@@ -5,8 +5,9 @@ workload = {
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
         # 'loop_dim_size': {'B': 1, 'K': 64, 'C': 3, 'OY': 7, 'OX': 376, 'FY': 3, 'FX': 3},
         # 'loop_dim_size': {'B': 1, 'K': 64, 'C': 3, 'OY': 7, 'OX': 37600, 'FY': 3, 'FX': 3},   ## both input and output cannot
-        # 'loop_dim_size': {'B': 1, 'K': 64, 'C': 3, 'OY': 7, 'OX': 12500, 'FY': 3, 'FX': 3}, ## input can fit, output cannot
-        'loop_dim_size': {'B': 1, 'K': 64, 'C': 3, 'OY': 7, 'OX': 14562, 'FY': 3, 'FX': 3}, ## input can fit, output cannot (boundary condition)
+        # 'loop_dim_size': {'B': 1, 'K': 64, 'C': 3, 'OY': 7, 'OX': 12500, 'FY': 3, 'FX': 3}, ## input can fit 1 CN a time, output cannot
+        'loop_dim_size': {'B': 1, 'K': 64, 'C': 2, 'OY': 7, 'OX': 12500, 'FY': 2, 'FX': 3}, ## input can fit 2 CNs a time, output cannot
+        # 'loop_dim_size': {'B': 1, 'K': 64, 'C': 3, 'OY': 7, 'OX': 14562, 'FY': 3, 'FX': 3}, ## input can fit, output cannot (boundary condition)
         # 'loop_dim_size': {'B': 1, 'K': 3, 'C': 64, 'OY': 7, 'OX': 12500, 'FY': 3, 'FX': 3}, ## input cannot fit, output can
         # 'loop_dim_size': {'B': 1, 'K': 640, 'C': 30, 'OY': 7, 'OX': 7, 'FY': 3, 'FX': 3}, ## weight cannot fit, input can fit, output can
         # 'loop_dim_size': {'B': 1, 'K': 640, 'C': 30, 'OY': 7, 'OX': 7, 'FY': 3, 'FX': 3}, ## weight cannot fit, input can fit, output can
@@ -24,7 +25,8 @@ workload = {
         # 'loop_dim_size': {'B': 1, 'K': 8, 'C': 64, 'OY': 5, 'OX': 376, 'FY': 3, 'FX': 3},
         # 'loop_dim_size': {'B': 1, 'K': 8, 'C': 64, 'OY': 5, 'OX': 37600, 'FY': 3, 'FX': 3},
         # 'loop_dim_size': {'B': 1, 'K': 8, 'C': 64, 'OY': 5, 'OX': 12500, 'FY': 3, 'FX': 3},
-        'loop_dim_size': {'B': 1, 'K': 8, 'C': 64, 'OY': 5, 'OX': 14562, 'FY': 3, 'FX': 3},
+        'loop_dim_size': {'B': 1, 'K': 8, 'C': 64, 'OY': 5, 'OX': 12500, 'FY': 3, 'FX': 3},
+        # 'loop_dim_size': {'B': 1, 'K': 8, 'C': 64, 'OY': 5, 'OX': 14562, 'FY': 3, 'FX': 3},
         # 'loop_dim_size': {'B': 1, 'K': 8, 'C': 3, 'OY': 5, 'OX': 12500, 'FY': 3, 'FX': 3},
         # 'loop_dim_size': {'B': 1, 'K': 80, 'C': 640, 'OY': 5, 'OX': 7, 'FY': 3, 'FX': 3},  # weight cannot fit, input can, output can
         # 'loop_dim_size': {'B': 1, 'K': 8, 'C': 640, 'OY': 5, 'OX': 7, 'FY': 3, 'FX': 3},  # weight cannot fit, input can, output can
