@@ -4,6 +4,7 @@ from stream.classes.cost_model.memory_manager import MemoryManager
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.tensor import Tensor
 import logging
+
 logger = logging.getLogger(__name__)
 
 
@@ -54,7 +55,7 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, memory_manager: MemoryM
 
     # Get all the nodes with no successors that produce final outputs, used for off-loading final outputs
     sink_layers = sorted(set(n.id[0] for n, d in G.out_degree() if d == 0))
-    sink_layer_nodes = set((n for n in G.nodes() if (n.id[0] in sink_layers) and (n.produces_final_output == True)))
+    sink_layer_nodes = set((n for n in G.nodes() if (n.id[0] in sink_layers) and (n.produces_final_output is True)))
 
     # Get the offchip core id
     offchip_core_id = accelerator.offchip_core_id
@@ -65,8 +66,8 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, memory_manager: MemoryM
             constant_tensor = n.operand_tensors[op]
             if not memory_manager.contains(constant_tensor, offchip_core_id):
                 memory_manager.add_tensor_to_core(
-                    tensor=constant_tensor, 
-                    core_id=offchip_core_id, 
+                    tensor=constant_tensor,
+                    core_id=offchip_core_id,
                     timestep=0,
                     timestep_end=0,
                     tensors_to_avoid_evicting=[])
@@ -86,11 +87,12 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, memory_manager: MemoryM
             preds_ends, cn_candidates = zip(*candidates)
             best_candidate = max(cn_candidates, key=attrgetter('id'))
             preds_end = preds_ends[cn_candidates.index(best_candidate)]
+        else:
+            raise ValueError(f"Scheduler's CN candidate_selection criterion '{candidate_selection}' is not supported.")
         # Remove this candidate from the candidates (as we are going to schedule it)
         candidates.remove((preds_end, best_candidate))
 
         core_id = best_candidate.core_allocation
-
         core = accelerator.get_core(core_id)
 
         start = max(cores_idle_from[core_id], preds_end)  # init start time when the core becomes available
@@ -110,7 +112,6 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, memory_manager: MemoryM
         # Sort these tensors based on their earliest possible transfer time
         tensors_this_candidate_needs, tensors_operands = zip(*sorted(zip(tensors_this_candidate_needs, tensors_operands)))
 
-
         ## Step 1
         # There could be operands that are too large to store in the highest memory on the core
         # The tensors stored in these memories should be evicted and potentially written back to off-chip
@@ -128,10 +129,25 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, memory_manager: MemoryM
         for tensor, tensor_operand in zip(tensors_this_candidate_needs, tensors_operands):
             core_ids_storing_tensor, stored_since_timesteps = memory_manager.find_tensor(tensor)
             if core_id not in core_ids_storing_tensor and tensor_operand not in best_candidate.too_large_operands:
-                # TODO: Replace this to get the best tensor source core based on energy/latency of transfer
+                # To know when is the earliest time that we transfer this data, we need to know 3 things (NO.1, NO.2, NO.3)
+                # NO.1 : when the sender core is ready to provide this data
+                # TODO: Replace this to get the best tensor source core based on energy/latency of transfer. Currently, we just select the first core that holds it ([0]).
                 tensor_core_id = core_ids_storing_tensor[0]
                 stored_since_timestep = stored_since_timesteps[0]
-                transfer_start, transfer_end, link_energy_cost, memory_energy_cost = accelerator.transfer_data(tensor, tensor_core_id, core_id, tensor_operand, max(stored_since_timestep, timestep))
+
+                # NO.2 : when the communication link that in charge of transferring this data is ready
+                sender_core = accelerator.get_core(tensor_core_id)
+                receiver_core = accelerator.get_core(core_id)
+                links = accelerator.get_links_for_pair(sender_core, receiver_core)
+                # TODO: Currently, we just select the first shortest-distance communication link.
+                link_available_timestep = links[0].available_from
+
+                # NO.3 : when the receiver core is ready (have enough space) to receive this data (NO.1 and NO.2 are considered in this step.)
+                consider_transfer_from_timestep = max(stored_since_timestep, link_available_timestep)
+                can_transfer_from_timestep = memory_manager.test_add_tensor_to_core(tensor, core_id, consider_transfer_from_timestep, memory_op=tensor_operand)
+
+                # Transfer the data from the data at the can_transfer_from_timestep
+                transfer_start, transfer_end, link_energy_cost, memory_energy_cost = accelerator.transfer_data(tensor, tensor_core_id, core_id, tensor_operand, can_transfer_from_timestep)
                 # Add it to the correct memory
                 evictions_complete_timestep, eviction_link_energy_cost, eviction_memory_energy_cost = memory_manager.add_tensor_to_core(tensor, core_id, transfer_start, transfer_end, tensors_this_candidate_needs, memory_op=tensor_operand)
                 # Shift the possible start time of this node if the transfer causes delay

@@ -110,11 +110,9 @@ class Accelerator:
         if not links:  # if links is empty (happens when sender == receiver, i.e. "transfer" from Core A -> Core A)
             return start_timestep, start_timestep, link_energy_cost, 0  # the "transfer" doesn't require any time
         transfer_start = max(start_timestep, links[0].available_from)
-        transfer_timestep = transfer_start
         for link in links:
-            transfer_timestep, transfer_energy_cost = link.put(tensor, transfer_timestep)
+            transfer_end, transfer_energy_cost = link.put(tensor, transfer_start)
             link_energy_cost += transfer_energy_cost
-        transfer_end = transfer_timestep  # Timestep of last transfer complete
         # Energy cost of memory reads/writes on sender/receiver
         # For this we need to know the memory operand in order to know where in the sender/receiver the tensor is stored
         # We assume the tensor to be sent is defined from the sender perspective, so we take its operand as the sender memory operand

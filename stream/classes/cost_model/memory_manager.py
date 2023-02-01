@@ -2,7 +2,7 @@ from itertools import combinations
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.tensor import Tensor
-
+import bisect
 
 class MemoryManager:
     """Class that keeps track of the memory state of all top level memories of each core.
@@ -29,8 +29,8 @@ class MemoryManager:
             self.available[core] = [level.memory_instance.size for level in top_levels]
             self.stored_tensors[core] = [list() for level in top_levels]
             self.stored_since_timestep[core] = [{} for level in top_levels]
-            self.delta_history[core] = [[(0, 0)] for level in top_levels]  # (timestep, delta in used [+ means more used so less available])
-            self.stored_cumsum[core] = [[(0, 0)] for level in top_levels]
+            self.delta_history[core] = [[[0, 0]] for level in top_levels]  # (timestep, delta in used [+ means more used so less available])
+            self.stored_cumsum[core] = [[[0, 0]] for level in top_levels]
             self.current_timestep[core] = [0 for level in top_levels]
         self.off_chip_core_id = self.accelerator.offchip_core_id
 
@@ -81,20 +81,61 @@ class MemoryManager:
             total_eviction_link_energy_cost += eviction_link_energy_cost
             total_eviction_memory_energy_cost += eviction_memory_energy_cost
 
-        # Now that we have enough space, we add this tensor 
+        # Now that we have enough space, we add this tensor
         self.stored_tensors[core][top_level_idx].append(tensor)
         self.stored_since_timestep[core][top_level_idx][tensor.equality_hash()] = timestep + timestep_delta
         self.available[core][top_level_idx] -= tensor_size
-        self.delta_history[core][top_level_idx].append((timestep, tensor_size))
-        
+        # use package bisect to insert the [timestep, tensor_size] in the correct timeframe, enable data preloading
+        bisect.insort(self.delta_history[core][top_level_idx], [timestep, tensor_size])
+
         (last_timestep, last_cumsum) = self.stored_cumsum[core][top_level_idx][-1]
         if timestep == last_timestep:
-            self.stored_cumsum[core][top_level_idx][-1] = (timestep, last_cumsum + tensor_size)
+            self.stored_cumsum[core][top_level_idx][-1] = [timestep, last_cumsum + tensor_size]
+        # if the timestep is before the last_timestep, it means data loading happens, and all the stored_cumsum afterwards need to be updated
+        elif timestep < last_timestep:
+            insert_id = bisect.bisect(self.stored_cumsum[core][top_level_idx], [timestep, tensor_size])
+            already_stored_size = self.stored_cumsum[core][top_level_idx][insert_id-1][1]
+            bisect.insort(self.stored_cumsum[core][top_level_idx], [timestep, already_stored_size + tensor_size])
+            for stored_cumsum_afterwards in self.stored_cumsum[core][top_level_idx][insert_id+1:]:
+                stored_cumsum_afterwards[1] += tensor_size
         else:
-            self.stored_cumsum[core][top_level_idx].append((timestep, last_cumsum + tensor_size))
-        
+            self.stored_cumsum[core][top_level_idx].append([timestep, last_cumsum + tensor_size])
+
         return timestep, total_eviction_link_energy_cost, total_eviction_memory_energy_cost
-        
+
+    def test_add_tensor_to_core(self, tensor: Tensor, core_id: int, test_timestep: int, memory_op: str) -> int:
+        """
+        This function gives the earliest timestep since test_timestep that the tensor can be added to the core
+
+        Args:
+        tensor (Tensor): The tensor to be added to the core.
+        core_id (int): The core id that is going to receive the tensor.
+        test_timestep (int): The timestep from which to start considering make this tensor data transfer.
+        memory_op (str): The memory operand storing the tensor on the receiving end of the transfer.
+
+        Returns:
+        int: The earliest timestep at which the transfer can actually start.
+        """
+
+        core = self.accelerator.get_core(core_id)
+        top_level_idx = self.get_top_level_idx(core, memory_op)
+        memory_usage_in_receiver_core = self.stored_cumsum[core][top_level_idx]
+        memory_usage_in_receiver_core_when_data_is_ready = None
+        if len(memory_usage_in_receiver_core) == 1:
+            memory_usage_in_receiver_core_when_data_is_ready = memory_usage_in_receiver_core
+        else:
+            for idx, memory_usage in enumerate(memory_usage_in_receiver_core):
+                if memory_usage[0] > test_timestep:
+                    memory_usage_in_receiver_core_when_data_is_ready = memory_usage_in_receiver_core[idx - 1:]
+                    break
+            if not memory_usage_in_receiver_core_when_data_is_ready:
+                memory_usage_in_receiver_core_when_data_is_ready = [memory_usage_in_receiver_core[-1]]
+
+        for memory_usage in memory_usage_in_receiver_core_when_data_is_ready:
+            if tensor.size < self.capacities[core][top_level_idx] - memory_usage[1]:
+                return max(memory_usage[0], test_timestep)
+        raise ValueError("Something went wrong.")
+
     def generate_all_combinations(self, lst):
         for i in range(1, len(lst) + 1):
             for comb in combinations(lst, i):
@@ -161,13 +202,19 @@ class MemoryManager:
         del self.stored_since_timestep[core][top_level_idx][tensor.equality_hash()]
 
         self.available[core][top_level_idx] += tensor_size
-        self.delta_history[core][top_level_idx].append((current_timestep, -tensor_size))
+        bisect.insort(self.delta_history[core][top_level_idx], [current_timestep, -tensor_size])
 
         (last_timestep, last_cumsum) = self.stored_cumsum[core][top_level_idx][-1]
         if current_timestep == last_timestep:
-            self.stored_cumsum[core][top_level_idx][-1] = (current_timestep, last_cumsum - tensor_size)
+            self.stored_cumsum[core][top_level_idx][-1] = [current_timestep, last_cumsum - tensor_size]
+        elif timestep < last_timestep:
+            insert_id = bisect.bisect(self.stored_cumsum[core][top_level_idx], [timestep, -tensor_size])
+            already_stored_size = self.stored_cumsum[core][top_level_idx][insert_id][1]
+            bisect.insort(self.stored_cumsum[core][top_level_idx], [timestep, already_stored_size - tensor_size])
+            for stored_cumsum_afterwards in self.stored_cumsum[core][insert_id+1:]:
+                stored_cumsum_afterwards[1] -= tensor_size
         else:
-            self.stored_cumsum[core][top_level_idx].append((current_timestep, last_cumsum - tensor_size))
+            self.stored_cumsum[core][top_level_idx].append([current_timestep, last_cumsum - tensor_size])
 
         return current_timestep, total_link_energy_cost, total_memory_energy_cost
 
