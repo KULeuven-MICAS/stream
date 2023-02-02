@@ -1,13 +1,13 @@
 from itertools import combinations
 
-from stream.classes.hardware.architecture.accelerator import Accelerator
+# from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.tensor import Tensor
 import bisect
 
 class MemoryManager:
     """Class that keeps track of the memory state of all top level memories of each core.
     """
-    def __init__(self, accelerator: Accelerator) -> None:
+    def __init__(self, accelerator) -> None:
         self.accelerator = accelerator
         # For each core in the accelerator, create a list containing the top level memories, which memory operands they store and their capacity
         self.top_levels = {}  # top level memory of each core
