@@ -21,6 +21,7 @@ class Tensor:
         self.base_priority = None  # Will be set when we know how many successors this node has
         self.total_priority = None
         self.core_priorities = None
+        self.id = self.origin.id + (layer_operand,)
 
     def __str__(self) -> str:
         return f"Tensor({self.origin}, {self.layer_operand})"

@@ -119,7 +119,7 @@ class MemoryManager:
         worst_case_timestep (int): when the data cannot be prefetched (no enough space), the latest timestep that it needs to be transferred.
 
         Returns:
-        int: The earliest timestep at which the transfer can actually start.
+        can_transfer_from_timestep (int): The earliest timestep at which the transfer can actually start.
         """
 
         core = self.accelerator.get_core(core_id)
@@ -138,9 +138,13 @@ class MemoryManager:
 
         for memory_usage in memory_usage_in_receiver_core_when_data_is_ready:
             if tensor.size < self.capacities[core][top_level_idx] - memory_usage[1]:
-                return max(memory_usage[0], test_timestep)
-        # raise ValueError("Something went wrong.")
-        logger.warning(f"Tensor {tensor} cannot be prefetched to core {core_id} due to not enough space. It can cause some computation stall.")
+                can_transfer_from_timestep = max(memory_usage[0], test_timestep)
+                if can_transfer_from_timestep >= worst_case_timestep:
+                    logger.warning(f"{tensor} cannot be prefetched to core {core_id}. Cause stall.")
+                else:
+                    logger.info(f"{tensor} is prefetched to core {core_id} to hide stall.")
+                return can_transfer_from_timestep
+        logger.warning(f"Tensor {tensor} cannot be prefetched to core {core_id}. Cause stall.")
         return worst_case_timestep
 
     def generate_all_combinations(self, lst):

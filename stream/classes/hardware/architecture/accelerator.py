@@ -155,21 +155,25 @@ class Accelerator:
         links = self.get_links_for_pair(sender_core, receiver_core)
         # TODO: Currently, we just select the first shortest-distance communication link.
         link_available_timestep = links[0].available_from
+        data_transfer_duration = ceil(tensor.size/links[0].bandwidth)
 
-        ## STEP 3: When the receiving core has enough space to store the tensor
+        ## STEP 3: When the receiving core has enough space to store the tensor (don't consider the data eviction)
         consider_transfer_from_timestep = max(stored_since_timestep, link_available_timestep)
         can_transfer_from_timestep = \
             self.memory_manager.test_add_tensor_to_core(tensor, receiving_core_id, consider_transfer_from_timestep, worst_case_timestep, memory_op=tensor_operand)
+        can_end_from_timestep = can_transfer_from_timestep + data_transfer_duration
 
-        ## STEP 4: Transfer the data
-        transfer_start, transfer_end, transfer_link_energy_cost, transfer_memory_energy_cost = \
-            self.transfer_data(tensor, tensor_core_id, receiving_core_id, tensor_operand, can_transfer_from_timestep)
-
-        # Add it to the correct memory
+        ## STEP 4: Add it to the correct memory (consider the data eviction, thus get the actual available transfer time: evictions_complete_timestep)
         evictions_complete_timestep, eviction_link_energy_cost, eviction_memory_energy_cost = \
-            self.memory_manager.add_tensor_to_core(tensor, receiving_core_id, transfer_start, transfer_end, non_evictable_tensors, memory_op=tensor_operand)
+            self.memory_manager.add_tensor_to_core(tensor, receiving_core_id, can_transfer_from_timestep, can_end_from_timestep, non_evictable_tensors, memory_op=tensor_operand)
+        actual_available_transfer_start = evictions_complete_timestep
+
+        ## STEP 5: Transfer the data
+        transfer_start, transfer_end, transfer_link_energy_cost, transfer_memory_energy_cost = \
+            self.transfer_data(tensor, tensor_core_id, receiving_core_id, tensor_operand, actual_available_transfer_start)
+
         # Shift the possible start time of this node if the transfer causes delay
-        transfer_complete_timestep = max(transfer_end, evictions_complete_timestep)
+        transfer_complete_timestep = transfer_end
 
         return transfer_complete_timestep, transfer_link_energy_cost, transfer_memory_energy_cost, eviction_link_energy_cost, eviction_memory_energy_cost
 
