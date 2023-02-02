@@ -103,7 +103,6 @@ class Accelerator:
         Returns:
             int: The timestep at which the transfer is complete.
         """
-        
 
         link_energy_cost = 0
         if isinstance(sender, int):
@@ -155,7 +154,7 @@ class Accelerator:
         links = self.get_links_for_pair(sender_core, receiver_core)
         # TODO: Currently, we just select the first shortest-distance communication link.
         link_available_timestep = links[0].available_from
-        data_transfer_duration = ceil(tensor.size/links[0].bandwidth)
+        data_transfer_duration = ceil(tensor.size / links[0].bandwidth)
 
         ## STEP 3: When the receiving core has enough space to store the tensor (don't consider the data eviction)
         consider_transfer_from_timestep = max(stored_since_timestep, link_available_timestep)
@@ -172,10 +171,16 @@ class Accelerator:
         transfer_start, transfer_end, transfer_link_energy_cost, transfer_memory_energy_cost = \
             self.transfer_data(tensor, tensor_core_id, receiving_core_id, tensor_operand, actual_available_transfer_start)
 
-        # Shift the possible start time of this node if the transfer causes delay
-        transfer_complete_timestep = transfer_end
+        ## STEP 6: Check if the already transfered data can be removed from the sender core (excluding DRAM)
+        # As long as the sender core no longer need it, we wipe it up to save space for other data fetching and prefetching.
+        if sender_core.id == self.offchip_core_id:
+            pass
+        else:
+            if (sender_core.id not in tensor.core_priorities) or (tensor.core_priorities[sender_core.id] == 0):
+                top_level_idx = self.memory_manager.get_top_level_idx(sender_core, tensor.memory_operand)
+                self.memory_manager.remove_tensor_from_core(sender_core, top_level_idx, tensor, transfer_end, write_back_to_offchip=False)
 
-        return transfer_complete_timestep, transfer_link_energy_cost, transfer_memory_energy_cost, eviction_link_energy_cost, eviction_memory_energy_cost
+        return transfer_end, transfer_link_energy_cost, transfer_memory_energy_cost, eviction_link_energy_cost, eviction_memory_energy_cost
 
     def get_memory_energy_cost_of_transfer(self, tensor: Tensor, sender: Core or int, receiver: Core or int, sender_memory_operand: str, receiver_memory_operand: str):
 
@@ -235,5 +240,3 @@ class Accelerator:
 
     def find_tensor(self, tensor: Tensor):
         return self.memory_manager.find_tensor(tensor)
-
-    

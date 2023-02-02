@@ -2,7 +2,8 @@ class Tensor:
     """Class to represent a data tensor.
     TODO: Add from which layer this tensor originates and its dimension ranges
     """
-    def __init__(self, size: int, origin=None, layer_operand: str=None, loop_dimensions: tuple=None, loop_ranges: tuple=None):
+
+    def __init__(self, size: int, origin=None, layer_operand: str = None, loop_dimensions: tuple = None, loop_ranges: tuple = None):
         """Initialize the Tensor instance.
 
         Args:
@@ -18,9 +19,9 @@ class Tensor:
         self.memory_operand = self.origin.memory_operand_links[layer_operand]
         self.loop_dimensions = loop_dimensions
         self.loop_ranges = loop_ranges
-        self.base_priority = None  # Will be set when we know how many successors this node has
-        self.total_priority = None
-        self.core_priorities = None
+        self.base_priority = None  # Will be set when we know how many successors this node has (static)
+        self.total_priority = None  # For all the cores, successors the tensor is still going to be used by (dynamic)
+        self.core_priorities = {}  # For each core, successors the tensor is still going to be used by (dynamic)
         self.id = self.origin.id + (layer_operand,)
 
     def __str__(self) -> str:
@@ -38,7 +39,6 @@ class Tensor:
     def __lt__(self, __o: object) -> bool:
         return isinstance(__o, Tensor) and self.size < __o.size
 
-
     # def __eq__(self, __o: object) -> bool:
     #     return isinstance(__o, Tensor) and \
     #         self.origin.id[0] == __o.origin.id[0] and \
@@ -48,6 +48,22 @@ class Tensor:
     def equality_hash(self):
         return hash((self.origin.id[0], self.layer_operand, self.loop_ranges))
 
-    def set_base_priority(self, base_priority):
+    def initialize_priorities_for_constant_operand(self, base_priority):
         self.base_priority = base_priority
         self.total_priority = base_priority
+        # We assume one CN is only allocated to one core
+        core_id = self.origin.core_allocation[0]
+        self.core_priorities[core_id] = base_priority
+
+    def initialize_priorities_for_variable_operand(self, G, node, layer_id):
+        successors = [succ for succ in G.successors(node) if succ.id[0] != layer_id]
+        base_priority = len(successors)
+        self.base_priority = base_priority
+        self.total_priority = base_priority
+        if self.layer_operand == node.output_operand:
+            # We assume one CN is only allocated to one core
+            self.core_priorities = {successor.core_allocation[0]: 0 for successor in successors}
+            for successor in successors:
+                self.core_priorities[successor.core_allocation[0]] += 1
+        else:
+            self.core_priorities[self.origin.core_allocation[0]] = base_priority
