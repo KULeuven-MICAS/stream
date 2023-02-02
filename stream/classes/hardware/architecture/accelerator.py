@@ -21,10 +21,7 @@ class Accelerator:
         self.name = name
         self.cores = cores
         self.global_buffer = global_buffer
-        if offchip_core_id is None:
-            self.offchip_core_id = max((core.id for core in self.cores.nodes()))
-        else:
-            self.offchip_core_id = offchip_core_id
+        self.offchip_core_id = offchip_core_id
         self.shortest_paths = self.get_shortest_paths()
         self.pair_links = self.get_links_for_all_core_pairs()
 
