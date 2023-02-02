@@ -65,7 +65,7 @@ class PoolingParser(Parser):
             core_allocation = node_mapping["core_allocation"]
             d["core_allocation"] =  core_allocation
 
-            spatial_mapping = self.get_spatial_mappings(core_allocation)
+            spatial_mapping = self.get_spatial_mappings(self.accelerator, core_allocation)
             d["spatial_mapping"] =  spatial_mapping
 
             d["memory_operand_links"] =  {'O': 'O', 'W': 'I2', 'I': 'I1'}
