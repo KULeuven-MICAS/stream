@@ -24,8 +24,8 @@ workload = {
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
         # 'loop_dim_size': {'B': 1, 'K': 8, 'C': 64, 'OY': 5, 'OX': 376, 'FY': 3, 'FX': 3},
         # 'loop_dim_size': {'B': 1, 'K': 8, 'C': 64, 'OY': 5, 'OX': 37600, 'FY': 3, 'FX': 3},
-        # 'loop_dim_size': {'B': 1, 'K': 8, 'C': 64, 'OY': 5, 'OX': 12500, 'FY': 3, 'FX': 3},
         'loop_dim_size': {'B': 1, 'K': 8, 'C': 64, 'OY': 5, 'OX': 12500, 'FY': 3, 'FX': 3},
+        # 'loop_dim_size': {'B': 1, 'K': 8, 'C': 64, 'OY': 5, 'OX': 12500, 'FY': 3, 'FX': 3},
         # 'loop_dim_size': {'B': 1, 'K': 8, 'C': 64, 'OY': 5, 'OX': 14562, 'FY': 3, 'FX': 3},
         # 'loop_dim_size': {'B': 1, 'K': 8, 'C': 3, 'OY': 5, 'OX': 12500, 'FY': 3, 'FX': 3},
         # 'loop_dim_size': {'B': 1, 'K': 80, 'C': 640, 'OY': 5, 'OX': 7, 'FY': 3, 'FX': 3},  # weight cannot fit, input can, output can

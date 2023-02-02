@@ -124,7 +124,7 @@ class Accelerator:
         memory_energy_cost = self.get_memory_energy_cost_of_transfer(tensor, sender, receiver, sender_memory_operand, receiver_memory_operand)
         return transfer_start, transfer_end, link_energy_cost, memory_energy_cost
 
-    def transfer_tensor_to_core(self, tensor: Tensor, receiving_core_id: int, tensor_operand: str, non_evictable_tensors: list):
+    def transfer_tensor_to_core(self, tensor: Tensor, receiving_core_id: int, tensor_operand: str, non_evictable_tensors: list, worst_case_timestep: int):
         """Transfer a tensor to a given core id.
         This function computes when the transfer can take place based on three factors:
         1) The timestep from which this tensor is available for transfer on a sender core.
@@ -135,6 +135,8 @@ class Accelerator:
             tensor (Tensor): The tensor to transfer.
             receiving_core_id (int): The id of the core that needs to receive the tensor.
             tensor_operand (str): The memory operand where the tensor needs to be stored.
+            non_evictable_tensors (list): the stored tensor that cannot be evicted
+            worst_case_timestep (int): when the data cannot be prefetched (no enough space), the latest timestep that it needs to be transferred
         """
         ## STEP 1: Since when is the tensor available on a sending core
         # Find the core that is storing this tensor
@@ -156,13 +158,16 @@ class Accelerator:
 
         ## STEP 3: When the receiving core has enough space to store the tensor
         consider_transfer_from_timestep = max(stored_since_timestep, link_available_timestep)
-        can_transfer_from_timestep = self.memory_manager.test_add_tensor_to_core(tensor, receiving_core_id, consider_transfer_from_timestep, memory_op=tensor_operand)
+        can_transfer_from_timestep = \
+            self.memory_manager.test_add_tensor_to_core(tensor, receiving_core_id, consider_transfer_from_timestep, worst_case_timestep, memory_op=tensor_operand)
 
         ## STEP 4: Transfer the data
-        transfer_start, transfer_end, transfer_link_energy_cost, transfer_memory_energy_cost = self.transfer_data(tensor, tensor_core_id, receiving_core_id, tensor_operand, can_transfer_from_timestep)
+        transfer_start, transfer_end, transfer_link_energy_cost, transfer_memory_energy_cost = \
+            self.transfer_data(tensor, tensor_core_id, receiving_core_id, tensor_operand, can_transfer_from_timestep)
 
         # Add it to the correct memory
-        evictions_complete_timestep, eviction_link_energy_cost, eviction_memory_energy_cost = self.memory_manager.add_tensor_to_core(tensor, receiving_core_id, transfer_start, transfer_end, non_evictable_tensors, memory_op=tensor_operand)
+        evictions_complete_timestep, eviction_link_energy_cost, eviction_memory_energy_cost = \
+            self.memory_manager.add_tensor_to_core(tensor, receiving_core_id, transfer_start, transfer_end, non_evictable_tensors, memory_op=tensor_operand)
         # Shift the possible start time of this node if the transfer causes delay
         transfer_complete_timestep = max(transfer_end, evictions_complete_timestep)
 

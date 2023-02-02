@@ -3,6 +3,9 @@ from itertools import combinations
 # from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.tensor import Tensor
 import bisect
+import logging
+
+logger = logging.getLogger(__name__)
 
 class MemoryManager:
     """Class that keeps track of the memory state of all top level memories of each core.
@@ -75,7 +78,8 @@ class MemoryManager:
         memory_capacity = self.capacities[core][top_level_idx]
         tensors_to_evict = self.find_best_tensor_combination_to_evict_fast(tensor, stored_tensors, memory_capacity, tensors_to_avoid_evicting)
         for tensor_to_evict in tensors_to_evict:
-            end_of_eviction_timestep, eviction_link_energy_cost, eviction_memory_energy_cost = self.remove_tensor_from_core(core, top_level_idx, tensor_to_evict, timestep, write_back_to_offchip=True)
+            end_of_eviction_timestep, eviction_link_energy_cost, eviction_memory_energy_cost = \
+                self.remove_tensor_from_core(core, top_level_idx, tensor_to_evict, timestep, write_back_to_offchip=True)
             if end_of_eviction_timestep > timestep:
                 timestep = end_of_eviction_timestep
             total_eviction_link_energy_cost += eviction_link_energy_cost
@@ -103,7 +107,7 @@ class MemoryManager:
 
         return timestep, total_eviction_link_energy_cost, total_eviction_memory_energy_cost
 
-    def test_add_tensor_to_core(self, tensor: Tensor, core_id: int, test_timestep: int, memory_op: str) -> int:
+    def test_add_tensor_to_core(self, tensor: Tensor, core_id: int, test_timestep: int, worst_case_timestep: int, memory_op: str) -> int:
         """
         This function gives the earliest timestep since test_timestep that the tensor can be added to the core
 
@@ -112,6 +116,7 @@ class MemoryManager:
         core_id (int): The core id that is going to receive the tensor.
         test_timestep (int): The timestep from which to start considering make this tensor data transfer.
         memory_op (str): The memory operand storing the tensor on the receiving end of the transfer.
+        worst_case_timestep (int): when the data cannot be prefetched (no enough space), the latest timestep that it needs to be transferred.
 
         Returns:
         int: The earliest timestep at which the transfer can actually start.
@@ -134,7 +139,9 @@ class MemoryManager:
         for memory_usage in memory_usage_in_receiver_core_when_data_is_ready:
             if tensor.size < self.capacities[core][top_level_idx] - memory_usage[1]:
                 return max(memory_usage[0], test_timestep)
-        raise ValueError("Something went wrong.")
+        # raise ValueError("Something went wrong.")
+        logger.warning(f"Tensor {tensor} cannot be prefetched to core {core_id} due to not enough space. It can cause some computation stall.")
+        return worst_case_timestep
 
     def generate_all_combinations(self, lst):
         for i in range(1, len(lst) + 1):
