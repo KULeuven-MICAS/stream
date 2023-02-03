@@ -608,7 +608,7 @@ class GenerateCNWorkloadHybridStage(Stage):
                     attr_to_add_to = "data_produced_unique"
                     precision = node.operand_precision["O_final"]
                 else:
-                    finer_nodes_list = reversed(finer_nodes)  # list in reversed order
+                    finer_nodes_list = list(reversed(finer_nodes))  # list in reversed order
                     should_add_to_tensor_list = [True for finer_node in finer_nodes_list]
                     attr_to_add_to = "data_consumed_unique"
                     precision = node.operand_precision[op] * (not is_source_node)  # if this layer is the first layer, we assume the inputs are streamed and "free"
