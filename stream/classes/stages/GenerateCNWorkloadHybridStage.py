@@ -323,7 +323,7 @@ class GenerateCNWorkloadHybridStage(Stage):
             # Initialize the priorities (total inter-CN data reuse factor) for the constant operands of this finer_node
             for constant_operand in finer_node.constant_operands:
                 tensor = finer_node.operand_tensors[constant_operand]
-                tensor.initialize_priorities_for_constant_operand(tensor_reuse_factors[constant_operand][n])
+                tensor.set_base_priorities(tensor_reuse_factors[constant_operand][n])
 
             # Compute the output data produced by each finer node, assuming that all the data produced by different CNs are unique
             finer_node.data_produced_unique = finer_node.operand_size_elem['O'] * finer_node.operand_precision['O_final']
@@ -660,7 +660,8 @@ class GenerateCNWorkloadHybridStage(Stage):
                 tensor: Tensor = node.operand_tensors[layer_operand]
                 if layer_operand == node.output_operand:
                     # Look at the amount of successors from different layers
-                    tensor.initialize_priorities_for_variable_operand(G, node, layer_id)
+                    successors = [succ for succ in G.successors(node) if succ.id[0] != layer_id]
+                    tensor.set_base_priorities(len(successors))
             nb_seen_nodes_per_layer_id[layer_id] += 1
 
     def set_nb_real_predecessors(self, G):

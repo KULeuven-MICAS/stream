@@ -20,7 +20,6 @@ class Tensor:
         self.loop_dimensions = loop_dimensions
         self.loop_ranges = loop_ranges
         self.base_priority = None  # Will be set when we know how many successors this node has (static)
-        self.total_priority = None  # For all the cores, successors the tensor is still going to be used by (dynamic)
         self.core_priorities = {}  # For each core, successors the tensor is still going to be used by (dynamic)
         self.id = self.origin.id + (layer_operand,)
 
@@ -48,22 +47,18 @@ class Tensor:
     def equality_hash(self):
         return hash((self.origin.id[0], self.layer_operand, self.loop_ranges))
 
-    def initialize_priorities_for_constant_operand(self, base_priority):
+    def set_base_priorities(self, base_priority):
         self.base_priority = base_priority
-        self.total_priority = base_priority
-        # We assume one CN is only allocated to one core
-        core_id = self.origin.core_allocation[0]
-        self.core_priorities[core_id] = base_priority
 
-    def initialize_priorities_for_variable_operand(self, G, node, layer_id):
+    def initialize_core_priorities(self, G, node):
+        layer_id = node.id[0]
         successors = [succ for succ in G.successors(node) if succ.id[0] != layer_id]
-        base_priority = len(successors)
-        self.base_priority = base_priority
-        self.total_priority = base_priority
         if self.layer_operand == node.output_operand:
-            # We assume one CN is only allocated to one core
-            self.core_priorities = {successor.core_allocation[0]: 0 for successor in successors}
+            self.core_priorities = {successor.core_allocation: 0 for successor in successors}
             for successor in successors:
-                self.core_priorities[successor.core_allocation[0]] += 1
+                self.core_priorities[successor.core_allocation] += 1
         else:
-            self.core_priorities[self.origin.core_allocation[0]] = base_priority
+            self.core_priorities[self.origin.core_allocation] = self.base_priority
+
+    def get_total_priority(self):
+        return sum([priority for priority in self.core_priorities.values()])

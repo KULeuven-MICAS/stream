@@ -59,17 +59,20 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, cores_idle_from=None, c
     # Get the offchip core id
     offchip_core_id = accelerator.offchip_core_id
 
-    # Add the constant operand tensors of all nodes to the off-chip initially
+    ## Schedule preparation:
+    # 1. Initialize the total and core priority for each tensor
+    # 2. Add the constant operand tensors of all nodes to the off-chip initially
     for n in G.nodes():
-        for op in n.constant_operands:
-            constant_tensor = n.operand_tensors[op]
-            if not accelerator.contains_tensor(constant_tensor, offchip_core_id):
-                accelerator.memory_manager.add_tensor_to_core(
-                    tensor=constant_tensor,
-                    core_id=offchip_core_id,
-                    timestep=0,
-                    timestep_end=0,
-                    tensors_to_avoid_evicting=[])
+        for op, tensor in n.operand_tensors.items():
+            tensor.initialize_core_priorities(G, n)
+            if op in n.constant_operands:
+                if not accelerator.contains_tensor(tensor, offchip_core_id):
+                    accelerator.memory_manager.add_tensor_to_core(
+                        tensor=tensor,
+                        core_id=offchip_core_id,
+                        timestep=0,
+                        timestep_end=0,
+                        tensors_to_avoid_evicting=[])
 
     done = False
     logger.info("Start scheduling.")
@@ -182,8 +185,8 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, cores_idle_from=None, c
         # Memory usage: When the node ends:
         # Decrease the priority of all the tensors this node used
         for tensor_used_by_node in tensors_this_candidate_needs:
-            tensor_used_by_node.total_priority -= 1
-            if tensor_used_by_node.total_priority == 0:
+            tensor_used_by_node.core_priorities[core_id] -= 1
+            if tensor_used_by_node.get_total_priority() == 0:
                 cores_storing_tensor_used_by_node, stored_since_timesteps = accelerator.memory_manager.find_tensor(tensor_used_by_node)
                 for storing_core_id in cores_storing_tensor_used_by_node:
                     storing_core = accelerator.get_core(storing_core_id)
