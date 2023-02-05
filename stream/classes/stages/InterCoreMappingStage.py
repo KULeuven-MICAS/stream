@@ -84,7 +84,7 @@ class InterCoreMappingStage(Stage):
                                fig_path=f"outputs/schedule_plot{self.fig_path}fixed.png")
             scme.plot_memory_usage(fig_path=f"outputs/memory_usage_plot{self.fig_path}fixed.png")
             print(f"energy={energy}, latency={latency}")
-            yield None, None
+            yield scme, None
         else:
             logger.info(f"Running Inter-Core Allocation Optimization with Genetic Algorithm.")
             # Initialize the genetic algorithm
@@ -102,7 +102,7 @@ class InterCoreMappingStage(Stage):
                                        plot_data_transfer=self.plot_data_transfer,
                                        fig_path=f"outputs/schedule_plot{self.fig_path}{i}.png")
                     scme.plot_memory_usage(fig_path=f"outputs/memory_usage_plot{self.fig_path}{i}.png")
-            yield None, None
+            yield scme, None
         logger.info(f'Finished InterCoreMappingStage.')
 
     def set_hw_performance_non_flexible_nodes(self):

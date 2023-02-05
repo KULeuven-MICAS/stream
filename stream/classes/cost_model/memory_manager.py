@@ -1,13 +1,18 @@
 from itertools import combinations
 
-from stream.classes.hardware.architecture.accelerator import Accelerator
+# from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.tensor import Tensor
+import bisect
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 class MemoryManager:
     """Class that keeps track of the memory state of all top level memories of each core.
     """
-    def __init__(self, accelerator: Accelerator) -> None:
+
+    def __init__(self, accelerator) -> None:
         self.accelerator = accelerator
         # For each core in the accelerator, create a list containing the top level memories, which memory operands they store and their capacity
         self.top_levels = {}  # top level memory of each core
@@ -29,8 +34,8 @@ class MemoryManager:
             self.available[core] = [level.memory_instance.size for level in top_levels]
             self.stored_tensors[core] = [list() for level in top_levels]
             self.stored_since_timestep[core] = [{} for level in top_levels]
-            self.delta_history[core] = [[(0, 0)] for level in top_levels]  # (timestep, delta in used [+ means more used so less available])
-            self.stored_cumsum[core] = [[(0, 0)] for level in top_levels]
+            self.delta_history[core] = [[[0, 0]] for level in top_levels]  # (timestep, delta in used [+ means more used so less available])
+            self.stored_cumsum[core] = [[[0, 0]] for level in top_levels]
             self.current_timestep[core] = [0 for level in top_levels]
         self.off_chip_core_id = self.accelerator.offchip_core_id
 
@@ -53,7 +58,7 @@ class MemoryManager:
             raise ValueError(f"Tensor {tensor} was not found in any of the cores.")
         return cores_storing_tensor, stored_since
 
-    def add_tensor_to_core(self, tensor: Tensor, core_id: int, timestep: int, timestep_end: int, tensors_to_avoid_evicting: list, memory_op: str=None):
+    def add_tensor_to_core(self, tensor: Tensor, core_id: int, timestep: int, timestep_end: int, tensors_to_avoid_evicting: list, memory_op: str = None):
         timestep_delta = timestep_end - timestep
         total_eviction_link_energy_cost = 0
         total_eviction_memory_energy_cost = 0
@@ -73,34 +78,83 @@ class MemoryManager:
         # If there is no equivalent tensor in the core, remove tensors until we have enough space
         # Tensors are removed based on their priority value
         memory_capacity = self.capacities[core][top_level_idx]
-        tensors_to_evict = self.find_best_tensor_combination_to_evict_fast(tensor, stored_tensors, memory_capacity, tensors_to_avoid_evicting)
+        tensors_to_evict = self.find_best_tensor_combination_to_evict_fast(core_id, tensor, stored_tensors, memory_capacity, tensors_to_avoid_evicting)
         for tensor_to_evict in tensors_to_evict:
-            end_of_eviction_timestep, eviction_link_energy_cost, eviction_memory_energy_cost = self.remove_tensor_from_core(core, top_level_idx, tensor_to_evict, timestep, write_back_to_offchip=True)
+            end_of_eviction_timestep, eviction_link_energy_cost, eviction_memory_energy_cost = \
+                self.remove_tensor_from_core(core, top_level_idx, tensor_to_evict, timestep, write_back_to_offchip=True)
             if end_of_eviction_timestep > timestep:
                 timestep = end_of_eviction_timestep
             total_eviction_link_energy_cost += eviction_link_energy_cost
             total_eviction_memory_energy_cost += eviction_memory_energy_cost
 
-        # Now that we have enough space, we add this tensor 
+        # Now that we have enough space, we add this tensor
         self.stored_tensors[core][top_level_idx].append(tensor)
         self.stored_since_timestep[core][top_level_idx][tensor.equality_hash()] = timestep + timestep_delta
         self.available[core][top_level_idx] -= tensor_size
-        self.delta_history[core][top_level_idx].append((timestep, tensor_size))
-        
+        # use package bisect to insert the [timestep, tensor_size] in the correct timeframe, enable data preloading
+        bisect.insort(self.delta_history[core][top_level_idx], [timestep, tensor_size])
+
         (last_timestep, last_cumsum) = self.stored_cumsum[core][top_level_idx][-1]
         if timestep == last_timestep:
-            self.stored_cumsum[core][top_level_idx][-1] = (timestep, last_cumsum + tensor_size)
+            self.stored_cumsum[core][top_level_idx][-1] = [timestep, last_cumsum + tensor_size]
+        # if the timestep is before the last_timestep, it means data loading happens, and all the stored_cumsum afterwards need to be updated
+        elif timestep < last_timestep:
+            insert_id = bisect.bisect(self.stored_cumsum[core][top_level_idx], [timestep, tensor_size])
+            already_stored_size = self.stored_cumsum[core][top_level_idx][insert_id - 1][1]
+            bisect.insort(self.stored_cumsum[core][top_level_idx], [timestep, already_stored_size + tensor_size])
+            for stored_cumsum_afterwards in self.stored_cumsum[core][top_level_idx][insert_id + 1:]:
+                stored_cumsum_afterwards[1] += tensor_size
         else:
-            self.stored_cumsum[core][top_level_idx].append((timestep, last_cumsum + tensor_size))
-        
+            self.stored_cumsum[core][top_level_idx].append([timestep, last_cumsum + tensor_size])
+
         return timestep, total_eviction_link_energy_cost, total_eviction_memory_energy_cost
-        
+
+    def test_add_tensor_to_core(self, tensor: Tensor, core_id: int, test_timestep: int, worst_case_timestep: int, memory_op: str) -> int:
+        """
+        This function gives the earliest timestep since test_timestep that the tensor can be added to the core
+
+        Args:
+        tensor (Tensor): The tensor to be added to the core.
+        core_id (int): The core id that is going to receive the tensor.
+        test_timestep (int): The timestep from which to start considering make this tensor data transfer.
+        memory_op (str): The memory operand storing the tensor on the receiving end of the transfer.
+        worst_case_timestep (int): when the data cannot be prefetched (no enough space), the latest timestep that it needs to be transferred.
+
+        Returns:
+        can_transfer_from_timestep (int): The earliest timestep at which the transfer can actually start.
+        """
+
+        core = self.accelerator.get_core(core_id)
+        top_level_idx = self.get_top_level_idx(core, memory_op)
+        memory_usage_in_receiver_core = self.stored_cumsum[core][top_level_idx]
+        memory_usage_in_receiver_core_when_data_is_ready = None
+        if len(memory_usage_in_receiver_core) == 1:
+            memory_usage_in_receiver_core_when_data_is_ready = memory_usage_in_receiver_core
+        else:
+            for idx, memory_usage in enumerate(memory_usage_in_receiver_core):
+                if memory_usage[0] > test_timestep:
+                    memory_usage_in_receiver_core_when_data_is_ready = memory_usage_in_receiver_core[idx - 1:]
+                    break
+            if not memory_usage_in_receiver_core_when_data_is_ready:
+                memory_usage_in_receiver_core_when_data_is_ready = [memory_usage_in_receiver_core[-1]]
+
+        for memory_usage in memory_usage_in_receiver_core_when_data_is_ready:
+            if tensor.size < self.capacities[core][top_level_idx] - memory_usage[1]:
+                can_transfer_from_timestep = max(memory_usage[0], test_timestep)
+                if can_transfer_from_timestep >= worst_case_timestep:
+                    logger.warning(f"{tensor} cannot be prefetched to core {core_id}. Cause stall.")
+                else:
+                    logger.info(f"{tensor} is prefetched to core {core_id} to hide stall.")
+                return can_transfer_from_timestep
+        logger.warning(f"Tensor {tensor} cannot be prefetched to core {core_id}. Cause stall.")
+        return worst_case_timestep
+
     def generate_all_combinations(self, lst):
         for i in range(1, len(lst) + 1):
             for comb in combinations(lst, i):
                 yield comb
 
-    def find_best_tensor_combination_to_evict(self, tensor_to_add, stored_tensors, capacity, tensors_to_avoid_evicting):
+    def find_best_tensor_combination_to_evict(self, core_id, tensor_to_add, stored_tensors, capacity, tensors_to_avoid_evicting):
         relevant_tensors_to_avoid_evicting = [tensor for tensor in tensors_to_avoid_evicting if tensor in stored_tensors]
         stored_tensors_size = sum((stored_tensor.size for stored_tensor in stored_tensors))
         if stored_tensors_size + tensor_to_add.size <= capacity:
@@ -108,7 +162,7 @@ class MemoryManager:
         min_size_to_evict = tensor_to_add.size - (capacity - stored_tensors_size)
         min_score, best_combination_to_evict = float('inf'), []
         for combination in self.generate_all_combinations([tensor for tensor in stored_tensors if tensor not in relevant_tensors_to_avoid_evicting]):
-            score = sum((stored_tensor.total_priority * stored_tensor.size for stored_tensor in combination))
+            score = sum((stored_tensor.core_priorities[core_id] * stored_tensor.size for stored_tensor in combination))
             evicted_size = sum((stored_tensor.size for stored_tensor in combination))
             if evicted_size >= min_size_to_evict and score < min_score:
                 min_score = score
@@ -117,12 +171,14 @@ class MemoryManager:
             raise ValueError("The best tensor combination to evict is empty. tensors_to_avoid_evicting might be too large for the candidate.")
         return best_combination_to_evict
 
-    def find_best_tensor_combination_to_evict_fast(self, tensor_to_add, stored_tensors, capacity, tensors_to_avoid_evicting):
+    def find_best_tensor_combination_to_evict_fast(self, core_id, tensor_to_add, stored_tensors, capacity, tensors_to_avoid_evicting):
         relevant_tensors_to_avoid_evicting = [tensor for tensor in tensors_to_avoid_evicting if tensor in stored_tensors]
         stored_tensors_size = sum((stored_tensor.size for stored_tensor in stored_tensors))
         min_size_to_evict = tensor_to_add.size - (capacity - stored_tensors_size)
+        if min_size_to_evict < 0:   # no need to evict any tensor, the memory's space is enough
+            return []
         evictable_tensors = [tensor for tensor in stored_tensors if tensor not in relevant_tensors_to_avoid_evicting]
-        evictable_tensors_priority_size = [tensor.total_priority * tensor.size for tensor in evictable_tensors]
+        evictable_tensors_priority_size = [tensor.core_priorities[core_id] * tensor.size for tensor in evictable_tensors]
         if not evictable_tensors:
             evictable_tensors_priority_size, evictable_tensors = [], []
         else:
@@ -136,7 +192,7 @@ class MemoryManager:
         tensors_to_evict = evictable_tensors[:idx_satisfying_min_size_to_evict]
         return tensors_to_evict
 
-    def remove_tensor_from_core(self, core, top_level_idx, tensor: Tensor, timestep: int, write_back_to_offchip: bool=True):
+    def remove_tensor_from_core(self, core, top_level_idx, tensor: Tensor, timestep: int, write_back_to_offchip: bool = True):
         tensor_size = tensor.size
 
         # Transfer the tensor to off-chip if it's not present there
@@ -161,13 +217,19 @@ class MemoryManager:
         del self.stored_since_timestep[core][top_level_idx][tensor.equality_hash()]
 
         self.available[core][top_level_idx] += tensor_size
-        self.delta_history[core][top_level_idx].append((current_timestep, -tensor_size))
+        bisect.insort(self.delta_history[core][top_level_idx], [current_timestep, -tensor_size])
 
         (last_timestep, last_cumsum) = self.stored_cumsum[core][top_level_idx][-1]
         if current_timestep == last_timestep:
-            self.stored_cumsum[core][top_level_idx][-1] = (current_timestep, last_cumsum - tensor_size)
+            self.stored_cumsum[core][top_level_idx][-1] = [current_timestep, last_cumsum - tensor_size]
+        elif timestep < last_timestep:
+            insert_id = bisect.bisect(self.stored_cumsum[core][top_level_idx], [timestep, -tensor_size])
+            already_stored_size = self.stored_cumsum[core][top_level_idx][insert_id][1]
+            bisect.insort(self.stored_cumsum[core][top_level_idx], [timestep, already_stored_size - tensor_size])
+            for stored_cumsum_afterwards in self.stored_cumsum[core][insert_id + 1:]:
+                stored_cumsum_afterwards[1] -= tensor_size
         else:
-            self.stored_cumsum[core][top_level_idx].append((current_timestep, last_cumsum - tensor_size))
+            self.stored_cumsum[core][top_level_idx].append([current_timestep, last_cumsum - tensor_size])
 
         return current_timestep, total_link_energy_cost, total_memory_energy_cost
 

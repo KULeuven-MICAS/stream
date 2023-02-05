@@ -10,6 +10,7 @@ from stream.classes.workload.flatten_node import FlattenNode
 from stream.classes.workload.lpnormalization_node import LpNormalizationNode
 from stream.classes.workload.reshape_node import ReshapeNode
 from stream.classes.workload.transpose_node import TransposeNode
+from stream.classes.workload.tensor import Tensor
 
 from zigzag.classes.mapping.temporal.temporal_loop import TemporalLoop
 from stream.classes.workload.communication_node import CommunicationNode
@@ -319,10 +320,10 @@ class GenerateCNWorkloadHybridStage(Stage):
                 produces_final_output = False
             finer_node = ComputationNode((original_node_id, n), finer_node_attrs_copy, node_name, node_input_names, node_output_names, produces_final_output=produces_final_output)
 
-            # Compute the base_priority (data_reuse_factor) for the constant operands of this finer_node
+            # Initialize the priorities (total inter-CN data reuse factor) for the constant operands of this finer_node
             for constant_operand in finer_node.constant_operands:
                 tensor = finer_node.operand_tensors[constant_operand]
-                tensor.set_base_priority(tensor_reuse_factors[constant_operand][n])
+                tensor.set_base_priorities(tensor_reuse_factors[constant_operand][n])
 
             # Compute the output data produced by each finer node, assuming that all the data produced by different CNs are unique
             finer_node.data_produced_unique = finer_node.operand_size_elem['O'] * finer_node.operand_precision['O_final']
@@ -645,7 +646,8 @@ class GenerateCNWorkloadHybridStage(Stage):
 
     @staticmethod
     def set_base_priority_of_nodes(G, finer_nodes_dict):
-        """Set the base_priority of all stored tensors in every node in finer_nodes based on the amount of real (excluding same layer edges) edges.
+        """Set the base_priority of all stored tensors of variable operands in every node in finer_nodes
+         based on the amount of real (excluding same layer edges) edges.
 
         Args:
             finer_nodes (list): List of the nodes for which to set the tensors' base_priority
@@ -655,10 +657,11 @@ class GenerateCNWorkloadHybridStage(Stage):
         for node in nx.topological_sort(G):
             layer_id = node.id[0]
             for layer_operand in node.operand_list:
-                tensor = node.operand_tensors[layer_operand]
+                tensor: Tensor = node.operand_tensors[layer_operand]
                 if layer_operand == node.output_operand:
                     # Look at the amount of successors from different layers
-                    tensor.set_base_priority(len([succ for succ in G.successors(node) if succ.id[0] != layer_id]))
+                    successors = [succ for succ in G.successors(node) if succ.id[0] != layer_id]
+                    tensor.set_base_priorities(len(successors))
             nb_seen_nodes_per_layer_id[layer_id] += 1
 
     def set_nb_real_predecessors(self, G):

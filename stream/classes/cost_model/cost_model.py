@@ -30,7 +30,6 @@ class StreamCostModelEvaluation:
         self.latency = None
         self.max_memory_usage = None
         self.core_timesteps_delta_cumsums = None
-        self.memory_manager = MemoryManager(self.accelerator)  # Defined here (and not in accelerator) because we need a new one for every cost model evaluation.
         self.scheduler_candidate_selection = scheduler_candidate_selection
 
     def __str__(self):
@@ -40,7 +39,7 @@ class StreamCostModelEvaluation:
         """Run the SCME by scheduling the graph through time. The scheduler takes into account inter-core data movement and also tracks energy and memory through the memory manager.
         This assumes each node in the graph has an energy and runtime of the core to which they are allocated to.
         """
-        results = schedule_graph(self.workload, self.accelerator, self.memory_manager, candidate_selection=self.scheduler_candidate_selection)
+        results = schedule_graph(self.workload, self.accelerator, candidate_selection=self.scheduler_candidate_selection)
         self.latency = results[0]
         self.total_computation_energy_cost = results[0]
         self.total_memory_energy_cost =  results[1]
@@ -65,4 +64,4 @@ class StreamCostModelEvaluation:
     def plot_memory_usage(self, fig_path="outputs/memory_usage_plot.png"):
         """Plot the memory usage of this SCME.
         """
-        plot_memory_usage(self.memory_manager, fig_path)
+        plot_memory_usage(self.accelerator.memory_manager, fig_path)

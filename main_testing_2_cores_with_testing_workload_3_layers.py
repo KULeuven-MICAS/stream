@@ -10,10 +10,9 @@ _logging.basicConfig(level=_logging_level,
                      format=_logging_format)
 
 #################################
-accelerator = 'stream.inputs.examples.hardware.Meta_prototype_dual_core_simd_offchip'
-workload_path = 'stream.inputs.examples.workload.resnet18'
-# workload_path = 'stream/inputs/examples/workload/resnet18.onnx'
-mapping_path = 'stream.inputs.examples.mapping.meta_prototype_quad_core_pooling_simd_offchip'
+accelerator = 'stream.inputs.testing.hardware.dual_testing_core_offchip'
+workload_path = 'stream.inputs.testing.workload.testing_workload_3_layers_for_2_cores'
+mapping_path = 'stream.inputs.testing.mapping.testing_mapping'
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
 hint_loops = [('OY', 'all')]  # outer CN loops, with error in resnet18 plotting
@@ -43,7 +42,7 @@ mainstage = MainStage([  # Initializes the MainStage as entry point
     loma_lpf_limit=6,  # required by LomaStage
     nb_ga_individuals=4,  # number of individuals in each genetic algorithm generation
     nb_ga_generations=1,  # number of genetic algorithm generations
-    node_hw_performances_path=f"outputs/{node_hw_cost_pkl_name}.pickle",  # saved node_hw_performances to skip re-computation
+    # node_hw_performances_path=f"outputs/{node_hw_cost_pkl_name}.pickle",  # saved node_hw_performances to skip re-computation
     plot_hof=True,  # Save schedule and memory usage plot of each individual in the Genetic Algorithm hall of fame
     plot_file_name=plot_file_name,
     plot_full_schedule=plot_full_schedule,

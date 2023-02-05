@@ -10,10 +10,9 @@ _logging.basicConfig(level=_logging_level,
                      format=_logging_format)
 
 #################################
-accelerator = 'stream.inputs.examples.hardware.Meta_prototype_dual_core_simd_offchip'
-workload_path = 'stream.inputs.examples.workload.resnet18'
-# workload_path = 'stream/inputs/examples/workload/resnet18.onnx'
-mapping_path = 'stream.inputs.examples.mapping.meta_prototype_quad_core_pooling_simd_offchip'
+accelerator = 'stream.inputs.testing.hardware.quad_testing_core_offchip'
+workload_path = 'stream.inputs.testing.workload.testing_workload_for_4_cores'
+mapping_path = 'stream.inputs.testing.mapping.testing_mapping'
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
 hint_loops = [('OY', 'all')]  # outer CN loops, with error in resnet18 plotting
@@ -50,7 +49,7 @@ mainstage = MainStage([  # Initializes the MainStage as entry point
     plot_data_transfer=plot_data_transfer,
     cn_define_mode=CN_define_mode,
     hint_loops=hint_loops,
-    scheduler_candidate_selection='memory'
+    scheduler_candidate_selection='latency'
 )
 
 # Launch the MainStage
