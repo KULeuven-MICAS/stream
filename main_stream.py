@@ -11,8 +11,8 @@ _logging.basicConfig(level=_logging_level,
 
 #################################
 accelerator = 'stream.inputs.examples.hardware.Meta_prototype_dual_core_simd_offchip'
-workload_path = 'stream.inputs.examples.workload.resnet18'
-# workload_path = 'stream/inputs/examples/workload/resnet18.onnx'
+# workload_path = 'stream.inputs.examples.workload.resnet18'
+workload_path = 'stream/inputs/examples/workload/resnet18.onnx'
 mapping_path = 'stream.inputs.examples.mapping.meta_prototype_quad_core_pooling_simd_offchip'
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
@@ -30,8 +30,8 @@ plot_data_transfer = True
 
 mainstage = MainStage([  # Initializes the MainStage as entry point
     AcceleratorParserStage,  # Parses the accelerator
-    # StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-    UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
+    StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+    # UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
     GenerateCNWorkloadHybridStage,
     IntraCoreMappingStage,
     InterCoreMappingStage,
