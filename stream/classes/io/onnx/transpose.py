@@ -18,7 +18,7 @@ class TransposeParser(Parser):
             for n in self.nodes_outputs:
                 if node_input in self.nodes_outputs[n]:
                     predecessors.append(n)
-        print(predecessors)
+        # print(predecessors)
 
         # Get the input names of the operator
         input_names = [self.node.input[0]]
