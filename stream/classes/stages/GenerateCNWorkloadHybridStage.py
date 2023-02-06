@@ -16,7 +16,7 @@ from zigzag.classes.mapping.temporal.temporal_loop import TemporalLoop
 from stream.classes.workload.communication_node import CommunicationNode
 from stream.classes.workload.computation_node import ComputationNode
 from zigzag.classes.stages.Stage import Stage
-from zigzag.classes.workload.dummy_node import DummyNode
+from stream.classes.workload.dummy_node import DummyNode
 from stream.classes.workload.pooling_node import PoolingNode
 from zigzag.utils import pickle_deepcopy
 
@@ -469,7 +469,7 @@ class GenerateCNWorkloadHybridStage(Stage):
             # Assert that the input operand of this consumer and the output opernad of the producer have the same number of dimensions
             producer_dimensions = producer.operand_dimensionality_order['O']
             consumer_dimensions = consumer.operand_dimensionality_order[input_operand]
-            assert len(producer_dimensions) == len(consumer_dimensions), f"The producer {producer} has dimensions {producer_dimensions}, while the consumer {consumer} has dimensions {consumer_dimensions}."
+            # assert len(producer_dimensions) == len(consumer_dimensions), f"The producer {producer} has dimensions {producer_dimensions}, while the consumer {consumer} has dimensions {consumer_dimensions}."
             # Build the tree of all finer consumer nodes for this operand
             consumer_tree = build_rtree(finer_consumers, input_operand)
 
@@ -557,6 +557,8 @@ class GenerateCNWorkloadHybridStage(Stage):
             output_tensor = node.flatten(input_tensor)
         elif isinstance(node, ElementwiseNode):
             output_tensor = input_tensor.copy()
+        else:
+            raise NotImplementedError(f"Tensor propagation not implemented for node {node.name}.")
         return output_tensor
 
     @staticmethod

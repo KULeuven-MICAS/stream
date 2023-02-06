@@ -51,8 +51,8 @@ class GemmParser(Parser):
 
             # Find the previous layer(s) that should be this node's parent(s)
             node_inputs = self.node.input
-            assert len(node_inputs) == 2, f"Gemm should have two input names, but has: {node_inputs}"
-            (first_input_name, second_input_name) = node_inputs
+            assert len(node_inputs) >= 2, f"Gemm should have atleast two input names, but has: {node_inputs}."
+            (first_input_name, second_input_name) = node_inputs[:2]
             d["operand_source"] = {
                 'A': [src for (src, src_output_names) in nodes_outputs.items() if first_input_name in src_output_names],
                 'B': [src for (src, src_output_names) in nodes_outputs.items() if second_input_name in src_output_names]
