@@ -48,15 +48,17 @@ class MemoryManager:
     def find_tensor(self, tensor: Tensor):
         equality_hash = tensor.equality_hash()
         cores_storing_tensor = []
+        top_level_idxs = []
         stored_since = []
         for core in self.stored_tensors:
             for top_level_idx, stored_tensors in enumerate(self.stored_tensors[core]):
                 if any([equality_hash == stored_tensor.equality_hash() for stored_tensor in stored_tensors]):
                     cores_storing_tensor.append(core.id)
                     stored_since.append(self.stored_since_timestep[core][top_level_idx][equality_hash])
+                    top_level_idxs.append(top_level_idx)
         if not cores_storing_tensor:
             raise ValueError(f"Tensor {tensor} was not found in any of the cores.")
-        return cores_storing_tensor, stored_since
+        return cores_storing_tensor, top_level_idxs, stored_since
 
     def add_tensor_to_core(self, tensor: Tensor, core_id: int, timestep: int, timestep_end: int, tensors_to_avoid_evicting: list, memory_op: str = None):
         timestep_delta = timestep_end - timestep

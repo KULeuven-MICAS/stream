@@ -184,13 +184,12 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, cores_idle_from=None, c
         ## Step 6
         # Memory usage: When the node ends:
         # Decrease the priority of all the tensors this node used
-        for tensor_used_by_node in tensors_this_candidate_needs:
+        for (tensor_used_by_node, tensor_memory_operand) in zip(tensors_this_candidate_needs, tensors_operands):
             tensor_used_by_node.core_priorities[core_id] -= 1
             if tensor_used_by_node.get_total_priority() == 0:
-                cores_storing_tensor_used_by_node, stored_since_timesteps = accelerator.memory_manager.find_tensor(tensor_used_by_node)
-                for storing_core_id in cores_storing_tensor_used_by_node:
+                cores_storing_tensor_used_by_node, top_level_idxs, stored_since_timesteps = accelerator.memory_manager.find_tensor(tensor_used_by_node)
+                for storing_core_id, top_level_idx in zip(cores_storing_tensor_used_by_node, top_level_idxs):
                     storing_core = accelerator.get_core(storing_core_id)
-                    top_level_idx = accelerator.memory_manager.get_top_level_idx(storing_core, tensor_used_by_node.memory_operand)
                     accelerator.memory_manager.remove_tensor_from_core(storing_core, top_level_idx, tensor_used_by_node, end, write_back_to_offchip=False)
 
         ## Step 7

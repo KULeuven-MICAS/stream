@@ -66,9 +66,12 @@ class SimdParser(Parser):
             node_mapping = self.mapping[self.node.name]
         else:
             try:
-                node_mapping = self.mapping["simd"]
+                node_mapping = self.mapping[self.node.op_type]
             except:
-                raise ValueError(f"There is no mapping provided for node {self.node.name}, nor a default one.")
+                try:
+                    node_mapping = self.mapping["default"]
+                except:
+                    raise ValueError(f"There is no mapping provided for node {self.node.name}, nor for {self.node.op_type} nor a default one.")
 
         node_attrs = get_layer_node_input_format(ia_dimension_shape, oa_dimension_shape, node_mapping)
         # Get the node's input(s) and output(s) tensor names

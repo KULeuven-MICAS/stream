@@ -136,7 +136,7 @@ class Accelerator:
         """
         ## STEP 1: Since when is the tensor available on a sending core
         # Find the core that is storing this tensor
-        core_ids_storing_tensor, stored_since_timesteps = self.find_tensor(tensor)
+        core_ids_storing_tensor, top_level_idxs, stored_since_timesteps = self.find_tensor(tensor)
         # If we already have the tensor on the receiving core, return
         if receiving_core_id in core_ids_storing_tensor:
             return -1, 0, 0, 0, 0

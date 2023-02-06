@@ -177,9 +177,12 @@ class ConvParser(Parser):
             node_mapping = self.mapping[self.node.name]
         else:
             try:
-                node_mapping = self.mapping["default"]
+                node_mapping = self.mapping[self.node.op_type]
             except:
-                raise ValueError(f"There is no mapping provided for node {self.node.name}, nor a default one.")
+                try:
+                    node_mapping = self.mapping["default"]
+                except:
+                    raise ValueError(f"There is no mapping provided for node {self.node.name}, nor for {self.node.op_type} nor a default one.")
 
         # Take a deepcopy of the mapping, otherwise it will be changed for other layers if using default
         node_mapping = pickle_deepcopy(node_mapping)
