@@ -79,10 +79,12 @@ class InterCoreMappingStage(Stage):
             logger.info(f"Evaluating fixed inter-core allocation.")
             core_allocations = []
             (energy, latency, scme) = self.fitness_evaluator.get_fitness(core_allocations, return_scme=True)
+            '''
             scme.plot_schedule(plot_full_schedule=self.plot_full_schedule,
                                plot_data_transfer=self.plot_data_transfer,
                                fig_path=f"outputs/schedule_plot{self.fig_path}fixed.png")
             scme.plot_memory_usage(fig_path=f"outputs/memory_usage_plot{self.fig_path}fixed.png")
+            '''
             print(f"energy={energy}, latency={latency}")
             yield scme, None
         else:
@@ -98,10 +100,12 @@ class InterCoreMappingStage(Stage):
                 for i, core_allocations in enumerate(hof):
                     results = self.fitness_evaluator.get_fitness(core_allocations, return_scme=True)
                     scme = results[-1]
+                    '''
                     scme.plot_schedule(plot_full_schedule=self.plot_full_schedule,
                                        plot_data_transfer=self.plot_data_transfer,
                                        fig_path=f"outputs/schedule_plot{self.fig_path}{i}.png")
                     scme.plot_memory_usage(fig_path=f"outputs/memory_usage_plot{self.fig_path}{i}.png")
+                    '''
             yield scme, None
         logger.info(f'Finished InterCoreMappingStage.')
 
