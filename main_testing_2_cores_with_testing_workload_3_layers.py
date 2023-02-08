@@ -69,3 +69,4 @@ memory_fig_path="outputs/memory_plot.png"
 
 plot_timeline_brokenaxes(scme[0].workload,scme[0].accelerator, draw_dependencies, section_start_percent, percent_shown, plot_data_transfer, fig_path=timeline_fig_path)
 plot_memory_usage(scme[0].accelerator.memory_manager, fig_path=memory_fig_path)
+
