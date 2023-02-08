@@ -11,9 +11,10 @@ logger = logging.getLogger(__name__)
 from stream.classes.hardware.architecture.accelerator import Accelerator
 
 
-def plot_timeline_brokenaxes(G_given: DiGraph, accelerator: Accelerator, draw_dependencies=True,
-                             section_start_percent=(0, 50, 95), percent_shown=(5, 5, 5), plot_data_transfer=False,
-                             fig_path="outputs/schedule_plot.png"):
+def plot_timeline_brokenaxes(G_given: DiGraph, accelerator: Accelerator, draw_dependencies: object = True,
+                             section_start_percent: object = (0, 50, 95), percent_shown: object = (5, 5, 5),
+                             plot_data_transfer: object = False,
+                             fig_path: object = "outputs/schedule_plot.png") -> object:
 
     logger.info("Plotting...")
 
