@@ -137,13 +137,13 @@ workload = {
         'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
-    11: {  # Addition of layer 7 (residual connection) and layer 9 (main path)
+    11: {  # Addition of layer 10 (residual connection) and layer 9 (main path)
         'operator_type': 'Add',
         'equation': 'O[b][g][oy][ox]=X[b][g][oy][ox]+Y[b][g][oy][ox]',
         'dimension_relations': [],
         'loop_dim_size': {'B': 1, 'G': 128, 'OY': 28, 'OX': 28},
         'operand_precision': {'O': 16, 'O_final': 8, 'X': 8, 'Y': 8},
-        'operand_source': {'X': [700], 'Y': [9]},
+        'operand_source': {'X': [10], 'Y': [9]},
         'constant_operands': [],
         'operand_source_dimension_mapping': {'X': {'OX': 'OX', 'OY': 'OY', 'G': 'K'}, 'Y': {'OX': 'OX', 'OY': 'OY', 'G': 'K'}},
         'memory_operand_links': {'O': 'O', 'X': 'I2', 'Y': 'I1'}
@@ -155,7 +155,7 @@ workload = {
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
         'loop_dim_size': {'B': 1, 'K': 128, 'C': 128, 'OY': 28, 'OX': 28, 'FY': 3, 'FX': 3},
         'operand_precision': {'O': 16, 'O_final': 8, 'W': 8, 'I': 8},
-        'operand_source': {'W': [], 'I': [10]},
+        'operand_source': {'W': [], 'I': [11]},
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
@@ -168,19 +168,19 @@ workload = {
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
         'loop_dim_size': {'B': 1, 'K': 128, 'C': 128, 'OY': 28, 'OX': 28, 'FY': 3, 'FX': 3},
         'operand_precision': {'O': 16, 'O_final': 8, 'W': 8, 'I': 8},
-        'operand_source': {'W': [], 'I': [11]},
+        'operand_source': {'W': [], 'I': [12]},
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'K'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
         'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
-    14: {  # Addition of layer 10 (residual connection) and layer 12 (main path)
+    14: {  # Addition of layer 11 (residual connection) and layer 13 (main path)
         'operator_type': 'Add',
         'equation': 'O[b][g][oy][ox]=X[b][g][oy][ox]+Y[b][g][oy][ox]',
         'dimension_relations': [],
         'loop_dim_size': {'B': 1, 'G': 128, 'OY': 28, 'OX': 28},
         'operand_precision': {'O': 16, 'O_final': 8, 'X': 8, 'Y': 8},
-        'operand_source': {'X': [10], 'Y': [12]},
+        'operand_source': {'X': [11], 'Y': [13]},
         'constant_operands': [],
         'operand_source_dimension_mapping': {'X': {'OX': 'OX', 'OY': 'OY', 'G': 'G'}, 'Y': {'OX': 'OX', 'OY': 'OY', 'G': 'K'}},
         'memory_operand_links': {'O': 'O', 'X': 'I2', 'Y': 'I1'}
@@ -192,7 +192,7 @@ workload = {
         'dimension_relations': ['ix=2*ox+1*fx', 'iy=2*oy+1*fy'],
         'loop_dim_size': {'B': 1, 'K': 256, 'C': 128, 'OY': 14, 'OX': 14, 'FY': 3, 'FX': 3},
         'operand_precision': {'O': 16, 'O_final': 8, 'W': 8, 'I': 8},
-        'operand_source': {'W': [], 'I': [13]},
+        'operand_source': {'W': [], 'I': [14]},
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
@@ -205,32 +205,32 @@ workload = {
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
         'loop_dim_size': {'B': 1, 'K': 256, 'C': 256, 'OY': 14, 'OX': 14, 'FY': 3, 'FX': 3},
         'operand_precision': {'O': 16, 'O_final': 8, 'W': 8, 'I': 8},
-        'operand_source': {'W': [], 'I': [14]},
+        'operand_source': {'W': [], 'I': [15]},
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'K'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
         'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
-    17: {  # conv downsample of layer 13
+    17: {  # conv downsample of layer 14
         'operator_type': 'Conv_downsample',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=2*ox+1*fx', 'iy=2*oy+1*fy'],
         'loop_dim_size': {'B': 1, 'K': 256, 'C': 128, 'OY': 14, 'OX': 14, 'FY': 3, 'FX': 3},
         'operand_precision': {'O': 16, 'O_final': 8, 'W': 8, 'I': 8},
-        'operand_source': {'W': [], 'I': [13]},
+        'operand_source': {'W': [], 'I': [14]},
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
         'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
-    18: {  # Addition of layer 13 (residual connection) and layer 15 (main path)
+    18: {  # Addition of layer 17 (residual connection) and layer 16 (main path)
         'operator_type': 'Add',
         'equation': 'O[b][g][oy][ox]=X[b][g][oy][ox]+Y[b][g][oy][ox]',
         'dimension_relations': [],
         'loop_dim_size': {'B': 1, 'G': 256, 'OY': 14, 'OX': 14},
         'operand_precision': {'O': 16, 'O_final': 8, 'X': 8, 'Y': 8},
-        'operand_source': {'X': [1300], 'Y': [15]},
+        'operand_source': {'X': [17], 'Y': [16]},
         'constant_operands': [],
         'operand_source_dimension_mapping': {'X': {'OX': 'OX', 'OY': 'OY', 'G': 'K'}, 'Y': {'OX': 'OX', 'OY': 'OY', 'G': 'K'}},
         'memory_operand_links': {'O': 'O', 'X': 'I2', 'Y': 'I1'}
@@ -242,7 +242,7 @@ workload = {
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
         'loop_dim_size': {'B': 1, 'K': 256, 'C': 256, 'OY': 14, 'OX': 14, 'FY': 3, 'FX': 3},
         'operand_precision': {'O': 16, 'O_final': 8, 'W': 8, 'I': 8},
-        'operand_source': {'W': [], 'I': [16]},
+        'operand_source': {'W': [], 'I': [18]},
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
@@ -255,19 +255,19 @@ workload = {
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
         'loop_dim_size': {'B': 1, 'K': 256, 'C': 256, 'OY': 14, 'OX': 14, 'FY': 3, 'FX': 3},
         'operand_precision': {'O': 16, 'O_final': 8, 'W': 8, 'I': 8},
-        'operand_source': {'W': [], 'I': [17]},
+        'operand_source': {'W': [], 'I': [19]},
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'K'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
         'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
-    21: {  # Addition of layer 16 (residual connection) and layer 18 (main path)
+    21: {  # Addition of layer 18 (residual connection) and layer 20 (main path)
         'operator_type': 'Add',
         'equation': 'O[b][g][oy][ox]=X[b][g][oy][ox]+Y[b][g][oy][ox]',
         'dimension_relations': [],
         'loop_dim_size': {'B': 1, 'G': 256, 'OY': 14, 'OX': 14},
         'operand_precision': {'O': 16, 'O_final': 8, 'X': 8, 'Y': 8},
-        'operand_source': {'X': [16], 'Y': [18]},
+        'operand_source': {'X': [18], 'Y': [20]},
         'constant_operands': [],
         'operand_source_dimension_mapping': {'X': {'OX': 'OX', 'OY': 'OY', 'G': 'G'}, 'Y': {'OX': 'OX', 'OY': 'OY', 'G': 'K'}},
         'memory_operand_links': {'O': 'O', 'X': 'I2', 'Y': 'I1'}
@@ -279,7 +279,7 @@ workload = {
         'dimension_relations': ['ix=2*ox+1*fx', 'iy=2*oy+1*fy'],
         'loop_dim_size': {'B': 1, 'K': 512, 'C': 256, 'OY': 7, 'OX': 7, 'FY': 3, 'FX': 3},
         'operand_precision': {'O': 16, 'O_final': 8, 'W': 8, 'I': 8},
-        'operand_source': {'W': [], 'I': [19]},
+        'operand_source': {'W': [], 'I': [21]},
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
@@ -292,32 +292,32 @@ workload = {
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
         'loop_dim_size': {'B': 1, 'K': 512, 'C': 512, 'OY': 7, 'OX': 7, 'FY': 3, 'FX': 3},
         'operand_precision': {'O': 16, 'O_final': 8, 'W': 8, 'I': 8},
-        'operand_source': {'W': [], 'I': [20]},
+        'operand_source': {'W': [], 'I': [22]},
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'K'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
         'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
-    24: {  # conv downsample of layer 19
+    24: {  # conv downsample of layer 21
         'operator_type': 'Conv_downsample',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=2*ox+1*fx', 'iy=2*oy+1*fy'],
         'loop_dim_size': {'B': 1, 'K': 512, 'C': 256, 'OY': 7, 'OX': 7, 'FY': 3, 'FX': 3},
         'operand_precision': {'O': 16, 'O_final': 8, 'W': 8, 'I': 8},
-        'operand_source': {'W': [], 'I': [19]},
+        'operand_source': {'W': [], 'I': [21]},
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
         'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
-    25: {  # Addition of layer 19 (residual connection) and layer 21 (main path)
+    25: {  # Addition of layer 24 (residual connection) and layer 23 (main path)
         'operator_type': 'Add',
         'equation': 'O[b][g][oy][ox]=X[b][g][oy][ox]+Y[b][g][oy][ox]',
         'dimension_relations': [],
         'loop_dim_size': {'B': 1, 'G': 512, 'OY': 7, 'OX': 7},
         'operand_precision': {'O': 16, 'O_final': 8, 'X': 8, 'Y': 8},
-        'operand_source': {'X': [1900], 'Y': [21]},
+        'operand_source': {'X': [24], 'Y': [23]},
         'constant_operands': [],
         'operand_source_dimension_mapping': {'X': {'OX': 'OX', 'OY': 'OY', 'G': 'G'}, 'Y': {'OX': 'OX', 'OY': 'OY', 'G': 'K'}},
         'memory_operand_links': {'O': 'O', 'X': 'I2', 'Y': 'I1'}
@@ -329,7 +329,7 @@ workload = {
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
         'loop_dim_size': {'B': 1, 'K': 512, 'C': 512, 'OY': 7, 'OX': 7, 'FY': 3, 'FX': 3},
         'operand_precision': {'O': 16, 'O_final': 8, 'W': 8, 'I': 8},
-        'operand_source': {'W': [], 'I': [22]},
+        'operand_source': {'W': [], 'I': [25]},
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
@@ -342,30 +342,30 @@ workload = {
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
         'loop_dim_size': {'B': 1, 'K': 512, 'C': 512, 'OY': 7, 'OX': 7, 'FY': 3, 'FX': 3},
         'operand_precision': {'O': 16, 'O_final': 8, 'W': 8, 'I': 8},
-        'operand_source': {'W': [], 'I': [23]},
+        'operand_source': {'W': [], 'I': [26]},
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'K'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
         'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
-    28: {  # Addition of layer 22 (residual connection) and layer 24 (main path)
+    28: {  # Addition of layer 25 (residual connection) and layer 27 (main path)
         'operator_type': 'Add',
         'equation': 'O[b][g][oy][ox]=X[b][g][oy][ox]+Y[b][g][oy][ox]',
         'dimension_relations': [],
         'loop_dim_size': {'B': 1, 'G': 512, 'OY': 7, 'OX': 7},
         'operand_precision': {'O': 16, 'O_final': 8, 'X': 8, 'Y': 8},
-        'operand_source': {'X': [22], 'Y': [24]},
+        'operand_source': {'X': [25], 'Y': [27]},
         'constant_operands': [],
         'operand_source_dimension_mapping': {'X': {'OX': 'OX', 'OY': 'OY', 'G': 'G'}, 'Y': {'OX': 'OX', 'OY': 'OY', 'G': 'K'}},
         'memory_operand_links': {'O': 'O', 'X': 'I2', 'Y': 'I1'}
     },
     29: {  # aver pool
-        'operator_type': 'AveragePool',
+        'operator_type': 'Pooling',
         'equation': 'O[b][g][oy][ox]+=W[fx][fy]*I[b][g][iy][ix]',
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
         'loop_dim_size': {'B': 1, 'G': 512, 'OY': 1, 'OX': 1, 'FX': 7, 'FY': 7},
         'operand_precision': {'O': 16, 'O_final': 8, 'I': 8, 'W': 0},
-        'operand_source': {'W': [], 'I': [25]},
+        'operand_source': {'W': [], 'I': [28]},
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'G': 'K'}},
         'memory_operand_links': {'O': 'O', 'I': 'I1', 'W': 'I2'}
@@ -376,7 +376,7 @@ workload = {
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
         'loop_dim_size': {'B': 1, 'K': 1000, 'C': 512, 'OY': 1, 'OX': 1, 'FY': 1, 'FX': 1},
         'operand_precision': {'O': 16, 'O_final': 8, 'W': 8, 'I': 8},
-        'operand_source': {'W': [], 'I': [26]},
+        'operand_source': {'W': [], 'I': [29]},
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'}
