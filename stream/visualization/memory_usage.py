@@ -15,13 +15,19 @@ plt.rc('ytick', labelsize=SMALL_SIZE)    # fontsize of the tick labels
 plt.rc('legend', fontsize=SMALL_SIZE)    # legend fontsize
 plt.rc('figure', titlesize=BIGGER_SIZE)  # fontsize of the figure title
 
-def plot_memory_usage(memory_manager: MemoryManager, fig_path="outputs/memory_usage.png"):
+def plot_memory_usage(memory_manager: MemoryManager, show_dram = False, fig_path="outputs/memory_usage.png"):
     delta_history = memory_manager.delta_history
     total_nb_of_top_level_memories = sum([sum([len(history) > 1 for history in core_history if max(list(zip(*history))[1]) > 0]) for core_history in delta_history.values()])
+    if show_dram == False:
+        total_nb_of_top_level_memories=total_nb_of_top_level_memories-1;
     fig, axs = plt.subplots(total_nb_of_top_level_memories, figsize=(15, 6), sharex=True)
     fig.suptitle('Memory usage through time (bits)')
     axs_iter = iter(axs)
     cores_sorted = sorted([(core.id, core) for core in delta_history.keys()])
+
+    if show_dram == False:
+        cores_sorted.pop()
+
     for (core_id, core) in cores_sorted:
         core_history = delta_history[core]
         for top_level_idx, history in enumerate(core_history):
@@ -43,8 +49,19 @@ def plot_memory_usage(memory_manager: MemoryManager, fig_path="outputs/memory_us
             ax.plot(timesteps, used_memory_space, drawstyle='steps-post')  # Plot the timesteps and used memory through time
             ax.axhline(y=max(used_memory_space), xmin=min(timesteps), xmax=max(timesteps), color='r', linestyle='dashed')
             ax.text(min(timesteps), max(used_memory_space), f"{max(used_memory_space):.2e}", color='r', verticalalignment='bottom', fontsize=BIGGER_SIZE)
-            ax.set_ylim(bottom=0, top=1.1 * max(used_memory_space))
-            ax.set_ylabel(f"C{core_id}\nTL{top_level_idx}")
+            #ax.text(min(memory_capacity), max(memory_capacity), f"{max(memory_capacity):.2e}", color='r', verticalalignment='bottom', fontsize=BIGGER_SIZE)
+            ax.set_ylim(bottom=0, top=1.3 * max(used_memory_space))
+            ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
+
+            if show_dram and core_id == len(cores_sorted)-1:
+                ax.set_ylabel(f"DRAM")
+            else:
+                if top_level_idx == 0:
+                    ax.set_ylabel(f"Core-{core_id}\nWeight Mem")
+                else:
+                    ax.set_ylabel(f"Core-{core_id}\nActivation Mem")
+
+
     ax.set_xlabel("Cycles")  # Set xlabel of last axis (bottom one)
     fig.tight_layout()
     fig.subplots_adjust(hspace=0)
