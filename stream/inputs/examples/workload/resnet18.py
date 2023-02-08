@@ -124,7 +124,7 @@ workload = {
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
         'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
-    700: {  # conv downsample of layer 7
+    10: {  # conv downsample of layer 7
         'operator_type': 'Conv_downsample',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=2*ox+1*fx', 'iy=2*oy+1*fy'],
@@ -137,7 +137,7 @@ workload = {
         'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
-    10: {  # Addition of layer 7 (residual connection) and layer 9 (main path)
+    11: {  # Addition of layer 7 (residual connection) and layer 9 (main path)
         'operator_type': 'Add',
         'equation': 'O[b][g][oy][ox]=X[b][g][oy][ox]+Y[b][g][oy][ox]',
         'dimension_relations': [],
@@ -149,7 +149,7 @@ workload = {
         'memory_operand_links': {'O': 'O', 'X': 'I2', 'Y': 'I1'}
     }
     ,
-    11: {  # conv3_3
+    12: {  # conv3_3
         'operator_type': 'Conv',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
@@ -162,7 +162,7 @@ workload = {
         'padding': {'IY': (1, 1), 'IX': (1, 1)}
     }
     ,
-    12: {  # conv3_4
+    13: {  # conv3_4
         'operator_type': 'Conv',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
@@ -174,7 +174,7 @@ workload = {
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
         'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
-    13: {  # Addition of layer 10 (residual connection) and layer 12 (main path)
+    14: {  # Addition of layer 10 (residual connection) and layer 12 (main path)
         'operator_type': 'Add',
         'equation': 'O[b][g][oy][ox]=X[b][g][oy][ox]+Y[b][g][oy][ox]',
         'dimension_relations': [],
@@ -186,7 +186,7 @@ workload = {
         'memory_operand_links': {'O': 'O', 'X': 'I2', 'Y': 'I1'}
     }
     ,
-    14: {  # conv4_1, stride 2
+    15: {  # conv4_1, stride 2
         'operator_type': 'Conv',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=2*ox+1*fx', 'iy=2*oy+1*fy'],
@@ -199,7 +199,7 @@ workload = {
         'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
-    15: {  # conv4_2
+    16: {  # conv4_2
         'operator_type': 'Conv',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
@@ -211,7 +211,7 @@ workload = {
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
         'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
-    1300: {  # conv downsample of layer 13
+    17: {  # conv downsample of layer 13
         'operator_type': 'Conv_downsample',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=2*ox+1*fx', 'iy=2*oy+1*fy'],
@@ -224,7 +224,7 @@ workload = {
         'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
-    16: {  # Addition of layer 13 (residual connection) and layer 15 (main path)
+    18: {  # Addition of layer 13 (residual connection) and layer 15 (main path)
         'operator_type': 'Add',
         'equation': 'O[b][g][oy][ox]=X[b][g][oy][ox]+Y[b][g][oy][ox]',
         'dimension_relations': [],
@@ -236,7 +236,7 @@ workload = {
         'memory_operand_links': {'O': 'O', 'X': 'I2', 'Y': 'I1'}
     }
     ,
-    17: {  # conv4_3
+    19: {  # conv4_3
         'operator_type': 'Conv',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
@@ -249,7 +249,7 @@ workload = {
         'padding': {'IY': (1, 1), 'IX': (1, 1)}
     }
     ,
-    18: {  # conv4_4
+    20: {  # conv4_4
         'operator_type': 'Conv',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
@@ -261,7 +261,7 @@ workload = {
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
         'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
-    19: {  # Addition of layer 16 (residual connection) and layer 18 (main path)
+    21: {  # Addition of layer 16 (residual connection) and layer 18 (main path)
         'operator_type': 'Add',
         'equation': 'O[b][g][oy][ox]=X[b][g][oy][ox]+Y[b][g][oy][ox]',
         'dimension_relations': [],
@@ -273,7 +273,7 @@ workload = {
         'memory_operand_links': {'O': 'O', 'X': 'I2', 'Y': 'I1'}
     }
     ,
-    20: {  # conv5_1, stride 2
+    22: {  # conv5_1, stride 2
         'operator_type': 'Conv',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=2*ox+1*fx', 'iy=2*oy+1*fy'],
@@ -286,7 +286,7 @@ workload = {
         'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
-    21: {  # conv5_2
+    23: {  # conv5_2
         'operator_type': 'Conv',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
@@ -298,7 +298,7 @@ workload = {
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
         'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
-    1900: {  # conv downsample of layer 19
+    24: {  # conv downsample of layer 19
         'operator_type': 'Conv_downsample',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=2*ox+1*fx', 'iy=2*oy+1*fy'],
@@ -311,7 +311,7 @@ workload = {
         'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
-    22: {  # Addition of layer 19 (residual connection) and layer 21 (main path)
+    25: {  # Addition of layer 19 (residual connection) and layer 21 (main path)
         'operator_type': 'Add',
         'equation': 'O[b][g][oy][ox]=X[b][g][oy][ox]+Y[b][g][oy][ox]',
         'dimension_relations': [],
@@ -323,7 +323,7 @@ workload = {
         'memory_operand_links': {'O': 'O', 'X': 'I2', 'Y': 'I1'}
     }
     ,
-    23: {  # conv5_3
+    26: {  # conv5_3
         'operator_type': 'Conv',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
@@ -336,7 +336,7 @@ workload = {
         'padding': {'IY': (1, 1), 'IX': (1, 1)}
     }
     ,
-    24: {  # conv4_4
+    27: {  # conv4_4
         'operator_type': 'Conv',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
@@ -348,7 +348,7 @@ workload = {
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
         'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
-    25: {  # Addition of layer 22 (residual connection) and layer 24 (main path)
+    28: {  # Addition of layer 22 (residual connection) and layer 24 (main path)
         'operator_type': 'Add',
         'equation': 'O[b][g][oy][ox]=X[b][g][oy][ox]+Y[b][g][oy][ox]',
         'dimension_relations': [],
@@ -359,7 +359,7 @@ workload = {
         'operand_source_dimension_mapping': {'X': {'OX': 'OX', 'OY': 'OY', 'G': 'G'}, 'Y': {'OX': 'OX', 'OY': 'OY', 'G': 'K'}},
         'memory_operand_links': {'O': 'O', 'X': 'I2', 'Y': 'I1'}
     },
-    26: {  # aver pool
+    29: {  # aver pool
         'operator_type': 'AveragePool',
         'equation': 'O[b][g][oy][ox]+=W[fx][fy]*I[b][g][iy][ix]',
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
@@ -370,7 +370,7 @@ workload = {
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'G': 'K'}},
         'memory_operand_links': {'O': 'O', 'I': 'I1', 'W': 'I2'}
     },
-    27: {  # fc
+    30: {  # fc
         'operator_type': 'Conv',
         'equation': 'O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]',
         'dimension_relations': ['ix=1*ox+1*fx', 'iy=1*oy+1*fy'],
