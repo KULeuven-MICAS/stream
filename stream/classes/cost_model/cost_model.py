@@ -41,15 +41,15 @@ class StreamCostModelEvaluation:
         """
         results = schedule_graph(self.workload, self.accelerator, candidate_selection=self.scheduler_candidate_selection)
         self.latency = results[0]
-        self.total_computation_energy_cost = results[0]
-        self.total_memory_energy_cost =  results[1]
-        self.total_link_energy_cost = results[2]
-        self.input_onloading_link_energy_cost = results[3]
-        self.input_onloading_memory_energy_cost = results[4]
-        self.output_offloading_link_energy_cost =results[5]
-        self.output_offloading_memory_energy_cost = results[6]
-        self.eviction_link_energy_cost = results[7]
-        self.eviction_memory_energy_cost = results[8]
+        self.total_computation_energy_cost = results[1]
+        self.total_memory_energy_cost =  results[2]
+        self.total_link_energy_cost = results[3]
+        self.input_onloading_link_energy_cost = results[4]
+        self.input_onloading_memory_energy_cost = results[5]
+        self.output_offloading_link_energy_cost =results[6]
+        self.output_offloading_memory_energy_cost = results[7]
+        self.eviction_link_energy_cost = results[8]
+        self.eviction_memory_energy_cost = results[9]
         self.energy = self.total_computation_energy_cost + self.total_memory_energy_cost + self.total_link_energy_cost + self.input_onloading_link_energy_cost + self.input_onloading_memory_energy_cost + self.output_offloading_link_energy_cost + self.output_offloading_memory_energy_cost + self.eviction_link_energy_cost + self.eviction_memory_energy_cost
 
     def plot_schedule(self, plot_full_schedule=False, draw_dependencies=True, plot_data_transfer=False,
