@@ -3,6 +3,7 @@ from stream.classes.stages import *
 from stream.visualization.schedule import plot_timeline_brokenaxes
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.plot_scme import bar_plot_stream_cost_model_evaluations_breakdown
+from stream.visualization.memory_usage import humanbytes
 import re
 
 # Initialize the logger
