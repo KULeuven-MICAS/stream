@@ -8,11 +8,11 @@ def bar_plot_stream_cost_model_evaluations_breakdown(scmes: List[StreamCostModel
     barWidth = 0.1
 
     list_attributes = [x for x in scmes[0][0].__dict__.keys() if 'energy' in x]
-    list_attributes.remove('input_onloading_link_energy_cost')
-    list_attributes.remove('input_onloading_memory_energy_cost')
-    list_attributes.remove('output_offloading_link_energy_cost')
-    list_attributes.remove('output_offloading_memory_energy_cost')
-    list_attributes.remove('eviction_memory_energy_cost')
+    #list_attributes.remove('input_onloading_link_energy_cost')
+    #list_attributes.remove('input_onloading_memory_energy_cost')
+    #list_attributes.remove('output_offloading_link_energy_cost')
+    #list_attributes.remove('output_offloading_memory_energy_cost')
+    #list_attributes.remove('eviction_memory_energy_cost')
 
     list_corrected = []
     for attribute in list_attributes:

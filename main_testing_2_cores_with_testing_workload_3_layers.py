@@ -1,7 +1,6 @@
 from zigzag.classes.stages import *
 from stream.classes.stages import *
 from stream.visualization.schedule import plot_timeline_brokenaxes
-from stream.visualization.memory_usage import plot_memory_usage
 import re
 
 # Initialize the logger
