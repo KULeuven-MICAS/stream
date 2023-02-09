@@ -17,16 +17,12 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, cores_idle_from=None, c
         accelerator (Accelerator): The accelerator to schedule the nodes on.
         cores_start_offset (dict, optional): A dict containing for each core_id its start offset. Defaults to None.
     """
-    # Initialize total link energy cost and memory energy cost
-    total_computation_energy_cost = 0
-    total_link_energy_cost = 0
-    total_memory_energy_cost = 0
-    total_eviction_link_energy_cost = 0
-    total_eviction_memory_energy_cost = 0
-    input_onloading_link_energy_cost = 0
-    input_onloading_memory_energy_cost = 0
-    output_offloading_link_energy_cost = 0
-    output_offloading_memory_energy_cost = 0
+    # Initialize total link energy cost and memory energy costs
+    total_cn_onchip_energy = 0
+    total_cn_offchip_link_energy, total_cn_offchip_memory_energy = 0, 0
+    total_eviction_to_offchip_link_energy, total_eviction_to_offchip_memory_energy = 0, 0
+    total_sink_layer_output_offchip_link_energy, total_sink_layer_output_offchip_memory_energy = 0, 0
+    total_core_to_core_link_energy, total_core_to_core_memory_energy = 0, 0
 
     all_core_ids = sorted(list(set(n.core_allocation for n in G.nodes())))
     if cores_idle_from is None:
@@ -122,8 +118,8 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, cores_idle_from=None, c
         for too_large_operand in best_candidate.too_large_operands:
             eviction_link_energy_cost, eviction_memory_energy_cost, timestep = \
                 accelerator.memory_manager.evict_all_tensors_from_core(core_id, too_large_operand, timestep, tensors_this_candidate_needs)
-            total_eviction_link_energy_cost += eviction_link_energy_cost
-            total_eviction_memory_energy_cost += eviction_memory_energy_cost
+            total_eviction_to_offchip_link_energy += eviction_link_energy_cost
+            total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
 
         ## Step 2
         # The computation might need tensors that are currently not present in the core's memories
@@ -133,15 +129,19 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, cores_idle_from=None, c
             if tensor_operand not in best_candidate.too_large_operands:
                 # Transfer the tensor
                 worst_case_timestep = timestep
-                transfer_complete_timestep, transfer_link_energy_cost, transfer_memory_energy_cost, eviction_link_energy_cost, eviction_memory_energy_cost = \
+                transfer_complete_timestep, transfer_link_energy_cost, transfer_memory_energy_cost, eviction_link_energy_cost, eviction_memory_energy_cost, came_from_offchip = \
                     accelerator.transfer_tensor_to_core(tensor, core_id, tensor_operand, tensors_this_candidate_needs, worst_case_timestep)
                 # Update the possible start time of this node
                 timestep = max(timestep, transfer_complete_timestep)
                 # Add the energy costs to their respective trackers
-                total_link_energy_cost += transfer_link_energy_cost
-                total_memory_energy_cost += transfer_memory_energy_cost
-                total_eviction_link_energy_cost += eviction_link_energy_cost
-                total_eviction_memory_energy_cost += eviction_memory_energy_cost
+                if came_from_offchip:
+                    total_cn_offchip_link_energy += transfer_link_energy_cost
+                    total_cn_offchip_memory_energy += transfer_memory_energy_cost
+                else:
+                    total_core_to_core_link_energy += transfer_link_energy_cost
+                    total_core_to_core_memory_energy += transfer_memory_energy_cost
+                total_eviction_to_offchip_link_energy += eviction_link_energy_cost
+                total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
 
         ## Step 3
         # Check if we had any operands that were too large to store in the core's memory, block the relevant off-chip link for the duration
@@ -163,8 +163,8 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, cores_idle_from=None, c
             core_id_to_add_output_to = core_id
         evictions_complete_timestep, eviction_link_energy_cost, eviction_memory_energy_cost = \
             accelerator.memory_manager.add_tensor_to_core(output_tensor, core_id_to_add_output_to, start, end, tensors_this_candidate_needs)
-        total_eviction_link_energy_cost += eviction_link_energy_cost
-        total_eviction_memory_energy_cost += eviction_memory_energy_cost
+        total_eviction_to_offchip_link_energy += eviction_link_energy_cost
+        total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
         start = evictions_complete_timestep
         end = start + best_candidate.get_runtime()
 
@@ -176,7 +176,8 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, cores_idle_from=None, c
         last_node_start_time[core_id] = start
 
         # Add the computation energy of running this node
-        total_computation_energy_cost += best_candidate.energy
+        total_cn_onchip_energy += best_candidate.get_onchip_energy()
+        total_cn_offchip_memory_energy += best_candidate.get_offchip_energy()
 
         # Add this node to the scheduled nodes
         scheduled_nodes.add(best_candidate)
@@ -201,8 +202,8 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, cores_idle_from=None, c
             if not best_candidate.output_operand in best_candidate.too_large_operands:
                 current_timestep, link_energy_cost, memory_energy_cost = \
                     accelerator.memory_manager.remove_tensor_from_core(core, top_level_idx, output_tensor, end, write_back_to_offchip=True)
-                output_offloading_link_energy_cost += link_energy_cost
-                output_offloading_memory_energy_cost += memory_energy_cost
+                total_sink_layer_output_offchip_link_energy += link_energy_cost
+                total_sink_layer_output_offchip_memory_energy += memory_energy_cost
 
         ## Step 8
         # For each successor of this node, check if all of its predecessors have been scheduled
@@ -219,4 +220,4 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, cores_idle_from=None, c
     latency = max((n.end for n in G.nodes()))
     # print("Scheduling completed")
     # print(f"Latency found = {latency}")
-    return latency, total_computation_energy_cost, total_memory_energy_cost, total_link_energy_cost, input_onloading_link_energy_cost, input_onloading_memory_energy_cost, output_offloading_link_energy_cost, output_offloading_memory_energy_cost, total_eviction_link_energy_cost, total_eviction_memory_energy_cost
+    return latency, total_cn_onchip_energy, total_cn_offchip_link_energy, total_cn_offchip_memory_energy, total_eviction_to_offchip_link_energy, total_eviction_to_offchip_memory_energy, total_sink_layer_output_offchip_link_energy, total_sink_layer_output_offchip_memory_energy, total_core_to_core_link_energy, total_core_to_core_memory_energy

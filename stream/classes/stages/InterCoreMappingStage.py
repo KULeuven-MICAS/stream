@@ -5,6 +5,7 @@ from zigzag.classes.stages.Stage import Stage
 from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.opt.allocation.genetic_algorithm.genetic_algorithm import GeneticAlgorithm
 from stream.classes.opt.allocation.genetic_algorithm.fitness_evaluator import StandardFitnessEvaluator
+from stream.utils import get_too_large_operands
 
 logger = logging.getLogger(__name__)
 
@@ -117,45 +118,38 @@ class InterCoreMappingStage(Stage):
             hw_performances = self.node_hw_performances[non_flexible_unique_node]
             assert len(hw_performances.keys()) == 1, f"Non-flexible unique node {non_flexible_unique_node} has more than one entry in node_hw_performances."
             (core, cme) = next((key, val) for key, val in hw_performances.items())
-            energy = cme.energy_total
+            onchip_energy = cme.energy_total  # Initialize the on-chip energy as total energy
             latency = cme.latency_total1
             core_allocation = core.id
 
-            too_large_operands = self.get_too_large_operands(cme, core_id=core_allocation)
+            too_large_operands = get_too_large_operands(cme, self.accelerator, core_id=core_allocation)
+            # If there is a too_large_operand, we separate the off-chip energy.
+            offchip_energy = 0
+            for too_large_operand in too_large_operands:
+                layer_operand = next((k for (k, v) in cme.layer.memory_operand_links.items() if v == too_large_operand))
+                offchip_energy += cme.energy_breakdown[layer_operand][-1]
+                onchip_energy -= offchip_energy
 
             nodes = (n for n in self.workload.nodes() if n == non_flexible_unique_node)
             for node in nodes:
-                self.set_hw_performance_node(node, energy, latency, core_allocation)
+                self.set_hw_performance_node(node, onchip_energy, offchip_energy, latency, core_allocation)
                 node.set_too_large_operands(too_large_operands.copy())
 
     @staticmethod
-    def set_hw_performance_node(node: ComputationNode, energy: float, runtime: int, core_allocation: int):
+    def set_hw_performance_node(node: ComputationNode, onchip_energy: float, offchip_energy: float, runtime: int, core_allocation: int):
         """Set the hardware performance and core_allocation of the given node.
 
         Args:
             node (Node): The node of which to set the 
-            energy (float): energy of executing this node
+            onchip_energy (float): on-chip energy of executing this node
+            offchip_energy (float): off-chip energy of executing this node
             runtime (int): runtime of executing this node
             core_allocation (int): the core_id on which this node will be ran
         """
-        node.set_energy(energy)
+        node.set_onchip_energy(onchip_energy)
+        node.set_offchip_energy(offchip_energy)
         node.set_runtime(runtime)
         node.set_core_allocation(core_allocation)
-
-    def get_too_large_operands(self, cme, core_id):
-        """Create a list of memory operands for which an extra memory level (i.e. offchip) was added.
-
-        Args:
-            cme (CostModelEvaluation): The CostModelEvaluation containing information wrt the memory utilization.
-        """
-        too_large_operands = []
-        core = self.accelerator.get_core(core_id)
-        core_nb_memory_levels = core.memory_hierarchy.nb_levels
-        for (layer_operand, l) in cme.mapping.data_elem_per_level.items():
-            memory_operand = cme.layer.memory_operand_links[layer_operand]
-            if len(l) > core_nb_memory_levels[memory_operand] + 1:  # +1 because of spatial level
-                too_large_operands.append(memory_operand)
-        return too_large_operands
 
     def is_leaf(self) -> bool:
         return True

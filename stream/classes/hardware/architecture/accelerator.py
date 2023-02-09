@@ -139,7 +139,7 @@ class Accelerator:
         core_ids_storing_tensor, top_level_idxs, stored_since_timesteps = self.find_tensor(tensor)
         # If we already have the tensor on the receiving core, return
         if receiving_core_id in core_ids_storing_tensor:
-            return -1, 0, 0, 0, 0
+            return -1, 0, 0, 0, 0, False
         # TODO: Instead of taking the first core that stores this, could do something more fancy
         tensor_core_id = core_ids_storing_tensor[0]
         # Get since when this tensor is available on the core
@@ -177,7 +177,10 @@ class Accelerator:
                 top_level_idx = self.memory_manager.get_top_level_idx(sender_core, tensor.memory_operand)
                 self.memory_manager.remove_tensor_from_core(sender_core, top_level_idx, tensor, transfer_end, write_back_to_offchip=False)
 
-        return transfer_end, transfer_link_energy_cost, transfer_memory_energy_cost, eviction_link_energy_cost, eviction_memory_energy_cost
+        ## STEP 7: Give back a flag that tells us whether this transfer came from off-chip for energy tracking
+        came_from_offchip = tensor_core_id == self.offchip_core_id
+
+        return transfer_end, transfer_link_energy_cost, transfer_memory_energy_cost, eviction_link_energy_cost, eviction_memory_energy_cost, came_from_offchip
 
     def get_memory_energy_cost_of_transfer(self, tensor: Tensor, sender: Core or int, receiver: Core or int, sender_memory_operand: str, receiver_memory_operand: str):
 

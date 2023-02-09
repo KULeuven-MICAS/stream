@@ -30,7 +30,7 @@ class ComputationNode(LayerNode, Node):
             node_attrs["core_allocation"] = [node_attrs["core_allocation"]]
 
         LayerNode.__init__(self, node_id, node_attrs, node_name)
-        Node.__init__(self, type='computation', energy=None, runtime=None, core_allocation=node_attrs.get('core_allocation', None), input_names=input_names, output_names=output_names)
+        Node.__init__(self, type='computation', onchip_energy=None, offchip_energy=None, runtime=None, core_allocation=node_attrs.get('core_allocation', None), input_names=input_names, output_names=output_names)
 
         # Save whether this ComputationNode produces a final output
         self.produces_final_output = produces_final_output

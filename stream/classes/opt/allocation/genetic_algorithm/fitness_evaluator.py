@@ -2,6 +2,8 @@ from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 from stream.classes.workload.computation_node import ComputationNode
 from zigzag.utils import pickle_deepcopy
 
+from stream.utils import get_too_large_operands
+
 
 class FitnessEvaluator:
     def __init__(self, workload=None, accelerator=None, node_hw_performances=None) -> None:
@@ -62,25 +64,17 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                     cme = self.node_hw_performances[equivalent_unique_node][core]
                 except KeyError:
                     raise KeyError(f"The given node_hw_performances doesn't have information for core_allocation={core_allocation} of node={node}")
-                energy = cme.energy_total
+                onchip_energy = cme.energy_total  # Initialize on-chip energy as total energy
                 latency = cme.latency_total1
-                too_large_operands = self.get_too_large_operands(cme, core_id=core_allocation)
-                node.set_energy(energy)
+                too_large_operands = get_too_large_operands(cme, self.accelerator, core_id=core_allocation)
+                # If there is a too_large_operand, we separate the off-chip energy.
+                offchip_energy = 0
+                for too_large_operand in too_large_operands:
+                    layer_operand = next((k for (k, v) in cme.layer.memory_operand_links.items() if v == too_large_operand))
+                    offchip_energy += cme.energy_breakdown[layer_operand][-1]
+                    onchip_energy -= offchip_energy
+                node.set_onchip_energy(onchip_energy)
+                node.set_offchip_energy(offchip_energy)
                 node.set_runtime(latency)
                 node.set_core_allocation(core_allocation)
                 node.set_too_large_operands(too_large_operands)
-
-    def get_too_large_operands(self, cme, core_id):
-        """Create a list of memory operands for which an extra memory level (i.e. offchip) was added.
-
-        Args:
-            cme (CostModelEvaluation): The CostModelEvaluation containing information wrt the memory utilization.
-        """
-        too_large_operands = []
-        core = self.accelerator.get_core(core_id)
-        core_nb_memory_levels = core.memory_hierarchy.nb_levels
-        for (layer_operand, l) in cme.mapping.data_elem_per_level.items():
-            memory_operand = cme.layer.memory_operand_links[layer_operand]
-            if len(l) > core_nb_memory_levels[memory_operand] + 1:  # +1 because of spatial level
-                too_large_operands.append(memory_operand)
-        return too_large_operands

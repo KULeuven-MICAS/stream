@@ -6,7 +6,7 @@ class Node(metaclass=ABCMeta):
     Example: ComputationNode, CommunicationNode, etc.
     """
 
-    def __init__(self, type: str, energy: float, runtime: int, core_allocation: int, input_names: List[str], output_names: List[str]) -> None:
+    def __init__(self, type: str, onchip_energy: float, offchip_energy: float, runtime: int, core_allocation: int, input_names: List[str], output_names: List[str]) -> None:
         """Initialize the Node metaclass
 
         Args:
@@ -18,7 +18,8 @@ class Node(metaclass=ABCMeta):
             outpus: (List[str]): The names of the output tensors of this node. 
         """
         self.type = type.lower()
-        self.energy = energy
+        self.onchip_energy = onchip_energy
+        self.offchip_energy = offchip_energy
         self.runtime = runtime
         self.core_allocation = core_allocation
         self.start = None  # will be set by the scheduler
@@ -35,10 +36,20 @@ class Node(metaclass=ABCMeta):
     def __repr__(self):
         return str(self)
 
-    def get_energy(self):
-        """Get the energy of running this node
+    def get_total_energy(self):
+        """Get the total energy of running this node, including off-chip energy.
         """
-        return self.energy
+        return self.onchip_energy + self.offchip_energy
+
+    def get_onchip_energy(self):
+        """Get the on-chip energy of running this node.
+        """
+        return self.onchip_energy
+
+    def get_offchip_energy(self):
+        """Get the off-chip energy of running this node.
+        """
+        return self.offchip_energy
 
     def get_runtime(self):
         """Get the runtime of running this node.
@@ -58,13 +69,21 @@ class Node(metaclass=ABCMeta):
     def get_core_allocation(self):
         return self.core_allocation
 
-    def set_energy(self, energy):
-        """Set the energy of running this node.
+    def set_onchip_energy(self, energy):
+        """Set the on-chip energy of running this node.
 
         Args:
             energy (float): energy consumption of this node
         """
-        self.energy = energy
+        self.onchip_energy = energy
+
+    def set_offchip_energy(self, energy):
+        """Set the off-chip energy of running this node.
+
+        Args:
+            energy (float): energy consumption of this node
+        """
+        self.offchip_energy = energy
 
     def set_runtime(self, runtime):
         """Set the runtime of running this node.

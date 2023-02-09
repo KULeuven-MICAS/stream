@@ -18,15 +18,12 @@ class StreamCostModelEvaluation:
         self.workload = workload
         self.accelerator = accelerator
         self.energy = None
-        self.total_computation_energy_cost = None
-        self.total_memory_energy_cost = None
-        self.total_link_energy_cost = None
-        self.input_onloading_link_energy_cost = None
-        self.input_onloading_memory_energy_cost = None
-        self.output_offloading_link_energy_cost = None
-        self.output_offloading_memory_energy_cost = None
-        self.eviction_link_energy_cost = None
-        self.eviction_memory_energy_cost = None
+        self.total_cn_onchip_energy = None
+        self.total_cn_offchip_link_energy, self.total_cn_offchip_memory_energy = None, None
+        self.total_eviction_to_offchip_link_energy, self.total_eviction_to_offchip_memory_energy = None, None
+        self.total_sink_layer_output_offchip_link_energy, self.total_sink_layer_output_offchip_memory_energy = None, None
+        self.total_core_to_core_link_energy, self.total_core_to_core_memory_energy = None, None
+
         self.latency = None
         self.max_memory_usage = None
         self.core_timesteps_delta_cumsums = None
@@ -41,16 +38,13 @@ class StreamCostModelEvaluation:
         """
         results = schedule_graph(self.workload, self.accelerator, candidate_selection=self.scheduler_candidate_selection)
         self.latency = results[0]
-        self.total_computation_energy_cost = results[1]
-        self.total_memory_energy_cost =  results[2]
-        self.total_link_energy_cost = results[3]
-        self.input_onloading_link_energy_cost = results[4]
-        self.input_onloading_memory_energy_cost = results[5]
-        self.output_offloading_link_energy_cost =results[6]
-        self.output_offloading_memory_energy_cost = results[7]
-        self.eviction_link_energy_cost = results[8]
-        self.eviction_memory_energy_cost = results[9]
-        self.energy = self.total_computation_energy_cost + self.total_memory_energy_cost + self.total_link_energy_cost + self.input_onloading_link_energy_cost + self.input_onloading_memory_energy_cost + self.output_offloading_link_energy_cost + self.output_offloading_memory_energy_cost + self.eviction_link_energy_cost + self.eviction_memory_energy_cost
+        self.total_cn_onchip_energy = results[1]
+        self.total_cn_offchip_link_energy, self.total_cn_offchip_memory_energy = results[2], results[3]
+        self.total_eviction_to_offchip_link_energy, self.total_eviction_to_offchip_memory_energy = results[4], results[5]
+        self.total_sink_layer_output_offchip_link_energy, self.total_sink_layer_output_offchip_memory_energy = results[6], results[7]
+        self.total_core_to_core_link_energy, self.total_core_to_core_memory_energy = results[8], results[9]
+
+        self.energy = self.total_cn_onchip_energy + self.total_cn_offchip_link_energy + self.total_cn_offchip_memory_energy + self.total_eviction_to_offchip_link_energy + self.total_eviction_to_offchip_memory_energy + self.total_sink_layer_output_offchip_link_energy + self.total_sink_layer_output_offchip_memory_energy + self.total_core_to_core_link_energy + self.total_core_to_core_memory_energy
 
     def plot_schedule(self, plot_full_schedule=False, draw_dependencies=True, plot_data_transfer=False,
                       section_start_percent=(0, 50, 95), percent_shown=(5, 5, 5), fig_path="outputs/schedule_plot.png"):
