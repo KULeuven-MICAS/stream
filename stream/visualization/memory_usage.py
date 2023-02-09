@@ -79,7 +79,7 @@ def plot_memory_usage(memory_manager: MemoryManager, show_dram = False, show_hum
             ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
 
             if show_dram and core_id == len(cores_sorted)-1:
-                ax.set_ylabel(f"DRAM")
+                ax.set_ylabel(f"DRAM\n[Bytes]")
             else:
                 if top_level_idx == 0:
                     ax.set_ylabel(f"Core-{core_id}\nWeight\n[Bytes]")

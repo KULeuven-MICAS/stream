@@ -3,7 +3,7 @@ from stream.classes.stages import *
 import re
 
 
-def get_hardware_performance_stream(accelerator, workload_path, mapping_path, plot_file_name,plot_full_schedule, plot_data_transfer, CN_define_mode, hint_loops):
+def get_hardware_performance_stream(hardware, workload_path, mapping_path, CN_define_mode, hint_loops):
 
     # Initialize the logger
     import logging as _logging
@@ -22,7 +22,7 @@ def get_hardware_performance_stream(accelerator, workload_path, mapping_path, pl
         InterCoreMappingStage,
     ],
 
-        accelerator=accelerator,  # required by AcceleratorParserStage
+        accelerator=hardware,  # required by AcceleratorParserStage
         workload_path=workload_path,  # required by ModelParserStage
         mapping_path=mapping_path,  # required by ModelParserStage
         loma_lpf_limit=6,  # required by LomaStage
@@ -30,9 +30,9 @@ def get_hardware_performance_stream(accelerator, workload_path, mapping_path, pl
         nb_ga_generations=1,  # number of genetic algorithm generations
         # node_hw_performances_path=f"outputs/{node_hw_cost_pkl_name}.pickle",  # saved node_hw_performances to skip re-computation
         plot_hof=True,  # Save schedule and memory usage plot of each individual in the Genetic Algorithm hall of fame
-        plot_file_name=plot_file_name,
-        plot_full_schedule=plot_full_schedule,
-        plot_data_transfer=plot_data_transfer,
+        plot_file_name='',
+        plot_full_schedule='',
+        plot_data_transfer='',
         cn_define_mode=CN_define_mode,
         hint_loops=hint_loops,
         scheduler_candidate_selection='memory'
@@ -56,9 +56,6 @@ if __name__ == "__main__":
     wl_name = re.split(r"/|\.", workload_path)[-1]
     experiment_id = f"{hw_name}-{wl_name}-CNmode_{CN_define_mode}-hintloop_{str(hint_loops)}"
     node_hw_cost_pkl_name = f'saved_CN_HW_cost-{experiment_id}'
-    plot_file_name = f'-{experiment_id}-'
-    plot_full_schedule = True
-    plot_data_transfer = True
 
-    answer = get_hardware_performance_stream(accelerator, workload_path, mapping_path, plot_file_name,plot_full_schedule, plot_data_transfer, CN_define_mode, hint_loops)
+    answer = get_hardware_performance_stream(accelerator, workload_path, mapping_path, CN_define_mode, hint_loops)
     print(f'Answer = {answer}')
