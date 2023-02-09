@@ -40,7 +40,7 @@ def plot_memory_usage(memory_manager: MemoryManager, show_dram = False, show_hum
     total_nb_of_top_level_memories = sum([sum([len(history) > 1 for history in core_history if max(list(zip(*history))[1]) > 0]) for core_history in delta_history.values()])
     if show_dram == False:
         total_nb_of_top_level_memories=total_nb_of_top_level_memories-1;
-    fig, axs = plt.subplots(total_nb_of_top_level_memories, figsize=(15, 6), sharex=True)
+    fig, axs = plt.subplots(total_nb_of_top_level_memories, figsize=(16, 6), sharex=True)
     fig.suptitle('Memory usage through time (Bytes)')
     axs_iter = iter(axs)
     cores_sorted = sorted([(core.id, core) for core in delta_history.keys()])
@@ -90,6 +90,7 @@ def plot_memory_usage(memory_manager: MemoryManager, show_dram = False, show_hum
     ax.set_xlabel("Cycles")  # Set xlabel of last axis (bottom one)
     fig.tight_layout()
     fig.subplots_adjust(hspace=0)
+    plt.show(block=True)
     fig.savefig(fig_path)
     print(f"Saved memory usage fig to {fig_path}")
 

@@ -19,10 +19,14 @@ class StreamCostModelEvaluation:
         self.accelerator = accelerator
         self.energy = None
         self.total_cn_onchip_energy = None
-        self.total_cn_offchip_link_energy, self.total_cn_offchip_memory_energy = None, None
-        self.total_eviction_to_offchip_link_energy, self.total_eviction_to_offchip_memory_energy = None, None
-        self.total_sink_layer_output_offchip_link_energy, self.total_sink_layer_output_offchip_memory_energy = None, None
-        self.total_core_to_core_link_energy, self.total_core_to_core_memory_energy = None, None
+        self.total_cn_offchip_link_energy = None
+        self.total_cn_offchip_memory_energy = None
+        self.total_eviction_to_offchip_link_energy = None
+        self.total_eviction_to_offchip_memory_energy = None
+        self.total_sink_layer_output_offchip_link_energy = None
+        self.total_sink_layer_output_offchip_memory_energy = None
+        self.total_core_to_core_link_energy = None
+        self.total_core_to_core_memory_energy = None
 
         self.latency = None
         self.max_memory_usage = None
