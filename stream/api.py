@@ -48,9 +48,9 @@ if __name__ == "__main__":
     # workload = 'inputs.examples.workload.resnet18_few_layers'
     # mapping = 'inputs.examples.mapping.tpu_like_quad_core'
 
-    accelerator = 'stream.inputs.testing.hardware.quad_testing_core_offchip'
-    workload = 'stream.inputs.testing.workload.testing_workload_for_4_cores'
-    mapping = 'stream.inputs.testing.mapping.testing_mapping'
+    accelerator = 'inputs.testing.hardware.quad_testing_core_offchip'
+    workload = 'inputs.testing.workload.testing_workload_for_4_cores'
+    mapping = 'inputs.testing.mapping.testing_mapping'
 
     CN_define_mode = 1  # manually define outer CN size for all cores and all layers
     hint_loops = [('OY', 'all')]
