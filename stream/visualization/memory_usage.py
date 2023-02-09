@@ -35,7 +35,7 @@ def humanbytes(B):
         return '{0:.2f} TB'.format(B / TB)
 
 
-def plot_memory_usage(memory_manager: MemoryManager, show_dram = False, fig_path="outputs/memory_usage.png"):
+def plot_memory_usage(memory_manager: MemoryManager, show_dram = False, show_human_bytes = True, fig_path="outputs/memory_usage.png"):
     delta_history = memory_manager.delta_history
     total_nb_of_top_level_memories = sum([sum([len(history) > 1 for history in core_history if max(list(zip(*history))[1]) > 0]) for core_history in delta_history.values()])
     if show_dram == False:
@@ -68,8 +68,13 @@ def plot_memory_usage(memory_manager: MemoryManager, show_dram = False, fig_path
             ax = next(axs_iter)
             ax.plot(timesteps, used_memory_space, drawstyle='steps-post')  # Plot the timesteps and used memory through time
             ax.axhline(y=max(used_memory_space), xmin=min(timesteps), xmax=max(timesteps), color='r', linestyle='dashed')
-            my_text = humanbytes(max(used_memory_space))+ ' / ' + humanbytes(np.array(memory_capacity))
-            ax.text(min(timesteps), max(used_memory_space), my_text, color='r', verticalalignment='bottom', fontsize=BIGGER_SIZE)
+
+            if show_human_bytes == True:
+                mem_text = humanbytes(max(used_memory_space)) + ' / ' + humanbytes(np.array(memory_capacity))
+            else:
+                mem_text = f"{max(used_memory_space)} B /  {np.array(memory_capacity)} B"
+
+            ax.text(min(timesteps), max(used_memory_space), mem_text, color='r', verticalalignment='bottom', fontsize=BIGGER_SIZE)
             ax.set_ylim(bottom=0, top=1.3 * max(used_memory_space))
             ax.ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
 
@@ -77,9 +82,9 @@ def plot_memory_usage(memory_manager: MemoryManager, show_dram = False, fig_path
                 ax.set_ylabel(f"DRAM")
             else:
                 if top_level_idx == 0:
-                    ax.set_ylabel(f"Core-{core_id}\nWeight")
+                    ax.set_ylabel(f"Core-{core_id}\nWeight\n[Bytes]")
                 else:
-                    ax.set_ylabel(f"Core-{core_id}\nActivation")
+                    ax.set_ylabel(f"Core-{core_id}\nActivation\n[Bytes]")
 
 
     ax.set_xlabel("Cycles")  # Set xlabel of last axis (bottom one)
