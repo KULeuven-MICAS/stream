@@ -127,8 +127,9 @@ class InterCoreMappingStage(Stage):
             offchip_energy = 0
             for too_large_operand in too_large_operands:
                 layer_operand = next((k for (k, v) in cme.layer.memory_operand_links.items() if v == too_large_operand))
-                offchip_energy += cme.energy_breakdown[layer_operand][-1]
-                onchip_energy -= offchip_energy
+                layer_operand_offchip_energy = cme.energy_breakdown[layer_operand][-1]
+                offchip_energy += layer_operand_offchip_energy
+                onchip_energy -= layer_operand_offchip_energy
 
             nodes = (n for n in self.workload.nodes() if n == non_flexible_unique_node)
             for node in nodes:
