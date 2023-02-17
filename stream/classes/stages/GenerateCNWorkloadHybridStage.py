@@ -70,6 +70,9 @@ class GenerateCNWorkloadHybridStage(Stage):
             # Compute the edges between nodes originating from one bigger node (intra-edges)
             intra_edges = self.get_intra_edges(finer_nodes)
             G.add_edges_from(intra_edges)
+            # If there is only one finer node for this layer, add the node to the graph
+            if not intra_edges:
+                G.add_nodes_from(finer_nodes)
 
         # Get all pairs of nodes that we have to extract inter edges for
         all_pairs = self.get_all_node_pairs(self.workload)
@@ -318,7 +321,7 @@ class GenerateCNWorkloadHybridStage(Stage):
                 produces_final_output = True
             else:
                 produces_final_output = False
-            finer_node = ComputationNode((original_node_id, n), finer_node_attrs_copy, node_name, node_input_names, node_output_names, produces_final_output=produces_final_output)
+            finer_node = ComputationNode((original_node_id, n), finer_node_attrs_copy, node_name, node_input_names, node_output_names, op_type=original_node.type, produces_final_output=produces_final_output)
 
             # Initialize the priorities (total inter-CN data reuse factor) for the constant operands of this finer_node
             for constant_operand in finer_node.constant_operands:

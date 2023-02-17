@@ -95,6 +95,7 @@ class GemmParser(Parser):
         # Get the node's input(s) and output(s) tensor names
         node_input_names = list(self.node.input)
         node_output_names = list(self.node.output)
-        node_obj = ComputationNode(self.node_id, node_attrs, self.node.name, node_input_names, node_output_names)
+        op_type = 'gemm'
+        node_obj = ComputationNode(self.node_id, node_attrs, self.node.name, node_input_names, node_output_names, op_type)
 
         return node_obj

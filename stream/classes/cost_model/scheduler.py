@@ -71,7 +71,6 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, cores_idle_from=None, c
                         tensors_to_avoid_evicting=[])
 
     done = False
-    logger.info("Start scheduling.")
     while not done:
 
         # If this core doesn't have any candidates, continue to the next core

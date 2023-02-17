@@ -22,7 +22,7 @@ class ComputationNode(LayerNode, Node):
         LayerNode (_type_): _description_
     """
 
-    def __init__(self, node_id, node_attrs, node_name, input_names, output_names, produces_final_output=False, add_missing_node_attrs=False):
+    def __init__(self, node_id, node_attrs, node_name, input_names, output_names, op_type='computation', produces_final_output=False, add_missing_node_attrs=False):
 
         assert isinstance(node_id, tuple), "node_id of ComputationNode initialization should be a tuple: (Layer number, Node number of that layer)"
 
@@ -30,7 +30,7 @@ class ComputationNode(LayerNode, Node):
             node_attrs["core_allocation"] = [node_attrs["core_allocation"]]
 
         LayerNode.__init__(self, node_id, node_attrs, node_name)
-        Node.__init__(self, type='computation', onchip_energy=None, offchip_energy=None, runtime=None, core_allocation=node_attrs.get('core_allocation', None), input_names=input_names, output_names=output_names)
+        Node.__init__(self, type=op_type, onchip_energy=None, offchip_energy=None, runtime=None, core_allocation=node_attrs.get('core_allocation', None), input_names=input_names, output_names=output_names)
 
         # Save whether this ComputationNode produces a final output
         self.produces_final_output = produces_final_output

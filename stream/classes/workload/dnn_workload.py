@@ -57,7 +57,8 @@ class DNNWorkload(DiGraph):
             logger.info(f"Parsed layer node {layer_name} | INPUT {layer_input_names} | OUTPUT {layer_output_names}")
             ''' Assume always define the final layer in the end '''
             produces_final_output = not layer_output_names
-            layer_node = ComputationNode((layer_id,), layer, layer_name, layer_input_names, layer_output_names, produces_final_output, add_missing_node_attrs=True)
+            op_type = layer['operator_type'].lower()
+            layer_node = ComputationNode((layer_id,), layer, layer_name, layer_input_names, layer_output_names, op_type, produces_final_output, add_missing_node_attrs=True)
             '''Save this layer_id and LayerNode pair in the layer_id_to_obj dict'''
             layer_id_to_obj[layer_id] = layer_node
             self.add_node(layer_node)
