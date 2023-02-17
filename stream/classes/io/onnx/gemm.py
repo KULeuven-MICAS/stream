@@ -38,8 +38,6 @@ class GemmParser(Parser):
             d["loop_dim_size"] = {'K': K, 'C': C, 'B': B}
             d["dimension_relations"] = []
             d["operand_precision"] =  {'O': 16, 'O_final': 8, 'B': 8, 'A': 8}
-            d["operand_source"] =  {'B': [], 'A': []}
-            d["constant_operands"] =  ['B']
 
             core_allocation = node_mapping["core_allocation"]
             d["core_allocation"] =  core_allocation
