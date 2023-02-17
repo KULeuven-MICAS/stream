@@ -7,7 +7,7 @@ class ElementwiseNode(Node):
     def __init__(self, type, name, predecessors, input_names, output_names) -> None:
         """Initialize the ReshapeNode.
         """
-        super().__init__(type, energy=0, runtime=0, core_allocation=-1, input_names=input_names, output_names=output_names)
+        super().__init__(type, onchip_energy=0, offchip_energy=0, runtime=0, core_allocation=-1, input_names=input_names, output_names=output_names)
         self.name = name
         self.input_operand_source = {'I': predecessors}
 

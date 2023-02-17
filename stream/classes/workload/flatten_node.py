@@ -11,7 +11,7 @@ class FlattenNode(Node):
         Args:
             shape (list): The output tensor's shape.
         """
-        super().__init__("flatten", energy=0, runtime=0, core_allocation=-1, input_names=input_names, output_names=output_names)
+        super().__init__("flatten", onchip_energy=0, offchip_energy=0, runtime=0, core_allocation=-1, input_names=input_names, output_names=output_names)
         self.axis = axis
         self.input_operand_source = {'I': predecessors}
 

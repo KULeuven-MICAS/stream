@@ -14,7 +14,7 @@ class ReshapeNode(Node):
             input_names (list) The input names of this node.
             output_names (list): The output names of this node.
         """
-        super().__init__("reshape", energy=0, runtime=0, core_allocation=-1, input_names=input_names, output_names=output_names)
+        super().__init__("reshape", onchip_energy=0, offchip_energy=0, runtime=0, core_allocation=-1, input_names=input_names, output_names=output_names)
         self.shape = shape
         self.input_operand_source = {'I': predecessors}
 
