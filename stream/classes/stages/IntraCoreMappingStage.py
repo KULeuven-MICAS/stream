@@ -73,7 +73,7 @@ class IntraCoreMappingStage(Stage):
             self.given_node_hw_performances = None
 
         for node in self.unique_nodes:
-            hw_performances = {}
+            self.node_hw_performances[node] = {}
             for core_id in self.valid_allocations[node]:
                 core = self.accelerator.get_core(core_id)
                 # It's possible this node might not fully fit within the core's top level memories. If so, we update the core
@@ -98,26 +98,26 @@ class IntraCoreMappingStage(Stage):
                     assert len(answers) == 1, "IntraCoreMappingStage's subflow returned more than one CME"
                     cme = answers[0][0]
                     node.core_allocation = None  # Reset the node's core allocation
-                hw_performances[core] = cme
-                self.node_hw_performances[node] = hw_performances
+                    self.node_hw_performances[node][core] = cme
+                    self.save_node_hw_performances()  # Save the hw performances dict after every node is finished 
         kwargs = self.kwargs.copy()
         kwargs["workload"] = self.workload
         kwargs["accelerator"] = self.accelerator
         kwargs["node_hw_performances"] = self.node_hw_performances
+        
+        logger.info(f'Finished IntraCoreMappingStage.')
+        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
+        for cme, extra_info in sub_stage.run():
+            yield cme, extra_info
 
-        # Save the hw performances to a pickle file to make debugging quicker
+    def save_node_hw_performances(self):
         if "node_hw_performances_path" in self.kwargs:
             folder_path = '/'.join(self.kwargs["node_hw_performances_path"].split('/')[:-1])
             if not path.isdir(folder_path):
                 makedirs(folder_path)
             with open(self.kwargs["node_hw_performances_path"], 'wb') as handle:
                 pickle.dump(self.node_hw_performances, handle, protocol=pickle.HIGHEST_PROTOCOL)
-            logger.info(f'Saved unique CN node HW performance to {self.kwargs["node_hw_performances_path"]}.')
-
-        logger.info(f'Finished IntraCoreMappingStage.')
-        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
-        for cme, extra_info in sub_stage.run():
-            yield cme, extra_info
+            logger.debug(f'Saved unique CN node HW performance to {self.kwargs["node_hw_performances_path"]}.')
 
     def get_intra_core_mapping_flow(self, node, too_large_operands, core_id):
 
