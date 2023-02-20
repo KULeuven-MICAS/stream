@@ -79,7 +79,7 @@ class IntraCoreMappingStage(Stage):
                 # It's possible this node might not fully fit within the core's top level memories. If so, we update the core
                 too_large_operands_for_cme = self.check_core_capacity_for_node(core, node)
                 # Check if this (node, core) combination is present in the loaded performances pickle
-                if self.given_node_hw_performances and node in self.given_node_hw_performances and core in self.given_node_hw_performances[node]:
+                if self.given_node_hw_performances and node in self.given_node_hw_performances and self.given_node_hw_performances[node] and core in self.given_node_hw_performances[node]:
                     if not isinstance(self.given_node_hw_performances[node][core], CostModelEvaluation):
                         raise TypeError(f"Given node_hw_performances for node {node} and core {core} is not a CME.")
                     cme = self.given_node_hw_performances[node][core]
