@@ -24,7 +24,7 @@ class DefaultNodeParser(Parser):
         # Get the input names of this operator
         input_names = list(self.node.input)
         output_names = list(self.node.output)
-        
-        node_obj = DummyNode(self.node_id, preds, self.node.name, input_names, output_names)
+        op_type = self.node.op_type.lower()
+        node_obj = DummyNode(self.node_id, preds, self.node.name, input_names, output_names, op_type)
 
         return node_obj
