@@ -83,11 +83,14 @@ class IntraCoreMappingStage(Stage):
                     if not isinstance(self.given_node_hw_performances[node][core], CostModelEvaluation):
                         raise TypeError(f"Given node_hw_performances for node {node} and core {core} is not a CME.")
                     cme = self.given_node_hw_performances[node][core]
+                    self.node_hw_performances[node][core] = cme
                 # Check if this (node, core) combination has already been optimized during this run
                 elif self.node_hw_performances and node in self.node_hw_performances and self.node_hw_performances[node] and any((core.equals(processed_core) for processed_core in self.node_hw_performances[node])):
                     # Find the core that is equal
                     equal_core = next(processed_core for processed_core in self.node_hw_performances[node] if core.equals(processed_core))
                     cme = self.node_hw_performances[node][equal_core]
+                    self.node_hw_performances[node][core] = cme
+                    self.save_node_hw_performances()
                 # Compute this (node, core) combination's optimal mapping
                 else:
                     node.core_allocation = core_id  # Set the node's core allocation to the core_id we want to extract hw performance for

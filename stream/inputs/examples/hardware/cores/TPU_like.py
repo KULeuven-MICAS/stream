@@ -83,7 +83,7 @@ def get_operational_array():
     return multiplier_array
 
 def get_dataflows():
-    return [{'D1': ('K', 32), 'D2': ('C', 32)}]
+    return [{'D1': ('K', 32), 'D2': ('C', 32)}, {'D1': ('G', 32)}]
 
 
 def get_core(id):
