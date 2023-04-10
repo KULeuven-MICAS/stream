@@ -216,7 +216,11 @@ def schedule_graph(G: DiGraph, accelerator: Accelerator, cores_idle_from=None, c
         nb_scheduled_nodes += 1
         done = nb_scheduled_nodes == nb_graph_nodes
 
-    latency = max((n.end for n in G.nodes()))
+    ## Step 9
+    # The total schedule latency is the max of all CN end times and the link end times
+    cn_end_times = max((n.end for n in G.nodes()))
+    link_end_times = max([l.available_from for l in list(set(d['cl'] for _, _, d in accelerator.cores.edges(data=True)))])
+    latency = max(cn_end_times, link_end_times)
     # print("Scheduling completed")
     # print(f"Latency found = {latency}")
     return latency, total_cn_onchip_energy, total_cn_offchip_link_energy, total_cn_offchip_memory_energy, total_eviction_to_offchip_link_energy, total_eviction_to_offchip_memory_energy, total_sink_layer_output_offchip_link_energy, total_sink_layer_output_offchip_memory_energy, total_core_to_core_link_energy, total_core_to_core_memory_energy
