@@ -59,6 +59,7 @@ mainstage = MainStage(
 
 # Launch the MainStage
 scme, _ = mainstage.run()
+scme = scme[0]
 
 # Ploting Results
 
@@ -71,8 +72,7 @@ timeline_fig_path = "outputs/schedule_plot.png"
 memory_fig_path = "outputs/memory_plot.png"
 
 plot_timeline_brokenaxes(
-    scme[0].workload,
-    scme[0].accelerator,
+    scme,
     draw_dependencies,
     section_start_percent,
     percent_shown,

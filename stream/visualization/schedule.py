@@ -4,7 +4,6 @@ from matplotlib.patches import Rectangle
 from networkx import DiGraph
 import numpy as np
 import logging
-import matplotlib.ticker as plticker
 
 logger = logging.getLogger(__name__)
 
@@ -12,8 +11,7 @@ from stream.classes.hardware.architecture.accelerator import Accelerator
 
 
 def plot_timeline_brokenaxes(
-    G_given: DiGraph,
-    accelerator: Accelerator,
+    scme,  # StreamCostModelEvaluation
     draw_dependencies: object = True,
     section_start_percent: object = (0, 50, 95),
     percent_shown: object = (5, 5, 5),
@@ -22,7 +20,10 @@ def plot_timeline_brokenaxes(
 ) -> object:
     logger.info("Plotting...")
 
-    nb_layers = len(set(iter([n.id[0] for n in G_given.nodes()])))
+    G: DiGraph = scme.workload
+    accelerator: Accelerator = scme.accelerator
+
+    nb_layers = len(set(iter([n.id[0] for n in G.nodes()])))
     nb_cores = accelerator.cores.number_of_nodes()
 
     dep_linewidth = 1
@@ -30,12 +31,13 @@ def plot_timeline_brokenaxes(
     tick_rotation = 0
     assert len(section_start_percent) == len(percent_shown)
 
-    # Copy the graph
-    G = G_given.copy()
-
-    # Total latency of the graph (including communication)
+    # Total latency of the SCME
+    latency = scme.latency
+    # Total energy of the SCME
+    energy = scme.energy
+    # total EDP of the SCME
+    edp = latency * energy
     # First get all used and unique communication links
-    latency = max((cn.end for cn in G.nodes()))
     used_cl_collect = []
     for ky, pair_link in accelerator.pair_links.items():
         if pair_link:
@@ -46,11 +48,6 @@ def plot_timeline_brokenaxes(
                     used_cl_collect.append(link)
         # Then plot the active data transfer period on these unique communication links
         pair_link_id = 0
-        for cl in used_cl_collect:
-            try:
-                latency = max(latency, cl.active_periods[-1][1])
-            except:
-                pass
 
     fig = plt.figure(figsize=(20, 6))
 
@@ -166,10 +163,6 @@ def plot_timeline_brokenaxes(
         pair_link_id = 0
         for cl in used_cl_collect:
             y_labels.append(cl.get_name_for_schedule_plot())
-            try:
-                latency = max(latency, cl.active_periods[-1][1])
-            except:
-                pass
 
             """ Plot DRAM blocking period due to too_large_operand """
             if cl.blocked_periods:
@@ -313,7 +306,10 @@ def plot_timeline_brokenaxes(
 
     bax.set_xlabel("Clock Cycles", labelpad=20, fontsize=14)
 
-    plt.title(f"Latency = {int(latency):,} Cycles", loc="right")
+    plt.title(
+        f"Latency = {int(latency):.3e} Cycles   Energy = {energy:.3e} pJ   EDP = {edp:.3e}",
+        loc="right",
+    )
     # Get all handles and labels and then filter them for unique ones and set legend
     legend_without_duplicate_labels(bax, loc=(0.0, 1.01), ncol=9)
     ylims = [ax.get_ylim() for ax in axs]
