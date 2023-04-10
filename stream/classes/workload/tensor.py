@@ -3,7 +3,14 @@ class Tensor:
     TODO: Add from which layer this tensor originates and its dimension ranges
     """
 
-    def __init__(self, size: int, origin=None, layer_operand: str = None, loop_dimensions: tuple = None, loop_ranges: tuple = None):
+    def __init__(
+        self,
+        size: int,
+        origin=None,
+        layer_operand: str = None,
+        loop_dimensions: tuple = None,
+        loop_ranges: tuple = None,
+    ):
         """Initialize the Tensor instance.
 
         Args:
@@ -19,8 +26,12 @@ class Tensor:
         self.memory_operand = self.origin.memory_operand_links[layer_operand]
         self.loop_dimensions = loop_dimensions
         self.loop_ranges = loop_ranges
-        self.base_priority = None  # Will be set when we know how many successors this node has (static)
-        self.core_priorities = {}  # For each core, successors the tensor is still going to be used by (dynamic)
+        self.base_priority = (
+            None  # Will be set when we know how many successors this node has (static)
+        )
+        self.core_priorities = (
+            {}
+        )  # For each core, successors the tensor is still going to be used by (dynamic)
         self.id = self.origin.id + (layer_operand,)
 
     def __str__(self) -> str:
@@ -54,7 +65,9 @@ class Tensor:
         layer_id = node.id[0]
         successors = [succ for succ in G.successors(node) if succ.id[0] != layer_id]
         if self.layer_operand == node.output_operand:
-            self.core_priorities = {successor.core_allocation: 0 for successor in successors}
+            self.core_priorities = {
+                successor.core_allocation: 0 for successor in successors
+            }
             for successor in successors:
                 self.core_priorities[successor.core_allocation] += 1
         else:

@@ -18,7 +18,13 @@ class Accelerator:
     In this Stream version, the cores are actually a graph with directed edges representing communication links.
     """
 
-    def __init__(self, name, cores: DiGraph, global_buffer: MemoryInstance or None, offchip_core_id=None):
+    def __init__(
+        self,
+        name,
+        cores: DiGraph,
+        global_buffer: MemoryInstance or None,
+        offchip_core_id=None,
+    ):
         self.name = name
         self.cores = cores
         self.global_buffer = global_buffer
@@ -37,8 +43,7 @@ class Accelerator:
         """
         JSON representation used for saving this object to a json file.
         """
-        return {"name": self.name,
-                "cores": self.cores}
+        return {"name": self.name, "cores": self.cores}
 
     def get_core(self, core_id: int or str) -> Core:
         """
@@ -47,21 +52,30 @@ class Accelerator:
         """
         core = next((core for core in self.cores.nodes() if core.id == core_id), None)
         if not core:
-            raise ValueError(f"Requested core with id {core_id} is not present in accelerator.")
+            raise ValueError(
+                f"Requested core with id {core_id} is not present in accelerator."
+            )
         return core
 
     def get_shortest_paths(self):
         # For each core pair save a shortest path
         shortest_paths = {}
-        for (producer_core, consumer_core) in itertools.product(self.cores.nodes(), self.cores.nodes()):
-            shortest_paths[(producer_core, consumer_core)] = nx.shortest_path(self.cores, producer_core, consumer_core)
+        for producer_core, consumer_core in itertools.product(
+            self.cores.nodes(), self.cores.nodes()
+        ):
+            shortest_paths[(producer_core, consumer_core)] = nx.shortest_path(
+                self.cores, producer_core, consumer_core
+            )
         return shortest_paths
 
     def get_links_for_all_core_pairs(self):
         communication_links = {}
         for pair, path in self.shortest_paths.items():
             traversed_edges = [(i, j) for i, j in zip(path, path[1:])]
-            communication_links[pair] = [self.cores.edges[traversed_edge]['cl'] for traversed_edge in traversed_edges]
+            communication_links[pair] = [
+                self.cores.edges[traversed_edge]["cl"]
+                for traversed_edge in traversed_edges
+            ]
             # print(pair, communication_links[pair])
         return communication_links
 
@@ -86,7 +100,14 @@ class Accelerator:
         receiver = self.get_core(receiver_id)
         return self.get_links_for_pair(sender, receiver)
 
-    def transfer_data(self, tensor: Tensor, sender: Core or int, receiver: Core or int, receiver_memory_operand: str, start_timestep: int) -> tuple[int, int, float, float]:
+    def transfer_data(
+        self,
+        tensor: Tensor,
+        sender: Core or int,
+        receiver: Core or int,
+        receiver_memory_operand: str,
+        start_timestep: int,
+    ) -> tuple[int, int, float, float]:
         """Transfer a data tensor from sender to receiver for this accelerator starting at timestep.
 
         Args:
@@ -107,8 +128,15 @@ class Accelerator:
         if isinstance(receiver, int):
             receiver = self.get_core(receiver)
         links: List[CommunicationLink] = self.get_links_for_pair(sender, receiver)
-        if not links:  # if links is empty (happens when sender == receiver, i.e. "transfer" from Core A -> Core A)
-            return start_timestep, start_timestep, link_energy_cost, 0  # the "transfer" doesn't require any time
+        if (
+            not links
+        ):  # if links is empty (happens when sender == receiver, i.e. "transfer" from Core A -> Core A)
+            return (
+                start_timestep,
+                start_timestep,
+                link_energy_cost,
+                0,
+            )  # the "transfer" doesn't require any time
         transfer_start = max(start_timestep, links[0].available_from)
         for link in links:
             transfer_end, transfer_energy_cost = link.put(tensor, transfer_start)
@@ -117,10 +145,19 @@ class Accelerator:
         # For this we need to know the memory operand in order to know where in the sender/receiver the tensor is stored
         # We assume the tensor to be sent is defined from the sender perspective, so we take its operand as the sender memory operand
         sender_memory_operand = tensor.memory_operand
-        memory_energy_cost = self.get_memory_energy_cost_of_transfer(tensor, sender, receiver, sender_memory_operand, receiver_memory_operand)
+        memory_energy_cost = self.get_memory_energy_cost_of_transfer(
+            tensor, sender, receiver, sender_memory_operand, receiver_memory_operand
+        )
         return transfer_start, transfer_end, link_energy_cost, memory_energy_cost
 
-    def transfer_tensor_to_core(self, tensor: Tensor, receiving_core_id: int, tensor_operand: str, non_evictable_tensors: list, worst_case_timestep: int):
+    def transfer_tensor_to_core(
+        self,
+        tensor: Tensor,
+        receiving_core_id: int,
+        tensor_operand: str,
+        non_evictable_tensors: list,
+        worst_case_timestep: int,
+    ):
         """Transfer a tensor to a given core id.
         This function computes when the transfer can take place based on three factors:
         1) The timestep from which this tensor is available for transfer on a sender core.
@@ -136,7 +173,11 @@ class Accelerator:
         """
         ## STEP 1: Since when is the tensor available on a sending core
         # Find the core that is storing this tensor
-        core_ids_storing_tensor, top_level_idxs, stored_since_timesteps = self.find_tensor(tensor)
+        (
+            core_ids_storing_tensor,
+            top_level_idxs,
+            stored_since_timesteps,
+        ) = self.find_tensor(tensor)
         # If we already have the tensor on the receiving core, return
         if receiving_core_id in core_ids_storing_tensor:
             return -1, 0, 0, 0, 0, False
@@ -154,36 +195,86 @@ class Accelerator:
         data_transfer_duration = ceil(tensor.size / links[0].bandwidth)
 
         ## STEP 3: When the receiving core has enough space to store the tensor (don't consider the data eviction)
-        consider_transfer_from_timestep = max(stored_since_timestep, link_available_timestep)
-        can_transfer_from_timestep = \
-            self.memory_manager.test_add_tensor_to_core(tensor, receiving_core_id, consider_transfer_from_timestep, worst_case_timestep, memory_op=tensor_operand)
+        consider_transfer_from_timestep = max(
+            stored_since_timestep, link_available_timestep
+        )
+        can_transfer_from_timestep = self.memory_manager.test_add_tensor_to_core(
+            tensor,
+            receiving_core_id,
+            consider_transfer_from_timestep,
+            worst_case_timestep,
+            memory_op=tensor_operand,
+        )
         can_end_from_timestep = can_transfer_from_timestep + data_transfer_duration
 
         ## STEP 4: Add it to the correct memory (consider the data eviction, thus get the actual available transfer time: evictions_complete_timestep)
-        evictions_complete_timestep, eviction_link_energy_cost, eviction_memory_energy_cost = \
-            self.memory_manager.add_tensor_to_core(tensor, receiving_core_id, can_transfer_from_timestep, can_end_from_timestep, non_evictable_tensors, memory_op=tensor_operand)
+        (
+            evictions_complete_timestep,
+            eviction_link_energy_cost,
+            eviction_memory_energy_cost,
+        ) = self.memory_manager.add_tensor_to_core(
+            tensor,
+            receiving_core_id,
+            can_transfer_from_timestep,
+            can_end_from_timestep,
+            non_evictable_tensors,
+            memory_op=tensor_operand,
+        )
         actual_available_transfer_start = evictions_complete_timestep
 
         ## STEP 5: Transfer the data
-        transfer_start, transfer_end, transfer_link_energy_cost, transfer_memory_energy_cost = \
-            self.transfer_data(tensor, tensor_core_id, receiving_core_id, tensor_operand, actual_available_transfer_start)
+        (
+            transfer_start,
+            transfer_end,
+            transfer_link_energy_cost,
+            transfer_memory_energy_cost,
+        ) = self.transfer_data(
+            tensor,
+            tensor_core_id,
+            receiving_core_id,
+            tensor_operand,
+            actual_available_transfer_start,
+        )
 
         ## STEP 6: Check if the already transfered data can be removed from the sender core (excluding DRAM)
         # As long as the sender core no longer need it, we wipe it up to save space for other data fetching and prefetching.
         if sender_core.id == self.offchip_core_id:
             pass
         else:
-            if (sender_core.id not in tensor.core_priorities) or (tensor.core_priorities[sender_core.id] == 0):
-                top_level_idx = self.memory_manager.get_top_level_idx(sender_core, tensor.memory_operand)
-                self.memory_manager.remove_tensor_from_core(sender_core, top_level_idx, tensor, transfer_end, write_back_to_offchip=False)
+            if (sender_core.id not in tensor.core_priorities) or (
+                tensor.core_priorities[sender_core.id] == 0
+            ):
+                top_level_idx = self.memory_manager.get_top_level_idx(
+                    sender_core, tensor.memory_operand
+                )
+                self.memory_manager.remove_tensor_from_core(
+                    sender_core,
+                    top_level_idx,
+                    tensor,
+                    transfer_end,
+                    write_back_to_offchip=False,
+                )
 
         ## STEP 7: Give back a flag that tells us whether this transfer came from off-chip for energy tracking
         came_from_offchip = tensor_core_id == self.offchip_core_id
 
-        return transfer_end, transfer_link_energy_cost, transfer_memory_energy_cost, eviction_link_energy_cost, eviction_memory_energy_cost, came_from_offchip
+        return (
+            transfer_end,
+            transfer_link_energy_cost,
+            transfer_memory_energy_cost,
+            eviction_link_energy_cost,
+            eviction_memory_energy_cost,
+            came_from_offchip,
+        )
 
-    def get_memory_energy_cost_of_transfer(self, tensor: Tensor, sender: Core or int, receiver: Core or int, sender_memory_operand: str, receiver_memory_operand: str):
-
+    def get_memory_energy_cost_of_transfer(
+        self,
+        tensor: Tensor,
+        sender: Core or int,
+        receiver: Core or int,
+        sender_memory_operand: str,
+        receiver_memory_operand: str,
+    ):
         # Convert given sender and receiver to Core object if given as ids
         if isinstance(sender, int):
             sender = self.get_core(sender)
@@ -191,18 +282,32 @@ class Accelerator:
             receiver = self.get_core(receiver)
 
         # Get the top level of output memory for the sender and the top level of input memory for the consumer_operand
-        sender_top_memory_level = sender.memory_hierarchy.get_operand_top_level(sender_memory_operand)
-        receiver_top_memory_level = receiver.memory_hierarchy.get_operand_top_level(receiver_memory_operand)
+        sender_top_memory_level = sender.memory_hierarchy.get_operand_top_level(
+            sender_memory_operand
+        )
+        receiver_top_memory_level = receiver.memory_hierarchy.get_operand_top_level(
+            receiver_memory_operand
+        )
         # Sender memory energy
-        nb_sender_memory_reads_for_data = ceil(tensor.size / sender_top_memory_level.read_bw)
-        sender_energy = sender_top_memory_level.read_energy * nb_sender_memory_reads_for_data
+        nb_sender_memory_reads_for_data = ceil(
+            tensor.size / sender_top_memory_level.read_bw
+        )
+        sender_energy = (
+            sender_top_memory_level.read_energy * nb_sender_memory_reads_for_data
+        )
         # Receiver memory energy
-        nb_receiver_memory_writes_for_data = ceil(tensor.size / sender_top_memory_level.write_bw)
-        receiver_energy = receiver_top_memory_level.write_energy * nb_receiver_memory_writes_for_data
+        nb_receiver_memory_writes_for_data = ceil(
+            tensor.size / sender_top_memory_level.write_bw
+        )
+        receiver_energy = (
+            receiver_top_memory_level.write_energy * nb_receiver_memory_writes_for_data
+        )
 
         return sender_energy + receiver_energy
 
-    def block_offchip_links(self, too_large_operands, core_id, start_timestep, duration, cn_id) -> int:
+    def block_offchip_links(
+        self, too_large_operands, core_id, start_timestep, duration, cn_id
+    ) -> int:
         """Block the communication link between 'core' and the offchip core starting at timestep 'start_timestep' for duration 'duration'.
 
         Args:
@@ -216,19 +321,25 @@ class Accelerator:
         effective_start_timestep = start_timestep
         core = self.get_core(core_id)
         offchip_core = self.get_core(self.offchip_core_id)
-        if 'O' in too_large_operands:
+        if "O" in too_large_operands:
             links_to_block.append(self.get_links_for_pair(core, offchip_core))
-        if [op for op in too_large_operands if op != 'O']:
+        if [op for op in too_large_operands if op != "O"]:
             links_to_block.append(self.get_links_for_pair(offchip_core, core))
         if not too_large_operands:
             return start_timestep
         # Get the worst case start time of all the links for all the operands
-        worst_case_start_time = max([link.available_from for links in links_to_block for link in links])
+        worst_case_start_time = max(
+            [link.available_from for links in links_to_block for link in links]
+        )
         worst_case_start_time = max(start_timestep, worst_case_start_time)
         links_set = set((link for links in links_to_block for link in links))
         for link in links_set:
-            blocking_start_timestep, blocking_end_timestep = link.block(worst_case_start_time, duration, cn_id)
-            assert blocking_start_timestep == worst_case_start_time, "Mismatch between worst case link start time and effective link block start time."
+            blocking_start_timestep, blocking_end_timestep = link.block(
+                worst_case_start_time, duration, cn_id
+            )
+            assert (
+                blocking_start_timestep == worst_case_start_time
+            ), "Mismatch between worst case link start time and effective link block start time."
         # for links in links_to_block:
         #     for link in links: # There can be multiple links if the offchip is not directly connected to this core
         #         blocking_start_timestep, blocking_end_timestep = link.block(worst_case_start_time, duration, cn_id)

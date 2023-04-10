@@ -12,7 +12,9 @@ from zigzag.classes.hardware.architecture.memory_hierarchy import MemoryHierarch
 from zigzag.classes.hardware.architecture.operational_array import OperationalArray
 from zigzag.classes.mapping.spatial.spatial_mapping import SpatialMapping
 from zigzag.classes.stages.Stage import Stage
-from zigzag.classes.stages.SpatialMappingConversionStage import SpatialMappingConversionStage
+from zigzag.classes.stages.SpatialMappingConversionStage import (
+    SpatialMappingConversionStage,
+)
 from zigzag.classes.workload.layer_node import LayerNode
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,7 @@ class CustomSpatialMappingGeneratorStage(Stage):
 
     :param main_inputs: MainInputs, NOT copied
     """
+
     def __init__(self, list_of_callables, *, accelerator, layer, **kwargs):
         """
         Note: list_of_callables does NOT need to include SpatialMappingConversionStage. Although this is used,
@@ -40,7 +43,6 @@ class CustomSpatialMappingGeneratorStage(Stage):
         self.accelerator = accelerator
         self.check_layer(layer)
         self.layer = layer
-
 
     @staticmethod
     def check_layer(layer):
@@ -79,13 +81,14 @@ class CustomSpatialMappingGeneratorStage(Stage):
             self.layer.user_spatial_mapping = user_spatial_mapping
             # Note: manual instantiation of spatial mapping conversion stage here. We let that class deal with
             # everything else, including instantion of the actual substages
-            spatial_mapping_conversion_stage = SpatialMappingConversionStage(self.list_of_callables,
-                                                                             accelerator=self.accelerator,
-                                                                             layer=self.layer,
-                                                                             **self.kwargs)
+            spatial_mapping_conversion_stage = SpatialMappingConversionStage(
+                self.list_of_callables,
+                accelerator=self.accelerator,
+                layer=self.layer,
+                **self.kwargs,
+            )
             for cme, extra_info in spatial_mapping_conversion_stage.run():
                 yield cme, (user_spatial_mapping, extra_info)
-
 
     def generate_user_spatial_mappings(self):
         """
@@ -113,26 +116,41 @@ class CustomSpatialMappingGeneratorStage(Stage):
 
         # For every operational array dimension, we initialize it by maximally unrolling all layer dimensions.
         # Later these will be restricted if the memory structure doesn't allow for this unrolling
-        oa_dim_unrolling = {oa_dim: {layer_dim: int(min(layer_size, oa_dim.size)) for layer_dim, layer_size in
-                                     self.layer.loop_dim_size.items()} for oa_dim in oa_dims}
+        oa_dim_unrolling = {
+            oa_dim: {
+                layer_dim: int(min(layer_size, oa_dim.size))
+                for layer_dim, layer_size in self.layer.loop_dim_size.items()
+            }
+            for oa_dim in oa_dims
+        }
 
         for memory_level in innermost_levels:
             served_dimensions: Set[Dimension] = memory_level.served_dimensions
             mem_ops = memory_level.operands
             for mem_op in mem_ops:
-                layer_op = self.layer.get_layer_operand(mem_op=mem_op)  # get the layer operand
-                if layer_op == 'O':
-                    mem_bandwidth = memory_level.write_bw  # partial outputs are written to the memory
+                layer_op = self.layer.get_layer_operand(
+                    mem_op=mem_op
+                )  # get the layer operand
+                if layer_op == "O":
+                    mem_bandwidth = (
+                        memory_level.write_bw
+                    )  # partial outputs are written to the memory
                 else:
-                    mem_bandwidth = memory_level.read_bw  # inputs are read from the memory
-                precision = self.layer.operand_precision[layer_op]  # bit precision of layer operand
-                irrelevant_dimensions = self.layer.get_operand_irrelevant_dimensions(layer_op)
+                    mem_bandwidth = (
+                        memory_level.read_bw
+                    )  # inputs are read from the memory
+                precision = self.layer.operand_precision[
+                    layer_op
+                ]  # bit precision of layer operand
+                irrelevant_dimensions = self.layer.get_operand_irrelevant_dimensions(
+                    layer_op
+                )
                 for oa_dim in oa_dims:
                     if oa_dim not in served_dimensions:
                         continue
                     # If the operational array dimension is a served dimension of the lowest memory level,
                     # we ought to limit the unrolling for the relevant and partially relevant loop dimensions
-                    for (layer_dim, unrolling_size) in oa_dim_unrolling[oa_dim].items():
+                    for layer_dim, unrolling_size in oa_dim_unrolling[oa_dim].items():
                         if layer_dim in irrelevant_dimensions:
                             continue
                         # If not irrelevant, it is (partially) relevant. Limit based on BW and operand precision.
@@ -140,7 +158,9 @@ class CustomSpatialMappingGeneratorStage(Stage):
                             max_multicast_elements = mem_bandwidth // precision
                         except ZeroDivisionError:
                             max_multicast_elements = unrolling_size
-                        oa_dim_unrolling[oa_dim][layer_dim] = min(max_multicast_elements, unrolling_size)
+                        oa_dim_unrolling[oa_dim][layer_dim] = min(
+                            max_multicast_elements, unrolling_size
+                        )
 
         # At this point the unrolled layer dimensions are maximal (wrt the served dimensions and bandwidth of the lowest memory level).
         # The unrolling size might not be a factor of the layer dimension size, which is required (for non greedy mapping).
@@ -148,7 +168,7 @@ class CustomSpatialMappingGeneratorStage(Stage):
         unrollings = []
         for oa_dim in oa_dims:
             oa_dim_unrollings = []
-            for (layer_dim, unrolling_size) in oa_dim_unrolling[oa_dim].items():
+            for layer_dim, unrolling_size in oa_dim_unrolling[oa_dim].items():
                 layer_dim_size = self.layer.loop_dim_size[layer_dim]
                 # If e.g. the unrolling size is 10 (because operational array dimension size is 10)
                 # but the layer dimension size is 14, this would result in a temporal remainder of 14/10.
@@ -174,11 +194,22 @@ class CustomSpatialMappingGeneratorStage(Stage):
         # Now we have to combine them into user-defined spatial mappings.
         for combination in itertools.product(*unrollings):
             # If the combination has two oa dimensions that unroll the same layer dimension, skip it as this is impossible.
-            if not self.all_unique([loop_dimension for (loop_dimension, loop_size) in (c for c in combination if c is not None)]):
+            if not self.all_unique(
+                [
+                    loop_dimension
+                    for (loop_dimension, loop_size) in (
+                        c for c in combination if c is not None
+                    )
+                ]
+            ):
                 continue
             # Zip the combination (which is a (layer_dim, layer_size) for each oa_dim with the oa_dim names.
             oa_dim_names = [oa_dim.name for oa_dim in oa_dims]
-            user_spatial_mapping = {oa_dim_name: unrolling for (oa_dim_name, unrolling) in zip(oa_dim_names, combination) if unrolling is not None}
+            user_spatial_mapping = {
+                oa_dim_name: unrolling
+                for (oa_dim_name, unrolling) in zip(oa_dim_names, combination)
+                if unrolling is not None
+            }
             yield user_spatial_mapping
 
     @staticmethod

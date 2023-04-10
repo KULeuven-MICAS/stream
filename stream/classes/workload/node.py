@@ -1,12 +1,22 @@
 from abc import ABCMeta
 from typing import List
 
+
 class Node(metaclass=ABCMeta):
     """Abstract base class that represents a piece of an algorithmic workload.
     Example: ComputationNode, CommunicationNode, etc.
     """
 
-    def __init__(self, type: str, onchip_energy: float, offchip_energy: float, runtime: int, core_allocation: int, input_names: List[str], output_names: List[str]) -> None:
+    def __init__(
+        self,
+        type: str,
+        onchip_energy: float,
+        offchip_energy: float,
+        runtime: int,
+        core_allocation: int,
+        input_names: List[str],
+        output_names: List[str],
+    ) -> None:
         """Initialize the Node metaclass
 
         Args:
@@ -15,7 +25,7 @@ class Node(metaclass=ABCMeta):
             runtime (int): The runtime of this Node.
             core_allocation (int): The core id on which this Node is mapped.
             inputs: (List[str]): The names of the input tensors of this node
-            outpus: (List[str]): The names of the output tensors of this node. 
+            outpus: (List[str]): The names of the output tensors of this node.
         """
         self.type = type.lower()
         self.onchip_energy = onchip_energy
@@ -37,33 +47,27 @@ class Node(metaclass=ABCMeta):
         return str(self)
 
     def get_total_energy(self):
-        """Get the total energy of running this node, including off-chip energy.
-        """
+        """Get the total energy of running this node, including off-chip energy."""
         return self.onchip_energy + self.offchip_energy
 
     def get_onchip_energy(self):
-        """Get the on-chip energy of running this node.
-        """
+        """Get the on-chip energy of running this node."""
         return self.onchip_energy
 
     def get_offchip_energy(self):
-        """Get the off-chip energy of running this node.
-        """
+        """Get the off-chip energy of running this node."""
         return self.offchip_energy
 
     def get_runtime(self):
-        """Get the runtime of running this node.
-        """
+        """Get the runtime of running this node."""
         return self.runtime
 
     def get_start(self):
-        """Get the start time in cycles of this node.
-        """
+        """Get the start time in cycles of this node."""
         return self.start
 
     def get_end(self):
-        """Get the end time in cycles of this node.
-        """
+        """Get the end time in cycles of this node."""
         return self.end
 
     def get_core_allocation(self):

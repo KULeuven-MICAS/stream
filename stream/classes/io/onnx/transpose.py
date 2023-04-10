@@ -3,11 +3,11 @@ from zigzag.classes.io.onnx.parser import Parser
 
 
 class TransposeParser(Parser):
-    """Parses an onnx reshape operator into a ReshapeNode.
-    """
+    """Parses an onnx reshape operator into a ReshapeNode."""
+
     def __init__(self, node_id, node, nodes_outputs, mapping, onnx_model) -> None:
         super().__init__(node_id, node, nodes_outputs, mapping, onnx_model)
-    
+
     def run(self):
         return self.generate_layer_node_for_transpose()
 

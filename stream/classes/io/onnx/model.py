@@ -5,7 +5,10 @@ from stream.classes.io.onnx.simd import SimdParser
 from stream.classes.io.onnx.transpose import TransposeParser
 from stream.classes.io.onnx.lpnormalization import LpNormalizationParser
 from stream.classes.io.onnx.default import DefaultNodeParser
-from zigzag.classes.io.onnx.utils import parse_mapping_from_path, parse_onnx_model_from_path
+from zigzag.classes.io.onnx.utils import (
+    parse_mapping_from_path,
+    parse_onnx_model_from_path,
+)
 from stream.classes.io.onnx.gemm import GemmParser
 from stream.classes.io.onnx.matmul import MatMulParser
 from stream.classes.io.onnx.conv import ConvParser
@@ -13,12 +16,13 @@ from stream.classes.workload.onnx_workload import ONNXWorkload
 
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 
 class ONNXModelParser:
-    """Parse the ONNX model into a workload.
-    """
+    """Parse the ONNX model into a workload."""
+
     def __init__(self, onnx_model_path, mapping_path, accelerator) -> None:
         self.onnx_model_path = onnx_model_path
         self.mapping_path = mapping_path
@@ -77,23 +81,71 @@ class ONNXModelParser:
             nodes_outputs[node_id] = node.output
 
             if node.op_type in ["QLinearConv", "Conv"]:
-                parser = ConvParser(node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model, self.accelerator)
+                parser = ConvParser(
+                    node_id_tuple,
+                    node,
+                    nodes_outputs,
+                    self.mapping,
+                    self.onnx_model,
+                    self.accelerator,
+                )
             elif node.op_type in ["MatMul"]:
-                parser = MatMulParser(node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model, self.accelerator)
+                parser = MatMulParser(
+                    node_id_tuple,
+                    node,
+                    nodes_outputs,
+                    self.mapping,
+                    self.onnx_model,
+                    self.accelerator,
+                )
             elif node.op_type in ["Gemm"]:
-                parser = GemmParser(node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model, self.accelerator)
-            elif node.op_type in ["MaxPool", "AveragePool", "GlobalMaxPool", "GlobalAveragePool"]:
-                parser = PoolingParser(node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model, self.accelerator)
+                parser = GemmParser(
+                    node_id_tuple,
+                    node,
+                    nodes_outputs,
+                    self.mapping,
+                    self.onnx_model,
+                    self.accelerator,
+                )
+            elif node.op_type in [
+                "MaxPool",
+                "AveragePool",
+                "GlobalMaxPool",
+                "GlobalAveragePool",
+            ]:
+                parser = PoolingParser(
+                    node_id_tuple,
+                    node,
+                    nodes_outputs,
+                    self.mapping,
+                    self.onnx_model,
+                    self.accelerator,
+                )
             elif node.op_type in ["Reshape"]:
-                parser = ReshapeParser(node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model)
+                parser = ReshapeParser(
+                    node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model
+                )
             elif node.op_type in ["Flatten"]:
-                parser = FlattenParser(node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model)
+                parser = FlattenParser(
+                    node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model
+                )
             elif node.op_type in ["Add"]:
-                parser = SimdParser(node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model, self.accelerator)
+                parser = SimdParser(
+                    node_id_tuple,
+                    node,
+                    nodes_outputs,
+                    self.mapping,
+                    self.onnx_model,
+                    self.accelerator,
+                )
             elif node.op_type in ["Transpose"]:
-                parser = TransposeParser(node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model)
+                parser = TransposeParser(
+                    node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model
+                )
             elif node.op_type in ["LpNormalization"]:
-                parser = LpNormalizationParser(node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model)
+                parser = LpNormalizationParser(
+                    node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model
+                )
             else:  # it is not any of the above, so create a DummyNode
                 parser = DefaultNodeParser(node_id_tuple, node, nodes_outputs)
             node_obj = parser.run()
@@ -101,15 +153,16 @@ class ONNXModelParser:
             workload.add(node_id_tuple, node_obj)
 
         logger.info(
-            f"Created ONNXWorkload graph with {workload.number_of_nodes()} nodes and {workload.number_of_edges()} edges.")
+            f"Created ONNXWorkload graph with {workload.number_of_nodes()} nodes and {workload.number_of_edges()} edges."
+        )
 
         return workload
 
     def get_onnx_model(self):
         return self.onnx_model
-    
+
     def get_mapping(self):
         return self.mapping
-    
+
     def get_workload(self):
         return self.workload

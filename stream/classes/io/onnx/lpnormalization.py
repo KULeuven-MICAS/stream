@@ -3,11 +3,11 @@ from zigzag.classes.io.onnx.parser import Parser
 
 
 class LpNormalizationParser(Parser):
-    """Parses an onnx reshape operator into a ReshapeNode.
-    """
+    """Parses an onnx reshape operator into a ReshapeNode."""
+
     def __init__(self, node_id, node, nodes_outputs, mapping, onnx_model) -> None:
         super().__init__(node_id, node, nodes_outputs, mapping, onnx_model)
-    
+
     def run(self):
         return self.generate_lpnormalization_node()
 

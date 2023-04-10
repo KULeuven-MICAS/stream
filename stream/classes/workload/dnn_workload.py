@@ -8,12 +8,14 @@ from typing import Dict, Any
 from networkx import DiGraph
 
 import logging
+
 logger = logging.getLogger(__name__)
 
 
 class DNNWorkload(DiGraph):
-
-    def __init__(self, workload: Dict[Any, Dict], mapping: Dict[Any, Dict], accelerator, **attr):
+    def __init__(
+        self, workload: Dict[Any, Dict], mapping: Dict[Any, Dict], accelerator, **attr
+    ):
         """
         Collect all the algorithmic workload information here.
         :param workload: user-defined workload file (py).
@@ -27,45 +29,64 @@ class DNNWorkload(DiGraph):
         workload_saved = copy.deepcopy(workload)
 
         for i, (layer_id, layer) in enumerate(workload.items()):
-            ''' Add layer-core allocation to the layer attribute'''
-            if layer['operator_type'] in mapping:
-                core_allocation = mapping[layer['operator_type']]["core_allocation"]
+            """Add layer-core allocation to the layer attribute"""
+            if layer["operator_type"] in mapping:
+                core_allocation = mapping[layer["operator_type"]]["core_allocation"]
             else:
                 try:
                     core_allocation = mapping["default"]["core_allocation"]
                 except:
-                    raise ValueError(f"There is no mapping provided for layer {layer['operator_type']}, nor a default one.")
-            layer['core_allocation'] = core_allocation
+                    raise ValueError(
+                        f"There is no mapping provided for layer {layer['operator_type']}, nor a default one."
+                    )
+            layer["core_allocation"] = core_allocation
 
-            ''' Add spatial mapping to the layer attribute '''
+            """ Add spatial mapping to the layer attribute """
             spatial_mapping = self.get_spatial_mappings(accelerator, core_allocation)
             layer["spatial_mapping"] = spatial_mapping
 
-            ''' Add temporal ordering to the layer attribute '''
+            """ Add temporal ordering to the layer attribute """
             # TODO allow user to define fixed temporal loop order
 
-            '''For each item in the dict generate the LayerNode and add it to the dnn graph G'''
-            layer_name = layer['operator_type'] + '_' + str(layer_id)
-            layer_input_names = [l['operator_type'] + '_' + str(l_id) + '_output' for (l_id, l) in workload_saved.items()
-                                 if l_id in self.cat_lists_from_all_values_of_a_dict(layer['operand_source'])]
-            layer_output_names = [layer['operator_type'] + '_' + str(layer_id) + '_output']
+            """For each item in the dict generate the LayerNode and add it to the dnn graph G"""
+            layer_name = layer["operator_type"] + "_" + str(layer_id)
+            layer_input_names = [
+                l["operator_type"] + "_" + str(l_id) + "_output"
+                for (l_id, l) in workload_saved.items()
+                if l_id
+                in self.cat_lists_from_all_values_of_a_dict(layer["operand_source"])
+            ]
+            layer_output_names = [
+                layer["operator_type"] + "_" + str(layer_id) + "_output"
+            ]
 
             if not layer_input_names:
-                layer_input_names = ['the_first_input']
+                layer_input_names = ["the_first_input"]
             if not layer_output_names:
-                layer_input_names = ['the_last_output']
-            logger.info(f"Parsed layer node {layer_name} | INPUT {layer_input_names} | OUTPUT {layer_output_names}")
-            ''' Assume always define the final layer in the end '''
+                layer_input_names = ["the_last_output"]
+            logger.info(
+                f"Parsed layer node {layer_name} | INPUT {layer_input_names} | OUTPUT {layer_output_names}"
+            )
+            """ Assume always define the final layer in the end """
             produces_final_output = not layer_output_names
-            op_type = layer['operator_type'].lower()
-            layer_node = ComputationNode((layer_id,), layer, layer_name, layer_input_names, layer_output_names, op_type, produces_final_output, add_missing_node_attrs=True)
-            '''Save this layer_id and LayerNode pair in the layer_id_to_obj dict'''
+            op_type = layer["operator_type"].lower()
+            layer_node = ComputationNode(
+                (layer_id,),
+                layer,
+                layer_name,
+                layer_input_names,
+                layer_output_names,
+                op_type,
+                produces_final_output,
+                add_missing_node_attrs=True,
+            )
+            """Save this layer_id and LayerNode pair in the layer_id_to_obj dict"""
             layer_id_to_obj[layer_id] = layer_node
             self.add_node(layer_node)
             self.layer_node_list.append(layer_node)
-            '''Find all of its operand sources and add edges accordingly'''
+            """Find all of its operand sources and add edges accordingly"""
             edges = []
-            for (op, parent_list) in layer.get('operand_source', {}).items():
+            for op, parent_list in layer.get("operand_source", {}).items():
                 for parent_id in parent_list:
                     parent_layer = layer_id_to_obj[parent_id]
                     edges.append((parent_layer, layer_node))
@@ -79,7 +100,9 @@ class DNNWorkload(DiGraph):
         for node in self.nodes:
             if node.id == id:
                 return node
-        raise ValueError("DNNWorkload instance does not have a node with the requested id")
+        raise ValueError(
+            "DNNWorkload instance does not have a node with the requested id"
+        )
 
     @staticmethod
     def get_spatial_mappings(accelerator, core_allocation):
@@ -87,7 +110,7 @@ class DNNWorkload(DiGraph):
         if isinstance(core_allocation, int):
             core = accelerator.get_core(core_allocation)
             spatial_mappings = core.dataflows
-        elif (isinstance(core_allocation, list) and len(core_allocation) == 1):
+        elif isinstance(core_allocation, list) and len(core_allocation) == 1:
             core = accelerator.get_core(core_allocation[0])
             spatial_mappings = core.dataflows
         else:

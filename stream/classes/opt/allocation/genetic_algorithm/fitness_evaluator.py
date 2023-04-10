@@ -6,7 +6,9 @@ from stream.utils import get_too_large_operands
 
 
 class FitnessEvaluator:
-    def __init__(self, workload=None, accelerator=None, node_hw_performances=None) -> None:
+    def __init__(
+        self, workload=None, accelerator=None, node_hw_performances=None
+    ) -> None:
         self.workload = workload
         self.accelerator = accelerator
         self.node_hw_performances = node_hw_performances
@@ -15,10 +17,18 @@ class FitnessEvaluator:
     def get_fitness(self):
         raise NotImplementedError
 
+
 class StandardFitnessEvaluator(FitnessEvaluator):
-    """The standard fitness evaluator considers latency, max buffer occupancy and energy equally.
-    """
-    def __init__(self, workload, accelerator, node_hw_performances, coarse_node_ids_flexible, scheduler_candidate_selection) -> None:
+    """The standard fitness evaluator considers latency, max buffer occupancy and energy equally."""
+
+    def __init__(
+        self,
+        workload,
+        accelerator,
+        node_hw_performances,
+        coarse_node_ids_flexible,
+        scheduler_candidate_selection,
+    ) -> None:
         super().__init__(workload, accelerator, node_hw_performances)
 
         self.weights = (-1.0, -1.0)
@@ -34,7 +44,11 @@ class StandardFitnessEvaluator(FitnessEvaluator):
             core_allocations (list): core_allocations
         """
         self.set_node_core_allocations(core_allocations)
-        scme = StreamCostModelEvaluation(pickle_deepcopy(self.workload), pickle_deepcopy(self.accelerator), self.scheduler_candidate_selection)
+        scme = StreamCostModelEvaluation(
+            pickle_deepcopy(self.workload),
+            pickle_deepcopy(self.accelerator),
+            self.scheduler_candidate_selection,
+        )
         scme.run()
         energy = scme.energy
         latency = scme.latency
@@ -54,24 +68,46 @@ class StandardFitnessEvaluator(FitnessEvaluator):
             core = self.accelerator.get_core(core_allocation)
             coarse_id = self.coarse_node_ids_flexible[i]
             # Find all nodes of this coarse id and set their core_allocation, energy and runtime
-            nodes = (node for node in self.workload.nodes() if isinstance(node, ComputationNode) and node.id[0] == coarse_id)
+            nodes = (
+                node
+                for node in self.workload.nodes()
+                if isinstance(node, ComputationNode) and node.id[0] == coarse_id
+            )
             for node in nodes:
                 try:
-                    equivalent_unique_node = next((n for n in self.node_hw_performances.keys() if node == n))
+                    equivalent_unique_node = next(
+                        (n for n in self.node_hw_performances.keys() if node == n)
+                    )
                 except StopIteration:
-                    raise ValueError(f"The given node_hw_performances doesn't have run information for node={node}")
+                    raise ValueError(
+                        f"The given node_hw_performances doesn't have run information for node={node}"
+                    )
                 try:
                     cme = self.node_hw_performances[equivalent_unique_node][core]
                 except KeyError:
-                    raise KeyError(f"The given node_hw_performances doesn't have information for core_allocation={core_allocation} of node={node}")
-                onchip_energy = cme.energy_total  # Initialize on-chip energy as total energy
+                    raise KeyError(
+                        f"The given node_hw_performances doesn't have information for core_allocation={core_allocation} of node={node}"
+                    )
+                onchip_energy = (
+                    cme.energy_total
+                )  # Initialize on-chip energy as total energy
                 latency = cme.latency_total1
-                too_large_operands = get_too_large_operands(cme, self.accelerator, core_id=core_allocation)
+                too_large_operands = get_too_large_operands(
+                    cme, self.accelerator, core_id=core_allocation
+                )
                 # If there is a too_large_operand, we separate the off-chip energy.
                 offchip_energy = 0
                 for too_large_operand in too_large_operands:
-                    layer_operand = next((k for (k, v) in cme.layer.memory_operand_links.items() if v == too_large_operand))
-                    layer_operand_offchip_energy = cme.energy_breakdown[layer_operand][-1]
+                    layer_operand = next(
+                        (
+                            k
+                            for (k, v) in cme.layer.memory_operand_links.items()
+                            if v == too_large_operand
+                        )
+                    )
+                    layer_operand_offchip_energy = cme.energy_breakdown[layer_operand][
+                        -1
+                    ]
                     offchip_energy += layer_operand_offchip_energy
                     onchip_energy -= layer_operand_offchip_energy
                 node.set_onchip_energy(onchip_energy)

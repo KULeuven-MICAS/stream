@@ -6,7 +6,6 @@ from networkx import DiGraph
 
 
 class ONNXWorkload(DiGraph):
-
     def __init__(self, **attr):
         """
         Collect all the algorithmic workload information here.
@@ -29,7 +28,7 @@ class ONNXWorkload(DiGraph):
 
         self.add_node(node_obj)
         edges = []
-        for (op, parents) in node_obj.input_operand_source.items():
+        for op, parents in node_obj.input_operand_source.items():
             for parent_id in parents:
                 parent_node_obj = self.node_id_to_obj[(parent_id,)]
                 edges.append((parent_node_obj, node_obj))
@@ -43,7 +42,6 @@ class ONNXWorkload(DiGraph):
         for node in self.nodes:
             if node.id == id:
                 return node
-        raise ValueError("DNNWorkload instance does not have a node with the requested id")
-
-
-
+        raise ValueError(
+            "DNNWorkload instance does not have a node with the requested id"
+        )

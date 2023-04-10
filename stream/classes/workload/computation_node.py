@@ -10,7 +10,7 @@ from zigzag.classes.workload.layer_node import LayerNode
 
 class ComputationNode(LayerNode, Node):
     """Extension of ZigZag's concept of a "LayerNode" into a more general concept
-    called "ComputationNode", which is not necessarily an entire layer, 
+    called "ComputationNode", which is not necessarily an entire layer,
     but can represent a smaller chunk of a layer.
     This object also inherits from the "Node" class, which is an abstract baseclass to represent
     different types of onnx nodes needed to accurately schedule the fine-grained graph.
@@ -22,21 +22,43 @@ class ComputationNode(LayerNode, Node):
         LayerNode (_type_): _description_
     """
 
-    def __init__(self, node_id, node_attrs, node_name, input_names, output_names, op_type='computation', produces_final_output=False, add_missing_node_attrs=False):
-
-        assert isinstance(node_id, tuple), "node_id of ComputationNode initialization should be a tuple: (Layer number, Node number of that layer)"
+    def __init__(
+        self,
+        node_id,
+        node_attrs,
+        node_name,
+        input_names,
+        output_names,
+        op_type="computation",
+        produces_final_output=False,
+        add_missing_node_attrs=False,
+    ):
+        assert isinstance(
+            node_id, tuple
+        ), "node_id of ComputationNode initialization should be a tuple: (Layer number, Node number of that layer)"
 
         if isinstance(node_attrs["core_allocation"], int):
             node_attrs["core_allocation"] = [node_attrs["core_allocation"]]
 
         LayerNode.__init__(self, node_id, node_attrs, node_name)
-        Node.__init__(self, type=op_type, onchip_energy=None, offchip_energy=None, runtime=None, core_allocation=node_attrs.get('core_allocation', None), input_names=input_names, output_names=output_names)
+        Node.__init__(
+            self,
+            type=op_type,
+            onchip_energy=None,
+            offchip_energy=None,
+            runtime=None,
+            core_allocation=node_attrs.get("core_allocation", None),
+            input_names=input_names,
+            output_names=output_names,
+        )
 
         # Save whether this ComputationNode produces a final output
         self.produces_final_output = produces_final_output
 
         # Save the loop ranges of this ComputationNode
-        self.loop_ranges: Dict[str, tuple] = node_attrs.get('loop_ranges', {dim: (0, size) for dim, size in self.loop_dim_size.items()})
+        self.loop_ranges: Dict[str, tuple] = node_attrs.get(
+            "loop_ranges", {dim: (0, size) for dim, size in self.loop_dim_size.items()}
+        )
         self.calculate_pr_loop_ranges()  # adds pr dimensions loop ranges to self.loop_ranges
         # Rename methods mentioning layer to node
         self.attrs = self.layer_attrs
@@ -47,27 +69,48 @@ class ComputationNode(LayerNode, Node):
         # For example, a conv layer will have an I tensor, W tensor and O tensor.
         self.operand_tensors = {}
         for op in self.operand_list:
-            if op == 'O':
-                precision = self.operand_precision['O_final']
+            if op == "O":
+                precision = self.operand_precision["O_final"]
             else:
                 precision = self.operand_precision[op]
             op_dimensionality_order = self.operand_dimensionality_order[op]
             ranges = tuple([self.loop_ranges[dim] for dim in op_dimensionality_order])
-            size = prod([upper_bound - lower_bound for (lower_bound, upper_bound) in ranges]) * precision
-            self.operand_tensors[op] = Tensor(size=size, origin=self, layer_operand=op, loop_dimensions=op_dimensionality_order, loop_ranges=ranges)
+            size = (
+                prod(
+                    [upper_bound - lower_bound for (lower_bound, upper_bound) in ranges]
+                )
+                * precision
+            )
+            self.operand_tensors[op] = Tensor(
+                size=size,
+                origin=self,
+                layer_operand=op,
+                loop_dimensions=op_dimensionality_order,
+                loop_ranges=ranges,
+            )
 
-        self.too_large_operands = None  # Will be set by the InterCoreMappingStage or by the FitnessEvaluator
+        self.too_large_operands = (
+            None  # Will be set by the InterCoreMappingStage or by the FitnessEvaluator
+        )
         self.nb_real_predecessors = None
 
-        ''' Add missing layer attr info: operand_tensor_reshape and pr_loop_dim_size for customized workload parser '''
-        if add_missing_node_attrs and node_attrs['operator_type'] in ['Conv', 'Conv_downsample', 'MaxPool', 'AveragePool']:
-            B = node_attrs['loop_dim_size']['B']
-            OX = node_attrs['loop_dim_size']['OX']
-            OY = node_attrs['loop_dim_size']['OY']
-            IX = self.pr_loop_dim_size['IX']
-            IY = self.pr_loop_dim_size['IY']
-            node_attrs["pr_loop_dim_size"] = {'IX': IX, 'IY': IY}
-            node_attrs["operand_tensor_reshape"] = {'I': (B, -1, IX, IY), 'O': (B, -1, OX, OY)}
+        """ Add missing layer attr info: operand_tensor_reshape and pr_loop_dim_size for customized workload parser """
+        if add_missing_node_attrs and node_attrs["operator_type"] in [
+            "Conv",
+            "Conv_downsample",
+            "MaxPool",
+            "AveragePool",
+        ]:
+            B = node_attrs["loop_dim_size"]["B"]
+            OX = node_attrs["loop_dim_size"]["OX"]
+            OY = node_attrs["loop_dim_size"]["OY"]
+            IX = self.pr_loop_dim_size["IX"]
+            IY = self.pr_loop_dim_size["IY"]
+            node_attrs["pr_loop_dim_size"] = {"IX": IX, "IY": IY}
+            node_attrs["operand_tensor_reshape"] = {
+                "I": (B, -1, IX, IY),
+                "O": (B, -1, OX, OY),
+            }
 
     def __str__(self):
         return f"ComputationNode({self.id})"
@@ -101,19 +144,24 @@ class ComputationNode(LayerNode, Node):
 
         if not isinstance(__o, ComputationNode):
             return False
-        return self.loop_dim_size == __o.loop_dim_size and self.dimension_relations == __o.dimension_relations and \
-               self.operand_precision == __o.operand_precision and self.memory_operand_links == __o.memory_operand_links and \
-               self.id[0] == __o.id[0] and self.nb_real_predecessors == __o.nb_real_predecessors
+        return (
+            self.loop_dim_size == __o.loop_dim_size
+            and self.dimension_relations == __o.dimension_relations
+            and self.operand_precision == __o.operand_precision
+            and self.memory_operand_links == __o.memory_operand_links
+            and self.id[0] == __o.id[0]
+            and self.nb_real_predecessors == __o.nb_real_predecessors
+        )
 
     def __lt__(self, other):
         """Compare two ComputationNodes for the 'less than (<)' operator.
 
-            Args:
-                other (ComputationNode): The other ComputationNode.
+        Args:
+            other (ComputationNode): The other ComputationNode.
 
-            Returns:
-                bool: self < other
-            """
+        Returns:
+            bool: self < other
+        """
         return self.id < other.id
 
     def get_operand_for_dim(self, dim) -> str:
@@ -128,11 +176,12 @@ class ComputationNode(LayerNode, Node):
         for op in self.operand_list:
             if dim in self.operand_dimensionality_order[op]:
                 return op
-        raise ValueError(f"The given dim {dim} doesn't appear in any operand's dimensionality order")
+        raise ValueError(
+            f"The given dim {dim} doesn't appear in any operand's dimensionality order"
+        )
 
     def calculate_pr_loop_ranges(self):
-        """Add the loop ranges of the partially revelant dimensions for this node to self.loop_ranges
-        """
+        """Add the loop ranges of the partially revelant dimensions for this node to self.loop_ranges"""
         for pr_dim, related_dims_and_scalings in self.pr_scaling_factors.items():
             dim_padding = self.padding.get(pr_dim, (0, 0))
             padding_begin = dim_padding[0]
@@ -140,14 +189,17 @@ class ComputationNode(LayerNode, Node):
             pr_dim_val_min = -padding_begin
             pr_dim_val_max = -padding_begin
             for related_dimension, scaling_factor in related_dims_and_scalings.items():
-                pr_dim_val_min += scaling_factor * self.loop_ranges[related_dimension.upper()][0]
-                pr_dim_val_max += scaling_factor * (self.loop_ranges[related_dimension.upper()][1] - 1)  # convert to inclusive upper limit
+                pr_dim_val_min += (
+                    scaling_factor * self.loop_ranges[related_dimension.upper()][0]
+                )
+                pr_dim_val_max += scaling_factor * (
+                    self.loop_ranges[related_dimension.upper()][1] - 1
+                )  # convert to inclusive upper limit
             pr_dim_val_max += 1  # convert to exclusive upper range
             self.loop_ranges[pr_dim] = (pr_dim_val_min, pr_dim_val_max)
 
     def reshape_operand_tensor(self, tensor, operand):
-        """Reshape the tensor back to the representation needed for producer/consumer.
-        """
+        """Reshape the tensor back to the representation needed for producer/consumer."""
         new_shape = self.operand_tensor_reshape[operand]
         if not new_shape:
             new_shape = tensor.shape
