@@ -22,12 +22,10 @@ class Accelerator:
         self,
         name,
         cores: DiGraph,
-        global_buffer: MemoryInstance or None,
         offchip_core_id=None,
     ):
         self.name = name
         self.cores = cores
-        self.global_buffer = global_buffer
         self.offchip_core_id = offchip_core_id
         self.shortest_paths = self.get_shortest_paths()
         self.pair_links = self.get_links_for_all_core_pairs()
