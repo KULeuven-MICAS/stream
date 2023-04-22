@@ -1,5 +1,4 @@
 zigzag-dse
-stream-dse
 rtree
 deap
 brokenaxes

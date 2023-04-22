@@ -9,6 +9,13 @@ logger = logging.getLogger(__name__)
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 
+# MPL FONT SIZES
+SMALLER_SIZE = 11
+SMALL_SIZE = 14
+MEDIUM_SIZE = 16
+BIG_SIZE = 18
+BIGGER_SIZE = 20
+
 PLOT_DEPENDENCY_LINES_SAME_CORE = True
 
 
@@ -20,13 +27,24 @@ def plot_timeline_brokenaxes(
     plot_data_transfer: object = False,
     fig_path: object = "outputs/schedule_plot.png",
 ) -> object:
-    logger.info("Plotting...")
-
     G: DiGraph = scme.workload
     accelerator: Accelerator = scme.accelerator
 
     nb_layers = len(set(iter([n.id[0] for n in G.nodes()])))
     nb_cores = accelerator.cores.number_of_nodes()
+
+    plt.rc("font", size=SMALL_SIZE)  # controls default text sizes
+    plt.rc("axes", titlesize=SMALL_SIZE)  # fontsize of the axes title
+    plt.rc("axes", labelsize=BIGGER_SIZE)  # fontsize of the x and y labels
+    plt.rc("xtick", labelsize=SMALL_SIZE)  # fontsize of the tick labels
+    plt.rc("ytick", labelsize=SMALL_SIZE)  # fontsize of the tick labels
+    if nb_layers > 6:
+        plt.rc("legend", fontsize=SMALLER_SIZE)  # legend fontsize
+    else:
+        plt.rc("legend", fontsize=BIG_SIZE)  # legend fontsize
+    plt.rc("figure", titlesize=BIGGER_SIZE)  # fontsize of the figure title
+
+    logger.info("Plotting...")
 
     dep_linewidth = 1
     ANNOTATE_CN_ID = True
@@ -313,7 +331,7 @@ def plot_timeline_brokenaxes(
         loc="right",
     )
     # Get all handles and labels and then filter them for unique ones and set legend
-    legend_without_duplicate_labels(bax, loc=(0.0, 1.01), ncol=9)
+    legend_without_duplicate_labels(bax, loc=(0.0, 1.01), ncol=7)
     ylims = [ax.get_ylim() for ax in axs]
     miny = min((lim[0] for lim in ylims))
     maxy = max((lim[1] for lim in ylims))

@@ -150,7 +150,7 @@ class ComputationNode(LayerNode, Node):
             and self.operand_precision == __o.operand_precision
             and self.memory_operand_links == __o.memory_operand_links
             and self.id[0] == __o.id[0]
-            and self.nb_real_predecessors == __o.nb_real_predecessors
+            # and self.nb_real_predecessors == __o.nb_real_predecessors
         )
 
     def __lt__(self, other):
