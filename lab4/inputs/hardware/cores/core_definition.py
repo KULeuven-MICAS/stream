@@ -52,8 +52,9 @@ width_offchip = 64  # in bits
 ###############################################################################################
 #
 # The bandwidth of communication links between cores.
-#
 inter_core_bandwidth = 64
+# The unit energy cost per bit of the communication links between cores.
+inter_core_energy_cost = 10
 #
 ###############################################################################################
 #
