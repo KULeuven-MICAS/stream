@@ -17,9 +17,9 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 ####################################################################################
 
 ############################## Provide inputs ######################################
-workload_path = "lab4.inputs.workload.duplicated_resnet18_layer_fixed"
 accelerator = "lab4.inputs.hardware.heterogeneous_quadcore"
-mapping_path = "lab4.inputs.mapping.mapping_fixed"
+workload_path = "lab4.inputs.workload.duplicated_resnet18_layer"
+mapping_path = "lab4.inputs.mapping.mapping"
 ####################################################################################
 
 ############################## Define variables for run ############################

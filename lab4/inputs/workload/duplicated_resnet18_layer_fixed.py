@@ -1,6 +1,6 @@
 workload = {
     0: {
-        "operator_type": "Conv",
+        "operator_type": "layer_on_core0",
         "equation": "O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]",
         "dimension_relations": ["ix=2*ox+1*fx", "iy=2*oy+1*fy"],
         "loop_dim_size": {
@@ -19,7 +19,7 @@ workload = {
         "padding": {"IY": (3, 2), "IX": (3, 2)},
     },
     1: {
-        "operator_type": "Conv",
+        "operator_type": "layer_on_core1",
         "equation": "O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]",
         "dimension_relations": ["ix=2*ox+1*fx", "iy=2*oy+1*fy"],
         "loop_dim_size": {
@@ -38,7 +38,7 @@ workload = {
         "padding": {"IY": (3, 2), "IX": (3, 2)},
     },
     2: {
-        "operator_type": "Conv",
+        "operator_type": "layer_on_core2",
         "equation": "O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]",
         "dimension_relations": ["ix=2*ox+1*fx", "iy=2*oy+1*fy"],
         "loop_dim_size": {
@@ -57,7 +57,7 @@ workload = {
         "padding": {"IY": (3, 2), "IX": (3, 2)},
     },
     3: {
-        "operator_type": "Conv",
+        "operator_type": "layer_on_core3",
         "equation": "O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]",
         "dimension_relations": ["ix=2*ox+1*fx", "iy=2*oy+1*fy"],
         "loop_dim_size": {
