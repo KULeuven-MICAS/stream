@@ -7,6 +7,7 @@ from stream.classes.stages import *
 from stream.visualization.schedule import plot_timeline_brokenaxes
 from stream.visualization.memory_usage import plot_memory_usage
 import re
+import pickle
 
 ############################## Initialize the logger ##############################
 import logging as _logging
@@ -47,9 +48,7 @@ node_hw_performances_path = f"lab4/outputs/{node_hw_cost_pkl_name}.pickle"
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
         AcceleratorParserStage,  # Parses the accelerator
-        # StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
         UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
-        # ProfileWorkloadStage,
         GenerateCNWorkloadHybridStage,
         IntraCoreMappingStage,
         InterCoreMappingStage,
@@ -71,17 +70,27 @@ mainstage = MainStage(
     visualize_node_hw_performances=True,
 )
 
-# Launch the MainStage
-scme, _ = mainstage.run()
-scme = scme[0]
+# Unpickle the best SCME if we already ran this experiment
+pickle_path = f"lab4/outputs/{experiment_id}_best_scme.pickle"
+if os.path.exists(pickle_path):
+    with open(pickle_path, "rb") as fp:
+        scme = pickle.load(fp)
+else:
+    # Launch the MainStage
+    scme, _ = mainstage.run()
+    scme = scme[0]
+
+# Pickle the best SCME for later re-plotting
+with open(pickle_path, "wb") as fp:
+    pickle.dump(scme, fp)
 
 # Ploting Results
 plot_full_schedule = True
 draw_dependencies = True
 plot_data_transfer = True
-section_start_percent = (0,)
-percent_shown = (100,)
-fig_path = f"lab4/outputs/timeline-{experiment_id}-fixed.png"
+section_start_percent = (0, 50, 98)
+percent_shown = (2, 2, 2)
+fig_path = f"lab4/outputs/timeline-{experiment_id}-flexible.png"
 
 plot_timeline_brokenaxes(
     scme,
