@@ -7,6 +7,7 @@ from stream.classes.stages import *
 from stream.visualization.schedule import plot_timeline_brokenaxes
 from stream.visualization.memory_usage import plot_memory_usage
 import re
+import pickle
 
 ############################## Initialize the logger ##############################
 import logging as _logging
@@ -18,13 +19,13 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 ############################## Provide inputs ######################################
 accelerator = "lab4.inputs.hardware.heterogeneous_quadcore"
-workload_path = "lab4.inputs.workload.duplicated_resnet18_layer"
+workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 mapping_path = "lab4.inputs.mapping.mapping"
 ####################################################################################
 
 ############################## Define variables for run ############################
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
-hint_loops = []  # outer CN loops
+hint_loops = [("OY", "all")]  # outer CN loops
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
@@ -47,7 +48,8 @@ node_hw_performances_path = f"lab4/outputs/{node_hw_cost_pkl_name}.pickle"
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
         AcceleratorParserStage,  # Parses the accelerator
-        UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
+        StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+        # UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
         GenerateCNWorkloadHybridStage,
         IntraCoreMappingStage,
         InterCoreMappingStage,
@@ -69,16 +71,26 @@ mainstage = MainStage(
     visualize_node_hw_performances=True,
 )
 
-# Launch the MainStage
-scme, _ = mainstage.run()
-scme = scme[0]
+# Unpickle the best SCME if we already ran this experiment
+pickle_path = f"lab4/outputs/{experiment_id}_best_scme.pickle"
+if os.path.exists(pickle_path):
+    with open(pickle_path, "rb") as fp:
+        scme = pickle.load(fp)
+else:
+    # Launch the MainStage
+    scme, _ = mainstage.run()
+    scme = scme[0]
+
+# Pickle the best SCME for later re-plotting
+with open(pickle_path, "wb") as fp:
+    pickle.dump(scme, fp)
 
 # Ploting Results
 plot_full_schedule = True
 draw_dependencies = True
 plot_data_transfer = True
-section_start_percent = (0,)
-percent_shown = (100,)
+section_start_percent = (0, 50, 98)
+percent_shown = (2, 2, 2)
 fig_path = f"lab4/outputs/timeline-{experiment_id}-flexible.png"
 
 plot_timeline_brokenaxes(
