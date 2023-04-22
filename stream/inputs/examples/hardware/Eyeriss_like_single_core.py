@@ -1,4 +1,6 @@
-from inputs.examples.hardware.cores.Eyeriss_like import get_core as get_eyeriss_like_core
+from inputs.examples.hardware.cores.Eyeriss_like import (
+    get_core as get_eyeriss_like_core,
+)
 from inputs.examples.hardware.cores.pooling import get_core as get_pooling_core
 from inputs.examples.hardware.cores.simd import get_core as get_simd_core
 from inputs.examples.hardware.cores.offchip import get_offchip_core
@@ -13,5 +15,6 @@ offchip_core = get_offchip_core(id=offchip_core_id)
 
 cores_graph = get_2d_mesh(cores, 1, 1, 32, 0, pooling_core, simd_core, offchip_core)
 
-global_buffer = None
-accelerator = Accelerator("Eyeriss-like-single-core", cores_graph, global_buffer, offchip_core_id=offchip_core_id)
+accelerator = Accelerator(
+    "Eyeriss-like-single-core", cores_graph, offchip_core_id=offchip_core_id
+)
