@@ -42,6 +42,9 @@ plot_data_transfer = True
 nb_ga_individuals = 16  # number of individuals in each genetic algorithm generation
 nb_ga_generations = 16  # number of genetic algorithm generations
 node_hw_performances_path = f"lab4/outputs/{node_hw_cost_pkl_name}.pickle"
+visualize_node_hw_performances_path = (
+    f"lab4/outputs/{node_hw_cost_pkl_name}_visualization.png"
+)
 ####################################################################################
 
 
@@ -67,7 +70,7 @@ mainstage = MainStage(
     cn_define_mode=CN_define_mode,
     hint_loops=hint_loops,
     scheduler_candidate_selection="latency",
-    visualize_node_hw_performances=True,
+    visualize_node_hw_performances_path=visualize_node_hw_performances_path,
 )
 
 # Unpickle the best SCME if we already ran this experiment
@@ -90,7 +93,7 @@ draw_dependencies = True
 plot_data_transfer = True
 section_start_percent = (0, 50, 98)
 percent_shown = (2, 2, 2)
-fig_path = f"lab4/outputs/timeline-{experiment_id}-flexible.png"
+fig_path = f"lab4/outputs/timeline-{experiment_id}.png"
 
 plot_timeline_brokenaxes(
     scme,
