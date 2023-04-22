@@ -327,7 +327,7 @@ def plot_timeline_brokenaxes(
     axs[0].set_yticklabels(y_labels)
     plt.show(block=False)
     plt.savefig(fig_path, format="png", bbox_inches="tight")
-    print(f"Saved timeline fig to {fig_path}")
+    logger.info(f"Plotted schedule timeline to {fig_path}")
 
 
 def legend_without_duplicate_labels(bax, loc, ncol):
