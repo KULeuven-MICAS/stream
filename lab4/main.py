@@ -25,7 +25,7 @@ mapping_path = "lab4.inputs.mapping.mapping"
 
 ############################## Define variables for run ############################
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
-hint_loops = [("OY", "all")]  # outer CN loops
+hint_loops = []  # outer CN loops
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
@@ -89,9 +89,9 @@ with open(pickle_path, "wb") as fp:
 plot_full_schedule = True
 draw_dependencies = True
 plot_data_transfer = True
-section_start_percent = (0, 50, 98)
-percent_shown = (2, 2, 2)
-fig_path = f"lab4/outputs/timeline-{experiment_id}-flexible.png"
+section_start_percent = (0,)
+percent_shown = (100,)
+fig_path = f"lab4/outputs/timeline-{experiment_id}.png"
 
 plot_timeline_brokenaxes(
     scme,
