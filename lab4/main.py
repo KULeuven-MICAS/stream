@@ -31,7 +31,7 @@ memory_fig_path = f"lab4/outputs/memory_usage.png"
 
 ############################## Define variables for run ############################
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
-hint_loops = [("OY", "all")]  # outer CN loops
+hint_loops = []  # outer CN loops
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
