@@ -300,10 +300,12 @@ class MemoryManager:
             for tensor in stored_tensors
             if tensor not in relevant_tensors_to_avoid_evicting
         ]
-        evictable_tensors_priority_size = [
-            tensor.core_priorities[core_id] * tensor.size
-            for tensor in evictable_tensors
-        ]
+        evictable_tensors_priority_size = []
+        for tensor in evictable_tensors:
+            core_priority = tensor.get_core_priority(core_id, self)
+            importance = core_priority * tensor.size
+            evictable_tensors_priority_size.append(importance)
+
         if not evictable_tensors:
             evictable_tensors_priority_size, evictable_tensors = [], []
         else:

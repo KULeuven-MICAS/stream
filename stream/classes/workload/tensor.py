@@ -75,3 +75,21 @@ class Tensor:
 
     def get_total_priority(self):
         return sum([priority for priority in self.core_priorities.values()])
+
+    def get_core_priority(self, core_id, memory_manager):
+        if core_id in self.core_priorities:
+            return self.core_priorities[core_id]
+        else:
+            storing_cores, _, _ = memory_manager.find_tensor(self)
+            # If the core_id is not in the dict (it means the core_id is the core that generates the tensor),
+            # we check which cores don't yet have the tensor and sum their priorities as the generator core priority.
+            not_storing_core_ids = list(
+                set(self.core_priorities.keys()) - set(storing_cores)
+            )
+            not_storing_priority = sum(
+                (
+                    self.core_priorities[not_storing_core_id]
+                    for not_storing_core_id in not_storing_core_ids
+                )
+            )
+            return not_storing_priority
