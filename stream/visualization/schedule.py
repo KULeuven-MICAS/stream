@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 
+PLOT_DEPENDENCY_LINES_SAME_CORE = True
+
 
 def plot_timeline_brokenaxes(
     scme,  # StreamCostModelEvaluation
@@ -269,7 +271,7 @@ def plot_timeline_brokenaxes(
         c_l = cons.id[0]
         p_core = prod.core_allocation
         c_core = cons.core_allocation
-        if p_core == c_core:
+        if not PLOT_DEPENDENCY_LINES_SAME_CORE and p_core == c_core:
             continue
         p_start = prod.start
         p_duration = prod.runtime
