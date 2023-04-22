@@ -127,7 +127,6 @@ class InterCoreMappingStage(Stage):
                                fig_path=f"outputs/schedule_plot{self.fig_path}fixed.png")
             scme.plot_memory_usage(fig_path=f"outputs/memory_usage_plot{self.fig_path}fixed.png")
             """
-            print(f"energy={energy}, latency={latency}")
             yield scme, None
         else:
             logger.info(
