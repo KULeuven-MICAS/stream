@@ -4,28 +4,18 @@ import lab4.inputs.hardware.cores.core_definition as core_def
 import lab4.inputs.hardware.cores.core_description as core_desc
 
 
-def get_dataflows(quad_core=False):
-    if quad_core:
-        return [
-            {
-                "D1": ("OX", core_def.quad_core_multiplier_array_size_2D[0]),
-                "D2": ("K", core_def.quad_core_multiplier_array_size_2D[1]),
-            },
-            # {"D2": ("G", core_def.quad_core_multiplier_array_size_2D[1])},
-        ]
-    else:
-        return [
-            {
-                "D1": ("OX", core_def.single_core_multiplier_array_size_2D[0]),
-                "D2": ("K", core_def.single_core_multiplier_array_size_2D[1]),
-            },
-            # {"D2": ("G", core_def.single_core_multiplier_array_size_2D[1])},
-        ]
+def get_dataflows():
+    return [
+        {
+            "D1": ("OX", core_def.quad_core_multiplier_array_size_2D[0]),
+            "D2": ("K", core_def.quad_core_multiplier_array_size_2D[1]),
+        }
+    ]
 
 
-def get_core(id, quad_core):
-    operational_array = core_desc.get_multiplier_array_2D(quad_core)
+def get_core(id):
+    operational_array = core_desc.get_multiplier_array_2D()
     memory_hierarchy = core_desc.get_memory_hierarchy_OX_K_dataflow(operational_array)
-    dataflows = get_dataflows(quad_core)
+    dataflows = get_dataflows()
     core = Core(id, operational_array, memory_hierarchy, dataflows)
     return core
