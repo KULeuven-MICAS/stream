@@ -7,7 +7,7 @@ from zigzag.classes.hardware.architecture.memory_hierarchy import MemoryHierarch
 import lab4.inputs.hardware.cores.core_definition as core_def
 
 
-def get_multiplier_array_2D(quad_core=False):
+def get_multiplier_array_2D():
     """Multiplier array variables"""
     multiplier_input_precision = [
         core_def.operand_precision,
@@ -15,16 +15,10 @@ def get_multiplier_array_2D(quad_core=False):
     ]
     multiplier_energy = core_def.energy_mac_operation
     multiplier_area = 0
-    if quad_core:
-        dimensions = {
-            "D1": core_def.quad_core_multiplier_array_size_2D[0],
-            "D2": core_def.quad_core_multiplier_array_size_2D[1],
-        }
-    else:
-        dimensions = {
-            "D1": core_def.single_core_multiplier_array_size_2D[0],
-            "D2": core_def.single_core_multiplier_array_size_2D[1],
-        }
+    dimensions = {
+        "D1": core_def.quad_core_multiplier_array_size_2D[0],
+        "D2": core_def.quad_core_multiplier_array_size_2D[1],
+    }
 
     multiplier = Multiplier(
         multiplier_input_precision, multiplier_energy, multiplier_area
@@ -34,7 +28,7 @@ def get_multiplier_array_2D(quad_core=False):
     return multiplier_array
 
 
-def get_multiplier_array_3D(quad_core=False):
+def get_multiplier_array_3D():
     """Multiplier array variables"""
     multiplier_input_precision = [
         core_def.operand_precision,
@@ -42,19 +36,11 @@ def get_multiplier_array_3D(quad_core=False):
     ]
     multiplier_energy = core_def.energy_mac_operation
     multiplier_area = 0
-
-    if quad_core:
-        dimensions = {
-            "D1": core_def.quad_core_multiplier_array_size_3D[0],
-            "D2": core_def.quad_core_multiplier_array_size_2D[1],
-            "D3": core_def.quad_core_multiplier_array_size_3D[2],
-        }
-    else:
-        dimensions = {
-            "D1": core_def.single_core_multiplier_array_size_3D[0],
-            "D2": core_def.single_core_multiplier_array_size_3D[1],
-            "D3": core_def.single_core_multiplier_array_size_3D[2],
-        }
+    dimensions = {
+        "D1": core_def.quad_core_multiplier_array_size_3D[0],
+        "D2": core_def.quad_core_multiplier_array_size_2D[1],
+        "D3": core_def.quad_core_multiplier_array_size_3D[2],
+    }
 
     multiplier = Multiplier(
         multiplier_input_precision, multiplier_energy, multiplier_area
@@ -65,7 +51,6 @@ def get_multiplier_array_3D(quad_core=False):
 
 
 def get_memory_hierarchy_C_K_dataflow(multiplier_array):
-
     """Memory hierarchy variables"""
     """ size=#bit, bw=#bit"""
     # Defintion of register file for inputs and weights
@@ -218,7 +203,6 @@ def get_memory_hierarchy_C_K_dataflow(multiplier_array):
 
 
 def get_memory_hierarchy_OX_FX_FY_dataflow(multiplier_array):
-
     """Memory hierarchy variables"""
     """ size=#bit, bw=#bit"""
     # Defintion of register file for inputs and weights
@@ -371,7 +355,6 @@ def get_memory_hierarchy_OX_FX_FY_dataflow(multiplier_array):
 
 
 def get_memory_hierarchy_OX_K_dataflow(multiplier_array):
-
     """Memory hierarchy variables"""
     """ size=#bit, bw=#bit"""
     # Defintion of register file for inputs and weights
