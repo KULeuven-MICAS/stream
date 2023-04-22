@@ -81,7 +81,7 @@ draw_dependencies = True
 plot_data_transfer = True
 section_start_percent = (0,)
 percent_shown = (100,)
-fig_path = f"lab4/outputs/timeline_{experiment_id}_fixed.png"
+fig_path = f"lab4/outputs/timeline-{experiment_id}-fixed.png"
 
 plot_timeline_brokenaxes(
     scme,
