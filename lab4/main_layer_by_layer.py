@@ -47,9 +47,7 @@ node_hw_performances_path = f"lab4/outputs/{node_hw_cost_pkl_name}.pickle"
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
         AcceleratorParserStage,  # Parses the accelerator
-        # StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
         UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
-        # ProfileWorkloadStage,
         GenerateCNWorkloadHybridStage,
         IntraCoreMappingStage,
         InterCoreMappingStage,
@@ -81,7 +79,7 @@ draw_dependencies = True
 plot_data_transfer = True
 section_start_percent = (0,)
 percent_shown = (100,)
-fig_path = f"lab4/outputs/timeline-{experiment_id}-fixed.png"
+fig_path = f"lab4/outputs/timeline-{experiment_id}-flexible.png"
 
 plot_timeline_brokenaxes(
     scme,
