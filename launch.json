@@ -1,0 +1,40 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: lab4/main_fixed.py",
+            "type": "python",
+            "request": "launch",
+            "program": "lab4/main_fixed.py",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Python: lab4/main_layer_by_layer.py",
+            "type": "python",
+            "request": "launch",
+            "program": "lab4/main_layer_by_layer.py",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Python: lab4/main_layer_fused.py",
+            "type": "python",
+            "request": "launch",
+            "program": "lab4/main_layer_fused.py",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+        {
+            "name": "Python: lab4/main.py",
+            "type": "python",
+            "request": "launch",
+            "program": "lab4/main.py",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        },
+    ]
+}
