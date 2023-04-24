@@ -79,8 +79,7 @@ memory_fig_path = "outputs/memory_plot.png"
 breakdown_fig_path = "outputs/breakdown_plot.png"
 
 plot_timeline_brokenaxes(
-    scme[0].workload,
-    scme[0].accelerator,
+    scme[0],
     draw_dependencies,
     section_start_percent,
     percent_shown,
