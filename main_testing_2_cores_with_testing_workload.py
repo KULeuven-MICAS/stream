@@ -65,10 +65,9 @@ mainstage = MainStage(
 
 # Launch the MainStage
 scme, _ = mainstage.run()
+scme = scme[0]
 
 # Ploting Results
-
-
 plot_full_schedule = True
 draw_dependencies = True
 plot_data_transfer = True
@@ -79,18 +78,17 @@ memory_fig_path = "outputs/memory_plot.png"
 breakdown_fig_path = "outputs/breakdown_plot.png"
 
 plot_timeline_brokenaxes(
-    scme[0].workload,
-    scme[0].accelerator,
+    scme,
     draw_dependencies,
     section_start_percent,
     percent_shown,
     plot_data_transfer,
     fig_path=timeline_fig_path,
 )
-plot_memory_usage(scme[0].accelerator.memory_manager, fig_path=memory_fig_path)
+# plot_memory_usage(scme.accelerator.memory_manager, fig_path=memory_fig_path)
 
-list_scme = []
-list_scme.append(scme)
-list_scme.append(scme)
+# list_scme = []
+# list_scme.append(scme)
+# list_scme.append(scme)
 
-bar_plot_stream_cost_model_evaluations_breakdown(list_scme, fig_path=breakdown_fig_path)
+# bar_plot_stream_cost_model_evaluations_breakdown(list_scme, fig_path=breakdown_fig_path)
