@@ -116,7 +116,7 @@ class InterCoreMappingStage(Stage):
 
         logger.info(f"Start InterCoreMappingStage.")
         if self.individual_length == 0:
-            logger.info(f"Evaluating fixed inter-core allocation.")
+            logger.info(f"Evaluating fixed layer-core allocation.")
             core_allocations = []
             (energy, latency, scme) = self.fitness_evaluator.get_fitness(
                 core_allocations, return_scme=True
