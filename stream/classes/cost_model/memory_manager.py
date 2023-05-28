@@ -13,8 +13,9 @@ class MemoryManager:
 
     def __init__(self, accelerator) -> None:
         self.accelerator = accelerator
-        # For each core in the accelerator, create a list containing the top level memories, which memory operands they store and their capacity
+        # For each core in the accelerator, create a list containing the top level memories, instances, which memory operands they store and their capacity
         self.top_levels = {}  # top level memory of each core
+        self.top_instances = {}
         self.memory_operands = {}  # memory operand stored by every top level memory
         self.capacities = {}  # memory capacity of each top level memory
         self.available = (
@@ -42,6 +43,7 @@ class MemoryManager:
                 )
             )
             self.top_levels[core] = top_levels
+            self.top_instances[core] = [level.memory_instance for level in top_levels]
             self.memory_operands[core] = [level.operands for level in top_levels]
             self.capacities[core] = [level.memory_instance.size for level in top_levels]
             self.available[core] = [level.memory_instance.size for level in top_levels]
@@ -52,40 +54,96 @@ class MemoryManager:
             ]  # (timestep, delta in used [+ means more used so less available])
             self.stored_cumsum[core] = [[[0, 0]] for level in top_levels]
             self.current_timestep[core] = [0 for level in top_levels]
+
+        self.unique_top_instances = set()
+        # Some top level memories instances might be shared, thus we keep for each unique top memory instance the:
+        # - capacity
+        self.top_instance_capacities = {}
+        # - avilable memory space
+        self.top_instance_available = {}
+        # - stored tensors
+        self.top_instance_stored_tensors = {}
+        # - timestep since when they have been stored
+        self.top_instance_stored_since_timestep = {}
+        # - the changes in memory usage through time
+        self.top_instance_delta_history = {}
+        # - the cumulative sum of stored tensors
+        self.top_instance_stored_cumsum = {}
+        # - the current timestep, i.e. when the top level was lastly used
+        self.top_instance_current_timestep = {}
+        for core, top_levels in self.top_levels.items():
+            for top_level in top_levels:
+                top_instance = top_level.memory_instance
+                if top_instance not in self.unique_top_instances:
+                    self.unique_top_instances.add(top_instance)
+                    self.top_instance_capacities[top_instance] = top_instance.size
+                    self.top_instance_available[top_instance] = top_instance.size
+                    self.top_instance_stored_tensors[top_instance] = []
+                    self.top_instance_stored_since_timestep[top_instance] = {}
+                    self.top_instance_delta_history[top_instance] = [[0, 0]]
+                    self.top_instance_stored_cumsum[top_instance] = [[0, 0]]
+                    self.top_instance_current_timestep[top_instance] = 0
+
         self.off_chip_core_id = self.accelerator.offchip_core_id
 
     def contains(self, tensor: Tensor, core_id: int):
         core = self.accelerator.get_core(core_id)
         memory_op = tensor.memory_operand
         top_level_idx = self.get_top_level_idx(core, memory_op)
+        top_instance = self.top_instances[core][top_level_idx]
         return any(
             [
                 tensor.equality_hash() == stored_tensor.equality_hash()
-                for stored_tensor in self.stored_tensors[core][top_level_idx]
+                for stored_tensor in self.top_instance_stored_tensors[top_instance]
             ]
         )
 
-    def find_tensor(self, tensor: Tensor):
+    def find_tensor_in_top_instances(self, tensor: Tensor):
+        """Find the top memory instances that are storing this tensor.
+
+        Args:
+            tensor (Tensor): _description_
+        """
         equality_hash = tensor.equality_hash()
+        # Find all instances storing this tensor
+        instances_storing_tensor = set()
+        stored_since_timesteps = {}
+        for top_instance, stored_tensors in self.top_instance_stored_tensors.items():
+            if any(
+                (
+                    equality_hash == stored_tensor.equality_hash()
+                    for stored_tensor in stored_tensors
+                )
+            ):
+                instances_storing_tensor.add(top_instance)
+                stored_since_timesteps[
+                    top_instance
+                ] = self.top_instance_stored_since_timestep[top_instance][equality_hash]
+        # If no instances are storing this tensor, raise error
+        if not instances_storing_tensor:
+            raise ValueError(f"Tensor {tensor} was not found in any of the instances.")
+        return instances_storing_tensor, stored_since_timesteps
+
+    def find_tensor(self, tensor: Tensor):
+        (
+            instances_storing_tensor,
+            stored_since_timesteps,
+        ) = self.find_tensor_in_top_instances(tensor)
         cores_storing_tensor = []
-        top_level_idxs = []
+        top_instance_idxs = []
         stored_since = []
-        for core in self.stored_tensors:
-            for top_level_idx, stored_tensors in enumerate(self.stored_tensors[core]):
-                if any(
-                    [
-                        equality_hash == stored_tensor.equality_hash()
-                        for stored_tensor in stored_tensors
-                    ]
-                ):
+        # Find which cores have these instances as their top instance
+        for core, top_instances in self.top_instances.items():
+            for top_instance_idx, top_instance in enumerate(top_instances):
+                if top_instance in instances_storing_tensor:
                     cores_storing_tensor.append(core.id)
-                    stored_since.append(
-                        self.stored_since_timestep[core][top_level_idx][equality_hash]
-                    )
-                    top_level_idxs.append(top_level_idx)
-        if not cores_storing_tensor:
-            raise ValueError(f"Tensor {tensor} was not found in any of the cores.")
-        return cores_storing_tensor, top_level_idxs, stored_since
+                    top_instance_idxs.append(top_instance_idx)
+                    stored_since.append(stored_since_timesteps[top_instance])
+                    # Remove the entry so that next cores that have this shared memory don't get added
+                    instances_storing_tensor.remove(top_instance)
+                    del stored_since_timesteps[top_instance]
+
+        return cores_storing_tensor, top_instance_idxs, stored_since
 
     def add_tensor_to_core(
         self,
@@ -104,17 +162,13 @@ class MemoryManager:
         if not memory_op:
             memory_op = tensor.memory_operand
         top_level_idx = self.get_top_level_idx(core, memory_op)
-        stored_tensors = self.stored_tensors[core][top_level_idx]
-        # current_timestep = self.current_timestep[core][top_level_idx]
-        # if timestep <= current_timestep:
-        #     timestep = current_timestep
-        # else:
-        #     self.current_timestep[core][top_level_idx] = timestep
+        top_instance = self.top_instances[core][top_level_idx]
+        stored_tensors = self.top_instance_stored_tensors[top_instance]
         if self.contains(tensor, core_id):
             return
         # If there is no equivalent tensor in the core, remove tensors until we have enough space
         # Tensors are removed based on their priority value
-        memory_capacity = self.capacities[core][top_level_idx]
+        memory_capacity = self.top_instance_capacities[top_instance]
         tensors_to_evict = self.find_best_tensor_combination_to_evict_fast(
             core_id, tensor, stored_tensors, memory_capacity, tensors_to_avoid_evicting
         )
@@ -136,38 +190,40 @@ class MemoryManager:
             total_eviction_memory_energy_cost += eviction_memory_energy_cost
 
         # Now that we have enough space, we add this tensor
-        self.stored_tensors[core][top_level_idx].append(tensor)
-        self.stored_since_timestep[core][top_level_idx][tensor.equality_hash()] = (
-            timestep + timestep_delta
-        )
-        self.available[core][top_level_idx] -= tensor_size
+        self.top_instance_stored_tensors[top_instance].append(tensor)
+        self.top_instance_stored_since_timestep[top_instance][
+            tensor.equality_hash()
+        ] = (timestep + timestep_delta)
+        self.top_instance_available[top_instance] -= tensor_size
         # use package bisect to insert the [timestep, tensor_size] in the correct timeframe, enable data preloading
-        bisect.insort(self.delta_history[core][top_level_idx], [timestep, tensor_size])
+        bisect.insort(
+            self.top_instance_delta_history[top_instance], [timestep, tensor_size]
+        )
 
-        (last_timestep, last_cumsum) = self.stored_cumsum[core][top_level_idx][-1]
+        (last_timestep, last_cumsum) = self.top_instance_stored_cumsum[top_instance][-1]
         if timestep == last_timestep:
-            self.stored_cumsum[core][top_level_idx][-1] = [
+            self.top_instance_stored_cumsum[top_instance][-1] = [
                 timestep,
                 last_cumsum + tensor_size,
             ]
         # if the timestep is before the last_timestep, it means data loading happens, and all the stored_cumsum afterwards need to be updated
         elif timestep < last_timestep:
             insert_id = bisect.bisect(
-                self.stored_cumsum[core][top_level_idx], [timestep, tensor_size]
+                self.top_instance_stored_cumsum[top_instance], [timestep, tensor_size]
             )
-            already_stored_size = self.stored_cumsum[core][top_level_idx][
+            already_stored_size = self.top_instance_stored_cumsum[top_instance][
                 insert_id - 1
             ][1]
             bisect.insort(
-                self.stored_cumsum[core][top_level_idx],
+                self.top_instance_stored_cumsum[top_instance],
                 [timestep, already_stored_size + tensor_size],
             )
-            for stored_cumsum_afterwards in self.stored_cumsum[core][top_level_idx][
-                insert_id + 1 :
-            ]:
+            for stored_cumsum_afterwards in self.top_instance_stored_cumsum[
+                top_instance
+            ][insert_id + 1 :]:
                 stored_cumsum_afterwards[1] += tensor_size
         else:
-            self.stored_cumsum[core][top_level_idx].append(
+            self.top_instance_stored_cumsum[top_instance].append(
                 [timestep, last_cumsum + tensor_size]
             )
 
@@ -201,7 +257,8 @@ class MemoryManager:
 
         core = self.accelerator.get_core(core_id)
         top_level_idx = self.get_top_level_idx(core, memory_op)
-        memory_usage_in_receiver_core = self.stored_cumsum[core][top_level_idx]
+        top_instance = self.top_instances[core][top_level_idx]
+        memory_usage_in_receiver_core = self.top_instance_stored_cumsum[top_instance]
         memory_usage_in_receiver_core_when_data_is_ready = None
         if len(memory_usage_in_receiver_core) == 1:
             memory_usage_in_receiver_core_when_data_is_ready = (
@@ -220,7 +277,10 @@ class MemoryManager:
                 ]
 
         for memory_usage in memory_usage_in_receiver_core_when_data_is_ready:
-            if tensor.size < self.capacities[core][top_level_idx] - memory_usage[1]:
+            if (
+                tensor.size
+                < self.top_instance_capacities[top_instance] - memory_usage[1]
+            ):
                 can_transfer_from_timestep = max(memory_usage[0], test_timestep)
                 # if can_transfer_from_timestep >= worst_case_timestep:
                 #     logger.warning(f"{tensor} cannot be prefetched to core {core_id}. Cause stall.")
@@ -372,10 +432,11 @@ class MemoryManager:
             # self.current_timestep[core][top_level_idx] = current_timestep
 
         try:
+            top_instance = self.top_instances[core][top_level_idx]
             equivalent_tensor = next(
                 (
                     stored_tensor
-                    for stored_tensor in self.stored_tensors[core][top_level_idx]
+                    for stored_tensor in self.top_instance_stored_tensors[top_instance]
                     if stored_tensor.equality_hash() == tensor.equality_hash()
                 )
             )
@@ -383,33 +444,40 @@ class MemoryManager:
             raise ValueError(
                 f"No tensor found equal to {tensor} in core {core} top_level_idx {top_level_idx}."
             )
-        self.stored_tensors[core][top_level_idx].remove(equivalent_tensor)
-        del self.stored_since_timestep[core][top_level_idx][tensor.equality_hash()]
+        self.top_instance_stored_tensors[top_instance].remove(equivalent_tensor)
+        del self.top_instance_stored_since_timestep[top_instance][
+            tensor.equality_hash()
+        ]
 
-        self.available[core][top_level_idx] += tensor_size
+        self.top_instance_available[top_instance] += tensor_size
         bisect.insort(
-            self.delta_history[core][top_level_idx], [current_timestep, -tensor_size]
+            self.top_instance_delta_history[top_instance],
+            [current_timestep, -tensor_size],
         )
 
-        (last_timestep, last_cumsum) = self.stored_cumsum[core][top_level_idx][-1]
+        (last_timestep, last_cumsum) = self.top_instance_stored_cumsum[top_instance][-1]
         if current_timestep == last_timestep:
-            self.stored_cumsum[core][top_level_idx][-1] = [
+            self.top_instance_stored_cumsum[top_instance][-1] = [
                 current_timestep,
                 last_cumsum - tensor_size,
             ]
         elif timestep < last_timestep:
             insert_id = bisect.bisect(
-                self.stored_cumsum[core][top_level_idx], [timestep, -tensor_size]
+                self.top_instance_stored_cumsum[top_instance], [timestep, -tensor_size]
             )
-            already_stored_size = self.stored_cumsum[core][top_level_idx][insert_id][1]
+            already_stored_size = self.top_instance_stored_cumsum[top_instance][
+                insert_id
+            ][1]
             bisect.insort(
-                self.stored_cumsum[core][top_level_idx],
+                self.top_instance_stored_cumsum[top_instance],
                 [timestep, already_stored_size - tensor_size],
             )
-            for stored_cumsum_afterwards in self.stored_cumsum[core][insert_id + 1 :]:
+            for stored_cumsum_afterwards in self.top_instance_stored_cumsum[
+                top_instance
+            ][insert_id + 1 :]:
                 stored_cumsum_afterwards[1] -= tensor_size
         else:
-            self.stored_cumsum[core][top_level_idx].append(
+            self.top_instance_stored_cumsum[top_instance].append(
                 [current_timestep, last_cumsum - tensor_size]
             )
 
@@ -431,8 +499,9 @@ class MemoryManager:
         total_memory_energy_cost = 0
         core = self.accelerator.get_core(core_id)
         top_level_idx = self.get_top_level_idx(core, memory_operand)
+        top_instance = self.top_instances[core][top_level_idx]
         # stored_tensors = self.stored_tensors[core][top_level_idx]
-        for tensor in self.stored_tensors[core][top_level_idx].copy():
+        for tensor in self.top_instance_stored_tensors[top_instance].copy():
             if tensor in tensors_to_avoid_evicting:
                 continue  # Skip evicting this tensor (e.g. it's an input for this candidate)
             (

@@ -179,6 +179,17 @@ class Accelerator:
         # If we already have the tensor on the receiving core, return
         if receiving_core_id in core_ids_storing_tensor:
             return -1, 0, 0, 0, 0, False
+        # If any of the cores that is storing the tensor has a shared memory with the target core,
+        # return without transfer cost.
+        if any(
+            [
+                self.has_shared_memory(
+                    storing_core_id, receiving_core_id, tensor_operand
+                )
+                for storing_core_id in core_ids_storing_tensor
+            ]
+        ):
+            return -1, 0, 0, 0, 0, False
         # TODO: Instead of taking the first core that stores this, could do something more fancy
         tensor_core_id = core_ids_storing_tensor[0]
         # Get since when this tensor is available on the core
@@ -349,3 +360,31 @@ class Accelerator:
 
     def find_tensor(self, tensor: Tensor):
         return self.memory_manager.find_tensor(tensor)
+
+    def has_shared_memory(self, core_id_a, core_id_b, memory_operand):
+        """Check whether two cores have a shared top level memory instance for a given memory operand.
+
+        Args:
+            core_id_a (int): The first core id.
+            core_id_b (int): The second core id.
+            memory_operand (str): The memory operand to check the top level memory instance for.
+        """
+        core_a = self.get_core(core_id_a)
+        core_b = self.get_core(core_id_b)
+        top_memory_instance_a = next(
+            (
+                ml.memory_instance
+                for ml, out_degree in core_a.memory_hierarchy.out_degree()
+                if out_degree == 0 and memory_operand in ml.operands
+            )
+        )
+        top_memory_instance_b = next(
+            (
+                ml.memory_instance
+                for ml, out_degree in core_b.memory_hierarchy.out_degree()
+                if out_degree == 0 and memory_operand in ml.operands
+            )
+        )
+        if top_memory_instance_a is top_memory_instance_b:
+            return True
+        return False
