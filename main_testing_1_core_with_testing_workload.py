@@ -14,8 +14,8 @@ _logging_format = (
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 #################################
-accelerator = "stream.inputs.testing.hardware.quad_testing_core_offchip"
-workload_path = "stream.inputs.testing.workload.testing_workload_for_4_cores"
+accelerator = "stream.inputs.testing.hardware.single_testing_core_offchip"
+workload_path = "stream.inputs.testing.workload.testing_workload_for_1_core"
 mapping_path = "stream.inputs.testing.mapping.testing_mapping"
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers

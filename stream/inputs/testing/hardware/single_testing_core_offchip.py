@@ -4,11 +4,11 @@ from stream.inputs.examples.hardware.cores.offchip_dual_port import get_offchip_
 from stream.inputs.examples.hardware.nocs.mesh_2d import get_2d_mesh
 from stream.classes.hardware.architecture.accelerator import Accelerator
 
-cores = [get_testing_core1(id) for id in range(4)]  # 4 cores
-offchip_core_id = 4
+cores = [get_testing_core1(id) for id in range(1)]  # 4 cores
+offchip_core_id = 1
 offchip_core = get_offchip_core(id=offchip_core_id)
 
-cores_graph = get_2d_mesh(cores, nb_rows=2, nb_cols=2, bandwidth=64, unit_energy_cost=0, offchip_core=offchip_core)
+cores_graph = get_2d_mesh(cores, nb_rows=1, nb_cols=1, bandwidth=64, unit_energy_cost=0, offchip_core=offchip_core)
 
 global_buffer = None
-accelerator = Accelerator("Testing-4-core-with-offchip", cores_graph, offchip_core_id=offchip_core_id)
+accelerator = Accelerator("Testing-1-core-with-offchip", cores_graph, offchip_core_id=offchip_core_id)
