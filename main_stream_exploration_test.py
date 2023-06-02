@@ -15,8 +15,8 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 #################################
 accelerator = "stream.inputs.examples.hardware.TPU_like_quad_core"
-# workload_path = "stream.inputs.examples.workload.resnet18"
-workload_path = "stream/inputs/exploration/workload/squeezenet.onnx"
+workload_path = "stream.inputs.examples.workload.resnet18"
+# workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
@@ -45,8 +45,8 @@ node_hw_performances_path = f"outputs/{node_hw_cost_pkl_name}.pickle"
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
         AcceleratorParserStage,  # Parses the accelerator
-        StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-        # UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
+        # StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+        UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
         GenerateCNWorkloadHybridStage,
         IntraCoreMappingStage,
         InterCoreMappingStage,
