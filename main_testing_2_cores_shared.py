@@ -2,6 +2,10 @@ from zigzag.classes.stages import *
 from stream.classes.stages import *
 from stream.visualization.schedule import plot_timeline_brokenaxes
 from stream.visualization.memory_usage import plot_memory_usage
+from stream.visualization.plot_scme import (
+    bar_plot_stream_cost_model_evaluations_breakdown,
+)
+from stream.visualization.memory_usage import humanbytes
 import re
 
 # Initialize the logger
@@ -14,31 +18,21 @@ _logging_format = (
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 #################################
-accelerator = "stream.inputs.examples.hardware.TPU_like_quad_core"
-workload_path = "stream.inputs.examples.workload.resnet18"
-# workload_path = 'stream/inputs/examples/workload/resnet18.onnx'
-mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
-
-CN_define_mode = 1  # manually define outer CN size for all cores and all layers
-# hint_loops = [('OY', 'all')]  # outer CN loops, with error in resnet18 plotting
+CN_define_mode = 1
 hint_loops = []
+
+accelerator = "stream.inputs.testing.shared.dual_testing_core_offchip"
+workload_path = "stream.inputs.testing.shared.testing_workload_for_2_cores"
+mapping_path = "stream.inputs.testing.mapping.testing_mapping"
+
 
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
-if wl_name == "onnx":
-    wl_name = re.split(r"/|\.", workload_path)[-2]
-hint_loops_str_list = []
-for dim, size in hint_loops:
-    hint_loops_str_list.extend([str(dim).lower(), str(size)])
-hint_loops_str = "_".join(hint_loops_str_list)
-experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}"
-node_hw_cost_pkl_name = f"saved_cn_hw_cost-{experiment_id}"
+experiment_id = f"{hw_name}-{wl_name}-CNmode_{CN_define_mode}-hintloop_{str(hint_loops)}"
+node_hw_cost_pkl_name = f"saved_CN_HW_cost-{experiment_id}"
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
 plot_data_transfer = True
-nb_ga_individuals = 16  # number of individuals in each genetic algorithm generation
-nb_ga_generations = 16  # number of genetic algorithm generations
-node_hw_performances_path = f"outputs/{node_hw_cost_pkl_name}.pickle"
 #################################
 
 
@@ -55,9 +49,9 @@ mainstage = MainStage(
     workload_path=workload_path,  # required by ModelParserStage
     mapping_path=mapping_path,  # required by ModelParserStage
     loma_lpf_limit=6,  # required by LomaStage
-    nb_ga_individuals=nb_ga_individuals,  # number of individuals in each genetic algorithm generation
-    nb_ga_generations=nb_ga_generations,  # number of genetic algorithm generations
-    node_hw_performances_path=node_hw_performances_path,  # saved node_hw_performances to skip re-computation
+    nb_ga_individuals=4,  # number of individuals in each genetic algorithm generation
+    nb_ga_generations=1,  # number of genetic algorithm generations
+    # node_hw_performances_path=f"outputs/{node_hw_cost_pkl_name}.pickle",  # saved node_hw_performances to skip re-computation
     plot_hof=True,  # Save schedule and memory usage plot of each individual in the Genetic Algorithm hall of fame
     plot_file_name=plot_file_name,
     plot_full_schedule=plot_full_schedule,
@@ -68,13 +62,10 @@ mainstage = MainStage(
 )
 
 # Launch the MainStage
-
 scme, _ = mainstage.run()
 scme = scme[0]
 
 # Ploting Results
-
-
 plot_full_schedule = True
 draw_dependencies = True
 plot_data_transfer = True
@@ -82,6 +73,7 @@ section_start_percent = (0,)
 percent_shown = (100,)
 timeline_fig_path = "outputs/schedule_plot.png"
 memory_fig_path = "outputs/memory_plot.png"
+breakdown_fig_path = "outputs/breakdown_plot.png"
 
 plot_timeline_brokenaxes(
     scme,
@@ -91,4 +83,10 @@ plot_timeline_brokenaxes(
     plot_data_transfer,
     fig_path=timeline_fig_path,
 )
-plot_memory_usage(scme, fig_path=memory_fig_path)
+# plot_memory_usage(scme.accelerator.memory_manager, fig_path=memory_fig_path)
+
+# list_scme = []
+# list_scme.append(scme)
+# list_scme.append(scme)
+
+# bar_plot_stream_cost_model_evaluations_breakdown(list_scme, fig_path=breakdown_fig_path)

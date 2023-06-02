@@ -184,7 +184,7 @@ class Accelerator:
         if any(
             [
                 self.has_shared_memory(
-                    storing_core_id, receiving_core_id, tensor_operand
+                    storing_core_id, receiving_core_id, "O", tensor_operand
                 )
                 for storing_core_id in core_ids_storing_tensor
             ]
@@ -361,13 +361,14 @@ class Accelerator:
     def find_tensor(self, tensor: Tensor):
         return self.memory_manager.find_tensor(tensor)
 
-    def has_shared_memory(self, core_id_a, core_id_b, memory_operand):
+    def has_shared_memory(self, core_id_a, core_id_b, mem_op_a, mem_op_b):
         """Check whether two cores have a shared top level memory instance for a given memory operand.
 
         Args:
             core_id_a (int): The first core id.
             core_id_b (int): The second core id.
-            memory_operand (str): The memory operand to check the top level memory instance for.
+            mem_op_a (str): The memory operand for the tensor in core a.
+            mem_op_b (str): The memory operand for the tensor in core b.
         """
         core_a = self.get_core(core_id_a)
         core_b = self.get_core(core_id_b)
@@ -375,14 +376,14 @@ class Accelerator:
             (
                 ml.memory_instance
                 for ml, out_degree in core_a.memory_hierarchy.out_degree()
-                if out_degree == 0 and memory_operand in ml.operands
+                if out_degree == 0 and mem_op_a in ml.operands
             )
         )
         top_memory_instance_b = next(
             (
                 ml.memory_instance
                 for ml, out_degree in core_b.memory_hierarchy.out_degree()
-                if out_degree == 0 and memory_operand in ml.operands
+                if out_degree == 0 and mem_op_b in ml.operands
             )
         )
         if top_memory_instance_a is top_memory_instance_b:

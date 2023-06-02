@@ -41,7 +41,7 @@ def plot_timeline_brokenaxes(
     if nb_layers > 6:
         plt.rc("legend", fontsize=SMALLER_SIZE)  # legend fontsize
     else:
-        plt.rc("legend", fontsize=BIG_SIZE)  # legend fontsize
+        plt.rc("legend", fontsize=MEDIUM_SIZE)  # legend fontsize
     plt.rc("figure", titlesize=BIGGER_SIZE)  # fontsize of the figure title
 
     logger.info("Plotting...")
@@ -73,7 +73,7 @@ def plot_timeline_brokenaxes(
 
     x_starts = [int((start / 100) * latency) for start in section_start_percent]
     x_ends = [
-        int(((start + percent) / 100) * latency * 1.01)
+        int(((start + percent) / 100) * latency)
         for (start, percent) in zip(section_start_percent, percent_shown)
     ]
 

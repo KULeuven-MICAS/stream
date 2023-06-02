@@ -1,4 +1,5 @@
 from itertools import combinations
+import numpy as np
 
 # from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.tensor import Tensor
@@ -17,24 +18,9 @@ class MemoryManager:
         self.top_levels = {}  # top level memory of each core
         self.top_instances = {}
         self.memory_operands = {}  # memory operand stored by every top level memory
-        self.capacities = {}  # memory capacity of each top level memory
-        self.available = (
-            {}
-        )  # available memory capacity in bits of each top level memory
-        self.delta_history = (
-            {}
-        )  # tracks used memory space in bits deltas of each top level memory
-        self.stored_tensors = (
-            {}
-        )  # track which tensors are present in each top level memory through a dict {equality_hash: tensor}
-        self.stored_since_timestep = (
-            {}
-        )  # tracks for each tensor since what timestep is has been present in the memory (used for causality)
-        self.stored_cumsum = {}
-        self.current_timestep = {}
-        self.cores = []
-        for core in self.accelerator.cores.nodes():
-            self.cores.append(core)
+        for core_id, core in sorted(
+            [(core.id, core) for core in self.accelerator.cores.nodes()]
+        ):
             top_levels = list(
                 (
                     level
@@ -45,17 +31,10 @@ class MemoryManager:
             self.top_levels[core] = top_levels
             self.top_instances[core] = [level.memory_instance for level in top_levels]
             self.memory_operands[core] = [level.operands for level in top_levels]
-            self.capacities[core] = [level.memory_instance.size for level in top_levels]
-            self.available[core] = [level.memory_instance.size for level in top_levels]
-            self.stored_tensors[core] = [list() for level in top_levels]
-            self.stored_since_timestep[core] = [{} for level in top_levels]
-            self.delta_history[core] = [
-                [[0, 0]] for level in top_levels
-            ]  # (timestep, delta in used [+ means more used so less available])
-            self.stored_cumsum[core] = [[[0, 0]] for level in top_levels]
-            self.current_timestep[core] = [0 for level in top_levels]
 
         self.unique_top_instances = set()
+        self.cores_per_top_instance = {}
+        self.memory_operands_per_top_instance = {}
         # Some top level memories instances might be shared, thus we keep for each unique top memory instance the:
         # - capacity
         self.top_instance_capacities = {}
@@ -76,15 +55,24 @@ class MemoryManager:
                 top_instance = top_level.memory_instance
                 if top_instance not in self.unique_top_instances:
                     self.unique_top_instances.add(top_instance)
+                    self.cores_per_top_instance[top_instance] = [core]
+                    self.memory_operands_per_top_instance[top_instance] = [
+                        tuple(top_level.operands)
+                    ]
                     self.top_instance_capacities[top_instance] = top_instance.size
                     self.top_instance_available[top_instance] = top_instance.size
                     self.top_instance_stored_tensors[top_instance] = []
                     self.top_instance_stored_since_timestep[top_instance] = {}
                     self.top_instance_delta_history[top_instance] = [[0, 0]]
-                    self.top_instance_stored_cumsum[top_instance] = [[0, 0]]
+                    self.top_instance_stored_cumsum[top_instance] = np.array([[0, 0]])
                     self.top_instance_current_timestep[top_instance] = 0
+                else:
+                    self.cores_per_top_instance[top_instance].append(core)
+                    self.memory_operands_per_top_instance[top_instance].append(
+                        tuple(top_level.operands)
+                    )
 
-        self.off_chip_core_id = self.accelerator.offchip_core_id
+        self.offchip_core_id = self.accelerator.offchip_core_id
 
     def contains(self, tensor: Tensor, core_id: int):
         core = self.accelerator.get_core(core_id)
@@ -200,31 +188,29 @@ class MemoryManager:
             self.top_instance_delta_history[top_instance], [timestep, tensor_size]
         )
 
-        (last_timestep, last_cumsum) = self.top_instance_stored_cumsum[top_instance][-1]
-        if timestep == last_timestep:
-            self.top_instance_stored_cumsum[top_instance][-1] = [
-                timestep,
-                last_cumsum + tensor_size,
-            ]
-        # if the timestep is before the last_timestep, it means data loading happens, and all the stored_cumsum afterwards need to be updated
-        elif timestep < last_timestep:
-            insert_id = bisect.bisect(
-                self.top_instance_stored_cumsum[top_instance], [timestep, tensor_size]
-            )
-            already_stored_size = self.top_instance_stored_cumsum[top_instance][
-                insert_id - 1
-            ][1]
-            bisect.insort(
+        # Use numpy searchsorted to find the where the timestep should be inserted
+        all_timesteps = self.top_instance_stored_cumsum[top_instance][:, 0]
+        all_usages = self.top_instance_stored_cumsum[top_instance][:, 1]
+        insert_idx = np.searchsorted(all_timesteps, timestep)
+        timestep_already_present = (
+            insert_idx < len(all_timesteps) and all_timesteps[insert_idx] == timestep
+        )
+
+        # We first update the remaining usages of later timesteps
+        # If timestep was already in all_timesteps, this timestep will also be updated
+        relevant_usages = all_usages[insert_idx:]
+        updated_relevant_usages = relevant_usages + tensor.size
+        self.top_instance_stored_cumsum[top_instance][
+            insert_idx:, 1
+        ] = updated_relevant_usages
+
+        # If the timestep was not in all_timesteps, it will be inserted here
+        if not timestep_already_present:
+            self.top_instance_stored_cumsum[top_instance] = np.insert(
                 self.top_instance_stored_cumsum[top_instance],
-                [timestep, already_stored_size + tensor_size],
-            )
-            for stored_cumsum_afterwards in self.top_instance_stored_cumsum[
-                top_instance
-            ][insert_id + 1 :]:
-                stored_cumsum_afterwards[1] += tensor_size
-        else:
-            self.top_instance_stored_cumsum[top_instance].append(
-                [timestep, last_cumsum + tensor_size]
+                insert_idx,
+                [timestep, all_usages[insert_idx - 1] + tensor.size],
+                axis=0,
             )
 
         return (
@@ -258,36 +244,20 @@ class MemoryManager:
         core = self.accelerator.get_core(core_id)
         top_level_idx = self.get_top_level_idx(core, memory_op)
         top_instance = self.top_instances[core][top_level_idx]
-        memory_usage_in_receiver_core = self.top_instance_stored_cumsum[top_instance]
-        memory_usage_in_receiver_core_when_data_is_ready = None
-        if len(memory_usage_in_receiver_core) == 1:
-            memory_usage_in_receiver_core_when_data_is_ready = (
-                memory_usage_in_receiver_core
-            )
-        else:
-            for idx, memory_usage in enumerate(memory_usage_in_receiver_core):
-                if memory_usage[0] > test_timestep:
-                    memory_usage_in_receiver_core_when_data_is_ready = (
-                        memory_usage_in_receiver_core[idx - 1 :]
-                    )
-                    break
-            if not memory_usage_in_receiver_core_when_data_is_ready:
-                memory_usage_in_receiver_core_when_data_is_ready = [
-                    memory_usage_in_receiver_core[-1]
-                ]
-
-        for memory_usage in memory_usage_in_receiver_core_when_data_is_ready:
-            if (
-                tensor.size
-                < self.top_instance_capacities[top_instance] - memory_usage[1]
-            ):
-                can_transfer_from_timestep = max(memory_usage[0], test_timestep)
-                # if can_transfer_from_timestep >= worst_case_timestep:
-                #     logger.warning(f"{tensor} cannot be prefetched to core {core_id}. Cause stall.")
-                # else:
-                #     logger.info(f"{tensor} is prefetched to core {core_id} to hide stall.")
+        top_instance_capacity = self.top_instance_capacities[top_instance]
+        all_timesteps = self.top_instance_stored_cumsum[top_instance][:, 0]
+        all_usages = self.top_instance_stored_cumsum[top_instance][:, 1]
+        first_possible_idx = np.searchsorted(all_timesteps, test_timestep)
+        last_possible_idx = len(all_timesteps)
+        for possible_idx in range(first_possible_idx, last_possible_idx):
+            relevant_usages = all_usages[possible_idx:]
+            updated_relevant_usages = relevant_usages + tensor.size
+            if max(updated_relevant_usages) <= top_instance_capacity:
+                can_transfer_from_timestep = max(
+                    all_timesteps[possible_idx], test_timestep
+                )
                 return can_transfer_from_timestep
-        # logger.warning(f"Tensor {tensor} cannot be prefetched to core {core_id}. Cause stall.")
+        # If we can't add it during any of the previous timesteps, return the worst case
         return worst_case_timestep
 
     def generate_all_combinations(self, lst):
@@ -406,7 +376,7 @@ class MemoryManager:
         total_link_energy_cost = 0
         total_memory_energy_cost = 0
         should_be_written_to_offchip = write_back_to_offchip and not self.contains(
-            tensor, self.off_chip_core_id
+            tensor, self.offchip_core_id
         )
         # current_timestep = max(timestep, self.current_timestep[core][top_level_idx])
         current_timestep = timestep
@@ -419,7 +389,7 @@ class MemoryManager:
             ) = self.accelerator.transfer_data(
                 tensor,
                 core,
-                self.off_chip_core_id,
+                self.offchip_core_id,
                 tensor.memory_operand,
                 current_timestep,
             )
@@ -427,7 +397,7 @@ class MemoryManager:
             total_link_energy_cost += link_energy_cost
             total_memory_energy_cost += memory_energy_cost
             self.add_tensor_to_core(
-                tensor, self.off_chip_core_id, transfer_start, transfer_end, []
+                tensor, self.offchip_core_id, transfer_start, transfer_end, []
             )  # no tensors to avoid evicting on offchip core
             # self.current_timestep[core][top_level_idx] = current_timestep
 
@@ -455,30 +425,30 @@ class MemoryManager:
             [current_timestep, -tensor_size],
         )
 
-        (last_timestep, last_cumsum) = self.top_instance_stored_cumsum[top_instance][-1]
-        if current_timestep == last_timestep:
-            self.top_instance_stored_cumsum[top_instance][-1] = [
-                current_timestep,
-                last_cumsum - tensor_size,
-            ]
-        elif timestep < last_timestep:
-            insert_id = bisect.bisect(
-                self.top_instance_stored_cumsum[top_instance], [timestep, -tensor_size]
-            )
-            already_stored_size = self.top_instance_stored_cumsum[top_instance][
-                insert_id
-            ][1]
-            bisect.insort(
+        # Use numpy searchsorted to find the where the current_timestep should be inserted
+        all_timesteps = self.top_instance_stored_cumsum[top_instance][:, 0]
+        all_usages = self.top_instance_stored_cumsum[top_instance][:, 1]
+        insert_idx = np.searchsorted(all_timesteps, current_timestep)
+        timestep_already_present = (
+            insert_idx < len(all_timesteps)
+            and all_timesteps[insert_idx] == current_timestep
+        )
+
+        # We first update the remaining usages of later timesteps
+        # If timestep was already in all_timesteps, this timestep will also be updated
+        relevant_usages = all_usages[insert_idx:]
+        updated_relevant_usages = relevant_usages - tensor.size
+        self.top_instance_stored_cumsum[top_instance][
+            insert_idx:, 1
+        ] = updated_relevant_usages
+
+        # If the timestep was not in all_timesteps, it will be inserted here
+        if not timestep_already_present:
+            self.top_instance_stored_cumsum[top_instance] = np.insert(
                 self.top_instance_stored_cumsum[top_instance],
-                [timestep, already_stored_size - tensor_size],
-            )
-            for stored_cumsum_afterwards in self.top_instance_stored_cumsum[
-                top_instance
-            ][insert_id + 1 :]:
-                stored_cumsum_afterwards[1] -= tensor_size
-        else:
-            self.top_instance_stored_cumsum[top_instance].append(
-                [current_timestep, last_cumsum - tensor_size]
+                insert_idx,
+                [current_timestep, all_usages[insert_idx - 1] - tensor.size],
+                axis=0,
             )
 
         return current_timestep, total_link_energy_cost, total_memory_energy_cost
