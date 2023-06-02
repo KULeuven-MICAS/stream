@@ -80,9 +80,8 @@ draw_dependencies = True
 plot_data_transfer = True
 section_start_percent = (0,)
 percent_shown = (100,)
-timeline_fig_path = "outputs/schedule_plot.png"
-memory_fig_path = "outputs/memory_plot.png"
-breakdown_fig_path = "outputs/breakdown_plot.png"
+timeline_fig_path = f"outputs/{experiment_id}-schedule.png"
+memory_fig_path = f"outputs/{experiment_id}-memory.png"
 
 plot_timeline_brokenaxes(
     scme,
@@ -92,10 +91,4 @@ plot_timeline_brokenaxes(
     plot_data_transfer,
     fig_path=timeline_fig_path,
 )
-# plot_memory_usage(scme.accelerator.memory_manager, fig_path=memory_fig_path)
-
-# list_scme = []
-# list_scme.append(scme)
-# list_scme.append(scme)
-
-# bar_plot_stream_cost_model_evaluations_breakdown(list_scme, fig_path=breakdown_fig_path)
+plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
