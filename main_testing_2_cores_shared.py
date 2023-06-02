@@ -18,21 +18,30 @@ _logging_format = (
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 #################################
-CN_define_mode = 1
-hint_loops = []
-
 accelerator = "stream.inputs.testing.shared.dual_testing_core_offchip"
 workload_path = "stream.inputs.testing.shared.testing_workload_for_2_cores"
 mapping_path = "stream.inputs.testing.mapping.testing_mapping"
 
+CN_define_mode = 1  # manually define outer CN size for all cores and all layers
+# hint_loops = [('OY', 'all')]  # outer CN loops, with error in resnet18 plotting
+hint_loops = []
 
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
-experiment_id = f"{hw_name}-{wl_name}-CNmode_{CN_define_mode}-hintloop_{str(hint_loops)}"
-node_hw_cost_pkl_name = f"saved_CN_HW_cost-{experiment_id}"
+if wl_name == "onnx":
+    wl_name = re.split(r"/|\.", workload_path)[-2]
+hint_loops_str_list = []
+for dim, size in hint_loops:
+    hint_loops_str_list.extend([str(dim).lower(), str(size)])
+hint_loops_str = "_".join(hint_loops_str_list)
+experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}"
+node_hw_cost_pkl_name = f"saved_cn_hw_cost-{experiment_id}"
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
 plot_data_transfer = True
+nb_ga_individuals = 16  # number of individuals in each genetic algorithm generation
+nb_ga_generations = 16  # number of genetic algorithm generations
+node_hw_performances_path = f"outputs/{node_hw_cost_pkl_name}.pickle"
 #################################
 
 
@@ -49,9 +58,9 @@ mainstage = MainStage(
     workload_path=workload_path,  # required by ModelParserStage
     mapping_path=mapping_path,  # required by ModelParserStage
     loma_lpf_limit=6,  # required by LomaStage
-    nb_ga_individuals=4,  # number of individuals in each genetic algorithm generation
-    nb_ga_generations=1,  # number of genetic algorithm generations
-    # node_hw_performances_path=f"outputs/{node_hw_cost_pkl_name}.pickle",  # saved node_hw_performances to skip re-computation
+    nb_ga_individuals=nb_ga_individuals,  # number of individuals in each genetic algorithm generation
+    nb_ga_generations=nb_ga_generations,  # number of genetic algorithm generations
+    node_hw_performances_path=node_hw_performances_path,  # save node_hw_performances to skip re-computation
     plot_hof=True,  # Save schedule and memory usage plot of each individual in the Genetic Algorithm hall of fame
     plot_file_name=plot_file_name,
     plot_full_schedule=plot_full_schedule,
