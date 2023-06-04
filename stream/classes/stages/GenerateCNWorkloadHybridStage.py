@@ -64,6 +64,8 @@ class GenerateCNWorkloadHybridStage(Stage):
             self.inner_CN_loops = hint_loops
         elif cn_define_mode == 3:
             self.factor_loops = hint_loops
+        elif cn_define_mode == "manual":
+            pass
         else:
             raise ValueError(f"CN_define_mode can not be {self.cn_define_mode}.")
 
@@ -205,6 +207,29 @@ class GenerateCNWorkloadHybridStage(Stage):
         """
         outer_loops = []
 
+        # test_outer_loops = {
+        #     (0,): [("K", 4), ("OX", 8), ("OY", 112)],
+        #     (1,): [("OX", 4), ("OY", 56)],
+        #     (2,): [("OY", 56)],
+        #     (3,): [("OY", 56)],
+        #     (4,): [("OY", 56)],
+        #     (5,): [("OY", 56)],
+        #     (6,): [("OY", 56)],
+        #     (7,): [("OY", 56)],
+        #     (8,): [("OY", 56)],
+        # }
+        test_outer_loops = {
+            (0,): [("OY", 112)],
+            (1,): [("OY", 56)],
+            (2,): [("OY", 56)],
+            (3,): [("OY", 56)],
+            (4,): [("OY", 56)],
+            (5,): [("OY", 56)],
+            (6,): [("OY", 56)],
+            (7,): [("OY", 56)],
+            (8,): [("OY", 56)],
+        }
+
         if self.cn_define_mode == 1:
             for loop_name, loop_size in self.outer_CN_loops:
                 if loop_name in layer.loop_dim_size:
@@ -259,6 +284,17 @@ class GenerateCNWorkloadHybridStage(Stage):
                             )
             outer_loops = self.get_rest_loops(layer.loop_dim_size, inner_loops)
 
+        elif self.cn_define_mode == "manual":
+            for loop_name, loop_size in test_outer_loops[layer.id]:
+                if loop_name in layer.loop_dim_size:
+                    if loop_size == "all" or layer.loop_dim_size[loop_name] < loop_size:
+                        outer_loops.append(
+                            TemporalLoop(loop_name, layer.loop_dim_size[loop_name])
+                        )
+                    elif layer.loop_dim_size[loop_name] % loop_size == 0:
+                        outer_loops.append(TemporalLoop(loop_name, loop_size))
+                    else:
+                        raise ValueError()
         else:
             # TODO
             inner_loops = []
