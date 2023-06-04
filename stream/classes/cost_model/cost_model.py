@@ -13,7 +13,11 @@ class StreamCostModelEvaluation:
     """
 
     def __init__(
-        self, workload: DiGraph, accelerator: Accelerator, scheduler_candidate_selection
+        self,
+        workload: DiGraph,
+        accelerator: Accelerator,
+        scheduler_candidate_selection: str,
+        operands_to_prefetch: list,
     ) -> None:
         # Initialize the SCME by setting the workload graph to be scheduled
         self.workload = workload
@@ -33,6 +37,7 @@ class StreamCostModelEvaluation:
         self.max_memory_usage = None
         self.core_timesteps_delta_cumsums = None
         self.scheduler_candidate_selection = scheduler_candidate_selection
+        self.operands_to_prefetch = operands_to_prefetch
 
     def __str__(self):
         return f"SCME(energy={self.energy:.2e}, latency={self.latency:.2e})"
@@ -45,6 +50,7 @@ class StreamCostModelEvaluation:
             self.workload,
             self.accelerator,
             candidate_selection=self.scheduler_candidate_selection,
+            operands_to_prefetch=self.operands_to_prefetch,
         )
         self.latency = results[0]
         self.total_cn_onchip_energy = results[1]

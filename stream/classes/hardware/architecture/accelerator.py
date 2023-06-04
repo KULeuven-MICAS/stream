@@ -157,10 +157,12 @@ class Accelerator:
         worst_case_timestep: int,
     ):
         """Transfer a tensor to a given core id.
-        This function computes when the transfer can take place based on three factors:
+        This function computes when the transfer can take place based on four factors:
         1) The timestep from which this tensor is available for transfer on a sender core.
         2) When the communication link in charge of these transfers are ready.
         3) When the receiving core has enough space to store the tensor.
+        4) The transfer is scheduled as close to the computation as possible. This prevents the
+        whole memory from being filled up with data that is only required in the far future.
 
         Args:
             tensor (Tensor): The tensor to transfer.
@@ -200,8 +202,10 @@ class Accelerator:
         receiver_core = self.get_core(receiving_core_id)
         links = self.get_links_for_pair(sender_core, receiver_core)
         # TODO: Currently, we just select the first shortest-distance communication link.
-        link_available_timestep = links[0].available_from
-        data_transfer_duration = ceil(tensor.size / links[0].bandwidth)
+        link_available_timestep = max([link.available_from for link in links])
+        data_transfer_duration = max(
+            [ceil(tensor.size / link.bandwidth) for link in links]
+        )
 
         consider_transfer_from_timestep = max(
             stored_since_timestep, link_available_timestep
@@ -213,6 +217,7 @@ class Accelerator:
             receiving_core_id,
             consider_transfer_from_timestep,
             worst_case_timestep,
+            data_transfer_duration,
             memory_op=tensor_operand,
         )
         can_end_from_timestep = can_transfer_from_timestep + data_transfer_duration
