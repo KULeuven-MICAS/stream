@@ -70,6 +70,18 @@ def get_memory_hierarchy(multiplier_array):
         w_port=1,
         rw_port=0,
     )
+    l1_i_o = MemoryInstance(
+        name="l1_i_o",
+        size=16 * 1024 * 8,
+        r_bw=64 * 64,
+        w_bw=64 * 64,
+        r_cost=50,
+        w_cost=55,
+        area=0,
+        r_port=2,
+        w_port=2,
+        rw_port=0,
+    )
 
     memory_hierarchy_graph = MemoryHierarchy(operational_array=multiplier_array)
 
@@ -107,13 +119,6 @@ def get_memory_hierarchy(multiplier_array):
             (0, 0, 0, 0, 1),
         },
     )
-    # First SRAM for inputs
-    memory_hierarchy_graph.add_memory(
-        memory_instance=shared_c2_c3,
-        operands=("I1",),
-        port_alloc=({"fh": "rw_port_1", "tl": "rw_port_1", "fl": None, "th": None},),
-        served_dimensions="all",
-    )
     # First SRAM for weights
     memory_hierarchy_graph.add_memory(
         memory_instance=l1_w,
@@ -121,16 +126,17 @@ def get_memory_hierarchy(multiplier_array):
         port_alloc=({"fh": "w_port_1", "tl": "r_port_1", "fl": None, "th": None},),
         served_dimensions="all",
     )
-    # First SRAM for outputs
+    # First SRAM for inputs and outputs
     memory_hierarchy_graph.add_memory(
-        memory_instance=shared_c3_c4,
-        operands=("O"),
+        memory_instance=l1_i_o,
+        operands=("I1", "O"),
         port_alloc=(
+            {"fh": "w_port_1", "tl": "r_port_1", "fl": None, "th": None},
             {
-                "fh": "rw_port_1",
-                "tl": "rw_port_1",
-                "fl": "rw_port_2",
-                "th": "rw_port_2",
+                "fh": "w_port_1",
+                "tl": "r_port_1",
+                "fl": "w_port_2",
+                "th": "r_port_2",
             },
         ),
         served_dimensions="all",

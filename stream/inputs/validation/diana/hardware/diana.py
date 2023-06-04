@@ -17,8 +17,8 @@ from stream.classes.hardware.architecture.accelerator import Accelerator
 
 cores = [
     get_digital_core(0),
-    get_analog_core(1),
-    get_pooling_core(2),
+    get_pooling_core(1),
+    get_analog_core(2),
     get_simd_core(3),
 ]  # 4 cores
 offchip_core_id = 4

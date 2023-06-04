@@ -1,19 +1,19 @@
-from stream.inputs.validation.verma.hardware.cores.core_0 import (
+from stream.inputs.validation.verma_ocn.hardware.cores.core_0 import (
     get_core as get_core_0,
 )
-from stream.inputs.validation.verma.hardware.cores.core_1 import (
+from stream.inputs.validation.verma_ocn.hardware.cores.core_1 import (
     get_core as get_core_1,
 )
-from stream.inputs.validation.verma.hardware.cores.core_2 import (
+from stream.inputs.validation.verma_ocn.hardware.cores.core_2 import (
     get_core as get_core_2,
 )
-from stream.inputs.validation.verma.hardware.cores.core_3 import (
+from stream.inputs.validation.verma_ocn.hardware.cores.core_3 import (
     get_core as get_core_3,
 )
-from stream.inputs.validation.verma.hardware.cores.core_4 import (
+from stream.inputs.validation.verma_ocn.hardware.cores.core_4 import (
     get_core as get_core_4,
 )
-from stream.inputs.validation.verma.hardware.cores.offchip_dual_port import (
+from stream.inputs.validation.verma_ocn.hardware.cores.offchip_dual_port import (
     get_core as get_offchip_core,
 )
 
@@ -36,7 +36,7 @@ offchip_core = get_offchip_core(id=offchip_core_id)
 cores_graph = fixed_interconnect_with_offchip(
     cores,
     unit_energy_cost=0,
-    bandwidth=16,
+    bandwidth=128,
     offchip_core=offchip_core,
 )
 

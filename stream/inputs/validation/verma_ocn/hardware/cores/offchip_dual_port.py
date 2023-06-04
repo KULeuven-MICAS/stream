@@ -10,7 +10,7 @@ def get_memory_hierarchy(multiplier_array):
     """ size=#bit, bw=(read bw, write bw), cost=(read word energy, write work energy) """
     dram = MemoryInstance(
         name="dram",
-        size=512 * 1024 * 8 * 8,  # Size of L2 memory
+        size=8 * 1024 * 1024 * 8,
         r_bw=128,
         w_bw=128,
         r_cost=100,

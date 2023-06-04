@@ -34,7 +34,7 @@ hint_loops_str_list = []
 for dim, size in hint_loops:
     hint_loops_str_list.extend([str(dim).lower(), str(size)])
 hint_loops_str = "_".join(hint_loops_str_list)
-experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}-new-all"
+experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}"
 node_hw_cost_pkl_name = f"saved_cn_hw_cost-{experiment_id}"
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
@@ -81,8 +81,8 @@ draw_dependencies = True
 plot_data_transfer = True
 section_start_percent = (0,)
 percent_shown = (100,)
-timeline_fig_path = f"outputs/{experiment_id}_schedule.png"
-memory_fig_path = f"outputs/{experiment_id}_memory.png"
+timeline_fig_path = f"outputs/{experiment_id}_schedule_new_all.png"
+memory_fig_path = f"outputs/{experiment_id}_memory_new_all.png"
 breakdown_fig_path = "outputs/breakdown_plot.png"
 
 plot_timeline_brokenaxes(
