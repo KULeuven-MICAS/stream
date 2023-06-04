@@ -151,9 +151,24 @@ class MemoryManager:
             memory_op = tensor.memory_operand
         top_level_idx = self.get_top_level_idx(core, memory_op)
         top_instance = self.top_instances[core][top_level_idx]
-        stored_tensors = self.top_instance_stored_tensors[top_instance]
+
         if self.contains(tensor, core_id):
             return
+
+        ## Get the tensors that were stored at this timestep.
+        # Because of shared memory there might be tensors that don't exist yet
+        # but are already in the top_instance_stored_tensors because of
+        # the scheduler's non-causal behavior.
+        stored_tensors = self.top_instance_stored_tensors[top_instance]
+        stored_tensors = [
+            stored_tensor
+            for stored_tensor in stored_tensors
+            if self.top_instance_stored_since_timestep[top_instance][
+                stored_tensor.equality_hash()
+            ]
+            <= timestep
+        ]
+
         # If there is no equivalent tensor in the core, remove tensors until we have enough space
         # Tensors are removed based on their priority value
         memory_capacity = self.top_instance_capacities[top_instance]
@@ -249,7 +264,7 @@ class MemoryManager:
         all_usages = self.top_instance_stored_cumsum[top_instance][:, 1]
         first_possible_idx = np.searchsorted(all_timesteps, test_timestep)
         last_possible_idx = len(all_timesteps)
-        for possible_idx in range(first_possible_idx, last_possible_idx):
+        for possible_idx in range(first_possible_idx - 1, last_possible_idx):
             relevant_usages = all_usages[possible_idx:]
             updated_relevant_usages = relevant_usages + tensor.size
             if max(updated_relevant_usages) <= top_instance_capacity:
@@ -257,8 +272,8 @@ class MemoryManager:
                     all_timesteps[possible_idx], test_timestep
                 )
                 return can_transfer_from_timestep
-        # If we can't add it during any of the previous timesteps, return the worst case
-        return worst_case_timestep
+        # If we can't add it during any of the previous timesteps, return current timestep
+        return test_timestep
 
     def generate_all_combinations(self, lst):
         for i in range(1, len(lst) + 1):
