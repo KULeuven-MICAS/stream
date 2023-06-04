@@ -13,6 +13,7 @@ def schedule_graph(
     accelerator: Accelerator,
     cores_idle_from=None,
     candidate_selection="latency",
+    operands_to_prefetch=[],
 ):
     """Schedule the nodes of graph G across the cores in the system.
     Each node should have a core_allocation and runtime set.
@@ -21,6 +22,7 @@ def schedule_graph(
         G (DiGraph): Graph containing the nodes to be scheduled.
         accelerator (Accelerator): The accelerator to schedule the nodes on.
         cores_start_offset (dict, optional): A dict containing for each core_id its start offset. Defaults to None.
+        operands_to_prefetch (list, optional): The layer operands that should be prefetched at the start of the schedule.
     """
     # Initialize total link energy cost and memory energy costs
     total_cn_onchip_energy = 0
@@ -75,6 +77,7 @@ def schedule_graph(
     ## Schedule preparation:
     # 1. Initialize the total and core priority for each tensor
     # 2. Add the constant operand tensors of all nodes to the off-chip initially
+    # 3. Prefetch the constant operands that should be prefetched to their core
     for n in G.nodes():
         for op, tensor in n.operand_tensors.items():
             tensor.initialize_core_priorities(G, n)
@@ -87,7 +90,29 @@ def schedule_graph(
                         timestep_end=0,
                         tensors_to_avoid_evicting=[],
                     )
-
+                if op in operands_to_prefetch:
+                    core_allocation = n.core_allocation
+                    memory_op = n.memory_operand_links[op]
+                    if not accelerator.contains_tensor(tensor, core_allocation):
+                        (
+                            transfer_complete_timestep,
+                            transfer_link_energy_cost,
+                            transfer_memory_energy_cost,
+                            eviction_link_energy_cost,
+                            eviction_memory_energy_cost,
+                            came_from_offchip,
+                        ) = accelerator.transfer_tensor_to_core(
+                            tensor, core_allocation, memory_op, [], 0
+                        )
+                        assert came_from_offchip
+                        total_cn_offchip_link_energy += transfer_link_energy_cost
+                        total_cn_offchip_memory_energy += transfer_memory_energy_cost
+                        total_eviction_to_offchip_link_energy += (
+                            eviction_link_energy_cost
+                        )
+                        total_eviction_to_offchip_memory_energy += (
+                            eviction_memory_energy_cost
+                        )
     done = False
     while not done:
         # If this core doesn't have any candidates, continue to the next core

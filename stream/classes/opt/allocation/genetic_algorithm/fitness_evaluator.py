@@ -28,6 +28,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
         node_hw_performances,
         coarse_node_ids_flexible,
         scheduler_candidate_selection,
+        operands_to_prefetch,
     ) -> None:
         super().__init__(workload, accelerator, node_hw_performances)
 
@@ -36,6 +37,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
 
         self.coarse_node_ids_flexible = coarse_node_ids_flexible
         self.scheduler_candidate_selection = scheduler_candidate_selection
+        self.operands_to_prefetch = operands_to_prefetch
 
     def get_fitness(self, core_allocations: list, return_scme=False):
         """Get the fitness of the given core_allocations
@@ -48,6 +50,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
             pickle_deepcopy(self.workload),
             pickle_deepcopy(self.accelerator),
             self.scheduler_candidate_selection,
+            self.operands_to_prefetch,
         )
         scme.run()
         energy = scme.energy
