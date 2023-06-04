@@ -1,6 +1,4 @@
 from networkx import DiGraph
-import numpy as np
-from stream.classes.cost_model.memory_manager import MemoryManager
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.cost_model.scheduler import schedule_graph

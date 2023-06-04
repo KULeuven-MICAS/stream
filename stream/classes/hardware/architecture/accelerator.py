@@ -203,10 +203,11 @@ class Accelerator:
         link_available_timestep = links[0].available_from
         data_transfer_duration = ceil(tensor.size / links[0].bandwidth)
 
-        ## STEP 3: When the receiving core has enough space to store the tensor (don't consider the data eviction)
         consider_transfer_from_timestep = max(
             stored_since_timestep, link_available_timestep
         )
+
+        ## STEP 3: When the receiving core has enough space to store the tensor (don't consider the data eviction)
         can_transfer_from_timestep = self.memory_manager.test_add_tensor_to_core(
             tensor,
             receiving_core_id,
