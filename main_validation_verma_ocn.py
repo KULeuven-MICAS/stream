@@ -36,7 +36,7 @@ hint_loops_str_list = []
 for dim, size in hint_loops:
     hint_loops_str_list.extend([str(dim).lower(), str(size)])
 hint_loops_str = "_".join(hint_loops_str_list)
-experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}-new"
+experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}-new-new"
 node_hw_cost_pkl_name = f"saved_cn_hw_cost-{experiment_id}"
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
@@ -70,6 +70,7 @@ mainstage = MainStage(
     cn_define_mode=CN_define_mode,
     hint_loops=hint_loops,
     scheduler_candidate_selection="latency",
+    operands_to_prefetch=["W"],
     visualize_node_hw_performances_path=None,
 )
 

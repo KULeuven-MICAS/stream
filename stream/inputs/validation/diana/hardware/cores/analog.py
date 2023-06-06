@@ -54,8 +54,8 @@ def get_memory_hierarchy(multiplier_array):
     l1_w = MemoryInstance(
         name="l1_w",
         size=8192 * 32 * 8,
-        r_bw=64 * 64 * 3 * 3 * 8,
-        w_bw=64 * 64 * 3 * 3 * 8,
+        r_bw=64 * 8 * 4 * 4,  # 64 * 64 * 3 * 3 * 8,
+        w_bw=64 * 8 * 4 * 4,  # 64 * 64 * 3 * 3 * 8,
         r_cost=50,
         w_cost=55,
         area=0,

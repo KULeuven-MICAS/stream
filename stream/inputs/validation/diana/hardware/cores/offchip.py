@@ -11,8 +11,8 @@ def get_memory_hierarchy(multiplier_array):
     dram = MemoryInstance(
         name="dram",
         size=512 * 1024 * 8 * 8,  # Size of L2 memory
-        r_bw=128,
-        w_bw=128,
+        r_bw=16 * 8,
+        w_bw=16 * 8,
         r_cost=100,
         w_cost=110,
         area=0,

@@ -10,9 +10,37 @@ from stream.inputs.validation.diana.hardware.cores.shared_memories import shared
 def get_memory_hierarchy(multiplier_array):
     """Memory hierarchy variables"""
     """ size=#bit, bw=(read bw, write bw), cost=(read word energy, write work energy) """
-    inf = MemoryInstance(
-        name="rf_16B",
-        size=1_000_000_000,
+    buffer_i = MemoryInstance(
+        name="rf_32B",
+        size=64 * 8,
+        r_bw=2 * 8,
+        w_bw=2 * 8,
+        r_cost=0.01,
+        w_cost=0.01,
+        area=0,
+        r_port=0,
+        w_port=0,
+        rw_port=2,
+        latency=0,
+    )  # rd E per bit 0.0625
+
+    buffer_w = MemoryInstance(
+        name="rf_32B",
+        size=64 * 8,
+        r_bw=2 * 8,
+        w_bw=2 * 8,
+        r_cost=0.01,
+        w_cost=0.01,
+        area=0,
+        r_port=0,
+        w_port=0,
+        rw_port=2,
+        latency=0,
+    )  # rd E per bit 0.0625
+
+    buffer_o = MemoryInstance(
+        name="rf_32B",
+        size=64 * 8,
         r_bw=64 * 8,
         w_bw=64 * 8,
         r_cost=0.01,
@@ -33,6 +61,31 @@ def get_memory_hierarchy(multiplier_array):
     tl: to low = rd_out_to_low
     """
     memory_hierarchy_graph.add_memory(
+        memory_instance=buffer_i,
+        operands=("I1",),
+        port_alloc=({"fh": "rw_port_1", "tl": "rw_port_2", "fl": None, "th": None},),
+        served_dimensions="all",
+    )
+    memory_hierarchy_graph.add_memory(
+        memory_instance=buffer_w,
+        operands=("I2",),
+        port_alloc=({"fh": "rw_port_1", "tl": "rw_port_2", "fl": None, "th": None},),
+        served_dimensions="all",
+    )
+    memory_hierarchy_graph.add_memory(
+        memory_instance=buffer_o,
+        operands=("O",),
+        port_alloc=(
+            {
+                "fh": "rw_port_1",
+                "tl": "rw_port_2",
+                "fl": "rw_port_1",
+                "th": "rw_port_2",
+            },
+        ),
+        served_dimensions="all",
+    )
+    memory_hierarchy_graph.add_memory(
         memory_instance=shared_l1,
         operands=("I1", "I2", "O"),
         port_alloc=(
@@ -40,8 +93,8 @@ def get_memory_hierarchy(multiplier_array):
             {"fh": "rw_port_2", "tl": "rw_port_2", "fl": None, "th": None},
             {
                 "fh": "rw_port_1",
-                "tl": "rw_port_1",
-                "fl": "rw_port_2",
+                "tl": "rw_port_2",
+                "fl": "rw_port_1",
                 "th": "rw_port_2",
             },
         ),
@@ -61,7 +114,7 @@ def get_operational_array():
 
 
 def get_dataflows():
-    return [{"D1": ("K", 64)}]
+    return [{"D1": ("G", 64)}]
 
 
 def get_core(id):

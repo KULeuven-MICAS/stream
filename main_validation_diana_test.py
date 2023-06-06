@@ -18,23 +18,25 @@ _logging_format = (
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 #################################
-CN_define_mode = 1
-hint_loops = [("OY", "all")]
+CN_define_mode = "manual"
+hint_loops = "shouldn't matter"
 
-accelerator = "stream.inputs.validation.depfin.hardware.depfin"
-workload_path = "stream.inputs.validation.depfin.workload.fsrcnn"
-mapping_path = "stream.inputs.validation.depfin.mapping.mapping"
+accelerator = "stream.inputs.validation.diana.hardware.diana"
+workload_path = (
+    "stream.inputs.validation.diana.workload.resnet18_few_layers_with_residual"
+)
+mapping_path = "stream.inputs.validation.diana.mapping.mapping"
 
 
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
     wl_name = re.split(r"/|\.", workload_path)[-2]
-hint_loops_str_list = []
-for dim, size in hint_loops:
-    hint_loops_str_list.extend([str(dim).lower(), str(size)])
-hint_loops_str = "_".join(hint_loops_str_list)
-experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}-new-new"
+# hint_loops_str_list = []
+# for dim, size in hint_loops:
+#     hint_loops_str_list.extend([str(dim).lower(), str(size)])
+# hint_loops_str = "_".join(hint_loops_str_list)
+experiment_id = f"{hw_name}-{wl_name}-hintloop_test"
 node_hw_cost_pkl_name = f"saved_cn_hw_cost-{experiment_id}"
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
@@ -68,7 +70,7 @@ mainstage = MainStage(
     cn_define_mode=CN_define_mode,
     hint_loops=hint_loops,
     scheduler_candidate_selection="memory",
-    operands_to_prefetch=["W"],
+    operands_to_prefetch=["W"],  # Layer operands to prefetch
     visualize_node_hw_performances_path=None,
 )
 
@@ -76,14 +78,15 @@ mainstage = MainStage(
 scme, _ = mainstage.run()
 scme = scme[0]
 
+print(f"{scme.latency=:.3e}")
 # Ploting Results
 plot_full_schedule = True
 draw_dependencies = False
 plot_data_transfer = True
 section_start_percent = (0,)
 percent_shown = (100,)
-timeline_fig_path = f"outputs/{experiment_id}_schedule_100.svg"
-memory_fig_path = f"outputs/{experiment_id}_memory_100.png"
+timeline_fig_path = f"outputs/{experiment_id}_schedule_new_100_prefetch_oy_final.svg"
+memory_fig_path = f"outputs/{experiment_id}_memory_new_100_prefetch_oy_final.png"
 breakdown_fig_path = "outputs/breakdown_plot.png"
 
 plot_timeline_brokenaxes(

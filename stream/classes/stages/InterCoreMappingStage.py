@@ -164,17 +164,6 @@ class InterCoreMappingStage(Stage):
         logger.info(f"Finished InterCoreMappingStage.")
 
     def set_hw_performance_non_flexible_nodes(self):
-        # test_latencies = {
-        #     (0, 0): 167,
-        #     (1, 0): 64,
-        #     (2, 0): 2240,
-        #     (3, 0): 2240,
-        #     (4, 0): 2240,
-        #     (5, 0): 2240,
-        #     (6, 0): 2240,
-        #     (7, 0): 2240,
-        #     (8, 0): 2240,
-        # }
         """Set the energy, runtime and core_allocation of the nodes in self.workload that only have a single possible core allocation."""
         non_flexible_unique_nodes = set(self.unique_nodes) - set(
             self.unique_nodes_flexible
@@ -189,10 +178,7 @@ class InterCoreMappingStage(Stage):
                 cme.energy_total
             )  # Initialize the on-chip energy as total energy
             latency = cme.latency_total1
-            # latency = test_latencies[cme.layer.id]
-            print(f"TESTING LATENCY = {latency} for layer {cme.layer.id}")
             core_allocation = core.id
-
             too_large_operands = get_too_large_operands(
                 cme, self.accelerator, core_id=core_allocation
             )

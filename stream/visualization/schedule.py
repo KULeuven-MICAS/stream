@@ -112,7 +112,8 @@ def plot_timeline_brokenaxes(
                     width=width,
                     height=height,
                     facecolor=color,
-                    edgecolor="black",
+                    # edgecolor="black",
+                    linewidth=0,
                     lw=1,
                     label=f"Layer {layer_id}",
                 )
@@ -141,7 +142,8 @@ def plot_timeline_brokenaxes(
                         width=width,
                         height=height,
                         facecolor=color,
-                        edgecolor="black",
+                        # edgecolor="black",
+                        linewidth=0,
                         lw=1,
                         label=f"Layer {layer_id}",
                     )
@@ -208,8 +210,8 @@ def plot_timeline_brokenaxes(
                                     width=width,
                                     height=height,
                                     facecolor=color,
-                                    edgecolor="black",
-                                    lw=1,
+                                    # edgecolor="black",
+                                    linewidth=0,
                                     hatch="xx",
                                     label=f"Layer {layer_id}",
                                 )
@@ -241,8 +243,8 @@ def plot_timeline_brokenaxes(
                                         width=width,
                                         height=height,
                                         facecolor=color,
-                                        edgecolor="black",
-                                        lw=1,
+                                        # edgecolor="black",
+                                        linewidth=0,
                                         hatch="---",
                                         label=f"Layer {layer_id}",
                                     )
@@ -260,7 +262,8 @@ def plot_timeline_brokenaxes(
                                         width=width,
                                         height=height,
                                         facecolor=color,
-                                        edgecolor="black",
+                                        # edgecolor="black",
+                                        linewidth=0,
                                         lw=1,
                                         label=f"Layer {layer_id}",
                                     )
@@ -335,6 +338,10 @@ def plot_timeline_brokenaxes(
     ylims = [ax.get_ylim() for ax in axs]
     miny = min((lim[0] for lim in ylims))
     maxy = max((lim[1] for lim in ylims))
+    # cn_start = next((cn.start for cn in G.nodes() if cn.id == (2, 1)))
+    # cn_end = next((cn.end for cn in G.nodes() if cn.id == (2, 1)))
+    # axs[0].axvline(x=cn_start, color="k")
+    # axs[0].axvline(x=cn_end, color="k")
     for ax in axs:
         ax.xaxis.set_major_formatter(major_formatter)
         ax.tick_params(axis="x", labelrotation=tick_rotation)
@@ -346,7 +353,7 @@ def plot_timeline_brokenaxes(
     axs[0].set_yticks(range(len(y_labels)))
     axs[0].set_yticklabels(y_labels)
     plt.show(block=False)
-    plt.savefig(fig_path, format="png", bbox_inches="tight")
+    plt.savefig(fig_path, format="svg", bbox_inches="tight")
     logger.info(f"Plotted schedule timeline to {fig_path}")
 
 
