@@ -2,7 +2,17 @@ from zigzag.classes.stages import *
 from stream.classes.stages import *
 from stream.visualization.schedule import plot_timeline_brokenaxes
 from stream.visualization.memory_usage import plot_memory_usage
+import argparse
 import re
+
+
+parser = argparse.ArgumentParser(description="Setup zigzag-v2 inputs")
+parser.add_argument('--workload_path', metavar='path', required=True, help='module path to workload, e.g. inputs.examples.workloads.resnet18')
+parser.add_argument('--mapping_path', metavar='path', required=True, help='path to mapping file, e.g., inputs.examples.mapping.tpu_like')
+parser.add_argument('--accelerator', metavar='path', required=True, help='module path to the accelerator, e.g. inputs.examples.hardware.TPU_like')
+parser.add_argument('--headname', metavar='path', required=True, help='module path to the accelerator, e.g. inputs.examples.hardware.TPU_like')
+args = parser.parse_args()
+
 
 # Initialize the logger
 import logging as _logging
@@ -15,20 +25,20 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 #################################
 # accelerator = "stream.inputs.exploration.hardware.HW1_1bigcore"
-accelerator = "stream.inputs.exploration.hardware.HW2_4homo_bus"
+# accelerator = "stream.inputs.exploration.hardware.HW2_4homo"
 # accelerator = "stream.inputs.exploration.hardware.HW3_4hetero"
 
 
-workload_path = "stream/inputs/exploration/workload/resnet18.onnx"
-mapping_path = "stream.inputs.exploration.mapping.HW2_4homo"
+# workload_path = "stream/inputs/exploration/workload/resnet18.onnx"
+# mapping_path = "stream.inputs.exploration.mapping.HW2_4homo"
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
-hint_loops = [("OY", "all")]
+hint_loops = []
 
-hw_name = accelerator.split(".")[-1]
-wl_name = re.split(r"/|\.", workload_path)[-1]
+hw_name = args.accelerator.split(".")[-1]
+wl_name = re.split(r"/|\.", args.workload_path)[-1]
 if wl_name == "onnx":
-    wl_name = re.split(r"/|\.", workload_path)[-2]
+    wl_name = re.split(r"/|\.", args.workload_path)[-2]
 hint_loops_str_list = []
 for dim, size in hint_loops:
     hint_loops_str_list.extend([str(dim).lower(), str(size)])
@@ -40,7 +50,8 @@ plot_full_schedule = True
 plot_data_transfer = True
 nb_ga_individuals = 16  # number of individuals in each genetic algorithm generation
 nb_ga_generations = 16  # number of genetic algorithm generations
-node_hw_performances_path = f"outputs_0608/{node_hw_cost_pkl_name}.pickle"
+
+node_hw_performances_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results/result/{args.headname}-lbl-{node_hw_cost_pkl_name}.pickle"
 #################################
 
 
@@ -53,9 +64,9 @@ mainstage = MainStage(
         IntraCoreMappingStage,
         InterCoreMappingStage,
     ],
-    accelerator=accelerator,  # required by AcceleratorParserStage
-    workload_path=workload_path,  # required by ModelParserStage
-    mapping_path=mapping_path,  # required by ModelParserStage
+    accelerator=args.accelerator,  # required by AcceleratorParserStage
+    workload_path=args.workload_path,  # required by ModelParserStage
+    mapping_path=args.mapping_path,  # required by ModelParserStage
     loma_lpf_limit=7,  # required by LomaStage
     nb_ga_individuals=nb_ga_individuals,  # number of individuals in each genetic algorithm generation
     nb_ga_generations=nb_ga_generations,  # number of genetic algorithm generations
@@ -75,15 +86,13 @@ scme, _ = mainstage.run()
 scme = scme[0]
 
 # Ploting Results
-
-
 plot_full_schedule = True
 draw_dependencies = True
 plot_data_transfer = True
 section_start_percent = (0,)
 percent_shown = (100,)
-timeline_fig_path = f"outputs_0608/{experiment_id}-schedule.png"
-memory_fig_path = f"outputs_0608/{experiment_id}-memory.png"
+timeline_fig_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results/plot/{args.headname}-lbl-{experiment_id}-schedule.png"
+memory_fig_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results/plot/{args.headname}-lbl-{experiment_id}-memory.png"
 
 plot_timeline_brokenaxes(
     scme,
@@ -94,3 +103,11 @@ plot_timeline_brokenaxes(
     fig_path=timeline_fig_path,
 )
 plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
+
+# Print Results
+import logging
+logger = logging.getLogger(__name__)
+latency = scme.latency
+energy = scme.energy
+edp = latency * energy
+logger.info(f"Experiment {args.headname} Results: Latency = {int(latency):.4e} Cycles   Energy = {energy:.4e} pJ   EDP = {edp:.4e}")

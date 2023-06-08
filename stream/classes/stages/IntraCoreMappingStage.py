@@ -196,7 +196,7 @@ class IntraCoreMappingStage(Stage):
                 )
 
     def get_intra_core_mapping_flow(self, node, too_large_operands, core_id):
-        logger.info(f"Launching intra-core mapping optimization for {node}...")
+        logger.info(f"Launching intra-core mapping optimization for {node} -> core {core_id} ...")
 
         if too_large_operands:
             accelerator = self.add_offchip_to_core(

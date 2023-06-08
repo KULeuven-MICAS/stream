@@ -153,7 +153,7 @@ class MemoryManager:
         top_instance = self.top_instances[core][top_level_idx]
         stored_tensors = self.top_instance_stored_tensors[top_instance]
         if self.contains(tensor, core_id):
-            return
+            return (timestep, total_eviction_link_energy_cost, total_eviction_memory_energy_cost)
         # If there is no equivalent tensor in the core, remove tensors until we have enough space
         # Tensors are removed based on their priority value
         memory_capacity = self.top_instance_capacities[top_instance]
