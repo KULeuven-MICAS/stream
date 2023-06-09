@@ -40,6 +40,8 @@ class Node(metaclass=ABCMeta):
         self.input_names = input_names
         self.output_names = output_names
 
+        self.ideal_runtime = None
+
     def __str__(self):
         return f"{self.type.capitalize()}Node()"
 
@@ -123,3 +125,9 @@ class Node(metaclass=ABCMeta):
             bool: True if this node has been assigned an end time
         """
         return self.end is not None
+
+    def get_ideal_runtime(self):
+        return self.ideal_runtime
+
+    def set_ideal_runtime(self, ideal_runtime):
+        self.ideal_runtime = ideal_runtime
