@@ -94,7 +94,8 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                 onchip_energy = (
                     cme.energy_total
                 )  # Initialize on-chip energy as total energy
-                latency = cme.latency_total1
+                latency = cme.latency_total2
+                ideal_runtime = cme.ideal_temporal_cycle
                 too_large_operands = get_too_large_operands(
                     cme, self.accelerator, core_id=core_allocation
                 )
@@ -118,3 +119,4 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                 node.set_runtime(latency)
                 node.set_core_allocation(core_allocation)
                 node.set_too_large_operands(too_large_operands)
+                node.set_ideal_runtime(ideal_runtime)

@@ -2,8 +2,16 @@ from networkx import DiGraph
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.cost_model.scheduler import schedule_graph
+from stream.classes.cost_model.scheduler_simple import (
+    schedule_graph as schedule_graph_simple,
+)
+from stream.classes.cost_model.scheduler_simple_ideal_runtime import (
+    schedule_graph as schedule_graph_simple_ideal,
+)
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import plot_timeline_brokenaxes
+
+from time import perf_counter
 
 
 class StreamCostModelEvaluation:
@@ -39,6 +47,13 @@ class StreamCostModelEvaluation:
         self.scheduler_candidate_selection = scheduler_candidate_selection
         self.operands_to_prefetch = operands_to_prefetch
 
+        self.t_complex = None  # evaluation time for complex scheduling
+        self.t_simple = None  # evaluation time for simple scheduling
+
+        self.latency_simple = None
+        self.total_cn_onchip_energy_simple = None
+        self.total_cn_offchip_memory_energy_simple = None
+
     def __str__(self):
         return f"SCME(energy={self.energy:.2e}, latency={self.latency:.2e})"
 
@@ -46,12 +61,16 @@ class StreamCostModelEvaluation:
         """Run the SCME by scheduling the graph through time. The scheduler takes into account inter-core data movement and also tracks energy and memory through the memory manager.
         This assumes each node in the graph has an energy and runtime of the core to which they are allocated to.
         """
+        print(f"starting complex now")
+        t_complex_start = perf_counter()
         results = schedule_graph(
             self.workload,
             self.accelerator,
             candidate_selection=self.scheduler_candidate_selection,
             operands_to_prefetch=self.operands_to_prefetch,
         )
+        t_complex = perf_counter() - t_complex_start
+        self.t_complex = t_complex
         self.latency = results[0]
         self.total_cn_onchip_energy = results[1]
         self.total_cn_offchip_link_energy, self.total_cn_offchip_memory_energy = (
@@ -82,6 +101,33 @@ class StreamCostModelEvaluation:
             + self.total_core_to_core_link_energy
             + self.total_core_to_core_memory_energy
         )
+        print(f"starting simple now")
+        t_simple_start = perf_counter()
+        results_simple = schedule_graph_simple(
+            self.workload,
+            self.accelerator,
+            candidate_selection=self.scheduler_candidate_selection,
+            operands_to_prefetch=self.operands_to_prefetch,
+        )
+        t_simple = perf_counter() - t_simple_start
+        self.t_simple = t_simple
+        self.latency_simple = results_simple[0]
+        self.total_cn_onchip_energy_simple = results_simple[1]
+        self.total_cn_offchip_memory_energy_simple = results_simple[2]
+
+        print("starting simple with ideal runtimes now")
+        t_simple_ideal_start = perf_counter()
+        results_simple_ideal = schedule_graph_simple_ideal(
+            self.workload,
+            self.accelerator,
+            candidate_selection=self.scheduler_candidate_selection,
+            operands_to_prefetch=self.operands_to_prefetch,
+        )
+        t_simple_ideal = perf_counter() - t_simple_ideal_start
+        self.t_simple_ideal = t_simple_ideal
+        self.latency_simple_ideal = results_simple_ideal[0]
+        self.total_cn_onchip_energy_simple_ideal = results_simple_ideal[1]
+        self.total_cn_offchip_memory_energy_simple_ideal = results_simple_ideal[2]
 
     def plot_schedule(
         self,

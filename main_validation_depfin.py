@@ -76,25 +76,42 @@ mainstage = MainStage(
 scme, _ = mainstage.run()
 scme = scme[0]
 
-# Ploting Results
-plot_full_schedule = True
-draw_dependencies = False
-plot_data_transfer = True
-section_start_percent = (0,)
-percent_shown = (100,)
-timeline_fig_path = f"outputs/{experiment_id}_schedule_100.svg"
-memory_fig_path = f"outputs/{experiment_id}_memory_100.png"
-breakdown_fig_path = "outputs/breakdown_plot.png"
-
-plot_timeline_brokenaxes(
-    scme,
-    draw_dependencies,
-    section_start_percent,
-    percent_shown,
-    plot_data_transfer,
-    fig_path=timeline_fig_path,
+measured_latency = 6.18e6
+print(f"MEASURED")
+print(f"{measured_latency:.3e}")
+print(f"COMPLEX")
+accuracy_latency = 100 * (1 - abs(1 - scme.latency / measured_latency))
+print(f"{scme.latency=:.3e}\t accuracy={accuracy_latency:.3f}%")
+print(f"SIMPLE")
+accuracy_latency_simple = 100 * (1 - abs(1 - scme.latency_simple / measured_latency))
+print(f"{scme.latency_simple=:.3e}\t accuracy={accuracy_latency_simple:.3f}%")
+print(f"SIMPLE IDEAL")
+accuracy_latency_simple_ideal = 100 * (
+    1 - abs(1 - scme.latency_simple_ideal / measured_latency)
 )
-plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
+print(
+    f"{scme.latency_simple_ideal:.3e}\t accuracy={accuracy_latency_simple_ideal:.3f}%"
+)
+
+# # Ploting Results
+# plot_full_schedule = True
+# draw_dependencies = False
+# plot_data_transfer = True
+# section_start_percent = (0,)
+# percent_shown = (100,)
+# timeline_fig_path = f"outputs/{experiment_id}_schedule_100.svg"
+# memory_fig_path = f"outputs/{experiment_id}_memory_100.png"
+# breakdown_fig_path = "outputs/breakdown_plot.png"
+
+# plot_timeline_brokenaxes(
+#     scme,
+#     draw_dependencies,
+#     section_start_percent,
+#     percent_shown,
+#     plot_data_transfer,
+#     fig_path=timeline_fig_path,
+# )
+# plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
 
 # list_scme = []
 # list_scme.append(scme)

@@ -207,20 +207,9 @@ class GenerateCNWorkloadHybridStage(Stage):
         """
         outer_loops = []
 
-        # test_outer_loops = {
-        #     (0,): [("K", 4), ("OX", 8), ("OY", 112)],
-        #     (1,): [("OX", 4), ("OY", 56)],
-        #     (2,): [("OY", 56)],
-        #     (3,): [("OY", 56)],
-        #     (4,): [("OY", 56)],
-        #     (5,): [("OY", 56)],
-        #     (6,): [("OY", 56)],
-        #     (7,): [("OY", 56)],
-        #     (8,): [("OY", 56)],
-        # }
         test_outer_loops = {
-            (0,): [("OY", 112)],
-            (1,): [("OY", 56)],
+            (0,): [("K", 4), ("OX", 8), ("OY", 112)],
+            (1,): [("OX", 4), ("OY", 56)],
             (2,): [("OY", 56)],
             (3,): [("OY", 56)],
             (4,): [("OY", 56)],
@@ -229,6 +218,17 @@ class GenerateCNWorkloadHybridStage(Stage):
             (7,): [("OY", 56)],
             (8,): [("OY", 56)],
         }
+        # test_outer_loops = {
+        #     (0,): [("OY", 112)],
+        #     (1,): [("OY", 56)],
+        #     (2,): [("OY", 56)],
+        #     (3,): [("OY", 56)],
+        #     (4,): [("OY", 56)],
+        #     (5,): [("OY", 56)],
+        #     (6,): [("OY", 56)],
+        #     (7,): [("OY", 56)],
+        #     (8,): [("OY", 56)],
+        # }
 
         if self.cn_define_mode == 1:
             for loop_name, loop_size in self.outer_CN_loops:

@@ -177,7 +177,8 @@ class InterCoreMappingStage(Stage):
             onchip_energy = (
                 cme.energy_total
             )  # Initialize the on-chip energy as total energy
-            latency = cme.latency_total1
+            latency = cme.latency_total2
+            ideal_runtime = cme.ideal_temporal_cycle
             core_allocation = core.id
             too_large_operands = get_too_large_operands(
                 cme, self.accelerator, core_id=core_allocation
@@ -199,7 +200,12 @@ class InterCoreMappingStage(Stage):
             nodes = (n for n in self.workload.nodes() if n == non_flexible_unique_node)
             for node in nodes:
                 self.set_hw_performance_node(
-                    node, onchip_energy, offchip_energy, latency, core_allocation
+                    node,
+                    onchip_energy,
+                    offchip_energy,
+                    latency,
+                    core_allocation,
+                    ideal_runtime,
                 )
                 node.set_too_large_operands(too_large_operands.copy())
 
@@ -210,6 +216,7 @@ class InterCoreMappingStage(Stage):
         offchip_energy: float,
         runtime: int,
         core_allocation: int,
+        ideal_runtime: int = None,
     ):
         """Set the hardware performance and core_allocation of the given node.
 
@@ -224,6 +231,7 @@ class InterCoreMappingStage(Stage):
         node.set_offchip_energy(offchip_energy)
         node.set_runtime(runtime)
         node.set_core_allocation(core_allocation)
+        node.set_ideal_runtime(ideal_runtime)
 
     def is_leaf(self) -> bool:
         return True
