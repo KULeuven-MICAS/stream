@@ -48,9 +48,9 @@ node_hw_cost_pkl_name = f"saved_cn_hw_cost-{experiment_id}"
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
 plot_data_transfer = True
-nb_ga_individuals = 16  # number of individuals in each genetic algorithm generation
-nb_ga_generations = 16  # number of genetic algorithm generations
-node_hw_performances_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results/result/{args.headname}-fused-{node_hw_cost_pkl_name}.pickle"
+nb_ga_individuals = 64  # number of individuals in each genetic algorithm generation
+nb_ga_generations = 64  # number of genetic algorithm generations
+node_hw_performances_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results2/result/{args.headname}-fused-{node_hw_cost_pkl_name}.pickle"
 #################################
 
 
@@ -76,7 +76,8 @@ mainstage = MainStage(
     plot_data_transfer=plot_data_transfer,
     cn_define_mode=CN_define_mode,
     hint_loops=hint_loops,
-    scheduler_candidate_selection="memory",
+    scheduler_candidate_selection="latency",
+    visualize_node_hw_performances_path=f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results2/result/{args.headname}-fused-{node_hw_cost_pkl_name}.png",
 )
 
 # Launch the MainStage
@@ -92,8 +93,8 @@ draw_dependencies = True
 plot_data_transfer = True
 section_start_percent = (0,)
 percent_shown = (100,)
-timeline_fig_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results/plot/{args.headname}-fused-{experiment_id}-schedule.png"
-memory_fig_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results/plot/{args.headname}-fused-{experiment_id}-memory.png"
+timeline_fig_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results2/plot/{args.headname}-fused-{experiment_id}-schedule.png"
+memory_fig_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results2/plot/{args.headname}-fused-{experiment_id}-memory.png"
 
 plot_timeline_brokenaxes(
     scme,

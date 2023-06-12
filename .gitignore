@@ -149,3 +149,4 @@ docs/Makefile
 docs/make.bat
 .makefile.swp
 stream/outputs
+*.xlsx*

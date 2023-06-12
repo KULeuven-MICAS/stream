@@ -8,9 +8,14 @@ from stream.inputs.exploration.hardware.nocs.mesh_2d import get_2d_mesh
 from stream.inputs.exploration.hardware.nocs.comm_bus import get_comm_bus
 from stream.classes.hardware.architecture.accelerator import Accelerator
 
-cores = [get_core_C16_K16(id) for id in range(32)]
-cores.extend([get_core_OX16_K16(id) for id in range(32, 48)])
-cores.extend([get_core_OX28_FX3_FY3(id) for id in range(48, 64)])
+def my_core_pattern(i):
+    return [get_core_C16_K16(4*i), get_core_C16_K16(4*i + 1), get_core_OX16_K16(4*i + 2), get_core_OX28_FX3_FY3(4*i + 3)]
+
+cores = []
+core_pattern_repetitive_time = 16
+for i in range(core_pattern_repetitive_time):
+    cores += my_core_pattern(i)
+
 pooling_core = get_pooling_core(id=64)
 simd_core = get_simd_core(id=65)
 offchip_core_id = 66
