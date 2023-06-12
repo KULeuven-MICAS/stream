@@ -36,6 +36,7 @@ class InterCoreMappingStage(Stage):
         plot_full_schedule=False,
         plot_data_transfer=False,
         scheduler_candidate_selection,
+        operands_to_prefetch,
         **kwargs,
     ):
         """Initialize the InterCoreMappingStage.
@@ -59,6 +60,7 @@ class InterCoreMappingStage(Stage):
         self.plot_full_schedule = plot_full_schedule
         self.plot_data_transfer = plot_data_transfer
         self.scheduler_candidate_selection = scheduler_candidate_selection
+        self.operands_to_prefetch = operands_to_prefetch
 
         # self.coarse_node_ids contains all the original node (aka layers) ids of the original graph
         self.unique_nodes = list(
@@ -94,6 +96,7 @@ class InterCoreMappingStage(Stage):
             self.node_hw_performances,
             self.coarse_node_ids_flexible,
             self.scheduler_candidate_selection,
+            self.operands_to_prefetch,
         )
 
         # Extract the length of an individual.
