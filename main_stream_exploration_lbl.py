@@ -3,6 +3,7 @@ from stream.classes.stages import *
 from stream.visualization.schedule import plot_timeline_brokenaxes
 from stream.visualization.memory_usage import plot_memory_usage
 import argparse
+import pickle
 import re
 
 
@@ -51,7 +52,12 @@ plot_data_transfer = True
 nb_ga_individuals = 64  # number of individuals in each genetic algorithm generation
 nb_ga_generations = 64  # number of genetic algorithm generations
 
-node_hw_performances_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results2/result/{args.headname}-lbl-{node_hw_cost_pkl_name}.pickle"
+root_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results3_latency"
+intra_result_path = f"{root_path}/intra_result/"
+inter_result_path = f"{root_path}/inter_result/"
+plot_path = f"{root_path}/plot/"
+filename = f"{args.headname}-lbl-{node_hw_cost_pkl_name}"
+node_hw_performances_path = f"{intra_result_path}{filename}.pickle"
 #################################
 
 
@@ -77,14 +83,18 @@ mainstage = MainStage(
     plot_data_transfer=plot_data_transfer,
     cn_define_mode=CN_define_mode,
     hint_loops=hint_loops,
+    operands_to_prefetch=[],
     scheduler_candidate_selection="latency",
-    visualize_node_hw_performances_path=f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results2/result/{args.headname}-lbl-{node_hw_cost_pkl_name}.png",
+    visualize_node_hw_performances_path=f"{intra_result_path}{filename}.png",
 )
 
 # Launch the MainStage
-
 scme, _ = mainstage.run()
 scme = scme[0]
+
+# Save result
+with open(f"{inter_result_path}{filename}.pickle", "wb") as f:
+    pickle.dump(scme, f, -1)
 
 # Ploting Results
 plot_full_schedule = True
@@ -92,8 +102,8 @@ draw_dependencies = True
 plot_data_transfer = True
 section_start_percent = (0,)
 percent_shown = (100,)
-timeline_fig_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results2/plot/{args.headname}-lbl-{experiment_id}-schedule.png"
-memory_fig_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results2/plot/{args.headname}-lbl-{experiment_id}-memory.png"
+timeline_fig_path = f"{plot_path}{filename}-schedule.png"
+memory_fig_path = f"{plot_path}{filename}-memory.png"
 
 plot_timeline_brokenaxes(
     scme,
