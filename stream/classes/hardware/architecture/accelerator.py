@@ -192,10 +192,11 @@ class Accelerator:
             ]
         ):
             return -1, 0, 0, 0, 0, False
-        # TODO: Instead of taking the first core that stores this, could do something more fancy
-        tensor_core_id = core_ids_storing_tensor[0]
+        # Pick the core that has stored the tensor the longest
+        idx = stored_since_timesteps.index(min(stored_since_timesteps))
+        tensor_core_id = core_ids_storing_tensor[idx]
         # Get since when this tensor is available on the core
-        stored_since_timestep = stored_since_timesteps[0]
+        stored_since_timestep = stored_since_timesteps[idx]
 
         ## STEP 2: Since when are the links available for the transfer
         sender_core = self.get_core(tensor_core_id)
@@ -210,7 +211,7 @@ class Accelerator:
         consider_transfer_from_timestep = max(
             stored_since_timestep, link_available_timestep
         )
-
+        worst_case_timestep = max(worst_case_timestep, consider_transfer_from_timestep)
         ## STEP 3: When the receiving core has enough space to store the tensor (don't consider the data eviction)
         can_transfer_from_timestep = self.memory_manager.test_add_tensor_to_core(
             tensor,
