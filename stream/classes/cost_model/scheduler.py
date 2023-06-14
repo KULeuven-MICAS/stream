@@ -293,12 +293,24 @@ def schedule_graph(
                 for storing_core_id, top_level_idx in zip(
                     cores_storing_tensor_used_by_node, top_level_idxs
                 ):
+                    # If this tensor is an output tensor, find all nodes that needed it
+                    # to get an accurate timestep at which it can be removed
+                    timestep_for_removal = end
+                    if tensor_used_by_node.layer_operand == tensor_used_by_node.origin.output_operand:
+                        nodes_that_needed_tensor = [
+                            n for n in G.successors(tensor_used_by_node.origin) 
+                            if n.core_allocation == storing_core_id
+                        ]
+                        end_times = [n.end for n in nodes_that_needed_tensor]
+                        max_end_time = max(end_times, default=-1)
+                        assert max_end_time != -1, "There should be atleast one successor."
+                        timestep_for_removal = max_end_time
                     storing_core = accelerator.get_core(storing_core_id)
                     accelerator.memory_manager.remove_tensor_from_core(
                         storing_core,
                         top_level_idx,
                         tensor_used_by_node,
-                        end,
+                        timestep_for_removal,
                         write_back_to_offchip=False,
                     )
 
