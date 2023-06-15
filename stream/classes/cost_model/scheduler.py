@@ -303,7 +303,7 @@ def schedule_graph(
                         ]
                         end_times = [n.end for n in nodes_that_needed_tensor]
                         max_end_time = max(end_times, default=-1)
-                        assert max_end_time != -1, "There should be atleast one successor."
+                        assert max_end_time != -1, "There should be at least one successor."
                         timestep_for_removal = max_end_time
                     storing_core = accelerator.get_core(storing_core_id)
                     accelerator.memory_manager.remove_tensor_from_core(

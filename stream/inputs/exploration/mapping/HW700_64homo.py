@@ -23,4 +23,7 @@ mapping = {
     "Add": {
         "core_allocation": 65,
     },
+    "Mul": {
+        "core_allocation": 65,
+    },
 }
