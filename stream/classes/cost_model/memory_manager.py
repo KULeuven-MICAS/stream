@@ -1,5 +1,6 @@
 from itertools import combinations
 import numpy as np
+from typing import Tuple
 
 # from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.tensor import Tensor
@@ -141,7 +142,7 @@ class MemoryManager:
         timestep_end: int,
         tensors_to_avoid_evicting: list,
         memory_op: str = None,
-    ):
+    ) -> Tuple[int, int, int]:
         timestep_delta = timestep_end - timestep
         total_eviction_link_energy_cost = 0
         total_eviction_memory_energy_cost = 0
@@ -153,7 +154,7 @@ class MemoryManager:
         top_instance = self.top_instances[core][top_level_idx]
 
         if self.contains(tensor, core_id):
-            return
+            return (timestep, 0, 0)
 
         ## Get the tensors that were stored at this timestep.
         # Because of shared memory there might be tensors that don't exist yet
