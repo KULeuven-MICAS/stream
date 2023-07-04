@@ -301,7 +301,7 @@ def schedule_graph(
                             n for n in G.successors(tensor_used_by_node.origin)
                             if n.core_allocation == storing_core_id
                         ]
-                        end_times = [n.end for n in nodes_that_needed_tensor]
+                        end_times = [n.end for n in nodes_that_needed_tensor if n.end is not None]
                         max_end_time = max(end_times, default=timestep_for_removal)
                         # assert max_end_time != -1, "There should be at least one successor."
                         timestep_for_removal = max_end_time

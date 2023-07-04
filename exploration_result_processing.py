@@ -112,12 +112,12 @@ experiment_LUT = command_generator()
 
 
 result_collect = []
-result_path = '/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results/log/'
+result_path = '/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results3_latency/log/'
 
 paths = glob.glob(f'{result_path}/*.log')
 for idx, path in enumerate(paths):
     print(f'Reading in result -- {path}')
-    ky = int(re.split('[/ _]', path)[11])
+    ky = int(re.split('[/ _]', path)[12])
     en = None
     la = None
     edp = None
@@ -138,7 +138,7 @@ result_collect = sorted(result_collect, key=lambda x: x[0])
 
 df = pd.DataFrame(result_collect)
 writer = pd.ExcelWriter('test.xlsx', engine='xlsxwriter')
-df.to_excel(writer, sheet_name='welcome', index=False)
+df.to_excel(writer, sheet_name='result', index=False)
 writer.save()
 
 # for result in result_collect:
