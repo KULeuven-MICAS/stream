@@ -78,11 +78,17 @@ def schedule_graph(
     # 1. Initialize the total and core priority for each tensor
     # 2. Add the constant operand tensors of all nodes to the off-chip initially
     # 3. Prefetch the constant operands that should be prefetched to their core
+    offchip_top_instances = accelerator.get_top_instances_of_core(offchip_core_id)
     for n in G.nodes():
         for op, tensor in n.operand_tensors.items():
-            tensor.initialize_core_priorities(G, n)
+            tensor.initialize_instance_priorities(G, n, accelerator)
             if op in n.constant_operands:
-                if not accelerator.contains_tensor(tensor, offchip_core_id):
+                if not any(
+                    (
+                        accelerator.contains_tensor(tensor, offchip_top_instance)
+                        for offchip_top_instance in offchip_top_instances
+                    )
+                ):
                     accelerator.memory_manager.add_tensor_to_core(
                         tensor=tensor,
                         core_id=offchip_core_id,
@@ -93,7 +99,10 @@ def schedule_graph(
                 if op in operands_to_prefetch:
                     core_allocation = n.core_allocation
                     memory_op = n.memory_operand_links[op]
-                    if not accelerator.contains_tensor(tensor, core_allocation):
+                    core_top_instance = accelerator.get_top_instance_of_core(
+                        core_allocation, memory_op
+                    )
+                    if not accelerator.contains_tensor(tensor, core_top_instance):
                         (
                             transfer_complete_timestep,
                             transfer_link_energy_cost,
@@ -283,32 +292,65 @@ def schedule_graph(
         for tensor_used_by_node, tensor_memory_operand in zip(
             tensors_this_candidate_needs, tensors_operands
         ):
-            tensor_used_by_node.core_priorities[core_id] -= 1
+            # TODO: tensor_memory_operand will be 'O' for activation tensors.
+            # TODO: If the memory between input and output is not shared, this will give a wrong instance.
+            top_instance = accelerator.get_top_instance_of_core(
+                best_candidate.core_allocation, tensor_memory_operand
+            )
+            tensor_used_by_node.instance_priorities[top_instance] -= 1
             if tensor_used_by_node.get_total_priority() == 0:
                 (
                     cores_storing_tensor_used_by_node,
                     top_level_idxs,
                     stored_since_timesteps,
                 ) = accelerator.memory_manager.find_tensor(tensor_used_by_node)
-                for storing_core_id, top_level_idx in zip(
-                    cores_storing_tensor_used_by_node, top_level_idxs
-                ):
+                (
+                    instances_storing_tensor,
+                    stored_since_timesteps,
+                ) = accelerator.memory_manager.find_tensor_in_top_instances(
+                    tensor_used_by_node
+                )
+                for instance_storing_tensor in instances_storing_tensor:
+                    core_ids_of_instance = [
+                        core.id
+                        for core in accelerator.memory_manager.cores_per_top_instance[
+                            instance_storing_tensor
+                        ]
+                    ]
                     # If this tensor is an output tensor, find all nodes that needed it
                     # to get an accurate timestep at which it can be removed
                     timestep_for_removal = end
-                    if tensor_used_by_node.layer_operand == tensor_used_by_node.origin.output_operand:
-                        nodes_that_needed_tensor = [
-                            n for n in G.successors(tensor_used_by_node.origin)
-                            if n.core_allocation == storing_core_id
-                        ]
-                        end_times = [n.end for n in nodes_that_needed_tensor if n.end is not None]
-                        max_end_time = max(end_times, default=timestep_for_removal)
-                        # assert max_end_time != -1, "There should be at least one successor."
+
+                    if (
+                        tensor_used_by_node.layer_operand
+                        == tensor_used_by_node.origin.output_operand
+                    ):
+                        origin = tensor_used_by_node.origin
+                        if offchip_core_id in core_ids_of_instance:
+                            # If wanting to discard it from offchip, look at the max end time across all successors
+                            nodes_that_needed_tensor = [
+                                n
+                                for n in G.successors(origin)
+                                if n.id[0] != origin.id[0]
+                            ]
+                        else:
+                            # If discarding it from a regular core, look at the max end time successors that used it from that instance
+                            nodes_that_needed_tensor = [
+                                n
+                                for n in G.successors(origin)
+                                if n.core_allocation in core_ids_of_instance
+                                and n.id[0] != origin.id[0]
+                            ]
+                        end_times = [n.end for n in nodes_that_needed_tensor]
+                        max_end_time = max(end_times, default=-1)
+                        assert (
+                            max_end_time != -1
+                        ), "There should be atleast one successor."
+                        assert max_end_time is not None, "Shouldn't be None."
+
                         timestep_for_removal = max_end_time
-                    storing_core = accelerator.get_core(storing_core_id)
-                    accelerator.memory_manager.remove_tensor_from_core(
-                        storing_core,
-                        top_level_idx,
+                    accelerator.memory_manager.remove_tensor_from_top_instance(
+                        instance_storing_tensor,
                         tensor_used_by_node,
                         timestep_for_removal,
                         write_back_to_offchip=False,

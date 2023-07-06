@@ -61,6 +61,7 @@ mainstage = MainStage(
     cn_define_mode=CN_define_mode,
     hint_loops=hint_loops,
     scheduler_candidate_selection="memory",
+    operands_to_prefetch=["W"],
 )
 
 # Launch the MainStage

@@ -29,9 +29,7 @@ class Tensor:
         self.base_priority = (
             None  # Will be set when we know how many successors this node has (static)
         )
-        self.core_priorities = (
-            {}
-        )  # For each core, successors the tensor is still going to be used by (dynamic)
+        self.instance_priorities = {}
         self.id = self.origin.id + (layer_operand,)
 
     def __str__(self) -> str:
@@ -61,35 +59,46 @@ class Tensor:
     def set_base_priorities(self, base_priority):
         self.base_priority = base_priority
 
-    def initialize_core_priorities(self, G, node):
-        layer_id = node.id[0]
-        successors = [succ for succ in G.successors(node) if succ.id[0] != layer_id]
-        if self.layer_operand == node.output_operand:
-            self.core_priorities = {
-                successor.core_allocation: 0 for successor in successors
-            }
-            for successor in successors:
-                self.core_priorities[successor.core_allocation] += 1
+    def get_instance_priority(self, top_instance, memory_manager):
+        if top_instance in self.instance_priorities:
+            return self.instance_priorities[top_instance]
         else:
-            self.core_priorities[self.origin.core_allocation] = self.base_priority
-
-    def get_total_priority(self):
-        return sum([priority for priority in self.core_priorities.values()])
-
-    def get_core_priority(self, core_id, memory_manager):
-        if core_id in self.core_priorities:
-            return self.core_priorities[core_id]
-        else:
-            storing_cores, _, _ = memory_manager.find_tensor(self)
-            # If the core_id is not in the dict (it means the core_id is the core that generates the tensor),
-            # we check which cores don't yet have the tensor and sum their priorities as the generator core priority.
-            not_storing_core_ids = list(
-                set(self.core_priorities.keys()) - set(storing_cores)
+            # If the top_instance is not in the dict. it means the core_id is the core that generates the tensor.
+            # We  then return as priority the sum of all priorities of top instances that are not sotring the tensor.
+            storing_instances, _, _ = memory_manager.find_tensor(self)
+            not_storing_instances = list(
+                set(self.instance_priorities.keys()) - set(storing_instances)
             )
             not_storing_priority = sum(
                 (
-                    self.core_priorities[not_storing_core_id]
-                    for not_storing_core_id in not_storing_core_ids
+                    self.instance_priorities[not_storing_instance]
+                    for not_storing_instance in not_storing_instances
                 )
             )
             return not_storing_priority
+
+    def initialize_instance_priorities(self, G, node, accelerator):
+        if self.layer_operand == node.output_operand:
+            out_edges = [
+                (succ, d)
+                for n, succ, d in G.out_edges(node, data=True)
+                if succ.id[0] != n.id[0]
+            ]
+            for successor, data in out_edges:
+                core = accelerator.get_core(successor.core_allocation)
+                layer_operand = data["operand"]
+                memory_operand = successor.memory_operand_links[layer_operand]
+                top_instance = core.get_top_memory_instance(memory_operand)
+                if top_instance in self.instance_priorities:
+                    self.instance_priorities[top_instance] += 1
+                else:  # first time we see this instance
+                    self.instance_priorities[top_instance] = 1
+
+        else:
+            core = accelerator.get_core(node.core_allocation)
+            memory_operand = self.memory_operand
+            top_instance = core.get_top_memory_instance(memory_operand)
+            self.instance_priorities[top_instance] = self.base_priority
+
+    def get_total_priority(self):
+        return sum(self.instance_priorities.values())
