@@ -147,6 +147,3 @@ outputs*/*.png
 # docs makefile and make.bat
 docs/Makefile
 docs/make.bat
-.makefile.swp
-stream/outputs
-*.xlsx*

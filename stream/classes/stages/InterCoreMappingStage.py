@@ -83,7 +83,7 @@ class InterCoreMappingStage(Stage):
         self.valid_allocations = []
         for n in self.unique_nodes_flexible:
             hw_performances = self.node_hw_performances[n]
-            valid_core_ids = [core.id for core in hw_performances.keys() if core.id < len(self.unique_nodes_flexible)]
+            valid_core_ids = [core.id for core in hw_performances.keys()]
             self.valid_allocations.append(valid_core_ids)
 
         # Set the hardware performance and core_allocation of nodes in the workload that only have a single possible core allocation

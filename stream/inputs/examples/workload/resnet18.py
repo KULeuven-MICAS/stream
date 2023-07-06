@@ -8,7 +8,7 @@ workload = {
         'operand_source': {'W': [], 'I': []},
         'constant_operands': ['I', 'W'],
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (3, 2), 'IX': (3, 2)}
+        'padding': {'IY': (3, 2), 'IX': (3, 2)}
     }
     ,
     1: {  # max pool, stride 2
@@ -21,7 +21,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'G': 'K'}},
         'memory_operand_links': {'O': 'O', 'I': 'I1', 'W': 'I2'},
-        #'padding': {'IY': (1, 0), 'IX': (1, 0)}
+        'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
     2: {  # conv2_1
@@ -34,7 +34,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 1), 'IX': (1, 1)}
+        'padding': {'IY': (1, 1), 'IX': (1, 1)}
     }
     ,
     3: {  # conv2_2
@@ -47,7 +47,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'K'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 1), 'IX': (1, 1)}
+        'padding': {'IY': (1, 1), 'IX': (1, 1)}
     }
     ,
     4: {  # Addition of layer 1 (residual path) and layer 3 (main path)
@@ -72,7 +72,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 1), 'IX': (1, 1)}
+        'padding': {'IY': (1, 1), 'IX': (1, 1)}
     }
     ,
     6: {  # conv2_4
@@ -85,7 +85,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'K'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 1), 'IX': (1, 1)}
+        'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
     7: {  # Addition of layer 4 (residual connection) and layer 6 (main path)
         'operator_type': 'Add',
@@ -109,7 +109,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 0), 'IX': (1, 0)}
+        'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
     9: {  # conv3_2
@@ -122,7 +122,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'K'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 1), 'IX': (1, 1)}
+        'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
     10: {  # conv downsample of layer 7
         'operator_type': 'Conv_downsample',
@@ -134,7 +134,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 0), 'IX': (1, 0)}
+        'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
     11: {  # Addition of layer 10 (residual connection) and layer 9 (main path)
@@ -159,7 +159,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 1), 'IX': (1, 1)}
+        'padding': {'IY': (1, 1), 'IX': (1, 1)}
     }
     ,
     13: {  # conv3_4
@@ -172,7 +172,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'K'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 1), 'IX': (1, 1)}
+        'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
     14: {  # Addition of layer 11 (residual connection) and layer 13 (main path)
         'operator_type': 'Add',
@@ -196,7 +196,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 0), 'IX': (1, 0)}
+        'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
     16: {  # conv4_2
@@ -209,7 +209,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'K'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 1), 'IX': (1, 1)}
+        'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
     17: {  # conv downsample of layer 14
         'operator_type': 'Conv_downsample',
@@ -221,7 +221,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 0), 'IX': (1, 0)}
+        'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
     18: {  # Addition of layer 17 (residual connection) and layer 16 (main path)
@@ -246,7 +246,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 1), 'IX': (1, 1)}
+        'padding': {'IY': (1, 1), 'IX': (1, 1)}
     }
     ,
     20: {  # conv4_4
@@ -259,7 +259,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'K'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 1), 'IX': (1, 1)}
+        'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
     21: {  # Addition of layer 18 (residual connection) and layer 20 (main path)
         'operator_type': 'Add',
@@ -283,7 +283,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 0), 'IX': (1, 0)}
+        'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
     23: {  # conv5_2
@@ -296,7 +296,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'K'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 1), 'IX': (1, 1)}
+        'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
     24: {  # conv downsample of layer 21
         'operator_type': 'Conv_downsample',
@@ -308,7 +308,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 0), 'IX': (1, 0)}
+        'padding': {'IY': (1, 0), 'IX': (1, 0)}
     }
     ,
     25: {  # Addition of layer 24 (residual connection) and layer 23 (main path)
@@ -333,7 +333,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'G'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 1), 'IX': (1, 1)}
+        'padding': {'IY': (1, 1), 'IX': (1, 1)}
     }
     ,
     27: {  # conv4_4
@@ -346,7 +346,7 @@ workload = {
         'constant_operands': ['W'],
         'operand_source_dimension_mapping': {'I': {'IX': 'OX', 'IY': 'OY', 'C': 'K'}},
         'memory_operand_links': {'O': 'O', 'W': 'I2', 'I': 'I1'},
-        #'padding': {'IY': (1, 1), 'IX': (1, 1)}
+        'padding': {'IY': (1, 1), 'IX': (1, 1)}
     },
     28: {  # Addition of layer 25 (residual connection) and layer 27 (main path)
         'operator_type': 'Add',
