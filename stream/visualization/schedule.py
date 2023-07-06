@@ -345,7 +345,8 @@ def plot_timeline_brokenaxes(
         y_labels[i] = label.replace(f"Core({accelerator.offchip_core_id})", "DRAM")
     axs[0].set_yticks(range(len(y_labels)))
     axs[0].set_yticklabels(y_labels)
-    plt.show(block=False)
+    plt.show(block=True)
+    # plt.show(block=False)
     plt.savefig(fig_path, format="png", bbox_inches="tight")
     logger.info(f"Plotted schedule timeline to {fig_path}")
 

@@ -320,6 +320,7 @@ def schedule_graph(
                     # If this tensor is an output tensor, find all nodes that needed it
                     # to get an accurate timestep at which it can be removed
                     timestep_for_removal = end
+
                     if (
                         tensor_used_by_node.layer_operand
                         == tensor_used_by_node.origin.output_operand
@@ -346,6 +347,7 @@ def schedule_graph(
                             max_end_time != -1
                         ), "There should be atleast one successor."
                         assert max_end_time is not None, "Shouldn't be None."
+
                         timestep_for_removal = max_end_time
                     accelerator.memory_manager.remove_tensor_from_top_instance(
                         instance_storing_tensor,
