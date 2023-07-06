@@ -50,9 +50,9 @@ plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
 plot_data_transfer = True
 nb_ga_individuals = 64  # number of individuals in each genetic algorithm generation
-nb_ga_generations = 64  # number of genetic algorithm generations
+nb_ga_generations = 10  # number of genetic algorithm generations
 
-root_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results3_latency"
+root_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results_test_bigger_W_GB"
 intra_result_path = f"{root_path}/intra_result/"
 inter_result_path = f"{root_path}/inter_result/"
 plot_path = f"{root_path}/plot/"

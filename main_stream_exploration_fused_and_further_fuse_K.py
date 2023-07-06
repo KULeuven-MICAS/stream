@@ -33,8 +33,9 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 # workload_path = "stream/inputs/exploration/workload/resnet18.onnx"
 # mapping_path = "stream.inputs.exploration.mapping.HW2_4homo"
 
-CN_define_mode = 1  # manually define outer CN size for all cores and all layers
+CN_define_mode = 4  # manually define outer CN size for all cores and all layers
 hint_loops = [("OY", "all")]
+
 
 hw_name = args.accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", args.workload_path)[-1]

@@ -64,6 +64,8 @@ class GenerateCNWorkloadHybridStage(Stage):
             self.inner_CN_loops = hint_loops
         elif cn_define_mode == 3:
             self.factor_loops = hint_loops
+        elif cn_define_mode == 4:
+            self.outer_CN_loops = hint_loops
         else:
             raise ValueError(f"CN_define_mode can not be {self.cn_define_mode}.")
 
@@ -258,6 +260,44 @@ class GenerateCNWorkloadHybridStage(Stage):
                                 f"({loop_name}, {loop_size}) is not a valid inner CN loop."
                             )
             outer_loops = self.get_rest_loops(layer.loop_dim_size, inner_loops)
+
+        elif self.cn_define_mode == 4:
+            outer_CN_loops_saved = self.outer_CN_loops.copy()
+            # half LF half LBL
+            # if layer.id[0] >= 24:
+            #     outer_CN_loops_saved = []
+
+            # half LF half finner LF with K outer
+            # if layer.id[0] >= 24 and 'conv' in layer.name.lower():
+            #     outer_CN_loops_saved = [('OY', 'all'), ('K', 16)]
+
+            # half LF half finner LF with OY outer
+            # if layer.id[0] >= 24 and 'conv' in layer.name.lower():
+            #     outer_CN_loops_saved = [('K', 16), ('OY', 'all')]
+            for loop_name, loop_size in outer_CN_loops_saved:
+                if loop_name in layer.loop_dim_size:
+                    if loop_size == "all" or layer.loop_dim_size[loop_name] < loop_size:
+                        outer_loops.append(
+                            TemporalLoop(loop_name, layer.loop_dim_size[loop_name])
+                        )
+                    elif layer.loop_dim_size[loop_name] % loop_size == 0:
+                        outer_loops.append(TemporalLoop(loop_name, loop_size))
+                    else:
+                        try:
+                            # find the closest factor within 50x.
+                            new_loop_size = (
+                                self.find_the_closest_divisible_factor_within_a_range(
+                                    layer.loop_dim_size[loop_name], loop_size, 50
+                                )
+                            )
+                            outer_loops.append(TemporalLoop(loop_name, new_loop_size))
+                            logger.info(
+                                f"For layer {int(layer.id[0])}, the outer CN dimension {loop_name} size is adjusted from {loop_size} to {new_loop_size}."
+                            )
+                        except:
+                            raise ValueError(
+                                f"({loop_name}, {loop_size}) is not a valid outer CN loop."
+                            )
 
         else:
             # TODO
