@@ -14,6 +14,7 @@ class ONNXModelParserStage(Stage):
     ):
         super().__init__(list_of_callables, **kwargs)
         self.accelerator = accelerator
+        self.mapping_path = mapping_path
         self.onnx_model_parser = ONNXModelParser(
             workload_path, mapping_path, accelerator
         )
@@ -24,6 +25,7 @@ class ONNXModelParserStage(Stage):
         workload = self.onnx_model_parser.get_workload()
 
         self.kwargs["accelerator"] = self.accelerator
+        self.kwargs["mapping_path"] = self.mapping_path
         sub_stage = self.list_of_callables[0](
             self.list_of_callables[1:],
             onnx_model=onnx_model,
