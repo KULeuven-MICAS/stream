@@ -140,6 +140,7 @@ output*/*.pickle
 outputs*/*.json
 
 # result png files
+outputs
 outputs*/*.png
 *.png
 
