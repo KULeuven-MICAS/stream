@@ -74,7 +74,6 @@ class LayerSplittingStage(Stage):
                 raise NotImplementedError(
                     f"Splitting on output channels requires 'K' loop."
                 )
-            print(output_channels)
             while divmod(output_channels, split_factor)[1] != 0:
                 split_factor += 1
                 if split_factor > output_channels:
@@ -123,7 +122,7 @@ class LayerSplittingStage(Stage):
                     (
                         split_node_names,
                         concat_name,
-                    ) = self.replace_conv_with_splitconv(
+                    ) = self.split_operator(
                         self.onnx_model, operator_name, split_factor
                     )
 
@@ -151,11 +150,11 @@ class LayerSplittingStage(Stage):
     #     return True
 
     @staticmethod
-    def replace_conv_with_splitconv(model, node_name, num_splits):
+    def split_operator(model, node_name, num_splits):
         """
-        Replaces a Conv operator in an ONNX model with a sequence of Conv operators with smaller kernel sizes
-        that are concatenated together. The output channels of each new Conv operator are equal to the output channels
-        of the original Conv operator divided by num_splits. Returns the names of the output tensors of the new Conv
+        Replaces an ONNX Conv or Gemm operator in an ONNX model with a sequence of Conv operators with smaller kernel sizes
+        that are concatenated together. The output channels of each new operator are equal to the output channels
+        of the original operator divided by num_splits. Returns the names of the output tensors of the new
         operators and the name of the output tensor of the new Concat operator.
 
         Arguments:
@@ -173,12 +172,19 @@ class LayerSplittingStage(Stage):
         original_node = None
         for i, node in enumerate(model.graph.node):
             if node.name == node_name:
+                original_node = node
+                original_node_idx = i
                 if node.op_type == "Conv":
-                    original_node = node
-                    original_node_idx = i
-                    break
+                    weight_output_channel_idx = 0
+                elif node.op_type == "Gemm":
+                    transB = 0
+                    for attr in node.attribute:
+                        if attr.name == "transB":
+                            transB = attr.i
+                    weight_output_channel_idx = 0 if transB else 1
                 else:
-                    raise ValueError("Node is not a 'Conv' operator.")
+                    raise ValueError(f"Unsupported operator type {node.op_type}.")
+                break
 
         # Get the shape of the weight of the Conv node
         weight_input_shape = None
@@ -188,11 +194,18 @@ class LayerSplittingStage(Stage):
                 break
 
         # Find the original node's output in value_info
+        node_output_is_graph_output = False
         original_node_output_name = original_node.output[0]
         original_node_output_tensor = None
         for value_info in graph.value_info:
             if value_info.name == original_node_output_name:
                 original_node_output_tensor = value_info
+
+        if original_node_output_tensor is None:
+            for output in graph.output:
+                if output.name == original_node_output_name:
+                    original_node_output_tensor = output
+                    node_output_is_graph_output = True
 
         if original_node_output_tensor is None:
             raise ValueError(
@@ -210,7 +223,7 @@ class LayerSplittingStage(Stage):
         if weight_input_shape is None:
             raise ValueError("Could not determine shape of weight input of Conv node.")
 
-        output_channels = weight_input_shape[0]
+        output_channels = weight_input_shape[weight_output_channel_idx]
 
         # Check if num_splits is a divisor of output_channels
         if output_channels % num_splits != 0:
@@ -228,7 +241,7 @@ class LayerSplittingStage(Stage):
             # Create new weight tensor
             weight_name = f"{original_node.input[1]}_split_{i}"
             weight_shape = weight_input_shape
-            weight_shape[0] = split_size
+            weight_shape[weight_output_channel_idx] = split_size
             weight_data = numpy_helper.from_array(
                 np.zeros(weight_shape), name=weight_name
             )
@@ -239,27 +252,28 @@ class LayerSplittingStage(Stage):
             node_inputs = original_node.input
             node_inputs[1] = weight_name
 
-            conv_node = helper.make_node(
-                "Conv",
+            new_node = helper.make_node(
+                original_node.op_type,
                 inputs=node_inputs,
                 outputs=[f"{original_node.output[0]}_split_{i}"],
                 name=f"{original_node.name}_{i}",
             )
-            # Set the conv node attributes to the original_node attributes
-            conv_node.attribute.extend(original_node.attribute)
+            # Set the new node attributes to the original_node attributes
+            new_node.attribute.extend(original_node.attribute)
 
-            new_nodes.append(conv_node)
+            new_nodes.append(new_node)
             # Insert the new conv node into the graph
-            graph.node.insert(original_node_idx, conv_node)
+            graph.node.insert(original_node_idx, new_node)
             original_node_idx += 1
 
-            new_output_names.append(conv_node.output[0])
+            new_output_names.append(new_node.output[0])
 
         # Create the Concat node
+        concat_output_name = f"{original_node.output[0]}_split_concat"
         concat_node = helper.make_node(
             "Concat",
             inputs=new_output_names,
-            outputs=[f"{original_node.output[0]}_split_concat"],
+            outputs=[concat_output_name],
             name=f"{original_node.name}_split_concat",
             axis=shape_index_for_split,
         )
@@ -271,7 +285,14 @@ class LayerSplittingStage(Stage):
         for node in model.graph.node:
             if node != original_node and original_node_output_name in node.input:
                 node.input.remove(original_node_output_name)
-                node.input.append(concat_node.output[0])
+                node.input.append(concat_output_name)
+
+        # If the original node is a graph output, replace it with the Concat output name
+        # TODO: Check if the concat output shape is equal to the original node's output shape
+        if node_output_is_graph_output:
+            for output in graph.output:
+                if output.name == original_node_output_name:
+                    output.name = concat_output_name
 
         # Add new nodes and weights to the graph
         graph.initializer.extend(new_weights)
