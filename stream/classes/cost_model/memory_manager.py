@@ -149,7 +149,11 @@ class MemoryManager:
         top_instance = self.top_instances[core][top_level_idx]
 
         if self.contains(tensor, top_instance):
-            return
+            return (
+                timestep,
+                total_eviction_link_energy_cost,
+                total_eviction_memory_energy_cost,
+            )
 
         ## Get the tensors that were stored at this timestep.
         # Because of shared memory there might be tensors that don't exist yet
