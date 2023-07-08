@@ -8,10 +8,30 @@ import re
 
 
 parser = argparse.ArgumentParser(description="Setup zigzag-v2 inputs")
-parser.add_argument('--workload_path', metavar='path', required=True, help='module path to workload, e.g. inputs.examples.workloads.resnet18')
-parser.add_argument('--mapping_path', metavar='path', required=True, help='path to mapping file, e.g., inputs.examples.mapping.tpu_like')
-parser.add_argument('--accelerator', metavar='path', required=True, help='module path to the accelerator, e.g. inputs.examples.hardware.TPU_like')
-parser.add_argument('--headname', metavar='path', required=True, help='module path to the accelerator, e.g. inputs.examples.hardware.TPU_like')
+parser.add_argument(
+    "--workload_path",
+    metavar="path",
+    required=True,
+    help="module path to workload, e.g. inputs.examples.workloads.resnet18",
+)
+parser.add_argument(
+    "--mapping_path",
+    metavar="path",
+    required=True,
+    help="path to mapping file, e.g., inputs.examples.mapping.tpu_like",
+)
+parser.add_argument(
+    "--accelerator",
+    metavar="path",
+    required=True,
+    help="module path to the accelerator, e.g. inputs.examples.hardware.TPU_like",
+)
+parser.add_argument(
+    "--headname",
+    metavar="path",
+    required=True,
+    help="module path to the accelerator, e.g. inputs.examples.hardware.TPU_like",
+)
 args = parser.parse_args()
 
 
@@ -52,12 +72,14 @@ plot_data_transfer = True
 nb_ga_individuals = 96  # number of individuals in each genetic algorithm generation
 nb_ga_generations = 16  # number of genetic algorithm generations
 
-root_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results4_latency"
+root_path = f"./testing_exploration_issues"
 intra_result_path = f"{root_path}/intra_result/"
 inter_result_path = f"{root_path}/inter_result/"
 plot_path = f"{root_path}/plot/"
 filename = f"{args.headname}-fused-{node_hw_cost_pkl_name}"
 node_hw_performances_path = f"{intra_result_path}{filename}.pickle"
+split_onnx_model_path = f"{root_path}/split_models/split_model-{experiment_id}.onnx"
+split_W_double_buffered = True
 #################################
 
 
@@ -88,6 +110,8 @@ mainstage = MainStage(
     operands_to_prefetch=[],
     scheduler_candidate_selection="latency",
     visualize_node_hw_performances_path=f"{intra_result_path}{filename}.png",
+    split_onnx_model_path=split_onnx_model_path,
+    split_W_double_buffered=split_W_double_buffered,
 )
 
 # Launch the MainStage
@@ -119,8 +143,11 @@ plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fi
 
 # Print Results
 import logging
+
 logger = logging.getLogger(__name__)
 latency = scme.latency
 energy = scme.energy
 edp = latency * energy
-logger.info(f"Experiment {args.headname} Results: Latency = {int(latency):.4e} Cycles   Energy = {energy:.4e} pJ   EDP = {edp:.4e}")
+logger.info(
+    f"Experiment {args.headname} Results: Latency = {int(latency):.4e} Cycles   Energy = {energy:.4e} pJ   EDP = {edp:.4e}"
+)

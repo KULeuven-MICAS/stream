@@ -16,7 +16,7 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 #################################
 accelerator = "stream.inputs.examples.hardware.TPU_like_quad_core"
 # workload_path = "stream.inputs.examples.workload.resnet18"
-workload_path = "stream/inputs/exploration/workload/squeezenet.onnx"
+workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers

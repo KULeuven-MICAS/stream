@@ -1,3 +1,4 @@
+import os
 from brokenaxes import brokenaxes
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
@@ -218,6 +219,7 @@ def plot_timeline_brokenaxes(
             if cl.active_periods:
                 for active_period in cl.active_periods:
                     layer_id = active_period[3][0]
+                    node_id = active_period[3][1]
                     # Get the colour for this layer
                     if layer_id not in layer_ids_seen:
                         color = next(layer_colors)
@@ -227,8 +229,9 @@ def plot_timeline_brokenaxes(
                     x = active_period[0]
                     y = nb_cores - 1 + pair_link_id - 0.25
                     width = active_period[1] - active_period[0]
-                    # distinguish weight from activation (input/output)
-                    if active_period[2] == "W":
+                    # distinguish constant operands (weights) from activations (input/output)
+                    node = next((n for n in G.nodes() if n.id == (layer_id, node_id)))
+                    if active_period[2] in node.constant_operands:
                         for ax_idx in range(0, nb_axs):
                             if (
                                 (x_starts[ax_idx] <= x <= x_ends[ax_idx])
@@ -262,6 +265,7 @@ def plot_timeline_brokenaxes(
                                         facecolor=color,
                                         edgecolor="black",
                                         lw=1,
+                                        hatch="|",
                                         label=f"Layer {layer_id}",
                                     )
                                 )
@@ -347,6 +351,10 @@ def plot_timeline_brokenaxes(
     axs[0].set_yticklabels(y_labels)
     plt.show(block=True)
     # plt.show(block=False)
+    # Create subfolders if they don't exist
+    dir_name = os.path.dirname(os.path.abspath(fig_path))
+    if not os.path.isdir(dir_name):
+        os.makedirs(dir_name)
     plt.savefig(fig_path, format="png", bbox_inches="tight")
     logger.info(f"Plotted schedule timeline to {fig_path}")
 
