@@ -119,7 +119,7 @@ def plot_timeline_brokenaxes(
             )
             if ANNOTATE_CN_ID:
                 axs[0].annotate(
-                    f"{cn.id[1]}",
+                    f"{cn.id[0]}\n{cn.id[1]}",
                     (x + width / 2, y + 0.25),
                     color="black",
                     weight="bold",
@@ -148,7 +148,7 @@ def plot_timeline_brokenaxes(
                 )
                 if ANNOTATE_CN_ID:
                     axs[ax_idx].annotate(
-                        f"{cn.id[1]}",
+                        f"{cn.id[0]}\n{cn.id[1]}",
                         (x + width / 2, y + 0.25),
                         color="black",
                         weight="bold",
@@ -267,7 +267,7 @@ def plot_timeline_brokenaxes(
                                 )
                                 if ANNOTATE_CN_ID:
                                     axs[ax_idx].annotate(
-                                        f"{active_period[3][1]}",
+                                        f"{active_period[3][0]}\n{active_period[3][1]}",
                                         (x + width / 2, y + 0.25),
                                         color="black",
                                         weight="bold",
