@@ -204,8 +204,7 @@ class Accelerator:
         # TODO there will be multiple possible cores to transfer between.
         # TODO For now, we take the first one
         sender_core = sender_cores[0]
-        receiver_core = self.get_core(receiving_core_id)
-        links = self.get_links_for_pair(sender_core, receiver_core)
+        links = self.get_links_for_pair(sender_core, receiving_core)
         # TODO: Currently, we just select the first shortest-distance communication link.
         link_available_timestep = max([link.available_from for link in links])
         data_transfer_duration = max(
@@ -215,7 +214,7 @@ class Accelerator:
         consider_transfer_from_timestep = max(
             stored_since_timestep, link_available_timestep
         )
-        worst_case_timestep = max(worst_case_timestep, consider_transfer_from_timestep)
+        worst_case_timestep = consider_transfer_from_timestep
         ## STEP 3: When the receiving core has enough space to store the tensor (don't consider the data eviction)
         can_transfer_from_timestep = self.memory_manager.test_add_tensor_to_core(
             tensor,
