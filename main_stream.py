@@ -13,16 +13,17 @@ _logging_format = (
 )
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
-#################################
+################################INPUTS################################
 accelerator = "stream.inputs.examples.hardware.TPU_like_quad_core"
-# workload_path = "stream.inputs.examples.workload.resnet18"
 workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
-
-CN_define_mode = 1  # manually define outer CN size for all cores and all layers
-# hint_loops = [('OY', 'all')]  # outer CN loops, with error in resnet18 plotting
+CN_define_mode = 1  # manually define outer-CN loops
 hint_loops = [("OY", "all")]
+nb_ga_individuals = 16  # number of individuals in each generation
+nb_ga_generations = 16  # number of genetic algorithm generations
+######################################################################
 
+################################PARSING###############################
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
@@ -33,14 +34,23 @@ for dim, size in hint_loops:
 hint_loops_str = "_".join(hint_loops_str_list)
 experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}"
 node_hw_cost_pkl_name = f"saved_cn_hw_cost-{experiment_id}"
+######################################################################
+
+############PLOTTING#############
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
+draw_dependencies = True
 plot_data_transfer = True
-nb_ga_individuals = 16  # number of individuals in each genetic algorithm generation
-nb_ga_generations = 16  # number of genetic algorithm generations
-node_hw_performances_path = f"outputs/{node_hw_cost_pkl_name}.pickle"
+section_start_percent = (0,)
+percent_shown = (100,)
 #################################
 
+
+################################PATHS################################
+node_hw_performances_path = f"outputs/{node_hw_cost_pkl_name}.pickle"
+timeline_fig_path = f"outputs/{experiment_id}-schedule.png"
+memory_fig_path = f"outputs/{experiment_id}-memory.png"
+#####################################################################
 
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
@@ -74,16 +84,6 @@ scme, _ = mainstage.run()
 scme = scme[0]
 
 # Ploting Results
-
-
-plot_full_schedule = True
-draw_dependencies = True
-plot_data_transfer = True
-section_start_percent = (0,)
-percent_shown = (100,)
-timeline_fig_path = f"outputs/{experiment_id}-schedule.png"
-memory_fig_path = f"outputs/{experiment_id}-memory.png"
-
 plot_timeline_brokenaxes(
     scme,
     draw_dependencies,
