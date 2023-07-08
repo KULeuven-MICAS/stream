@@ -335,7 +335,7 @@ def plot_timeline_brokenaxes(
         loc="right",
     )
     # Get all handles and labels and then filter them for unique ones and set legend
-    legend_without_duplicate_labels(bax, loc=(0.0, 1.01), ncol=7)
+    legend_without_duplicate_labels(bax, loc=(0.0, 1.01), ncol=6)
     ylims = [ax.get_ylim() for ax in axs]
     miny = min((lim[0] for lim in ylims))
     maxy = max((lim[1] for lim in ylims))

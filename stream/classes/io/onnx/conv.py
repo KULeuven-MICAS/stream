@@ -265,6 +265,4 @@ class ConvParser(Parser):
             op_type,
         )
 
-        logger.info(f"Parsed Conv node {self.node.name}")
-
         return node_obj
