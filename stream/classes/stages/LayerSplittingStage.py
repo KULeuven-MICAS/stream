@@ -1,3 +1,4 @@
+import os
 from math import ceil
 import numpy as np
 import onnx
@@ -10,6 +11,7 @@ from stream.classes.workload.node import Node
 from stream.classes.hardware.architecture.communication_link import CommunicationLink
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from zigzag.utils import pickle_deepcopy
+from stream.classes.stages import utils
 
 from stream.classes.workload.dummy_node import DummyNode
 
@@ -27,6 +29,22 @@ class LayerSplittingStage(Stage):
         self.onnx_model = onnx_model
         self.workload = workload
 
+        # Set the required kwarg attributes
+        self.split_onnx_model_path = None
+        self.split_W_double_buffered = None
+        required_kwargs = ["split_onnx_model_path", "split_W_double_buffered"]
+        utils.set_required_kwargs(required_kwargs, self)
+
+        # Create subfolders for split model save path if they don't exist
+        dir_name = os.path.dirname(os.path.abspath(self.split_onnx_model_path))
+        if not os.path.isdir(dir_name):
+            os.makedirs(dir_name)
+
+        if self.split_W_double_buffered:
+            self.split_W_percentage = 0.5
+        else:
+            self.split_W_percentage = 1
+
         # Get the weight capacity of all cores
         weight_capacities = {}
         for core in self.accelerator.cores.nodes():
@@ -38,7 +56,6 @@ class LayerSplittingStage(Stage):
             weight_capacities[core.id] = core_weight_capacity
 
         # Get for each layer the split factor we need to be able to fit weights on possible cores
-        max_weight_size = 0
         split_factors = {}
         for node in self.workload.nodes():
             # Get the weight capacity of all possible core allocations of this node
@@ -64,7 +81,9 @@ class LayerSplittingStage(Stage):
             weight_size = node.operand_size_bit[constant_operand]
             if weight_size == 0:
                 continue
-            split_factor = ceil(weight_size / min_core_capacity)
+            split_factor = ceil(
+                weight_size / (self.split_W_percentage * min_core_capacity)
+            )  # 0.5 for double buffering
             if split_factor == 1:
                 continue
             # Check if the split_factor is a divisor of the number of output channels
@@ -132,13 +151,12 @@ class LayerSplittingStage(Stage):
 
         # Infer the model tensor shapes
         self.onnx_model = infer_shapes(self.onnx_model)
-        split_model_save_path = "outputs/model_split.onnx"
-        onnx.save(self.onnx_model, split_model_save_path)
+        onnx.save(self.onnx_model, self.split_onnx_model_path)
 
         self.kwargs["accelerator"] = self.accelerator
         sub_stage = self.list_of_callables[0](
             self.list_of_callables[1:],
-            workload_path=split_model_save_path,
+            workload_path=self.split_onnx_model_path,
             **self.kwargs,
         )
         for cme, extra_info in sub_stage.run():
@@ -186,12 +204,29 @@ class LayerSplittingStage(Stage):
                     raise ValueError(f"Unsupported operator type {node.op_type}.")
                 break
 
-        # Get the shape of the weight of the Conv node
+        # Get the shape of the weight of the operator
         weight_input_shape = None
+        original_weight_name = original_node.input[1]
         for original_weight in graph.initializer:
-            if original_weight.name == original_node.input[1]:
+            if original_weight.name == original_weight_name:
                 weight_input_shape = list(original_weight.dims)
                 break
+        if weight_input_shape is None:
+            raise ValueError(
+                f"Could not determine shape of weight input of operator {node_name}."
+            )
+
+        # Get the shape of the bias of the operator (if it has a bias)
+        has_bias = False
+        original_bias_name = None
+        bias_input_shape = None
+        if len(node.input) == 3:
+            has_bias = True
+            original_bias_name = node.input[2]
+            for original_bias in graph.initializer:
+                if original_bias.name == original_bias_name:
+                    bias_input_shape = list(original_bias.dims)
+                    break
 
         # Find the original node's output in value_info
         node_output_is_graph_output = False
@@ -220,9 +255,6 @@ class LayerSplittingStage(Stage):
             d.dim_value for d in original_node_output_tensor.type.tensor_type.shape.dim
         ]
 
-        if weight_input_shape is None:
-            raise ValueError("Could not determine shape of weight input of Conv node.")
-
         output_channels = weight_input_shape[weight_output_channel_idx]
 
         # Check if num_splits is a divisor of output_channels
@@ -236,10 +268,12 @@ class LayerSplittingStage(Stage):
         # Split the original node into n nodes
         new_nodes = []
         new_weights = []
+        new_biases = []
         new_output_names = []
         for i in range(num_splits):
+            node_inputs = original_node.input
             # Create new weight tensor
-            weight_name = f"{original_node.input[1]}_split_{i}"
+            weight_name = f"{original_weight_name}_split_{i}"
             weight_shape = weight_input_shape
             weight_shape[weight_output_channel_idx] = split_size
             weight_data = numpy_helper.from_array(
@@ -248,8 +282,20 @@ class LayerSplittingStage(Stage):
             # Remove the zeros. Right now the new weight tensors have no actual values.
             weight_data.ClearField("raw_data")
             new_weights.append(weight_data)
+            # Create new bias tensor if the original node has one
+            if has_bias:
+                bias_name = f"{original_bias_name}_split_{i}"
+                bias_shape = bias_input_shape
+                assert (
+                    len(bias_shape) == 1
+                ), "Correct dim idx not implemented for > 1 bias dim."
+                bias_shape[0] = split_size
+                bias_data = numpy_helper.from_array(
+                    np.zeros(bias_shape), name=bias_name
+                )
+                bias_data.ClearField("raw_data")
+                new_biases.append(bias_data)
 
-            node_inputs = original_node.input
             node_inputs[1] = weight_name
 
             new_node = helper.make_node(
@@ -284,8 +330,9 @@ class LayerSplittingStage(Stage):
         # Update connections to original nodes
         for node in model.graph.node:
             if node != original_node and original_node_output_name in node.input:
+                output_name_idx = list(node.input).index(original_node_output_name)
                 node.input.remove(original_node_output_name)
-                node.input.append(concat_output_name)
+                node.input.insert(output_name_idx, concat_output_name)
 
         # If the original node is a graph output, replace it with the Concat output name
         # TODO: Check if the concat output shape is equal to the original node's output shape
@@ -294,9 +341,11 @@ class LayerSplittingStage(Stage):
                 if output.name == original_node_output_name:
                     output.name = concat_output_name
 
-        # Add new nodes and weights to the graph
+        # Add new weights to the graph
         graph.initializer.extend(new_weights)
-
+        # Add new biases to the graph
+        graph.initializer.extend(new_biases)
+        # Add new outputs to the graph
         new_output_shape = original_output_shape
         new_output_shape[shape_index_for_split] = split_size
         new_output_tensors = []
@@ -305,8 +354,6 @@ class LayerSplittingStage(Stage):
                 new_output_name, original_output_elem_type, original_output_shape
             )
             new_output_tensors.append(new_output_tensor)
-
-        # Add the new value info tensors the the graph's value info
         graph.value_info.extend(new_output_tensors)
 
         # Remove original node from graph

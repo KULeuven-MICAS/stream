@@ -38,7 +38,9 @@ plot_full_schedule = True
 plot_data_transfer = True
 nb_ga_individuals = 16  # number of individuals in each genetic algorithm generation
 nb_ga_generations = 16  # number of genetic algorithm generations
-node_hw_performances_path = f"outputs/{node_hw_cost_pkl_name}.pickle"
+node_hw_performances_path = (f"outputs/{node_hw_cost_pkl_name}.pickle",)
+split_onnx_model_path = f"outputs/model_split-{experiment_id}.pickle"
+split_W_double_buffered = True
 #################################
 
 
@@ -68,6 +70,8 @@ mainstage = MainStage(
     hint_loops=hint_loops,
     scheduler_candidate_selection="memory",
     operands_to_prefetch=[],
+    split_onnx_model_path=split_onnx_model_path,
+    split_W_double_buffered=split_W_double_buffered,
 )
 
 # Launch the MainStage
