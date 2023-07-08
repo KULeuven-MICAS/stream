@@ -73,14 +73,14 @@ plot_data_transfer = True
 nb_ga_individuals = 96  # number of individuals in each genetic algorithm generation
 nb_ga_generations = 24  # number of genetic algorithm generations
 
-root_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results5_latency"
+root_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results6_latency"
 intra_result_path = f"{root_path}/intra_result/"
 inter_result_path = f"{root_path}/inter_result/"
 plot_path = f"{root_path}/plot/"
 filename = f"{args.headname}-lbl-{node_hw_cost_pkl_name}"
 node_hw_performances_path = f"{intra_result_path}{filename}.pickle"
 split_onnx_model_path = f"{root_path}/split_models/split_model-lbl-{experiment_id}.onnx"
-split_W_double_buffered = False
+split_W_double_buffered = True
 #################################
 
 

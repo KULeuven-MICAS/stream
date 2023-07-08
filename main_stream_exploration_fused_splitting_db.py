@@ -5,7 +5,6 @@ from stream.visualization.memory_usage import plot_memory_usage
 import argparse
 import pickle
 import re
-import os
 
 
 parser = argparse.ArgumentParser(description="Setup zigzag-v2 inputs")
@@ -55,7 +54,7 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 # mapping_path = "stream.inputs.exploration.mapping.HW2_4homo"
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
-hint_loops = []
+hint_loops = [("OY", "all")]
 
 hw_name = args.accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", args.workload_path)[-1]
@@ -73,14 +72,14 @@ plot_data_transfer = True
 nb_ga_individuals = 96  # number of individuals in each genetic algorithm generation
 nb_ga_generations = 24  # number of genetic algorithm generations
 
-root_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results5_latency"
+root_path = f"/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results6_latency"
 intra_result_path = f"{root_path}/intra_result/"
 inter_result_path = f"{root_path}/inter_result/"
 plot_path = f"{root_path}/plot/"
-filename = f"{args.headname}-lbl-{node_hw_cost_pkl_name}"
+filename = f"{args.headname}-fused-{node_hw_cost_pkl_name}"
 node_hw_performances_path = f"{intra_result_path}{filename}.pickle"
-split_onnx_model_path = f"{root_path}/split_models/split_model-lbl-{experiment_id}.onnx"
-split_W_double_buffered = False
+split_onnx_model_path = f"{root_path}/split_models/split_model-fused-{experiment_id}.onnx"
+split_W_double_buffered = True
 #################################
 
 
@@ -120,12 +119,7 @@ scme, _ = mainstage.run()
 scme = scme[0]
 
 # Save result
-result_filename = f"{inter_result_path}{filename}.pickle"
-# Create subfolders for result if they don't exist
-dir_name = os.path.dirname(os.path.abspath(result_filename))
-if not os.path.isdir(dir_name):
-    os.makedirs(dir_name)
-with open(result_filename, "wb") as f:
+with open(f"{inter_result_path}{filename}.pickle", "wb") as f:
     pickle.dump(scme, f, -1)
 
 # Ploting Results
