@@ -148,7 +148,7 @@ class MemoryManager:
         top_level_idx = self.get_top_level_idx(core, memory_op)
         top_instance = self.top_instances[core][top_level_idx]
 
-        if self.contains(tensor, core_id):
+        if self.contains(tensor, top_instance):
             return (
                 timestep,
                 total_eviction_link_energy_cost,
