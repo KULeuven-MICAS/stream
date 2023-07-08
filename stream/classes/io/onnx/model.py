@@ -89,6 +89,7 @@ class ONNXModelParser:
                     self.onnx_model,
                     self.accelerator,
                 )
+                logger.info(f"Parsed Conv node {node.name}.")
             elif node.op_type in ["MatMul"]:
                 parser = MatMulParser(
                     node_id_tuple,
@@ -98,6 +99,7 @@ class ONNXModelParser:
                     self.onnx_model,
                     self.accelerator,
                 )
+                logger.info(f"Parsed MatMul node {node.name}.")
             elif node.op_type in ["Gemm"]:
                 parser = GemmParser(
                     node_id_tuple,
@@ -107,6 +109,7 @@ class ONNXModelParser:
                     self.onnx_model,
                     self.accelerator,
                 )
+                logger.info(f"Parsed Gemm node {node.name}.")
             elif node.op_type in [
                 "MaxPool",
                 "AveragePool",
@@ -121,6 +124,7 @@ class ONNXModelParser:
                     self.onnx_model,
                     self.accelerator,
                 )
+                logger.info(f"Parsed Pooling node {node.name}.")
             elif node.op_type in ["Reshape"]:
                 parser = ReshapeParser(
                     node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model
@@ -129,25 +133,36 @@ class ONNXModelParser:
                 parser = FlattenParser(
                     node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model
                 )
-            elif node.op_type in ["Add"]:
-                parser = SimdParser(
-                    node_id_tuple,
-                    node,
-                    nodes_outputs,
-                    self.mapping,
-                    self.onnx_model,
-                    self.accelerator,
-                )
+                logger.info(f"Parsed Flatten node {node.name}.")
+            elif node.op_type in ["Add", "Mul"]:
+                # TODO: a temporary fix an element-wise Add or Mul which has asymmetric input data -> treat it as a DummyNode.
+                #  Future to support node with asymmetric input data.
+                if has_asymmetric_input_data(node, self.onnx_model):
+                    parser = DefaultNodeParser(node_id_tuple, node, nodes_outputs)
+                    logger.info(f"Parsed asymmetric {node.op_type} node {node.name}. as a DummyNode")
+                else:
+                    parser = SimdParser(
+                        node_id_tuple,
+                        node,
+                        nodes_outputs,
+                        self.mapping,
+                        self.onnx_model,
+                        self.accelerator,
+                    )
+                    logger.info(f"Parsed {node.op_type} node {node.name}.")
             elif node.op_type in ["Transpose"]:
                 parser = TransposeParser(
                     node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model
                 )
+                logger.info(f"Parsed Transpose node {node.name}.")
             elif node.op_type in ["LpNormalization"]:
                 parser = LpNormalizationParser(
                     node_id_tuple, node, nodes_outputs, self.mapping, self.onnx_model
                 )
+                logger.info(f"Parsed LpNormalization node {node.name}.")
             else:  # it is not any of the above, so create a DummyNode
                 parser = DefaultNodeParser(node_id_tuple, node, nodes_outputs)
+                logger.info(f"Parsed {node.op_type} node {node.name}. as a DummyNode")
             node_obj = parser.run()
             # Add the node_obj to the ONNXWorkload
             workload.add(node_id_tuple, node_obj)
@@ -166,3 +181,16 @@ class ONNXModelParser:
 
     def get_workload(self):
         return self.workload
+
+
+def has_asymmetric_input_data(node, onnx_model):
+    from zigzag.classes.io.onnx.utils import get_onnx_tensor_type
+
+    input_name1 = node.input[0]
+    input_name2 = node.input[1]
+    input_shape1 = get_onnx_tensor_type(input_name1, onnx_model).shape
+    input_shape2 = get_onnx_tensor_type(input_name2, onnx_model).shape
+    if input_shape1 != input_shape2:
+        return True
+    else:
+        return False
