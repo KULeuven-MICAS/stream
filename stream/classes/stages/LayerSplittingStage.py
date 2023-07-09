@@ -193,20 +193,28 @@ class LayerSplittingStage(Stage):
                 original_node = node
                 original_node_idx = i
                 if node.op_type == "Conv":
+                    node_weight_input_idx = 1
+                    node_bias_input_idx = 2 if len(node.input) >= 3 else None
                     weight_output_channel_idx = 0
                 elif node.op_type == "Gemm":
                     transB = 0
                     for attr in node.attribute:
                         if attr.name == "transB":
                             transB = attr.i
+                    node_weight_input_idx = 1
+                    node_bias_input_idx = 2 if len(node.input) >= 3 else None
                     weight_output_channel_idx = 0 if transB else 1
+                elif node.op_type == "QLinearConv":
+                    node_weight_input_idx = 3
+                    node_bias_input_idx = 8 if len(node.input) >= 9 else None
+                    weight_output_channel_idx = 0
                 else:
                     raise ValueError(f"Unsupported operator type {node.op_type}.")
                 break
 
         # Get the shape of the weight of the operator
         weight_input_shape = None
-        original_weight_name = original_node.input[1]
+        original_weight_name = original_node.input[node_weight_input_idx]
         for original_weight in graph.initializer:
             if original_weight.name == original_weight_name:
                 weight_input_shape = list(original_weight.dims)
@@ -220,9 +228,9 @@ class LayerSplittingStage(Stage):
         has_bias = False
         original_bias_name = None
         bias_input_shape = None
-        if len(node.input) == 3:
+        if node_bias_input_idx is not None:
             has_bias = True
-            original_bias_name = node.input[2]
+            original_bias_name = node.input[node_bias_input_idx]
             for original_bias in graph.initializer:
                 if original_bias.name == original_bias_name:
                     bias_input_shape = list(original_bias.dims)
@@ -296,7 +304,7 @@ class LayerSplittingStage(Stage):
                 bias_data.ClearField("raw_data")
                 new_biases.append(bias_data)
 
-            node_inputs[1] = weight_name
+            node_inputs[node_weight_input_idx] = weight_name
 
             new_node = helper.make_node(
                 original_node.op_type,
