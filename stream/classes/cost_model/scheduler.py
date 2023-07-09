@@ -340,12 +340,9 @@ def schedule_graph(
                                 if n.core_allocation in core_ids_of_instance
                                 and n.id[0] != origin.id[0]
                             ]
-                        end_times = [n.end for n in nodes_that_needed_tensor]
-                        max_end_time = max(end_times, default=-1)
-                        assert (
-                            max_end_time != -1
-                        ), "There should be atleast one successor."
-                        assert max_end_time is not None, "Shouldn't be None."
+                        end_times = [n.end for n in nodes_that_needed_tensor if n.end is not None]
+                        max_end_time = max(end_times, default=timestep_for_removal)
+                        # assert max_end_time != -1, "There should be at least one successor."
                         timestep_for_removal = max_end_time
                     accelerator.memory_manager.remove_tensor_from_top_instance(
                         instance_storing_tensor,
