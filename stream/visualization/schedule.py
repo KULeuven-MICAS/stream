@@ -4,6 +4,13 @@ from matplotlib.patches import Rectangle
 from networkx import DiGraph
 import numpy as np
 import logging
+import plotly.express as px
+import plotly.graph_objects as go
+import pandas as pd
+import pickle
+import networkx as nx
+import argparse
+
 
 logger = logging.getLogger(__name__)
 
@@ -365,3 +372,109 @@ def legend_without_duplicate_labels(bax, loc, ncol):
 
 def major_formatter(x, pos):
     return f"{int(x):,}"
+
+
+########################## PLOTLY PLOTTING ########################
+def add_dependencies(fig, scme):
+    for node in scme.workload.nodes():
+        c_id = node.id
+        c_l = node.id[0]
+        preds = scme.workload.predecessors(node)
+        for pred in preds:
+            p_id = pred.id
+            p_l = pred.id[0]
+            if p_l == c_l:
+                continue  # Ignore intra layer edges
+            p_start = pred.start
+            p_runtime = pred.runtime
+            p_end = pred.end
+            p_core = pred.core_allocation
+            c_start = node.start
+            c_runtime = node.runtime
+            c_core = node.core_allocation
+            fig.add_trace(
+                go.Scatter(
+                    x=[p_end, c_start],
+                    y=[f"Core {p_core}", f"Core {c_core}"],
+                    name=f"{p_id}-->{c_id}",
+                    line=dict(width=1, color="black"),
+                )
+            )
+    # fig.for_each_trace(
+    #     lambda trace: trace.update(visible=False) if "-->" in trace.name else (),
+    # )
+
+
+def dataframe_from_scme(scme):
+    nodes = list(nx.topological_sort(scme.workload))
+    dicts = []
+    for n in nodes:
+        id = n.id
+        layer = id[0]
+        core_id = n.core_allocation
+        start = n.start
+        end = n.end
+        runtime = n.runtime
+        d = dict(
+            Task=f"CN{id}",
+            Start=start,
+            End=end,
+            Resource=f"Core {core_id}",
+            Layer=f"Layer {layer}",
+            Runtime=runtime,
+        )
+        dicts.append(d)
+    df = pd.DataFrame(dicts)
+    return df
+
+
+def visualize_timeline_plotly(scme, draw_dependencies=False):
+    logger.info(f"Visualizing using Plotly. {scme=}, {draw_dependencies=}.")
+    df = dataframe_from_scme(scme)
+    fig_timeline = px.timeline(
+        df,
+        x_start="Start",
+        x_end="End",
+        y="Resource",
+        color="Layer",
+        labels={"Color": "Legend"},
+    )
+    fig_timeline.update_yaxes(autorange="reversed")
+
+    # Added so px.timeline works with integer numbers
+    fig_timeline.layout.xaxis.type = "linear"
+    for d in fig_timeline.data:
+        filt = df["Layer"] == d.name
+        d.x = df[filt]["Runtime"].tolist()
+
+    # Draw dependency lines if necessary
+    if draw_dependencies:
+        add_dependencies(fig_timeline, scme)
+
+    # Title
+    edp = scme.latency * scme.energy
+    fig_timeline.update_layout(
+        title_text=f"Computation Schedule.\t\t\tLatency = {scme.latency:.3e}\t\t\tEnergy = {scme.energy:.3e}\t\t\tEDP = {edp:.3e}"
+    )
+    fig_timeline.show()
+
+
+if __name__ == "__main__":
+    # Parse arguments
+    parser = argparse.ArgumentParser()
+    a = parser.add_argument("--path", "-p", type=str, help="Path to scme pickle file.")
+    parser.add_argument(
+        "--draw_dependencies",
+        "-d",
+        nargs="?",  # makes it optional
+        default=0,
+        type=int,
+        help="Draw the inter-layer dependencies.",
+    )
+    args = parser.parse_args()
+    # Get scme from pickle filepath
+    scme_path = args.path
+    with open(scme_path, "rb") as fp:
+        scme = pickle.load(fp)
+    # Visualize using Plotly
+    visualize_timeline_plotly(scme, draw_dependencies=args.draw_dependencies)
