@@ -112,7 +112,7 @@ experiment_LUT = command_generator()
 
 
 result_collect = []
-result_path = '/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results3_latency/log/'
+result_path = '/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results4_latency/log/'
 
 paths = glob.glob(f'{result_path}/*.log')
 for idx, path in enumerate(paths):
@@ -137,8 +137,8 @@ for idx, path in enumerate(paths):
 result_collect = sorted(result_collect, key=lambda x: x[0])
 
 df = pd.DataFrame(result_collect)
-writer = pd.ExcelWriter('test.xlsx', engine='xlsxwriter')
-df.to_excel(writer, sheet_name='result', index=False)
+writer = pd.ExcelWriter('case1.xlsx', engine='xlsxwriter')
+df.to_excel(writer, sheet_name='result', header=['Index', 'Workload', 'Hardware', 'Schedule', 'Latency', 'Energy', 'EDP'])
 writer.save()
 
 # for result in result_collect:

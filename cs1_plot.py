@@ -7,7 +7,7 @@ import xlsxwriter
 HW_sc_list = ["single_core_16x16_mesh_dpDRAM", "single_core_32x32_mesh_dpDRAM",
               "single_core_64x64_mesh_dpDRAM", "single_core_128x128_mesh_dpDRAM"]
 HW_homo_list = ["single_core_16x16_mesh_dpDRAM", "HW2_4homo_mesh_dpDRAM",
-                "HW500_16homo_mesh_dpDRAM", "single_core_64x64_mesh_dpDRAM"]
+                "HW500_16homo_mesh_dpDRAM", "HW700_64homo_mesh_dpDRAM"]
 HW_hetero_list = ["single_core_16x16_mesh_dpDRAM", "HW3_4hetero_mesh_dpDRAM",
                   "HW600_16hetero_mesh_dpDRAM", "HW800_64hetero_mesh_dpDRAM"]
 schedule_way = ["lyl", "fused"]
@@ -135,10 +135,10 @@ def plot_cs1(opt_goal, WL, result_path):
 
     plt.tight_layout()
     # plt.show()
-    plt.savefig(f"exploration_figures/{WL}_{opt_goal}.png")
+    plt.savefig(f"exploration_figures4/{WL}_{opt_goal}.png")
 
 if __name__ == "__main__":
-    for opt_goal in ['latency', 'edp']:
-        result_path = f'/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results3_{opt_goal}/log/'
+    for opt_goal in ['latency']:
+        result_path = f'/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results4_{opt_goal}/log/'
         for WL in WL_list:
             plot_cs1(opt_goal,WL,result_path)
