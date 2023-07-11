@@ -353,7 +353,7 @@ class Accelerator:
         links_set = set((link for links in links_to_block for link in links))
         for link in links_set:
             blocking_start_timestep, blocking_end_timestep = link.block(
-                worst_case_start_time, duration, cn_id
+                worst_case_start_time, duration, cn_id, too_large_operands
             )
             assert (
                 blocking_start_timestep == worst_case_start_time

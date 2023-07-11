@@ -1,8 +1,12 @@
 from zigzag.classes.stages import *
 from stream.classes.stages import *
-from stream.visualization.schedule import plot_timeline_brokenaxes
+from stream.visualization.schedule import (
+    plot_timeline_brokenaxes,
+    visualize_timeline_plotly,
+)
 from stream.visualization.memory_usage import plot_memory_usage
 import re
+import pickle
 
 # Initialize the logger
 import logging as _logging
@@ -18,9 +22,9 @@ accelerator = "stream.inputs.examples.hardware.TPU_like_quad_core"
 workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
 CN_define_mode = 1  # manually define outer-CN loops
-hint_loops = [("OY", "all")]
+hint_loops = []
 nb_ga_individuals = 16  # number of individuals in each generation
-nb_ga_generations = 16  # number of genetic algorithm generations
+nb_ga_generations = 2  # number of genetic algorithm generations
 ######################################################################
 
 ################################PARSING###############################
@@ -33,7 +37,8 @@ for dim, size in hint_loops:
     hint_loops_str_list.extend([str(dim).lower(), str(size)])
 hint_loops_str = "_".join(hint_loops_str_list)
 experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}"
-node_hw_cost_pkl_name = f"saved_cn_hw_cost-{experiment_id}"
+node_hw_cost_pkl_name = f"{experiment_id}-saved_cn_hw_cost"
+scme_pkl_name = f"{experiment_id}-scme"
 ######################################################################
 
 ############PLOTTING#############
@@ -48,7 +53,9 @@ percent_shown = (100,)
 
 ################################PATHS################################
 node_hw_performances_path = f"outputs/{node_hw_cost_pkl_name}.pickle"
-timeline_fig_path = f"outputs/{experiment_id}-schedule.png"
+scme_path = f"outputs/{scme_pkl_name}.pickle"
+timeline_fig_path_plotly = f"outputs/{experiment_id}-schedule.html"
+timeline_fig_path_matplotlib = f"outputs/{experiment_id}-schedule.png"
 memory_fig_path = f"outputs/{experiment_id}-memory.png"
 #####################################################################
 
@@ -83,13 +90,25 @@ mainstage = MainStage(
 scme, _ = mainstage.run()
 scme = scme[0]
 
-# Ploting Results
+# Save the scme to a pickle file
+with open(scme_path, "wb") as fp:
+    pickle.dump(scme, fp)
+
+# Plotting results using Plotly
+visualize_timeline_plotly(
+    scme,
+    draw_dependencies=draw_dependencies,
+    draw_communication=plot_data_transfer,
+    fig_path=timeline_fig_path_plotly,
+)
+
+# Ploting results using Matplotlib
 plot_timeline_brokenaxes(
     scme,
     draw_dependencies,
     section_start_percent,
     percent_shown,
     plot_data_transfer,
-    fig_path=timeline_fig_path,
+    fig_path=timeline_fig_path_matplotlib,
 )
 plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
