@@ -511,7 +511,6 @@ def get_dataframe_from_scme(scme, add_communication=False):
         communication_dicts = get_communication_dicts(scme)
         dicts += communication_dicts
     df = pd.DataFrame(dicts)
-    print(df)
     return df
 
 
