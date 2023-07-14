@@ -239,46 +239,38 @@ class MemoryManager:
         tensor: Tensor,
         core_id: int,
         test_timestep: int,
-        worst_case_timestep: int,
-        data_transfer_duration: int,
         memory_op: str,
     ) -> int:
         """
         This function gives the earliest timestep since test_timestep that the tensor can be added to the core.
-        A timestep is picked as close as possible to the actual computatino (worst_case_timestep) that doesn't block the computation
 
         Args:
         tensor (Tensor): The tensor to be added to the core.
         core_id (int): The core id that is going to receive the tensor.
         test_timestep (int): The timestep from which to start considering make this tensor data transfer.
-        data_transfer_duration (int): The duration of the transfer.
         memory_op (str): The memory operand storing the tensor on the receiving end of the transfer.
-        worst_case_timestep (int): when the data cannot be prefetched (no enough space), the latest timestep that it needs to be transferred.
 
         Returns:
         can_transfer_from_timestep (int): The earliest timestep at which the transfer can actually start.
         """
-        ideal_timestep = max(
-            test_timestep, worst_case_timestep - data_transfer_duration
-        )
         core = self.accelerator.get_core(core_id)
         top_level_idx = self.get_top_level_idx(core, memory_op)
         top_instance = self.top_instances[core][top_level_idx]
         top_instance_capacity = self.top_instance_capacities[top_instance]
         all_timesteps = self.top_instance_stored_cumsum[top_instance][:, 0]
         all_usages = self.top_instance_stored_cumsum[top_instance][:, 1]
-        first_possible_idx = np.searchsorted(all_timesteps, ideal_timestep)
+        first_possible_idx = np.searchsorted(all_timesteps, test_timestep)
         last_possible_idx = len(all_timesteps)
         for possible_idx in range(first_possible_idx - 1, last_possible_idx):
             relevant_usages = all_usages[possible_idx:]
             updated_relevant_usages = relevant_usages + tensor.size
             if max(updated_relevant_usages) <= top_instance_capacity:
                 can_transfer_from_timestep = max(
-                    all_timesteps[possible_idx], ideal_timestep
+                    all_timesteps[possible_idx], test_timestep
                 )
                 return can_transfer_from_timestep
         # If we can't add it at any timestep, raise error
-        return worst_case_timestep
+        raise ValueError("Tensor can't be added at any timestep")
 
     def generate_all_combinations(self, lst):
         for i in range(1, len(lst) + 1):
