@@ -220,8 +220,6 @@ class Accelerator:
             tensor,
             receiving_core_id,
             consider_transfer_from_timestep,
-            worst_case_timestep,
-            data_transfer_duration,
             memory_op=tensor_operand,
         )
         can_end_from_timestep = can_transfer_from_timestep + data_transfer_duration
