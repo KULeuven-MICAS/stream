@@ -9,6 +9,7 @@ from stream.classes.hardware.architecture.communication_link import Communicatio
 from zigzag.classes.hardware.architecture.core import Core
 from zigzag.classes.hardware.architecture.memory_instance import MemoryInstance
 from stream.classes.workload.tensor import Tensor
+from stream.classes.hardware.architecture.utils import intersections
 
 
 class Accelerator:
@@ -137,7 +138,7 @@ class Accelerator:
             )  # the "transfer" doesn't require any time
         transfer_start = max(start_timestep, links[0].available_from)
         for link in links:
-            transfer_end, transfer_energy_cost = link.put(tensor, transfer_start)
+            transfer_end, transfer_energy_cost = link.transfer(tensor, transfer_start)
             link_energy_cost += transfer_energy_cost
         # Energy cost of memory reads/writes on sender/receiver
         # For this we need to know the memory operand in order to know where in the sender/receiver the tensor is stored
@@ -205,11 +206,10 @@ class Accelerator:
         # TODO For now, we take the first one
         sender_core = sender_cores[0]
         links = self.get_links_for_pair(sender_core, receiving_core)
+        # TODO: Move the memory timestep check to here
+        links_idle_time = self.get_links_idle_time(links, tensor, stored_since_timestep)
         # TODO: Currently, we just select the first shortest-distance communication link.
         link_available_timestep = max([link.available_from for link in links])
-        data_transfer_duration = max(
-            [ceil(tensor.size / link.bandwidth) for link in links]
-        )
 
         consider_transfer_from_timestep = max(
             stored_since_timestep, link_available_timestep
@@ -363,6 +363,39 @@ class Accelerator:
         #         blocking_start_timestep, blocking_end_timestep = link.block(worst_case_start_time, duration, cn_id)
         #         assert blocking_start_timestep == worst_case_start_time, "Mismatch between worst case link start time and effective link block start time."
         return worst_case_start_time
+
+    def get_links_idle_time(
+        self, links: list, tensor: Tensor, best_case_start: int
+    ) -> int:
+        """Return the timestep at which tensor can be transfered across the links.
+        Both links must have an idle window large enough for the transfer.
+        The timestep must be greater than or equal to best_case_start.
+
+        Args:
+            links (list): List of the CommunicationLinks involved in the transfer.
+            tensor (Tensor): The tensor to be transfered.
+            best_case_start (int): The best case start timestep of the transfer.
+        """
+        assert len(links) > 0
+        duration = max([ceil(tensor.size / link.bandwidth) for link in links])
+        idle_intersections = links[0].idle_periods
+        idle_intersections = [
+            period
+            for period in idle_intersections
+            if period[1] - period[0] >= duration and period[0] >= best_case_start
+        ]
+        for link in links[1:]:
+            idle_intersections = intersections(idle_intersections, link.idle_periods)
+            idle_intersections = [
+                period
+                for period in idle_intersections
+                if period[1] - period[0] >= duration and period[0] >= best_case_start
+            ]
+        # Pick the first idle intersection that satisfied all the constraints
+        if not idle_intersections:
+            raise ValueError("There is no idle period long enough for the transfer.")
+        selected_idle_period = idle_intersections[0]
+        return selected_idle_period[0]
 
     def contains_tensor(self, tensor: Tensor, top_instance):
         return self.memory_manager.contains(tensor, top_instance)
