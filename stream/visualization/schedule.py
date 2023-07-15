@@ -378,7 +378,7 @@ def major_formatter(x, pos):
 
 
 ########################## PLOTLY PLOTTING ########################
-def add_dependencies(fig, scme):
+def add_dependencies(fig, scme, colors):
     for node in scme.workload.nodes():
         c_id = node.id
         c_l = node.id[0]
@@ -397,15 +397,18 @@ def add_dependencies(fig, scme):
             c_core = node.core_allocation
             legendgroup = f"Layer {c_l}"
             legendgrouptitle_text = legendgroup
+            marker = {"color": colors[c_l]}
+            line = {"width": 1, "color": colors[c_l]}
             fig.add_trace(
                 go.Scatter(
                     x=[p_end, c_start],
                     y=[f"Core {p_core}", f"Core {c_core}"],
                     name=f"{p_id}-->{c_id}",
-                    line=dict(width=1, color="black"),
                     legendgroup=legendgroup,
                     legendgrouptitle_text=legendgrouptitle_text,
                     hoverinfo="none",
+                    line=line,
+                    marker=marker,
                 )
             )
     # fig.for_each_trace(
@@ -562,7 +565,7 @@ def visualize_timeline_plotly(
 
     # Draw dependency lines if necessary
     if draw_dependencies:
-        add_dependencies(fig, scme)
+        add_dependencies(fig, scme, colors)
 
     # Title
     edp = scme.latency * scme.energy
