@@ -1,7 +1,7 @@
 import onnx
 
 from zigzag.classes.io.onnx.parser import Parser
-from zigzag.classes.io.onnx.utils import get_node_input_output_dimension_shapes
+from zigzag.classes.io.onnx.utils import get_node_input_output_dimension_shapes, get_onnx_tensor_type
 from stream.classes.workload.computation_node import ComputationNode
 
 import logging
@@ -94,6 +94,9 @@ class MatMulParser(Parser):
         C = ia_dimension_shape[1]
         K = oa_dimension_shape[1]
 
+        # check whether this is an output node
+        is_model_output = get_onnx_tensor_type(self.node.output[0], self.onnx_model).category.is_output
+
         # Get the hw mapping of this node.
         if self.node.name in self.mapping:
             node_mapping = self.mapping[self.node.name]
@@ -122,6 +125,7 @@ class MatMulParser(Parser):
             node_input_names,
             node_output_names,
             op_type,
+            is_model_output=is_model_output,
         )
 
         return node_obj

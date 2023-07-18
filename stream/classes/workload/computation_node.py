@@ -31,6 +31,7 @@ class ComputationNode(LayerNode, Node):
         output_names,
         op_type="computation",
         produces_final_output=False,
+        is_model_output=False,
         add_missing_node_attrs=False,
     ):
         assert isinstance(
@@ -53,7 +54,12 @@ class ComputationNode(LayerNode, Node):
         )
 
         # Save whether this ComputationNode produces a final output
+        #   this is not whether this is an output of the model, only whether this node reaches
+        #   the end of the reduced loop ranges.
         self.produces_final_output = produces_final_output
+
+        # Save whether the output of the ComputationNode is an output of the model itself
+        self.is_model_output = is_model_output
 
         # Save the loop ranges of this ComputationNode
         self.loop_ranges: Dict[str, tuple] = node_attrs.get(

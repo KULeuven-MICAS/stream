@@ -191,6 +191,9 @@ class ConvParser(Parser):
             self.node, self.onnx_model
         )
 
+        # check whether this is an output node
+        is_model_output = get_onnx_tensor_type(self.node.output[0], self.onnx_model).category.is_output
+
         # Get the hw mapping of this node.
         if self.node.name in self.mapping:
             node_mapping = self.mapping[self.node.name]
@@ -230,6 +233,7 @@ class ConvParser(Parser):
             node_input_names,
             node_output_names,
             op_type,
+            is_model_output=is_model_output,
         )
 
         return node_obj
