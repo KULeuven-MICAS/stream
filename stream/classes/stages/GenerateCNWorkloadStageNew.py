@@ -610,7 +610,8 @@ class GenerateCNWorkloadStage(Stage):
                 finer_node_name,
                 finer_node_input_names,
                 finer_node_output_names,
-                produces_final_output,
+                produces_final_output=produces_final_output,
+                is_model_output=original_node.produces_final_output,
             )
             finer_node.type = node_type
             finer_nodes.append(finer_node)

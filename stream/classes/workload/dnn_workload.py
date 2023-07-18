@@ -2,7 +2,6 @@ import copy
 
 import networkx as nx
 
-from zigzag.classes.workload.layer_node import LayerNode
 from stream.classes.workload.computation_node import ComputationNode
 from typing import Dict, Any
 from networkx import DiGraph
@@ -79,6 +78,7 @@ class DNNWorkload(DiGraph):
                 op_type,
                 produces_final_output,
                 add_missing_node_attrs=True,
+                is_model_output=False,  # TODO what to do here?
             )
             """Save this layer_id and LayerNode pair in the layer_id_to_obj dict"""
             layer_id_to_obj[layer_id] = layer_node
