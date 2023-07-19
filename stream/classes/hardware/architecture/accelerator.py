@@ -171,37 +171,40 @@ class Accelerator:
             non_evictable_tensors (list): the stored tensor that cannot be evicted
             worst_case_timestep (int): when the data cannot be prefetched (no enough space), the latest timestep that it needs to be transferred
         """
+        ## STEP 0: Check if the tensor is already on the receiving core
+        # Get the top instance where the tensor will be transferred to
+        receiving_core = self.get_core(receiving_core_id)
+        receiving_core_instances = set(
+            self.memory_manager.top_instances[receiving_core]
+        )
+        receiving_top_instance = self.get_top_instance_of_core(
+            receiving_core_id, tensor_operand
+        )
+        if self.memory_manager.contains(tensor, receiving_top_instance):
+            return -1, 0, 0, 0, 0, False
         ## STEP 1: Since when is the tensor available on a sending core
-        # Find the core that is storing this tensor
+        # Get the top instances storing the tensor
         (
-            core_ids_storing_tensor,
-            top_level_idxs,
+            instances_storing_tensor,
             stored_since_timesteps,
-        ) = self.find_tensor(tensor)
-        # If we already have the tensor on the receiving core, return
-        if receiving_core_id in core_ids_storing_tensor:
-            return -1, 0, 0, 0, 0, False
-        # If any of the cores that is storing the tensor has a shared memory with the target core,
-        # return without transfer cost.
-        if any(
-            [
-                self.has_shared_memory(
-                    storing_core_id, receiving_core_id, "O", tensor_operand
-                )
-                for storing_core_id in core_ids_storing_tensor
-            ]
-        ):
-            return -1, 0, 0, 0, 0, False
+        ) = self.find_tensor_in_top_instances(tensor)
         # Pick the core that has stored the tensor the longest
-        idx = stored_since_timesteps.index(min(stored_since_timesteps))
-        tensor_core_id = core_ids_storing_tensor[idx]
-        # Get since when this tensor is available on the core
-        stored_since_timestep = stored_since_timesteps[idx]
+        stored_since_timestep = min(stored_since_timesteps.values())
+        storing_instance = next(
+            (
+                top_instance
+                for (top_instance, timestep) in stored_since_timesteps.items()
+                if timestep == stored_since_timestep
+            )
+        )
 
         ## STEP 2: Since when are the links available for the transfer
-        sender_core = self.get_core(tensor_core_id)
-        receiver_core = self.get_core(receiving_core_id)
-        links = self.get_links_for_pair(sender_core, receiver_core)
+        sender_cores = self.memory_manager.cores_per_top_instance[storing_instance]
+        # TODO If the storing_instance is a shared instance across more than one core,
+        # TODO there will be multiple possible cores to transfer between.
+        # TODO For now, we take the first one
+        sender_core = sender_cores[0]
+        links = self.get_links_for_pair(sender_core, receiving_core)
         # TODO: Currently, we just select the first shortest-distance communication link.
         link_available_timestep = max([link.available_from for link in links])
         data_transfer_duration = max(
@@ -211,7 +214,7 @@ class Accelerator:
         consider_transfer_from_timestep = max(
             stored_since_timestep, link_available_timestep
         )
-        worst_case_timestep = max(worst_case_timestep, consider_transfer_from_timestep)
+        worst_case_timestep = consider_transfer_from_timestep
         ## STEP 3: When the receiving core has enough space to store the tensor (don't consider the data eviction)
         can_transfer_from_timestep = self.memory_manager.test_add_tensor_to_core(
             tensor,
@@ -246,7 +249,7 @@ class Accelerator:
             transfer_memory_energy_cost,
         ) = self.transfer_data(
             tensor,
-            tensor_core_id,
+            sender_core.id,
             receiving_core_id,
             tensor_operand,
             actual_available_transfer_start,
@@ -257,22 +260,21 @@ class Accelerator:
         if sender_core.id == self.offchip_core_id:
             pass
         else:
-            if (sender_core.id not in tensor.core_priorities) or (
-                tensor.core_priorities[sender_core.id] == 0
+            if (storing_instance not in tensor.instance_priorities) or (
+                tensor.instance_priorities[storing_instance] == 0
             ):
                 top_level_idx = self.memory_manager.get_top_level_idx(
                     sender_core, tensor.memory_operand
                 )
-                self.memory_manager.remove_tensor_from_core(
-                    sender_core,
-                    top_level_idx,
+                self.memory_manager.remove_tensor_from_top_instance(
+                    storing_instance,
                     tensor,
                     transfer_end,
                     write_back_to_offchip=False,
                 )
 
         ## STEP 7: Give back a flag that tells us whether this transfer came from off-chip for energy tracking
-        came_from_offchip = tensor_core_id == self.offchip_core_id
+        came_from_offchip = sender_core.id == self.offchip_core_id
 
         return (
             transfer_end,
@@ -351,7 +353,7 @@ class Accelerator:
         links_set = set((link for links in links_to_block for link in links))
         for link in links_set:
             blocking_start_timestep, blocking_end_timestep = link.block(
-                worst_case_start_time, duration, cn_id
+                worst_case_start_time, duration, cn_id, too_large_operands
             )
             assert (
                 blocking_start_timestep == worst_case_start_time
@@ -362,11 +364,14 @@ class Accelerator:
         #         assert blocking_start_timestep == worst_case_start_time, "Mismatch between worst case link start time and effective link block start time."
         return worst_case_start_time
 
-    def contains_tensor(self, tensor: Tensor, core_id: int):
-        return self.memory_manager.contains(tensor, core_id)
+    def contains_tensor(self, tensor: Tensor, top_instance):
+        return self.memory_manager.contains(tensor, top_instance)
 
     def find_tensor(self, tensor: Tensor):
         return self.memory_manager.find_tensor(tensor)
+
+    def find_tensor_in_top_instances(self, tensor: Tensor):
+        return self.memory_manager.find_tensor_in_top_instances(tensor)
 
     def has_shared_memory(self, core_id_a, core_id_b, mem_op_a, mem_op_b):
         """Check whether two cores have a shared top level memory instance for a given memory operand.
@@ -396,3 +401,22 @@ class Accelerator:
         if top_memory_instance_a is top_memory_instance_b:
             return True
         return False
+
+    def get_top_instances_of_core(self, core_id):
+        core = self.get_core(core_id)
+        top_instances = self.memory_manager.top_instances[core]
+        return top_instances
+
+    def get_top_instance_of_core(self, core_id, mem_op):
+        core = self.get_core(core_id)
+        top_instances = self.memory_manager.top_instances[core]
+        for instance in top_instances:
+            core_idx = self.memory_manager.cores_per_top_instance[instance].index(core)
+            instance_mem_ops = self.memory_manager.memory_operands_per_top_instance[
+                instance
+            ][core_idx]
+            if mem_op in instance_mem_ops:
+                return instance
+        raise ValueError(
+            f"No top instance for core {core_id} with memory operand {mem_op}."
+        )

@@ -4,6 +4,16 @@ from matplotlib.patches import Rectangle
 from networkx import DiGraph
 import numpy as np
 import logging
+import plotly
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import pandas as pd
+import pickle
+import networkx as nx
+import argparse
+from itertools import cycle
+
 
 logger = logging.getLogger(__name__)
 
@@ -331,7 +341,7 @@ def plot_timeline_brokenaxes(
         loc="right",
     )
     # Get all handles and labels and then filter them for unique ones and set legend
-    legend_without_duplicate_labels(bax, loc=(0.0, 1.01), ncol=7)
+    legend_without_duplicate_labels(bax, loc=(0.0, 1.01), ncol=6)
     ylims = [ax.get_ylim() for ax in axs]
     miny = min((lim[0] for lim in ylims))
     maxy = max((lim[1] for lim in ylims))
@@ -365,3 +375,245 @@ def legend_without_duplicate_labels(bax, loc, ncol):
 
 def major_formatter(x, pos):
     return f"{int(x):,}"
+
+
+########################## PLOTLY PLOTTING ########################
+def add_dependencies(fig, scme, colors):
+    for node in scme.workload.nodes():
+        c_id = node.id
+        c_l = node.id[0]
+        preds = scme.workload.predecessors(node)
+        for pred in preds:
+            p_id = pred.id
+            p_l = pred.id[0]
+            if p_l == c_l:
+                continue  # Ignore intra layer edges
+            p_start = pred.start
+            p_runtime = pred.runtime
+            p_end = pred.end
+            p_core = pred.core_allocation
+            c_start = node.start
+            c_runtime = node.runtime
+            c_core = node.core_allocation
+            legendgroup = f"Layer {c_l}"
+            legendgrouptitle_text = legendgroup
+            marker = {"color": colors[c_l]}
+            line = {"width": 1, "color": colors[c_l]}
+            fig.add_trace(
+                go.Scatter(
+                    x=[p_end, c_start],
+                    y=[f"Core {p_core}", f"Core {c_core}"],
+                    name=f"{p_id}-->{c_id}",
+                    legendgroup=legendgroup,
+                    legendgrouptitle_text=legendgrouptitle_text,
+                    hoverinfo="none",
+                    line=line,
+                    marker=marker,
+                )
+            )
+    # fig.for_each_trace(
+    #     lambda trace: trace.update(visible=False) if "-->" in trace.name else (),
+    # )
+
+
+def get_communication_dicts(scme):
+    dicts = []
+    accelerator = scme.accelerator
+    active_links = set()
+    for ky, link_pair in accelerator.pair_links.items():
+        if link_pair:
+            for link in link_pair:
+                if link.active_periods or link.blocked_periods:
+                    active_links.add(link)
+    pass
+    link_labels = []
+    for pair_link_id, cl in enumerate(active_links):
+        link_labels.append(cl.get_name_for_schedule_plot())
+
+        """ Plot DRAM blocking period due to too_large_operand """
+        if cl.blocked_periods:
+            for blocked_period in cl.blocked_periods:
+                node = blocked_period[2]
+                layer_id = node[0]
+                # if layer_id not in layer_ids_seen:
+                # color = next(layer_colors)
+                # colors_seen.append(color)
+                # else:
+                # color = colors_seen[layer_ids_seen.index(layer_id)]
+                start = blocked_period[0]
+                end = blocked_period[1]
+                runtime = blocked_period[1] - blocked_period[0]
+                too_large_operands = blocked_period[3]
+                if runtime == 0:
+                    continue
+                d = dict(
+                    Task=f"Block for CN{node}",
+                    Start=start,
+                    End=end,
+                    Resource=cl.get_name_for_schedule_plot(),
+                    Layer=layer_id,
+                    Runtime=runtime,
+                    Blocking=True,
+                    Operands=too_large_operands,
+                )
+                dicts.append(d)
+        """ Plot data transfer on communication link (active periods) """
+        if cl.active_periods:
+            for active_period in cl.active_periods:
+                node_id = active_period[3]
+                layer_id = node_id[0]
+                operand = active_period[2]
+                # Get the colour for this layer
+                # if layer_id not in layer_ids_seen:
+                #     color = next(layer_colors)
+                #     colors_seen.append(color)
+                # else:
+                #     color = colors_seen[layer_ids_seen.index(layer_id)]
+                start = active_period[0]
+                end = active_period[1]
+                runtime = active_period[1] - active_period[0]
+                if runtime == 0:
+                    continue
+                d = dict(
+                    Task=f"Transfer for CN{node_id}",
+                    Start=start,
+                    End=end,
+                    Resource=cl.get_name_for_schedule_plot(),
+                    Layer=layer_id,
+                    Runtime=runtime,
+                    Blocking=False,
+                    Operands=[operand],
+                )
+                dicts.append(d)
+    return dicts
+
+
+def get_dataframe_from_scme(scme, add_communication=False):
+    nodes = list(nx.topological_sort(scme.workload))
+    dicts = []
+    for n in nodes:
+        id = n.id
+        layer = id[0]
+        core_id = n.core_allocation
+        start = n.start
+        end = n.end
+        runtime = n.runtime
+        operands = n.operand_list
+        d = dict(
+            Task=f"Compute for CN{id}",
+            Start=start,
+            End=end,
+            Resource=f"Core {core_id}",
+            Layer=layer,
+            Runtime=runtime,
+            Blocking=False,
+            Operands=operands,
+        )
+        dicts.append(d)
+    if True:
+        communication_dicts = get_communication_dicts(scme)
+        dicts += communication_dicts
+    df = pd.DataFrame(dicts)
+    return df
+
+
+def visualize_timeline_plotly(
+    scme,
+    draw_dependencies=False,
+    draw_communication=False,
+    fig_path="outputs/schedule.html",
+):
+    df = get_dataframe_from_scme(scme, draw_communication)
+    # We get all the layer ids to get a color mapping for them
+    layer_ids = list(set(df["Layer"].tolist()))
+    color_cycle = cycle(plotly.colors.DEFAULT_PLOTLY_COLORS)
+    colors = {layer_id: next(color_cycle) for layer_id in layer_ids}
+    bars = []
+    fig = go.Figure()
+    seen_layers = []
+    for idx, row in df.iterrows():
+        start = row["Start"]
+        runtime = row["Runtime"]
+        resource = row["Resource"]
+        layer = row["Layer"]
+        color = colors[layer]
+        name = row["Task"]
+        legendgroup = f"Layer {layer}"
+        legendgrouptitle_text = legendgroup
+        operands = row["Operands"]
+        if row["Blocking"]:
+            pattern_shape = "+"
+        else:
+            pattern_shape = ""
+        marker = {"color": color, "pattern": {"shape": pattern_shape}}
+        hovertext = f"<b>Task:</b> {name}<br><b>Operands:</b> {operands}<br><b>Runtime:</b> {runtime:.2e}"
+        bar = go.Bar(
+            base=[start],
+            x=[runtime],
+            y=[resource],
+            name=name,
+            orientation="h",
+            marker=marker,
+            legendgroup=legendgroup,
+            legendgrouptitle_text=legendgrouptitle_text,
+            hovertext=[hovertext],
+            hoverinfo="text",
+        )
+        fig.add_trace(bar)
+        bars.append(bar)
+        seen_layers.append(layer)
+
+    # Draw dependency lines if necessary
+    if draw_dependencies:
+        add_dependencies(fig, scme, colors)
+
+    # Title
+    edp = scme.latency * scme.energy
+    fig.update_layout(
+        title_text=f"Computation Schedule.\t\t\tLatency = {scme.latency:.3e}\t\t\tEnergy = {scme.energy:.3e}\t\t\tEDP = {edp:.3e}"
+    )
+    # for bar in fig_timeline.data:
+    #     fig.add_trace(go.Bar(bar), row=1,col=1)
+    fig.update_yaxes(
+        categoryorder="array", categoryarray=sorted(df["Resource"].tolist())
+    )
+    fig.update_yaxes(autorange="reversed")
+    fig.update_layout(barmode="stack")
+    fig.update_layout(showlegend=True)
+
+    fig.write_html(fig_path)
+    # fig.show()
+    logger.info(f"Plotted schedule timeline using Plotly to {fig_path}.")
+
+
+if __name__ == "__main__":
+    # Parse arguments
+    parser = argparse.ArgumentParser()
+    a = parser.add_argument("--path", "-p", type=str, help="Path to scme pickle file.")
+    parser.add_argument(
+        "--draw_dependencies",
+        "-d",
+        nargs="?",  # makes it optional
+        default=0,
+        type=int,
+        help="Draw the inter-layer dependencies.",
+    )
+    parser.add_argument(
+        "--draw_communication",
+        "-c",
+        nargs="?",
+        default=0,
+        type=int,
+        help="Draw the inter-core communication.",
+    )
+    args = parser.parse_args()
+    # Get scme from pickle filepath
+    scme_path = args.path
+    with open(scme_path, "rb") as fp:
+        scme = pickle.load(fp)
+    # Visualize using Plotly
+    visualize_timeline_plotly(
+        scme,
+        draw_dependencies=args.draw_dependencies,
+        draw_communication=args.draw_communication,
+    )

@@ -87,12 +87,21 @@ class CommunicationLink:
         """
         self.available_from = new_available_time
 
-    def block(self, start_timestep: int, blocking_time: int, cn_id: tuple):
+    def block(
+        self,
+        start_timestep: int,
+        blocking_time: int,
+        cn_id: tuple,
+        too_large_operands: list,
+    ):
         """Block this communication link from start timestep for a given duration.
 
         Args:
             start_timestep (int): The timestep at which the port ideally starts being blocked.
-            blocking_time (int): The duration for which the link should be blocked
+            blocking_time (int): The duration for which the link should be blocked.
+            cn_id (tuple): The id of the CN for which we are blocking this link.
+            too_large_operands (list): The operands of the CN that cause the blocking.
+
 
         Returns:
             int: The start time at which we can effectively start blocking the port.
@@ -109,6 +118,7 @@ class CommunicationLink:
                     effective_blocking_start_timestep,
                     effective_blocking_end_timestep,
                     cn_id,
+                    too_large_operands,
                 )
             )
         return effective_blocking_start_timestep, effective_blocking_end_timestep

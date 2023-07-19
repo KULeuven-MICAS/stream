@@ -60,7 +60,7 @@ def visualize_node_hw_performances_pickle(
     plt.rc("axes", labelsize=BIGGER_SIZE)  # fontsize of the x and y labels
     plt.rc("xtick", labelsize=SMALL_SIZE)  # fontsize of the tick labels
     plt.rc("ytick", labelsize=SMALL_SIZE)  # fontsize of the tick labels
-    plt.rc("legend", fontsize=BIG_SIZE)  # legend fontsize
+    plt.rc("legend", fontsize=SMALL_SIZE)  # legend fontsize
     plt.rc("figure", titlesize=BIGGER_SIZE)  # fontsize of the figure title
 
     with open(pickle_filepath, "rb") as handle:
@@ -110,8 +110,9 @@ def visualize_node_hw_performances_pickle(
     best_case_energy = sum(min_energy_per_node.values())
 
     # COLORMAP
-    colormap = plt.get_cmap("Set1")
-    colors = {core: colormap.colors[i] for i, core in enumerate(cores)}
+    colormap = list(plt.cm.rainbow(np.linspace(0, 1, len(cores))))
+    # colormap = plt.get_cmap("Set1")
+    colors = {core: colormap[i] for i, core in enumerate(cores)}
 
     x = np.arange(len(node_labels))
     width = 0.8 / len(cores)
@@ -147,7 +148,7 @@ def visualize_node_hw_performances_pickle(
         ax.yaxis.grid(
             which="minor", linestyle=":", linewidth=0.25, color=(0.2, 0.2, 0.2)
         )
-    axs[0].legend(loc="upper left", bbox_to_anchor=(0.0, 1.15), ncol=len(cores))
+    axs[0].legend(loc="upper left", bbox_to_anchor=(0.0, 1.15), ncol=min(len(cores), 7))
     axs[0].set_title(
         f"Worst (no overlap) best-case latency = {worst_case_latency:.3e} Cycles",
         loc="right",
