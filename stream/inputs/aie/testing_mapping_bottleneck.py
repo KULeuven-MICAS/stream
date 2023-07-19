@@ -21,9 +21,6 @@ mapping = {
         "core_allocation": 4,
     },
     "Add": {
-        "core_allocation": 3,
-    },
-    "Identity": {
-        "core_allocation": 3,
+        "core_allocation": 5,
     },
 }
