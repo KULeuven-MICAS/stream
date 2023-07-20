@@ -1,13 +1,8 @@
-import re
-
 from zigzag.classes.stages import *
 from stream.classes.stages import *
-from stream.visualization.schedule import (
-    plot_timeline_brokenaxes,
-    visualize_timeline_plotly,
-)
+from stream.visualization.schedule import plot_timeline_brokenaxes
 from stream.visualization.memory_usage import plot_memory_usage
-from stream.utils import save_scme, load_scme
+import re
 
 # Initialize the logger
 import logging as _logging
@@ -20,20 +15,18 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 #################################
 # accelerator = "stream.inputs.examples.hardware.TPU_like_quad_core"
-accelerator = "stream.inputs.aie.hardware.aie_col"
-# workload_path = "stream.inputs.examples.workload.resnet18"
+# # workload_path = "stream.inputs.examples.workload.resnet18"
 # workload_path = "stream/inputs/examples/workload/resnet18.onnx"
-workload_path = "stream/inputs/aie/one_bottleneck_with_bias.onnx"
-mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
-workload_path="/proj/rdi/staff/gagandee/dse/stream_aie/stream/inputs/aie/one_bottleneck_with_bias.onnx"
 # mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
 
-mapping_path = "stream.inputs.aie.testing_mapping_bottleneck"
 
+accelerator = "stream.inputs.aie.hardware.aie_col"
+workload_path = "stream/inputs/aie/two_bottleneck_no_bias.onnx"
+mapping_path = "stream.inputs.aie.testing_mapping_unet"
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
-hint_loops = [("OY", "all")]  # outer CN loops, with error in resnet18 plotting
-# hint_loops = []
+# hint_loops = [('OY', 'all')]  # outer CN loops, with error in resnet18 plotting
+hint_loops = [("OY", "all")]
 
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
@@ -43,7 +36,7 @@ hint_loops_str_list = []
 for dim, size in hint_loops:
     hint_loops_str_list.extend([str(dim).lower(), str(size)])
 hint_loops_str = "_".join(hint_loops_str_list)
-experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}-layer_splitting"
+experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}"
 node_hw_cost_pkl_name = f"saved_cn_hw_cost-{experiment_id}"
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
@@ -53,8 +46,6 @@ nb_ga_generations = 16  # number of genetic algorithm generations
 node_hw_performances_path = f"outputs/{node_hw_cost_pkl_name}.pickle"
 split_onnx_model_path = f"outputs/model_split-{experiment_id}.pickle"
 split_W_double_buffered = True
-scme_path = f"outputs/scme-{experiment_id}.pickle"
-timeline_fig_path_plotly = f"outputs/{experiment_id}-schedule.html"
 #################################
 
 
@@ -62,8 +53,8 @@ mainstage = MainStage(
     [  # Initializes the MainStage as entry point
         AcceleratorParserStage,  # Parses the accelerator
         StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-        # LayerSplittingStage,
-        # StreamONNXModelParserStage,  # Parses the potentially split ONNX model into the workload
+        LayerSplittingStage,
+        StreamONNXModelParserStage,  # Parses the potentially split ONNX model into the workload
         # UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
         GenerateCNWorkloadHybridStage,
         IntraCoreMappingStage,
@@ -88,13 +79,10 @@ mainstage = MainStage(
     split_W_double_buffered=split_W_double_buffered,
 )
 
-# Launch the MainStage if needed
-try:
-    scme = load_scme(scme_path)
-except:
-    scme, _ = mainstage.run()
-    scme = scme[0]
-    save_scme(scme, scme_path)
+# Launch the MainStage
+
+scme, _ = mainstage.run()
+scme = scme[0]
 
 # Ploting Results
 
@@ -106,16 +94,6 @@ section_start_percent = (0,)
 percent_shown = (100,)
 timeline_fig_path = f"outputs/{experiment_id}-schedule.png"
 memory_fig_path = f"outputs/{experiment_id}-memory.png"
-
-
-# Plotting results using Plotly
-visualize_timeline_plotly(
-    scme,
-    draw_dependencies=draw_dependencies,
-    draw_communication=plot_data_transfer,
-    fig_path=timeline_fig_path_plotly,
-)
-
 
 plot_timeline_brokenaxes(
     scme,

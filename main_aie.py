@@ -1,26 +1,34 @@
-# Initialize the logger
-import logging as _logging
+from zigzag.classes.stages import *
+from stream.classes.stages import *
+from stream.visualization.schedule import plot_timeline_brokenaxes
+from stream.visualization.memory_usage import plot_memory_usage
 import re
 
-from zigzag.classes.stages import *
-
-from stream.classes.stages import *
-from stream.visualization.memory_usage import plot_memory_usage
-from stream.visualization.schedule import plot_timeline_brokenaxes
+# Initialize the logger
+import logging as _logging
 
 _logging_level = _logging.INFO
-_logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
+_logging_format = (
+    "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
+)
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 #################################
-accelerator = "stream.inputs.testing.shared.dual_testing_core_offchip"
-workload_path = "stream.inputs.testing.shared.testing_workload_for_2_cores"
-mapping_path = "stream.inputs.testing.mapping.testing_mapping"
+
+accelerator = "stream.inputs.aie.hardware.aie_col"
+workload_path = "stream.inputs.aie.bottleneck"
+# workload_path = "stream.inputs.aie.bottleneck_scaled"
+mapping_path = "stream.inputs.aie.testing_mapping_bottleneck"
+
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
-# hint_loops = [('OY', 'all')]  # outer CN loops, with error in resnet18 plotting
-hint_loops = []
 
+# hint_loops = [("OY",'all'),("OX",'all')] #create 1 CN layer-by-layer
+
+hint_loops = [('OY', 16)]
+# hint_loops = [('OY', 16)]  
+# hint_loops=[]
+# hint_loops = [("OY",1),("OX",32)]
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
@@ -55,22 +63,30 @@ mainstage = MainStage(
     loma_lpf_limit=6,  # required by LomaStage
     nb_ga_individuals=nb_ga_individuals,  # number of individuals in each genetic algorithm generation
     nb_ga_generations=nb_ga_generations,  # number of genetic algorithm generations
-    node_hw_performances_path=node_hw_performances_path,  # save node_hw_performances to skip re-computation
+    node_hw_performances_path=node_hw_performances_path,  # saved node_hw_performances to skip re-computation
     plot_hof=True,  # Save schedule and memory usage plot of each individual in the Genetic Algorithm hall of fame
     plot_file_name=plot_file_name,
     plot_full_schedule=plot_full_schedule,
     plot_data_transfer=plot_data_transfer,
     cn_define_mode=CN_define_mode,
     hint_loops=hint_loops,
-    scheduler_candidate_selection="memory",
-    operands_to_prefetch=["W"],
+    scheduler_candidate_selection="latency",
+    operands_to_prefetch=[],
 )
 
 # Launch the MainStage
-scme, _ = mainstage.run()
-scme = scme[0]
 
+scme, _ = mainstage.run()
+
+for att in dir(scme):
+        print (att, getattr(scme,att))
+scme = scme[0]
+print(scme.workload)
+print(dir(scme.workload))
+print("*********************")
 # Ploting Results
+
+
 plot_full_schedule = True
 draw_dependencies = True
 plot_data_transfer = True
