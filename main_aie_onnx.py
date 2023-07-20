@@ -14,21 +14,20 @@ _logging_format = (
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 #################################
+# accelerator = "stream.inputs.examples.hardware.TPU_like_quad_core"
+# # workload_path = "stream.inputs.examples.workload.resnet18"
+# workload_path = "stream/inputs/examples/workload/resnet18.onnx"
+# mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
+
 
 accelerator = "stream.inputs.aie.hardware.aie_col"
-workload_path = "stream.inputs.aie.bottleneck"
-# workload_path = "stream.inputs.aie.bottleneck_scaled"
-mapping_path = "stream.inputs.aie.testing_mapping_bottleneck"
-
+workload_path = "stream/inputs/aie/two_bottleneck_no_bias.onnx"
+mapping_path = "stream.inputs.aie.testing_mapping_unet"
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
+# hint_loops = [('OY', 'all')]  # outer CN loops, with error in resnet18 plotting
+hint_loops = [("OY", "all")]
 
-# hint_loops = [("OY",'all'),("OX",'all')] #create 1 CN layer-by-layer
-
-hint_loops = [('OY', 16)]
-# hint_loops = [('OY', 16)]  
-# hint_loops=[]
-# hint_loops = [("OY",1),("OX",32)]
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
@@ -45,14 +44,18 @@ plot_data_transfer = True
 nb_ga_individuals = 16  # number of individuals in each genetic algorithm generation
 nb_ga_generations = 16  # number of genetic algorithm generations
 node_hw_performances_path = f"outputs/{node_hw_cost_pkl_name}.pickle"
+split_onnx_model_path = f"outputs/model_split-{experiment_id}.pickle"
+split_W_double_buffered = True
 #################################
 
 
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
         AcceleratorParserStage,  # Parses the accelerator
-        # StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-        UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
+        StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+        LayerSplittingStage,
+        StreamONNXModelParserStage,  # Parses the potentially split ONNX model into the workload
+        # UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
         GenerateCNWorkloadHybridStage,
         IntraCoreMappingStage,
         InterCoreMappingStage,
@@ -70,20 +73,17 @@ mainstage = MainStage(
     plot_data_transfer=plot_data_transfer,
     cn_define_mode=CN_define_mode,
     hint_loops=hint_loops,
-    scheduler_candidate_selection="latency",
+    scheduler_candidate_selection="memory",
     operands_to_prefetch=[],
+    split_onnx_model_path=split_onnx_model_path,
+    split_W_double_buffered=split_W_double_buffered,
 )
 
 # Launch the MainStage
 
 scme, _ = mainstage.run()
-
-for att in dir(scme):
-        print (att, getattr(scme,att))
 scme = scme[0]
-print(scme.workload)
-print(dir(scme.workload))
-print("*********************")
+
 # Ploting Results
 
 
