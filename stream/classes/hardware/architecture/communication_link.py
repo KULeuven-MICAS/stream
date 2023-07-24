@@ -2,6 +2,7 @@ from math import ceil
 import numpy as np
 
 from stream.classes.workload.tensor import Tensor
+from stream.classes.cost_model.communication_manager import CommunicationLinkEvent
 
 
 class BusyTimeViolationException(Exception):
@@ -10,33 +11,6 @@ class BusyTimeViolationException(Exception):
 
 class IdleTimeViolationException(Exception):
     pass
-
-
-class CommunicationLinkEvent:
-    """Represents an event on a communication link.
-    An event has:
-        - a type, e.g. "transfer" or "block"
-        - a start time
-        - an end time
-        - a list of tensors relevant for the event:
-            * the tensor being transferred
-            * the tensor(s) for which we are blocking
-    """
-
-    def __init__(self, type, start, end, tensors) -> None:
-        self.type = type
-        self.start = start
-        self.end = end
-        self.duration = self.end - self.start
-        self.tensors = tensors
-
-    def get_operands(self):
-        return [tensor.layer_operand for tensor in self.tensors]
-
-    def get_origin(self):
-        origins = [tensor.origin for tensor in self.tensors]
-        assert all([origin == origins[0] for origin in origins])
-        return origins[0]
 
 
 class CommunicationLink:
@@ -73,7 +47,11 @@ class CommunicationLink:
         )
 
     def __eq__(self, other) -> bool:
-        return str(self) == str(other)
+        return (self.sender, self.receiver, self.bandwidth) == (
+            other.sender,
+            other.receiver,
+            other.bandwidth,
+        )
 
     def get_name_for_schedule_plot(self) -> str:
         if self.bidirectional:
@@ -81,7 +59,7 @@ class CommunicationLink:
         else:
             return f"{self.sender} -> {self.receiver}"
 
-    def transfer(self, tensor: Tensor, start: int, duration: int) -> float:
+    def transfer(self, cle: CommunicationLinkEvent) -> float:
         """Transfer data on this communication link at timestep.
         The transfer can take longer than necessary for this link if another lower-bandwidth link is involved.
 
@@ -95,19 +73,11 @@ class CommunicationLink:
         """
         # TODO Check when we can actually do the transfer based on start and duration at higher level
         # duration = ceil(tensor.size / self.bandwidth)
-        energy_cost = self.unit_energy_cost * duration
-        end = start + duration
+        energy_cost = cle.energy
 
-        # Create a CLEvent
-        event = CommunicationLinkEvent(
-            type="transfer",
-            start=start,
-            end=end,
-            tensors=[tensor],
-        )
-        self.update_busy_periods(event)
-        self.update_idle_periods(event)
-        self.events.append(event)
+        self.update_busy_periods(cle)
+        self.update_idle_periods(cle)
+        self.events.append(cle)
         return energy_cost
 
     def block(
@@ -122,13 +92,7 @@ class CommunicationLink:
             start (int): The timestep at which the blocking starts.
             duration (int): The duration of the blocking.
             tensors (list): A list of tensors for which we are blocking the link.
-
-
-        Returns:
-            int: The start time at which we can effectively start blocking the port.
-            int: The end time at which the blocking ends.
         """
-        # TODO Check when the link can be blocked at a higher level
         end = start + duration
         # Create a CLEvent
         event = CommunicationLinkEvent(
@@ -136,6 +100,7 @@ class CommunicationLink:
             start=start,
             end=end,
             tensors=tensors,
+            energy=tensors[0].origin.get_offchip_energy(),
         )
         self.update_busy_periods(event)
         self.update_idle_periods(event)
