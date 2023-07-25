@@ -33,7 +33,7 @@ class Tensor:
         self.id = self.origin.id + (layer_operand,)
 
     def __str__(self) -> str:
-        return f"Tensor({self.origin}, {self.layer_operand})"
+        return f"Tensor{self.id}"
 
     def __repr__(self) -> str:
         return str(self)

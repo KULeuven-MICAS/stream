@@ -113,7 +113,7 @@ class ComputationNode(LayerNode, Node):
             }
 
     def __str__(self):
-        return f"ComputationNode({self.id})"
+        return f"ComputationNode{self.id}"
 
     def __repr__(self):
         return str(self)

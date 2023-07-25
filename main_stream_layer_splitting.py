@@ -1,8 +1,13 @@
+import re
+
 from zigzag.classes.stages import *
 from stream.classes.stages import *
-from stream.visualization.schedule import plot_timeline_brokenaxes
+from stream.visualization.schedule import (
+    plot_timeline_brokenaxes,
+    visualize_timeline_plotly,
+)
 from stream.visualization.memory_usage import plot_memory_usage
-import re
+from stream.utils import save_scme, load_scme
 
 # Initialize the logger
 import logging as _logging
@@ -20,8 +25,8 @@ workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
-# hint_loops = [('OY', 'all')]  # outer CN loops, with error in resnet18 plotting
-hint_loops = [("OY", "all")]
+hint_loops = []  # outer CN loops, with error in resnet18 plotting
+# hint_loops = []
 
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
@@ -31,7 +36,7 @@ hint_loops_str_list = []
 for dim, size in hint_loops:
     hint_loops_str_list.extend([str(dim).lower(), str(size)])
 hint_loops_str = "_".join(hint_loops_str_list)
-experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}"
+experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}-layer_splitting"
 node_hw_cost_pkl_name = f"saved_cn_hw_cost-{experiment_id}"
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
@@ -41,6 +46,8 @@ nb_ga_generations = 16  # number of genetic algorithm generations
 node_hw_performances_path = f"outputs/{node_hw_cost_pkl_name}.pickle"
 split_onnx_model_path = f"outputs/model_split-{experiment_id}.pickle"
 split_W_double_buffered = True
+scme_path = f"outputs/scme-{experiment_id}.pickle"
+timeline_fig_path_plotly = f"outputs/{experiment_id}-schedule.html"
 #################################
 
 
@@ -74,10 +81,13 @@ mainstage = MainStage(
     split_W_double_buffered=split_W_double_buffered,
 )
 
-# Launch the MainStage
-
-scme, _ = mainstage.run()
-scme = scme[0]
+# Launch the MainStage if needed
+try:
+    scme = load_scme(scme_path)
+except:
+    scme, _ = mainstage.run()
+    scme = scme[0]
+    save_scme(scme, scme_path)
 
 # Ploting Results
 
@@ -89,6 +99,16 @@ section_start_percent = (0,)
 percent_shown = (100,)
 timeline_fig_path = f"outputs/{experiment_id}-schedule.png"
 memory_fig_path = f"outputs/{experiment_id}-memory.png"
+
+
+# Plotting results using Plotly
+visualize_timeline_plotly(
+    scme,
+    draw_dependencies=draw_dependencies,
+    draw_communication=plot_data_transfer,
+    fig_path=timeline_fig_path_plotly,
+)
+
 
 plot_timeline_brokenaxes(
     scme,
