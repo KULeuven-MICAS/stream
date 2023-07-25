@@ -556,6 +556,11 @@ def visualize_timeline_plotly(
     fig.update_layout(barmode="stack")
     fig.update_layout(showlegend=True)
 
+    # Create subfolders if they don't exist
+    dir_name = os.path.dirname(os.path.abspath(fig_path))
+    if not os.path.isdir(dir_name):
+        os.makedirs(dir_name)
+
     fig.write_html(fig_path)
     # fig.show()
     logger.info(f"Plotted schedule timeline using Plotly to {fig_path}.")

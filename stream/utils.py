@@ -1,3 +1,4 @@
+import os
 import pickle
 
 from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
@@ -30,6 +31,9 @@ def save_scme(scme: StreamCostModelEvaluation, path: str):
         scme (StreamCostModelEvaluation): The stream cost model evaluation.
         path (str): The filepath to save the pickle to.
     """
+    dir_name = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(dir_name):
+        os.makedirs(dir_name)
     with open(path, "wb") as fp:
         pickle.dump(scme, fp)
 
