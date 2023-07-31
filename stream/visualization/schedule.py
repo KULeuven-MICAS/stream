@@ -7,6 +7,7 @@ import logging
 import plotly
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.express.colors import sample_colorscale
 from plotly.subplots import make_subplots
 import pandas as pd
 import pickle
@@ -27,6 +28,12 @@ BIG_SIZE = 18
 BIGGER_SIZE = 20
 
 PLOT_DEPENDENCY_LINES_SAME_CORE = True
+
+PLOTLY_HATCH_TYPES = {
+    "compute": "",
+    "block": "x",
+    "transfer": "-",
+}
 
 
 def plot_timeline_brokenaxes(
@@ -67,17 +74,6 @@ def plot_timeline_brokenaxes(
     energy = scme.energy
     # total EDP of the SCME
     edp = latency * energy
-    # First get all used and unique communication links
-    used_cl_collect = []
-    for ky, pair_link in accelerator.pair_links.items():
-        if pair_link:
-            for link in pair_link:
-                if (
-                    link.active_periods or link.blocked_periods
-                ) and link not in used_cl_collect:
-                    used_cl_collect.append(link)
-        # Then plot the active data transfer period on these unique communication links
-        pair_link_id = 0
 
     fig = plt.figure(figsize=(20, 6))
 
@@ -181,12 +177,10 @@ def plot_timeline_brokenaxes(
     if plot_data_transfer:
         # First get all used and unique communication links
         used_cl_collect = []
-        for ky, pair_link in accelerator.pair_links.items():
+        for ky, pair_link in accelerator.communication_manager.pair_links.items():
             if pair_link:
                 for link in pair_link:
-                    if (
-                        link.active_periods or link.blocked_periods
-                    ) and link not in used_cl_collect:
+                    if link.events and link not in used_cl_collect:
                         used_cl_collect.append(link)
 
         # Then plot the active data transfer period on these unique communication links
@@ -195,96 +189,60 @@ def plot_timeline_brokenaxes(
             y_labels.append(cl.get_name_for_schedule_plot())
 
             """ Plot DRAM blocking period due to too_large_operand """
-            if cl.blocked_periods:
-                for blocked_period in cl.blocked_periods:
-                    layer_id = blocked_period[2][0]
-                    if layer_id not in layer_ids_seen:
-                        color = next(layer_colors)
-                        colors_seen.append(color)
-                    else:
-                        color = colors_seen[layer_ids_seen.index(layer_id)]
-                    x = blocked_period[0]
-                    y = nb_cores - 1 + pair_link_id - 0.25
-                    width = blocked_period[1] - blocked_period[0]
-                    for ax_idx in range(0, nb_axs):
-                        if (
-                            (x_starts[ax_idx] <= x <= x_ends[ax_idx])
-                            or (x_starts[ax_idx] <= x + width <= x_ends[ax_idx])
-                            or (x_starts[ax_idx] > x and x + width > x_ends[ax_idx])
-                        ):
-                            axs[ax_idx].add_patch(
-                                Rectangle(
-                                    xy=(x, y),
-                                    width=width,
-                                    height=height,
-                                    facecolor=color,
-                                    edgecolor="black",
-                                    lw=1,
-                                    hatch="xx",
-                                    label=f"Layer {layer_id}",
-                                )
+            for event in cl.events:
+                task_type = event.type
+                blocking = task_type.lower() == "block"
+                start = event.start
+                end = event.end
+                runtime = end - start
+                tensors = event.tensors
+                weight_transfer = task_type.lower() == "transfer" and tensors[
+                    0
+                ].layer_operand in ["W", "B"]
+                layer_id = tensors[0].origin.id[0]
+                node_id = tensors[0].origin.id[1]
+                if layer_id not in layer_ids_seen:
+                    color = next(layer_colors)
+                    colors_seen.append(color)
+                else:
+                    color = colors_seen[layer_ids_seen.index(layer_id)]
+                x = start
+                y = nb_cores - 1 + pair_link_id - 0.25
+                width = runtime
+                if blocking:
+                    hatch = "xx"
+                elif weight_transfer:
+                    hatch = "---"
+                else:
+                    hatch = ""
+                for ax_idx in range(0, nb_axs):
+                    if (
+                        (x_starts[ax_idx] <= x <= x_ends[ax_idx])
+                        or (x_starts[ax_idx] <= x + width <= x_ends[ax_idx])
+                        or (x_starts[ax_idx] > x and x + width > x_ends[ax_idx])
+                    ):
+                        axs[ax_idx].add_patch(
+                            Rectangle(
+                                xy=(x, y),
+                                width=width,
+                                height=height,
+                                facecolor=color,
+                                edgecolor="black",
+                                lw=1,
+                                hatch=hatch,
+                                label=f"Layer {layer_id}",
                             )
-            """ Plot data transfer on communication link (active periods) """
-            if cl.active_periods:
-                for active_period in cl.active_periods:
-                    layer_id = active_period[3][0]
-                    # Get the colour for this layer
-                    if layer_id not in layer_ids_seen:
-                        color = next(layer_colors)
-                        colors_seen.append(color)
-                    else:
-                        color = colors_seen[layer_ids_seen.index(layer_id)]
-                    x = active_period[0]
-                    y = nb_cores - 1 + pair_link_id - 0.25
-                    width = active_period[1] - active_period[0]
-                    # distinguish weight from activation (input/output)
-                    if active_period[2] == "W":
-                        for ax_idx in range(0, nb_axs):
-                            if (
-                                (x_starts[ax_idx] <= x <= x_ends[ax_idx])
-                                or (x_starts[ax_idx] <= x + width <= x_ends[ax_idx])
-                                or (x_starts[ax_idx] > x and x + width > x_ends[ax_idx])
-                            ):
-                                axs[ax_idx].add_patch(
-                                    Rectangle(
-                                        xy=(x, y),
-                                        width=width,
-                                        height=height,
-                                        facecolor=color,
-                                        edgecolor="black",
-                                        lw=1,
-                                        hatch="---",
-                                        label=f"Layer {layer_id}",
-                                    )
-                                )
-                    else:
-                        for ax_idx in range(0, nb_axs):
-                            if (
-                                (x_starts[ax_idx] <= x <= x_ends[ax_idx])
-                                or (x_starts[ax_idx] <= x + width <= x_ends[ax_idx])
-                                or (x_starts[ax_idx] > x and x + width > x_ends[ax_idx])
-                            ):
-                                axs[ax_idx].add_patch(
-                                    Rectangle(
-                                        xy=(x, y),
-                                        width=width,
-                                        height=height,
-                                        facecolor=color,
-                                        edgecolor="black",
-                                        lw=1,
-                                        label=f"Layer {layer_id}",
-                                    )
-                                )
-                                if ANNOTATE_CN_ID:
-                                    axs[ax_idx].annotate(
-                                        f"{active_period[3][1]}",
-                                        (x + width / 2, y + 0.25),
-                                        color="black",
-                                        weight="bold",
-                                        fontsize=10,
-                                        ha="center",
-                                        va="center",
-                                    )
+                        )
+                        if ANNOTATE_CN_ID:
+                            axs[ax_idx].annotate(
+                                f"{node_id}",
+                                (x + width / 2, y + 0.25),
+                                color="black",
+                                weight="bold",
+                                fontsize=10,
+                                ha="center",
+                                va="center",
+                            )
             pair_link_id += 1
 
         """ Draw the divider line between schedule and data transfer """
@@ -378,6 +336,39 @@ def major_formatter(x, pos):
 
 
 ########################## PLOTLY PLOTTING ########################
+def add_dependency_button(fig):
+    show_bools = [True] * len(fig.data)
+    hide_bools = [
+        False if isinstance(trace, go.Scatter) else True for trace in fig.data
+    ]
+    fig.update_layout(
+        updatemenus=[
+            {
+                "buttons": [
+                    {
+                        "label": "Hide dependencies",
+                        "method": "update",
+                        "args": [
+                            {"visible": hide_bools},
+                        ],
+                    },
+                    {
+                        "label": "Show dependencies",
+                        "method": "update",
+                        "args": [
+                            {"visible": show_bools},
+                        ],
+                    },
+                ],
+                "x": 0.99,
+                "y": 1.01,
+                "xanchor": "right",
+                "yanchor": "bottom",
+            }
+        ]
+    )
+
+
 def add_dependencies(fig, scme, colors):
     for node in scme.workload.nodes():
         c_id = node.id
@@ -420,97 +411,74 @@ def get_communication_dicts(scme):
     dicts = []
     accelerator = scme.accelerator
     active_links = set()
-    for ky, link_pair in accelerator.pair_links.items():
+    for ky, link_pair in accelerator.communication_manager.pair_links.items():
         if link_pair:
             for link in link_pair:
-                if link.active_periods or link.blocked_periods:
+                if link.events:
                     active_links.add(link)
-    pass
     link_labels = []
     for pair_link_id, cl in enumerate(active_links):
-        link_labels.append(cl.get_name_for_schedule_plot())
-
-        """ Plot DRAM blocking period due to too_large_operand """
-        if cl.blocked_periods:
-            for blocked_period in cl.blocked_periods:
-                node = blocked_period[2]
-                layer_id = node[0]
-                # if layer_id not in layer_ids_seen:
-                # color = next(layer_colors)
-                # colors_seen.append(color)
-                # else:
-                # color = colors_seen[layer_ids_seen.index(layer_id)]
-                start = blocked_period[0]
-                end = blocked_period[1]
-                runtime = blocked_period[1] - blocked_period[0]
-                too_large_operands = blocked_period[3]
-                if runtime == 0:
-                    continue
-                d = dict(
-                    Task=f"Block for CN{node}",
-                    Start=start,
-                    End=end,
-                    Resource=cl.get_name_for_schedule_plot(),
-                    Layer=layer_id,
-                    Runtime=runtime,
-                    Blocking=True,
-                    Operands=too_large_operands,
-                )
-                dicts.append(d)
-        """ Plot data transfer on communication link (active periods) """
-        if cl.active_periods:
-            for active_period in cl.active_periods:
-                node_id = active_period[3]
-                layer_id = node_id[0]
-                operand = active_period[2]
-                # Get the colour for this layer
-                # if layer_id not in layer_ids_seen:
-                #     color = next(layer_colors)
-                #     colors_seen.append(color)
-                # else:
-                #     color = colors_seen[layer_ids_seen.index(layer_id)]
-                start = active_period[0]
-                end = active_period[1]
-                runtime = active_period[1] - active_period[0]
-                if runtime == 0:
-                    continue
-                d = dict(
-                    Task=f"Transfer for CN{node_id}",
-                    Start=start,
-                    End=end,
-                    Resource=cl.get_name_for_schedule_plot(),
-                    Layer=layer_id,
-                    Runtime=runtime,
-                    Blocking=False,
-                    Operands=[operand],
-                )
-                dicts.append(d)
+        resource = cl.get_name_for_schedule_plot()
+        link_labels.append(resource)
+        for event in cl.events:
+            task_type = event.type
+            start = event.start
+            end = event.end
+            runtime = end - start
+            tensors = event.tensors
+            node = event.tensors[0].origin
+            layer_id = node.id[0]
+            if runtime == 0:
+                continue
+            d = dict(
+                Task=task_type.capitalize(),
+                Start=start,
+                End=end,
+                Resource=resource,
+                Layer=layer_id,
+                Runtime=runtime,
+                Tensors=tensors,
+                Type=task_type,
+            )
+            dicts.append(d)
     return dicts
+
+
+def get_real_input_tensors(n, G):
+    preds = list(G.predecessors(n))
+    inputs = [
+        pred.operand_tensors[pred.output_operand]
+        for pred in preds
+        if pred.id[0] != n.id[0]
+    ]
+    inputs += [n.operand_tensors[op] for op in n.constant_operands]
+    return inputs
 
 
 def get_dataframe_from_scme(scme, add_communication=False):
     nodes = list(nx.topological_sort(scme.workload))
     dicts = []
-    for n in nodes:
-        id = n.id
+    for node in nodes:
+        id = node.id
         layer = id[0]
-        core_id = n.core_allocation
-        start = n.start
-        end = n.end
-        runtime = n.runtime
-        operands = n.operand_list
+        core_id = node.core_allocation
+        start = node.start
+        end = node.end
+        runtime = node.runtime
+        tensors = get_real_input_tensors(node, scme.workload)
+        task_type = "compute"
         d = dict(
-            Task=f"Compute for CN{id}",
+            Task=str(node),
             Start=start,
             End=end,
             Resource=f"Core {core_id}",
             Layer=layer,
             Runtime=runtime,
-            Blocking=False,
-            Operands=operands,
+            Tensors=tensors,
+            Type=task_type,
         )
         dicts.append(d)
-    if True:
+    if add_communication:
         communication_dicts = get_communication_dicts(scme)
         dicts += communication_dicts
     df = pd.DataFrame(dicts)
@@ -520,14 +488,14 @@ def get_dataframe_from_scme(scme, add_communication=False):
 def visualize_timeline_plotly(
     scme,
     draw_dependencies=False,
-    draw_communication=False,
+    draw_communication=True,
     fig_path="outputs/schedule.html",
 ):
     df = get_dataframe_from_scme(scme, draw_communication)
     # We get all the layer ids to get a color mapping for them
-    layer_ids = list(set(df["Layer"].tolist()))
-    color_cycle = cycle(plotly.colors.DEFAULT_PLOTLY_COLORS)
-    colors = {layer_id: next(color_cycle) for layer_id in layer_ids}
+    layer_ids = sorted(list(set(df["Layer"].tolist())))
+    color_cycle = cycle(sample_colorscale("rainbow", np.linspace(0, 1, len(layer_ids))))
+    colors = {layer_id: c for (layer_id, c) in zip(layer_ids, color_cycle)}
     bars = []
     fig = go.Figure()
     seen_layers = []
@@ -540,13 +508,11 @@ def visualize_timeline_plotly(
         name = row["Task"]
         legendgroup = f"Layer {layer}"
         legendgrouptitle_text = legendgroup
-        operands = row["Operands"]
-        if row["Blocking"]:
-            pattern_shape = "+"
-        else:
-            pattern_shape = ""
-        marker = {"color": color, "pattern": {"shape": pattern_shape}}
-        hovertext = f"<b>Task:</b> {name}<br><b>Operands:</b> {operands}<br><b>Runtime:</b> {runtime:.2e}"
+        tensors = row["Tensors"]
+        task_type = row["Type"]
+        hatch = PLOTLY_HATCH_TYPES[task_type]
+        marker = {"color": color, "pattern": {"shape": hatch}}
+        hovertext = f"<b>Task:</b> {name}<br><b>Tensors:</b> {tensors}<br><b>Runtime:</b> {runtime:.2e}"
         bar = go.Bar(
             base=[start],
             x=[runtime],
@@ -566,6 +532,9 @@ def visualize_timeline_plotly(
     # Draw dependency lines if necessary
     if draw_dependencies:
         add_dependencies(fig, scme, colors)
+
+    # Add button to show/hide dependencies
+    add_dependency_button(fig)
 
     # Title
     edp = scme.latency * scme.energy

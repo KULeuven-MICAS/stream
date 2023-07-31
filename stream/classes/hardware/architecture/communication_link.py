@@ -1,9 +1,16 @@
 from math import ceil
+import numpy as np
 
 from stream.classes.workload.tensor import Tensor
+from stream.classes.cost_model.communication_manager import CommunicationLinkEvent
 
-SAVE_ACTIVE_PERIODS = True
-SAVE_BLOCKED_PERIODS = True
+
+class BusyTimeViolationException(Exception):
+    pass
+
+
+class IdleTimeViolationException(Exception):
+    pass
 
 
 class CommunicationLink:
@@ -17,15 +24,10 @@ class CommunicationLink:
         self.bandwidth = bandwidth
         self.unit_energy_cost = unit_energy_cost
         self.bidirectional = bidirectional
-        self.available_from = 0  # from which timestep this link is available
-        if SAVE_ACTIVE_PERIODS:
-            self.active_periods = (
-                []
-            )  # will contain from when to when this link was active
-        if SAVE_BLOCKED_PERIODS:
-            self.blocked_periods = (
-                []
-            )  # will contain the ranges the port is blocked due toe execution of node with too large operand
+
+        self.events = []
+        self.busy_periods = []
+        self.idle_periods = [(0, float("inf"))]
 
     def __str__(self) -> str:
         return f"CommunicationLink({self.sender}, {self.receiver}, bw={self.bandwidth})"
@@ -45,7 +47,11 @@ class CommunicationLink:
         )
 
     def __eq__(self, other) -> bool:
-        return str(self) == str(other)
+        return (self.sender, self.receiver, self.bandwidth) == (
+            other.sender,
+            other.receiver,
+            other.bandwidth,
+        )
 
     def get_name_for_schedule_plot(self) -> str:
         if self.bidirectional:
@@ -53,72 +59,99 @@ class CommunicationLink:
         else:
             return f"{self.sender} -> {self.receiver}"
 
-    def is_available(self, timestep):
-        if timestep < self.available_from:
-            return False
-        return True
-
-    def put(self, data: Tensor, timestep: int) -> tuple[int, float]:
-        """Put data on this communication link at timestep.
+    def transfer(self, cle: CommunicationLinkEvent) -> float:
+        """Transfer data on this communication link at timestep.
+        The transfer can take longer than necessary for this link if another lower-bandwidth link is involved.
 
         Args:
-            data_size (int): The size of the packet in number of bits
-            timestep (int): The timestep in clock cyles to start the data transfer
+            tensor (Tensor): The tensor to be transferred.
+            start (int): The timestep in clock cyles to start the transfer.
+            duration (int): The duration of the transfer.
 
         Returns:
             int: The end time when communication on this link is finished
         """
-        start_timestep = max(self.available_from, timestep)
-        duration = ceil(data.size / self.bandwidth)
-        energy_cost = self.unit_energy_cost * duration
-        end_timestep = start_timestep + duration
-        self.update_available_time(end_timestep)
-        if SAVE_ACTIVE_PERIODS:
-            self.active_periods.append(
-                (start_timestep, end_timestep, data.layer_operand, data.origin.id)
-            )
-        return end_timestep, energy_cost
+        # TODO Check when we can actually do the transfer based on start and duration at higher level
+        # duration = ceil(tensor.size / self.bandwidth)
+        energy_cost = cle.energy
 
-    def update_available_time(self, new_available_time: int) -> None:
-        """Update communication link available time.
-
-        Args:
-            new_available_time (int): The updated available time for the communication link
-        """
-        self.available_from = new_available_time
+        self.update_busy_periods(cle)
+        self.update_idle_periods(cle)
+        self.events.append(cle)
+        return energy_cost
 
     def block(
         self,
-        start_timestep: int,
-        blocking_time: int,
-        cn_id: tuple,
-        too_large_operands: list,
+        start: int,
+        duration: int,
+        tensors: list,
     ):
         """Block this communication link from start timestep for a given duration.
 
         Args:
-            start_timestep (int): The timestep at which the port ideally starts being blocked.
-            blocking_time (int): The duration for which the link should be blocked.
-            cn_id (tuple): The id of the CN for which we are blocking this link.
-            too_large_operands (list): The operands of the CN that cause the blocking.
-
-
-        Returns:
-            int: The start time at which we can effectively start blocking the port.
-            int: The end time at which the blocking ends.
+            start (int): The timestep at which the blocking starts.
+            duration (int): The duration of the blocking.
+            tensors (list): A list of tensors for which we are blocking the link.
         """
-        effective_blocking_start_timestep = max(self.available_from, start_timestep)
-        effective_blocking_end_timestep = (
-            effective_blocking_start_timestep + blocking_time
+        end = start + duration
+        # Create a CLEvent
+        event = CommunicationLinkEvent(
+            type="block",
+            start=start,
+            end=end,
+            tensors=tensors,
+            energy=tensors[0].origin.get_offchip_energy(),
         )
-        self.update_available_time(effective_blocking_end_timestep)
-        if SAVE_BLOCKED_PERIODS:
-            self.blocked_periods.append(
-                (
-                    effective_blocking_start_timestep,
-                    effective_blocking_end_timestep,
-                    cn_id,
-                    too_large_operands,
-                )
+        self.update_busy_periods(event)
+        self.update_idle_periods(event)
+        self.events.append(event)
+        return
+
+    def update_busy_periods(self, event: CommunicationLinkEvent):
+        start = event.start
+        end = event.end
+        if start == end:
+            return
+        busy_starts = [start for (start, _) in self.busy_periods]
+        idx = np.searchsorted(busy_starts, start, side="right")
+        if idx > 0:
+            previous_end = self.busy_periods[idx - 1][1]
+            if previous_end > start:
+                raise BusyTimeViolationException()
+        # Sanity checks
+        if idx <= len(self.busy_periods) - 1:
+            next_start = self.busy_periods[idx][0]
+            if next_start < end:
+                raise BusyTimeViolationException()
+        # Insert the new busy period
+        self.busy_periods.insert(idx, (start, end))
+
+    def update_idle_periods(self, event: CommunicationLinkEvent):
+        busy_start = event.start
+        busy_end = event.end
+        busy_duration = event.duration
+        idle_starts = [start for (start, _) in self.idle_periods]
+        if busy_duration == 0:
+            return
+        idx = np.searchsorted(idle_starts, busy_start, side="right") - 1
+        assert idx >= 0
+        idle_start, idle_end = self.idle_periods[idx]
+        if idle_start > busy_start or busy_end > idle_end:
+            raise IdleTimeViolationException(
+                "Busy period must fall within idle period."
             )
-        return effective_blocking_start_timestep, effective_blocking_end_timestep
+        if idle_end - idle_start < busy_duration:
+            raise IdleTimeViolationException(
+                "Busy period must fall within idle period."
+            )
+        if idle_start == busy_start:
+            new_idle_period = (busy_end, idle_end)
+            self.idle_periods[idx] = new_idle_period
+        elif idle_end == busy_end:
+            new_idle_period = (idle_start, busy_start)
+            self.idle_periods[idx] = new_idle_period
+        else:
+            new_idle_periods = [(idle_start, busy_start), (busy_end, idle_end)]
+            del self.idle_periods[idx]
+            self.idle_periods.insert(idx, new_idle_periods[1])
+            self.idle_periods.insert(idx, new_idle_periods[0])
