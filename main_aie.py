@@ -24,8 +24,8 @@ mapping_path = "stream.inputs.aie.testing_mapping_bottleneck"
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
 
 # hint_loops = [("OY",'all'),("OX",'all')] #create 1 CN layer-by-layer
-
-hint_loops = [('OY', 16)]
+hint_loops = [("OY",'all')]
+# hint_loops = [('OY', 16)]
 # hint_loops = [('OY', 16)]  
 # hint_loops=[]
 # hint_loops = [("OY",1),("OX",32)]
@@ -42,8 +42,8 @@ node_hw_cost_pkl_name = f"saved_cn_hw_cost-{experiment_id}"
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
 plot_data_transfer = True
-nb_ga_individuals = 16  # number of individuals in each genetic algorithm generation
-nb_ga_generations = 16  # number of genetic algorithm generations
+nb_ga_individuals = 128  # number of individuals in each genetic algorithm generation
+nb_ga_generations = 128  # number of genetic algorithm generations
 node_hw_performances_path = f"outputs/{node_hw_cost_pkl_name}.pickle"
 #################################
 
