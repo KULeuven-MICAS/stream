@@ -17,7 +17,6 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 accelerator = "stream.inputs.aie.hardware.aie_col"
 workload_path = "stream.inputs.aie.bottleneck"
-# workload_path = "stream.inputs.aie.bottleneck_scaled"
 mapping_path = "stream.inputs.aie.testing_mapping_bottleneck"
 
 
