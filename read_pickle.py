@@ -2,11 +2,11 @@
 
 import pandas as pd
 import pickle
-# pickleFile = open("/proj/rdi/staff/gagandee/dse/stream_aie/outputs/saved_cn_hw_cost-aie_col-bottleneck-hintloop_oy_all.pickle","rb")
+pickleFile = open("/proj/rdi/staff/gagandee/dse/stream_aie/outputs/saved_cn_hw_cost-aie_col-bottleneck-hintloop_oy_all.pickle","rb")
 
-# obj = pd.read_pickle(pickleFile)
+obj = pd.read_pickle(pickleFile)
 # print (obj)
-pickle_filepath="/proj/rdi/staff/gagandee/dse/stream_aie/outputs/saved_cn_hw_cost-aie_col-one_bottleneck_with_bias-hintloop_oy_all-layer_splitting.pickle"
+pickle_filepath="/proj/rdi/staff/gagandee/dse/stream_aie/outputs/saved_cn_hw_cost-aie_col-bottleneck-hintloop_oy_all.pickle"
 
 with open(pickle_filepath, "rb") as handle:
         node_hw_performances = pickle.load(handle)
