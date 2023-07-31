@@ -16,8 +16,8 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 #################################
 
 accelerator = "stream.inputs.aie.hardware.aie_col"
-workload_path = "stream.inputs.aie.bottleneck"
-mapping_path = "stream.inputs.aie.testing_mapping_bottleneck"
+workload_path = "stream.inputs.aie.bottleneck_static"
+mapping_path = "stream.inputs.aie.testing_mapping_bottleneck_static"
 
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
