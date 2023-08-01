@@ -496,7 +496,7 @@ def schedule_graph(
     # The total schedule latency is the max of all CN end times and the link end times
     cns_end_time = max((n.end for n in G.nodes()))
     links_end_time = max(
-        [event.end for event in accelerator.communication_manager.events]
+        [event.end for event in accelerator.communication_manager.events], default=0
     )
     latency = max(cns_end_time, links_end_time)
     # print("Scheduling completed")
