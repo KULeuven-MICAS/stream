@@ -13,13 +13,13 @@ def get_memory_hierarchy(multiplier_array):
         size=10000000000,
         r_bw=16*8,
         w_bw=16*8,
-        r_cost=0,
-        w_cost=0,
+        r_cost=1000,
+        w_cost=1000,
         area=0,
         r_port=2,
         w_port=2,
-        rw_port=0,
-        latency=1,
+        rw_port=1,
+        latency=1000,
     )  # rd E per bit 16
 
     memory_hierarchy_graph = MemoryHierarchy(operational_array=multiplier_array)
