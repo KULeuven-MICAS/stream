@@ -11,21 +11,7 @@ workload = {
         "operand_source": {"W": [], "I": []},
         "constant_operands": ["W", "I"],
         "memory_operand_links": {"O": "O", "W": "I2", "I": "I1"},
-        "padding": {"IY": (0, 0), "IX": (0, 0)},
-    },
-    1: {
-        "operator_type": "Gemm",
-        "equation": "O[B][K]+=I[B][C]*W[C][K]",
-        "loop_dim_size": {
-            "B": 32,
-            "K": 512,
-            "C": 512,
-        },
-        "operand_precision": {"O": 8, "O_final": 8, "W": 8, "I": 8},
-        "operand_source": {"W": [], "I": []},
-        "constant_operands": ["W", "I"],
-        "memory_operand_links": {"O": "O", "W": "I2", "I": "I1"},
-        "padding": {"IY": (0, 0), "IX": (0, 0)},
+
     }
     # 3: {  # Addition of layer 1 (residual path) and layer 3 (main path)
     #     'operator_type': 'Add',
