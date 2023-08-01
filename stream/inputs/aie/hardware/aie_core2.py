@@ -146,6 +146,17 @@ def get_memory_hierarchy(multiplier_array):
     #     ),
     #     served_dimensions='all',
     # )
+    # memory_hierarchy_graph.add_memory(
+    #     memory_instance=mem_tile,
+    #     operands=("I1", "I2", "O"),
+    #     port_alloc=(
+    #         {"fh": "w_port_1", "tl": "r_port_1", "fl": None, "th": None},
+    #         {"fh": "w_port_1", "tl": "r_port_1", "fl": None, "th": None},
+    #         {"fh": "w_port_1", "tl": "r_port_1", "fl": "w_port_1", "th": "r_port_1"},
+    #     ),
+    #     served_dimensions='all',
+    # )
+
     from zigzag.visualization.graph.memory_hierarchy import visualize_memory_hierarchy_graph
     visualize_memory_hierarchy_graph(memory_hierarchy_graph)
     return memory_hierarchy_graph
