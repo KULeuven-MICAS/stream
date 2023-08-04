@@ -2,3 +2,5 @@ zigzag-dse
 rtree
 deap
 brokenaxes
+plotly
+pandas

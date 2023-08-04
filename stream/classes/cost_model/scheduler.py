@@ -128,9 +128,10 @@ def get_tensors_needed_for_node(node: ComputationNode, G: DiGraph):
         pred_output_tensor = pred.operand_tensors[pred.output_operand]
         tensors_this_candidate_needs.append(pred_output_tensor)
         tensors_operands.append(consumer_memory_op)
-    # Sort these tensors based on their earliest possible transfer time
-    tensors_this_candidate_needs, tensors_operands = zip(
-        *sorted(zip(tensors_this_candidate_needs, tensors_operands))
+    if tensors_this_candidate_needs:
+        # Sort these tensors based on their earliest possible transfer time
+        tensors_this_candidate_needs, tensors_operands = zip(
+            *sorted(zip(tensors_this_candidate_needs, tensors_operands))
     )
     return tensors_this_candidate_needs, tensors_operands
 
@@ -495,7 +496,7 @@ def schedule_graph(
     # The total schedule latency is the max of all CN end times and the link end times
     cns_end_time = max((n.end for n in G.nodes()))
     links_end_time = max(
-        [event.end for event in accelerator.communication_manager.events]
+        [event.end for event in accelerator.communication_manager.events], default=0
     )
     latency = max(cns_end_time, links_end_time)
     # print("Scheduling completed")
