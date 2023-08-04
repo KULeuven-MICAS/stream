@@ -189,10 +189,10 @@ class Accelerator:
             raise ValueError(
                 "Evictions required in offchip memory. Consider making offchip larger."
             )
-        t = timestep
+        t_evictions_complete = timestep
         for tensor_to_evict in tensors_to_evict:
             (
-                t,
+                t_eviction_complete,
                 eviction_link_energy_cost,
                 eviction_memory_energy_cost,
             ) = self.remove(
@@ -202,9 +202,10 @@ class Accelerator:
                 timestep,
                 write_back_to_offchip=True,
             )
+            t_evictions_complete = max(t_evictions_complete, t_eviction_complete)
             total_eviction_link_energy_cost += eviction_link_energy_cost
             total_eviction_memory_energy_cost += eviction_memory_energy_cost
-        return t, total_eviction_link_energy_cost, total_eviction_memory_energy_cost
+        return t_evictions_complete, total_eviction_link_energy_cost, total_eviction_memory_energy_cost
 
     def transfer_tensor_to_core(
         self,
@@ -253,23 +254,23 @@ class Accelerator:
                 sending_core_id, tensor.memory_operand
             )
             assert self.contains_tensor(tensor, storing_instance)
-            stored_since_timestep = (
-                self.memory_manager.top_instance_stored_since_timestep[
+            available_since_timestep = (
+                self.memory_manager.top_instance_available_since_timestep[
                     storing_instance
                 ][tensor.equality_hash()]
             )
         else:
             (
                 instances_storing_tensor,
-                stored_since_timesteps,
+                available_since_timesteps,
             ) = self.find_tensor_in_top_instances(tensor)
             # Pick the core that has stored the tensor the longest
-            stored_since_timestep = min(stored_since_timesteps.values())
+            available_since_timestep = min(available_since_timesteps.values())
             storing_instance = next(
                 (
                     top_instance
-                    for (top_instance, timestep) in stored_since_timesteps.items()
-                    if timestep == stored_since_timestep
+                    for (top_instance, timestep) in available_since_timesteps.items()
+                    if timestep == available_since_timestep
                 )
             )
         ################################# STEP 2 #################################
@@ -277,7 +278,7 @@ class Accelerator:
         enough_space_timestep = self.memory_manager.get_timestep_for_tensor_addition(
             tensor,
             receiving_core_id,
-            stored_since_timestep,
+            available_since_timestep,
             memory_op=tensor_operand,
         )
         ################################# STEP 3 #################################

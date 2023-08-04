@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 # Run these if this doesn't work:
 # $ sudo apt install msttcorefonts -qq
 # $ rm ~/.cache/matplotlib -rf
-matplotlib.rc("font", family="Arial")
+# matplotlib.rc("font", family="Arial")
 
 # MPL FONT SIZES
 SMALL_SIZE = 14
