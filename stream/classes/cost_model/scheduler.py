@@ -145,7 +145,7 @@ def clear_memories(
             timestep,
             eviction_link_energy_cost,
             eviction_memory_energy_cost,
-        ) = accelerator.remove_all(core, too_large_operand, timestep, exceptions)
+        ) = accelerator.remove_all(core, too_large_operand, timestep, exceptions, write_back_to_offchip=True)
         total_eviction_to_offchip_link_energy += eviction_link_energy_cost
         total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
     return (
@@ -182,7 +182,7 @@ def check_for_removal(
         if tensor_used_by_node.get_total_priority() == 0:
             (
                 instances_storing_tensor,
-                stored_since_timesteps,
+                _,
             ) = accelerator.memory_manager.find_tensor_in_top_instances(
                 tensor_used_by_node
             )
