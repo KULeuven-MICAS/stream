@@ -1,5 +1,7 @@
 import argparse
 import re
+import os
+
 from zigzag.classes.stages import *
 from stream.classes.stages import *
 from stream.utils import load_scme, save_scme
@@ -39,10 +41,7 @@ parser.add_argument(
     help="module path to the accelerator, e.g. inputs.examples.hardware.TPU_like",
 )
 parser.add_argument(
-    "--headname",
-    metavar="path",
-    required=True,
-    help="experiment number",
+    "--headname", metavar="path", required=True, help="experiment number",
 )
 
 parser.add_argument(
@@ -60,7 +59,7 @@ parser.add_argument(
 args = parser.parse_args()
 
 ################################### HYPERPARAMETERS ##################################
-CN_define_mode = 4  # manually define outer CN size for all cores and all layers
+CN_define_mode = 1  # manually define outer CN size for all cores and all layers
 hint_loops = [("OY", "all")]
 nb_ga_individuals = 64  # number of individuals in each genetic algorithm generation
 nb_ga_generations = 10  # number of genetic algorithm generations
@@ -82,19 +81,19 @@ experiment_id = (
 
 ######################################## PATHS #######################################
 results_path = args.results_path
-intra_result_path = f"{results_path}/intra_result/"
-inter_result_path = f"{results_path}/inter_result/"
-plot_path = f"{results_path}/plot/"
+intra_result_path = os.path.join(results_path, "intra_result/")
+inter_result_path = os.path.join(results_path, "inter_result/")
+plot_path = os.path.join(results_path, "plot/")
 node_hw_performances_path = (
-    f"{intra_result_path}{experiment_id}-saved_cn_hw_cost.pickle"
+    os.path.join(intra_result_path, f"{experiment_id}-saved_cn_hw_cost.pickle")
 )
 visualize_node_hw_performances_path = (
-    f"{intra_result_path}{experiment_id}-saved_cn_hw_cost.png"
+    os.path.join(intra_result_path, f"{experiment_id}-saved_cn_hw_cost.png")
 )
-scme_path = f"{inter_result_path}/{experiment_id}-scme.pickle"
-timeline_fig_path = f"{plot_path}{experiment_id}-schedule.png"
-memory_fig_path = f"{plot_path}{experiment_id}-memory.png"
-timeline_fig_path_plotly = f"{plot_path}{experiment_id}-schedule.html"
+scme_path = os.path.join(inter_result_path, f"{experiment_id}-scme.pickle")
+timeline_fig_path = os.path.join(plot_path, f"{experiment_id}-schedule.png")
+memory_fig_path = os.path.join(plot_path, f"{experiment_id}-memory.png")
+timeline_fig_path_plotly = os.path.join(plot_path, f"{experiment_id}-schedule.html")
 ######################################################################################
 
 ######################################## SETUP #######################################
