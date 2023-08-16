@@ -1,5 +1,5 @@
 import itertools
-from math import prod
+from math import ceil, prod
 from re import L
 from typing import List, Dict
 import networkx as nx
@@ -11,14 +11,15 @@ from stream.classes.workload.lpnormalization_node import LpNormalizationNode
 from stream.classes.workload.reshape_node import ReshapeNode
 from stream.classes.workload.transpose_node import TransposeNode
 from stream.classes.workload.tensor import Tensor
-
 from zigzag.classes.mapping.temporal.temporal_loop import TemporalLoop
-from stream.classes.workload.communication_node import CommunicationNode
 from stream.classes.workload.computation_node import ComputationNode
 from zigzag.classes.stages.Stage import Stage
 from stream.classes.workload.dummy_node import DummyNode
-from stream.classes.workload.pooling_node import PoolingNode
-from zigzag.utils import pickle_deepcopy
+from stream.classes.opt.splitting.splitting import (
+    convert_inner_cn_loops,
+    convert_outer_cn_loops,
+    convert_outer_cn_loops_with_k,
+)
 
 import logging
 
@@ -47,8 +48,6 @@ class GenerateCNWorkloadHybridStage(Stage):
         super().__init__(list_of_callables, **kwargs)
         self.workload = workload
         self.accelerator = accelerator
-        self.cores = accelerator.cores
-        self.core_ids = [core.id for core in self.cores]
 
         # Save for each of the workload's nodes the finer nodes that will be generated
         self.finer_nodes_dict = {}
@@ -57,15 +56,33 @@ class GenerateCNWorkloadHybridStage(Stage):
         self.numpy_tensors = {}
 
         # for CN node size case study, will be used in the function of get_outer_tmap_loop_dimensions
+        if cn_define_mode not in [1, 2, 3, 4]:
+            raise ValueError(f"cn_define_mode can not be {self.cn_define_mode}.")
         self.cn_define_mode = cn_define_mode
-        if cn_define_mode == 1:
-            self.outer_CN_loops = hint_loops
-        elif cn_define_mode == 2:
-            self.inner_CN_loops = hint_loops
-        elif cn_define_mode == 3:
-            self.factor_loops = hint_loops
-        else:
-            raise ValueError(f"CN_define_mode can not be {self.cn_define_mode}.")
+        self.hint_loops = (
+            hint_loops  # can be outer-cn or inner-cn depending on cn_define_mode
+        )
+        # layer_cutoffs is required only for cn_define_mode == 3
+        if cn_define_mode == 3:
+            try:
+                layer_cutoffs = self.kwargs["layer_cutoffs"]
+            except KeyError:
+                raise ValueError(
+                    "Please provide 'layer_cutoffs' when using cn_define_mode = 3."
+                )
+            assert len(layer_cutoffs) == len(self.hint_loops) - 1
+            self.layer_cutoffs = layer_cutoffs
+
+        # compute the weight capacities of the different cores and the number of splits required for each layer
+        if cn_define_mode == 4:
+            try:
+                self.split_W_percentage = self.kwargs["split_W_percentage"]
+            except:
+                self.split_W_percentage = 1
+            # compute the on-chip weight capacities of the different cores (assumes 'I2' is for weights)
+            self.weight_capacities = self.get_weight_capacities()
+            # compute the number of splits required for each layer in the original workload
+            self.layer_split_factors_k = self.get_layer_split_factors_k()
 
     def run(self):
         unique_finer_nodes = []
@@ -78,9 +95,8 @@ class GenerateCNWorkloadHybridStage(Stage):
                 continue
             outer_temporal_loops = self.get_outer_tmap_loop_dimensions(node)
             finer_nodes, unique_nodes = self.get_finer_nodes(node, outer_temporal_loops)
-            logger.info(
-                f"{node}: Generated {len(finer_nodes)} finer nodes, {len(unique_nodes)} unique nodes based on outer temporal loops {outer_temporal_loops}."
-            )
+            logger.info(f"{node}: Outer loops {outer_temporal_loops}.")
+            logger.info(f"{node}: Generated {len(finer_nodes)} finer nodes.")
             self.finer_nodes_dict[node] = finer_nodes
             unique_finer_nodes += unique_nodes
             # Compute the edges between nodes originating from one bigger node (intra-edges)
@@ -154,46 +170,6 @@ class GenerateCNWorkloadHybridStage(Stage):
                 pairs.append((node, successor, complex_pair))
         return tuple(pairs)
 
-    @staticmethod
-    def get_rest_loops(
-        total_loop_dim: Dict[str, int], to_be_excluded_loops: List[TemporalLoop]
-    ) -> List[TemporalLoop]:
-        """
-        This function return a list of the rest temporal loops after remove the to_be_excluded_loops from the total_loop_dim.
-        """
-        rest_loops = []
-        to_be_excluded_loops = {
-            TM_loop.dimension: TM_loop.size for TM_loop in to_be_excluded_loops
-        }
-        for loop_name, loop_value_total in total_loop_dim.items():
-            if loop_name in to_be_excluded_loops:
-                loop_value_to_be_gone = to_be_excluded_loops[loop_name]
-                loop_value_left = loop_value_total // loop_value_to_be_gone
-                if loop_value_left > 1:
-                    rest_loops.append(TemporalLoop(loop_name, loop_value_left))
-            else:
-                if loop_value_total > 1:
-                    rest_loops.append(TemporalLoop(loop_name, loop_value_total))
-        return rest_loops
-
-    @staticmethod
-    def find_the_closest_divisible_factor_within_a_range(total, factor, a_range):
-        """
-        This function find the closest divisible factor within a range.
-        E.g., if the total loop size 26, the factor is 10, and the range is 2,
-        the function will try all the values between 10/2 and 10*2, and return 13 as result.
-        """
-        lower_bound = max(2, factor // a_range)
-        upper_bound = min(total, factor * a_range)
-        new_factor_candidates = [
-            (i, abs(factor - i))
-            for i in range(lower_bound, upper_bound + 1)
-            if total % i == 0
-        ]
-
-        new_factor = min(new_factor_candidates, key=lambda tup: tup[1])[0]
-        return new_factor
-
     def get_outer_tmap_loop_dimensions(self, layer) -> List[TemporalLoop]:
         """Get the temporal loops that are outside a CN for this layer.
 
@@ -204,66 +180,37 @@ class GenerateCNWorkloadHybridStage(Stage):
             List[TemporalLoop]: list of temporal loops outside of cn
         """
         outer_loops = []
-
         if self.cn_define_mode == 1:
-            for loop_name, loop_size in self.outer_CN_loops:
-                if loop_name in layer.loop_dim_size:
-                    if loop_size == "all" or layer.loop_dim_size[loop_name] < loop_size:
-                        outer_loops.append(
-                            TemporalLoop(loop_name, layer.loop_dim_size[loop_name])
-                        )
-                    elif layer.loop_dim_size[loop_name] % loop_size == 0:
-                        outer_loops.append(TemporalLoop(loop_name, loop_size))
-                    else:
-                        try:
-                            # find the closest factor within 50x.
-                            new_loop_size = (
-                                self.find_the_closest_divisible_factor_within_a_range(
-                                    layer.loop_dim_size[loop_name], loop_size, 50
-                                )
-                            )
-                            outer_loops.append(TemporalLoop(loop_name, new_loop_size))
-                            logger.info(
-                                f"For layer {int(layer.id[0])}, the outer CN dimension {loop_name} size is adjusted from {loop_size} to {new_loop_size}."
-                            )
-                        except:
-                            raise ValueError(
-                                f"({loop_name}, {loop_size}) is not a valid outer CN loop."
-                            )
-
+            # outer_cn_loops identical for all layers
+            outer_cn_loops = self.hint_loops.copy()
+            outer_loops = convert_outer_cn_loops(outer_cn_loops, layer)
         elif self.cn_define_mode == 2:
-            inner_loops = []
-            for loop_name, loop_size in self.inner_CN_loops:
-                if loop_name in layer.loop_dim_size:
-                    if loop_size == "all" or layer.loop_dim_size[loop_name] < loop_size:
-                        inner_loops.append(
-                            TemporalLoop(loop_name, layer.loop_dim_size[loop_name])
-                        )
-                    elif layer.loop_dim_size[loop_name] % loop_size == 0:
-                        inner_loops.append(TemporalLoop(loop_name, loop_size))
-                    else:
-                        try:
-                            # find the closest factor within 50x.
-                            new_loop_size = (
-                                self.find_the_closest_divisible_factor_within_a_range(
-                                    layer.loop_dim_size[loop_name], loop_size, 50
-                                )
-                            )
-                            outer_loops.append(TemporalLoop(loop_name, new_loop_size))
-                            logger.info(
-                                f"For layer {int(layer.id[0])}, the inner CN dimension {loop_name} size is adjusted from {loop_size} to {new_loop_size}."
-                            )
-                        except:
-                            raise ValueError(
-                                f"({loop_name}, {loop_size}) is not a valid inner CN loop."
-                            )
-            outer_loops = self.get_rest_loops(layer.loop_dim_size, inner_loops)
-
+            inner_cn_loops = self.hint_loops.copy()
+            outer_loops = convert_inner_cn_loops(inner_cn_loops, layer)
+        elif self.cn_define_mode == 3:
+            # Assume that self.outer_cn_loops is a nested list
+            # The self.layer_cutoffs list specifies the transition from one list of cn loops to the next
+            # So for outer_cn_loops = [[("OY", "all")], [("OY", "all"), ("K", "all")]] and layer_cutoffs = [4]
+            # layer ids 0 to 3 will use [("OY", "all")] and layer ids 4 to end will use [("OY", "all), ("K", "all")]
+            # Find which sublist this layer should use
+            idx = np.searchsorted(self.layer_cutoffs, layer.id[0], side="right")
+            outer_cn_loops = self.hint_loops[idx].copy()
+            outer_loops = convert_outer_cn_loops(outer_cn_loops, layer)
+        elif self.cn_define_mode == 4:
+            # Assume we always split in the hint_loops dimensions
+            # Check if we need to split in K dimension for it to not block offchip during computation
+            outer_cn_loops = self.hint_loops.copy()
+            try:
+                split_factor = self.layer_split_factors_k[layer]
+            except KeyError:
+                split_factor = 1
+            outer_loops = convert_outer_cn_loops_with_k(
+                outer_cn_loops, layer, split_factor
+            )
         else:
-            # TODO
-            inner_loops = []
-            outer_loops = []
-
+            raise ValueError(
+                "This shouldn't be reached if initialization checks are correctly implemented."
+            )
         if not outer_loops:
             outer_loops.append(TemporalLoop(layer.loop_dim_list[0], 1))
         return outer_loops
@@ -292,6 +239,36 @@ class GenerateCNWorkloadHybridStage(Stage):
             preds.pop(idx)
             preds += skip_node_preds
         return preds
+
+    @staticmethod
+    def get_group_id(node: ComputationNode, loop_ranges: dict, groups: dict) -> int:
+        """Return the group id for the given loop ranges.
+        The group id is determined based on the relevant constant operand dimension loop ranges.
+        If there is no constant operand, we return 0.
+        If there is more than one constant operand, we only consider the last one's loop ranges.
+        If those loop ranges are already contained within 'groups' we return that group id.
+        Else we add it to the groups dict with an incremented group id.
+
+        Args:
+            node (ComputationNode): The original (layer) CN.
+            loop_ranges (dict): A dictionary containing the loop range for each dimension
+            groups (dict): The group ids for the already seen loop ranges.
+
+        Returns:
+            int: The group id for the given loop ranges
+        """
+        constant_operands = node.constant_operands
+        if not constant_operands:
+            return 0, groups
+        constant_operand = constant_operands[-1]
+        relevant_dims = node.operand_loop_dim[constant_operand]["r"]
+        relevant_ranges = tuple([loop_ranges[dim] for dim in relevant_dims])
+        if relevant_ranges in groups:
+            return groups[relevant_ranges], groups
+        max_group_id = max(groups.values(), default=-1)
+        new_group_id = max_group_id + 1
+        groups[relevant_ranges] = new_group_id
+        return new_group_id, groups
 
     @staticmethod
     def get_finer_nodes(
@@ -352,6 +329,7 @@ class GenerateCNWorkloadHybridStage(Stage):
             mult_factors.append(int(inner_span * outer_span))
 
         finer_nodes = []
+        groups = {}
         for n in range(nb_cns):
             outer_loop_values = []
             for i, outer_loop in enumerate(outer_temporal_loops):
@@ -384,10 +362,12 @@ class GenerateCNWorkloadHybridStage(Stage):
             finer_node_attrs_copy = finer_node_attrs.copy()
             finer_node_attrs_copy["loop_ranges"] = dim_min_max
 
-            # TODO Compute the discarded inputs of each finer node
-            # TODO Compute the spawning outputs of each finer node
+            # Determine the group id of this layer based on the loop ranges
+            group_id, groups = GenerateCNWorkloadHybridStage.get_group_id(
+                original_node, dim_min_max, groups
+            )
 
-            # Create the computation node object with the computed ranges of the loop dimensions and number of dying pixels
+            # Create the computation node object with the computed ranges of the loop dimensions
             node_name = original_node.name
             node_input_names = original_node.input_names
             node_output_names = original_node.output_names
@@ -410,6 +390,7 @@ class GenerateCNWorkloadHybridStage(Stage):
                 node_output_names,
                 op_type=original_node.type,
                 produces_final_output=produces_final_output,
+                group_id=group_id,
             )
 
             # Initialize the priorities (total inter-CN data reuse factor) for the constant operands of this finer_node
@@ -435,10 +416,15 @@ class GenerateCNWorkloadHybridStage(Stage):
 
     @staticmethod
     def get_intra_edges(nodes):
-        return [
-            (nodes[node_id], nodes[node_id + 1], {"bits": 0})
-            for node_id in range(len(nodes) - 1)
-        ]
+        # Get all the group ids
+        group_ids = sorted(set([n.group for n in nodes]))
+        intra_edges = []
+        for group_id in group_ids:
+            group_nodes = [n for n in nodes if n.group == group_id]
+            pairs = zip(group_nodes, group_nodes[1:])
+            for node_1, node_2 in pairs:
+                intra_edges.append((node_1, node_2, {"bits": 0}))
+        return intra_edges
 
     def get_inter_edges_rtree(
         self, producer, consumer, finer_producers, finer_consumers
@@ -897,6 +883,62 @@ class GenerateCNWorkloadHybridStage(Stage):
             )
             n.set_nb_real_predecessors(nb_real_predecessors)
 
+    def get_weight_capacities(self):
+        # Get the weight capacity of all cores
+        weight_capacities = {}
+        for core in self.accelerator.cores.nodes():
+            if core.id == self.accelerator.offchip_core_id:
+                continue  # skip offchip core
+            core_weight_capacity = core.memory_hierarchy.get_operand_top_level(
+                "I2"
+            ).memory_instance.size
+            weight_capacities[core.id] = core_weight_capacity
+        return weight_capacities
+
+    def get_layer_split_factors_k(self):
+        # Get for each layer the split factor we need to be able to fit weights on possible cores
+        split_factors = {}
+        for node in self.workload.nodes():
+            # Get the weight capacity of all possible core allocations of this node
+            core_allocations = node.core_allocation
+            if isinstance(node, DummyNode) or not isinstance(core_allocations, list):
+                continue
+            core_capacities = [
+                self.weight_capacities[core_id] for core_id in core_allocations
+            ]
+            min_core_capacity = min(core_capacities)
+            # Get the weight size of this layer
+            constant_operands = node.constant_operands
+            if not constant_operands:
+                continue
+            if "W" in node.constant_operands:
+                constant_operand = "W"
+            elif "B" in node.constant_operands:
+                constant_operand = "B"
+            else:
+                raise NotImplementedError(
+                    f"Layer splitting not implemented for {node} with constant operands= {node.constant_operands}."
+                )
+            weight_size = node.operand_size_bit[constant_operand]
+            if weight_size == 0:
+                continue
+            split_factor = ceil(
+                weight_size / (self.split_W_percentage * min_core_capacity)
+            )  # 0.5 for double buffering
+            if split_factor == 1:
+                continue
+            # Check if the split_factor is a divisor of the number of output channels
+            try:
+                output_channels = node.loop_dim_size["K"]
+            except KeyError:
+                raise NotImplementedError(f"{node} doesn't have a 'K' loop.")
+            while divmod(output_channels, split_factor)[1] != 0:
+                split_factor += 1
+                if split_factor > output_channels:
+                    raise ValueError(f"Something went wrong.")
+            split_factors[node] = split_factor
+        return split_factors
+
 
 def deduce_tensor_reuse_factors(original_node, outer_temporal_loops) -> dict[list[int]]:
     """This function is used to generate a list of inter-CN data reuse factor for each CN's constant operand, like W, based on the outer-CN loops and the r, ir relations.
@@ -929,7 +971,7 @@ def deduce_tensor_reuse_factors(original_node, outer_temporal_loops) -> dict[lis
                 r_ir_loop[constant_operand].append(("r", loop.size))
 
     # total_reuse_factor is the upper bound of the reuse factor that current layer CNs can reach
-    total_reuse_factor = {
+    total_reuse_factors = {
         op: prod(
             [
                 reuse_factor
@@ -940,51 +982,13 @@ def deduce_tensor_reuse_factors(original_node, outer_temporal_loops) -> dict[lis
         for op in r_ir_loop.keys()
     }
 
-    # data_reuse_factor initialization
-    data_reuse_factor = {}
-    for op in r_ir_loop.keys():
-        data_reuse_factor[op] = []
-        if r_ir_loop[op][0][0] == "ir":
-            data_reuse_factor[op] = [
-                i
-                for i in range(
-                    total_reuse_factor[op],
-                    total_reuse_factor[op] - r_ir_loop[op][0][1],
-                    -1,
-                )
-            ]
-            below_ir_size = [r_ir_loop[op][0][1]]
-        else:
-            data_reuse_factor[op] = [
-                total_reuse_factor[op]
-                for _ in range(
-                    total_reuse_factor[op],
-                    total_reuse_factor[op] - r_ir_loop[op][0][1],
-                    -1,
-                )
-            ]
-            below_ir_size = [1]
+    # total number of nodes that will be generated
+    nb_nodes = prod([tl.size for tl in outer_temporal_loops])
 
-    # return if there is only 1 outer-CN loop
-    if len(r_ir_loop[op]) == 1:
-        return data_reuse_factor
+    # tensor reuse factor will be set to the total reuse factor for each node
+    # whenveer a cn will be scheduled, the tensor reuse factor will decrease
+    tensor_reuse_factors = {}
+    for op, total_reuse_factor in total_reuse_factors.items():
+        tensor_reuse_factors[op] = [total_reuse_factor] * nb_nodes
 
-    for op in r_ir_loop.keys():
-        # deduce the data_reuse_factor if there is more than 1 outer-CN loop
-        for idx, (loop_type, loop_size) in enumerate(r_ir_loop[op][1:]):
-            origin_data_reuse_factor_list = pickle_deepcopy(data_reuse_factor[op])
-            if loop_type == "ir":
-                below_ir_size.append(below_ir_size[-1] * loop_size)
-                for size in range(1, loop_size):
-                    # reduce the data reuse factor if meet an ir loop
-                    data_reuse_factor[op] += [
-                        i - size * below_ir_size[idx]
-                        for i in origin_data_reuse_factor_list
-                    ]
-            else:
-                below_ir_size.append(below_ir_size[-1])
-                for size in range(1, loop_size):
-                    # maintain the data reuse factor if meet a r loop
-                    data_reuse_factor[op] += origin_data_reuse_factor_list
-
-    return data_reuse_factor
+    return tensor_reuse_factors
