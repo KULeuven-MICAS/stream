@@ -21,14 +21,16 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 #################################
 # accelerator = "stream.inputs.examples.hardware.TPU_like_quad_core"
 accelerator = "stream.inputs.aie.hardware.aie_col"
-# workload_path = "/proj/rdi/staff/gagandee/dse/stream_aie/stream/inputs/aie/one_bottleneck_no_res_no_bias.onnx"
+# workload_path = "stream.inputs.examples.workload.resnet18"
+# workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 workload_path="/proj/rdi/staff/gagandee/dse/stream_aie/stream/inputs/aie/one_bottleneck_with_bias.onnx"
 mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
-# mapping_path = "stream.inputs.aie.testing_mapping_unet"
+
+mapping_path="stream.inputs.aie.testing_mapping_bottleneck"
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
-# hint_loops = [('OY', 'all')]  # outer CN loops, with error in resnet18 plotting
-hint_loops = [("OY", "all")]
+hint_loops = [("OY", "all")]  # outer CN loops, with error in resnet18 plotting
+# hint_loops = []
 
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
