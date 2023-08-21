@@ -62,11 +62,16 @@ class InterCoreMappingStage(Stage):
         self.scheduler_candidate_selection = scheduler_candidate_selection
         self.operands_to_prefetch = operands_to_prefetch
 
+        # Determine the set of all (layer, group) combinations to vbe allocated separately
+        self.layer_groups = sorted(
+            set((n.id[0], n.group) for n in self.workload.nodes())
+        )
+
         # self.coarse_node_ids contains all the original node (aka layers) ids of the original graph
         self.unique_nodes = list(
             set((n for n, hw_performances in self.node_hw_performances.items()))
         )
-        self.coarse_node_ids = [n.id[0] for n in self.unique_nodes]
+        self.coarse_node_ids = [id[0] for id in self.layer_groups]
         # self.coarse_node_ids_flexible contains only those original node ids that have flexibility: they can be allocated to more than one core
         self.unique_nodes_flexible = sorted(
             set(
@@ -81,10 +86,17 @@ class InterCoreMappingStage(Stage):
         self.coarse_node_ids_flexible = [n.id[0] for n in self.unique_nodes_flexible]
         # For each unique node get the possible core allocations by getting the ids of the cores in node_hw_performances
         self.valid_allocations = []
-        for n in self.unique_nodes_flexible:
-            hw_performances = self.node_hw_performances[n]
-            valid_core_ids = [core.id for core in hw_performances.keys()]
-            self.valid_allocations.append(valid_core_ids)
+        # Save all the layer group combinations that are flexible
+        self.layer_groups_flexible = []
+        for layer_id, group_id in self.layer_groups:
+            # Find the unique node that corresponds to this layer
+            # This assumes all the nodes of this layer are identical
+            unique_node = next((n for n in self.unique_nodes if n.id[0] == layer_id))
+            if unique_node in self.unique_nodes_flexible:
+                hw_performances = self.node_hw_performances[unique_node]
+                valid_core_ids = [core.id for core in hw_performances.keys()]
+                self.layer_groups_flexible.append((layer_id, group_id))
+                self.valid_allocations.append(valid_core_ids)
 
         # Set the hardware performance and core_allocation of nodes in the workload that only have a single possible core allocation
         self.set_hw_performance_non_flexible_nodes()
@@ -94,14 +106,14 @@ class InterCoreMappingStage(Stage):
             self.workload,
             self.accelerator,
             self.node_hw_performances,
-            self.coarse_node_ids_flexible,
+            self.layer_groups_flexible,
             self.scheduler_candidate_selection,
             self.operands_to_prefetch,
         )
 
         # Extract the length of an individual.
         # This is the number of unique original nodes that have more than one possible core allocation
-        self.individual_length = len(self.coarse_node_ids_flexible)
+        self.individual_length = len(self.layer_groups_flexible)
         # Extract the value range each gene in the individual can have.
         # This ranges from 0 to the max core index.
         # TODO There might be some case where a core is not possible, so it shouldnt be tried by the GA

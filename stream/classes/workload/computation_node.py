@@ -32,6 +32,7 @@ class ComputationNode(LayerNode, Node):
         op_type="computation",
         produces_final_output=False,
         add_missing_node_attrs=False,
+        group_id=0,
     ):
         assert isinstance(
             node_id, tuple
@@ -51,6 +52,9 @@ class ComputationNode(LayerNode, Node):
             input_names=input_names,
             output_names=output_names,
         )
+
+        # Save the group id
+        self.group = group_id
 
         # Save whether this ComputationNode produces a final output
         self.produces_final_output = produces_final_output
