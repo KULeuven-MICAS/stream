@@ -485,6 +485,15 @@ def get_dataframe_from_scme(scme, add_communication=False):
     return df
 
 
+def get_sorted_y_labels(df):
+    all_labels = set(df["Resource"].tolist())
+    # Get computation labels
+    computation_labels = [label for label in all_labels if "-" not in label]
+    # Get communication labels (rest of the labels)
+    communication_labels = [label for label in all_labels if label not in computation_labels]
+    return sorted(computation_labels) + sorted(communication_labels)
+
+
 def visualize_timeline_plotly(
     scme,
     draw_dependencies=False,
@@ -543,9 +552,7 @@ def visualize_timeline_plotly(
     )
     # for bar in fig_timeline.data:
     #     fig.add_trace(go.Bar(bar), row=1,col=1)
-    fig.update_yaxes(
-        categoryorder="array", categoryarray=sorted(df["Resource"].tolist())
-    )
+    fig.update_yaxes(categoryorder="array", categoryarray=get_sorted_y_labels(df))
     fig.update_yaxes(autorange="reversed")
     fig.update_layout(barmode="stack")
     fig.update_layout(showlegend=True)
