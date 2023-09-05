@@ -37,7 +37,7 @@ dev = ["bumpver", "pip-tools", "build", "twine"]
 Homepage = "https://github.com/ZigZag-Project/stream"
 
 [project.scripts]
-realpython = "zigzag.__main__:main"
+realpython = "stream.__main__:main"
 
 [tool.bumpver]
 current_version = "0.0.7"
@@ -52,7 +52,7 @@ push = false
     'current_version = "{version}"', 
     'version = "{version}"'
 ]
-"zigzag/__init__.py" = ["{version}"]
+"stream/__init__.py" = ["{version}"]
 
 
 
