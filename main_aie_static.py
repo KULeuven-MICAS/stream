@@ -21,13 +21,13 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 #################################
 
 accelerator = "stream.inputs.aie.hardware.aie_col"
-workload_path = "stream.inputs.aie.bottleneck_static"
+workload_path = "stream/inputs/aie/one_bottleneck_with_bias.onnx"
 mapping_path = "stream.inputs.aie.testing_mapping_bottleneck_static"
-mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
+# mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
 hint_loops = []  # outer CN loops, with error in resnet18 plotting
 # hint_loops = []
-hint_loops = [("OY",'all')]
+hint_loops = [("OY", "all")]
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
@@ -36,7 +36,7 @@ hint_loops_str_list = []
 for dim, size in hint_loops:
     hint_loops_str_list.extend([str(dim).lower(), str(size)])
 hint_loops_str = "_".join(hint_loops_str_list)
-experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}-layer_splitting"
+experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}-layer_splitting-static-new"
 node_hw_cost_pkl_name = f"saved_cn_hw_cost-{experiment_id}"
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
@@ -54,10 +54,10 @@ timeline_fig_path_plotly = f"outputs/{experiment_id}-schedule.html"
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
         AcceleratorParserStage,  # Parses the accelerator
-        # StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+        StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
         # LayerSplittingStage,
         # StreamONNXModelParserStage,  # Parses the potentially split ONNX model into the workload
-        UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
+        # UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
         GenerateCNWorkloadHybridStage,
         IntraCoreMappingStage,
         InterCoreMappingStage,
