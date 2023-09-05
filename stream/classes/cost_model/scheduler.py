@@ -396,9 +396,6 @@ def schedule_graph(
             best_candidate.get_runtime(),
             best_candidate,
         )
-        # Get the start and end time of the candidate
-        start = timestep
-        end = start + best_candidate.get_runtime()
 
         ## Step 4
         # Make space for the output tensor of this computation node and spawn it when evictions are complete
@@ -420,7 +417,7 @@ def schedule_graph(
             output_tensor,
             core_to_add_output_to,
             output_memory_operand,
-            start,
+            timestep,
             tensors_this_candidate_needs,
         )
         total_eviction_to_offchip_link_energy += eviction_link_energy_cost
