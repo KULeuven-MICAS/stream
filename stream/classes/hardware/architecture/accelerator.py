@@ -177,11 +177,19 @@ class Accelerator:
 
         top_instance = self.get_top_instance_of_core(core, memory_op)
 
+        # Get the timestep at which there's enough space for this tensor
+        enough_space_timestep = self.memory_manager.get_timestep_for_tensor_addition(
+            tensor,
+            core.id,
+            timestep,
+            memory_op=tensor.memory_operand,
+        )
+
         tensors_to_evict = (
             self.memory_manager.find_best_tensor_combination_to_evict_fast(
                 top_instance,
                 tensor,
-                timestep,
+                enough_space_timestep,
                 exceptions=tensors_to_avoid_evicting,
             )
         )
@@ -205,7 +213,11 @@ class Accelerator:
             t_evictions_complete = max(t_evictions_complete, t_eviction_complete)
             total_eviction_link_energy_cost += eviction_link_energy_cost
             total_eviction_memory_energy_cost += eviction_memory_energy_cost
-        return t_evictions_complete, total_eviction_link_energy_cost, total_eviction_memory_energy_cost
+        return (
+            t_evictions_complete,
+            total_eviction_link_energy_cost,
+            total_eviction_memory_energy_cost,
+        )
 
     def transfer_tensor_to_core(
         self,
