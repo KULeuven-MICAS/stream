@@ -2,7 +2,10 @@
 User Guide
 ==========
 
-Explaination missing
+The following documents provide more information regarding the building blocks of Stream. Generally, the Stream framework can be divided into five big building blocks:
+
+.. image:: images/user-guide-overview.jpg
+  :width: 900
 
 .. toctree::
    :maxdepth: 1
