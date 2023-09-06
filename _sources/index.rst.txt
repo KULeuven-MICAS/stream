@@ -9,7 +9,10 @@ Welcome to Stream's documentation!
 Stream is a HW architecture-mapping design space exploration (DSE) framework for multi-core
 deep learning accelerators. The mapping can be explored at different granularities,
 ranging from classical layer-by-layer processing to fine-grained layer-fused processing.
-Stream builds on top of the ZigZag DSE framework, found [here](https://zigzag-project.github.io/zigzag/). 
+Stream builds on top of the ZigZag DSE framework, found `here <https://kuleuven-micas.github.io/zigzag/>`_.
+
+While the ZigZag framework was built to explore mappings of DNN workloads on single-core architecture in a layer-by-layer fashion, Stream extends this idea by two dimensions. Firstly, it allows the exploration of multi-core architectures as well. Secondly, Stream introduces layer-fused execution of DNN workloads while ZigZag is limited to layer-by-layer execution.
+You can read in `one of our publications <https://kuleuven-micas.github.io/stream/publications.html#extension-to-support-multi-core-layer-fused-scheduling>`_ about the advantages of the support of layer-fused processing and (heterogeneous) multi-core systems.
 
 .. toctree::
    :maxdepth: 2
