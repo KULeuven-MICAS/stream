@@ -21,14 +21,14 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 #################################
 
 accelerator = "stream.inputs.aie.hardware.aie_col"
-workload_path = "stream.inputs.aie.bottleneck"
-# workload_path = "stream.inputs.aie.bottleneck_scaled"
-mapping_path = "stream.inputs.aie.testing_mapping_bottleneck"
-
+workload_path = "stream.inputs.aie.single_gemm"
+workload_path="stream/inputs/aie/test_gemm.onnx"
+mapping_path="stream.inputs.aie.testing_mapping_bottleneck"
+# mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
 hint_loops = []  # outer CN loops, with error in resnet18 plotting
 # hint_loops = []
-hint_loops = [("OY",'all')]
+# hint_loops = [("OY",'all')]
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
@@ -55,10 +55,10 @@ timeline_fig_path_plotly = f"outputs/{experiment_id}-schedule.html"
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
         AcceleratorParserStage,  # Parses the accelerator
-        # StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-        # LayerSplittingStage,
-        # StreamONNXModelParserStage,  # Parses the potentially split ONNX model into the workload
-        UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
+        StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+        LayerSplittingStage,
+        StreamONNXModelParserStage,  # Parses the potentially split ONNX model into the workload
+        # UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
         GenerateCNWorkloadHybridStage,
         IntraCoreMappingStage,
         InterCoreMappingStage,
