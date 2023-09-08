@@ -24,7 +24,7 @@ accelerator = "stream.inputs.aie.hardware.aie_col"
 # workload_path = "stream.inputs.examples.workload.resnet18"
 # workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 workload_path="/proj/rdi/staff/gagandee/dse/stream_aie/stream/inputs/aie/one_bottleneck_with_bias.onnx"
-mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
+# mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
 
 mapping_path="stream.inputs.aie.testing_mapping_bottleneck"
 
