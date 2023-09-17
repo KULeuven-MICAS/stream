@@ -15,7 +15,7 @@ While the ZigZag framework was built to explore mappings of DNN workloads on sin
 You can read in `one of our publications <https://kuleuven-micas.github.io/stream/publications.html#extension-to-support-multi-core-layer-fused-scheduling>`_ about the advantages of the support of layer-fused processing and (heterogeneous) multi-core systems.
 
 .. image:: images/overview-frameworks.jpg
-  :width: 900
+  :width: 700
 
 .. toctree::
    :maxdepth: 2
