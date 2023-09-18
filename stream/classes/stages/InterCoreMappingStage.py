@@ -61,6 +61,7 @@ class InterCoreMappingStage(Stage):
         self.plot_data_transfer = plot_data_transfer
         self.scheduler_candidate_selection = scheduler_candidate_selection
         self.operands_to_prefetch = operands_to_prefetch
+        self.core_allocations = kwargs.get("core_allocations")
 
         # Determine the set of all (layer, group) combinations to vbe allocated separately
         self.layer_groups = sorted(
@@ -130,7 +131,13 @@ class InterCoreMappingStage(Stage):
         """
 
         logger.info(f"Start InterCoreMappingStage.")
-        if self.individual_length == 0:
+        if self.core_allocations is not None:
+            assert len(self.core_allocations) == len(self.node_hw_performances.keys()), f"core_allocations contains {len(self.core_allocations)} elements, but {len(self.node_hw_performances.keys())} were expected"
+            _, _, scme = self.fitness_evaluator.get_fitness(
+                self.core_allocations, return_scme=True
+            )
+            yield scme, None
+        elif self.individual_length == 0:
             logger.info(f"Evaluating fixed layer-core allocation.")
             core_allocations = []
             (energy, latency, scme) = self.fitness_evaluator.get_fitness(
@@ -162,6 +169,7 @@ class InterCoreMappingStage(Stage):
             print(hof)
             if self.plot_hof:
                 for i, core_allocations in enumerate(hof):
+                    print(core_allocations)
                     results = self.fitness_evaluator.get_fitness(
                         core_allocations, return_scme=True
                     )
