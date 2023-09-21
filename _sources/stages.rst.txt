@@ -60,3 +60,14 @@ The following stages are implemented in Stream:
 * `ONNXModelParserStage <https://github.com/KULeuven-MICAS/stream/blob/master/stream/classes/stages/ModelParserStage.py#L11>`_: Stage that parses the input workload residing in accelerator_path. The "workload" dict is converted to a NetworkX graph.
 
 Besides these stages, the `implemented stages from the ZigZag framework <https://kuleuven-micas.github.io/zigzag/stages.html#implemented-stages>`_ can be use as well.
+
+
+Creating your custom stage
+==========================
+
+Let's say you are not interested in saving the CME with minimal energy, but want to save based on another metric provided by the CME, or you want to define a new temporal mapping generator stage, you can easily create a custom stage. The easiest way is copying an existing stage class definition, and modifying it according to your intended behaviour. To guarantee correctness, following aspects have to be taken into account when creating a custom stage:
+
+* It must inherit from the abstract ``Stage`` class.
+* It must create its ``substage`` as the first element of the list of callables, with the remaining list as its first argument, and ``**kwargs`` as the second argument. These kwargs can be updated to change e.g. the accelerator, spatial mapping, temporal mapping, etc.
+* It must iterate over the different ``(CME, extra_info)`` tuples yielded by the ``substage.run()`` call in a for loop.
+* If the stage is a reduction (like e.g. the ``MinimalLatencyStage``), its ``yield`` statement must be outside the for loop which iterates over the returned ``(CME, extra_info)`` tuples, where some processing happens inside the for loop.
