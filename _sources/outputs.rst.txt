@@ -13,13 +13,16 @@ After selecting a SCME with the previous command, the attributes of the SCME can
     pprint(vars(scme))
     save_scme(scme, scme_path)
 
-Pickle file
------------
+Pickle file of SCME
+===================
 
 By using the ``save_scme()`` function from ``stream.utils``, the user can save a specific SCME in a pickle file for later investigations. The SCME includes all attributes of the ``StreamCostModelEvaluation`` in the `cost_model.py file <https://github.com/KULeuven-MICAS/stream/blob/master/stream/classes/cost_model/cost_model.py>`_. Examples for these attributes are the latency or the maximal memory usage of layer-core allocation underling to the SCME.
 
-Plotly schedule visualization
------------------------------
+Schedule visualization
+======================
+
+Plotly visualization
+--------------------
 
 The schedule of a specific SCME can be saved in a Plotly-html file by calling ``visualize_timeline_plotly()`` from ``stream.visualization.schedule``. The saved file can be opened in a web browser and the different parts of the schedule can be further investigated. The following image shows an example of this visualization:
 
@@ -28,13 +31,13 @@ The schedule of a specific SCME can be saved in a Plotly-html file by calling ``
 
 The first six lines of the diagram (``Core 0`` to ``Core 5``) show the usage of the different cores for this specific SCME. The following nine lines (``Core(0) -> Core(1)`` to ``Core(4) -> Core(1)``) show the communication (i.e. data exchange) between the different processing cores. The last line of the diagram (``Core(6) <-> Any``) shows the utilization of the port to the off-chip memory (i.e. ``Core(6)``).
 
-PNG schedule visualization
---------------------------
+PNG visualization
+-----------------
 
 By using the ``plot_timeline_brokenaxes()`` function from ``stream.visualization.schedule``, a similar visualization than the Plotly schedule can be saved in a ``png`` file.
 
-PNG memory usage visualization
-------------------------------
+Memory usage visualization
+==============================
 
 The function ``plot_memory_usage()`` from ``stream.visualization.memory_usage`` allows to save a visualization of the memory usage of a specific SCME. An example can look like the following diagram:
 
