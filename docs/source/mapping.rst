@@ -20,7 +20,7 @@ The spatial mapping describes the spatial parallelization strategy used in a cer
 
 In this example the Operational Array has two dimensions (i.e. D1 and D2). The output channels are unrolled over D1 and the input channels are unrolled over D2. This spatial mapping would be similar to the one used in Eyeriss. 
 
-Core allocation
+Core Allocation
 ---------------
 
 Besides the spatial mapping, the user has to provide information about which layer type can be exectued on which core in the hardware architecture. An example core allocation could look like the following
