@@ -35,6 +35,7 @@ jobs:
           pip install -r requirements.txt
           sphinx-build --version
           sphinx-build -b html source build
+          cp source/images/interactive-plotly-visualization.html build/
       - name: Deploy 🚀
         uses: JamesIves/github-pages-deploy-action@v4
         with:
