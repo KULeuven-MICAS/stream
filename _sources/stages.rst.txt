@@ -40,8 +40,9 @@ Stages within Stream are used to modularly and easily adapt the functionality of
         split_W_double_buffered=split_W_double_buffered,
     )
 
-    # Run the mainstage
-    mainstage.run()
+    # Launch the MainStage
+    scme, _ = mainstage.run() # Run the MainStage
+    scme = scme[0] # Select one of the returned cost models
 
 Implemented stages
 ==================
