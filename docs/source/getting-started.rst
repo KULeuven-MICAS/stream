@@ -49,7 +49,7 @@ which starts another run of Stream. Now the given inputs are processed in a laye
 Analyzing results
 =================
 
-During the run of each experiement, Streams saves the results in the ``outputs`` folder based on the paths provided in the ``main_stream.py`` and ``main_stream_layer_splitting.py`` files. In this folder, there will be four ``.png`` files. Two of them show the schedule of workload's layer on the different cores of the hw architecture (one file for the layer-by-layer approach and one file for the layer-fused approach). Besides this, the other two ``.png`` files show the memory utilization of the different cores in the system for the two different experiements.
+During the run of each experiement, Streams saves the results in the ``outputs`` folder based on the paths provided in the ``main_stream.py`` and ``main_stream_layer_splitting.py`` files. In this folder, there will be four ``.png`` files. Two of them show the schedule of workload's layer on the different cores of the hw architecture (one file for the layer-by-layer approach and one file for the layer-fused approach). Besides this, the other two ``.png`` files show the memory utilization of the different cores in the system for the two different experiements. More explanation about the results can be found on the :doc:`outputs` page.
 
 [1] N. P. Jouppi, C. Young, N. Patil, D. Patterson, G. Agrawal, R. Bajwa,
 S. Bates, S. Bhatia, N. Boden, A. Borchers, R. Boyle, P.-l. Cantin,
