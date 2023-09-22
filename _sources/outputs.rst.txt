@@ -36,6 +36,8 @@ The schedule of a specific SCME can be saved in a Plotly-html file by calling ``
 
 The first six lines of the diagram (``Core 0`` to ``Core 5``) show the usage of the different cores for this specific SCME. The following nine lines (``Core(0) -> Core(1)`` to ``Core(4) -> Core(1)``) show the communication (i.e. data exchange) between the different processing cores. The last line of the diagram (``Core(6) <-> Any``) shows the utilization of the port to the off-chip memory (i.e. ``Core(6)``).
 
+An example of such an interactive Plotly visualization can be accessed `through this link <interactive-plotly-visualization.html>`_.
+
 PNG visualization
 -----------------
 
