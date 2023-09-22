@@ -4,7 +4,10 @@ Outputs
 
 After the execution of all the stages has finished (``scme, _ = mainstage.run()``), the user has access to a variety of optimal Stream Cost Model Evaluations (CMEs) produced by the genetic algortihm of Stream (i.e. Hall of fame). Each of these SCMEs offers a layer-core allocation with an unique trade-off due to the usage of a NSGA-II genetic algorithm.
 
-The user can select one of these SCMEs by using selecting a specific SCME with the command ``scme = scme[0]``. Another SCME can be selected by using a different index than ``0``. After a specific SCME is selected, the user can generate a variety of outputs which will be introduced in the following. If you are using the example provided in `this file <https://github.com/KULeuven-MICAS/stream/blob/master/main_stream_layer_splitting.py>`_, then all the introduced outputs are saved in the ``outputs`` folder in your repo.
+Printing the attributs of a specific SCME
+-----------------------------------------
+
+The user can select one of these SCMEs by using selecting a specific SCME with the command ``scme = scme[0]``. Another SCME can be selected by using a different index than ``0``.
 
 After selecting a SCME with the previous command, the attributes of the SCME can be printed to the terminal with the following instructions:
 
@@ -12,6 +15,8 @@ After selecting a SCME with the previous command, the attributes of the SCME can
 
     pprint(vars(scme))
     save_scme(scme, scme_path)
+
+After a specific SCME is selected, the user can generate a variety of outputs which will be introduced in the following. If you are using the example provided in `this file <https://github.com/KULeuven-MICAS/stream/blob/master/main_stream_layer_splitting.py>`_, then all the introduced outputs are saved in the ``outputs`` folder in your repo.
 
 Pickle file of SCME
 ===================
