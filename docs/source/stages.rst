@@ -42,7 +42,7 @@ Stages within Stream are used to modularly and easily adapt the functionality of
 
     # Launch the MainStage
     scme, _ = mainstage.run() # Run the MainStage
-    scme = scme[0] # Select one of the returned cost models
+    scme = scme[0] # Select one of the returned cost models for later inspection
 
 Implemented stages
 ==================
