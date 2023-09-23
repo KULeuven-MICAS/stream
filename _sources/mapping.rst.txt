@@ -4,8 +4,8 @@ Mapping
 
 Stream requires two different specification about the possible mapping of a workload to a hardware architecture. These two mapping specification are
 
-1. the spatial mapping of each core in the hardware architecture
-2. the possible core allocation of each layer type
+1. the **spatial mapping** of each core in the hardware architecture
+2. the possible **core allocation** of each layer type
 
 These two specifications will be further explained on this page:
 
@@ -18,7 +18,7 @@ The spatial mapping describes the spatial parallelization strategy used in a cer
 
     [{"D1": ("K", 16), "D2": ("C", 16)}]
 
-In this example the Operational Array has two dimensions (i.e. D1 and D2). The output channels are unrolled over D1 and the input channels are unrolled over D2. This spatial mapping would be similar to the one used in Eyeriss. 
+In this example the Operational Array has two dimensions (i.e. D1 and D2). The output channels ("K") are unrolled over D1 and the input channels ("C") are unrolled over D2. Both dimensions have an unrolling factor of 16. This spatial mapping would be similar to the one used in Eyeriss. 
 
 Core Allocation
 ---------------
@@ -39,4 +39,4 @@ Besides the spatial mapping, the user has to provide information about which lay
         }
     }
 
-In this example all regular layers can be executed on core 0 to 3 while pooling layers have to be executed on core 4 and layers with SIMD operations (e.g. add) have to be executed on core 5.
+In this example all regular layers can be executed on core 0 to 3 while pooling layers have to be executed on core 4 and layers with SIMD operations (e.g. addition) have to be executed on core 5.

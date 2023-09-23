@@ -2,7 +2,7 @@
 Publications
 ############
 
-Here are the pointers to Stream-project publications. Stream is an extension to the ZigZag-project.
+Here are the pointers to Stream-project publications. Stream is an extension to the `ZigZag-project <https://kuleuven-micas.github.io/zigzag/>_`.
 
 The general idea of ZigZag
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
