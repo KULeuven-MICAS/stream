@@ -13,8 +13,8 @@ After selecting a SCME with the previous command, the attributes of the SCME can
 
 .. code-block:: python
 
+    from pprint import pprint
     pprint(vars(scme))
-    save_scme(scme, scme_path)
 
 After a specific SCME is selected, the user can generate a variety of outputs which will be introduced in the following. If you are using the example provided in `this file <https://github.com/KULeuven-MICAS/stream/blob/master/main_stream_layer_splitting.py>`_, then all the introduced outputs are saved in the ``outputs`` folder in your repo.
 
