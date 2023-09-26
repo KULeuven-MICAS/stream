@@ -1,4 +1,4 @@
-zigzag-dse
+zigzag-dse==2.4.5
 rtree
 deap
 brokenaxes
