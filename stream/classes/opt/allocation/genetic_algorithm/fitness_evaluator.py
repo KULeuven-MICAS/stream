@@ -26,7 +26,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
         workload,
         accelerator,
         node_hw_performances,
-        coarse_node_ids_flexible,
+        layer_groups_flexible,
         scheduler_candidate_selection,
         operands_to_prefetch,
     ) -> None:
@@ -35,7 +35,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
         self.weights = (-1.0, -1.0)
         self.metrics = ["energy", "latency"]
 
-        self.coarse_node_ids_flexible = coarse_node_ids_flexible
+        self.layer_groups_flexible = layer_groups_flexible
         self.scheduler_candidate_selection = scheduler_candidate_selection
         self.operands_to_prefetch = operands_to_prefetch
 
@@ -69,12 +69,14 @@ class StandardFitnessEvaluator(FitnessEvaluator):
         """
         for i, core_allocation in enumerate(core_allocations):
             core = self.accelerator.get_core(core_allocation)
-            coarse_id = self.coarse_node_ids_flexible[i]
+            (layer_id, group_id) = self.layer_groups_flexible[i]
             # Find all nodes of this coarse id and set their core_allocation, energy and runtime
             nodes = (
                 node
                 for node in self.workload.nodes()
-                if isinstance(node, ComputationNode) and node.id[0] == coarse_id
+                if isinstance(node, ComputationNode)
+                and node.id[0] == layer_id
+                and node.group == group_id
             )
             for node in nodes:
                 try:

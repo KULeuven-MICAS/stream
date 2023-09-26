@@ -82,18 +82,23 @@ def get_best_candidate(candidates: list, candidate_selection: str):
     # If this core doesn't have any candidates, continue to the next core
     if not candidates:
         raise ValueError(f"There are no candidates to schedule.")
+    preds_ends, cn_candidates = zip(*candidates)
     if candidate_selection == "latency":
         # Get the best candidate: the one with the earliest possible start time
         (preds_end, best_candidate) = min(candidates)
+        best_candidate_idx = preds_ends.index(preds_end)
     elif candidate_selection == "memory":
         # Get the best candidate: the one with the highest layer_id
-        preds_ends, cn_candidates = zip(*candidates)
-        best_candidate = max(cn_candidates, key=attrgetter("id"))
-        preds_end = preds_ends[cn_candidates.index(best_candidate)]
+        candidate_ids = [(cn.id[0], -cn.group, cn.id[1]) for cn in cn_candidates]
+        best_candidate_idx = candidate_ids.index(max(candidate_ids))
+        best_candidate = cn_candidates[best_candidate_idx]
+        preds_end = preds_ends[best_candidate_idx]
     else:
         raise ValueError(
             f"Scheduler's CN candidate_selection criterion '{candidate_selection}' is not supported."
         )
+    # Remove the candidate from the list of candidates
+    del candidates[best_candidate_idx]
     return best_candidate, preds_end
 
 
@@ -132,7 +137,7 @@ def get_tensors_needed_for_node(node: ComputationNode, G: DiGraph):
         # Sort these tensors based on their earliest possible transfer time
         tensors_this_candidate_needs, tensors_operands = zip(
             *sorted(zip(tensors_this_candidate_needs, tensors_operands))
-    )
+        )
     return tensors_this_candidate_needs, tensors_operands
 
 
@@ -146,7 +151,9 @@ def clear_memories(
             timestep,
             eviction_link_energy_cost,
             eviction_memory_energy_cost,
-        ) = accelerator.remove_all(core, too_large_operand, timestep, exceptions, write_back_to_offchip=True)
+        ) = accelerator.remove_all(
+            core, too_large_operand, timestep, exceptions, write_back_to_offchip=True
+        )
         total_eviction_to_offchip_link_energy += eviction_link_energy_cost
         total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
     return (
@@ -318,8 +325,7 @@ def schedule_graph(
     while not done:
         # Get the best candidate given the selection priority
         best_candidate, preds_end = get_best_candidate(candidates, candidate_selection)
-        # Remove this candidate from the candidates
-        candidates.remove((preds_end, best_candidate))
+
         # Get the core this candidate will be scheduled on
         core_id = best_candidate.core_allocation
         core = accelerator.get_core(core_id)
