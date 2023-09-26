@@ -11,7 +11,7 @@ namespaces = true  # true by default
 
 [project]
 name = "stream-dse"
-version = "0.0.7"
+version = "0.0.8"
 description = "Stream - Multi-core accelerator design space exploration with layer-fused scheduling"
 readme = "README.md"
 authors = [{ name = "Arne Symons", email = "arne.symons@kuleuven.be" }, { name = "Linyan Mei", email = "linyan.mei@kuleuven.be" }]
@@ -37,10 +37,10 @@ dev = ["bumpver", "pip-tools", "build", "twine"]
 Homepage = "https://github.com/ZigZag-Project/stream"
 
 [project.scripts]
-realpython = "zigzag.__main__:main"
+realpython = "stream.__main__:main"
 
 [tool.bumpver]
-current_version = "0.0.7"
+current_version = "0.0.8"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "bump version {old_version} -> {new_version}"
 commit = true
@@ -52,7 +52,7 @@ push = false
     'current_version = "{version}"', 
     'version = "{version}"'
 ]
-"zigzag/__init__.py" = ["{version}"]
+"stream/__init__.py" = ["{version}"]
 
 
 

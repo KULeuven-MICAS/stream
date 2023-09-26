@@ -196,7 +196,9 @@ class IntraCoreMappingStage(Stage):
                 )
 
     def get_intra_core_mapping_flow(self, node, too_large_operands, core_id):
-        logger.info(f"Launching intra-core mapping optimization for {node} -> core {core_id} ...")
+        logger.info(
+            f"Launching intra-core mapping optimization for {node} -> core {core_id} ..."
+        )
 
         if too_large_operands:
             accelerator = self.add_offchip_to_core(
@@ -429,7 +431,7 @@ class IntraCoreMappingStage(Stage):
         )
         ## Sanity checks
         # Make sure that there is only one offchip memory
-        offchip_memory_levels = offchip_core.memory_hierarchy.mem_instance_list
+        offchip_memory_levels = offchip_core.memory_hierarchy.mem_level_list
         assert (
             len(offchip_memory_levels) == 1
         ), "There is more than one offchip memory, unsure which one to take for intra core mapping"
