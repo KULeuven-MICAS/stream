@@ -85,8 +85,7 @@ def get_best_candidate(candidates: list, candidate_selection: str):
     preds_ends, cn_candidates = zip(*candidates)
     if candidate_selection == "latency":
         # Get the best candidate: the one with the earliest possible start time
-        (preds_end, best_candidate) = min(candidates)
-        best_candidate_idx = preds_ends.index(preds_end)
+        ((preds_end, best_candidate), best_candidate_idx) = min(zip(candidates, range(len(candidates))))
     elif candidate_selection == "memory":
         # Get the best candidate: the one with the highest layer_id
         candidate_ids = [(cn.id[0], -cn.group, cn.id[1]) for cn in cn_candidates]
@@ -396,9 +395,6 @@ def schedule_graph(
             best_candidate.get_runtime(),
             best_candidate,
         )
-        # Get the start and end time of the candidate
-        start = timestep
-        end = start + best_candidate.get_runtime()
 
         ## Step 4
         # Make space for the output tensor of this computation node and spawn it when evictions are complete
@@ -420,7 +416,7 @@ def schedule_graph(
             output_tensor,
             core_to_add_output_to,
             output_memory_operand,
-            start,
+            timestep,
             tensors_this_candidate_needs,
         )
         total_eviction_to_offchip_link_energy += eviction_link_energy_cost
