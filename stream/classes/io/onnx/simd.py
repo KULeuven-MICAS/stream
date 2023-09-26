@@ -49,17 +49,54 @@ class SimdParser(Parser):
             )
             d["spatial_mapping"] = spatial_mapping
 
-            d["memory_operand_links"] = {"O": "O", "B": "I2", "A": "I1"}
-
             # Find the previous layer(s) that should be this node's parent(s)
             node_inputs = self.node.input
-            preds = []
-            for node_input in node_inputs:
-                for n in self.nodes_outputs:
-                    if node_input in self.nodes_outputs[n]:
-                        preds.append(n)
-            assert len(preds) == 2, "Simd layer has more than 2 inputs."
-            d["operand_source"] = {"A": [preds[0]], "B": [preds[1]]}
+            assert (
+                len(node_inputs) == 2
+            ), f"Simd layer {self.node.name} doesn't have 2 inputs: {node_inputs}."
+            (input_name_A, input_name_B) = node_inputs
+            constant_operands = []
+            if any(
+                (
+                    input_name_A in output_names
+                    for output_names in self.nodes_outputs.values()
+                )
+            ):
+                memory_operand_A = "I1"
+            else:
+                memory_operand_A = "I2"
+                constant_operands.append("A")
+            if any(
+                (
+                    input_name_B in output_names
+                    for output_names in self.nodes_outputs.values()
+                )
+            ):
+                memory_operand_B = (
+                    "I2"  # TODO: Change this to I1 and fix subsequent uses
+                )
+            else:
+                memory_operand_B = "I2"
+                constant_operands.append("B")
+            d["operand_source"] = {
+                "A": [
+                    src
+                    for (src, src_output_names) in self.nodes_outputs.items()
+                    if input_name_A
+                    in src_output_names  # only add if it has a previous layer output
+                ],
+                "B": [
+                    src
+                    for (src, src_output_names) in self.nodes_outputs.items()
+                    if input_name_B in src_output_names
+                ],
+            }
+            d["memory_operand_links"] = {
+                "O": "O",
+                "B": memory_operand_B,
+                "A": memory_operand_A,
+            }
+            d["constant_operands"] = constant_operands
 
             return d
 
