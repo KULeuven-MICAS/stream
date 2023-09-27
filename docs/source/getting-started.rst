@@ -4,17 +4,14 @@ Getting Started
 
 Stream allows you to run a design space exploration for both, traditional layer-by-layer processing as well as layer-fused processing of DNN workloads. The framework can be used to explore the performace of a workload on multi-core and single-core architectures.
 
-First experiement
-=================
+In a first run, we are going to run ResNet-18 on quad-core architecture similar to a TPU like hardware [1]. We provide an `onnx <https://onnx.ai/>`_ model of this network in ``stream/inputs/examples/workload/resnet18.onnx`` and the HW architecture in ``stream/inputs/examples/hardware/TPU_like_quad_core.py``.
 
-In a first run, we are going to run ResNet-18 on quad-core architecture similar to a TPU like hardware [1]. We provide an `onnx <https://onnx.ai/>`_ model of this network in ``zigzag/inputs/examples/workload/resnet18.onnx`` and the HW architecture in ``zigzag/inputs/examples/hardware/TPU_like_quad_core.py``.
-
-The onnx model has been shape inferred, which means that besied the input and output tensor shapes, all intermediate tensor shapes have been inferred, which is information required by ZigZag. 
+The onnx model has been shape inferred, which means that besied the input and output tensor shapes, all intermediate tensor shapes have been inferred, which is information required by Stream. 
 
 .. warning::
     ZigZag requires an inferred onnx model, as it needs to know the shapes of all intermediate tensors to correctly infer the layer shapes. You can find more information on how to infer an onnx model `here <https://github.com/onnx/onnx/blob/main/docs/PythonAPIOverview.md#running-shape-inference-on-an-onnx-model>`_.
 
-Besides the workload and HW architecture, a mapping file must be provided which, as the name suggests, provides information on how the network’s layers will be mapped onto the hardware resources. The mapping is provided in ``zigzag/inputs/examples/mapping/alexnet_on_tpu_like.py``.
+Besides the workload and HW architecture, a mapping file must be provided which, as the name suggests, provides information about which layer can be mapped to which core in the hardware architecture. The mapping is provided in ``stream/inputs/examples/mapping/tpu_like_quad_core.py``.
 
 The framework is generally ran through a main file which parses the provided inputs and contains the program flow through the stages defined in the main file.
 
@@ -23,8 +20,9 @@ The framework is generally ran through a main file which parses the provided inp
     You can find more information in the :doc:`stages` document.
 
 Layer-by-layer processing of workload
--------------------------------------
-In a first run, we would like to run the previously introduced workload in a layer-by-layer fashion, which means that one layer is exectued at once on a certain core and the next layer can only start as soon as all previous layers are completely done.
+=====================================
+
+Now, we would like to run the previously introduced workload in a layer-by-layer fashion, which means that one layer is exectued at once on a certain core and the next layer can only start as soon as all previous layers are completely done.
 
 For this we have to exectue
 
@@ -35,8 +33,9 @@ For this we have to exectue
 which parses the given workload, hw architecture and the corresponding mapping. Stream will now evaluate how efficently the workload can be executed on the given hardware with a layer-by-layer approach.
 
 Layer-fused processing of workload
-----------------------------------
-In a second run, we would like to run the same workload on the same hw with the same mapping. The difference will be that a layer-fused approach is used instead of a layer-by-layer approach.
+==================================
+
+In a second run, we would like to run the same workload on the same HW with the same mapping. The difference will be that a layer-fused approach is used instead of a layer-by-layer approach.
 
 For this we have to execute
 

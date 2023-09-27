@@ -6,9 +6,9 @@ Here you can find the future changes we are planning on making to both the frame
 Framework
 ---------
 
-* Topic 1
+* Exploit cyclic behavior of steady-state portion of graph schedule to speed up scheduling.
 
 Documentation
 -------------
 
-* Topic 1
+* Add Doxygen code documentation.
