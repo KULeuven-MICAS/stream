@@ -78,17 +78,32 @@ def prefetch_constant_operands(
     )
 
 
-def get_best_candidate(candidates: list, candidate_selection: str):
+def get_best_candidate(candidates: list, candidate_selection: str, layer_stacks: list):
     # If this core doesn't have any candidates, continue to the next core
     if not candidates:
         raise ValueError(f"There are no candidates to schedule.")
     preds_ends, cn_candidates = zip(*candidates)
+    # Get the layer ids of all candidates
+    layer_ids = tuple((cn.id[0] for cn in cn_candidates))
+    # Get the group ids of all candidates
+    group_ids = tuple((-cn.group for cn in cn_candidates))
+    # Get the finer node ids of all candidates
+    finer_ids = tuple((cn.id[1] for cn in cn_candidates))
+    # Get the stack ids of all candidates
+    stack_ids = tuple(
+        (
+            -next(i for i, stack in enumerate(layer_stacks) if cn.id[0] in stack)
+            for cn in cn_candidates
+        )
+    )
     if candidate_selection == "latency":
         # Get the best candidate: the one with the earliest possible start time
-        ((preds_end, best_candidate), best_candidate_idx) = min(zip(candidates, range(len(candidates))))
+        ((preds_end, best_candidate), best_candidate_idx) = min(
+            zip(candidates, range(len(candidates)))
+        )
     elif candidate_selection == "memory":
         # Get the best candidate: the one with the highest layer_id
-        candidate_ids = [(cn.id[0], -cn.group, cn.id[1]) for cn in cn_candidates]
+        candidate_ids = list(zip(stack_ids, layer_ids, group_ids, finer_ids))
         best_candidate_idx = candidate_ids.index(max(candidate_ids))
         best_candidate = cn_candidates[best_candidate_idx]
         preds_end = preds_ends[best_candidate_idx]
@@ -243,6 +258,7 @@ def check_for_removal(
 def schedule_graph(
     G: DiGraph,
     accelerator: Accelerator,
+    layer_stacks: list,
     cores_idle_from=None,
     candidate_selection="latency",
     operands_to_prefetch=[],
@@ -323,7 +339,9 @@ def schedule_graph(
     done = False
     while not done:
         # Get the best candidate given the selection priority
-        best_candidate, preds_end = get_best_candidate(candidates, candidate_selection)
+        best_candidate, preds_end = get_best_candidate(
+            candidates, candidate_selection, layer_stacks
+        )
 
         # Get the core this candidate will be scheduled on
         core_id = best_candidate.core_allocation
