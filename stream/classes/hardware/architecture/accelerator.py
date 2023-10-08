@@ -197,7 +197,7 @@ class Accelerator:
             raise ValueError(
                 "Evictions required in offchip memory. Consider making offchip larger."
             )
-        t_evictions_complete = timestep
+        t_evictions_complete = enough_space_timestep
         for tensor_to_evict in tensors_to_evict:
             (
                 t_eviction_complete,
