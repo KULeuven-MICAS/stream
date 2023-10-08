@@ -137,7 +137,6 @@ class ComputationNode(LayerNode, Node):
         - dimension_relations: The partial relevancy between a dimension and two others.
         - operand_precision: The precision at which the operands are stored, which means the operand identifiers should be equal.
         - memory_operand_links: The link between memory operand (paths in mem hierarchy) and this node's operands
-        - nb_real_predecessors: The number of real predecessors this node has in the graph. This is required for accurate knowledge of the number of unique nodes.
 
         Args:
             __o (Node): The other node to compare this node with
@@ -154,7 +153,6 @@ class ComputationNode(LayerNode, Node):
             and self.operand_precision == __o.operand_precision
             and self.memory_operand_links == __o.memory_operand_links
             and self.id[0] == __o.id[0]
-            # and self.nb_real_predecessors == __o.nb_real_predecessors
         )
 
     def __lt__(self, other):
