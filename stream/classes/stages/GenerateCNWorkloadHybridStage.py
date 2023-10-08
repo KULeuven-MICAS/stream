@@ -5,6 +5,7 @@ from typing import List, Dict
 import networkx as nx
 import numpy as np
 from rtree import index
+from zigzag.utils import pickle_deepcopy
 from stream.classes.workload.elementwise_node import ElementwiseNode
 from stream.classes.workload.flatten_node import FlattenNode
 from stream.classes.workload.lpnormalization_node import LpNormalizationNode
@@ -132,6 +133,7 @@ class GenerateCNWorkloadHybridStage(Stage):
         logger.info(f"Finer graph: {G}.")
 
         kwargs = self.kwargs.copy()
+        kwargs["original_workload"] = pickle_deepcopy(self.workload)
         kwargs["workload"] = G
         kwargs["accelerator"] = self.accelerator
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
