@@ -112,7 +112,7 @@ experiment_LUT = command_generator()
 
 
 result_collect = []
-result_path = '/esat/prometheus1/users/lmei/Stream_2023_TC_exploration_results4_latency/log/'
+result_path = '/users/micas/asymons/stream_TC_2023/exploration/log'
 
 paths = glob.glob(f'{result_path}/*.log')
 for idx, path in enumerate(paths):
