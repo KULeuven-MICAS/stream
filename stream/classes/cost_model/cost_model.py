@@ -18,6 +18,7 @@ class StreamCostModelEvaluation:
         accelerator: Accelerator,
         scheduler_candidate_selection: str,
         operands_to_prefetch: list,
+        layer_stacks: list,
     ) -> None:
         # Initialize the SCME by setting the workload graph to be scheduled
         self.workload = workload
@@ -38,17 +39,20 @@ class StreamCostModelEvaluation:
         self.core_timesteps_delta_cumsums = None
         self.scheduler_candidate_selection = scheduler_candidate_selection
         self.operands_to_prefetch = operands_to_prefetch
+        self.layer_stacks = layer_stacks
 
     def __str__(self):
         return f"SCME(energy={self.energy:.2e}, latency={self.latency:.2e})"
 
     def run(self):
-        """Run the SCME by scheduling the graph through time. The scheduler takes into account inter-core data movement and also tracks energy and memory through the memory manager.
+        """Run the SCME by scheduling the graph through time.
+        The scheduler takes into account inter-core data movement and also tracks energy and memory through the memory manager.
         This assumes each node in the graph has an energy and runtime of the core to which they are allocated to.
         """
         results = schedule_graph(
             self.workload,
             self.accelerator,
+            self.layer_stacks,
             candidate_selection=self.scheduler_candidate_selection,
             operands_to_prefetch=self.operands_to_prefetch,
         )

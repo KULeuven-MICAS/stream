@@ -1,4 +1,5 @@
 from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
+from stream.classes.opt.scheduling.layer_stacks import get_layer_stacks, LayerStackMode
 from stream.classes.workload.computation_node import ComputationNode
 from zigzag.utils import pickle_deepcopy
 
@@ -29,6 +30,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
         layer_groups_flexible,
         scheduler_candidate_selection,
         operands_to_prefetch,
+        original_workload,  # used for layer stack calculation
     ) -> None:
         super().__init__(workload, accelerator, node_hw_performances)
 
@@ -38,6 +40,9 @@ class StandardFitnessEvaluator(FitnessEvaluator):
         self.layer_groups_flexible = layer_groups_flexible
         self.scheduler_candidate_selection = scheduler_candidate_selection
         self.operands_to_prefetch = operands_to_prefetch
+        self.original_workload = original_workload
+        self.constant_operand_occupation_factor = 1
+        self.layer_stacks_mode = LayerStackMode.OCCUPATION_BASED
 
     def get_fitness(self, core_allocations: list, return_scme=False):
         """Get the fitness of the given core_allocations
@@ -46,11 +51,19 @@ class StandardFitnessEvaluator(FitnessEvaluator):
             core_allocations (list): core_allocations
         """
         self.set_node_core_allocations(core_allocations)
+        layer_stacks = get_layer_stacks(
+            self.workload,
+            self.original_workload,
+            self.accelerator,
+            self.constant_operand_occupation_factor,
+            self.layer_stacks_mode,
+        )
         scme = StreamCostModelEvaluation(
             pickle_deepcopy(self.workload),
             pickle_deepcopy(self.accelerator),
             self.scheduler_candidate_selection,
             self.operands_to_prefetch,
+            layer_stacks,
         )
         scme.run()
         energy = scme.energy

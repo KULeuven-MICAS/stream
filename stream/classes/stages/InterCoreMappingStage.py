@@ -61,8 +61,9 @@ class InterCoreMappingStage(Stage):
         self.plot_data_transfer = plot_data_transfer
         self.scheduler_candidate_selection = scheduler_candidate_selection
         self.operands_to_prefetch = operands_to_prefetch
+        self.original_workload = kwargs["original_workload"]
 
-        # Determine the set of all (layer, group) combinations to vbe allocated separately
+        # Determine the set of all (layer, group) combinations to be allocated separately
         self.layer_groups = sorted(
             set((n.id[0], n.group) for n in self.workload.nodes())
         )
@@ -109,6 +110,7 @@ class InterCoreMappingStage(Stage):
             self.layer_groups_flexible,
             self.scheduler_candidate_selection,
             self.operands_to_prefetch,
+            self.original_workload,
         )
 
         # Extract the length of an individual.
