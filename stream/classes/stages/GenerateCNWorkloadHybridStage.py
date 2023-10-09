@@ -332,6 +332,7 @@ class GenerateCNWorkloadHybridStage(Stage):
 
         finer_nodes = []
         groups = {}
+        tensors = []
         for n in range(nb_cns):
             outer_loop_values = []
             for i, outer_loop in enumerate(outer_temporal_loops):
@@ -399,6 +400,16 @@ class GenerateCNWorkloadHybridStage(Stage):
             for constant_operand in finer_node.constant_operands:
                 tensor = finer_node.operand_tensors[constant_operand]
                 tensor.set_base_priorities(tensor_reuse_factors[constant_operand][n])
+
+            # Replace any of the tensors with identical tensors of previous finer nodes
+            for op, tensor in finer_node.operand_tensors.items():
+                replaced = False
+                for previous_tensor in tensors:
+                    if tensor.equality_hash() == previous_tensor.equality_hash():
+                        finer_node.operand_tensors[op] = previous_tensor
+                        replaced = True
+                if not replaced:
+                    tensors.append(tensor)
 
             # Compute the output data produced by each finer node, assuming that all the data produced by different CNs are unique
             finer_node.data_produced_unique = (
