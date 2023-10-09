@@ -116,8 +116,6 @@ def get_layer_stacks_occupation_based(
 
     if current_stack:
         all_stacks.append(current_stack)
-    for stack in all_stacks:
-        print(stack)
     return all_stacks
 
 
