@@ -60,7 +60,7 @@ args = parser.parse_args()
 
 ################################### HYPERPARAMETERS ##################################
 CN_define_mode = 4  # automatically split layers that are too big to fit on a core in K
-hint_loops = [("OY", "all")]
+hint_loops = [("OY", "all/4")]
 nb_ga_individuals = 64  # number of individuals in each genetic algorithm generation
 nb_ga_generations = 10  # number of genetic algorithm generations
 ######################################################################################
@@ -72,6 +72,8 @@ if wl_name == "onnx":
     wl_name = re.split(r"/|\.", args.workload_path)[-2]
 hint_loops_str_list = []
 for dim, size in hint_loops:
+    if isinstance(size, str) and "/" in size:
+        size = size.replace("/", "_")
     hint_loops_str_list.extend([str(dim).lower(), str(size)])
 hint_loops_str = "_".join(hint_loops_str_list)
 experiment_id = (
@@ -118,7 +120,7 @@ mainstage = MainStage(
     cn_define_mode=CN_define_mode,
     hint_loops=hint_loops,
     operands_to_prefetch=[],
-    scheduler_candidate_selection="latency",
+    scheduler_candidate_selection="memory",
     visualize_node_hw_performances_path=visualize_node_hw_performances_path,
 )
 ######################################################################################

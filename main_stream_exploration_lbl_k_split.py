@@ -118,7 +118,7 @@ mainstage = MainStage(
     cn_define_mode=CN_define_mode,
     hint_loops=hint_loops,
     operands_to_prefetch=[],
-    scheduler_candidate_selection="latency",
+    scheduler_candidate_selection="memory",
     visualize_node_hw_performances_path=visualize_node_hw_performances_path,
 )
 ######################################################################################
