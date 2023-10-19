@@ -1,4 +1,5 @@
 from typing import List, Dict
+from math import ceil
 
 from stream.classes.workload.computation_node import ComputationNode
 from zigzag.classes.mapping.temporal.temporal_loop import TemporalLoop
@@ -95,10 +96,19 @@ def convert_outer_cn_loops(outer_cn_loops: list, layer: ComputationNode):
     outer_loops = []
     for loop_name, loop_size in outer_cn_loops:
         if loop_name in layer.loop_dim_size:
-            if loop_size == "all" or layer.loop_dim_size[loop_name] < loop_size:
+            if loop_size == "all" or (isinstance(loop_size, int) and layer.loop_dim_size[loop_name] < loop_size):
                 outer_loops.append(
                     TemporalLoop(loop_name, layer.loop_dim_size[loop_name])
                 )
+            elif isinstance(loop_size, str) and loop_size[:4] == "all/":
+                div_factor = int(loop_size[4:])
+                if layer.loop_dim_size[loop_name] % div_factor != 0:
+                    outer_size = layer.loop_dim_size[loop_name]
+                    logger.info(f"{layer} not split more coarsly: {layer.loop_dim_size[loop_name]} % {div_factor} != 0")
+                else:
+                    outer_size = ceil(layer.loop_dim_size[loop_name]/div_factor)
+                    logger.info(f"{layer} split more coarsly: {outer_size}")
+                outer_loops.append(TemporalLoop(loop_name, outer_size))
             elif layer.loop_dim_size[loop_name] % loop_size == 0:
                 outer_loops.append(TemporalLoop(loop_name, loop_size))
             else:
