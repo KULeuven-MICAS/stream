@@ -205,7 +205,7 @@ class IntraCoreMappingStage(Stage):
             if "visualize_node_hw_performances_path":
                 # Get the scale factors
                 scale_factors = {
-                    n.id: len(list(cn for cn in self.workload if cn == n))
+                    n.id: len(list(cn for cn in self.workload if cn == n and cn.group == n.group))
                     for n in self.node_hw_performances
                 }
                 # Run the visualization
@@ -229,9 +229,9 @@ class IntraCoreMappingStage(Stage):
 
         main_stage = MainStage(
             [  # Initializes the MainStage as entry point
-                MinimalLatencyStage,
+                MinimalEnergyStage,  # MinimalLatencyStage,
                 SpatialMappingGeneratorStage,  # Generates multiple spatial mappings (SM)
-                MinimalLatencyStage,  # Reduces all CMEs, returning minimal latency one
+                MinimalEnergyStage,  # MinimalLatencyStage,  # Reduces all CMEs, returning minimal latency one
                 LomaStage,  # Generates multiple temporal mappings (TM)
                 CostModelStage,  # Evaluates generated SM and TM through cost model
             ],
