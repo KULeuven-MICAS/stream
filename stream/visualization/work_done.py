@@ -62,11 +62,17 @@ def plot_work_done(scmes: List[StreamCostModelEvaluation], nb_x_ticks, max_laten
     fig.write_html("outputs/exploration_k_split/work_done_ops.html")
 
 if __name__ == "__main__":
-    scme122 = load_scme('/users/micas/asymons/stream_TC_2023/exploration_k_split/inter_result/122-single_core_32x32_mesh_dpDRAM-resnet18-hintloop_-lbl-scme.pickle')
-    scme7 = load_scme('/users/micas/asymons/stream_TC_2023/exploration_k_split/inter_result/7-HW2_4homo_mesh_dpDRAM-resnet18-hintloop_oy_all-fused-scme.pickle')
-    scme13 = load_scme('/users/micas/asymons/stream_TC_2023/exploration_k_split/inter_result/13-HW3_4hetero_mesh_dpDRAM-resnet18-hintloop_oy_all-fused-scme.pickle')
-    
+    scme122 = load_scme('/users/micas/asymons/stream_TC_2023/exploration_k_split_memory/inter_result/122-single_core_32x32_mesh_dpDRAM-resnet18-hintloop_-lbl-scme.pickle')
+    scme7 = load_scme('/users/micas/asymons/stream_TC_2023/exploration_k_split_memory/inter_result/7-HW2_4homo_mesh_dpDRAM-resnet18-hintloop_oy_all-fused-scme.pickle')
+    scme13 = load_scme('/users/micas/asymons/stream_TC_2023/exploration_k_split_memory/inter_result/13-HW3_4hetero_mesh_dpDRAM-resnet18-hintloop_oy_all-fused-scme.pickle')
+    # scme13_half = load_scme('/users/micas/asymons/stream_TC_2023/test_oy_half/inter_result/13-HW3_4hetero_mesh_dpDRAM-resnet18-hintloop_oy_all-fused-scme.pickle')
     scmes = [scme122, scme7, scme13]
+    # scmes = [scme13, scme13_half]
 
+    # compare mobilenetv2 results: 1 32x32 core lbl vs 4 16x16 core heterogeneous lbl
+    # scme_mobilenetv2_single = load_scme('/users/micas/asymons/stream_TC_2023/exploration_k_split_memory/inter_result/138-single_core_32x32_mesh_dpDRAM-mobilenetv2-hintloop_-lbl-scme.pickle')
+    # scme_mobilenetv2_quad_hetero_lbl = load_scme('/users/micas/asymons/stream_TC_2023/exploration_k_split_memory/inter_result/44-HW3_4hetero_mesh_dpDRAM-mobilenetv2-hintloop_-lbl-scme.pickle')
+    # scme_mobilenetv2_quad_hetero_fused = load_scme('/users/micas/asymons/stream_TC_2023/exploration_k_split_memory/inter_result/45-HW3_4hetero_mesh_dpDRAM-mobilenetv2-hintloop_oy_all-fused-scme.pickle')
+    # scmes = [scme_mobilenetv2_single, scme_mobilenetv2_quad_hetero_lbl, scme_mobilenetv2_quad_hetero_fused]
     max_latency = max([scme.latency for scme in scmes])
-    plot_work_done(scmes, nb_x_ticks=100, max_latency=max_latency, cores_for_ideal=[0,1,2,3])
+    plot_work_done(scmes, nb_x_ticks=100, max_latency=max_latency)  #, cores_for_ideal=[0,1,2,3])
