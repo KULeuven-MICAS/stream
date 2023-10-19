@@ -211,7 +211,7 @@ class InterCoreMappingStage(Stage):
                 offchip_energy += layer_operand_offchip_energy
                 onchip_energy -= layer_operand_offchip_energy
 
-            nodes = (n for n in self.workload.nodes() if n == non_flexible_unique_node)
+            nodes = (n for n in self.workload.nodes() if n == non_flexible_unique_node and n.group == non_flexible_unique_node.group)
             for node in nodes:
                 self.set_hw_performance_node(
                     node, onchip_energy, offchip_energy, latency, core_allocation
