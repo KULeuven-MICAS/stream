@@ -9,7 +9,7 @@ CONSTANT_MEMORY_OPERAND = "I2"
 
 
 class LayerStackMode(Enum):
-    STANDARD = 0
+    ALL = 0
     OCCUPATION_BASED = 1
 
 
@@ -58,6 +58,8 @@ def get_layer_stacks_occupation_based(
     accelerator: Accelerator,
     occupation_factor: int,
 ):
+    # assert that all nodes in original workload are ComputationNodes
+    assert all(isinstance(n, ComputationNode) for n in original_workload.nodes())
     # Get all layer id, group combinations in the workload
     layer_groups = {}
     for n in workload.nodes():
@@ -87,8 +89,6 @@ def get_layer_stacks_occupation_based(
     # and the constant operands size
     for i, generation in enumerate(nx.topological_generations(original_workload)):
         for original_node in generation:
-            if not isinstance(original_node, ComputationNode):
-                continue
             layer_id = original_node.id[0]
             group_ids = layer_groups[layer_id]
             update_occupations(workload, occupations, layer_id, group_ids)
@@ -126,7 +126,7 @@ def get_layer_stacks(
     occupation_factor: int,
     mode: LayerStackMode,
 ):
-    if mode == LayerStackMode.STANDARD:
+    if mode == LayerStackMode.ALL:
         layer_stacks = get_layer_stacks_standard(workload)
     elif mode == LayerStackMode.OCCUPATION_BASED:
         layer_stacks = get_layer_stacks_occupation_based(
