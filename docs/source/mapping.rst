@@ -10,7 +10,7 @@ Stream requires two different specification about the possible mapping of a work
 These two specifications will be further explained on this page:
 
 Spatial Mapping
----------------
+===============
 
 The spatial mapping describes the spatial parallelization strategy used in a certain core. The spatial mapping has to be specified in the hardware architecture as an attribute to each core (see explanation `here <https://kuleuven-micas.github.io/stream/hardware.html#core>`_ and example `here <https://github.com/KULeuven-MICAS/stream/blob/master/stream/inputs/examples/hardware/cores/Eyeriss_like.py#L198>`_). An example dataflow could look like:
 
@@ -21,9 +21,9 @@ The spatial mapping describes the spatial parallelization strategy used in a cer
 In this example the Operational Array has two dimensions (i.e. D1 and D2). The output channels ("K") are unrolled over D1 and the input channels ("C") are unrolled over D2. Both dimensions have an unrolling factor of 16. 
 
 Core Allocation
----------------
+===============
 
-Besides the spatial mapping, the user has to provide information about which layer type can be exectued on which core in the hardware architecture. An `example core allocation <https://github.com/KULeuven-MICAS/stream/blob/master/stream/inputs/examples/mapping/eyeriss_like_quad_core_pooling_simd_offchip.py>`_ could look like the following
+Besides the spatial mapping, the user has to provide information about which layer type can be exectued on which core in the hardware architecture. An example core allocation for the architecture `here <https://github.com/KULeuven-MICAS/stream/blob/master/stream/inputs/examples/mapping/tpu_like_quad_core.py>`_ could look like:
 
 .. code-block:: python
 
@@ -53,5 +53,21 @@ In this example:
 3. All layers of type "simd" (case insensitive) will be allocated to core 5.
 4. All other layers can be allocated to cores 0, through 3 by default.
 
-When determining the possible core allocations for a node, the name is checked first, then the type, then the default.
+When determining the possible core allocations for a node, the name is checked first, then the type, then the default is used as a last resort.
 The available layer types are all the ones introduced in :doc:`workload`.
+
+Saving an SCME's allocation
+---------------------------
+
+When you have run Stream for optimizing a layer-core allocation, it can be interesting to save the obtained allocation for future use as a fixed mapping, without having to re-run the genetic algorithm.
+The obtained allocation can be saved to a python file through use of the `save_core_allocation <TODO>`_ function. The code below demonstrates its use:
+
+.. code-block:: python
+
+    from pprint import pprint
+    from stream.utils import load_scme, save_core_allocation
+
+    scme_path = 'my/saved.scme'
+    scme = load_scme(scme_path)
+    d = save_core_allocation(scme.workload, "my/fixed/mapping.py")
+    pprint(d)
