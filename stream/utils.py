@@ -1,6 +1,7 @@
 import pickle
 from networkx import DiGraph
 import json
+import os
 
 from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 
