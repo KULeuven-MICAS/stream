@@ -13,7 +13,7 @@ HW_HETEROGENEOUS_MULTI_CORE = ["single_core_16x16_mesh_dpDRAM", "HW3_4hetero_mes
 SCHEDULING_TYPES = ["lbl", "fused"]
 
 WORKLOADS = ['resnet18', 'fsrcnn', 'mobilenetv2', 'squeezenet', 'inception_v2']
-# WL_list = ['resnet18']
+# WORKLOADS = ['resnet18']
 
 
 def plot_cs1(opt_goal, wl, scme_path, plot_path):
@@ -79,11 +79,11 @@ def plot_cs1(opt_goal, wl, scme_path, plot_path):
 
 if __name__ == "__main__":
     for opt_goal in ['latency']:
-        scme_path = f'/users/micas/asymons/stream_TC_2023/exploration_k_split/inter_result/'
-        plot_path = f'./outputs/exploration_k_split/cs1_plot/'
+        scme_path = f'/users/micas/asymons/stream_TC_2023/exploration_k_split_memory_energy_coarser_4/inter_result/'
+        plot_path = f'/users/micas/asymons/stream_TC_2023/exploration_k_split_memory_energy_coarser_4/cs1_plot/'
         for wl in WORKLOADS:
             try:
-                plot_cs1(opt_goal, wl, scme_path, plot_path)
+               plot_cs1(opt_goal, wl, scme_path, plot_path)
             except:
                 print(f"WARNING: {wl} plot failed.")
                 continue
