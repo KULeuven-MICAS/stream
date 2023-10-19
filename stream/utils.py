@@ -2,6 +2,7 @@ import pickle
 from networkx import DiGraph
 import json
 import os
+import pprint
 
 from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 
@@ -47,8 +48,8 @@ def load_scme(path: str):
         scme = pickle.load(fp)
     return scme
 
-def save_core_allocation(workload: DiGraph, path: str, type="fixed") -> dict:
-    """Saves the core allocations of a workload to a pickle file.
+def save_core_allocation(workload: DiGraph, path: str, type="fixed", format="py") -> dict:
+    """Saves the core allocations of a workload to a python or pickle file.
     In fixed mode: if a layer has been split into multiple groups, the allocation of each group is saved to a tuple.
     In flexible mode: for each layer, the possible allocations are saved to a list.
     
@@ -77,6 +78,14 @@ def save_core_allocation(workload: DiGraph, path: str, type="fixed") -> dict:
     # Create folder structure if it doesn't exist
     os.makedirs(os.path.dirname(path), exist_ok=True)
     # The dict is saved with variable name 'mapping' as this is expected for running
-    with open(path, 'wb') as handle:
-        pickle.dump(mapping, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    if format in ["python", "py"]:
+        assert path.split(".")[-1] == "py", "format is python but file path doesn't end in .py"
+        with open(path, "w") as handle:
+            handle.write("mapping = ")
+            handle.write(pprint.pformat(mapping))
+    elif format in ["pickle", "pkl"]:
+        with open(path, "wb") as handle:
+            pickle.dump(mapping, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    else:
+        raise ValueError(f"Invalid format: {format}.")
     return mapping
