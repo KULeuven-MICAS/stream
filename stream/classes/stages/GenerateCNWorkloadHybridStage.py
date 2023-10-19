@@ -914,8 +914,10 @@ class GenerateCNWorkloadHybridStage(Stage):
         for node in self.workload.nodes():
             # Get the weight capacity of all possible core allocations of this node
             core_allocations = node.core_allocation
-            if isinstance(node, DummyNode) or not isinstance(core_allocations, list):
+            if isinstance(node, DummyNode):
                 continue
+            if isinstance(core_allocations, int):
+                continue  # for fixed single allocation don't consider the splitting
             core_capacities = [
                 self.weight_capacities[core_id] for core_id in core_allocations
             ]

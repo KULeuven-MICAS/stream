@@ -95,7 +95,7 @@ class InterCoreMappingStage(Stage):
             unique_node = next((n for n in self.unique_nodes if n.id[0] == layer_id))
             if unique_node in self.unique_nodes_flexible:
                 hw_performances = self.node_hw_performances[unique_node]
-                valid_core_ids = [core.id for core in hw_performances.keys()]
+                valid_core_ids = [core.id for core in hw_performances.keys() if core.id < len(self.unique_nodes_flexible)]
                 self.layer_groups_flexible.append((layer_id, group_id))
                 self.valid_allocations.append(valid_core_ids)
 

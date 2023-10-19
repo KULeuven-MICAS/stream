@@ -47,7 +47,7 @@ class IntraCoreMappingStage(Stage):
                 (
                     unique_node
                     for unique_node in self.unique_nodes
-                    if node == unique_node
+                    if node == unique_node and node.group == unique_node.group
                 )
             )
             if not equal_nodes:
@@ -58,9 +58,9 @@ class IntraCoreMappingStage(Stage):
         for node in self.unique_nodes:
             if isinstance(node, ComputationNode):
                 if isinstance(node.core_allocation, int):
-                    self.valid_allocations[node] = [node.core_allocation]
+                    self.valid_allocations[node] = (node.core_allocation,)
                 elif isinstance(node.core_allocation, (list, tuple)):
-                    self.valid_allocations[node] = list(node.core_allocation)
+                    self.valid_allocations[node] = node.core_allocation
                 else:
                     raise ValueError(f"No core allocation for node {node}.")
                 # if not node.core_allocation:
@@ -92,7 +92,15 @@ class IntraCoreMappingStage(Stage):
 
         for node in self.unique_nodes:
             self.node_hw_performances[node] = {}
-            for core_id in self.valid_allocations[node]:
+            if isinstance(self.valid_allocations[node], tuple):
+                try:
+                    core_ids = (self.valid_allocations[node][node.group],)
+                except IndexError:
+                    assert len(self.valid_allocations[node]) == 1
+                    core_ids = (self.valid_allocations[node][0],)
+            else:
+                core_ids = self.valid_allocations[node]
+            for core_id in core_ids:
                 core = self.accelerator.get_core(core_id)
                 # It's possible this node might not fully fit within the core's top level memories. If so, we update the core
                 too_large_operands_for_cme = self.check_core_capacity_for_node(
@@ -116,44 +124,56 @@ class IntraCoreMappingStage(Stage):
                 # Check if this (node, core) combination has already been optimized during this run
                 elif (
                     self.node_hw_performances
-                    and node in self.node_hw_performances
-                    and self.node_hw_performances[node]
                     and any(
                         (
-                            core.equals(processed_core)
-                            for processed_core in self.node_hw_performances[node]
+                            node == processed_node
+                            for processed_node in self.node_hw_performances
                         )
                     )
                 ):
-                    # Find the core that is equal
-                    equal_core = next(
-                        processed_core
-                        for processed_core in self.node_hw_performances[node]
-                        if core.equals(processed_core)
+                    equal_node = next(
+                        processed_node
+                        for processed_node in self.node_hw_performances
+                        if node == processed_node
                     )
-                    cme = self.node_hw_performances[node][equal_core]
-                    self.node_hw_performances[node][core] = cme
-                    self.save_node_hw_performances()
-                # Compute this (node, core) combination's optimal mapping
-                else:
-                    node.core_allocation = core_id  # Set the node's core allocation to the core_id we want to extract hw performance for
-                    node.user_spatial_mapping = (
-                        core.dataflows
-                    )  # Set the node's spatial mapping to the possible spatial mappings of the current core
-                    # Initialize the flow that will be followed to extract the optimal HW performance of every unique node-core allocation
-                    main_stage = self.get_intra_core_mapping_flow(
-                        node=node,
-                        too_large_operands=too_large_operands_for_cme,
-                        core_id=core_id,
-                    )
-                    answers = main_stage.run()
-                    assert (
-                        len(answers) == 1
-                    ), "IntraCoreMappingStage's subflow returned more than one CME"
-                    cme = answers[0][0]
-                    node.core_allocation = None  # Reset the node's core allocation
-                    self.node_hw_performances[node][core] = cme
-                    self.save_node_hw_performances()  # Save the hw performances dict after every node is finished
+                    if (
+                        self.node_hw_performances[equal_node]
+                        and any(
+                            (
+                                core.equals(processed_core)
+                                for processed_core in self.node_hw_performances[equal_node]
+                            )
+                        )
+                    ):
+                        # Find the core that is equal
+                        equal_core = next(
+                            processed_core
+                            for processed_core in self.node_hw_performances[equal_node]
+                            if core.equals(processed_core)
+                        )
+                        cme = self.node_hw_performances[equal_node][equal_core]
+                        self.node_hw_performances[node][core] = cme
+                        self.save_node_hw_performances()
+                    # Compute this (node, core) combination's optimal mapping
+                    else:
+                        node.core_allocation = core_id  # Set the node's core allocation to the core_id we want to extract hw performance for
+                        node.user_spatial_mapping = (
+                            core.dataflows
+                        )  # Set the node's spatial mapping to the possible spatial mappings of the current core
+                        # Initialize the flow that will be followed to extract the optimal HW performance of every unique node-core allocation
+                        main_stage = self.get_intra_core_mapping_flow(
+                            node=node,
+                            too_large_operands=too_large_operands_for_cme,
+                            core_id=core_id,
+                        )
+                        answers = main_stage.run()
+                        assert (
+                            len(answers) == 1
+                        ), "IntraCoreMappingStage's subflow returned more than one CME"
+                        cme = answers[0][0]
+                        node.core_allocation = None  # Reset the node's core allocation
+                        self.node_hw_performances[node][core] = cme
+                        self.save_node_hw_performances()  # Save the hw performances dict after every node is finished
         self.visualize_node_hw_performances()
         kwargs = self.kwargs.copy()
         kwargs["workload"] = self.workload
