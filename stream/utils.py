@@ -1,4 +1,6 @@
 import pickle
+from networkx import DiGraph
+import json
 
 from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 
@@ -43,3 +45,37 @@ def load_scme(path: str):
     with open(path, "rb") as fp:
         scme = pickle.load(fp)
     return scme
+
+def save_core_allocation(workload: DiGraph, path: str, type="fixed") -> dict:
+    """Saves the core allocations of a workload to a pickle file.
+    In fixed mode: if a layer has been split into multiple groups, the allocation of each group is saved to a tuple.
+    In flexible mode: for each layer, the possible allocations are saved to a list.
+    
+    Args:
+        workload (DiGraph): The graph of CNs
+        path (str): The filepath to save the dict to.
+        type (str, optional): The type of core allocation: fixed or flexible.
+    
+    Returns:
+        allocations (dict): The dictionary containing core allocations for each node name
+    """
+    node_allocations = {}
+    node_allocations_grouped = {}
+    for n in workload.nodes(): 
+        if n.name not in node_allocations:
+            node_allocations[n.name] = {"core_allocation": [n.core_allocation]}
+            node_allocations_grouped[n.name] = {n.group: n.core_allocation}
+        else:
+            node_allocations[n.name]["core_allocation"].append(n.core_allocation)
+            if n.group not in node_allocations_grouped[n.name]:
+                node_allocations_grouped[n.name][n.group] = n.core_allocation
+    if type == "fixed":
+        mapping = {k: {"core_allocation": tuple(list(zip(*sorted(v.items())))[1])} for k, v in node_allocations_grouped.items()}
+    else:
+        mapping = {k: {"core_allocation": sorted(set(v["core_allocation"]))} for k, v in node_allocations.items()}
+    # Create folder structure if it doesn't exist
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    # The dict is saved with variable name 'mapping' as this is expected for running
+    with open(path, 'wb') as handle:
+        pickle.dump(mapping, handle, protocol=pickle.HIGHEST_PROTOCOL)
+    return mapping
