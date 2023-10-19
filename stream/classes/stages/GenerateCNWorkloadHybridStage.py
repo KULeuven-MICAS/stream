@@ -130,10 +130,13 @@ class GenerateCNWorkloadHybridStage(Stage):
         # Set nb of real predecessors of all nodes in G
         self.set_nb_real_predecessors(G)
 
+        # Get the orignal workload with only ComputationNode objects
+        original_workload = self.prune_workload(keep_types=[ComputationNode])
+
         logger.info(f"Finer graph: {G}.")
 
         kwargs = self.kwargs.copy()
-        kwargs["original_workload"] = pickle_deepcopy(self.workload)
+        kwargs["original_workload"] = original_workload
         kwargs["workload"] = G
         kwargs["accelerator"] = self.accelerator
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
@@ -953,6 +956,25 @@ class GenerateCNWorkloadHybridStage(Stage):
                     raise ValueError(f"Something went wrong.")
             split_factors[node] = split_factor
         return split_factors
+
+    def prune_workload(self, keep_types=[]):
+        """Return a pruned workload graph with only nodes of type in 'keep_types'.
+        """
+        G = pickle_deepcopy(self.workload)
+        while any(any(not isinstance(node, keep_type) for keep_type in keep_types) for node in G.nodes()):
+            G0 = G.copy()
+            for node in G.nodes():
+                if any(not isinstance(node, keep_type) for keep_type in keep_types):
+                    assert G.is_directed()
+                    in_edges_containing_node = list(G0.in_edges(node))
+                    out_edges_containing_node = list(G0.out_edges(node))
+                    for in_src, _ in in_edges_containing_node:
+                        for _, out_dst in out_edges_containing_node:
+                            G0.add_edge(in_src, out_dst)
+                    G0.remove_node(node)
+                    break
+            G = G0
+        return G
 
 
 def deduce_tensor_reuse_factors(original_node, outer_temporal_loops) -> dict[list[int]]:
