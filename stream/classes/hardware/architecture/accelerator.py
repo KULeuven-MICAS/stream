@@ -396,7 +396,7 @@ class Accelerator:
         )
         # Receiver memory energy
         nb_receiver_memory_writes_for_data = ceil(
-            tensor.size / sender_top_memory_level.write_bw
+            tensor.size / receiver_top_memory_level.write_bw
         )
         receiver_energy = (
             receiver_top_memory_level.write_energy * nb_receiver_memory_writes_for_data
