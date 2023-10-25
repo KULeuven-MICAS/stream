@@ -49,9 +49,9 @@ In this example:
 
 1. The layer with name "/conv1/Conv" will have a fixed core allocation onto core 2.
 2. The layer with name "/conv2/Conv" will have a fixed core allocation for its groups (see `IntraCoreMappingStage` in :doc:`stages` for more information regarding groups).
-2. All layers of type "pooling" will be allocated to core 4.
-3. All layers of type "simd" (case insensitive) will be allocated to core 5.
-4. All other layers can be allocated to cores 0, through 3 by default.
+3. All layers of type "pooling" will be allocated to core 4.
+4. All layers of type "simd" (case insensitive) will be allocated to core 5.
+5. All other layers can be allocated to cores 0, through 3 by default.
 
 When determining the possible core allocations for a node, the name is checked first, then the type, then the default is used as a last resort.
 The available layer types are all the ones introduced in :doc:`workload`.
