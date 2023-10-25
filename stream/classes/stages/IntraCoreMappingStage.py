@@ -48,6 +48,7 @@ class IntraCoreMappingStage(Stage):
                     unique_node
                     for unique_node in self.unique_nodes
                     if node == unique_node and node.group == unique_node.group
+                    if node == unique_node and node.group == unique_node.group
                 )
             )
             if not equal_nodes:
@@ -59,7 +60,9 @@ class IntraCoreMappingStage(Stage):
             if isinstance(node, ComputationNode):
                 if isinstance(node.core_allocation, int):
                     self.valid_allocations[node] = (node.core_allocation,)
+                    self.valid_allocations[node] = (node.core_allocation,)
                 elif isinstance(node.core_allocation, (list, tuple)):
+                    self.valid_allocations[node] = node.core_allocation
                     self.valid_allocations[node] = node.core_allocation
                 else:
                     raise ValueError(f"No core allocation for node {node}.")
@@ -96,7 +99,8 @@ class IntraCoreMappingStage(Stage):
                 try:
                     core_ids = (self.valid_allocations[node][node.group],)
                 except IndexError:
-                    assert len(self.valid_allocations[node]) == 1
+                    nb_groups = len(set((n.group for n in self.workload.nodes() if n.id == node)))
+                    assert len(self.valid_allocations[node]) == 1, f"Fixed mapping for {node.name} should contain {nb_groups} entries."
                     core_ids = (self.valid_allocations[node][0],)
             else:
                 core_ids = self.valid_allocations[node]

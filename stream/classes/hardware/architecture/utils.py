@@ -35,6 +35,15 @@ def intersections(a, b):
     return ranges
 
 
+def get_core_capacities(accelerator, mem_op: str, core_ids: list):
+    core_capacities = {}
+    for core_id in core_ids:
+        core_name = f"Core {core_id}"
+        core = accelerator.get_core(core_id)
+        top_instance = accelerator.get_top_instance_of_core(core, mem_op)
+        core_capacities[core_name] = top_instance.size
+    return core_capacities
+
 if __name__ == "__main__":
     a = [(8, 10), (13, 15), (17, 20)]
     b = [(0, 9), (14, 18)]
