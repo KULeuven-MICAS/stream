@@ -86,7 +86,7 @@ def visualize_node_hw_performances_pickle(
     min_latency_per_node = {}
     min_energy_per_node = {}
     for node, hw_performances in node_hw_performances.items():
-        node_labels.append(f"L{node.id[0]}\nN{node.id[1]}")
+        node_labels.append(f"L{node.id[0]}\nN{node.id[1]}\nx{scale_factors[node]}")
         min_latency_per_node[node] = float("inf")
         min_energy_per_node[node] = float("inf")
         for core, cme in hw_performances.items():
