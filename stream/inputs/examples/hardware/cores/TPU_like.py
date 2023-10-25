@@ -28,7 +28,7 @@ def get_memory_hierarchy(multiplier_array):
 
     reg_O_1K = MemoryInstance(
         name="rf_1KB",
-        size=16,
+        size=1024 * 8,
         r_bw=16,
         w_bw=16,
         r_cost=0.54,
