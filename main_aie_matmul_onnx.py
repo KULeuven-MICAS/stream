@@ -25,8 +25,11 @@ workload_path = "/proj/rdi/staff/gagandee/dse/stream_aie/models/matmul_288_1_288
 accelerator = "stream.inputs.aie.hardware_mm.aie_col"
 mapping_path = "stream.inputs.aie.testing_mapping_matmul"
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
-
 hint_loops = []
+
+split_W_percentage = 0.5 # max percentage of capacity a single node's weights can be
+nb_ga_individuals = 16  # number of individuals in each generation
+nb_ga_generations = 16  # number of genetic algorithm generations
 # hint_loops = [("OY", "all")]
 ################################PARSING###############################
 hw_name = accelerator.split(".")[-1]
