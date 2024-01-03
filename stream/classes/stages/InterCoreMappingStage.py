@@ -158,8 +158,6 @@ class InterCoreMappingStage(Stage):
             # Run the genetic algorithm and get the results
             pop, hof = self.genetic_algorithm.run()
             logger.info(f"Finished Genetic Algorithm.")
-            print("Hall of fame:")
-            print(hof)
             if self.plot_hof:
                 for i, core_allocations in enumerate(hof):
                     results = self.fitness_evaluator.get_fitness(

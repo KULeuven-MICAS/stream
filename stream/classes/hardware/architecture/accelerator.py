@@ -317,7 +317,7 @@ class Accelerator:
         links = self.communication_manager.get_links_for_pair(
             sender_core, receiving_core
         )
-        links = {link: ceil(link.bandwidth) for link in links}
+        links = {link: link.bandwidth for link in links}
         transfer_duration = max([ceil(tensor.size / link.bandwidth) for link in links])
         transfer_start = self.communication_manager.get_links_idle_window(
             links, evictions_complete_timestep, transfer_duration, [tensor,]
