@@ -26,5 +26,5 @@ class FlattenParser(Parser):
         input_names = [self.node.input[0]]
         # Get the output names of the operator
         output_names = [self.node.output[0]]
-        node_obj = FlattenNode(predecessors, axis, input_names, output_names)
+        node_obj = FlattenNode(self.node_id, predecessors, axis, input_names, output_names)
         return node_obj
