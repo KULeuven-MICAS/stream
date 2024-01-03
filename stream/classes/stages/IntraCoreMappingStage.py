@@ -1,7 +1,7 @@
 from enum import unique
+import os
 import pickle
 import networkx as nx
-from os import path, makedirs
 import logging
 
 from zigzag.classes.cost_model.cost_model import CostModelEvaluation
@@ -11,6 +11,7 @@ from zigzag.classes.stages.Stage import Stage
 from stream.classes.workload.computation_node import ComputationNode
 from zigzag.utils import pickle_deepcopy
 from zigzag.classes.mapping.mapping_assist_funcs import decouple_pr_loop
+from stream.utils import load_scme, save_scme
 
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,
@@ -37,6 +38,7 @@ class IntraCoreMappingStage(Stage):
         self.accelerator = accelerator
         self.loma_lpf_limit = loma_lpf_limit
         self.loma_show_progress_bar = kwargs.get("loma_show_progress_bar", False)
+        self.node_hw_performances_path = kwargs.get("node_hw_performances_path", None)
 
         # Extract all unique nodes that will have to be evaluated
         self.unique_nodes = []
@@ -77,18 +79,11 @@ class IntraCoreMappingStage(Stage):
 
     def run(self):
         logger.info(f"Start IntraCoreMappingStage.")
-        # If the kwargs include a node_hw_performances_path, load in the pickle:
-        if "node_hw_performances_path" in self.kwargs and path.exists(
-            self.kwargs["node_hw_performances_path"]
-        ):
+        if self.node_hw_performances_path:
             try:
-                with open(self.kwargs["node_hw_performances_path"], "rb") as handle:
-                    self.given_node_hw_performances = pickle.load(handle)
-                    # self.check_given_node_hw_performances()
-            except:  # loading in the pickle raises an error when the class definitions have changed
+                self.given_node_hw_performances = load_scme(self.node_hw_performances_path)
+            except:
                 self.given_node_hw_performances = None
-        else:
-            self.given_node_hw_performances = None
 
         for node in self.unique_nodes:
             self.node_hw_performances[node] = {}
@@ -187,18 +182,12 @@ class IntraCoreMappingStage(Stage):
             yield cme, extra_info
 
     def save_node_hw_performances(self):
-        if "node_hw_performances_path" in self.kwargs:
-            folder_path = "/".join(
-                self.kwargs["node_hw_performances_path"].split("/")[:-1]
-            )
-            if not path.isdir(folder_path):
-                makedirs(folder_path)
-            with open(self.kwargs["node_hw_performances_path"], "wb") as handle:
-                pickle.dump(
-                    self.node_hw_performances, handle, protocol=pickle.HIGHEST_PROTOCOL
-                )
+        if self.node_hw_performances_path:
+            parent = os.path.dirname(self.node_hw_performances_path)
+            os.makedirs(parent, exist_ok=True)
+            save_scme(self.node_hw_performances, self.node_hw_performances_path)
             logger.debug(
-                f'Saved unique CN node HW performance to {self.kwargs["node_hw_performances_path"]}.'
+                f'Saved unique CN node HW performance to {self.node_hw_performances_path}.'
             )
 
     def visualize_node_hw_performances(self):
@@ -211,7 +200,7 @@ class IntraCoreMappingStage(Stage):
                 }
                 # Run the visualization
                 visualize_node_hw_performances_pickle(
-                    self.kwargs["node_hw_performances_path"],
+                    self.node_hw_performances,
                     scale_factors,
                     self.kwargs["visualize_node_hw_performances_path"],
                 )
