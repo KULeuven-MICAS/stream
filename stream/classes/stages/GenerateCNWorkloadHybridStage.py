@@ -63,16 +63,6 @@ class GenerateCNWorkloadHybridStage(Stage):
         self.hint_loops = (
             hint_loops  # can be outer-cn or inner-cn depending on cn_define_mode
         )
-        # layer_cutoffs is required only for cn_define_mode == 3
-        if cn_define_mode == 3:
-            try:
-                layer_cutoffs = self.kwargs["layer_cutoffs"]
-            except KeyError:
-                raise ValueError(
-                    "Please provide 'layer_cutoffs' when using cn_define_mode = 3."
-                )
-            assert len(layer_cutoffs) == len(self.hint_loops) - 1
-            self.layer_cutoffs = layer_cutoffs
 
         # compute the weight capacities of the different cores and the number of splits required for each layer
         if cn_define_mode == 4:
@@ -136,6 +126,7 @@ class GenerateCNWorkloadHybridStage(Stage):
         kwargs["original_workload"] = pickle_deepcopy(self.workload)
         kwargs["workload"] = G
         kwargs["accelerator"] = self.accelerator
+        kwargs["hint_loops"] = self.hint_loops
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
@@ -190,13 +181,15 @@ class GenerateCNWorkloadHybridStage(Stage):
             inner_cn_loops = self.hint_loops.copy()
             outer_loops = convert_inner_cn_loops(inner_cn_loops, layer)
         elif self.cn_define_mode == 3:
-            # Assume that self.outer_cn_loops is a nested list
-            # The self.layer_cutoffs list specifies the transition from one list of cn loops to the next
-            # So for outer_cn_loops = [[("OY", "all")], [("OY", "all"), ("K", "all")]] and layer_cutoffs = [4]
-            # layer ids 0 to 3 will use [("OY", "all")] and layer ids 4 to end will use [("OY", "all), ("K", "all")]
+            # Assume that self.hint_loops is a dict
+            # A key is a tuple containing the layer ids that should use the value as hint_loops
+            # So for self.hint_loops = {(0,1,2,3): [("OY", "all")], (4,): [("OY", "all"), ("K", "all")]}
+            # layer ids 0 to 3 will use [("OY", "all")] and layer id 4 will use [("OY", "all), ("K", "all")]
             # Find which sublist this layer should use
-            idx = np.searchsorted(self.layer_cutoffs, layer.id[0], side="right")
-            outer_cn_loops = self.hint_loops[idx].copy()
+            try:
+                outer_cn_loops = next(v for k, v in self.hint_loops.items() if layer.id[0] in k)
+            except StopIteration:
+                raise ValueError(f"Layer id {layer.id[0]} not in hint_loops: {self.hint_loops}")
             outer_loops = convert_outer_cn_loops(outer_cn_loops, layer)
         elif self.cn_define_mode == 4:
             # Assume we always split in the hint_loops dimensions
@@ -281,7 +274,7 @@ class GenerateCNWorkloadHybridStage(Stage):
         original_node_id = original_node.id[0]
 
         # Take away the outer_temporal_loops to create finer CNs for this node
-        finer_node_attrs = original_node.attrs.copy()
+        finer_node_attrs = pickle_deepcopy(original_node.attrs)
         for outer_tl in outer_temporal_loops:
             outer_dim = outer_tl.dimension
             outer_size = outer_tl.size

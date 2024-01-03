@@ -39,6 +39,7 @@ class Node(metaclass=ABCMeta):
 
         self.input_names = input_names
         self.output_names = output_names
+        self.offchip_bw = None  # will be set together with the core allocation
 
     def __str__(self):
         return f"{self.type.capitalize()}Node()"
@@ -123,3 +124,7 @@ class Node(metaclass=ABCMeta):
             bool: True if this node has been assigned an end time
         """
         return self.end is not None
+    
+    def set_offchip_bandwidth(self, offchip_bw):
+        self.offchip_bw = offchip_bw
+

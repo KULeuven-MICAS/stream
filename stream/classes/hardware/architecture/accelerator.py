@@ -240,6 +240,7 @@ class Accelerator:
 
         The tensor is then added to the memory. Evictions are still possible if
         there wasn't enough space on the receiver core at any earlier timestep.
+        If one of the links already transferred the tensor, we broadcast if possible.
 
         Args:
             tensor (Tensor): The tensor to transfer.
@@ -316,9 +317,10 @@ class Accelerator:
         links = self.communication_manager.get_links_for_pair(
             sender_core, receiving_core
         )
+        links = {link: ceil(link.bandwidth) for link in links}
         transfer_duration = max([ceil(tensor.size / link.bandwidth) for link in links])
         transfer_start = self.communication_manager.get_links_idle_window(
-            links, evictions_complete_timestep, transfer_duration
+            links, evictions_complete_timestep, transfer_duration, [tensor,]
         )
         transfer_end = transfer_start + transfer_duration
         ################################# STEP 5 #################################
@@ -342,9 +344,11 @@ class Accelerator:
         # if it is no longer needed.
         if sender_core.id == self.offchip_core_id:
             pass
+        # Don't remove it from the producing core 
         else:
+            not_on_producing_core = sender_core.id != tensor.origin.core_allocation
             if (storing_instance not in tensor.instance_priorities) or (
-                tensor.instance_priorities[storing_instance] == 0
+                not_on_producing_core and tensor.instance_priorities[storing_instance] == 0
             ):
                 self.remove(
                     tensor,

@@ -102,21 +102,15 @@ def convert_outer_cn_loops(outer_cn_loops: list, layer: ComputationNode):
             elif layer.loop_dim_size[loop_name] % loop_size == 0:
                 outer_loops.append(TemporalLoop(loop_name, loop_size))
             else:
-                try:
-                    # find the closest factor within 50x.
-                    new_loop_size = (
-                        find_the_closest_divisible_factor_within_a_range(
-                            layer.loop_dim_size[loop_name], loop_size, 50
-                        )
-                    )
-                    outer_loops.append(TemporalLoop(loop_name, new_loop_size))
-                    logger.info(
-                        f"For layer {int(layer.id[0])}, the outer CN dimension {loop_name} size is adjusted from {loop_size} to {new_loop_size}."
-                    )
-                except:
-                    raise ValueError(
-                        f"({loop_name}, {loop_size}) is not a valid outer CN loop."
-                    )
+                # Increase the loop size of the layer until it is divisible by the outer loop
+                new_layer_dim_size = layer.loop_dim_size[loop_name] + 1
+                while new_layer_dim_size % loop_size != 0:
+                    new_layer_dim_size += 1
+                # Set the new loop size of the layer
+                logger.warn(f"Layer {layer}: {loop_name} {layer.loop_dim_size[loop_name]} -> {new_layer_dim_size}")
+                layer.loop_dim_size[loop_name] = new_layer_dim_size
+                layer.attrs["loop_dim_size"][loop_name] = new_layer_dim_size
+                outer_loops.append(TemporalLoop(loop_name, loop_size))
     return outer_loops
 
 

@@ -5,3 +5,8 @@ from .ModelParserStage import ONNXModelParserStage as StreamONNXModelParserStage
 from .ModelParserStage import UserDefinedModelParserStage
 from .CustomSpatialMappingGeneratorStage import CustomSpatialMappingGeneratorStage
 from .LayerSplittingStage import LayerSplittingStage
+from .ResourceAllocationStage import ResourceAllocationStage
+from .DetermineLayerStacksStage import DetermineLayerStacksStage
+from .DetermineHintLoopsStage import DetermineHintLoopsStage
+from .PlotWorkloadDistributionStage import PlotWorkloadDistributionStage
+from .SimpleCostModelEvaluationStage import SimpleCostModelEvaluationStage

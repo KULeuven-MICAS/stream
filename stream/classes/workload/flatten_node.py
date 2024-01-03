@@ -5,7 +5,7 @@ from stream.classes.workload.node import Node
 class FlattenNode(Node):
     """Class that represents an onnx Flatten node."""
 
-    def __init__(self, predecessors, axis, input_names, output_names) -> None:
+    def __init__(self, id, predecessors, axis, input_names, output_names) -> None:
         """Initialize the FlattenNode
 
         Args:
@@ -20,6 +20,7 @@ class FlattenNode(Node):
             input_names=input_names,
             output_names=output_names,
         )
+        self.id = id
         self.axis = axis
         self.input_operand_source = {"I": predecessors}
 
