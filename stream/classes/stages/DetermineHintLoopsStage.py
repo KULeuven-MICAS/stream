@@ -3,18 +3,10 @@ from math import ceil
 import numpy as np
 import onnx
 from onnx import helper, numpy_helper
-from onnx.shape_inference import infer_shapes
 
-from zigzag.classes.stages.Stage import Stage
-from stream.classes.workload.onnx_workload import ONNXWorkload
-from stream.classes.workload.node import Node
-from stream.classes.hardware.architecture.communication_link import CommunicationLink
-from stream.classes.hardware.architecture.accelerator import Accelerator
-from zigzag.utils import pickle_deepcopy
-from stream.classes.stages import utils
 from stream.classes.workload.computation_node import ComputationNode
-
 from stream.classes.workload.dummy_node import DummyNode
+from zigzag.classes.stages.Stage import Stage
 
 import logging
 
