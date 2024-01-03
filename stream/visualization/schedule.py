@@ -537,15 +537,17 @@ def visualize_timeline_plotly(
         task_type = row["Type"]
         hatch = PLOTLY_HATCH_TYPES[task_type]
         marker = {"color": color, "pattern": {"shape": hatch}}
-        hovertext = f"""<b>Task:</b> {name}<br>
-                        <b>Tensors:</b> {tensors}<br>
-                        <b>Runtime:</b> {runtime:.2e}<br>
-                        <b>Start:</b> {start:.4e}<br>
-                        <b>End:</b> {start+runtime:.4e}<br>
-                        <b>Energy:</b> {energy:.4e}"""
+        hovertext = (
+            f"<b>Task:</b> {name}<br>"
+            f"<b>Tensors:</b> {tensors}<br>"
+            f"<b>Runtime:</b> {runtime:.2e}<br>"
+            f"<b>Start:</b> {start:.4e}<br>"
+            f"<b>End:</b> {start+runtime:.4e}<br>"
+            f"<b>Energy:</b> {energy:.4e}"
+        )
         if not isnan(row["Activity"]):
             activity = int(row["Activity"])
-            hovertext += f"<br><b>Activity:</b> {activity}"
+            hovertext += f"<br><b>Activity:</b> {activity} %"
         bar = go.Bar(
             base=[start],
             x=[runtime],
