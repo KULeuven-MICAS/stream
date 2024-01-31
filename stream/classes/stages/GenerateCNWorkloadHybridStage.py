@@ -127,11 +127,17 @@ class GenerateCNWorkloadHybridStage(Stage):
         kwargs["workload"] = G
         kwargs["accelerator"] = self.accelerator
         kwargs["hint_loops"] = self.hint_loops
+        if "scheduling_order" not in kwargs:
+            kwargs["scheduling_order"] = self.get_scheduling_order(G)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
 
         yield None, None
+
+    @staticmethod
+    def get_scheduling_order(workload):
+        return sorted((n.id for n in workload.nodes()), reverse=True)
 
     @staticmethod
     def get_all_node_pairs(G):
