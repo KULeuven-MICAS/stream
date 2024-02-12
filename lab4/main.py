@@ -4,7 +4,10 @@ import os
 sys.path.insert(0, os.getcwd())
 from zigzag.classes.stages import *
 from stream.classes.stages import *
-from stream.visualization.schedule import plot_timeline_brokenaxes
+from stream.visualization.schedule import (
+    plot_timeline_brokenaxes,
+    visualize_timeline_plotly,
+)
 from stream.visualization.memory_usage import plot_memory_usage
 import re
 import pickle
@@ -69,6 +72,8 @@ mainstage = MainStage(
     hint_loops=hint_loops,
     scheduler_candidate_selection="latency",
     visualize_node_hw_performances=True,
+    operands_to_prefetch=[],
+
 )
 
 # Unpickle the best SCME if we already ran this experiment
@@ -92,7 +97,17 @@ plot_data_transfer = True
 section_start_percent = (0,)
 percent_shown = (100,)
 fig_path = f"lab4/outputs/timeline-{experiment_id}.png"
+timeline_fig_path_plotly = f"lab4/outputs/timeline-{experiment_id}.html"
 
+# Plotting results using Plotly
+visualize_timeline_plotly(
+    scme,
+    draw_dependencies=draw_dependencies,
+    draw_communication=plot_data_transfer,
+    fig_path=timeline_fig_path_plotly,
+)
+
+# Plotting results using brokenaxes
 plot_timeline_brokenaxes(
     scme,
     draw_dependencies,
