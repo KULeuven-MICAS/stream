@@ -84,6 +84,8 @@ class IntraCoreMappingStage(Stage):
                 self.given_node_hw_performances = load_scme(self.node_hw_performances_path)
             except:
                 self.given_node_hw_performances = None
+        else:
+            self.given_node_hw_performances = None
 
         for node in self.unique_nodes:
             self.node_hw_performances[node] = {}
