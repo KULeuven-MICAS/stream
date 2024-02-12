@@ -26,6 +26,8 @@ dependencies = [
     'rtree',
     'deap',
     'brokenaxes',
+    'plotly',
+    'pandas',
 ]
 requires-python = ">=3.9"
 
