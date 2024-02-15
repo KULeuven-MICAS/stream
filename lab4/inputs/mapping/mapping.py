@@ -1,26 +1,14 @@
 mapping = {
-    "Conv": {
+    "Layer 0": {
         "core_allocation": [0, 1, 2, 3],
     },
-    "Gemm": {
+    "Layer 1": {
+        "core_allocation": (4,),
+    },
+    "Layer 2": {
         "core_allocation": [0, 1, 2, 3],
     },
-    "Pool": {
-        "core_allocation": [4],
-    },
-    "MaxPool": {
-        "core_allocation": [4],
-    },
-    "AveragePool": {
-        "core_allocation": [4],
-    },
-    "GlobalAveragePool": {
-        "core_allocation": [4],
-    },
-    "Add": {
-        "core_allocation": [5],
-    },
-    "default": {
+    "Layer 3": {
         "core_allocation": [0, 1, 2, 3],
     },
 }

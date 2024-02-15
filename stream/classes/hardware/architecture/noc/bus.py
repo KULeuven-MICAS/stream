@@ -6,6 +6,7 @@ from stream.classes.hardware.architecture.noc.communication_link import Communic
 from zigzag.hardware.architecture.Core import Core
 from zigzag.datatypes import Constants
 
+
 def have_shared_memory(a, b):
     """Returns True if core a and core b have a shared top level memory
 

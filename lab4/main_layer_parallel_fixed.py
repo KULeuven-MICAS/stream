@@ -20,14 +20,15 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 ####################################################################################
 
 ############################## Provide inputs ######################################
-workload_path = "lab4.inputs.workload.duplicated_resnet18_layer_fixed"
-accelerator = "lab4.inputs.hardware.heterogeneous_quadcore"
-mapping_path = "lab4.inputs.mapping.mapping_fixed"
+workload_path = "lab4.inputs.workload.resnet18_first_4_layers"
+accelerator = "lab4.inputs.hardware.heterogeneous_quadcore_bus"
+mapping_path = "lab4.inputs.mapping.mapping_fixed_parallel"
+timeline_fig_path_plotly = f"lab4/outputs/layer_parallel_fixed.html"
 ####################################################################################
 
 ############################## Define variables for run ############################
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
-hint_loops = []  # outer CN loops
+hint_loops = [("K", 4)]  # outer CN loops
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
@@ -36,7 +37,7 @@ hint_loops_str_list = []
 for dim, size in hint_loops:
     hint_loops_str_list.extend([str(dim).lower(), str(size)])
 hint_loops_str = "_".join(hint_loops_str_list)
-experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}"
+experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}-parallel"
 node_hw_cost_pkl_name = f"saved_cn_hw_cost-{experiment_id}"
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
@@ -89,7 +90,6 @@ plot_data_transfer = True
 section_start_percent = (0,)
 percent_shown = (100,)
 fig_path = f"lab4/outputs/timeline-{experiment_id}.png"
-timeline_fig_path_plotly = f"lab4/outputs/timeline-{experiment_id}.html"
 
 # Plotting results using Plotly
 visualize_timeline_plotly(
