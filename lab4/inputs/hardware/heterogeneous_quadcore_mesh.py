@@ -6,7 +6,7 @@ from lab4.inputs.hardware.cores.c_k import get_core as get_c_k_core
 from lab4.inputs.hardware.cores.offchip import get_core as get_offchip_core
 
 
-from stream.inputs.examples.hardware.cores.pooling import get_core as get_pooling_core
+from lab4.inputs.hardware.cores.pooling import get_core as get_pooling_core
 from stream.inputs.examples.hardware.cores.simd import get_core as get_simd_core
 from stream.inputs.examples.hardware.nocs.mesh_2d import get_2d_mesh
 from stream.classes.hardware.architecture.accelerator import Accelerator
@@ -37,7 +37,7 @@ cores_graph = get_2d_mesh(
 )
 
 accelerator = Accelerator(
-    "heterogeneous-quadcore",
+    "heterogeneous-quadcore-mesh",
     cores_graph,
     offchip_core_id=offchip_core_id,
 )
