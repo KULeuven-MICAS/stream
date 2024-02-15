@@ -23,7 +23,8 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 accelerator = "lab4.inputs.hardware.heterogeneous_quadcore_bus"
 workload_path = "lab4.inputs.workload.resnet18_first_4_layers"
 mapping_path = "lab4.inputs.mapping.mapping"
-timeline_fig_path_plotly = f"lab4/outputs/layer_sequential.html"
+timeline_fig_path_plotly = f"lab4/outputs/timeline-layer_sequential.html"
+memory_fig_path = f"lab4/outputs/memory-layer_sequential.png"
 ####################################################################################
 
 ############################## Define variables for run ############################
@@ -97,12 +98,5 @@ visualize_timeline_plotly(
     fig_path=timeline_fig_path_plotly,
 )
 
-# Plotting results using brokenaxes
-plot_timeline_brokenaxes(
-    scme,
-    draw_dependencies,
-    section_start_percent,
-    percent_shown,
-    plot_data_transfer,
-    fig_path=fig_path,
-)
+plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
+
