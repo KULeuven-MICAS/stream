@@ -34,7 +34,7 @@ width_l1_activation = 512
 # architectures are defined. The unit for the memory sizes are bytes and for the bus width it is bits.
 #
 # Size register file weights and inputs:
-size_rf_weight_input = 1
+size_rf_weight_input = 4
 # Bus width register file weights and inputs:
 width_rf_weight_input = size_rf_weight_input * 8
 # Size register file outputs:
