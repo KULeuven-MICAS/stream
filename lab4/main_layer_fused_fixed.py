@@ -24,7 +24,8 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 accelerator = "lab4.inputs.hardware.heterogeneous_quadcore_bus"
 workload_path = "lab4.inputs.workload.resnet18_first_4_layers"
 mapping_path = "lab4.inputs.mapping.mapping_fixed"
-timeline_fig_path_plotly = f"lab4/outputs/layer_fused_fixed.html"
+timeline_fig_path_plotly = f"lab4/outputs/timeline-layer_fused_fixed.html"
+memory_fig_path = f"lab4/outputs/memory-layer_fused_fixed.png"
 ####################################################################################
 
 ############################## Define variables for run ############################
@@ -96,8 +97,8 @@ with open(pickle_path, "wb") as fp:
 plot_full_schedule = True
 draw_dependencies = True
 plot_data_transfer = True
-section_start_percent = (0, 50, 98)
-percent_shown = (2, 2, 2)
+section_start_percent = (0,)
+percent_shown = (100,)
 fig_path = f"lab4/outputs/timeline-{experiment_id}.png"
 
 # Plotting results using Plotly
@@ -108,12 +109,4 @@ visualize_timeline_plotly(
     fig_path=timeline_fig_path_plotly,
 )
 
-# Plotting results using brokenaxes
-plot_timeline_brokenaxes(
-    scme,
-    draw_dependencies,
-    section_start_percent,
-    percent_shown,
-    plot_data_transfer,
-    fig_path=fig_path,
-)
+plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
