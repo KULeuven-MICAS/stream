@@ -20,9 +20,10 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 ####################################################################################
 
 ############################## Provide inputs ######################################
-accelerator = "lab4.inputs.hardware.heterogeneous_quadcore"
-workload_path = "lab4.inputs.workload.duplicated_resnet18_layer"
+accelerator = "lab4.inputs.hardware.heterogeneous_quadcore_bus"
+workload_path = "lab4.inputs.workload.resnet18_first_4_layers"
 mapping_path = "lab4.inputs.mapping.mapping"
+timeline_fig_path_plotly = f"lab4/outputs/layer_sequential.html"
 ####################################################################################
 
 ############################## Define variables for run ############################
@@ -87,7 +88,6 @@ plot_data_transfer = True
 section_start_percent = (0,)
 percent_shown = (100,)
 fig_path = f"lab4/outputs/timeline-{experiment_id}.png"
-timeline_fig_path_plotly = f"lab4/outputs/timeline-{experiment_id}.html"
 
 # Plotting results using Plotly
 visualize_timeline_plotly(
