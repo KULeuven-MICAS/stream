@@ -10,7 +10,6 @@ from stream.visualization.schedule import (
 )
 from stream.visualization.memory_usage import plot_memory_usage
 import re
-import pickle
 
 ############################## Initialize the logger ##############################
 import logging as _logging
@@ -21,15 +20,15 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 ####################################################################################
 
 ############################## Provide inputs ######################################
-accelerator = "lab4.inputs.hardware.heterogeneous_quadcore_bus"
 workload_path = "lab4.inputs.workload.resnet18_first_4_layers"
+accelerator = "lab4.inputs.hardware.heterogeneous_quadcore_bus"
 mapping_path = "lab4.inputs.mapping.mapping"
-timeline_fig_path_plotly = f"lab4/outputs/layer_fused.html"
+timeline_fig_path_plotly = f"lab4/outputs/layer_parallel.html"
 ####################################################################################
 
 ############################## Define variables for run ############################
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
-hint_loops = [("OY", "all")]  # outer CN loops
+hint_loops = [("K", 4)]  # outer CN loops
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
@@ -38,7 +37,7 @@ hint_loops_str_list = []
 for dim, size in hint_loops:
     hint_loops_str_list.extend([str(dim).lower(), str(size)])
 hint_loops_str = "_".join(hint_loops_str_list)
-experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}"
+experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}-parallel"
 node_hw_cost_pkl_name = f"saved_cn_hw_cost-{experiment_id}"
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
@@ -55,7 +54,9 @@ visualize_node_hw_performances_path = (
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
         AcceleratorParserStage,  # Parses the accelerator
+        # StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
         UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
+        # ProfileWorkloadStage,
         GenerateCNWorkloadHybridStage,
         IntraCoreMappingStage,
         InterCoreMappingStage,
@@ -75,29 +76,19 @@ mainstage = MainStage(
     hint_loops=hint_loops,
     scheduler_candidate_selection="latency",
     visualize_node_hw_performances_path=visualize_node_hw_performances_path,
-        operands_to_prefetch=[],
+    operands_to_prefetch=[],
 )
 
-# Unpickle the best SCME if we already ran this experiment
-pickle_path = f"lab4/outputs/{experiment_id}_best_scme.pickle"
-if os.path.exists(pickle_path):
-    with open(pickle_path, "rb") as fp:
-        scme = pickle.load(fp)
-else:
-    # Launch the MainStage
-    scme, _ = mainstage.run()
-    scme = scme[0]
-
-# Pickle the best SCME for later re-plotting
-with open(pickle_path, "wb") as fp:
-    pickle.dump(scme, fp)
+# Launch the MainStage
+scme, _ = mainstage.run()
+scme = scme[0]
 
 # Ploting Results
 plot_full_schedule = True
 draw_dependencies = True
 plot_data_transfer = True
-section_start_percent = (0, 50, 98)
-percent_shown = (2, 2, 2)
+section_start_percent = (0,)
+percent_shown = (100,)
 fig_path = f"lab4/outputs/timeline-{experiment_id}.png"
 
 # Plotting results using Plotly
