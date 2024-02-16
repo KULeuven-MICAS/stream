@@ -17,7 +17,7 @@ def get_memory_hierarchy(multiplier_array):
         r_bw=core_def.width_offchip,
         r_port=0,
         w_port=0,
-        rw_port=2,
+        rw_port=1,
         latency=1,
         auto_cost_extraction=True,
     )
@@ -34,13 +34,13 @@ def get_memory_hierarchy(multiplier_array):
         memory_instance=dram,
         operands=("I1", "I2", "O"),
         port_alloc=(
-            {"fh": "rw_port_1", "tl": "rw_port_2", "fl": None, "th": None},
-            {"fh": "rw_port_1", "tl": "rw_port_2", "fl": None, "th": None},
+            {"fh": "rw_port_1", "tl": "rw_port_1", "fl": None, "th": None},
+            {"fh": "rw_port_1", "tl": "rw_port_1", "fl": None, "th": None},
             {
                 "fh": "rw_port_1",
-                "tl": "rw_port_2",
+                "tl": "rw_port_1",
                 "fl": "rw_port_1",
-                "th": "rw_port_2",
+                "th": "rw_port_1",
             },
         ),
         #   port_alloc=({'fh': 'rw_port_1', 'tl': 'rw_port_1', 'fl': None, 'th': None},
