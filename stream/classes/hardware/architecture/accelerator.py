@@ -213,6 +213,7 @@ class Accelerator:
             t_evictions_complete = max(t_evictions_complete, t_eviction_complete)
             total_eviction_link_energy_cost += eviction_link_energy_cost
             total_eviction_memory_energy_cost += eviction_memory_energy_cost
+        t_evictions_complete = max(enough_space_timestep, t_evictions_complete)
         return (
             t_evictions_complete,
             total_eviction_link_energy_cost,
