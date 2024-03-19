@@ -8,14 +8,14 @@ from stream.utils import get_too_large_operands
 
 class FitnessEvaluator:
     def __init__(
-        self, workload=None, accelerator=None, node_hw_performances=None
+        self, workload=None, accelerator=None, node_hw_performances=None, original_workload=None
     ) -> None:
         self.workload = workload
         self.accelerator = accelerator
         self.node_hw_performances = node_hw_performances
         # self.num_cores = len(inputs.accelerator.cores)
 
-    def get_fitness(self):
+    def get_fitness(self, core_allocations: list, return_scme=False):
         raise NotImplementedError
 
 
