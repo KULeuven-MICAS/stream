@@ -11,6 +11,7 @@ CONSTANT_MEMORY_OPERAND = "I2"
 class LayerStackMode(Enum):
     STANDARD = 0
     OCCUPATION_BASED = 1
+    MANUAL = 2
 
 
 def fits(occupations, core_capacities, occupation_factor):
@@ -125,6 +126,7 @@ def get_layer_stacks(
     accelerator: Accelerator,
     occupation_factor: int,
     mode: LayerStackMode,
+    layer_stacks,
 ):
     if mode == LayerStackMode.STANDARD:
         layer_stacks = get_layer_stacks_standard(workload)
@@ -135,6 +137,9 @@ def get_layer_stacks(
             accelerator,
             occupation_factor,
         )
+    elif mode == LayerStackMode.MANUAL:
+        assert layer_stacks
+        layer_stacks = layer_stacks
     else:
         raise ValueError(f"Invalid layer stack calculation mode: {mode}.")
     return layer_stacks

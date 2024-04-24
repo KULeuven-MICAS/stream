@@ -1,7 +1,7 @@
 from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
-from stream.classes.opt.scheduling.layer_stacks import get_layer_stacks, LayerStackMode
 from stream.classes.workload.computation_node import ComputationNode
 from zigzag.utils import pickle_deepcopy
+from zigzag.classes.cost_model.cost_model import get_total_inst_bandwidth
 
 from stream.utils import get_too_large_operands
 
@@ -28,9 +28,8 @@ class StandardFitnessEvaluator(FitnessEvaluator):
         accelerator,
         node_hw_performances,
         layer_groups_flexible,
-        scheduler_candidate_selection,
         operands_to_prefetch,
-        original_workload,  # used for layer stack calculation
+        scheduling_order=None,
     ) -> None:
         super().__init__(workload, accelerator, node_hw_performances)
 
@@ -38,11 +37,8 @@ class StandardFitnessEvaluator(FitnessEvaluator):
         self.metrics = ["energy", "latency"]
 
         self.layer_groups_flexible = layer_groups_flexible
-        self.scheduler_candidate_selection = scheduler_candidate_selection
         self.operands_to_prefetch = operands_to_prefetch
-        self.original_workload = original_workload
-        self.constant_operand_occupation_factor = 1
-        self.layer_stacks_mode = LayerStackMode.OCCUPATION_BASED
+        self.scheduling_order = scheduling_order
 
     def get_fitness(self, core_allocations: list, return_scme=False):
         """Get the fitness of the given core_allocations
@@ -51,19 +47,11 @@ class StandardFitnessEvaluator(FitnessEvaluator):
             core_allocations (list): core_allocations
         """
         self.set_node_core_allocations(core_allocations)
-        layer_stacks = get_layer_stacks(
-            self.workload,
-            self.original_workload,
-            self.accelerator,
-            self.constant_operand_occupation_factor,
-            self.layer_stacks_mode,
-        )
         scme = StreamCostModelEvaluation(
             pickle_deepcopy(self.workload),
             pickle_deepcopy(self.accelerator),
-            self.scheduler_candidate_selection,
             self.operands_to_prefetch,
-            layer_stacks,
+            self.scheduling_order,
         )
         scme.run()
         energy = scme.energy
@@ -128,8 +116,13 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                     ]
                     offchip_energy += layer_operand_offchip_energy
                     onchip_energy -= layer_operand_offchip_energy
+                # If there was offchip memory added for too_large_operands, get the offchip bandwidth
+                offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
+                offchip_instance = next(v for k, v in offchip_core.mem_hierarchy_dict.items())[-1].memory_instance
+                offchip_bw = get_total_inst_bandwidth(cme, offchip_instance)
                 node.set_onchip_energy(onchip_energy)
                 node.set_offchip_energy(offchip_energy)
                 node.set_runtime(latency)
                 node.set_core_allocation(core_allocation)
                 node.set_too_large_operands(too_large_operands)
+                node.set_offchip_bandwidth(offchip_bw)

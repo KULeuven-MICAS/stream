@@ -1,6 +1,7 @@
-zigzag-dse==2.4.5
+zigzag-dse==2.5.3
 rtree
 deap
+matplotlib==3.7.2
 brokenaxes
 plotly
 pandas

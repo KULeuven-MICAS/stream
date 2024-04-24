@@ -5,3 +5,6 @@ from .ModelParserStage import ONNXModelParserStage as StreamONNXModelParserStage
 from .ModelParserStage import UserDefinedModelParserStage
 from .CustomSpatialMappingGeneratorStage import CustomSpatialMappingGeneratorStage
 from .LayerSplittingStage import LayerSplittingStage
+from .DetermineLayerStacksStage import DetermineLayerStacksStage
+from .DetermineHintLoopsStage import DetermineHintLoopsStage
+from .DetermineSchedulingOrderStage import DetermineSchedulingOrderStage

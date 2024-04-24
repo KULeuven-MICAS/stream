@@ -77,7 +77,10 @@ class ConvParser(Parser):
             d = {}
             # IMPORTANT: If any of the input loops require padding, they should be defined as the rightmost dimensions in the equation
             # This is because we construct the dimensionality order and then add the padding to those last dimensions in the order
-            d["equation"] = "O[b][g][k][oy][ox]+=W[k][c][fy][fx]*I[b][g][c][iy][ix]"
+            if groups > 1:
+                d["equation"] = "O[b][g][k][oy][ox]+=W[g][c][fy][fx]*I[b][g][c][iy][ix]"
+            else:
+                d["equation"] = "O[b][g][k][oy][ox]+=W[k][c][fy][fx]*I[b][g][c][iy][ix]"
 
             # Get dimension sizes from input parameters
             assert (
