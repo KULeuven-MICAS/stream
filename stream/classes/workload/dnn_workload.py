@@ -2,7 +2,7 @@ import copy
 
 import networkx as nx
 
-from zigzag.classes.workload.layer_node import LayerNode
+from zigzag.workload.layer_node import LayerNode
 from stream.classes.workload.computation_node import ComputationNode
 from typing import Dict, Any
 from networkx import DiGraph

@@ -1,11 +1,11 @@
 from typing import List, Dict
 
+from stream.classes.opt.splitting.TemporalLoop import TemporalLoop
 from stream.classes.workload.computation_node import ComputationNode
-from zigzag.classes.mapping.temporal.temporal_loop import TemporalLoop
 
 import logging
-logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
 
 
 def get_rest_loops(
@@ -68,10 +68,8 @@ def convert_inner_cn_loops(inner_cn_loops: list, layer: ComputationNode):
             else:
                 try:
                     # find the closest factor within 50x.
-                    new_loop_size = (
-                        find_the_closest_divisible_factor_within_a_range(
-                            layer.loop_dim_size[loop_name], loop_size, 50
-                        )
+                    new_loop_size = find_the_closest_divisible_factor_within_a_range(
+                        layer.loop_dim_size[loop_name], loop_size, 50
                     )
                     outer_loops.append(TemporalLoop(loop_name, new_loop_size))
                     logger.info(
@@ -83,6 +81,7 @@ def convert_inner_cn_loops(inner_cn_loops: list, layer: ComputationNode):
                     )
     outer_loops = get_rest_loops(layer.loop_dim_size, inner_loops)
     return outer_loops
+
 
 def convert_outer_cn_loops(outer_cn_loops: list, layer: ComputationNode):
     """Converts a list of string-defined outer-cn loops to outer-cn TemporalLoop objects.
@@ -107,14 +106,18 @@ def convert_outer_cn_loops(outer_cn_loops: list, layer: ComputationNode):
                 while new_layer_dim_size % loop_size != 0:
                     new_layer_dim_size += 1
                 # Set the new loop size of the layer
-                logger.warn(f"Layer {layer}: {loop_name} {layer.loop_dim_size[loop_name]} -> {new_layer_dim_size}")
+                logger.warn(
+                    f"Layer {layer}: {loop_name} {layer.loop_dim_size[loop_name]} -> {new_layer_dim_size}"
+                )
                 layer.loop_dim_size[loop_name] = new_layer_dim_size
                 layer.attrs["loop_dim_size"][loop_name] = new_layer_dim_size
                 outer_loops.append(TemporalLoop(loop_name, loop_size))
     return outer_loops
 
 
-def convert_outer_cn_loops_with_k(outer_cn_loops: list, layer: ComputationNode, split_factor: int):
+def convert_outer_cn_loops_with_k(
+    outer_cn_loops: list, layer: ComputationNode, split_factor: int
+):
     """Converts a list of string-defined outer-cn loops to outer-cn TemporalLoop objects.
     Adds output channel (K) outer-cn loops to the already provided outer-cn loops depending on the split factor.
 

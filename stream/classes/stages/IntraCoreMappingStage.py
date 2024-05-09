@@ -4,13 +4,13 @@ import pickle
 import networkx as nx
 import logging
 
-from zigzag.classes.cost_model.cost_model import CostModelEvaluation
-from zigzag.classes.hardware.architecture.core import Core
-from zigzag.classes.stages import *
-from zigzag.classes.stages.Stage import Stage
+from zigzag.cost_model.cost_model import CostModelEvaluation
+from zigzag.hardware.architecture.Core import Core
+from zigzag.stages import *
+from zigzag.stages.Stage import Stage
 from stream.classes.workload.computation_node import ComputationNode
 from zigzag.utils import pickle_deepcopy
-from zigzag.classes.mapping.mapping_assist_funcs import decouple_pr_loop
+from zigzag.mapping.mapping_assist_funcs import decouple_pr_loop
 from stream.utils import load_scme, save_scme
 
 from stream.visualization.node_hw_performances import (
@@ -81,7 +81,9 @@ class IntraCoreMappingStage(Stage):
         logger.info(f"Start IntraCoreMappingStage.")
         if self.node_hw_performances_path:
             try:
-                self.given_node_hw_performances = load_scme(self.node_hw_performances_path)
+                self.given_node_hw_performances = load_scme(
+                    self.node_hw_performances_path
+                )
             except:
                 self.given_node_hw_performances = None
         else:
@@ -93,8 +95,12 @@ class IntraCoreMappingStage(Stage):
                 try:
                     core_ids = (self.valid_allocations[node][node.group],)
                 except IndexError:
-                    nb_groups = len(set((n.group for n in self.workload.nodes() if n.id == node)))
-                    assert len(self.valid_allocations[node]) == 1, f"Fixed mapping for {node.name} should contain {nb_groups} entries."
+                    nb_groups = len(
+                        set((n.group for n in self.workload.nodes() if n.id == node))
+                    )
+                    assert (
+                        len(self.valid_allocations[node]) == 1
+                    ), f"Fixed mapping for {node.name} should contain {nb_groups} entries."
                     core_ids = (self.valid_allocations[node][0],)
             else:
                 core_ids = self.valid_allocations[node]
@@ -120,13 +126,10 @@ class IntraCoreMappingStage(Stage):
                     cme = self.given_node_hw_performances[node][core]
                     self.node_hw_performances[node][core] = cme
                 # Check if this (node, core) combination has already been optimized during this run
-                elif (
-                    self.node_hw_performances
-                    and any(
-                        (
-                            node == processed_node
-                            for processed_node in self.node_hw_performances
-                        )
+                elif self.node_hw_performances and any(
+                    (
+                        node == processed_node
+                        for processed_node in self.node_hw_performances
                     )
                 ):
                     equal_node = next(
@@ -134,13 +137,10 @@ class IntraCoreMappingStage(Stage):
                         for processed_node in self.node_hw_performances
                         if node == processed_node
                     )
-                    if (
-                        self.node_hw_performances[equal_node]
-                        and any(
-                            (
-                                core.equals(processed_core)
-                                for processed_core in self.node_hw_performances[equal_node]
-                            )
+                    if self.node_hw_performances[equal_node] and any(
+                        (
+                            core.equals(processed_core)
+                            for processed_core in self.node_hw_performances[equal_node]
                         )
                     ):
                         # Find the core that is equal
@@ -189,7 +189,7 @@ class IntraCoreMappingStage(Stage):
             os.makedirs(parent, exist_ok=True)
             save_scme(self.node_hw_performances, self.node_hw_performances_path)
             logger.debug(
-                f'Saved unique CN node HW performance to {self.node_hw_performances_path}.'
+                f"Saved unique CN node HW performance to {self.node_hw_performances_path}."
             )
 
     def visualize_node_hw_performances(self):
@@ -284,9 +284,9 @@ class IntraCoreMappingStage(Stage):
             for layer_operand, memory_operand in zip(layer_operands, memory_operands):
                 # if the operand is constant operand (e.g. 'W' and the first layer's 'I') or output operand, required capacity is gotten from the node directly
                 if layer_operand in constant_operands + [output_operand]:
-                    bits_to_be_stored_in_top_level[
-                        memory_operand
-                    ] = node.operand_size_bit[layer_operand]
+                    bits_to_be_stored_in_top_level[memory_operand] = (
+                        node.operand_size_bit[layer_operand]
+                    )
                 # if the operand is variable input operand, required capacity is calculated by summing up the the total data amount on the in edges,
                 # which can be larger than the ideal required data size
                 else:

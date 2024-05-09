@@ -5,7 +5,7 @@ from stream.classes.io.onnx.simd import SimdParser
 from stream.classes.io.onnx.transpose import TransposeParser
 from stream.classes.io.onnx.lpnormalization import LpNormalizationParser
 from stream.classes.io.onnx.default import DefaultNodeParser
-from zigzag.classes.io.onnx.utils import (
+from zigzag.parser.onnx.utils import (
     parse_mapping_from_path,
     parse_onnx_model_from_path,
 )
@@ -139,7 +139,9 @@ class ONNXModelParser:
                 #  Future to support node with asymmetric input data.
                 if has_asymmetric_input_data(node, self.onnx_model):
                     parser = DefaultNodeParser(node_id_tuple, node, nodes_outputs)
-                    logger.info(f"Parsed asymmetric {node.op_type} node {node.name}. as a DummyNode")
+                    logger.info(
+                        f"Parsed asymmetric {node.op_type} node {node.name}. as a DummyNode"
+                    )
                 else:
                     parser = SimdParser(
                         node_id_tuple,
@@ -184,7 +186,7 @@ class ONNXModelParser:
 
 
 def has_asymmetric_input_data(node, onnx_model):
-    from zigzag.classes.io.onnx.utils import get_onnx_tensor_type
+    from zigzag.parser.onnx.utils import get_onnx_tensor_type
 
     input_name1 = node.input[0]
     input_name2 = node.input[1]

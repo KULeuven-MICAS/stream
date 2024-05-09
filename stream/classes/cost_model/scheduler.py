@@ -1,7 +1,7 @@
 from operator import attrgetter, itemgetter
 from networkx import DiGraph
 
-from zigzag.classes.hardware.architecture.core import Core
+from zigzag.hardware.architecture.Core import Core
 from stream.classes.cost_model.memory_manager import MemoryManager
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode
@@ -314,9 +314,7 @@ def schedule_graph(
     done = False
     while not done:
         # Get the best candidate given the selection priority
-        best_candidate, preds_end = get_best_candidate(
-            candidates, scheduling_order
-        )
+        best_candidate, preds_end = get_best_candidate(candidates, scheduling_order)
 
         # Get the core this candidate will be scheduled on
         core_id = best_candidate.core_allocation

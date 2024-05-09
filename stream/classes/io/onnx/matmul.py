@@ -1,7 +1,7 @@
 import onnx
 
-from zigzag.classes.io.onnx.parser import Parser
-from zigzag.classes.io.onnx.utils import get_node_input_output_dimension_shapes
+from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
+from zigzag.parser.onnx.utils import get_node_input_output_dimension_shapes
 from stream.classes.workload.computation_node import ComputationNode
 
 import logging
@@ -9,7 +9,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class MatMulParser(Parser):
+class MatMulParser(ONNXOperatorParser):
     """Parses an ONNX MatMul operator into a LayerNode"""
 
     def __init__(

@@ -1,9 +1,9 @@
 from stream.classes.workload.flatten_node import FlattenNode
-from zigzag.classes.io.onnx.parser import Parser
-from zigzag.classes.io.onnx.utils import get_attribute_ints_with_name
+from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
+from zigzag.parser.onnx.utils import get_attribute_ints_with_name
 
 
-class FlattenParser(Parser):
+class FlattenParser(ONNXOperatorParser):
     """Parses an onnx flatten operator into a FlattenNode."""
 
     def __init__(self, node_id, node, nodes_outputs, mapping, onnx_model) -> None:
@@ -26,5 +26,7 @@ class FlattenParser(Parser):
         input_names = [self.node.input[0]]
         # Get the output names of the operator
         output_names = [self.node.output[0]]
-        node_obj = FlattenNode(self.node_id, predecessors, axis, input_names, output_names)
+        node_obj = FlattenNode(
+            self.node_id, predecessors, axis, input_names, output_names
+        )
         return node_obj

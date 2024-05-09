@@ -1,7 +1,7 @@
 from math import ceil
 
-from zigzag.classes.io.onnx.parser import Parser
-from zigzag.classes.io.onnx.utils import (
+from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
+from zigzag.parser.onnx.utils import (
     get_attribute_ints_with_name,
     get_node_input_output_dimension_shapes,
     get_onnx_tensor_type,
@@ -14,7 +14,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class ConvParser(Parser):
+class ConvParser(ONNXOperatorParser):
     """Parser for ONNX Conv and QLinearConv nodes into LayerNode."""
 
     def __init__(

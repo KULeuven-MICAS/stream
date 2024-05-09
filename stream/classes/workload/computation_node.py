@@ -5,7 +5,7 @@ import numpy as np
 
 from stream.classes.workload.node import Node
 from stream.classes.workload.tensor import Tensor
-from zigzag.classes.workload.layer_node import LayerNode
+from zigzag.workload.layer_node import LayerNode
 
 
 class ComputationNode(LayerNode, Node):

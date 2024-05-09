@@ -1,9 +1,8 @@
 from itertools import combinations
 import numpy as np
-import bisect
 import logging
 
-from zigzag.classes.hardware.architecture.core import Core
+from zigzag.hardware.architecture.Core import Core
 from stream.classes.workload.tensor import Tensor
 
 logger = logging.getLogger(__name__)
@@ -101,9 +100,11 @@ class MemoryManager:
                 )
             ):
                 instances_storing_tensor.add(top_instance)
-                available_since_timesteps[
-                    top_instance
-                ] = self.top_instance_available_since_timestep[top_instance][equality_hash]
+                available_since_timesteps[top_instance] = (
+                    self.top_instance_available_since_timestep[top_instance][
+                        equality_hash
+                    ]
+                )
         # If no instances are storing this tensor, raise error
         if not instances_storing_tensor:
             raise ValueError(f"Tensor {tensor} was not found in any of the instances.")
@@ -229,7 +230,7 @@ class MemoryManager:
         top_instance_capacity = self.top_instance_capacities[top_instance]
         all_timesteps = self.top_instance_stored_cumsum[top_instance][:, 0]
         all_usages = self.top_instance_stored_cumsum[top_instance][:, 1]
-        relevant_start_idx = np.searchsorted(all_timesteps, timestep, 'right') - 1
+        relevant_start_idx = np.searchsorted(all_timesteps, timestep, "right") - 1
         if relevant_start_idx == len(all_timesteps):
             return timestep
         relevant_timesteps = all_timesteps[relevant_start_idx:]
@@ -317,7 +318,7 @@ class MemoryManager:
         relevant_exceptions = [
             tensor for tensor in exceptions if tensor in stored_tensors
         ]
-        # For the total stored tensors size we also need to take into account all tensors, 
+        # For the total stored tensors size we also need to take into account all tensors,
         # including ones that are not yet present at this timestep.
         # Otherwise adding that tensor in the future could cause an overflow.
         stored_tensors_size = self.get_stored_cumsum_at_timestep(top_instance, timestep)
@@ -450,5 +451,5 @@ class MemoryManager:
         stored_cumsum = self.top_instance_stored_cumsum[top_instance]
         timesteps = stored_cumsum[:, 0]
         usages = stored_cumsum[:, 1]
-        idx = max(0, np.searchsorted(timesteps, timestep, 'right') - 1)
+        idx = max(0, np.searchsorted(timesteps, timestep, "right") - 1)
         return usages[idx]

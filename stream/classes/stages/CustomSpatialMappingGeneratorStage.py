@@ -5,17 +5,17 @@ import bisect
 
 from sympy import factorint
 
-from zigzag.classes.hardware.architecture.accelerator import Accelerator
-from zigzag.classes.hardware.architecture.core import Core
-from zigzag.classes.hardware.architecture.dimension import Dimension
-from zigzag.classes.hardware.architecture.memory_hierarchy import MemoryHierarchy
-from zigzag.classes.hardware.architecture.operational_array import OperationalArray
-from zigzag.classes.mapping.spatial.spatial_mapping import SpatialMapping
-from zigzag.classes.stages.Stage import Stage
-from zigzag.classes.stages.SpatialMappingConversionStage import (
+from zigzag.hardware.architecture.Accelerator import Accelerator
+from zigzag.hardware.architecture.Core import Core
+from zigzag.datatypes import OADimension
+from zigzag.hardware.architecture.MemoryHierarchy import MemoryHierarchy
+from zigzag.hardware.architecture.operational_array import OperationalArray
+from zigzag.mapping.spatial_mapping import SpatialMapping
+from zigzag.stages.Stage import Stage
+from zigzag.stages.SpatialMappingConversionStage import (
     SpatialMappingConversionStage,
 )
-from zigzag.classes.workload.layer_node import LayerNode
+from zigzag.workload.layer_node import LayerNode
 
 logger = logging.getLogger(__name__)
 

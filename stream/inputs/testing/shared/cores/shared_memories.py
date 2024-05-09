@@ -1,4 +1,4 @@
-from zigzag.classes.hardware.architecture.memory_instance import MemoryInstance
+from zigzag.hardware.architecture.memory_instance import MemoryInstance
 
 test_memory = MemoryInstance(
     name="sram_64KB",

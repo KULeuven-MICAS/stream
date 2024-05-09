@@ -1,13 +1,13 @@
 from stream.classes.workload.simd_node import SimdNode
-from zigzag.classes.io.onnx.parser import Parser
-from zigzag.classes.io.onnx.utils import (
+from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
+from zigzag.parser.onnx.utils import (
     get_attribute_ints_with_name,
     get_node_input_output_dimension_shapes,
 )
 
 
-class SimdParser(Parser):
-    """Parses an onnx operator representing an elementwise operation (simd) into a SimdNode.
+class SimdParser(ONNXOperatorParser):
+    """Parses an ONNXOperatorParser operator representing an elementwise operation (simd) into a SimdNode.
     e.g. Add, etc.
     """
 

@@ -1,7 +1,7 @@
 from typing import Generator
 
 from stream.classes.io.onnx.model import ONNXModelParser
-from zigzag.classes.stages.Stage import Stage
+from zigzag.stages.Stage import Stage
 from zigzag.utils import pickle_deepcopy
 
 import logging
@@ -57,7 +57,9 @@ def parse_workload_from_path(workload_path, mapping_path, accelerator):
         # Make a copy here to prevent it being changed later
         workload = pickle_deepcopy(workload_path)
     else:
-        raise NotImplementedError(f"Provided workload format ({type(workload_path)}) is not supported.")
+        raise NotImplementedError(
+            f"Provided workload format ({type(workload_path)}) is not supported."
+        )
 
     module = importlib.import_module(mapping_path)
     mapping = module.mapping

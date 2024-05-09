@@ -1,7 +1,7 @@
 from operator import attrgetter
 import logging
 
-from zigzag.classes.stages.Stage import Stage
+from zigzag.stages.Stage import Stage
 from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.opt.allocation.genetic_algorithm.genetic_algorithm import (
     GeneticAlgorithm,
@@ -10,7 +10,6 @@ from stream.classes.opt.allocation.genetic_algorithm.fitness_evaluator import (
     StandardFitnessEvaluator,
 )
 from stream.utils import get_too_large_operands
-from zigzag.classes.cost_model.cost_model import get_total_inst_bandwidth
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +93,11 @@ class InterCoreMappingStage(Stage):
             unique_node = next((n for n in self.unique_nodes if n.id[0] == layer_id))
             if unique_node in self.unique_nodes_flexible:
                 hw_performances = self.node_hw_performances[unique_node]
-                valid_core_ids = [core.id for core in hw_performances.keys() if core.id < len(self.unique_nodes_flexible)]
+                valid_core_ids = [
+                    core.id
+                    for core in hw_performances.keys()
+                    if core.id < len(self.unique_nodes_flexible)
+                ]
                 self.layer_groups_flexible.append((layer_id, group_id))
                 self.valid_allocations.append(valid_core_ids)
 
@@ -208,10 +211,17 @@ class InterCoreMappingStage(Stage):
                 onchip_energy -= layer_operand_offchip_energy
             # If there was offchip memory added for too_large_operands, get the offchip bandwidth
             offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
-            offchip_instance = next(v for k, v in offchip_core.mem_hierarchy_dict.items())[-1].memory_instance
-            offchip_bw = get_total_inst_bandwidth(cme, offchip_instance)
+            offchip_instance = next(
+                v for k, v in offchip_core.mem_hierarchy_dict.items()
+            )[-1].memory_instance
+            offchip_bw = cme.get_total_inst_bandwidth(offchip_instance)
 
-            nodes = (n for n in self.workload.nodes() if n == non_flexible_unique_node and n.group == non_flexible_unique_node.group)
+            nodes = (
+                n
+                for n in self.workload.nodes()
+                if n == non_flexible_unique_node
+                and n.group == non_flexible_unique_node.group
+            )
             for node in nodes:
                 self.set_hw_performance_node(
                     node, onchip_energy, offchip_energy, latency, core_allocation

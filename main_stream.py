@@ -1,4 +1,5 @@
-from zigzag.classes.stages import *
+from zigzag.stages.AcceleratorParserStage import AcceleratorParserStage
+from zigzag.stages.MainStage import MainStage
 from stream.classes.stages import *
 from stream.visualization.schedule import (
     plot_timeline_brokenaxes,
@@ -10,6 +11,7 @@ import pickle
 
 # Initialize the logger
 import logging as _logging
+
 
 _logging_level = _logging.INFO
 _logging_format = (

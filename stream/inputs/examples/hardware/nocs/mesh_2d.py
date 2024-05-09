@@ -3,7 +3,7 @@ import networkx as nx
 from networkx import DiGraph
 
 from stream.classes.hardware.architecture.communication_link import CommunicationLink
-from zigzag.classes.hardware.architecture.core import Core
+from zigzag.hardware.architecture.Core import Core
 
 
 def have_shared_memory(a, b):

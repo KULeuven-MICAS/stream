@@ -2,7 +2,7 @@ import itertools
 from math import ceil
 import networkx as nx
 
-from zigzag.classes.hardware.architecture.core import Core
+from zigzag.hardware.architecture.Core import Core
 from stream.classes.workload.tensor import Tensor
 from stream.classes.hardware.architecture.utils import intersections
 
@@ -225,7 +225,7 @@ class CommunicationManager:
         block_start = self.get_links_idle_window(
             links_to_block, start_timestep, duration, tensors
         )
-        # Get the 
+        # Get the
         for link, req_bw in links_to_block.items():
             req_bw = ceil(req_bw)
             link.block(block_start, duration, tensors, activity=req_bw)
@@ -254,7 +254,8 @@ class CommunicationManager:
             else:
                 idle_intersections = intersections(idle_intersections, windows)
                 idle_intersections = [
-                    period for period in idle_intersections
+                    period
+                    for period in idle_intersections
                     if period[1] - period[0] >= duration
                 ]
         return idle_intersections[0][0]

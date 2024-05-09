@@ -6,7 +6,7 @@ from onnx import helper, numpy_helper
 
 from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.workload.dummy_node import DummyNode
-from zigzag.classes.stages.Stage import Stage
+from zigzag.stages.Stage import Stage
 
 import logging
 
@@ -28,7 +28,7 @@ class DetermineHintLoopsStage(Stage):
 
     def run(self):
         if self.mode == "fused":
-            if self.hint_loops is None: 
+            if self.hint_loops is None:
                 self.hint_loops = self.get_hint_loops_fused()
                 self.kwargs["cn_define_mode"] = 3
         elif self.mode == "lbl":
@@ -36,7 +36,6 @@ class DetermineHintLoopsStage(Stage):
                 self.hint_loops = self.get_hint_loops_lbl()
         else:
             raise ValueError("Unsupported mode for hint loops determination.")
-        
 
         self.kwargs["accelerator"] = self.accelerator
         self.kwargs["workload"] = self.workload
@@ -53,7 +52,9 @@ class DetermineHintLoopsStage(Stage):
     def get_hint_loops_lbl(self):
         hint_loops = {}
         for stack in self.layer_stacks:
-            assert len(stack) == 1, "Stack contains more than one node in layer by layer case"
+            assert (
+                len(stack) == 1
+            ), "Stack contains more than one node in layer by layer case"
             hint_loops[stack] = []
         return hint_loops
 

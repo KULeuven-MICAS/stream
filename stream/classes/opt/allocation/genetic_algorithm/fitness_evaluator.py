@@ -1,7 +1,6 @@
 from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 from stream.classes.workload.computation_node import ComputationNode
 from zigzag.utils import pickle_deepcopy
-from zigzag.classes.cost_model.cost_model import get_total_inst_bandwidth
 
 from stream.utils import get_too_large_operands
 
@@ -117,9 +116,13 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                     offchip_energy += layer_operand_offchip_energy
                     onchip_energy -= layer_operand_offchip_energy
                 # If there was offchip memory added for too_large_operands, get the offchip bandwidth
-                offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
-                offchip_instance = next(v for k, v in offchip_core.mem_hierarchy_dict.items())[-1].memory_instance
-                offchip_bw = get_total_inst_bandwidth(cme, offchip_instance)
+                offchip_core = self.accelerator.get_core(
+                    self.accelerator.offchip_core_id
+                )
+                offchip_instance = next(
+                    v for k, v in offchip_core.mem_hierarchy_dict.items()
+                )[-1].memory_instance
+                offchip_bw = cme.get_total_inst_bandwidth(offchip_instance)
                 node.set_onchip_energy(onchip_energy)
                 node.set_offchip_energy(offchip_energy)
                 node.set_runtime(latency)

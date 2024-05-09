@@ -1,6 +1,7 @@
-# This main file uses a fixed layer-core allocation with the last layer split across multiple cores
+""" This main file uses a fixed layer-core allocation with the last layer split across multiple cores"""
 
-from zigzag.classes.stages import *
+from zigzag.stages.AcceleratorParserStage import AcceleratorParserStage
+from zigzag.stages.MainStage import MainStage
 from stream.classes.stages import *
 from stream.visualization.schedule import (
     plot_timeline_brokenaxes,
@@ -24,7 +25,7 @@ accelerator = "stream.inputs.examples.hardware.TPU_like_quad_core"
 workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core_resnet18_fixed_split"
 CN_define_mode = 4  # automatically split layers if too big to fit
-split_W_percentage = 0.5 # max percentage of capacity a single node's weights can be
+split_W_percentage = 0.5  # max percentage of capacity a single node's weights can be
 hint_loops = []
 nb_ga_individuals = 16  # number of individuals in each generation
 nb_ga_generations = 16  # number of genetic algorithm generations

@@ -1,12 +1,12 @@
 from stream.classes.workload.pooling_node import PoolingNode
-from zigzag.classes.io.onnx.parser import Parser
-from zigzag.classes.io.onnx.utils import (
+from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
+from zigzag.parser.onnx.utils import (
     get_attribute_ints_with_name,
     get_node_input_output_dimension_shapes,
 )
 
 
-class PoolingParser(Parser):
+class PoolingParser(ONNXOperatorParser):
     """Parses an onnx pooling operator into a PoolingNode.
     e.g. MaxPool, AveragePool, etc.
     """

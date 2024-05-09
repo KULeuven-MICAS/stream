@@ -1,6 +1,6 @@
 import networkx as nx
 
-from zigzag.classes.workload.layer_node import LayerNode
+from zigzag.workload.layer_node import LayerNode
 from typing import Dict, Any
 from networkx import DiGraph
 

@@ -1,5 +1,5 @@
-from zigzag.classes.io.onnx.parser import Parser
-from zigzag.classes.io.onnx.utils import (
+from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
+from zigzag.parser.onnx.utils import (
     get_node_input_output_dimension_shapes,
     get_attribute_ints_with_name,
 )
@@ -10,7 +10,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class GemmParser(Parser):
+class GemmParser(ONNXOperatorParser):
     """Parses an ONNX Gemm operator into a LayerNode"""
 
     def __init__(

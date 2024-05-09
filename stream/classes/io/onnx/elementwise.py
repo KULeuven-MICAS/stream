@@ -1,8 +1,8 @@
 from stream.classes.workload.elementwise_node import ElementwiseNode
-from zigzag.classes.io.onnx.parser import Parser
+from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 
 
-class ElementwiseParser(Parser):
+class ElementwiseParser(ONNXOperatorParser):
     """Parser for onnx operators that perform an elementwise operation on two input tensors into a single output tensor.
     For example, an Add operator adds two tensors together in every position into one output tensor.
     """
