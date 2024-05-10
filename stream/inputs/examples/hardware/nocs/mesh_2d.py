@@ -1,10 +1,17 @@
 import numpy as np
 import networkx as nx
-from networkx import DiGraph
+from networkx import DiGraph, MultiDiGraph
 
 from stream.classes.hardware.architecture.communication_link import CommunicationLink
-from zigzag.classes.hardware.architecture.core import Core
 
+# Aya: import from stream_core class instead
+#from zigzag.classes.hardware.architecture.core import Core
+from stream.classes.hardware.architecture.stream_core import Core
+
+# From the AIE-MLs perspective, the throughput of each of the loads and store is 256 bits per clock cycle.
+aya_core_to_core_bw = 256  # bandwidth of every link connecting two neighboring cores
+aya_core_to_mem_tile_bw = 32 * 6
+#aya_everything_to_dram_bw = 64 * 8
 
 def have_shared_memory(a, b):
     """Returns True if core a and core b have a shared top level memory
@@ -37,8 +44,9 @@ def get_2d_mesh(
     cores,
     nb_rows,
     nb_cols,
-    bandwidth,
+    axi_bandwidth,
     unit_energy_cost,
+    use_shared_mem_flag, #Aya: the goal of this flag is to easily enable or disable the direct connections between the neighboring cores
     pooling_core=None,
     simd_core=None,
     offchip_core=None,
@@ -63,9 +71,10 @@ def get_2d_mesh(
         offchip_core (Core, optional): If provided, the offchip core that is added.
         offchip_bandwidth (int, optional): If offchip_core is provided, this is the
     """
+    ########### Beginning of the logic for adding the links representing the shared memory
+    # At the moment there is a shared memory link in 4 directions
 
-    cores_array = np.asarray(cores).reshape((nb_rows, nb_cols), order="F")
-
+    cores_array = np.asarray(cores).reshape((nb_rows, nb_cols), order="C")
     edges = []
     # Horizontal edges
     for row in cores_array:
@@ -73,161 +82,90 @@ def get_2d_mesh(
         pairs = zip(row, row[1:])
         for pair in pairs:
             (sender, receiver) = pair
-            if not have_shared_memory(sender, receiver):
-                edges.append(
-                    (
-                        sender,
-                        receiver,
-                        {
-                            "cl": CommunicationLink(
-                                sender, receiver, bandwidth, unit_energy_cost
-                            )
-                        },
+            # Aya
+            if(sender.core_type == 1 or receiver.core_type == 1):  # skip memTile cores
+                continue
+            if use_shared_mem_flag:
+                if not have_shared_memory(sender, receiver):
+                    edges.append(
+                        (
+                            sender,
+                            receiver,
+                            {
+                                "cl": CommunicationLink(
+                                    sender, receiver, aya_core_to_core_bw, unit_energy_cost
+                                )
+                            },
+                        )
                     )
-                )
+
         # From right to left
         pairs = zip(reversed(row), reversed(row[:-1]))
         for pair in pairs:
             (sender, receiver) = pair
-            if not have_shared_memory(sender, receiver):
-                edges.append(
-                    (
-                        sender,
-                        receiver,
-                        {
-                            "cl": CommunicationLink(
-                                sender, receiver, bandwidth, unit_energy_cost
-                            )
-                        },
+            # Aya
+            if(sender.core_type == 1 or receiver.core_type == 1):  # skip memTile cores
+                continue
+            if use_shared_mem_flag:
+                if not have_shared_memory(sender, receiver):
+                    edges.append(
+                        (
+                            sender,
+                            receiver,
+                            {
+                                "cl": CommunicationLink(
+                                    sender, receiver, aya_core_to_core_bw, unit_energy_cost
+                                )
+                            },
+                        )
                     )
-                )
+           
     # Vertical edges
     for col in cores_array.T:
         # From top to bottom (bottom is highest idx)
         pairs = zip(col, col[1:])
         for pair in pairs:
             (sender, receiver) = pair
-            if not have_shared_memory(sender, receiver):
-                edges.append(
-                    (
-                        sender,
-                        receiver,
-                        {
-                            "cl": CommunicationLink(
-                                sender, receiver, bandwidth, unit_energy_cost
-                            )
-                        },
+            # Aya
+            if(sender.core_type == 1 or receiver.core_type == 1):  # skip memTile cores
+                continue
+           
+            if use_shared_mem_flag:
+                if not have_shared_memory(sender, receiver):
+                    edges.append(
+                        (
+                            sender,
+                            receiver,
+                            {
+                                "cl": CommunicationLink(
+                                    sender, receiver, aya_core_to_core_bw, unit_energy_cost
+                                )
+                            },
+                        )
                     )
-                )
+            
         # From bottom to top
         pairs = zip(reversed(col), reversed(col[:-1]))
         for pair in pairs:
+            # Aya
             (sender, receiver) = pair
-            if not have_shared_memory(sender, receiver):
-                edges.append(
-                    (
-                        sender,
-                        receiver,
-                        {
-                            "cl": CommunicationLink(
-                                sender, receiver, bandwidth, unit_energy_cost
-                            )
-                        },
+            if(sender.core_type == 1 or receiver.core_type == 1):  # skip memTile cores
+                continue
+            if use_shared_mem_flag:
+                if not have_shared_memory(sender, receiver):
+                    edges.append(
+                        (
+                            sender,
+                            receiver,
+                            {
+                                "cl": CommunicationLink(
+                                    sender, receiver, aya_core_to_core_bw, unit_energy_cost
+                                )
+                            },
+                        )
                     )
-                )
-
-    # If there is a pooling core, also add two edges from each core to the pooling core: one in each direction
-    if pooling_core:
-        if not isinstance(pooling_core, Core):
-            raise ValueError("The given pooling_core is not a Core object.")
-        for core in cores:
-            if not have_shared_memory(core, pooling_core):
-                edges.append(
-                    (
-                        core,
-                        pooling_core,
-                        {
-                            "cl": CommunicationLink(
-                                core, pooling_core, bandwidth, unit_energy_cost
-                            )
-                        },
-                    )
-                )
-                edges.append(
-                    (
-                        pooling_core,
-                        core,
-                        {
-                            "cl": CommunicationLink(
-                                pooling_core, core, bandwidth, unit_energy_cost
-                            )
-                        },
-                    )
-                )
-
-    # If there is a simd core, also add two edges from each core to the pooling core: one in each direction
-    # For now, assume the simd operations come for free, so bandwidth is infinite and unit energy cost is 0
-    simd_bandwidth = float("inf")
-    simd_unit_energy_cost = 0
-    if simd_core:
-        if not isinstance(simd_core, Core):
-            raise ValueError("The given simd_core is not a Core object.")
-        for core in cores:
-            if not have_shared_memory(core, simd_core):
-                edges.append(
-                    (
-                        core,
-                        simd_core,
-                        {
-                            "cl": CommunicationLink(
-                                core, simd_core, simd_bandwidth, simd_unit_energy_cost
-                            )
-                        },
-                    )
-                )
-                edges.append(
-                    (
-                        simd_core,
-                        core,
-                        {
-                            "cl": CommunicationLink(
-                                simd_core, core, simd_bandwidth, simd_unit_energy_cost
-                            )
-                        },
-                    )
-                )
-        # If there is a pooling core, also add two edges from/to the pooling core
-        if pooling_core:
-            if not have_shared_memory(pooling_core, simd_core):
-                edges.append(
-                    (
-                        pooling_core,
-                        simd_core,
-                        {
-                            "cl": CommunicationLink(
-                                pooling_core,
-                                simd_core,
-                                simd_bandwidth,
-                                simd_unit_energy_cost,
-                            )
-                        },
-                    )
-                )
-                edges.append(
-                    (
-                        simd_core,
-                        pooling_core,
-                        {
-                            "cl": CommunicationLink(
-                                simd_core,
-                                pooling_core,
-                                simd_bandwidth,
-                                simd_unit_energy_cost,
-                            )
-                        },
-                    )
-                )
-
+    ########### End of the logic for adding the links representing the shared memory
+                
     # If there is an offchip core, add a single link for writing to and a single link for reading from the offchip
     if offchip_core:
         offchip_read_bandwidth = offchip_core.mem_r_bw_dict["O"][0]
