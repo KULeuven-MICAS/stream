@@ -2,6 +2,9 @@ import numpy as np
 import networkx as nx
 from networkx import DiGraph
 
+# from stream.classes.hardware.architecture.communication_link import CommunicationLink
+# from zigzag.classes.hardware.architecture.core import Core
+
 from stream.classes.hardware.architecture.noc.communication_link import CommunicationLink
 from zigzag.datatypes import Constants
 from zigzag.hardware.architecture.Core import Core
@@ -15,10 +18,18 @@ def have_shared_memory(a, b):
         b (Core): Second core
     """
     top_level_memory_instances_a = set(
-        [level.memory_instance for level, out_degree in a.memory_hierarchy.out_degree() if out_degree == 0]
+        [
+            level.memory_instance
+            for level, out_degree in a.memory_hierarchy.out_degree()
+            if out_degree == 0
+        ]
     )
     top_level_memory_instances_b = set(
-        [level.memory_instance for level, out_degree in b.memory_hierarchy.out_degree() if out_degree == 0]
+        [
+            level.memory_instance
+            for level, out_degree in b.memory_hierarchy.out_degree()
+            if out_degree == 0
+        ]
     )
     for memory_instance_a in top_level_memory_instances_a:
         if memory_instance_a in top_level_memory_instances_b:
@@ -27,14 +38,14 @@ def have_shared_memory(a, b):
 
 
 def get_2d_mesh(
-    cores: list[Core],
-    nb_rows: int,
-    nb_cols: int,
-    bandwidth: int,
-    unit_energy_cost: float,
-    pooling_core: Core | None = None,
-    simd_core: Core | None = None,
-    offchip_core: Core | None = None,
+    cores,
+    nb_rows,
+    nb_cols,
+    bandwidth,
+    unit_energy_cost,
+    pooling_core=None,
+    simd_core=None,
+    offchip_core=None,
 ):
     """Return a 2D mesh graph of the cores where each core is connected to its N, E, S, W neighbour.
     We build the mesh by iterating through the row and then moving to the next column.
@@ -71,7 +82,11 @@ def get_2d_mesh(
                     (
                         sender,
                         receiver,
-                        {"cl": CommunicationLink(sender, receiver, bandwidth, unit_energy_cost)},
+                        {
+                            "cl": CommunicationLink(
+                                sender, receiver, bandwidth, unit_energy_cost
+                            )
+                        },
                     )
                 )
         # From right to left
@@ -83,7 +98,11 @@ def get_2d_mesh(
                     (
                         sender,
                         receiver,
-                        {"cl": CommunicationLink(sender, receiver, bandwidth, unit_energy_cost)},
+                        {
+                            "cl": CommunicationLink(
+                                sender, receiver, bandwidth, unit_energy_cost
+                            )
+                        },
                     )
                 )
     # Vertical edges
@@ -97,7 +116,11 @@ def get_2d_mesh(
                     (
                         sender,
                         receiver,
-                        {"cl": CommunicationLink(sender, receiver, bandwidth, unit_energy_cost)},
+                        {
+                            "cl": CommunicationLink(
+                                sender, receiver, bandwidth, unit_energy_cost
+                            )
+                        },
                     )
                 )
         # From bottom to top
@@ -109,7 +132,11 @@ def get_2d_mesh(
                     (
                         sender,
                         receiver,
-                        {"cl": CommunicationLink(sender, receiver, bandwidth, unit_energy_cost)},
+                        {
+                            "cl": CommunicationLink(
+                                sender, receiver, bandwidth, unit_energy_cost
+                            )
+                        },
                     )
                 )
 
@@ -123,14 +150,22 @@ def get_2d_mesh(
                     (
                         core,
                         pooling_core,
-                        {"cl": CommunicationLink(core, pooling_core, bandwidth, unit_energy_cost)},
+                        {
+                            "cl": CommunicationLink(
+                                core, pooling_core, bandwidth, unit_energy_cost
+                            )
+                        },
                     )
                 )
                 edges.append(
                     (
                         pooling_core,
                         core,
-                        {"cl": CommunicationLink(pooling_core, core, bandwidth, unit_energy_cost)},
+                        {
+                            "cl": CommunicationLink(
+                                pooling_core, core, bandwidth, unit_energy_cost
+                            )
+                        },
                     )
                 )
 
@@ -147,14 +182,22 @@ def get_2d_mesh(
                     (
                         core,
                         simd_core,
-                        {"cl": CommunicationLink(core, simd_core, simd_bandwidth, simd_unit_energy_cost)},
+                        {
+                            "cl": CommunicationLink(
+                                core, simd_core, simd_bandwidth, simd_unit_energy_cost
+                            )
+                        },
                     )
                 )
                 edges.append(
                     (
                         simd_core,
                         core,
-                        {"cl": CommunicationLink(simd_core, core, simd_bandwidth, simd_unit_energy_cost)},
+                        {
+                            "cl": CommunicationLink(
+                                simd_core, core, simd_bandwidth, simd_unit_energy_cost
+                            )
+                        },
                     )
                 )
         # If there is a pooling core, also add two edges from/to the pooling core
@@ -191,10 +234,10 @@ def get_2d_mesh(
 
     # If there is an offchip core, add a single link for writing to and a single link for reading from the offchip
     if offchip_core:
-        offchip_read_bandwidth = offchip_core.mem_r_bw_dict[Constants.OUTPUT_MEM_OP][0]
-        offchip_write_bandwidth = offchip_core.mem_w_bw_dict[Constants.OUTPUT_MEM_OP][0]
+        offchip_read_bandwidth = offchip_core.mem_r_bw_dict["O"][0]
+        offchip_write_bandwidth = offchip_core.mem_w_bw_dict["O"][0]
         # if the offchip core has only one port
-        if len(offchip_core.mem_hierarchy_dict[Constants.OUTPUT_MEM_OP][0].port_list) == 1:
+        if len(offchip_core.mem_hierarchy_dict["O"][0].port_list) == 1:
             to_offchip_link = CommunicationLink(
                 offchip_core,
                 "Any",
@@ -205,8 +248,12 @@ def get_2d_mesh(
             from_offchip_link = to_offchip_link
         # if the offchip core has more than one port
         else:
-            to_offchip_link = CommunicationLink("Any", offchip_core, offchip_write_bandwidth, unit_energy_cost)
-            from_offchip_link = CommunicationLink(offchip_core, "Any", offchip_read_bandwidth, unit_energy_cost)
+            to_offchip_link = CommunicationLink(
+                "Any", offchip_core, offchip_write_bandwidth, unit_energy_cost
+            )
+            from_offchip_link = CommunicationLink(
+                offchip_core, "Any", offchip_read_bandwidth, unit_energy_cost
+            )
         if not isinstance(offchip_core, Core):
             raise ValueError("The given offchip_core is not a Core object.")
         for core in cores:
