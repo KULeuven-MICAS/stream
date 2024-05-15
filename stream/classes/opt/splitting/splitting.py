@@ -1,11 +1,9 @@
-from typing import List, Dict
-
 from stream.classes.opt.splitting.TemporalLoop import TemporalLoop
 from stream.classes.workload.computation_node import ComputationNode
+from zigzag.datatypes import LayerDim
 
 import logging
 
-from zigzag.datatypes import LayerDim
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +61,7 @@ def convert_inner_cn_loops(inner_cn_loops: list, layer: ComputationNode):
                     new_loop_size = find_the_closest_divisible_factor_within_a_range(
                         layer.layer_dim_sizes[loop_name], loop_size, 50
                     )
-                    outer_loops.append(TemporalLoop(loop_name, new_loop_size))
+                    inner_loops.append(TemporalLoop(loop_name, new_loop_size))
                     logger.info(
                         f"For layer {int(layer.id)}, the inner CN dimension {loop_name} size is adjusted from {loop_size} to {new_loop_size}."
                     )
