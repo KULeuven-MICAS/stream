@@ -21,19 +21,24 @@ class AcceleratorFactory:
         simd_core_id: int | None = self.data["2d_mesh"]["simd_core_id"]
         offchip_core_id: int | None = self.data["2d_mesh"]["offchip_core_id"]
 
-        # pooling_core : Core | None = None
-        # simd_core : Core | None = None
-        # offchip_core : Core | None = None
-
         cores: list[Core] = []
         for core_id, core_data in enumerate(self.data["cores"]):
             core_factory = CoreFactory(core_data)
             core = core_factory.create(core_id)
             cores.append(core)
 
-        pooling_core = cores.pop(pooling_core_id) if pooling_core_id is not None else None
-        simd_core = cores.pop(simd_core_id) if simd_core_id is not None else None
-        offchip_core = cores.pop(offchip_core_id) if offchip_core_id is not None else None
+        # Grab special cores at given indices
+        pooling_core = cores[pooling_core_id] if pooling_core_id is not None else None
+        simd_core = cores[simd_core_id] if simd_core_id is not None else None
+        offchip_core = cores[offchip_core_id] if offchip_core_id is not None else None
+
+        # Remove special corse from 'regular' core list
+        if pooling_core is not None:
+            cores.remove(pooling_core)
+        if simd_core is not None:
+            cores.remove(simd_core)
+        if offchip_core is not None:
+            cores.remove(offchip_core)
 
         cores_graph = get_2d_mesh(
             cores=cores,

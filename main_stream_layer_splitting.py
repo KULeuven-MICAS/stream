@@ -19,9 +19,9 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 ################################INPUTS################################
-accelerator = "stream.inputs.examples.hardware.TPU_like_quad_core"
+accelerator = "stream/inputs/examples/hardware/TPU_like_quad_core.yaml"
 workload_path = "stream/inputs/examples/workload/resnet18.onnx"
-mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core_resnet18_fixed_split"
+mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core_resnet18_fixed_split.yaml"
 CN_define_mode = 4  # automatically split layers if too big to fit
 split_W_percentage = 0.5  # max percentage of capacity a single node's weights can be
 hint_loops = []
@@ -63,7 +63,7 @@ memory_fig_path = f"outputs/{experiment_id}-memory.png"
 
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
-        AcceleratorParserStage,  # Parses the accelerator
+        AcceleratorParserStage_,  # Parses the accelerator
         StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
         # UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
         GenerateCNWorkloadHybridStage,
