@@ -1,6 +1,6 @@
 """ This main file uses a fixed layer-core allocation with the last layer split across multiple cores"""
 
-from zigzag.stages.AcceleratorParserStage import AcceleratorParserStage
+from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
 from zigzag.stages.MainStage import MainStage
 from stream.classes.stages import *
 from stream.visualization.schedule import (
@@ -15,9 +15,7 @@ import pickle
 import logging as _logging
 
 _logging_level = _logging.INFO
-_logging_format = (
-    "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-)
+_logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 ################################INPUTS################################

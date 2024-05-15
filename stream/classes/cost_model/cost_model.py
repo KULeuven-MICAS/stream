@@ -4,6 +4,8 @@ from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.cost_model.scheduler import schedule_graph
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import plot_timeline_brokenaxes
+from zigzag.datatypes import LayerOperand
+from zigzag.workload.Workload import Workload
 
 
 class StreamCostModelEvaluation:
@@ -14,10 +16,10 @@ class StreamCostModelEvaluation:
 
     def __init__(
         self,
-        workload: DiGraph,
+        workload: Workload,
         accelerator: Accelerator,
-        operands_to_prefetch: list,
-        scheduling_order: list,
+        operands_to_prefetch: list[str],
+        scheduling_order: list[int],
     ) -> None:
         # Initialize the SCME by setting the workload graph to be scheduled
         self.workload = workload
@@ -51,26 +53,18 @@ class StreamCostModelEvaluation:
             self.workload,
             self.accelerator,
             operands_to_prefetch=self.operands_to_prefetch,
-            scheduling_order=self.scheduling_order
+            scheduling_order=self.scheduling_order,
         )
         self.latency = results[0]
         self.total_cn_onchip_energy = results[1]
-        self.total_cn_offchip_link_energy, self.total_cn_offchip_memory_energy = (
-            results[2],
-            results[3],
-        )
-        (
-            self.total_eviction_to_offchip_link_energy,
-            self.total_eviction_to_offchip_memory_energy,
-        ) = (results[4], results[5])
-        (
-            self.total_sink_layer_output_offchip_link_energy,
-            self.total_sink_layer_output_offchip_memory_energy,
-        ) = (results[6], results[7])
-        self.total_core_to_core_link_energy, self.total_core_to_core_memory_energy = (
-            results[8],
-            results[9],
-        )
+        self.total_cn_offchip_link_energy = results[2]
+        self.total_cn_offchip_memory_energy = results[3]
+        self.total_eviction_to_offchip_link_energy = results[4]
+        self.total_eviction_to_offchip_memory_energy = results[5]
+        self.total_sink_layer_output_offchip_link_energy = results[6]
+        self.total_sink_layer_output_offchip_memory_energy = results[7]
+        self.total_core_to_core_link_energy = results[8]
+        self.total_core_to_core_memory_energy = results[9]
 
         self.energy = (
             self.total_cn_onchip_energy

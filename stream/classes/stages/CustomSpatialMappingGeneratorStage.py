@@ -128,23 +128,13 @@ class CustomSpatialMappingGeneratorStage(Stage):
             served_dimensions: Set[Dimension] = memory_level.served_dimensions
             mem_ops = memory_level.operands
             for mem_op in mem_ops:
-                layer_op = self.layer.get_layer_operand(
-                    mem_op=mem_op
-                )  # get the layer operand
+                layer_op = self.layer.get_layer_operand(mem_op=mem_op)  # get the layer operand
                 if layer_op == "O":
-                    mem_bandwidth = (
-                        memory_level.write_bw
-                    )  # partial outputs are written to the memory
+                    mem_bandwidth = memory_level.write_bw  # partial outputs are written to the memory
                 else:
-                    mem_bandwidth = (
-                        memory_level.read_bw
-                    )  # inputs are read from the memory
-                precision = self.layer.operand_precision[
-                    layer_op
-                ]  # bit precision of layer operand
-                irrelevant_dimensions = self.layer.get_operand_irrelevant_dimensions(
-                    layer_op
-                )
+                    mem_bandwidth = memory_level.read_bw  # inputs are read from the memory
+                precision = self.layer.operand_precision[layer_op]  # bit precision of layer operand
+                irrelevant_dimensions = self.layer.get_operand_irrelevant_dimensions(layer_op)
                 for oa_dim in oa_dims:
                     if oa_dim not in served_dimensions:
                         continue
@@ -158,9 +148,7 @@ class CustomSpatialMappingGeneratorStage(Stage):
                             max_multicast_elements = mem_bandwidth // precision
                         except ZeroDivisionError:
                             max_multicast_elements = unrolling_size
-                        oa_dim_unrolling[oa_dim][layer_dim] = min(
-                            max_multicast_elements, unrolling_size
-                        )
+                        oa_dim_unrolling[oa_dim][layer_dim] = min(max_multicast_elements, unrolling_size)
 
         # At this point the unrolled layer dimensions are maximal (wrt the served dimensions and bandwidth of the lowest memory level).
         # The unrolling size might not be a factor of the layer dimension size, which is required (for non greedy mapping).
@@ -195,12 +183,7 @@ class CustomSpatialMappingGeneratorStage(Stage):
         for combination in itertools.product(*unrollings):
             # If the combination has two oa dimensions that unroll the same layer dimension, skip it as this is impossible.
             if not self.all_unique(
-                [
-                    loop_dimension
-                    for (loop_dimension, loop_size) in (
-                        c for c in combination if c is not None
-                    )
-                ]
+                [loop_dimension for (loop_dimension, loop_size) in (c for c in combination if c is not None)]
             ):
                 continue
             # Zip the combination (which is a (layer_dim, layer_size) for each oa_dim with the oa_dim names.

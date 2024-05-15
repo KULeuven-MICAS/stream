@@ -8,6 +8,7 @@ class ElementwiseParser(ONNXOperatorParser):
     """
 
     def __init__(self, node_id, node, nodes_outputs, mapping, onnx_model) -> None:
+        raise NotImplementedError
         super().__init__(node_id, node, nodes_outputs, mapping, onnx_model)
         self.type = node.op_type.lower()
         self.name = node.name
@@ -24,13 +25,9 @@ class ElementwiseParser(ONNXOperatorParser):
                     predecessors.append(n)
 
         # Get the names of the two inputs
-        assert (
-            len(self.node.input) == 2
-        ), f"Elementwise node has more than two inputs: {self.node.input}"
+        assert len(self.node.input) == 2, f"Elementwise node has more than two inputs: {self.node.input}"
         input_names = [self.node.input[0], self.node.input[1]]
         # Get the output name
         output_names = [self.node.output[0]]
-        node_obj = ElementwiseNode(
-            self.type, self.name, predecessors, input_names, output_names
-        )
+        node_obj = ElementwiseNode(self.type, self.name, predecessors, input_names, output_names)
         return node_obj

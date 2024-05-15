@@ -6,13 +6,12 @@ from zigzag.parser.onnx.utils import get_node_input_output_dimension_shapes
 class ReshapeParser(ONNXOperatorParser):
     """Parses an onnx reshape operator into a ReshapeNode."""
 
-    def __init__(self, node_id, node, nodes_outputs, mapping, onnx_model) -> None:
-        super().__init__(node_id, node, nodes_outputs, mapping, onnx_model)
-
     def run(self):
         return self.generate_reshape_node()
 
     def generate_reshape_node(self):
+        raise NotImplementedError
+
         # Get the predecessors of this node
         predecessors = []
         for node_input in self.node.input:

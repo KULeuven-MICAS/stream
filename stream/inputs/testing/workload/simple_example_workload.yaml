@@ -1,0 +1,58 @@
+- id: 0
+  operator_type: Conv_pointwise
+  equation: O[b][k][oy][ox]+=W[k][c]*I[b][c][oy][ox]
+  loop_dims : [B, K, C, OY, OX]
+  loop_sizes: [1, 16, 8, 5, 5]
+  operand_precision:
+    O: 16
+    O_final: 8
+    W: 8
+    I: 8
+  operand_source:
+    W: 0
+    I: 0
+
+- id: 1
+  operator_type: Conv_pointwise
+  equation: O[b][k][oy][ox]+=W[k][c]*I[b][c][oy][ox]
+  loop_dims : [B, K, C, OY, OX]
+  loop_sizes: [1, 4, 16, 5, 5]
+  operand_precision:
+    O: 16
+    O_final: 8
+    W: 8
+    I: 8
+  operand_source:
+    W: 1
+    I: 0
+    
+- id: 2
+  operator_type: Conv_pointwise
+  equation: O[b][k][oy][ox]+=W[k][c]*I[b][c][oy][ox]
+  loop_dims : [B, K, C, OY, OX]
+  loop_sizes: [1, 4, 16, 5, 5]
+  operand_precision:
+    O: 16
+    O_final: 8
+    W: 8
+    I: 8
+  operand_source:
+    W: 2
+    I: 0
+  constant_operands: ['W']
+
+- id: 3  # Addition of layer 22 (residual connection) and layer 24 (main path)
+  operator_type: Add
+  equation: O[b][g][oy][ox]=W[b][g][oy][ox]+I[b][g][oy][ox]
+  dimension_relations: []
+  loop_dims : [B, G, OY, OX]
+  loop_sizes: [1, 4, 5, 5]
+  operand_precision:
+    O: 16
+    O_final: 8
+    W: 8
+    Y: 8
+  operand_source:
+    I: 3
+    W: 3
+

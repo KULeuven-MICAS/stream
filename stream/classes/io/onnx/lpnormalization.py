@@ -6,6 +6,8 @@ class LpNormalizationParser(ONNXOperatorParser):
     """Parses an onnx reshape operator into a ReshapeNode."""
 
     def __init__(self, node_id, node, nodes_outputs, mapping, onnx_model) -> None:
+        raise NotImplementedError
+
         super().__init__(node_id, node, nodes_outputs, mapping, onnx_model)
 
     def run(self):

@@ -1,0 +1,20 @@
+name: eyeriss_like_quad_core
+cores:
+  # index corresponds to core ID
+  - pooling.yaml
+  - simd.yaml
+  - offchip.yaml
+  - eyeriss_like.yaml
+  - eyeriss_like.yaml
+  - eyeriss_like.yaml
+  - eyeriss_like.yaml
+
+2d_mesh:
+  nb_rows: 2
+  nb_cols: 2
+  bandwidth: 32
+  unit_energy_cost: 0
+  pooling_core_id: 0
+  simd_core_id: 1
+  offchip_core_id: 2
+

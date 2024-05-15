@@ -134,9 +134,7 @@ def get_memory_hierarchy(multiplier_array):
     memory_hierarchy_graph.add_memory(
         memory_instance=reg_O1,
         operands=("O",),
-        port_alloc=(
-            {"fh": "w_port_1", "tl": "r_port_1", "fl": "w_port_2", "th": "r_port_2"},
-        ),
+        port_alloc=({"fh": "w_port_1", "tl": "r_port_1", "fl": "w_port_2", "th": "r_port_2"},),
         served_dimensions={(0, 1)},
     )
 
@@ -194,9 +192,7 @@ def get_operational_array():
     multiplier_area = 1
     dimensions = {"D1": 16, "D2": 16}  # {'D1': ('K', 16), 'D2': ('C', 16)}
 
-    multiplier = Multiplier(
-        multiplier_input_precision, multiplier_energy, multiplier_area
-    )
+    multiplier = Multiplier(multiplier_input_precision, multiplier_energy, multiplier_area)
     multiplier_array = MultiplierArray(multiplier, dimensions)
 
     return multiplier_array

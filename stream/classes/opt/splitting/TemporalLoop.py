@@ -1,6 +1,9 @@
+from zigzag.datatypes import LayerDim
+
+
 class TemporalLoop:
 
-    def __init__(self, dimension: str, size: int) -> None:
+    def __init__(self, dimension: LayerDim, size: int) -> None:
         self.dimension = dimension
         self.size = size
         self.type = "temporal"

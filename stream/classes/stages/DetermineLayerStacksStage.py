@@ -30,9 +30,7 @@ class DetermineLayerStacksStage(Stage):
         for core in self.accelerator.cores.nodes():
             if core.id == self.accelerator.offchip_core_id:
                 continue  # skip offchip core
-            core_weight_capacity = core.memory_hierarchy.get_operand_top_level(
-                "I2"
-            ).memory_instance.size
+            core_weight_capacity = core.memory_hierarchy.get_operand_top_level("I2").memory_instance.size
             weight_capacities[core.id] = core_weight_capacity
 
         # Total weight capacity in bits
@@ -64,16 +62,7 @@ class DetermineLayerStacksStage(Stage):
             yield cme, extra_info
 
     def get_layer_stacks_lbl(self):
-        return [
-            (id,)
-            for id in sorted(
-                [
-                    n.id[0]
-                    for n in self.workload.nodes()
-                    if isinstance(n, ComputationNode)
-                ]
-            )
-        ]
+        return [(id,) for id in sorted([n.id for n in self.workload.nodes() if isinstance(n, ComputationNode)])]
 
     def get_layer_stacks_fused(self):
         cumsum = 0
@@ -81,7 +70,7 @@ class DetermineLayerStacksStage(Stage):
         current_stack = []
         for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
-                id = n.id[0]
+                id = n.id
                 try:
                     op = next(op for op in n.constant_operands)
                 except:
@@ -110,7 +99,7 @@ class DetermineLayerStacksStage(Stage):
         first_complete = False
         for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
-                id = n.id[0]
+                id = n.id
                 if first_complete:
                     stacks.append(tuple(current_stack))
                     current_stack = [id]
@@ -144,7 +133,7 @@ class DetermineLayerStacksStage(Stage):
         current_stack = []
         for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
-                id = n.id[0]
+                id = n.id
                 if id > self.stack_cutoff:
                     stacks.append(tuple(current_stack))
                     current_stack = [id]
@@ -169,7 +158,7 @@ class DetermineLayerStacksStage(Stage):
         lbl = False  # flag to switch to layer by layer
         for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
-                id = n.id[0]
+                id = n.id
                 if lbl:
                     stacks.append(tuple(current_stack))
                     current_stack = [id]

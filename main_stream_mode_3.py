@@ -1,4 +1,4 @@
-from zigzag.stages.AcceleratorParserStage import AcceleratorParserStage
+from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
 from zigzag.stages.MainStage import MainStage
 from stream.classes.stages import *
 from stream.visualization.schedule import (

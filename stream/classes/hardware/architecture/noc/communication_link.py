@@ -6,9 +6,7 @@ from stream.classes.cost_model.communication_manager import CommunicationLinkEve
 class CommunicationLink:
     """Represents a fixed-bandwidth communication link used to communicate between two cores."""
 
-    def __init__(
-        self, sender, receiver, bandwidth, unit_energy_cost, bidirectional=False
-    ) -> None:
+    def __init__(self, sender, receiver, bandwidth, unit_energy_cost, bidirectional=False) -> None:
         self.sender = sender
         self.receiver = receiver
         self.bandwidth = bandwidth
@@ -160,7 +158,7 @@ class CommunicationLink:
             if end - start >= duration:
                 valid_windows.append((start, end))
             try:
-                start = updated_ts[idx+1]
+                start = updated_ts[idx + 1]
             except:
                 break
         if not valid_windows:

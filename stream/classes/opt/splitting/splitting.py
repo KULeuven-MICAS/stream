@@ -5,19 +5,17 @@ from stream.classes.workload.computation_node import ComputationNode
 
 import logging
 
+from zigzag.datatypes import LayerDim
+
 logger = logging.getLogger(__name__)
 
 
-def get_rest_loops(
-    total_loop_dim: Dict[str, int], to_be_excluded_loops: List[TemporalLoop]
-) -> List[TemporalLoop]:
+def get_rest_loops(total_loop_dim: dict[str, int], to_be_excluded_loops: list[TemporalLoop]) -> list[TemporalLoop]:
     """
     This function return a list of the rest temporal loops after remove the to_be_excluded_loops from the total_loop_dim.
     """
     rest_loops = []
-    to_be_excluded_loops = {
-        TM_loop.dimension: TM_loop.size for TM_loop in to_be_excluded_loops
-    }
+    to_be_excluded_loops = {TM_loop.dimension: TM_loop.size for TM_loop in to_be_excluded_loops}
     for loop_name, loop_value_total in total_loop_dim.items():
         if loop_name in to_be_excluded_loops:
             loop_value_to_be_gone = to_be_excluded_loops[loop_name]
@@ -38,11 +36,7 @@ def find_the_closest_divisible_factor_within_a_range(total, factor, a_range):
     """
     lower_bound = max(2, factor // a_range)
     upper_bound = min(total, factor * a_range)
-    new_factor_candidates = [
-        (i, abs(factor - i))
-        for i in range(lower_bound, upper_bound + 1)
-        if total % i == 0
-    ]
+    new_factor_candidates = [(i, abs(factor - i)) for i in range(lower_bound, upper_bound + 1) if total % i == 0]
 
     new_factor = min(new_factor_candidates, key=lambda tup: tup[1])[0]
     return new_factor
@@ -58,32 +52,28 @@ def convert_inner_cn_loops(inner_cn_loops: list, layer: ComputationNode):
     """
     inner_loops = []
     for loop_name, loop_size in inner_cn_loops:
-        if loop_name in layer.loop_dim_size:
-            if loop_size == "all" or layer.loop_dim_size[loop_name] < loop_size:
-                inner_loops.append(
-                    TemporalLoop(loop_name, layer.loop_dim_size[loop_name])
-                )
-            elif layer.loop_dim_size[loop_name] % loop_size == 0:
+        if loop_name in layer.layer_dims:
+            if loop_size == "all" or layer.layer_dim_sizes[loop_name] < loop_size:
+                inner_loops.append(TemporalLoop(loop_name, layer.layer_dim_sizes[loop_name]))
+            elif layer.layer_dim_sizes[loop_name] % loop_size == 0:
                 inner_loops.append(TemporalLoop(loop_name, loop_size))
             else:
                 try:
                     # find the closest factor within 50x.
                     new_loop_size = find_the_closest_divisible_factor_within_a_range(
-                        layer.loop_dim_size[loop_name], loop_size, 50
+                        layer.layer_dim_sizes[loop_name], loop_size, 50
                     )
                     outer_loops.append(TemporalLoop(loop_name, new_loop_size))
                     logger.info(
-                        f"For layer {int(layer.id[0])}, the inner CN dimension {loop_name} size is adjusted from {loop_size} to {new_loop_size}."
+                        f"For layer {int(layer.id)}, the inner CN dimension {loop_name} size is adjusted from {loop_size} to {new_loop_size}."
                     )
                 except:
-                    raise ValueError(
-                        f"({loop_name}, {loop_size}) is not a valid inner CN loop."
-                    )
-    outer_loops = get_rest_loops(layer.loop_dim_size, inner_loops)
+                    raise ValueError(f"({loop_name}, {loop_size}) is not a valid inner CN loop.")
+    outer_loops = get_rest_loops(layer.layer_dim_sizes, inner_loops)
     return outer_loops
 
 
-def convert_outer_cn_loops(outer_cn_loops: list, layer: ComputationNode):
+def convert_outer_cn_loops(outer_cn_loops: list[tuple[str, int | str]], layer: ComputationNode):
     """Converts a list of string-defined outer-cn loops to outer-cn TemporalLoop objects.
     "all" in ("K", "all") is converted to the size of that dimension for the layer.
 
@@ -91,33 +81,37 @@ def convert_outer_cn_loops(outer_cn_loops: list, layer: ComputationNode):
         outer_cn_loops (list): The list of string-defined outer-cn loops
         layer (ComputationNode): The original layer.
     """
-    outer_loops = []
-    for loop_name, loop_size in outer_cn_loops:
-        if loop_name in layer.loop_dim_size:
-            if loop_size == "all" or layer.loop_dim_size[loop_name] < loop_size:
-                outer_loops.append(
-                    TemporalLoop(loop_name, layer.loop_dim_size[loop_name])
-                )
-            elif layer.loop_dim_size[loop_name] % loop_size == 0:
-                outer_loops.append(TemporalLoop(loop_name, loop_size))
+    outer_loops: list[TemporalLoop] = []
+    for layer_dim_str, loop_size in outer_cn_loops:
+        assert isinstance(layer_dim_str, str)
+        layer_dim = LayerDim(layer_dim_str)
+
+        if layer_dim in layer.layer_dim_sizes.layer_dims:
+            if isinstance(loop_size, str):
+                if loop_size == "all":
+                    outer_loops.append(TemporalLoop(layer_dim, layer.layer_dim_sizes[layer_dim]))
+                else:
+                    raise ValueError("Loop hint is string but not 'all'")
             else:
-                # Increase the loop size of the layer until it is divisible by the outer loop
-                new_layer_dim_size = layer.loop_dim_size[loop_name] + 1
-                while new_layer_dim_size % loop_size != 0:
-                    new_layer_dim_size += 1
-                # Set the new loop size of the layer
-                logger.warn(
-                    f"Layer {layer}: {loop_name} {layer.loop_dim_size[loop_name]} -> {new_layer_dim_size}"
-                )
-                layer.loop_dim_size[loop_name] = new_layer_dim_size
-                layer.attrs["loop_dim_size"][loop_name] = new_layer_dim_size
-                outer_loops.append(TemporalLoop(loop_name, loop_size))
+                if layer.layer_dim_sizes[layer_dim] < loop_size:
+                    outer_loops.append(TemporalLoop(layer_dim, layer.layer_dim_sizes[layer_dim]))
+                elif layer.layer_dim_sizes[layer_dim] % loop_size == 0:
+                    outer_loops.append(TemporalLoop(layer_dim, loop_size))
+                else:
+                    # Increase the loop size of the layer until it is divisible by the outer loop
+                    new_layer_dim_size = layer.layer_dim_sizes[layer_dim] + 1
+                    while new_layer_dim_size % loop_size != 0:
+                        new_layer_dim_size += 1
+                    # Set the new loop size of the layer
+                    logger.warn(
+                        f"Layer {layer}: {layer_dim} {layer.layer_dim_sizes[layer_dim]} -> {new_layer_dim_size}"
+                    )
+                    layer.layer_dim_sizes[layer_dim] = new_layer_dim_size
+                    outer_loops.append(TemporalLoop(layer_dim, loop_size))
     return outer_loops
 
 
-def convert_outer_cn_loops_with_k(
-    outer_cn_loops: list, layer: ComputationNode, split_factor: int
-):
+def convert_outer_cn_loops_with_k(outer_cn_loops: list, layer: ComputationNode, split_factor: int):
     """Converts a list of string-defined outer-cn loops to outer-cn TemporalLoop objects.
     Adds output channel (K) outer-cn loops to the already provided outer-cn loops depending on the split factor.
 
@@ -129,6 +123,6 @@ def convert_outer_cn_loops_with_k(
     if not isinstance(split_factor, int):
         raise ValueError("The number of K splits should be an integer.")
     if split_factor > 1:
-        outer_cn_loops += [("K", split_factor)]
+        outer_cn_loops += [(LayerDim("K"), split_factor)]
     outer_loops = convert_outer_cn_loops(outer_cn_loops, layer)
     return outer_loops
