@@ -1,0 +1,42 @@
+name: Python can run
+
+# Controls when the workflow will run
+on: [push]
+
+jobs:
+  build:
+
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Display Python version
+        run: python -c "import sys; print(sys.version)"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install ruff
+          pip install -r requirements.txt
+      - name: Lint with ruff
+        uses: chartboost/ruff-action@v1
+        with:
+          src: "./stream"
+          args: --select E9,F63,F7,F82
+      - name: Run without errors
+        run: |
+          python main_stream_layer_splitting.py
+          python main_stream_mode_3.py
+          python main_stream_mode_4.py
+          python main_stream.py
+          python main_testing_1_core_with_testing_workload.py
+          python main_testing_2_cores_shared.py
+          python main_testing_2_cores_with_testing_workload_3_layers.py
+          python main_testing_2_cores_with_testing_workload.py
+          python main_testing_4_cores_with_testing_workload.py
