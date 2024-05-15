@@ -14,9 +14,9 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 #################################
-accelerator = "stream.inputs.testing.shared.dual_testing_core_offchip"
-workload_path = "stream.inputs.testing.shared.testing_workload_for_2_cores"
-mapping_path = "stream.inputs.testing.mapping.testing_mapping"
+accelerator = "stream/inputs/testing/shared/dual_testing_core_offchip.yaml"
+workload_path = "stream/inputs/testing/shared/testing_workload_for_2_cores.yaml"
+mapping_path = "stream/inputs/testing/mapping/testing_mapping.yaml"
 
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
 # hint_loops = [('OY', 'all')]  # outer CN loops, with error in resnet18 plotting
@@ -69,7 +69,6 @@ mainstage = MainStage(
 
 # Launch the MainStage
 scme, _ = mainstage.run()
-scme = scme[0]
 
 # Ploting Results
 plot_full_schedule = True

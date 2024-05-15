@@ -1,25 +1,26 @@
+from typing import TYPE_CHECKING
 from brokenaxes import brokenaxes
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 from math import isnan
-from networkx import DiGraph
 import numpy as np
 import logging
-import plotly
-import plotly.express as px
 import plotly.graph_objects as go
 from plotly.express.colors import sample_colorscale
-from plotly.subplots import make_subplots
 import pandas as pd
 import pickle
 import networkx as nx
 import argparse
 from itertools import cycle
 
+from zigzag.workload.Workload import Workload
+
+if TYPE_CHECKING:
+    from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
+    from stream.classes.hardware.architecture.accelerator import Accelerator
 
 logger = logging.getLogger(__name__)
 
-from stream.classes.hardware.architecture.accelerator import Accelerator
 
 # MPL FONT SIZES
 SMALLER_SIZE = 11
@@ -38,14 +39,14 @@ PLOTLY_HATCH_TYPES = {
 
 
 def plot_timeline_brokenaxes(
-    scme,  # StreamCostModelEvaluation
-    draw_dependencies: object = True,
-    section_start_percent: object = (0, 50, 95),
-    percent_shown: object = (5, 5, 5),
-    plot_data_transfer: object = False,
-    fig_path: object = "outputs/schedule_plot.png",
-) -> object:
-    G: DiGraph = scme.workload
+    scme: "StreamCostModelEvaluation",
+    draw_dependencies: bool = True,
+    section_start_percent: tuple[int, ...] = (0, 50, 95),
+    percent_shown: tuple[int, ...] = (5, 5, 5),
+    plot_data_transfer: bool = False,
+    fig_path: str = "outputs/schedule_plot.png",
+) -> None:
+    G: Workload = scme.workload
     accelerator: Accelerator = scme.accelerator
 
     nb_layers = len(set(iter([n.id for n in G.nodes()])))

@@ -1,8 +1,8 @@
 name: testing-2-core-with-offchip
 cores:
   # index corresponds to core ID
-  - testing_core1.yaml
-  - testing_core2.yaml
+  - shared_testing_core1.yaml
+  - shared_testing_core2.yaml
   - offchip.yaml
 
 2d_mesh:

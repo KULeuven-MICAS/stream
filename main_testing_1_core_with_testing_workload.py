@@ -1,3 +1,4 @@
+from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
 from zigzag.stages.MainStage import MainStage
 from stream.classes.stages import *
@@ -59,6 +60,7 @@ mainstage = MainStage(
 
 # Launch the MainStage
 scme, _ = mainstage.run()
+scme: StreamCostModelEvaluation = scme[0]
 
 # Ploting Results
 plot_full_schedule = True
@@ -71,12 +73,12 @@ timeline_fig_path = "outputs/schedule_plot.html"
 memory_fig_path = "outputs/memory_plot.png"
 
 visualize_timeline_plotly(
-    scme[0],
+    scme,
     draw_dependencies,
     draw_communication,
     fig_path=timeline_fig_path,
 )
 
-print(f"Total network energy = {scme[0].energy:.2e} pJ")
-print(f"Total network latency = {scme[0].latency:.2e} cycles")
-plot_memory_usage(scme[0], fig_path=memory_fig_path)
+print(f"Total network energy = {scme.energy:.2e} pJ")
+print(f"Total network latency = {scme.latency:.2e} cycles")
+plot_memory_usage(scme, fig_path=memory_fig_path)

@@ -1,10 +1,10 @@
 name: testing-4-core-with-offchip
 cores:
   # index corresponds to core ID
-  - testing_core.yaml
-  - testing_core.yaml
-  - testing_core.yaml
-  - testing_core.yaml
+  - testing_core1.yaml
+  - testing_core1.yaml
+  - testing_core1.yaml
+  - testing_core1.yaml
   - offchip.yaml
 
 2d_mesh:
