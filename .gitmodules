@@ -1,3 +1,0 @@
-[submodule "zigzag_repo/zigzag"]
-	path = zigzag_repo/zigzag
-	url = git@github.com:KULeuven-MICAS/zigzag.git
