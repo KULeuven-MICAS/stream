@@ -1,6 +1,6 @@
 import numpy as np
 import networkx as nx
-from networkx import DiGraph, MultiDiGraph
+from networkx import DiGraph
 
 from stream.classes.hardware.architecture.communication_link import CommunicationLink
 
@@ -10,8 +10,6 @@ from stream.classes.hardware.architecture.stream_core import Core
 
 # From the AIE-MLs perspective, the throughput of each of the loads and store is 256 bits per clock cycle.
 aya_core_to_core_bw = 256  # bandwidth of every link connecting two neighboring cores
-aya_core_to_mem_tile_bw = 32 * 6
-#aya_everything_to_dram_bw = 64 * 8
 
 def have_shared_memory(a, b):
     """Returns True if core a and core b have a shared top level memory
@@ -44,7 +42,6 @@ def get_2d_mesh(
     cores,
     nb_rows,
     nb_cols,
-    axi_bandwidth,
     unit_energy_cost,
     use_shared_mem_flag, #Aya: the goal of this flag is to easily enable or disable the direct connections between the neighboring cores
     pooling_core=None,
