@@ -242,12 +242,12 @@ class IntraCoreMappingStage(Stage):
         """
         too_large_operands_for_cme = []
 
-        ## Step 1: get all the unique top level memories of the core
+        # Step 1: get all the unique top level memories of the core
         memory_hierarchy_dict = core.mem_hierarchy_dict
         top_memories = [memory[-1] for (mem_op, memory) in memory_hierarchy_dict.items()]
         unique_top_memories = set(top_memories)
 
-        ## Step 2: for each top level memory, for each operand this memory holds, calculate the required capacity (in bit) for holding them
+        # Step 2: for each top level memory, for each operand this memory holds, calculate the required capacity (in bit) for holding them
         memory_operand_link = node.memory_operand_links
         constant_operands = node.constant_operands
         output_operand = node.output_operand
@@ -269,7 +269,7 @@ class IntraCoreMappingStage(Stage):
                         bits_to_be_stored_in_top_level[memory_operand] += edge_data["bits"]
             total_required_capacity = sum(bits_to_be_stored_in_top_level.values())
 
-            ## Step 3: compare the total required capacity with the top level memory capacity
+            # Step 3: compare the total required capacity with the top level memory capacity
             if total_required_capacity <= top_level_capacity:
                 pass
             else:
@@ -289,7 +289,7 @@ class IntraCoreMappingStage(Stage):
                 operands_stored_in_top_level = list(bits_to_be_stored_in_top_level.keys())[:nb_operands_in_top_level]
                 operands_stored_in_offchip = list(bits_to_be_stored_in_top_level.keys())[nb_operands_in_top_level:]
 
-                ## Step 4: Check when some operand(s) fit in the top level core memory, and some cannot fit (too_large_operands),
+                # Step 4: Check when some operand(s) fit in the top level core memory, and some cannot fit (too_large_operands),
                 # the top level core memory has enough space for supporting the SU of not-fitted operands
                 if not operands_stored_in_top_level or not operands_stored_in_offchip:
                     pass
@@ -364,92 +364,15 @@ class IntraCoreMappingStage(Stage):
         Returns:
             int: the required memory capacity in the top memory of the core for operands_stored_in_offchip
         """
+        def get_lowest_level_unrolled_memory_capacity(memory_operand: MemoryOperand):
+            memory_level = core.memory_hierarchy.get_memory_levels(memory_operand)[0]
+            return memory_level.memory_instance.size * memory_level.unroll_count
 
-        def convert_spatial_mapping_to_dict(x: SpatialMapping):
-            """Converts the SpatialMapping to the legacy dict format used in `decouple_pr_loops`. Copy from
-            `SpatialMappingConversionStage.generate_mapping_per_mem_lvl`"""
-            mapping_per_mem_lvl: SpatialMappingPerMemLvl = {}
-            mem_hierarchy = core.memory_hierarchy
-            for layer_op in node.memory_operand_links.layer_operands:
-                mem_op = node.memory_operand_links.layer_to_mem_op(layer_op)
-                x_copy = x.copy()
-                mapping_per_mem_lvl[layer_op] = []
-                memory_levels = mem_hierarchy.get_memory_levels(mem_op)
-
-                for memory_level in memory_levels:
-                    spatial_mapping_lvl: list[tuple[LayerDim, UnrollFactor]] = []
-                    spatial_mapping_lvl_dict: dict[LayerDim, UnrollFactor] = {}
-                    served_dimensions = memory_level.served_dimensions
-                    for oa_dim in served_dimensions:
-                        if oa_dim in x_copy:
-                            # The dimension name is present in the user defined spatial mapping
-                            # Add the spatial loop of this dimension to the spatial mapping
-                            spatial_loop = x_copy[oa_dim]
-                            for layer_dim, unrolling in spatial_loop.items():
-                                if layer_dim in spatial_mapping_lvl_dict:
-                                    spatial_mapping_lvl_dict[layer_dim] *= unrolling
-                                else:
-                                    spatial_mapping_lvl_dict[layer_dim] = unrolling
-
-                            # Then remove this dim_name and spatial loop key value pair from the dict
-                            # as the spatial mapping representation is a level-by-level one.
-                            del x_copy.data[oa_dim]
-                    for combination in spatial_mapping_lvl_dict.items():
-                        spatial_mapping_lvl.append(combination)
-                    mapping_per_mem_lvl[layer_op].append(spatial_mapping_lvl)
-
-                # After we have gone through the memory levels, if there are still user-defined dimensions
-                # present, add them as the top level. Otherwise add an empty list to make arch levels correct:
-                # because first list we added was the operational array level.
-
-                # We will merge together if the top memory level is serving multiple oa dims
-                # and there are layer dims existing on multiple oa dims.
-                top_level_mapping_per_mem_lvl: dict[LayerDim, UnrollFactor | float] = {}
-
-                for oa_dim, mapping_single_oa_dim in x_copy.items():
-                    for layer_dim, unrolling in mapping_single_oa_dim.items():
-                        if layer_dim not in top_level_mapping_per_mem_lvl:
-                            top_level_mapping_per_mem_lvl[layer_dim] = unrolling
-                        else:
-                            top_level_mapping_per_mem_lvl[layer_dim] *= unrolling
-
-                top_level_spatial_mapping: list[tuple[LayerDim, UnrollFactor | float]] = [
-                    combination for combination in top_level_mapping_per_mem_lvl.items()
-                ]
-                mapping_per_mem_lvl[layer_op].append(top_level_spatial_mapping)
-            return mapping_per_mem_lvl
-
-        required_capacity_list: list[float] = []
-        # spatial_mapping_dict: SpatialMappingPerMemLvl = {}
-        spatial_mapping_per_mem_lvl_full = convert_spatial_mapping_to_dict(dataflows)
-
-        # for mem_operand in operands_stored_in_offchip:
-        #     operand = node.memory_operand_links.mem_to_layer_op(mem_operand)
-        #     spatial_mapping_dict[operand] = spatial_mapping_per_mem_lvl_full[operand]
-
-        spatial_mapping_dict_reform = decouple_pr_loop(spatial_mapping_per_mem_lvl_full, node)
-        data_size_dict = {}
+        unroll_dict: dict[MemoryOperand, int] = {}
         for mem_operand in operands_stored_in_offchip:
-            operand = node.memory_operand_links.mem_to_layer_op(mem_operand)
-            data_elem = 1
-            for loop_list in spatial_mapping_dict_reform[operand][0]:
-                (loop_type, loop_size) = loop_list
-                if loop_type in node.pr_decoupled_relevancy_info.get_r_layer_dims(operand):
-                    data_elem *= loop_size
-            data_size_dict[operand] = data_elem * node.operand_precision[operand]
-        required_capacity_list.append(sum(data_size_dict.values()))
-        return round(max(required_capacity_list))
-        # sizes_per_op: list[float] = []
-        # for mem_operand in operands_stored_in_offchip:
-        #     layer_op = node.memory_operand_links.mem_to_layer_op(mem_operand)
-        #     layer_dim_sizes: dict[LayerDim, UnrollFactor] = {}
-        #     for layer_dim in dataflows.all_contained_layer_dims:
-        #         layer_dim_sizes[layer_dim] = dataflows.get_total_unrolling_of_layer_dim(layer_dim)
-
-        #     total_size_this_op = node.calc_tensor_size(layer_op, LayerDimSizes(layer_dim_sizes))
-        #     sizes_per_op.append(total_size_this_op)
-
-        # return round(sum(sizes_per_op))
+            capacity = get_lowest_level_unrolled_memory_capacity(mem_operand)
+            unroll_dict[mem_operand] = capacity
+        return round(sum(unroll_dict.values()))
 
     def add_offchip_to_core(self, core_id: int, too_large_operands: list[MemoryOperand], layer_idx: int):
         """Add the offchip memory as the top level memory of the core with core_id in a copy of the accelerator
@@ -465,7 +388,7 @@ class IntraCoreMappingStage(Stage):
         updated_accelerator: Accelerator = pickle_deepcopy(self.accelerator)
         core: Core = updated_accelerator.get_core(core_id)
         offchip_core: Core = pickle_deepcopy(self.accelerator.get_core(self.accelerator.offchip_core_id))
-        ## Sanity checks
+        # Sanity checks
         # Make sure that there is only one offchip memory
         offchip_memory_levels = offchip_core.memory_hierarchy.mem_level_list
         assert (

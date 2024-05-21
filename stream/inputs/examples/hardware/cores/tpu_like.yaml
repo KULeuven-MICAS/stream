@@ -51,8 +51,10 @@ memories:
     latency: 1
     min_r_granularity: 64
     min_w_granularity: 64
-    operands: [I1, O]
+    operands: [I1, I2, O]
     ports:
+      - fh: w_port_1
+        tl: r_port_1
       - fh: w_port_1
         tl: r_port_1
       - fh: w_port_1

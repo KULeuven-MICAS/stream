@@ -9,7 +9,8 @@ cores:
   - simd.yaml
   - offchip.yaml
 
-2d_mesh:
+graph:
+  type: 2d_mesh
   nb_rows: 2
   nb_cols: 2
   bandwidth: 32

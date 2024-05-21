@@ -1,3 +1,4 @@
+from .AcceleratorParserStage import AcceleratorParserStage
 from .GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
 from .InterCoreMappingStage import InterCoreMappingStage
 from .IntraCoreMappingStage import IntraCoreMappingStage

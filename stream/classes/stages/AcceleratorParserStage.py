@@ -29,7 +29,7 @@ class AcceleratorParserStage(Stage):
     def parse_accelerator(self) -> Accelerator:
         accelerator_data = open_yaml(self.accelerator_yaml_path)
 
-        validator = AcceleratorValidator(accelerator_data)
+        validator = AcceleratorValidator(accelerator_data, self.accelerator_yaml_path)
         accelerator_data = validator.normalized_data
         validate_success = validator.validate()
         if not validate_success:
