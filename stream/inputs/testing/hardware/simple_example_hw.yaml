@@ -1,0 +1,18 @@
+name: meta-proto-2-core-with-pooling-and-offchip-cores
+cores:
+  # index corresponds to core ID
+  - meta_prototype.yaml
+  - meta_prototype.yaml
+  - pooling.yaml
+  - simd.yaml
+  - offchip.yaml
+
+2d_mesh:
+  nb_rows: 1
+  nb_cols: 2
+  bandwidth: 64
+  unit_energy_cost: 0
+  pooling_core_id: 2
+  simd_core_id: 3
+  offchip_core_id: 4
+

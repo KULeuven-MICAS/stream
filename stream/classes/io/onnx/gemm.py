@@ -1,84 +1,86 @@
-from zigzag.classes.io.onnx.parser import Parser
-from zigzag.classes.io.onnx.utils import (
+from typing import Any
+from onnx import ModelProto, NodeProto
+from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.workload.computation_node import ComputationNode
+from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
+from zigzag.parser.workload_factory import LayerNodeFactory
+from zigzag.parser.onnx.utils import (
     get_node_input_output_dimension_shapes,
     get_attribute_ints_with_name,
 )
-from stream.classes.workload.computation_node import ComputationNode
 
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-class GemmParser(Parser):
+class GemmParser(ONNXOperatorParser):
     """Parses an ONNX Gemm operator into a LayerNode"""
 
     def __init__(
-        self, node_id, node, nodes_outputs, mapping, onnx_model, accelerator
+        self,
+        node_id: int,
+        node: NodeProto,
+        nodes_outputs: dict[int, list[str]],
+        mapping_data: list[dict[str, Any]],
+        onnx_model: ModelProto,
+        accelerator: Accelerator,
     ) -> None:
-        super().__init__(node_id, node, nodes_outputs, mapping, onnx_model, accelerator)
+        super().__init__(node_id, node, nodes_outputs, onnx_model)
+        self.onnx_model = onnx_model
+        self.node_outputs = nodes_outputs
+        self.mapping_data = mapping_data
+        self.accelerator = accelerator
+        self.op_type = "gemm"
+        self.node_name = f"Layer{self.node_id}"
 
     def run(self):
         """Run the parser"""
-        layer_node = self.generate_layer_node_for_gemm()
-        return layer_node
+        return self.generate_layer_node_for_gemm()
+
+    def get_layer_node_input_format(self, B: int, C: int, K: int):
+        """
+        Generate the necessary dictionary items required for the Node creation.
+        """
+        # convert the data types to precisions based on the onnx definition
+
+        data: dict[str, Any] = {}
+        data["id"] = self.node_id
+        data["name"] = self.node_name
+        data["operator_type"] = self.op_type
+        data["equation"] = "O[b][k]+=I[b][c]*W[c][k]"
+
+        data["loop_dims"] = ["K", "C", "B"]
+        data["loop_sizes"] = [K, C, B]
+        data["dimension_relations"] = []
+        data["operand_precision"] = {"O": 16, "O_final": 8, "I": 8, "W": 8}
+
+        # Find the previous layer(s) that should be this node's parent(s)
+        node_inputs = self.node.input
+        assert len(node_inputs) >= 2, f"Gemm should have atleast two input names, but has: {node_inputs}."
+        (first_input_name, second_input_name) = node_inputs[:2]
+
+        source_list_I = [
+            src for (src, src_output_names) in self.nodes_outputs.items() if first_input_name in src_output_names
+        ]
+        source_list_W = [
+            src for (src, src_output_names) in self.nodes_outputs.items() if second_input_name in src_output_names
+        ]
+        assert len(source_list_I) <= 1
+        assert len(source_list_W) <= 1
+
+        source_I = source_list_I[0] if len(source_list_I) == 1 else self.node_id
+        source_W = source_list_W[0] if len(source_list_W) == 1 else self.node_id
+
+        data["operand_source"] = {
+            "I": source_I,
+            "W": source_W,
+        }
+
+        return data
 
     def generate_layer_node_for_gemm(self):
-        def get_layer_node_input_format(B, C, K, node_mapping, nodes_outputs):
-            """
-            Generate the necessary dictionary items required for the Node creation.
-            """
-            # convert the data types to precisions based on the onnx definition
-
-            # Equation
-            d = {}
-            d["equation"] = "O[b][k]+=A[b][c]*B[c][k]"
-
-            # Get dimension sizes from input parameters
-            K = K
-            C = C
-            B = B  # Not to be confused with operand 'B' which is the weights
-            d["loop_dim_size"] = {"K": K, "C": C, "B": B}
-            d["dimension_relations"] = []
-            d["operand_precision"] = {"O": 16, "O_final": 8, "B": 8, "A": 8}
-
-            core_allocation = node_mapping["core_allocation"]
-            d["core_allocation"] = core_allocation
-
-            spatial_mapping = self.get_spatial_mappings(
-                self.accelerator, core_allocation
-            )
-            d["spatial_mapping"] = spatial_mapping
-
-            d["memory_operand_links"] = {"O": "O", "B": "I2", "A": "I1"}
-
-            # Find the previous layer(s) that should be this node's parent(s)
-            node_inputs = self.node.input
-            assert (
-                len(node_inputs) >= 2
-            ), f"Gemm should have atleast two input names, but has: {node_inputs}."
-            (first_input_name, second_input_name) = node_inputs[:2]
-            d["operand_source"] = {
-                "A": [
-                    src
-                    for (src, src_output_names) in nodes_outputs.items()
-                    if first_input_name in src_output_names
-                ],
-                "B": [
-                    src
-                    for (src, src_output_names) in nodes_outputs.items()
-                    if second_input_name in src_output_names
-                ],
-            }
-            d["constant_operands"] = [
-                op for (op, preds) in d["operand_source"].items() if not preds
-            ]
-
-            return d
-
-        ia_dimension_shape, oa_dimension_shape = get_node_input_output_dimension_shapes(
-            self.node, self.onnx_model
-        )
+        ia_dimension_shape, oa_dimension_shape = get_node_input_output_dimension_shapes(self.node, self.onnx_model)
 
         # The Gemm node includes flags for transpose of both of its inputs.
         # If the first input is transposed, we need to transpose its shape here.
@@ -87,12 +89,10 @@ class GemmParser(Parser):
             assert len(ia_dimension_shape == 2)
             ia_dimension_shape = (ia_dimension_shape[1], ia_dimension_shape[0])
 
-        assert (
-            len(ia_dimension_shape) == len(oa_dimension_shape) == 2
-        )  # First element is batch size, second is input/output channel
-        assert (
-            ia_dimension_shape[0] == oa_dimension_shape[0]
-        )  # Batch size should be the same for input and output
+        # First element is batch size, second is input/output channel
+        assert len(ia_dimension_shape) == len(oa_dimension_shape) == 2
+        # Batch size should be the same for input and output
+        assert ia_dimension_shape[0] == oa_dimension_shape[0]
         # If the batch size is 0, we discard it by setting it to 1 internally inside ZigZag
         batch_size = ia_dimension_shape[0]
         if batch_size == 0:
@@ -102,34 +102,25 @@ class GemmParser(Parser):
         C = ia_dimension_shape[1]
         K = oa_dimension_shape[1]
 
-        # Get the hw mapping of this node.
-        if self.node.name in self.mapping:
-            node_mapping = self.mapping[self.node.name]
-        else:
-            try:
-                node_mapping = self.mapping[self.node.op_type]
-            except:
-                try:
-                    node_mapping = self.mapping["default"]
-                except:
-                    raise ValueError(
-                        f"There is no mapping provided for node {self.node.name}, nor for {self.node.op_type} nor a default one."
-                    )
+        node_data = self.get_layer_node_input_format(B, C, K)
 
-        node_attrs = get_layer_node_input_format(
-            B, C, K, node_mapping, self.nodes_outputs
-        )
+        node_factory = LayerNodeFactory(node_data, self.mapping_data)
+        node_attrs = node_factory.create_node_attr()
+
+        # Override spatial mapping by the one defined in the core's dataflows
+        core_allocation = node_attrs.core_allocation
+        spatial_mapping = self.accelerator.get_spatial_mapping_from_core(core_allocation)
+        node_attrs.spatial_mapping = spatial_mapping
+
         # Get the node's input(s) and output(s) tensor names
         node_input_names = list(self.node.input)
         node_output_names = list(self.node.output)
-        op_type = "gemm"
-        node_obj = ComputationNode(
-            self.node_id,
-            node_attrs,
-            self.node.name,
-            node_input_names,
-            node_output_names,
-            op_type,
+        return ComputationNode(
+            node_id=self.node_id,
+            node_name=self.node.name,
+            node_attr=node_attrs,
+            input_names=node_input_names,
+            output_names=node_output_names,
+            op_type=self.op_type,
+            operand_tensor_reshape=None,
         )
-
-        return node_obj

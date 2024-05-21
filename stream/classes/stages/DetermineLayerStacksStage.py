@@ -7,7 +7,7 @@ from onnx.shape_inference import infer_shapes
 
 from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.workload.dummy_node import DummyNode
-from zigzag.classes.stages.Stage import Stage
+from zigzag.stages.Stage import Stage
 
 import logging
 
@@ -15,9 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 class DetermineLayerStacksStage(Stage):
-    def __init__(
-        self, list_of_callables, *, accelerator, workload, **kwargs
-    ):
+    def __init__(self, list_of_callables, *, accelerator, workload, **kwargs):
         super().__init__(list_of_callables, **kwargs)
         self.accelerator = accelerator
         self.workload = workload
@@ -32,9 +30,7 @@ class DetermineLayerStacksStage(Stage):
         for core in self.accelerator.cores.nodes():
             if core.id == self.accelerator.offchip_core_id:
                 continue  # skip offchip core
-            core_weight_capacity = core.memory_hierarchy.get_operand_top_level(
-                "I2"
-            ).memory_instance.size
+            core_weight_capacity = core.memory_hierarchy.get_operand_top_level("I2").memory_instance.size
             weight_capacities[core.id] = core_weight_capacity
 
         # Total weight capacity in bits
@@ -42,7 +38,7 @@ class DetermineLayerStacksStage(Stage):
 
     def run(self):
         if self.mode == "fused":
-            if self.layer_stacks is None: 
+            if self.layer_stacks is None:
                 if self.stack_cutoff is not None:
                     self.layer_stacks = self.get_layer_stacks_fused_single_fixed()
                 elif self.stack_cutoffs is not None:
@@ -54,7 +50,6 @@ class DetermineLayerStacksStage(Stage):
                 self.layer_stacks = self.get_layer_stacks_lbl()
         else:
             raise ValueError("Unsupported mode for layer stack determination.")
-        
 
         self.kwargs["accelerator"] = self.accelerator
         self.kwargs["workload"] = self.workload
@@ -67,8 +62,7 @@ class DetermineLayerStacksStage(Stage):
             yield cme, extra_info
 
     def get_layer_stacks_lbl(self):
-        return [(id,) for id in sorted([n.id[0] for n in self.workload.nodes() if isinstance(n, ComputationNode)])]
-
+        return [(id,) for id in sorted([n.id for n in self.workload.nodes() if isinstance(n, ComputationNode)])]
 
     def get_layer_stacks_fused(self):
         cumsum = 0
@@ -76,7 +70,7 @@ class DetermineLayerStacksStage(Stage):
         current_stack = []
         for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
-                id = n.id[0]
+                id = n.id
                 try:
                     op = next(op for op in n.constant_operands)
                 except:
@@ -84,7 +78,7 @@ class DetermineLayerStacksStage(Stage):
                     continue
                 size = n.operand_size_bit[op]
                 cumsum += size
-                ratio = cumsum/self.total_weight_capacity
+                ratio = cumsum / self.total_weight_capacity
                 if ratio > 1:
                     stacks.append(tuple(current_stack))
                     current_stack = [id]
@@ -93,7 +87,7 @@ class DetermineLayerStacksStage(Stage):
                     current_stack.append(id)
         # Add last stack
         stacks.append(tuple(current_stack))
-        
+
         return stacks
 
     def get_layer_stacks_fused_single(self):
@@ -105,7 +99,7 @@ class DetermineLayerStacksStage(Stage):
         first_complete = False
         for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
-                id = n.id[0]
+                id = n.id
                 if first_complete:
                     stacks.append(tuple(current_stack))
                     current_stack = [id]
@@ -117,7 +111,7 @@ class DetermineLayerStacksStage(Stage):
                     continue
                 size = n.operand_size_bit[op]
                 cumsum += size
-                ratio = cumsum/self.total_weight_capacity
+                ratio = cumsum / self.total_weight_capacity
                 if ratio > 1:
                     stacks.append(tuple(current_stack))
                     current_stack = [id]
@@ -127,18 +121,19 @@ class DetermineLayerStacksStage(Stage):
                     current_stack.append(id)
         # Add last stack
         stacks.append(tuple(current_stack))
-        
+
         return stacks
 
     def get_layer_stacks_fused_single_fixed(self):
         """
-        layers will be fused based on ids in stack cutoffs. if ratio of weights > 1, we switch to layer by layer"""
+        layers will be fused based on ids in stack cutoffs. if ratio of weights > 1, we switch to layer by layer
+        """
         assert not self.stack_cutoff is None, "stack_cutoff should be defined."
         stacks = []
         current_stack = []
         for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
-                id = n.id[0]
+                id = n.id
                 if id > self.stack_cutoff:
                     stacks.append(tuple(current_stack))
                     current_stack = [id]
@@ -146,12 +141,13 @@ class DetermineLayerStacksStage(Stage):
                     current_stack.append(id)
         # Add last stack
         stacks.append(tuple(current_stack))
-        
+
         return stacks
 
     def get_layer_stacks_fused_multiple_fixed(self):
         """
-        Only the first set of layers will be fused until fixed id, rest layer by layer"""
+        Only the first set of layers will be fused until fixed id, rest layer by layer
+        """
         assert not self.stack_cutoffs is None, "stack_cutoff should be defined."
         stacks = []
         current_stack = []
@@ -162,7 +158,7 @@ class DetermineLayerStacksStage(Stage):
         lbl = False  # flag to switch to layer by layer
         for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
-                id = n.id[0]
+                id = n.id
                 if lbl:
                     stacks.append(tuple(current_stack))
                     current_stack = [id]
@@ -172,7 +168,7 @@ class DetermineLayerStacksStage(Stage):
                     current_stack = [id]
                     cumsum = 0
                     if cutoff_idx <= len(self.stack_cutoffs) - 1:
-                        stack_cutoff = self.stack_cutoffs[cutoff_idx] 
+                        stack_cutoff = self.stack_cutoffs[cutoff_idx]
                         cutoff_idx += 1
                     else:
                         lbl = True
@@ -184,7 +180,7 @@ class DetermineLayerStacksStage(Stage):
                     continue
                 size = n.operand_size_bit[op]
                 cumsum += size
-                ratio = cumsum/self.total_weight_capacity
+                ratio = cumsum / self.total_weight_capacity
                 if ratio > 1:
                     stacks.append(tuple(current_stack))
                     current_stack = [id]
@@ -195,5 +191,5 @@ class DetermineLayerStacksStage(Stage):
                         current_stack.append(id)
         # Add last stack
         stacks.append(tuple(current_stack))
-        
+
         return stacks

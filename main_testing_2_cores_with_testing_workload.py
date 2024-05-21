@@ -1,6 +1,8 @@
-from zigzag.classes.stages import *
+from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
+from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
+from zigzag.stages.MainStage import MainStage
 from stream.classes.stages import *
-from stream.visualization.schedule import plot_timeline_brokenaxes
+from stream.visualization.schedule import plot_timeline_brokenaxes, visualize_timeline_plotly
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.plot_scme import (
     bar_plot_stream_cost_model_evaluations_breakdown,
@@ -12,25 +14,21 @@ import re
 import logging as _logging
 
 _logging_level = _logging.INFO
-_logging_format = (
-    "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-)
+_logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 #################################
 CN_define_mode = 1
 hint_loops = [("OY", "all")]
 
-accelerator = "stream.inputs.testing.hardware.dual_testing_core_offchip"
-workload_path = "stream.inputs.testing.workload.testing_workload_for_2_cores"
-mapping_path = "stream.inputs.testing.mapping.testing_mapping"
+accelerator = "stream/inputs/testing/hardware/dual_testing_core_offchip.yaml"
+workload_path = "stream/inputs/testing/workload/testing_workload_for_2_cores.yaml"
+mapping_path = "stream/inputs/testing/mapping/testing_mapping.yaml"
 
 
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
-experiment_id = (
-    f"{hw_name}-{wl_name}-CNmode_{CN_define_mode}-hintloop_{str(hint_loops)}"
-)
+experiment_id = f"{hw_name}-{wl_name}-CNmode_{CN_define_mode}-hintloop_{str(hint_loops)}"
 node_hw_cost_pkl_name = f"saved_CN_HW_cost-{experiment_id}"
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
@@ -40,7 +38,7 @@ plot_data_transfer = True
 
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
-        AcceleratorParserStage,  # Parses the accelerator
+        AcceleratorParserStage_,  # Parses the accelerator
         # StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
         UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
         GenerateCNWorkloadHybridStage,
@@ -66,30 +64,25 @@ mainstage = MainStage(
 
 # Launch the MainStage
 scme, _ = mainstage.run()
-scme = scme[0]
+scme: StreamCostModelEvaluation = scme[0]
 
 # Ploting Results
 plot_full_schedule = True
 draw_dependencies = True
+draw_communication = True
 plot_data_transfer = True
 section_start_percent = (0,)
 percent_shown = (100,)
-timeline_fig_path = "outputs/schedule_plot.png"
+timeline_fig_path = "outputs/schedule_plot.html"
 memory_fig_path = "outputs/memory_plot.png"
-breakdown_fig_path = "outputs/breakdown_plot.png"
 
-plot_timeline_brokenaxes(
+visualize_timeline_plotly(
     scme,
     draw_dependencies,
-    section_start_percent,
-    percent_shown,
-    plot_data_transfer,
+    draw_communication,
     fig_path=timeline_fig_path,
 )
-# plot_memory_usage(scme.accelerator.memory_manager, fig_path=memory_fig_path)
 
-# list_scme = []
-# list_scme.append(scme)
-# list_scme.append(scme)
-
-# bar_plot_stream_cost_model_evaluations_breakdown(list_scme, fig_path=breakdown_fig_path)
+print(f"Total network energy = {scme.energy:.2e} pJ")
+print(f"Total network latency = {scme.latency:.2e} cycles")
+plot_memory_usage(scme, fig_path=memory_fig_path)

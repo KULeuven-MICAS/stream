@@ -1,125 +1,68 @@
-import copy
-
-import networkx as nx
-
-from zigzag.classes.workload.layer_node import LayerNode
+from typing import Any
+from zigzag.workload.Workload import Workload
+from zigzag.workload.layer_node import LayerNode
 from stream.classes.workload.computation_node import ComputationNode
-from typing import Dict, Any
-from networkx import DiGraph
 
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-class DNNWorkload(DiGraph):
-    def __init__(
-        self, workload: Dict[Any, Dict], mapping: Dict[Any, Dict], accelerator, **attr
-    ):
+class DNNWorkloadStream(Workload):
+    def __init__(self, nodes: list[LayerNode], **attr: Any):
         """
         Collect all the algorithmic workload information here.
-        :param workload: user-defined workload file (py).
+        Similar to `DNNWorkload` from ZigZag, but returns a DiGraph of ComputationNodes instead of LayerNodes.
 
         :return (self): Directed Graph with nodes the layers and edges the connections between layers.
         """
         super().__init__(**attr)
 
-        layer_id_to_obj = {}  # Lookup dict for id to LayerNode object translation
-        self.layer_node_list = []
-        workload_saved = copy.deepcopy(workload)
+        layer_id_to_obj: dict[int, ComputationNode] = {}
+        self.layer_node_list = nodes
 
-        for i, (layer_id, layer) in enumerate(workload.items()):
-            """Add layer-core allocation to the layer attribute"""
-            if layer["operator_type"] in mapping:
-                core_allocation = mapping[layer["operator_type"]]["core_allocation"]
-            else:
-                try:
-                    core_allocation = mapping["default"]["core_allocation"]
-                except:
-                    raise ValueError(
-                        f"There is no mapping provided for layer {layer['operator_type']}, nor a default one."
-                    )
-            layer["core_allocation"] = core_allocation
+        # workload_saved = copy.deepcopy(workload)
 
-            """ Add spatial mapping to the layer attribute """
-            spatial_mapping = self.get_spatial_mappings(accelerator, core_allocation)
-            layer["spatial_mapping"] = spatial_mapping
+        for node in nodes:
 
-            """ Add temporal ordering to the layer attribute """
-            # TODO allow user to define fixed temporal loop order
-
-            """For each item in the dict generate the LayerNode and add it to the dnn graph G"""
-            layer_name = layer["operator_type"] + "_" + str(layer_id)
-            layer_input_names = [
-                l["operator_type"] + "_" + str(l_id) + "_output"
-                for (l_id, l) in workload_saved.items()
-                if l_id
-                in self.cat_lists_from_all_values_of_a_dict(layer["operand_source"])
+            # Create ComputationNode
+            node_name = f"{node.type}_{node.id}"
+            node_input_names = [
+                f"{other_layer_node.type}_{other_layer_node.id}"
+                for other_layer_node in nodes
+                if other_layer_node.id in node.input_operand_source.values()
             ]
-            layer_output_names = [
-                layer["operator_type"] + "_" + str(layer_id) + "_output"
-            ]
+            node_output_names = [f"{node_name}_output"]
+            if len(node_input_names) == 0:
+                node_input_names = ["the_first_input"]
 
-            if not layer_input_names:
-                layer_input_names = ["the_first_input"]
-            if not layer_output_names:
-                layer_input_names = ["the_last_output"]
-            logger.info(
-                f"Parsed layer node {layer_name} | INPUT {layer_input_names} | OUTPUT {layer_output_names}"
+            # Assume always define the final layer in the end
+            # produces_final_output = not layer_output_names # TODO don't understand this old piece of code
+            produces_final_output = False
+
+            op_type = node.type.lower()
+            node_attr = node.extract_node_attr()
+            computation_node = ComputationNode(
+                node_id=node.id,
+                node_name=node_name,
+                node_attr=node_attr,
+                input_names=node_input_names,
+                output_names=node_output_names,
+                op_type=op_type,
+                produces_final_output=produces_final_output,
             )
-            """ Assume always define the final layer in the end """
-            produces_final_output = not layer_output_names
-            op_type = layer["operator_type"].lower()
-            layer_node = ComputationNode(
-                (layer_id,),
-                layer,
-                layer_name,
-                layer_input_names,
-                layer_output_names,
-                op_type,
-                produces_final_output,
-                add_missing_node_attrs=True,
-            )
-            """Save this layer_id and LayerNode pair in the layer_id_to_obj dict"""
-            layer_id_to_obj[layer_id] = layer_node
-            self.add_node(layer_node)
-            self.layer_node_list.append(layer_node)
-            """Find all of its operand sources and add edges accordingly"""
-            edges = []
-            for op, parent_list in layer.get("operand_source", {}).items():
-                for parent_id in parent_list:
-                    parent_layer = layer_id_to_obj[parent_id]
-                    edges.append((parent_layer, layer_node))
-                    layer_node.input_operand_source[op] = parent_layer
-            self.add_edges_from(edges)
 
-    def topological_sort(self):
-        return nx.topological_sort(self)
+            # Add to graph
+            logger.info("Parsed layer node %s | INPUT %s | OUTPUT %s", node_name, node_input_names, node_output_names)
+            layer_id_to_obj[computation_node.id] = computation_node
+            self.add_workload_node(computation_node)
 
-    def get_node_with_id(self, id):
-        for node in self.nodes:
-            if node.id == id:
-                return node
-        raise ValueError(
-            "DNNWorkload instance does not have a node with the requested id"
-        )
-
-    @staticmethod
-    def get_spatial_mappings(accelerator, core_allocation):
-        # If there is only one possible core allocation, set the spatial mapping as the one(s) of that core
-        if isinstance(core_allocation, int):
-            core = accelerator.get_core(core_allocation)
-            spatial_mappings = core.dataflows
-        elif isinstance(core_allocation, list) and len(core_allocation) == 1:
-            core = accelerator.get_core(core_allocation[0])
-            spatial_mappings = core.dataflows
-        else:
-            spatial_mappings = None
-        return spatial_mappings
-
-    @staticmethod
-    def cat_lists_from_all_values_of_a_dict(dict_to_cat: Dict[Any, list]) -> list:
-        li_ca = []
-        for li in dict_to_cat.values():
-            li_ca.extend(li)
-        return li_ca
+            # Find all of its operand sources and add edges accordingly
+            edges: list[tuple[LayerNode, LayerNode]] = []
+            for _, parent_id in node.input_operand_source.items():
+                # for parent_id in parent_list:
+                if parent_id not in layer_id_to_obj:
+                    raise ValueError(f"Illegal reference to non-existent layer with id {parent_id}")
+                parent_node = layer_id_to_obj[parent_id]
+                edges.append((parent_node, computation_node))
+            self.add_workload_edges_from(edges)

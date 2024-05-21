@@ -1,0 +1,21 @@
+- name: default
+  core_allocation: [0, 1]
+
+- name: Conv
+  core_allocation: [0, 1]
+
+- name: pooling
+  core_allocation: [2]
+
+- name: MaxPool
+  core_allocation: [2]
+
+- name: AveragePool
+  core_allocation: [2]
+
+- name: simd
+  core_allocation: [3]
+
+- name: Add
+  core_allocation: [3]
+

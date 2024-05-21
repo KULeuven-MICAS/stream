@@ -1,11 +1,13 @@
 from stream.classes.workload.transpose_node import TransposeNode
-from zigzag.classes.io.onnx.parser import Parser
+from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 
 
-class TransposeParser(Parser):
+class TransposeParser(ONNXOperatorParser):
     """Parses an onnx reshape operator into a ReshapeNode."""
 
     def __init__(self, node_id, node, nodes_outputs, mapping, onnx_model) -> None:
+        raise NotImplementedError
+
         super().__init__(node_id, node, nodes_outputs, mapping, onnx_model)
 
     def run(self):
@@ -13,7 +15,7 @@ class TransposeParser(Parser):
 
     def generate_layer_node_for_transpose(self):
         # Get the predecessors of this node
-        predecessors = []
+        predecessors: list[int] = []
         for node_input in self.node.input:
             for n in self.nodes_outputs:
                 if node_input in self.nodes_outputs[n]:

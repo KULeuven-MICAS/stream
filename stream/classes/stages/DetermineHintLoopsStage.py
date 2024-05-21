@@ -6,7 +6,7 @@ from onnx import helper, numpy_helper
 
 from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.workload.dummy_node import DummyNode
-from zigzag.classes.stages.Stage import Stage
+from zigzag.stages.Stage import Stage
 
 import logging
 
@@ -14,9 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 class DetermineHintLoopsStage(Stage):
-    def __init__(
-        self, list_of_callables, *, accelerator, workload, layer_stacks, **kwargs
-    ):
+    def __init__(self, list_of_callables, *, accelerator, workload, layer_stacks, **kwargs):
         super().__init__(list_of_callables, **kwargs)
         self.accelerator = accelerator
         self.workload = workload
@@ -28,7 +26,7 @@ class DetermineHintLoopsStage(Stage):
 
     def run(self):
         if self.mode == "fused":
-            if self.hint_loops is None: 
+            if self.hint_loops is None:
                 self.hint_loops = self.get_hint_loops_fused()
                 self.kwargs["cn_define_mode"] = 3
         elif self.mode == "lbl":
@@ -36,7 +34,6 @@ class DetermineHintLoopsStage(Stage):
                 self.hint_loops = self.get_hint_loops_lbl()
         else:
             raise ValueError("Unsupported mode for hint loops determination.")
-        
 
         self.kwargs["accelerator"] = self.accelerator
         self.kwargs["workload"] = self.workload
@@ -72,7 +69,7 @@ class DetermineHintLoopsStage(Stage):
         return hint_loops
 
     def get_nb_computation_nodes(self, stack):
-        nodes = [n for n in self.workload.nodes() if n.id[0] in stack]
+        nodes = [n for n in self.workload.nodes() if n.id in stack]
         nb_computation_nodes = sum([isinstance(n, ComputationNode) for n in nodes])
         return nb_computation_nodes
 
@@ -129,9 +126,7 @@ class DetermineHintLoopsStage(Stage):
                 weight_input_shape = list(original_weight.dims)
                 break
         if weight_input_shape is None:
-            raise ValueError(
-                f"Could not determine shape of weight input of operator {node_name}."
-            )
+            raise ValueError(f"Could not determine shape of weight input of operator {node_name}.")
 
         # Get the shape of the bias of the operator (if it has a bias)
         has_bias = False
@@ -160,17 +155,11 @@ class DetermineHintLoopsStage(Stage):
                     node_output_is_graph_output = True
 
         if original_node_output_tensor is None:
-            raise ValueError(
-                f"Couldn't find {original_node_output_name} in value info."
-            )
+            raise ValueError(f"Couldn't find {original_node_output_name} in value info.")
 
         # Add the new output tensors to the value_info
-        original_output_elem_type = (
-            original_node_output_tensor.type.tensor_type.elem_type
-        )
-        original_output_shape = [
-            d.dim_value for d in original_node_output_tensor.type.tensor_type.shape.dim
-        ]
+        original_output_elem_type = original_node_output_tensor.type.tensor_type.elem_type
+        original_output_shape = [d.dim_value for d in original_node_output_tensor.type.tensor_type.shape.dim]
 
         output_channels = weight_input_shape[weight_output_channel_idx]
 
@@ -193,9 +182,7 @@ class DetermineHintLoopsStage(Stage):
             weight_name = f"{original_weight_name}_split_{i}"
             weight_shape = weight_input_shape
             weight_shape[weight_output_channel_idx] = split_size
-            weight_data = numpy_helper.from_array(
-                np.zeros(weight_shape), name=weight_name
-            )
+            weight_data = numpy_helper.from_array(np.zeros(weight_shape), name=weight_name)
             # Remove the zeros. Right now the new weight tensors have no actual values.
             weight_data.ClearField("raw_data")
             new_weights.append(weight_data)
@@ -203,13 +190,9 @@ class DetermineHintLoopsStage(Stage):
             if has_bias:
                 bias_name = f"{original_bias_name}_split_{i}"
                 bias_shape = bias_input_shape
-                assert (
-                    len(bias_shape) == 1
-                ), "Correct dim idx not implemented for > 1 bias dim."
+                assert len(bias_shape) == 1, "Correct dim idx not implemented for > 1 bias dim."
                 bias_shape[0] = split_size
-                bias_data = numpy_helper.from_array(
-                    np.zeros(bias_shape), name=bias_name
-                )
+                bias_data = numpy_helper.from_array(np.zeros(bias_shape), name=bias_name)
                 bias_data.ClearField("raw_data")
                 new_biases.append(bias_data)
 

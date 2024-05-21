@@ -1,0 +1,15 @@
+- name: layer_on_core0
+  core_allocation: [0]
+
+- name: layer_on_core1
+  core_allocation: [1]
+
+- name: layer_on_core2
+  core_allocation: [2]
+
+- name: layer_on_core3
+  core_allocation: [3]
+
+- name: default
+  core_allocation: [0]
+

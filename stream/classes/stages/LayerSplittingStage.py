@@ -1,14 +1,18 @@
 import os
 from math import ceil
+from typing import Any
 import numpy as np
 import onnx
 from onnx import helper, numpy_helper
+from onnx import ModelProto
 from onnx.shape_inference import infer_shapes
 
-from zigzag.classes.stages.Stage import Stage
+from stream.classes.workload.computation_node import ComputationNode
+from zigzag.datatypes import Constants, LayerOperand
+from zigzag.stages.Stage import Stage, StageCallable
 from stream.classes.workload.onnx_workload import ONNXWorkload
 from stream.classes.workload.node import Node
-from stream.classes.hardware.architecture.communication_link import CommunicationLink
+from stream.classes.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from zigzag.utils import pickle_deepcopy
 from stream.classes.stages import utils
@@ -17,12 +21,21 @@ from stream.classes.workload.dummy_node import DummyNode
 
 import logging
 
+from zigzag.workload.Workload import Workload
+from zigzag.workload.layer_node import LayerNode
+
 logger = logging.getLogger(__name__)
 
 
 class LayerSplittingStage(Stage):
     def __init__(
-        self, list_of_callables, *, accelerator, onnx_model, workload, **kwargs
+        self,
+        list_of_callables: list[StageCallable],
+        *,
+        accelerator: Accelerator,
+        onnx_model: ModelProto,
+        workload: ONNXWorkload,
+        **kwargs: Any,
     ):
         super().__init__(list_of_callables, **kwargs)
         self.accelerator = accelerator
@@ -30,12 +43,13 @@ class LayerSplittingStage(Stage):
         self.workload = workload
 
         # Set the required kwarg attributes
-        self.split_onnx_model_path = None
+        self.split_onnx_model_path: str | None = None
         self.split_W_double_buffered = None
         required_kwargs = ["split_onnx_model_path", "split_W_double_buffered"]
         utils.set_required_kwargs(required_kwargs, self)
 
         # Create subfolders for split model save path if they don't exist
+        assert self.split_onnx_model_path is not None
         dir_name = os.path.dirname(os.path.abspath(self.split_onnx_model_path))
         if not os.path.isdir(dir_name):
             os.makedirs(dir_name)
@@ -46,83 +60,60 @@ class LayerSplittingStage(Stage):
             self.split_W_percentage = 1
 
         # Get the weight capacity of all cores
-        weight_capacities = {}
-        for core in self.accelerator.cores.nodes():
+        weight_capacities: dict[int, int] = {}
+        for core in self.accelerator.core_iterator:
             if core.id == self.accelerator.offchip_core_id:
                 continue  # skip offchip core
-            core_weight_capacity = core.memory_hierarchy.get_operand_top_level(
-                "I2"
-            ).memory_instance.size
+            core_weight_capacity = core.memory_hierarchy.get_operand_top_level(Constants.MEM_OP_2).memory_instance.size
             weight_capacities[core.id] = core_weight_capacity
 
         # Get for each layer the split factor we need to be able to fit weights on possible cores
         split_factors = {}
-        for node in self.workload.nodes():
+        for node in self.workload.node_iterator:
             # Get the weight capacity of all possible core allocations of this node
-            core_allocations = node.core_allocation
-            if isinstance(node, DummyNode) or not isinstance(core_allocations, list):
+            if not isinstance(node, ComputationNode):
                 continue
-            core_capacities = [
-                weight_capacities[core_id] for core_id in core_allocations
-            ]
+            core_allocations = node.possible_core_allocation
+            core_capacities = [weight_capacities[core_id] for core_id in core_allocations]
             min_core_capacity = min(core_capacities)
             # Get the weight size of this layer
-            constant_operands = node.constant_operands
-            if not constant_operands:
+            if not node.constant_operands:
                 continue
-            if "W" in node.constant_operands:
-                constant_operand = "W"
-            elif "B" in node.constant_operands:
-                constant_operand = "B"
-            else:
-                raise NotImplementedError(
-                    f"Layer splitting not implemented for {node} with constant operands= {node.constant_operands}."
-                )
+
+            constant_operand = node.constant_operands[0]
             weight_size = node.operand_size_bit[constant_operand]
             if weight_size == 0:
                 continue
-            split_factor = ceil(
-                weight_size / (self.split_W_percentage * min_core_capacity)
-            )  # 0.5 for double buffering
+            split_factor = ceil(weight_size / (self.split_W_percentage * min_core_capacity))  # 0.5 for double buffering
             if split_factor == 1:
                 continue
             # Check if the split_factor is a divisor of the number of output channels
             try:
-                output_channels = node.loop_dim_size["K"]
+                output_channels = node.layer_dim_sizes[LayerOperand("K")]
             except KeyError:
-                raise NotImplementedError(
-                    f"Splitting on output channels requires 'K' loop."
-                )
+                raise NotImplementedError("Splitting on output channels requires 'K' loop.")
             while divmod(output_channels, split_factor)[1] != 0:
                 split_factor += 1
                 if split_factor > output_channels:
-                    raise ValueError(f"Something went wrong.")
+                    raise ValueError("Something went wrong.")
             split_factors[node] = split_factor
         self.split_factors = split_factors
 
         memory_hierarchy = self.accelerator.get_core(0).memory_hierarchy
-        top_level = memory_hierarchy.get_operand_top_level("I2")
+        top_level = memory_hierarchy.get_operand_top_level(Constants.MEM_OP_2)
         self.weight_size_bits = top_level.memory_instance.size
 
     def run(self):
-        for workload_node in self.workload.nodes():
+        for workload_node in self.workload.node_iterator:
             if workload_node.type == "conv" or workload_node.type == "gemm":
                 try:
                     corresponding_onnx_operator = next(
-                        (
-                            n
-                            for n in self.onnx_model.graph.node
-                            if n.name == workload_node.name
-                        )
+                        (n for n in self.onnx_model.graph.node if n.name == workload_node.name)
                     )
                 except StopIteration:
                     input_names = workload_node.input_names
                     corresponding_onnx_operator = next(
-                        (
-                            n
-                            for n in self.onnx_model.graph.node
-                            if n.input == input_names
-                        )
+                        (n for n in self.onnx_model.graph.node if n.input == input_names)
                     )
                 operator_name = corresponding_onnx_operator.name
                 # print(workload_node.name)
@@ -141,9 +132,7 @@ class LayerSplittingStage(Stage):
                     (
                         split_node_names,
                         concat_name,
-                    ) = self.split_operator(
-                        self.onnx_model, operator_name, split_factor
-                    )
+                    ) = self.split_operator(self.onnx_model, operator_name, split_factor)
 
                     logger.info(
                         f"Split {workload_node.name} into {split_factor} Conv nodes: {split_node_names} and Concat node: {concat_name}."
@@ -220,9 +209,7 @@ class LayerSplittingStage(Stage):
                 weight_input_shape = list(original_weight.dims)
                 break
         if weight_input_shape is None:
-            raise ValueError(
-                f"Could not determine shape of weight input of operator {node_name}."
-            )
+            raise ValueError(f"Could not determine shape of weight input of operator {node_name}.")
 
         # Get the shape of the bias of the operator (if it has a bias)
         has_bias = False
@@ -251,17 +238,11 @@ class LayerSplittingStage(Stage):
                     node_output_is_graph_output = True
 
         if original_node_output_tensor is None:
-            raise ValueError(
-                f"Couldn't find {original_node_output_name} in value info."
-            )
+            raise ValueError(f"Couldn't find {original_node_output_name} in value info.")
 
         # Add the new output tensors to the value_info
-        original_output_elem_type = (
-            original_node_output_tensor.type.tensor_type.elem_type
-        )
-        original_output_shape = [
-            d.dim_value for d in original_node_output_tensor.type.tensor_type.shape.dim
-        ]
+        original_output_elem_type = original_node_output_tensor.type.tensor_type.elem_type
+        original_output_shape = [d.dim_value for d in original_node_output_tensor.type.tensor_type.shape.dim]
 
         output_channels = weight_input_shape[weight_output_channel_idx]
 
@@ -284,9 +265,7 @@ class LayerSplittingStage(Stage):
             weight_name = f"{original_weight_name}_split_{i}"
             weight_shape = weight_input_shape
             weight_shape[weight_output_channel_idx] = split_size
-            weight_data = numpy_helper.from_array(
-                np.zeros(weight_shape), name=weight_name
-            )
+            weight_data = numpy_helper.from_array(np.zeros(weight_shape), name=weight_name)
             # Remove the zeros. Right now the new weight tensors have no actual values.
             weight_data.ClearField("raw_data")
             new_weights.append(weight_data)
@@ -294,13 +273,9 @@ class LayerSplittingStage(Stage):
             if has_bias:
                 bias_name = f"{original_bias_name}_split_{i}"
                 bias_shape = bias_input_shape
-                assert (
-                    len(bias_shape) == 1
-                ), "Correct dim idx not implemented for > 1 bias dim."
+                assert len(bias_shape) == 1, "Correct dim idx not implemented for > 1 bias dim."
                 bias_shape[0] = split_size
-                bias_data = numpy_helper.from_array(
-                    np.zeros(bias_shape), name=bias_name
-                )
+                bias_data = numpy_helper.from_array(np.zeros(bias_shape), name=bias_name)
                 bias_data.ClearField("raw_data")
                 new_biases.append(bias_data)
 

@@ -1,0 +1,36 @@
+name: pooling
+
+memories:
+  pooling_mem:
+    size: 4915200
+    r_bw: 512
+    w_bw: 512
+    r_cost: 0.01
+    w_cost: 0.01
+    area: 0
+    r_port: 0
+    w_port: 0
+    rw_port: 2
+    latency: 0
+    operands: [I1, I2,O]
+    ports:
+      - fh: rw_port_1
+        tl: rw_port_2
+      - fh: rw_port_1
+        tl: rw_port_2        
+      - fh: rw_port_1
+        tl: rw_port_2
+        fl: rw_port_1
+        th: rw_port_2
+    served_dimensions: [D1]
+
+multipliers:
+  input_precision: [8, 8]
+  multiplier_energy: 0.1 # pJ
+  multiplier_area: 0.01 # unit
+  dimensions: [D1]
+  sizes: [64]
+
+dataflows:
+  D1: 
+    - K, 64

@@ -1,25 +1,26 @@
+from typing import TYPE_CHECKING
 from brokenaxes import brokenaxes
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 from math import isnan
-from networkx import DiGraph
 import numpy as np
 import logging
-import plotly
-import plotly.express as px
 import plotly.graph_objects as go
 from plotly.express.colors import sample_colorscale
-from plotly.subplots import make_subplots
 import pandas as pd
 import pickle
 import networkx as nx
 import argparse
 from itertools import cycle
 
+from zigzag.workload.Workload import Workload
+
+if TYPE_CHECKING:
+    from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
+    from stream.classes.hardware.architecture.accelerator import Accelerator
 
 logger = logging.getLogger(__name__)
 
-from stream.classes.hardware.architecture.accelerator import Accelerator
 
 # MPL FONT SIZES
 SMALLER_SIZE = 11
@@ -38,17 +39,17 @@ PLOTLY_HATCH_TYPES = {
 
 
 def plot_timeline_brokenaxes(
-    scme,  # StreamCostModelEvaluation
-    draw_dependencies: object = True,
-    section_start_percent: object = (0, 50, 95),
-    percent_shown: object = (5, 5, 5),
-    plot_data_transfer: object = False,
-    fig_path: object = "outputs/schedule_plot.png",
-) -> object:
-    G: DiGraph = scme.workload
+    scme: "StreamCostModelEvaluation",
+    draw_dependencies: bool = True,
+    section_start_percent: tuple[int, ...] = (0, 50, 95),
+    percent_shown: tuple[int, ...] = (5, 5, 5),
+    plot_data_transfer: bool = False,
+    fig_path: str = "outputs/schedule_plot.png",
+) -> None:
+    G: Workload = scme.workload
     accelerator: Accelerator = scme.accelerator
 
-    nb_layers = len(set(iter([n.id[0] for n in G.nodes()])))
+    nb_layers = len(set(iter([n.id for n in G.nodes()])))
     nb_cores = accelerator.cores.number_of_nodes()
 
     plt.rc("font", size=SMALL_SIZE)  # controls default text sizes
@@ -80,8 +81,7 @@ def plot_timeline_brokenaxes(
 
     x_starts = [int((start / 100) * latency) for start in section_start_percent]
     x_ends = [
-        int(((start + percent) / 100) * latency)
-        for (start, percent) in zip(section_start_percent, percent_shown)
+        int(((start + percent) / 100) * latency) for (start, percent) in zip(section_start_percent, percent_shown)
     ]
 
     bax = brokenaxes(xlims=tuple(zip(x_starts, x_ends)), wspace=0.05, d=0.005)
@@ -97,7 +97,7 @@ def plot_timeline_brokenaxes(
     legend_labels = []
     height = 0.5
     for cn in G.nodes():
-        layer_id = cn.id[0]
+        layer_id = cn.id
         # Get the colour for this layer
         if layer_id not in layer_ids_seen:
             color = next(layer_colors)
@@ -105,7 +105,7 @@ def plot_timeline_brokenaxes(
         else:
             color = colors_seen[layer_ids_seen.index(layer_id)]
         x = cn.start  # + 0.05
-        y = cn.core_allocation - 0.25
+        y = cn.chosen_core_allocation - 0.25
         width = cn.runtime  # - 0.05
         if (
             (x_starts[0] <= x <= x_ends[0])
@@ -126,7 +126,7 @@ def plot_timeline_brokenaxes(
             )
             if ANNOTATE_CN_ID:
                 axs[0].annotate(
-                    f"{cn.id[1]}",
+                    f"{cn.sub_id}",
                     (x + width / 2, y + 0.25),
                     color="black",
                     weight="bold",
@@ -155,7 +155,7 @@ def plot_timeline_brokenaxes(
                 )
                 if ANNOTATE_CN_ID:
                     axs[ax_idx].annotate(
-                        f"{cn.id[1]}",
+                        f"{cn.sub_id}",
                         (x + width / 2, y + 0.25),
                         color="black",
                         weight="bold",
@@ -197,11 +197,9 @@ def plot_timeline_brokenaxes(
                 end = event.end
                 runtime = end - start
                 tensors = event.tensors
-                weight_transfer = task_type.lower() == "transfer" and tensors[
-                    0
-                ].layer_operand in ["W", "B"]
-                layer_id = tensors[0].origin.id[0]
-                node_id = tensors[0].origin.id[1]
+                weight_transfer = task_type.lower() == "transfer" and tensors[0].layer_operand in ["W", "B"]
+                layer_id = tensors[0].origin.id
+                node_id = tensors[0].origin.sub_id
                 if layer_id not in layer_ids_seen:
                     color = next(layer_colors)
                     colors_seen.append(color)
@@ -248,16 +246,14 @@ def plot_timeline_brokenaxes(
 
         """ Draw the divider line between schedule and data transfer """
         for ax in axs:
-            ax.axhline(
-                y=hline_loc, xmin=0, xmax=latency, c="black", linewidth=2, zorder=0
-            )
+            ax.axhline(y=hline_loc, xmin=0, xmax=latency, c="black", linewidth=2, zorder=0)
 
     """ Plot inter-layer CN data dependency line """
     for prod, cons in G.edges():
-        p_l = prod.id[0]
-        c_l = cons.id[0]
-        p_core = prod.core_allocation
-        c_core = cons.core_allocation
+        p_l = prod.id
+        c_l = cons.id
+        p_core = prod.chosen_core_allocation
+        c_core = cons.chosen_core_allocation
         if not PLOT_DEPENDENCY_LINES_SAME_CORE and p_core == c_core:
             continue
         p_start = prod.start
@@ -323,12 +319,8 @@ def legend_without_duplicate_labels(bax, loc, ncol):
     handles, labels = zip(*bax.get_legend_handles_labels())
     handles = [item for sublist in handles for item in sublist]
     labels = [item for sublist in labels for item in sublist]
-    unique = [
-        (h, l) for i, (h, l) in enumerate(zip(handles, labels)) if l not in labels[:i]
-    ]
-    unique.sort(
-        key=lambda x: int(x[1].split(" ")[1])
-    )  # Sort the labels based on the layer number
+    unique = [(h, l) for i, (h, l) in enumerate(zip(handles, labels)) if l not in labels[:i]]
+    unique.sort(key=lambda x: int(x[1].split(" ")[1]))  # Sort the labels based on the layer number
     bax.legend(*zip(*unique), loc=loc, ncol=ncol)
 
 
@@ -339,9 +331,7 @@ def major_formatter(x, pos):
 ########################## PLOTLY PLOTTING ########################
 def add_dependency_button(fig):
     show_bools = [True] * len(fig.data)
-    hide_bools = [
-        False if isinstance(trace, go.Scatter) else True for trace in fig.data
-    ]
+    hide_bools = [False if isinstance(trace, go.Scatter) else True for trace in fig.data]
     fig.update_layout(
         updatemenus=[
             {
@@ -373,22 +363,22 @@ def add_dependency_button(fig):
 def add_dependencies(fig, scme, colors, layer_ids):
     for node in scme.workload.nodes():
         c_id = node.id
-        c_l = node.id[0]
+        c_l = node.id
         if c_l not in layer_ids:
             continue
         preds = scme.workload.predecessors(node)
         for pred in preds:
             p_id = pred.id
-            p_l = pred.id[0]
+            p_l = pred.id
             if p_l == c_l:
                 continue  # Ignore intra layer edges
             p_start = pred.start
             p_runtime = pred.runtime
             p_end = pred.end
-            p_core = pred.core_allocation
+            p_core = pred.chosen_core_allocation
             c_start = node.start
             c_runtime = node.runtime
-            c_core = node.core_allocation
+            c_core = node.chosen_core_allocation
             legendgroup = f"Layer {c_l}"
             legendgrouptitle_text = legendgroup
             marker = {"color": colors[c_l]}
@@ -431,7 +421,7 @@ def get_communication_dicts(scme):
             energy = event.energy
             tensors = event.tensors
             node = event.tensors[0].origin
-            layer_id = node.id[0]
+            layer_id = node.id
             activity = event.activity
             if runtime == 0:
                 continue
@@ -453,11 +443,7 @@ def get_communication_dicts(scme):
 
 def get_real_input_tensors(n, G):
     preds = list(G.predecessors(n))
-    inputs = [
-        pred.operand_tensors[pred.output_operand]
-        for pred in preds
-        if pred.id[0] != n.id[0]
-    ]
+    inputs = [pred.operand_tensors[pred.output_operand] for pred in preds if pred.id != n.id]
     inputs += [n.operand_tensors[op] for op in n.constant_operands]
     return inputs
 
@@ -467,10 +453,10 @@ def get_dataframe_from_scme(scme, layer_ids, add_communication=False):
     dicts = []
     for node in nodes:
         id = node.id
-        layer = id[0]
+        layer = id
         if layer not in layer_ids:
             continue
-        core_id = node.core_allocation
+        core_id = node.chosen_core_allocation
         start = node.start
         end = node.end
         runtime = node.runtime
@@ -514,7 +500,7 @@ def visualize_timeline_plotly(
     layer_ids=None,
 ):
     if not layer_ids:
-        layer_ids = sorted(set(n.id[0] for n in scme.workload.nodes()))
+        layer_ids = sorted(set(n.id for n in scme.workload.nodes()))
     df = get_dataframe_from_scme(scme, layer_ids, draw_communication)
     # We get all the layer ids to get a color mapping for them
     layer_ids = sorted(list(set(df["Layer"].tolist())))

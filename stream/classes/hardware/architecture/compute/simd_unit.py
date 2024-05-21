@@ -1,8 +1,8 @@
 from typing import List
-from zigzag.classes.hardware.architecture.operational_unit import OperationalUnit
+from zigzag.hardware.architecture.operational_unit import OperationalUnit
 
 
-class PoolingUnit(OperationalUnit):
+class SimdUnit(OperationalUnit):
     def __init__(self, input_precision: List[int], energy_cost: float, area: float):
         """
         Initialize the Multiplier object.

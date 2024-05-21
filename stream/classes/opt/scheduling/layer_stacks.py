@@ -4,6 +4,7 @@ from networkx import DiGraph
 from stream.classes.hardware.architecture.accelerator import Accelerator
 
 from stream.classes.workload.computation_node import ComputationNode
+from zigzag.workload.Workload import Workload
 
 CONSTANT_MEMORY_OPERAND = "I2"
 
@@ -15,20 +16,13 @@ class LayerStackMode(Enum):
 
 
 def fits(occupations, core_capacities, occupation_factor):
-    return not any(
-        [
-            occupations[core_id] >= core_capacities[core_id] * occupation_factor
-            for core_id in occupations
-        ]
-    )
+    return not any([occupations[core_id] >= core_capacities[core_id] * occupation_factor for core_id in occupations])
 
 
-def update_occupations(workload, occupations, layer_id, group_ids):
+def update_occupations(workload: Workload, occupations, layer_id: int, group_ids: list[int]):
     for group_id in group_ids:
         # Find a node that has this layer and group id and extract its constant op size
-        node = next(
-            n for n in workload.nodes() if n.id[0] == layer_id and n.group == group_id
-        )
+        node = next(n for n in workload.nodes() if n.id == layer_id and n.group == group_id)
         constant_operands = node.constant_operands
         if not constant_operands:
             continue
@@ -39,7 +33,8 @@ def update_occupations(workload, occupations, layer_id, group_ids):
         assert memory_operand == CONSTANT_MEMORY_OPERAND
         # Get the size of the constant operand and add it to the current stack
         size = node.operand_size_bit[constant_operand]
-        allocation = node.core_allocation
+        allocation = node.chosen_core_allocation
+        assert allocation is not None
         occupations[allocation] += size
 
 
@@ -49,7 +44,7 @@ def get_layer_stacks_standard(workload: DiGraph):
     Args:
         workload (DiGraph): The workload.
     """
-    layer_ids = sorted(set(node.id[0] for node in workload.nodes()))
+    layer_ids = sorted(set(node.id for node in workload.nodes()))
     return [layer_ids]
 
 
@@ -64,7 +59,7 @@ def get_layer_stacks_occupation_based(
     for n in workload.nodes():
         if not isinstance(n, ComputationNode):
             continue
-        layer_id = n.id[0]
+        layer_id = n.id
         group_id = n.group
         if layer_id in layer_groups:
             layer_groups[layer_id].add(group_id)
@@ -73,9 +68,7 @@ def get_layer_stacks_occupation_based(
     # Active cores given the allocations of the workload
     active_core_ids = sorted(set(n.core_allocation for n in workload.nodes()))
     core_capacities = {
-        core_id: accelerator.get_core(core_id).get_memory_size_dict()[
-            CONSTANT_MEMORY_OPERAND
-        ][-1]
+        core_id: accelerator.get_core(core_id).get_memory_size_dict()[CONSTANT_MEMORY_OPERAND][-1]
         for core_id in active_core_ids
     }
     # Store all stacks
@@ -90,7 +83,7 @@ def get_layer_stacks_occupation_based(
         for original_node in generation:
             if not isinstance(original_node, ComputationNode):
                 continue
-            layer_id = original_node.id[0]
+            layer_id = original_node.id
             group_ids = layer_groups[layer_id]
             update_occupations(workload, occupations, layer_id, group_ids)
             # Check if the occupation exceeds the capacity * occupation_factor for any core

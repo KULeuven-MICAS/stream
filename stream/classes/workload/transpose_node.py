@@ -1,3 +1,4 @@
+from typing import Any
 import numpy as np
 from stream.classes.workload.node import Node
 
@@ -13,6 +14,8 @@ class TransposeNode(Node):
             input_names (list) The input names of this node.
             output_names (list): The output names of this node.
         """
+        raise NotImplementedError
+
         super().__init__(
             "transpose",
             onchip_energy=0,
@@ -24,7 +27,7 @@ class TransposeNode(Node):
         )
         self.input_operand_source = {"I": predecessors}
 
-    def transpose(self, input_tensor):
+    def transpose(self, input_tensor: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
         """Transpose an input tensor.
 
         Args:

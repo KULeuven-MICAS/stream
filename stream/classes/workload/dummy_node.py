@@ -1,5 +1,5 @@
-from typing import List
 from stream.classes.workload.node import Node
+from zigzag.datatypes import LayerOperand
 
 
 class DummyNode(Node):
@@ -9,23 +9,23 @@ class DummyNode(Node):
 
     def __init__(
         self,
-        id: int,
-        predecessors,
-        node_name,
-        input_names: List[str],
-        output_names: List[str],
+        node_id: int,
+        node_name: str,
+        predecessor: int | None,
+        input_names: list[str],
+        output_names: list[str],
         op_type: str = "dummy",
     ) -> None:
         super().__init__(
+            node_id=node_id,
+            node_name=node_name,
             type=op_type,
             onchip_energy=0,
             offchip_energy=0,
             runtime=0,
-            core_allocation=-1,
+            possible_core_allocation=[-1],
             input_names=input_names,
             output_names=output_names,
         )
-
-        self.id = id
-        self.input_operand_source = {"I": predecessors}
-        self.name = node_name
+        if predecessor is not None:
+            self.input_operand_source = {LayerOperand("I"): predecessor}

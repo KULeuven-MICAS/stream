@@ -11,6 +11,8 @@ class CommunicationNode(Node):
         Args:
             core_id (int): the core id on which the communication happens
         """
+        raise NotImplementedError
+
         super().__init__(
             type="communication",
             energy=0,

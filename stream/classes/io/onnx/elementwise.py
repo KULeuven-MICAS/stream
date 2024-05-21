@@ -1,13 +1,14 @@
 from stream.classes.workload.elementwise_node import ElementwiseNode
-from zigzag.classes.io.onnx.parser import Parser
+from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 
 
-class ElementwiseParser(Parser):
+class ElementwiseParser(ONNXOperatorParser):
     """Parser for onnx operators that perform an elementwise operation on two input tensors into a single output tensor.
     For example, an Add operator adds two tensors together in every position into one output tensor.
     """
 
     def __init__(self, node_id, node, nodes_outputs, mapping, onnx_model) -> None:
+        raise NotImplementedError
         super().__init__(node_id, node, nodes_outputs, mapping, onnx_model)
         self.type = node.op_type.lower()
         self.name = node.name
@@ -24,13 +25,9 @@ class ElementwiseParser(Parser):
                     predecessors.append(n)
 
         # Get the names of the two inputs
-        assert (
-            len(self.node.input) == 2
-        ), f"Elementwise node has more than two inputs: {self.node.input}"
+        assert len(self.node.input) == 2, f"Elementwise node has more than two inputs: {self.node.input}"
         input_names = [self.node.input[0], self.node.input[1]]
         # Get the output name
         output_names = [self.node.output[0]]
-        node_obj = ElementwiseNode(
-            self.type, self.name, predecessors, input_names, output_names
-        )
+        node_obj = ElementwiseNode(self.type, self.name, predecessors, input_names, output_names)
         return node_obj
