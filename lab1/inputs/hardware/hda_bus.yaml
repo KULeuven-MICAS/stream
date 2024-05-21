@@ -1,0 +1,13 @@
+name: tpu_like_quad_core
+cores:
+  # index corresponds to core ID
+  - ./cores/core_a.yaml
+  - ./cores/core_b.yaml
+  - ./cores/core_c.yaml
+  - ./cores/offchip.yaml
+
+graph:
+  type: bus
+  bandwidth: 32
+  unit_energy_cost: 0
+  offchip_core_id: 3
