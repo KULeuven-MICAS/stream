@@ -1,0 +1,3 @@
+- name: default
+  core_allocation: [0, 1, 2]
+  core_allocation_is_fixed: False
