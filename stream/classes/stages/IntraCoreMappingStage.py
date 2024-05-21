@@ -144,7 +144,7 @@ class IntraCoreMappingStage(Stage):
                     # Compute this (node, core) combination's optimal mapping
                     else:
                         # Set the node's core allocation to the core_id we want to extract hw performance for
-                        node.set_chosen_core_allocation(core_id)
+                        node.set_core_allocation(core_id)
                         # Set the node's spatial mapping to the possible spatial mappings of the current core
                         node.spatial_mapping = core.dataflows if core.dataflows is not None else SpatialMapping.empty()
                         # Initialize the flow that will be followed to extract the optimal HW performance of every unique node-core allocation
@@ -156,7 +156,7 @@ class IntraCoreMappingStage(Stage):
                         answers = main_stage.run()
                         assert len(answers) == 1, "IntraCoreMappingStage's subflow returned more than one CME"
                         cme = answers[0][0]
-                        node.chosen_core_allocation = None  # Reset the node's core allocation
+                        node.core_allocation = None  # Reset the node's core allocation
                         self.node_hw_performances[node][core] = cme
                         self.save_node_hw_performances()  # Save the hw performances dict after every node is finished
         self.visualize_node_hw_performances()

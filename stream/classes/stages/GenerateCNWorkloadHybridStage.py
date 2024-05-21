@@ -135,7 +135,7 @@ class GenerateCNWorkloadHybridStage(Stage):
 
     @staticmethod
     def get_scheduling_order(workload: Workload):
-        return sorted((n.id for n in workload.nodes()), reverse=True)
+        return sorted(((n.id, n.sub_id) for n in workload.nodes()), reverse=True)
 
     @staticmethod
     def get_all_node_pairs(G: Workload) -> tuple[tuple[ComputationNode, ComputationNode, bool], ...]:
@@ -367,8 +367,12 @@ class GenerateCNWorkloadHybridStage(Stage):
                 produces_final_output=produces_final_output,
                 group_id=group_id,
             )
-            # Override property
+            # Override loop_ranges property
             finer_node.update_loop_ranges(dim_min_max)
+            # Re-calculate pr loop ranges based on new loop_ranges
+            finer_node.calculate_pr_loop_ranges()
+            # Re-set the operand tensors for the new loop_ranges
+            finer_node.set_operand_tensors()
 
             # Initialize the priorities (total inter-CN data reuse factor) for the constant operands of this finer_node
             for constant_operand in finer_node.constant_operands:
@@ -436,6 +440,7 @@ class GenerateCNWorkloadHybridStage(Stage):
         # where the onnx tensors are always flattened back to 4D (merging the G+C or G+K into one channel dimension)
         dimensions, loop_ranges = self.flatten_grouped_convolution_ranges(producer, consumer, dimensions, loop_ranges)
         bounding_box = [loop_ranges[dim] for dim in dimensions]
+        print(bounding_box)
 
         if not interleaved:
             bounding_box_flat = tuple([item for sublist in bounding_box for item in sublist])
@@ -631,7 +636,7 @@ class GenerateCNWorkloadHybridStage(Stage):
         all_inter_edges: list[tuple[ComputationNode, ComputationNode, dict[str, Any]]] = []
         for path_between in paths_between_generator:
             dependent_operand = Constants.OUTPUT_LAYER_OP
-            ## FIRST NODE
+            # FIRST NODE
             # First node in the path is a ComputationNode, of which we extract the output operand dependency tensor
             node = path_between[0]
             assert isinstance(node, ComputationNode), "First node in path should be ComputationNode"
@@ -642,12 +647,12 @@ class GenerateCNWorkloadHybridStage(Stage):
                 tensor_cns = self.get_tensor_cns(node, finer_nodes)
                 numpy_tensors[node] = tensor_cns
                 tensor = tensor_cns[Constants.OUTPUT_LAYER_OP]
-            ## INTERMEDIATE NON-COMPUTATION NODES
+            # INTERMEDIATE NON-COMPUTATION NODES
             for _, node in enumerate(path_between[1:-1], start=1):
                 if isinstance(node, ComputationNode):
                     raise ValueError("Intermediate nodes should not be of type ComputationNode.")
                 tensor = self.propagate_cn_production_for_non_cn(node, tensor)
-            ## LAST NODE IN PATH
+            # LAST NODE IN PATH
             last_node: Node = path_between[-1]
             # Find the operand for which this last node connects to its predecessor
 

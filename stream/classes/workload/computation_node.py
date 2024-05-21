@@ -82,6 +82,13 @@ class ComputationNode(LayerNode, Node):
         # Each ComputationNode will save a tensor for all its defined operands.
         # For example, a conv layer will have an I tensor, W tensor and O tensor.
         self.operand_tensors: dict[LayerOperand, Tensor] = {}
+        self.set_operand_tensors()
+
+        # Will be set by the InterCoreMappingStage or by the FitnessEvaluator
+        self.too_large_operands = None
+        self.nb_real_predecessors = None
+
+    def set_operand_tensors(self):
         for op in self.layer_operands:
             if op == Constants.OUTPUT_LAYER_OP:
                 precision = self.operand_precision.final_output_precision
@@ -98,10 +105,6 @@ class ComputationNode(LayerNode, Node):
                 loop_dimensions=op_dimensionality_order,
                 loop_ranges=ranges,
             )
-
-        # Will be set by the InterCoreMappingStage or by the FitnessEvaluator
-        self.too_large_operands = None
-        self.nb_real_predecessors = None
 
     def get_operand_tensor_reshape_default(self) -> OperandTensorReshape | None:
         try:

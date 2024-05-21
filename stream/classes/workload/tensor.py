@@ -18,7 +18,7 @@ class Tensor:
         origin: "ComputationNode",
         layer_operand: LayerOperand,
         loop_dimensions: list[LayerDim],
-        loop_ranges: tuple[int, int],
+        loop_ranges: tuple[tuple[int, int], ...],
     ):
         """Initialize the Tensor instance.
 
@@ -61,7 +61,7 @@ class Tensor:
     #         self.loop_ranges == __o.loop_ranges
 
     def equality_hash(self):
-        return hash((self.origin.id, self.origin.sub_id, self.layer_operand, self.loop_ranges))
+        return hash((self.origin.id, self.layer_operand, self.loop_ranges))
 
     def set_base_priorities(self, base_priority):
         self.base_priority = base_priority

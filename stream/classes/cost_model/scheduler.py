@@ -81,7 +81,7 @@ def get_best_candidate(candidates: list[ComputationNode], scheduling_order: list
     if not candidates:
         raise ValueError("There are no candidates to schedule.")
     preds_ends, cn_candidates = zip(*candidates)
-    idxs = [scheduling_order.index(n.id) for n in cn_candidates]
+    idxs = [scheduling_order.index((n.id, n.sub_id)) for n in cn_candidates]
     best_candidate_idx = idxs.index(min(idxs))
     best_candidate = cn_candidates[best_candidate_idx]
     preds_end = preds_ends[best_candidate_idx]
@@ -264,7 +264,7 @@ def schedule_graph(
     offchip_core_id = accelerator.offchip_core_id
     offchip_core = accelerator.get_core(offchip_core_id)
 
-    ## Schedule preparation:
+    # Schedule preparation:
     # 1. Initialize the memory instance priorities for each tensor
     initialize_priorities(G, accelerator)
     # 2. Add the constant operand tensors of all nodes to the off-chip initially
@@ -292,9 +292,9 @@ def schedule_graph(
         core = accelerator.get_core(core_id)
         # Earliest start time is when core is available or predecessors finished
         start = max(cores_idle_from[core_id], preds_end)
-        ## Step 0
+        # Step 0
         tensors_this_candidate_needs, tensors_operands = get_tensors_needed_for_node(best_candidate, G)
-        ## Step 1
+        # Step 1
         # There could be operands that are too large to store in the highest memory on the core
         # The tensors stored in these memories should be evicted and potentially written back to off-chip
         # Clear these memories (this might delay the potential start time if things have to written to off-chip)
@@ -312,7 +312,7 @@ def schedule_graph(
         )
         total_eviction_to_offchip_link_energy += clear_link_energy
         total_eviction_to_offchip_memory_energy += clear_memory_energy
-        ## Step 2
+        # Step 2
         # The computation might need tensors that are currently not present in the core's memories
         # We need to fetch these tensors from either off-chip or from the core where they are present
         # Transfer these tensors from wherever they are currently residing to this core
@@ -343,7 +343,7 @@ def schedule_graph(
             total_eviction_to_offchip_link_energy += eviction_link_energy_cost
             total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
 
-        ## Step 3
+        # Step 3
         # Check if we had any operands that were too large to store in the core's memory, block the relevant off-chip link for the duration
         # This might again delay the execution if the offchip link was already blocked by another core
         timestep = accelerator.block_offchip_links(
@@ -354,7 +354,7 @@ def schedule_graph(
             best_candidate,
         )
 
-        ## Step 4
+        # Step 4
         # Make space for the output tensor of this computation node and spawn it when evictions are complete
         # If the output operand is in the too large operands, add it to off-chip, otherwise add it to this core's output memory
         output_layer_operand = best_candidate.output_operand
@@ -387,7 +387,7 @@ def schedule_graph(
             available_timestep=end,
         )
 
-        ## Step 5
+        # Step 5
         # Update the start and end time of the node
         best_candidate.set_start(start)
         best_candidate.set_end(end)
@@ -400,7 +400,7 @@ def schedule_graph(
         # Add this node to the scheduled nodes
         scheduled_nodes.add(best_candidate)
 
-        ## Step 6
+        # Step 6
         # Memory usage: When the node ends:
         # Decrease the priority of all the tensors this node used
         decrease_priority(tensors_this_candidate_needs, tensors_operands, accelerator, best_candidate)
@@ -413,7 +413,7 @@ def schedule_graph(
             end,
         )
 
-        ## Step 7
+        # Step 7
         # Memory usage: When the node ends:
         # If this node is a sink node (node that has no successors and that produces a final output), transfer final outputs to offchip
         if best_candidate in sink_layer_nodes:
@@ -433,7 +433,7 @@ def schedule_graph(
                 total_sink_layer_output_offchip_link_energy += link_energy_cost
                 total_sink_layer_output_offchip_memory_energy += memory_energy_cost
 
-        ## Step 8
+        # Step 8
         # For each successor of this node, check if all of its predecessors have been scheduled
         for successor in sorted(G.successors(best_candidate)):
             if all((pred in scheduled_nodes for pred in G.predecessors(successor))):
@@ -448,7 +448,7 @@ def schedule_graph(
         nb_scheduled_nodes += 1
         done = nb_scheduled_nodes == nb_graph_nodes
 
-    ## Step 9
+    # Step 9
     # The total schedule latency is the max of all CN end times and the link end times
     cns_end_time = max((n.end for n in G.nodes()))
     links_end_time = max([event.end for event in accelerator.communication_manager.events], default=0)
