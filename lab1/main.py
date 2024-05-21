@@ -18,6 +18,7 @@ from zigzag.stages.MainStage import MainStage
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(levelname)s - %(message)s"
 _logging.basicConfig(level=_logging_level, format=_logging_format)
+logger = _logging.getLogger(__name__)
 ####################################################################################
 
 ############################## Provide inputs ######################################
@@ -78,6 +79,9 @@ mainstage = MainStage(
 # Launch the MainStage
 scme, _ = mainstage.run()
 scme = scme[0]
+
+# Log total energy and latency
+logger.info(f"Total energy: {scme.energy:.3e}; Total latency: {scme.latency:.3e}")
 
 # Ploting Results
 plot_full_schedule = True
