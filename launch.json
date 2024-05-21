@@ -5,36 +5,28 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "Python: lab4/main_fixed.py",
+            "name": "Python: lab1/main.py",
             "type": "python",
             "request": "launch",
-            "program": "lab4/main_fixed.py",
+            "program": "lab1/main.py",
             "console": "integratedTerminal",
             "justMyCode": true
         },
         {
-            "name": "Python: lab4/main_layer_by_layer.py",
+            "name": "Python: lab2/main.py",
             "type": "python",
             "request": "launch",
-            "program": "lab4/main_layer_by_layer.py",
+            "program": "lab2/main.py",
             "console": "integratedTerminal",
             "justMyCode": true
         },
         {
-            "name": "Python: lab4/main_layer_fused.py",
+            "name": "Python: lab3/main.py",
             "type": "python",
             "request": "launch",
-            "program": "lab4/main_layer_fused.py",
+            "program": "lab3/main.py",
             "console": "integratedTerminal",
             "justMyCode": true
-        },
-        {
-            "name": "Python: lab4/main.py",
-            "type": "python",
-            "request": "launch",
-            "program": "lab4/main.py",
-            "console": "integratedTerminal",
-            "justMyCode": true
-        },
+        }
     ]
 }
