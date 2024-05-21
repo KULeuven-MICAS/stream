@@ -1,0 +1,17 @@
+name: tpu_like_quad_core
+cores:
+  # index corresponds to core ID
+  - core_a.yaml
+  - core_b.yaml
+  - core_c.yaml
+  - tpu_like.yaml
+  - pooling.yaml
+  - simd.yaml
+  - offchip.yaml
+
+bus:
+  bandwidth: 32
+  unit_energy_cost: 0
+  pooling_core_id: 4
+  simd_core_id: 5
+  offchip_core_id: 6
