@@ -1,0 +1,15 @@
+- name: Layer0
+  core_allocation: [2]
+  core_allocation_is_fixed: True
+- name: Layer1
+  core_allocation: [2]
+  core_allocation_is_fixed: True
+- name: Layer2
+  core_allocation: [2]
+  core_allocation_is_fixed: True
+- name: Layer3
+  core_allocation: [2]
+  core_allocation_is_fixed: True
+- name: default
+  core_allocation: [2]
+  core_allocation_is_fixed: True
