@@ -1,0 +1,62 @@
+- name: /avgpool/GlobalAveragePool
+  core_allocation: (4,)
+- name: /conv1/Conv
+  core_allocation: (1,)
+- name: /fc/Gemm
+  core_allocation: (3,)
+- name: /layer1/layer1.0/Add
+  core_allocation: (5,)
+- name: /layer1/layer1.0/conv1/Conv
+  core_allocation: (0,)
+- name: /layer1/layer1.0/conv2/Conv
+  core_allocation: (0,)
+- name: /layer1/layer1.1/Add
+  core_allocation: (5,)
+- name: /layer1/layer1.1/conv1/Conv
+  core_allocation: (2,)
+- name: /layer1/layer1.1/conv2/Conv
+  core_allocation: (2,)
+- name: /layer2/layer2.0/Add
+  core_allocation: (5,)
+- name: /layer2/layer2.0/conv1/Conv
+  core_allocation: (2,)
+- name: /layer2/layer2.0/conv2/Conv
+  core_allocation: (2,)
+- name: /layer2/layer2.0/downsample/downsample.0/Conv
+  core_allocation: (2,)
+- name: /layer2/layer2.1/Add
+  core_allocation: (5,)
+- name: /layer2/layer2.1/conv1/Conv
+  core_allocation: (3,)
+- name: /layer2/layer2.1/conv2/Conv
+  core_allocation: (3,)
+- name: /layer3/layer3.0/Add
+  core_allocation: (5,)
+- name: /layer3/layer3.0/conv1/Conv
+  core_allocation: (1,)
+- name: /layer3/layer3.0/conv2/Conv
+  core_allocation: (1, 2)
+- name: /layer3/layer3.0/downsample/downsample.0/Conv
+  core_allocation: (0,)
+- name: /layer3/layer3.1/Add
+  core_allocation: (5,)
+- name: /layer3/layer3.1/conv1/Conv
+  core_allocation: (1, 2)
+- name: /layer3/layer3.1/conv2/Conv
+  core_allocation: (0, 2)
+- name: /layer4/layer4.0/Add
+  core_allocation: (5,)
+- name: /layer4/layer4.0/conv1/Conv
+  core_allocation: (1, 3, 1, 3)
+- name: /layer4/layer4.0/conv2/Conv
+  core_allocation: (2, 1, 2, 2, 0, 1, 1, 3)
+- name: /layer4/layer4.0/downsample/downsample.0/Conv
+  core_allocation: (1,)
+- name: /layer4/layer4.1/Add
+  core_allocation: (5,)
+- name: /layer4/layer4.1/conv1/Conv
+  core_allocation: (2, 2, 2, 1, 1, 3, 2, 3)
+- name: /layer4/layer4.1/conv2/Conv
+  core_allocation: (0, 2, 1, 1, 3, 3, 3, 0)
+- name: /maxpool/MaxPool
+  core_allocation: (4,)

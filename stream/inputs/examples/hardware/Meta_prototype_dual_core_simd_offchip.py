@@ -4,7 +4,7 @@ from stream.inputs.examples.hardware.cores.Meta_prototype_like import (
 from stream.inputs.examples.hardware.cores.pooling import get_core as get_pooling_core
 from stream.inputs.examples.hardware.cores.simd import get_core as get_simd_core
 from stream.inputs.examples.hardware.cores.offchip import get_offchip_core
-from stream.inputs.examples.hardware.nocs.mesh_2d import get_2d_mesh
+from stream.classes.hardware.architecture.mesh_2d import get_2d_mesh
 from stream.classes.hardware.architecture.accelerator import Accelerator
 
 cores = [get_meta_prototype_core(id) for id in range(2)]  # 2 identical cores

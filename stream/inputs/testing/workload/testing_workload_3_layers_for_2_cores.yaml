@@ -1,0 +1,56 @@
+- id: 0
+  operator_type: layer_on_core0
+  equation: O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]
+  dimension_relations: [ix=1*ox+1*fx, iy=1*oy+1*fy]
+  loop_dims : [B, K, C, OY, OX, FY, FX]
+  loop_sizes: [1, 3, 64, 7, 12500, 3, 3]
+  operand_precision:
+    O: 16
+    O_final: 8
+    W: 8
+    I: 8
+  operand_source:
+    W: 0
+    I: 0
+  pr_loop_dims: [IY, IX]
+  padding:
+    - [0, 0]
+    - [1, 1]
+
+- id: 1
+  operator_type: layer_on_core1
+  equation: O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]
+  dimension_relations: [ix=1*ox+1*fx, iy=1*oy+1*fy]
+  loop_dims : [B, K, C, OY, OX, FY, FX]
+  loop_sizes: [1, 8, 3, 5, 12500, 3, 3]
+  operand_precision:
+    O: 16
+    O_final: 8
+    W: 8
+    I: 8
+  operand_source:
+    W: 1
+    I: 0
+  pr_loop_dims: [IY, IX]
+  padding:
+    - [0, 0]
+    - [1, 1]
+
+- id: 2
+  operator_type: layer_on_core0
+  equation: O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][iy][ix]
+  dimension_relations: [ix=1*ox+1*fx, iy=1*oy+1*fy]
+  loop_dims : [B, K, C, OY, OX, FY, FX]
+  loop_sizes: [1, 8, 8, 3, 12500, 3, 3]
+  operand_precision:
+    O: 16
+    O_final: 8
+    W: 8
+    I: 8
+  operand_source:
+    W: 2
+    I: 1
+  pr_loop_dims: [IY, IX]
+  padding:
+    - [0, 0]
+    - [1, 1]

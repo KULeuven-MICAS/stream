@@ -1,5 +1,4 @@
 import matplotlib.pyplot as plt
-from matplotlib.offsetbox import AnchoredText
 import numpy
 
 
@@ -29,13 +28,9 @@ class StatisticsEvaluator:
 
             for individual in pop:
                 if len(self.fitness_evaluator.metrics) == 1:
-                    first_metric = second_metric = self.fitness_evaluator.get_fitness(
-                        individual
-                    )
+                    first_metric = second_metric = self.fitness_evaluator.get_fitness(individual)
                 elif len(self.fitness_evaluator.metrics) == 2:
-                    first_metric, second_metric = self.fitness_evaluator.get_fitness(
-                        individual
-                    )
+                    first_metric, second_metric = self.fitness_evaluator.get_fitness(individual)
                 elif len(self.fitness_evaluator.metrics) == 3:
                     (
                         first_metric,
@@ -109,9 +104,7 @@ class StatisticsEvaluator:
 
         for individual in pop:
             if len(self.fitness_evaluator.metrics) == 2:
-                first_metric, second_metric = self.fitness_evaluator.get_fitness(
-                    individual
-                )
+                first_metric, second_metric = self.fitness_evaluator.get_fitness(individual)
                 third_metirc = first_metric  # unrelevant assignment
             elif len(self.fitness_evaluator.metrics) == 3:
                 (
@@ -166,10 +159,6 @@ class StatisticsEvaluator:
             plt.show()
 
         else:
-            from mpl_toolkits.mplot3d import Axes3D
-            import matplotlib.pyplot as plt
-            import numpy as np
-
             plt.clf()
             fig = plt.figure()
             ax = fig.add_subplot(111, projection="3d")
@@ -196,9 +185,7 @@ class StatisticsEvaluator:
         means = numpy.mean(x, axis=0).tolist()
 
         for i in range(len(means)):
-            means[i] = numpy.format_float_scientific(
-                means[i], precision=2, min_digits=2
-            )
+            means[i] = numpy.format_float_scientific(means[i], precision=2, min_digits=2)
 
         return means
 

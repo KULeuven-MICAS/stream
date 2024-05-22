@@ -1,11 +1,16 @@
+from typing import Any, TypeAlias
 from math import prod
-from typing import Dict
 
 import numpy as np
 
 from stream.classes.workload.node import Node
 from stream.classes.workload.tensor import Tensor
-from zigzag.classes.workload.layer_node import LayerNode
+from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
+from zigzag.workload.layer_attributes import LayerPadding
+from zigzag.workload.layer_node import LayerNode, LayerNodeAttributes
+
+OperandTensorReshape: TypeAlias = dict[LayerOperand, tuple[int, int, int, int]]
+LoopRanges: TypeAlias = dict[LayerDim, tuple[int, int]]
 
 
 class ComputationNode(LayerNode, Node):
@@ -24,67 +29,75 @@ class ComputationNode(LayerNode, Node):
 
     def __init__(
         self,
-        node_id,
-        node_attrs,
-        node_name,
-        input_names,
-        output_names,
-        op_type="computation",
-        produces_final_output=False,
-        add_missing_node_attrs=False,
-        group_id=0,
+        node_id: int,
+        node_name: str,
+        node_attr: LayerNodeAttributes,
+        input_names: list[str],
+        output_names: list[str],
+        op_type: str = "computation",
+        operand_tensor_reshape: OperandTensorReshape | None = None,
+        produces_final_output: bool = False,
+        group_id: int = 0,
+        # To distinguish alternative versions of this node
+        sub_id: int = -1,
     ):
-        assert isinstance(
-            node_id, tuple
-        ), "node_id of ComputationNode initialization should be a tuple: (Layer number, Node number of that layer)"
 
-        if isinstance(node_attrs["core_allocation"], int):
-            node_attrs["core_allocation"] = [node_attrs["core_allocation"]]
-
-        LayerNode.__init__(self, node_id, node_attrs, node_name)
+        LayerNode.__init__(self, layer_id=node_id, node_name=node_name, node_attr=node_attr)
         Node.__init__(
             self,
+            node_id=node_id,
+            node_name=node_name,
             type=op_type,
-            onchip_energy=None,
-            offchip_energy=None,
-            runtime=None,
-            core_allocation=node_attrs.get("core_allocation", None),
+            onchip_energy=0,
+            offchip_energy=0,
+            runtime=0,
+            possible_core_allocation=node_attr.core_allocation,
             input_names=input_names,
             output_names=output_names,
         )
 
-        # Save the group id
+        self.sub_id = sub_id
         self.group = group_id
-
-        # Save whether this ComputationNode produces a final output
+        self.operand_tensor_reshape = (
+            operand_tensor_reshape if operand_tensor_reshape is not None else self.get_operand_tensor_reshape_default()
+        )
+        # Whether this ComputationNode produces a final output
         self.produces_final_output = produces_final_output
 
-        # Save the loop ranges of this ComputationNode
-        self.loop_ranges: Dict[str, tuple] = node_attrs.get(
-            "loop_ranges", {dim: (0, size) for dim, size in self.loop_dim_size.items()}
-        )
-        self.calculate_pr_loop_ranges()  # adds pr dimensions loop ranges to self.loop_ranges
+        # self.loop_ranges: dict[str, tuple] = node_attrs.get(
+        #     "loop_ranges", {dim: (0, size) for dim, size in self.loop_dim_size.items()}
+        # )
+        self.loop_ranges: LoopRanges = {layer_dim: (0, size) for layer_dim, size in self.layer_dim_sizes.items()}
+
+        # adds pr dimensions loop ranges to self.loop_ranges
+        self.calculate_pr_loop_ranges()
         # Rename methods mentioning layer to node
-        self.attrs = self.layer_attrs
         self.extract_node_info = self.extract_layer_info
-        self.get_node_operand = self.get_layer_operand
+        # Rename function
+        self.get_node_operand = self.memory_operand_links.mem_to_layer_op
+        self.operand_dimensionality_order: dict[LayerOperand, list[LayerDim]] = {
+            layer_op: self.equation.get_r_layer_dims(layer_op) for layer_op in self.equation.get_contained_operands()
+        }
 
         # Each ComputationNode will save a tensor for all its defined operands.
         # For example, a conv layer will have an I tensor, W tensor and O tensor.
-        self.operand_tensors = {}
-        for op in self.operand_list:
-            if op == "O":
-                precision = self.operand_precision["O_final"]
+        self.operand_tensors: dict[LayerOperand, Tensor] = {}
+        self.set_operand_tensors()
+
+        # Will be set by the InterCoreMappingStage or by the FitnessEvaluator
+        self.too_large_operands = None
+        self.nb_real_predecessors = None
+
+    def set_operand_tensors(self):
+        for op in self.layer_operands:
+            if op == Constants.OUTPUT_LAYER_OP:
+                precision = self.operand_precision.final_output_precision
             else:
                 precision = self.operand_precision[op]
+
             op_dimensionality_order = self.operand_dimensionality_order[op]
             ranges = tuple([self.loop_ranges[dim] for dim in op_dimensionality_order])
-            size = (
-                prod(
-                    [upper_bound - lower_bound for (lower_bound, upper_bound) in ranges]
-                )
-                * precision
-            )
+            size = prod([upper_bound - lower_bound for (lower_bound, upper_bound) in ranges]) * precision
             self.operand_tensors[op] = Tensor(
                 size=size,
                 origin=self,
@@ -93,34 +106,22 @@ class ComputationNode(LayerNode, Node):
                 loop_ranges=ranges,
             )
 
-        self.too_large_operands = (
-            None  # Will be set by the InterCoreMappingStage or by the FitnessEvaluator
-        )
-        self.nb_real_predecessors = None
-
-        """ Add missing layer attr info: operand_tensor_reshape and pr_loop_dim_size for customized workload parser """
-        if add_missing_node_attrs and node_attrs["operator_type"] in [
-            "Conv",
-            "Conv_downsample",
-            "MaxPool",
-            "AveragePool",
-        ]:
-            B = node_attrs["loop_dim_size"]["B"]
-            OX = node_attrs["loop_dim_size"]["OX"]
-            OY = node_attrs["loop_dim_size"]["OY"]
-            IX = self.pr_loop_dim_size["IX"]
-            IY = self.pr_loop_dim_size["IY"]
-            node_attrs["pr_loop_dim_size"] = {"IX": IX, "IY": IY}
-            node_attrs["operand_tensor_reshape"] = {
-                "I": (B, -1, IX, IY),
-                "O": (B, -1, OX, OY),
+    def get_operand_tensor_reshape_default(self) -> OperandTensorReshape | None:
+        try:
+            size_B = self.layer_dim_sizes[LayerDim("B")]
+            size_OX = self.layer_dim_sizes[LayerDim("OX")]
+            size_OY = self.layer_dim_sizes[LayerDim("OY")]
+            size_IX = self.pr_layer_dim_sizes[LayerDim("IX")]
+            size_IY = self.pr_layer_dim_sizes[LayerDim("IY")]
+            return {
+                LayerOperand("I"): (size_B, -1, size_IX, size_IY),
+                LayerOperand("O"): (size_B, -1, size_OX, size_OY),
             }
+        except KeyError:
+            return None
 
     def __str__(self):
-        return f"ComputationNode{self.id}"
-
-    def __repr__(self):
-        return str(self)
+        return f"ComputationNode{self.id}_{self.sub_id}"
 
     def __hash__(self) -> int:
         """The hash operator of a node depending on its id. The id is a tuple that can be of variable depth.
@@ -128,36 +129,38 @@ class ComputationNode(LayerNode, Node):
         Returns:
             int: the computed hash
         """
-        return hash(self.id)
+        return hash((self.id, self.sub_id))
 
-    def __eq__(self, __o: object) -> bool:
-        """Compare the equality beween two nodes.
-        Two nodes are considered equal if they have equal hardware performance, which happens following attributes are equal:
+    def __eq__(self, other: object) -> bool:
+        """Compare the equality between two nodes.
+        Two nodes are considered equal if they have equal hardware performance, which happens following attributes are
+        equal:
         - loop_dim_size: The size of the loops.
         - dimension_relations: The partial relevancy between a dimension and two others.
-        - operand_precision: The precision at which the operands are stored, which means the operand identifiers should be equal.
+        - operand_precision: The precision at which the operands are stored, which means the operand identifiers should
+          be equal.
         - memory_operand_links: The link between memory operand (paths in mem hierarchy) and this node's operands
-        - nb_real_predecessors: The number of real predecessors this node has in the graph. This is required for accurate knowledge of the number of unique nodes.
+        - nb_real_predecessors: The number of real predecessors this node has in the graph. This is required for
+          accurate knowledge of the number of unique nodes.
 
         Args:
-            __o (Node): The other node to compare this node with
+            other (Node): The other node to compare this node with
 
         Returns:
             bool: Whether the nodes are equal or not
         """
 
-        if not isinstance(__o, ComputationNode):
-            return False
         return (
-            self.loop_dim_size == __o.loop_dim_size
-            and self.dimension_relations == __o.dimension_relations
-            and self.operand_precision == __o.operand_precision
-            and self.memory_operand_links == __o.memory_operand_links
-            and self.id[0] == __o.id[0]
-            # and self.nb_real_predecessors == __o.nb_real_predecessors
+            isinstance(other, ComputationNode)
+            and self.layer_dim_sizes == other.layer_dim_sizes
+            and self.dimension_relations == other.dimension_relations
+            and self.operand_precision == other.operand_precision
+            and self.memory_operand_links == other.memory_operand_links
+            and self.id == other.id
+            # and self.nb_real_predecessors == other.nb_real_predecessors
         )
 
-    def __lt__(self, other):
+    def __lt__(self, other: "ComputationNode"):
         """Compare two ComputationNodes for the 'less than (<)' operator.
 
         Args:
@@ -168,7 +171,7 @@ class ComputationNode(LayerNode, Node):
         """
         return self.id < other.id
 
-    def get_operand_for_dim(self, dim) -> str:
+    def get_operand_for_dim(self, dim: LayerDim) -> LayerOperand:
         """Return the first operand in the operand_list that has this dim as one of is dimensions
 
         Args:
@@ -177,40 +180,42 @@ class ComputationNode(LayerNode, Node):
         Returns:
             str: The operand that has dim as one of its dimensions
         """
-        for op in self.operand_list:
+        for op in self.layer_operands:
             if dim in self.operand_dimensionality_order[op]:
                 return op
-        raise ValueError(
-            f"The given dim {dim} doesn't appear in any operand's dimensionality order"
-        )
+        raise ValueError(f"The given dim {dim} doesn't appear in any operand's dimensionality order")
 
     def calculate_pr_loop_ranges(self):
         """Add the loop ranges of the partially revelant dimensions for this node to self.loop_ranges"""
         for pr_dim, related_dims_and_scalings in self.pr_scaling_factors.items():
-            dim_padding = self.padding.get(pr_dim, (0, 0))
+            dim_padding = self.padding[pr_dim] if pr_dim in self.padding else LayerPadding.DEFAULT
             padding_begin = dim_padding[0]
             # Assume that there is always 2 dimensions involved in the calculation of a pr dimension
             pr_dim_val_min = -padding_begin
             pr_dim_val_max = -padding_begin
             for related_dimension, scaling_factor in related_dims_and_scalings.items():
-                pr_dim_val_min += (
-                    scaling_factor * self.loop_ranges[related_dimension.upper()][0]
-                )
+                pr_dim_val_min += scaling_factor * self.loop_ranges[related_dimension][0]
                 pr_dim_val_max += scaling_factor * (
-                    self.loop_ranges[related_dimension.upper()][1] - 1
+                    self.loop_ranges[related_dimension][1] - 1
                 )  # convert to inclusive upper limit
             pr_dim_val_max += 1  # convert to exclusive upper range
             self.loop_ranges[pr_dim] = (pr_dim_val_min, pr_dim_val_max)
 
-    def reshape_operand_tensor(self, tensor, operand):
+    def reshape_operand_tensor(self, tensor: np.ndarray[Any, Any], operand: LayerOperand):
         """Reshape the tensor back to the representation needed for producer/consumer."""
-        new_shape = self.operand_tensor_reshape[operand]
-        if not new_shape:
+        if self.operand_tensor_reshape is None or operand not in self.operand_tensor_reshape:
             new_shape = tensor.shape
+        else:
+            new_shape = self.operand_tensor_reshape[operand]
         return np.reshape(tensor, new_shape)
 
-    def set_too_large_operands(self, too_large_operands):
+    def set_too_large_operands(self, too_large_operands: list[MemoryOperand]):
         self.too_large_operands = too_large_operands
 
-    def set_nb_real_predecessors(self, nb_real_predecessors):
+    def set_nb_real_predecessors(self, nb_real_predecessors: int):
         self.nb_real_predecessors = nb_real_predecessors
+
+    def update_loop_ranges(self, new_ranges: LoopRanges):
+        """Override the loop ranges with a new value for each of the given LayerDims. Keep the old range for the LayerDims not defined in `new_ranges`"""
+        for layer_dim in new_ranges:
+            self.loop_ranges[layer_dim] = new_ranges[layer_dim]

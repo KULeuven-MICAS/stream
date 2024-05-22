@@ -1,0 +1,15 @@
+name: testing-1-core-with-offchip
+cores:
+  # index corresponds to core ID
+  - testing_core1.yaml
+  - offchip.yaml
+
+2d_mesh:
+  nb_rows: 1
+  nb_cols: 1
+  bandwidth: 64
+  unit_energy_cost: 0
+  offchip_core_id: 1
+
+
+

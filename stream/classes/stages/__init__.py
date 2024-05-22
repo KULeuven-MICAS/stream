@@ -1,9 +1,9 @@
+from .AcceleratorParserStage import AcceleratorParserStage
 from .GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
 from .InterCoreMappingStage import InterCoreMappingStage
 from .IntraCoreMappingStage import IntraCoreMappingStage
 from .ModelParserStage import ONNXModelParserStage as StreamONNXModelParserStage
 from .ModelParserStage import UserDefinedModelParserStage
-from .CustomSpatialMappingGeneratorStage import CustomSpatialMappingGeneratorStage
 from .LayerSplittingStage import LayerSplittingStage
 from .DetermineLayerStacksStage import DetermineLayerStacksStage
 from .DetermineHintLoopsStage import DetermineHintLoopsStage

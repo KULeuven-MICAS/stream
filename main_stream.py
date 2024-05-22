@@ -1,4 +1,7 @@
-from zigzag.classes.stages import *
+from zigzag.stages.MainStage import MainStage
+from stream.classes.stages.AcceleratorParserStage import (
+    AcceleratorParserStage as AcceleratorParserStage_,
+)
 from stream.classes.stages import *
 from stream.visualization.schedule import (
     plot_timeline_brokenaxes,
@@ -11,16 +14,15 @@ import pickle
 # Initialize the logger
 import logging as _logging
 
+
 _logging_level = _logging.INFO
-_logging_format = (
-    "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-)
+_logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 ################################INPUTS################################
-accelerator = "stream.inputs.examples.hardware.TPU_like_quad_core"
+accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 workload_path = "stream/inputs/examples/workload/resnet18.onnx"
-mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
+mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
 CN_define_mode = 1  # manually define outer-CN loops
 hint_loops = [("OY", "all")]
 nb_ga_individuals = 16  # number of individuals in each generation
@@ -59,9 +61,10 @@ timeline_fig_path_matplotlib = f"outputs/{experiment_id}-schedule.png"
 memory_fig_path = f"outputs/{experiment_id}-memory.png"
 #####################################################################
 
+
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
-        AcceleratorParserStage,  # Parses the accelerator
+        AcceleratorParserStage_,  # Parses the accelerator
         StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
         # UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
         GenerateCNWorkloadHybridStage,

@@ -2,7 +2,7 @@ from stream.inputs.examples.hardware.cores.TPU_like import get_core as get_tpu_c
 from stream.inputs.examples.hardware.cores.pooling import get_core as get_pooling_core
 from stream.inputs.examples.hardware.cores.simd import get_core as get_simd_core
 from stream.inputs.examples.hardware.cores.offchip import get_offchip_core
-from stream.inputs.examples.hardware.nocs.mesh_2d import get_2d_mesh
+from stream.classes.hardware.architecture.mesh_2d import get_2d_mesh
 from stream.classes.hardware.architecture.accelerator import Accelerator
 
 cores = [get_tpu_core(id) for id in range(4)]  # 4 identical cores

@@ -2,9 +2,9 @@ import numpy as np
 import networkx as nx
 from networkx import DiGraph
 
-from stream.classes.hardware.architecture.communication_link import CommunicationLink
-from zigzag.classes.hardware.architecture.core import Core
-
+from stream.classes.hardware.architecture.noc.communication_link import CommunicationLink
+from zigzag.hardware.architecture.Core import Core
+from zigzag.datatypes import Constants
 
 def have_shared_memory(a, b):
     """Returns True if core a and core b have a shared top level memory
@@ -33,108 +33,34 @@ def have_shared_memory(a, b):
     return False
 
 
-def get_2d_mesh(
+def get_bus(
     cores,
-    nb_rows,
-    nb_cols,
     bandwidth,
     unit_energy_cost,
     pooling_core=None,
     simd_core=None,
     offchip_core=None,
 ):
-    """Return a 2D mesh graph of the cores where each core is connected to its N, E, S, W neighbour.
-    We build the mesh by iterating through the row and then moving to the next column.
-    Each connection between two cores includes two links, one in each direction, each with specified bandwidth.
-    Thus there are a total of ((nb_cols-1)*2*nb_rows + (nb_rows-1)*2*nb_cols) links in the noc.
-    If a pooling_core is provided, it is added with two directional links with each core, one in each direction.
-    Thus, 2*nb_rows*nb_cols more links are added.
-    If an offchip_core is provided, it is added with two directional links with each core, one in each direction.
-    Thus, 2*nb_rows*nb_cols (+2 if a pooling core is present)
+    """Return a graph of the cores where each core is connected to a single bus.
 
     Args:
         cores (list): list of core objects
-        nb_rows (int): the number of rows in the 2D mesh
-        nb_cols (int): the number of columns in the 2D mesh
-        bandwidth (int): bandwidth of each created directional link in bits per clock cycle
+        bandwidth (int): bandwidth of the communication bus
         unit_energy_cost (float): The unit energy cost of having a communication-link active. This does not include the involved memory read/writes.
         pooling_core (Core, optional): If provided, the pooling core that is added.
         simd_core (Core, optional): If provided, the simd core that is added.
         offchip_core (Core, optional): If provided, the offchip core that is added.
         offchip_bandwidth (int, optional): If offchip_core is provided, this is the
     """
-
-    cores_array = np.asarray(cores).reshape((nb_rows, nb_cols), order="F")
+    bus = CommunicationLink("Any", "Any", bandwidth, unit_energy_cost)
 
     edges = []
-    # Horizontal edges
-    for row in cores_array:
-        # From left to right
-        pairs = zip(row, row[1:])
-        for pair in pairs:
-            (sender, receiver) = pair
-            if not have_shared_memory(sender, receiver):
-                edges.append(
-                    (
-                        sender,
-                        receiver,
-                        {
-                            "cl": CommunicationLink(
-                                sender, receiver, bandwidth, unit_energy_cost
-                            )
-                        },
-                    )
-                )
-        # From right to left
-        pairs = zip(reversed(row), reversed(row[:-1]))
-        for pair in pairs:
-            (sender, receiver) = pair
-            if not have_shared_memory(sender, receiver):
-                edges.append(
-                    (
-                        sender,
-                        receiver,
-                        {
-                            "cl": CommunicationLink(
-                                sender, receiver, bandwidth, unit_energy_cost
-                            )
-                        },
-                    )
-                )
-    # Vertical edges
-    for col in cores_array.T:
-        # From top to bottom (bottom is highest idx)
-        pairs = zip(col, col[1:])
-        for pair in pairs:
-            (sender, receiver) = pair
-            if not have_shared_memory(sender, receiver):
-                edges.append(
-                    (
-                        sender,
-                        receiver,
-                        {
-                            "cl": CommunicationLink(
-                                sender, receiver, bandwidth, unit_energy_cost
-                            )
-                        },
-                    )
-                )
-        # From bottom to top
-        pairs = zip(reversed(col), reversed(col[:-1]))
-        for pair in pairs:
-            (sender, receiver) = pair
-            if not have_shared_memory(sender, receiver):
-                edges.append(
-                    (
-                        sender,
-                        receiver,
-                        {
-                            "cl": CommunicationLink(
-                                sender, receiver, bandwidth, unit_energy_cost
-                            )
-                        },
-                    )
-                )
+    pairs = [(a, b) for idx, a in enumerate(cores) for b in cores[idx + 1:]]
+    for pair in pairs:
+        (sender, receiver) = pair
+        if not have_shared_memory(sender, receiver):
+            edges.append((sender, receiver, {"cl": bus}))
+            edges.append((receiver, sender, {"cl": bus}))
 
     # If there is a pooling core, also add two edges from each core to the pooling core: one in each direction
     if pooling_core:
@@ -179,9 +105,7 @@ def get_2d_mesh(
                         core,
                         simd_core,
                         {
-                            "cl": CommunicationLink(
-                                core, simd_core, simd_bandwidth, simd_unit_energy_cost
-                            )
+                            "cl": bus
                         },
                     )
                 )
@@ -190,9 +114,7 @@ def get_2d_mesh(
                         simd_core,
                         core,
                         {
-                            "cl": CommunicationLink(
-                                simd_core, core, simd_bandwidth, simd_unit_energy_cost
-                            )
+                            "cl": bus
                         },
                     )
                 )
@@ -204,12 +126,7 @@ def get_2d_mesh(
                         pooling_core,
                         simd_core,
                         {
-                            "cl": CommunicationLink(
-                                pooling_core,
-                                simd_core,
-                                simd_bandwidth,
-                                simd_unit_energy_cost,
-                            )
+                            "cl": bus
                         },
                     )
                 )
@@ -218,22 +135,18 @@ def get_2d_mesh(
                         simd_core,
                         pooling_core,
                         {
-                            "cl": CommunicationLink(
-                                simd_core,
-                                pooling_core,
-                                simd_bandwidth,
-                                simd_unit_energy_cost,
-                            )
+                            "cl": bus
                         },
                     )
                 )
 
     # If there is an offchip core, add a single link for writing to and a single link for reading from the offchip
     if offchip_core:
-        offchip_read_bandwidth = offchip_core.mem_r_bw_dict["O"][0]
-        offchip_write_bandwidth = offchip_core.mem_w_bw_dict["O"][0]
+        output_operand = Constants.OUTPUT_MEM_OP
+        offchip_read_bandwidth = offchip_core.mem_r_bw_dict[output_operand][0]
+        offchip_write_bandwidth = offchip_core.mem_w_bw_dict[output_operand][0]
         # if the offchip core has only one port
-        if len(offchip_core.mem_hierarchy_dict["O"][0].port_list) == 1:
+        if len(offchip_core.mem_hierarchy_dict[output_operand][0].port_list) == 1:
             to_offchip_link = CommunicationLink(
                 offchip_core,
                 "Any",

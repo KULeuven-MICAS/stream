@@ -1,7 +1,7 @@
 from stream.classes.hardware.architecture.pooling_array import PoolingArray
-from zigzag.classes.hardware.architecture.memory_hierarchy import MemoryHierarchy
-from zigzag.classes.hardware.architecture.memory_instance import MemoryInstance
-from zigzag.classes.hardware.architecture.core import Core
+from zigzag.hardware.architecture.MemoryHierarchy import MemoryHierarchy
+from zigzag.hardware.architecture.memory_instance import MemoryInstance
+from zigzag.hardware.architecture.Core import Core
 from stream.classes.hardware.architecture.pooling_unit import PoolingUnit
 
 
