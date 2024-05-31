@@ -14,13 +14,15 @@ from stream.classes.opt.allocation.genetic_algorithm.genetic_algorithm import (
     GeneticAlgorithm,
 )
 from stream.classes.opt.allocation.genetic_algorithm.fitness_evaluator import (
-    StandardFitnessEvaluator,
+    StandardFitnessEvaluator, FitnessEvaluator
 )
 from stream.utils import get_too_large_operands
 from zigzag.workload.Workload import Workload
+from typing import Type, TypeVar
 
 logger = logging.getLogger(__name__)
 
+TFitnessEvaluator = TypeVar("TFitnessEvaluator", bound=FitnessEvaluator)
 
 class InterCoreMappingStage(Stage):
     """
@@ -44,6 +46,7 @@ class InterCoreMappingStage(Stage):
         plot_full_schedule: bool = False,
         plot_data_transfer: bool = False,
         operands_to_prefetch: list[LayerOperand],
+        custom_fitness_evaluator: Type[TFitnessEvaluator] | None = None,
         **kwargs,
     ):
         """Initialize the InterCoreMappingStage.
@@ -68,6 +71,8 @@ class InterCoreMappingStage(Stage):
         self.plot_data_transfer = plot_data_transfer
         self.operands_to_prefetch = operands_to_prefetch
         self.scheduling_order = kwargs.get("scheduling_order", None)
+        self.original_workload = kwargs["original_workload"]
+        self.custom_fitness_evaluator = custom_fitness_evaluator
 
         # Determine the set of all (layer, group) combinations to be allocated separately
         self.layer_groups: list[tuple[int, int]] = sorted(set((n.id, n.group) for n in self.workload.nodes()))
@@ -102,14 +107,25 @@ class InterCoreMappingStage(Stage):
         self.set_hw_performance_non_flexible_nodes()
 
         # Initialize the fitness evaluator of different core allocations
-        self.fitness_evaluator = StandardFitnessEvaluator(
-            self.workload,
-            self.accelerator,
-            self.node_hw_performances,
-            self.layer_groups_flexible,
-            self.operands_to_prefetch,
-            self.scheduling_order,
-        )
+        if self.custom_fitness_evaluator is not None:
+            self.fitness_evaluator = self.custom_fitness_evaluator(
+                self.workload,
+                self.accelerator,
+                self.node_hw_performances,
+                self.layer_groups_flexible,
+                self.scheduling_order,
+                self.operands_to_prefetch,
+                self.original_workload,
+            )
+        else:
+            self.fitness_evaluator = StandardFitnessEvaluator(
+                self.workload,
+                self.accelerator,
+                self.node_hw_performances,
+                self.layer_groups_flexible,
+                self.operands_to_prefetch,
+                self.scheduling_order,
+            )
 
         # Extract the length of an individual.
         # This is the number of unique original nodes that have more than one possible core allocation
