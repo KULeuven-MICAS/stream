@@ -5,7 +5,10 @@ import networkx as nx
 
 from stream.classes.workload.computation_node import ComputationNode
 from zigzag.datatypes import Constants, MemoryOperand
-from zigzag.hardware.architecture.Core import Core
+
+#from zigzag.hardware.architecture.Core import Core
+from stream.classes.hardware.architecture.stream_core import Core
+
 from stream.classes.workload.tensor import Tensor
 from stream.classes.hardware.architecture.utils import intersections
 

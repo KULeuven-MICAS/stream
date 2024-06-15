@@ -3,7 +3,10 @@ from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import LayerOperand
-from zigzag.hardware.architecture.Core import Core
+
+#from zigzag.hardware.architecture.Core import Core
+from stream.classes.hardware.architecture.stream_core import Core
+
 from zigzag.utils import pickle_deepcopy
 
 from stream.utils import get_too_large_operands

@@ -3,7 +3,10 @@ from typing import Iterator
 from networkx import DiGraph
 
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.Core import Core
+
+#from zigzag.hardware.architecture.Core import Core
+from stream.classes.hardware.architecture.stream_core import Core
+
 from stream.classes.cost_model.memory_manager import MemoryManager
 from stream.classes.cost_model.communication_manager import CommunicationManager
 from stream.classes.workload.tensor import Tensor

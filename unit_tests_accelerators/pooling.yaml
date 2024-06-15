@@ -1,0 +1,54 @@
+name: pooling
+
+memories:
+  rf_16B:
+    size: 128
+    r_bw: 24
+    w_bw: 24
+    r_cost: 0
+    w_cost: 0
+    area: 0.95
+    r_port: 1
+    w_port: 1
+    rw_port: 0
+    latency: 1
+    operands: [I1, O]
+    ports:
+      - fh: w_port_1
+        tl: r_port_1
+      - fh: w_port_1
+        tl: r_port_1
+        fl: w_port_1
+        th: r_port_1
+    served_dimensions: [D1, D2]
+
+  sram_128KB:
+    size: 1048576
+    r_bw: 128
+    w_bw: 128
+    r_cost: 150
+    w_cost: 165
+    area: 6
+    r_port: 1
+    w_port: 1
+    rw_port: 0
+    latency: 1
+    operands: [I2]
+    ports:
+      - fh: w_port_1
+        tl: r_port_1
+    served_dimensions: [D1, D2]
+
+
+multipliers:
+  input_precision: [8, 8]
+  multiplier_energy: 0.1 # pJ
+  multiplier_area: 0.01 # unit
+  dimensions: [D1, D2]
+  sizes: [3, 3]
+
+dataflows:
+  D1: 
+    - FX, 3
+  D2: 
+    - FY, 3

@@ -21,6 +21,6 @@ mapping = {
         "core_allocation": 4,
     },
     "Add": {
-        "core_allocation": 5,
+        "core_allocation": 4,
     },
 }

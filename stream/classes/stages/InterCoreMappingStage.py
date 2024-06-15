@@ -7,7 +7,10 @@ from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import LayerOperand
-from zigzag.hardware.architecture.Core import Core
+
+#from zigzag.hardware.architecture.Core import Core
+from stream.classes.hardware.architecture.stream_core import Core
+
 from zigzag.stages.Stage import Stage, StageCallable
 from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.opt.allocation.genetic_algorithm.genetic_algorithm import (

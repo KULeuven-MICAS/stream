@@ -28,6 +28,18 @@ hint_loops = []
 nb_ga_individuals = 16  # number of individuals in each generation
 nb_ga_generations = 16  # number of genetic algorithm generations
 ######################################################################
+# #################################
+# accelerator = "stream.inputs.examples.hardware.TPU_like_quad_core"
+# workload_path = "stream.inputs.examples.workload.resnet18"
+# mapping_path = "stream.inputs.aie.testing_mapping_unet"
+accelerator = "stream.inputs.aie.hardware.aie_col"
+workload_path = "stream/inputs/examples/workload/resnet18.onnx"
+mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
+
+
+CN_define_mode = 4  # manually define outer CN size for all cores and all layers
+hint_loops = []  # outer CN loops, with error in resnet18 plotting
+# hint_loops = []
 
 ################################PARSING###############################
 hw_name = accelerator.split(".")[-1]
