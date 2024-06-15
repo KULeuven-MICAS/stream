@@ -6,7 +6,8 @@
 #
 #===----------------------------------------------------------------------===
 
-from zigzag.classes.stages import *
+from zigzag.stages.MainStage import MainStage
+from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
 from stream.classes.stages import *
 from stream.visualization.schedule import (
     plot_timeline_brokenaxes,
@@ -16,10 +17,7 @@ from stream.visualization.memory_usage import plot_memory_usage
 import re
 import pickle
 
-# Aya added this
-# from zigzag.visualization.results import (
-#     print_mapping,
-# )
+
 from stream.utils import save_core_allocation
 
 # Initialize the logger
@@ -32,9 +30,11 @@ _logging_format = (
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 #################################
-accelerator = "unit_tests_accelerators.two_cores_accelerator"
+accelerator = "unit_tests_accelerators/two_cores.yaml"
+#accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 workload_path = "unit_tests_workloads/conv2_1x1_C_512_K_256-1x1_C_256_K_256_workload.onnx"
-mapping_path = "unit_tests_accelerators.two_cores_mapping"
+mapping_path = "unit_tests_accelerators/two_cores_mapping.yaml"
+#mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
 
 # Aya: added this to customize the path to the output
 example_name = "2cores-2conv-1x1-1x1"
@@ -83,7 +83,7 @@ memory_fig_path = f"unit_tests_results/{example_name}/{experiment_id}-memory-CN_
 
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
-        AcceleratorParserStage,  # Parses the accelerator
+        AcceleratorParserStage_,  # Parses the accelerator
         StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
         #UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
         GenerateCNWorkloadHybridStage,

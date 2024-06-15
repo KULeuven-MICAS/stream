@@ -2,8 +2,10 @@ from typing import Any
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.hardware.architecture.noc.mesh_2d import get_2d_mesh
 from stream.classes.hardware.architecture.noc.bus import get_bus
-from zigzag.hardware.architecture.Core import Core
 
+
+from zigzag.hardware.architecture.Core import Core
+#from stream.classes.hardware.architecture.stream_core import Core
 
 from zigzag.parser.accelerator_factory import CoreFactory
 
@@ -18,11 +20,19 @@ class AcceleratorFactory:
     def create(self) -> Accelerator:
         """! Create an Accelerator instance from the user-provided data."""
         cores: list[Core] = []
+        cores_type: list[int] = []
+        for core_id, core_type in enumerate(self.data["cores_type"]):
+            cores_type.append(core_type)
+
+        i = 0
         for core_id, core_data in enumerate(self.data["cores"]):
             core_factory = CoreFactory(core_data)
             core = core_factory.create(core_id)
+            core.core_type = cores_type[i]
+            i += 1
             cores.append(core)
 
+        
         if self.data["graph"]["type"] == "2d_mesh":
             cores_graph = self.create_2d_mesh(cores)
         elif self.data["graph"]["type"] == "bus":
@@ -31,6 +41,7 @@ class AcceleratorFactory:
             raise ValueError(f"Invalid graph type {self.data['graph']['type']}.")
 
         offchip_core_id: int | None = self.data["graph"]["offchip_core_id"]
+        
         return Accelerator(name=self.data["name"], cores=cores_graph, offchip_core_id=offchip_core_id)
 
     def create_2d_mesh(self, cores: list[Core]):

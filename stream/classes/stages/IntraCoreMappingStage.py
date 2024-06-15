@@ -8,7 +8,10 @@ import logging
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import LayerDim, LayerOperand, MemoryOperand, UnrollFactor
-from zigzag.hardware.architecture.Core import Core
+
+#from zigzag.hardware.architecture.Core import Core
+from stream.classes.hardware.architecture.stream_core import Core
+
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
 from zigzag.mapping.spatial_mapping import SpatialMapping

@@ -2,10 +2,11 @@ import numpy as np
 import networkx as nx
 from networkx import DiGraph
 
-from stream.classes.hardware.architecture.communication_link import CommunicationLink
+#from stream.classes.hardware.architecture.communication_link import CommunicationLink
+from stream.classes.hardware.architecture.noc import CommunicationLink
 
-# Aya: import from stream_core class instead
-#from zigzag.classes.hardware.architecture.core import Core
+# import from stream_core class instead
+# from zigzag.classes.hardware.architecture.core import Core
 from stream.classes.hardware.architecture.stream_core import Core
 
 # From the AIE-MLs perspective, the throughput of each of the loads and store is 256 bits per clock cycle.
@@ -39,14 +40,14 @@ def have_shared_memory(a, b):
 
 
 def get_2d_mesh(
-    cores,
-    nb_rows,
-    nb_cols,
-    unit_energy_cost,
-    use_shared_mem_flag, #Aya: the goal of this flag is to easily enable or disable the direct connections between the neighboring cores
-    pooling_core=None,
-    simd_core=None,
-    offchip_core=None,
+    cores: list[Core],
+    nb_rows: int,
+    nb_cols: int,
+    bandwidth: int,
+    unit_energy_cost: float,
+    pooling_core: Core | None = None,
+    simd_core: Core | None = None,
+    offchip_core: Core | None = None,
 ):
     """Return a 2D mesh graph of the cores where each core is connected to its N, E, S, W neighbour.
     We build the mesh by iterating through the row and then moving to the next column.
@@ -71,6 +72,8 @@ def get_2d_mesh(
     ########### Beginning of the logic for adding the links representing the shared memory
     # At the moment there is a shared memory link in 4 directions
 
+    use_shared_mem_flag = True
+    
     cores_array = np.asarray(cores).reshape((nb_rows, nb_cols), order="C")
     edges = []
     # Horizontal edges

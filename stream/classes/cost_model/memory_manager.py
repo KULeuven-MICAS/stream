@@ -5,7 +5,10 @@ import logging
 
 from stream.classes.workload.tensor import Tensor
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.Core import Core
+
+#from zigzag.hardware.architecture.Core import Core
+from stream.classes.hardware.architecture.stream_core import Core
+
 from zigzag.hardware.architecture.MemoryInstance import MemoryInstance
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 

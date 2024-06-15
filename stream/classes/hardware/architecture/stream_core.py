@@ -7,18 +7,22 @@
 #===----------------------------------------------------------------------===//
 
 
-from zigzag.classes.hardware.architecture.core import Core, MemoryHierarchy, OperationalArray
+from zigzag.hardware.architecture.Core import Core
+
+from zigzag.hardware.architecture.operational_array import OperationalArray
+from zigzag.hardware.architecture.MemoryHierarchy import MemoryHierarchy
+
+from zigzag.mapping.spatial_mapping import SpatialMapping
 
 
 # Aya: Wrapping the Core class of Zigzag to extend it with more fields
 class Core(Core):
     def __init__(
         self,
-        id: int,
+        core_id: int,
         operational_array: OperationalArray,
         memory_hierarchy: MemoryHierarchy,
-        core_type: int = 0, # Aya: the convention is 0: Compute, 1: MemTile, 2: Offchip
-        dataflows: list = None,
+        dataflows: SpatialMapping | None = None,
     ):
-        self.core_type = core_type
-        super().__init__(id, operational_array, memory_hierarchy, dataflows)
+        self.core_type = 0  # Initialize it to 0 and later I change it in the accelerator_factory.. the convention is 0: Compute, 1: MemTile, 2: Offchip
+        super().__init__(core_id=core_id, operational_array=operational_array, memory_hierarchy=memory_hierarchy, dataflows=dataflows)

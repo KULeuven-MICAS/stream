@@ -2,7 +2,10 @@ from operator import attrgetter, itemgetter
 from networkx import DiGraph, Graph
 
 from zigzag.datatypes import LayerOperand, MemoryOperand
-from zigzag.hardware.architecture.Core import Core
+
+#from zigzag.hardware.architecture.Core import Core
+from stream.classes.hardware.architecture.stream_core import Core
+
 from stream.classes.cost_model.memory_manager import MemoryManager
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode
@@ -81,7 +84,8 @@ def get_best_candidate(candidates: list[ComputationNode], scheduling_order: list
     if not candidates:
         raise ValueError("There are no candidates to schedule.")
     preds_ends, cn_candidates = zip(*candidates)
-    idxs = [scheduling_order.index((n.id, n.sub_id)) for n in cn_candidates]
+    #idxs = [scheduling_order.index((n.id, n.sub_id)) for n in cn_candidates]
+    idxs = [scheduling_order.index((n.id)) for n in cn_candidates]
     best_candidate_idx = idxs.index(min(idxs))
     best_candidate = cn_candidates[best_candidate_idx]
     preds_end = preds_ends[best_candidate_idx]

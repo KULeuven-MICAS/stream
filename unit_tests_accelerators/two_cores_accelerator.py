@@ -34,7 +34,6 @@ cores_graph = get_2d_mesh(
     cores,
     nb_rows=nb_rows,
     nb_cols=nb_cols,
-    axi_bandwidth=aya_everything_to_dram_bw,
     pooling_core=[],
     unit_energy_cost=0,
     use_shared_mem_flag=True,
