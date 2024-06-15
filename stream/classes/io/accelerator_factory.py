@@ -21,14 +21,18 @@ class AcceleratorFactory:
         """! Create an Accelerator instance from the user-provided data."""
         cores: list[Core] = []
         cores_type: list[int] = []
-        for core_id, core_type in enumerate(self.data["cores_type"]):
-            cores_type.append(core_type)
+        if "cores_type" in self.data:
+            for core_id, core_type in enumerate(self.data["cores_type"]):
+                cores_type.append(core_type)
 
         i = 0
         for core_id, core_data in enumerate(self.data["cores"]):
             core_factory = CoreFactory(core_data)
             core = core_factory.create(core_id)
-            core.core_type = cores_type[i]
+            if len(cores_type) > 0:
+                core.core_type = cores_type[i]
+            else:  # force all cores to be compute
+                core.core_type = 0
             i += 1
             cores.append(core)
 

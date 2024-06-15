@@ -17,4 +17,3 @@ cores:
   pooling_core_id: 0
   simd_core_id: 1
   offchip_core_id: 2
-
