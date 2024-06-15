@@ -13,7 +13,7 @@ from zigzag.classes.hardware.architecture.operational_unit import Multiplier
 from zigzag.classes.hardware.architecture.operational_array import MultiplierArray
 
 
-# Aya: import from stream_core class instead
+# import from stream_core class instead
 #from zigzag.classes.hardware.architecture.core import Core
 from stream.classes.hardware.architecture.stream_core import Core
 
@@ -24,7 +24,7 @@ def get_memory_hierarchy(multiplier_array):
     """ size=#bit, bw=(read bw, write bw), cost=(read word energy, write work energy) """
     rf_iw = MemoryInstance(
         name="rf_iw",
-        size=512*12, # Aya: Is this how we model the 24x256-bit registers as 12x512-bit registers?
+        size=512*12, # Is this how we model the 24x256-bit registers as 12x512-bit registers?
         r_bw=512*12,
         w_bw=512*12,
         r_cost=0.01,
@@ -36,7 +36,7 @@ def get_memory_hierarchy(multiplier_array):
         latency=0,
     )  #
 
-    # Aya: Not sure where the specs of this register memory instance come from????
+    # Not sure where the specs of this register memory instance come from????
     rf_o = MemoryInstance(
         name="rf_o",
         size=2048*5, #5x2048b X registers
@@ -53,14 +53,14 @@ def get_memory_hierarchy(multiplier_array):
 
     l1_oiw = MemoryInstance(
         name="l1_oiw",
-        size=64*1024*8, # Aya: the capacity of a core's data memory is 64 KB
-        r_bw=512,  # Aya: two read ports with a bandwidth of 256 bits/cycle each
-        w_bw=256,  # Aya: one write port with a bandwidth of 256 bits/cycle
+        size=64*1024*8, # the capacity of a core's data memory is 64 KB
+        r_bw=512,  # two read ports with a bandwidth of 256 bits/cycle each
+        w_bw=256,  # one write port with a bandwidth of 256 bits/cycle
         r_cost=1,
         w_cost=1,
         area=0,
-        r_port=2,  # Aya: two read ports
-        w_port=1,  # Aya: one write port
+        r_port=2,  # two read ports
+        w_port=1,  # one write port
         rw_port=0,
         latency=1,
     )  # rd E per bit 0.08
@@ -121,12 +121,12 @@ def get_memory_hierarchy(multiplier_array):
 
 def get_operational_array():
     """Multiplier array variables"""
-    multiplier_input_precision = [8, 8]  # Aya: we are currently modeling int8
+    multiplier_input_precision = [8, 8]  # we are currently modeling int8
     multiplier_energy = 0.5
     multiplier_area = 0
     vec_macs=1
     # dimensions = {"D1": 256} 
-    dimensions = {'D1': 16, 'D2': 16}  # Aya: total number of MACs int8 precision is 256
+    dimensions = {'D1': 16, 'D2': 16}  # total number of MACs int8 precision is 256
 
     multiplier = Multiplier(
         multiplier_input_precision, multiplier_energy, multiplier_area

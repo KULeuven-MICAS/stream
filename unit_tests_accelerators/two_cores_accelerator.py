@@ -22,10 +22,10 @@ cores = [one_aie_core(0),
          one_aie_core(1),
         ] 
 offchip_core_id = 10
-aya_everything_to_dram_bw = 64 * 8
-offchip_core = shim_core(id=offchip_core_id, offchip_bw=aya_everything_to_dram_bw) # basically DRAM
+everything_to_dram_bw = 64 * 8
+offchip_core = shim_core(id=offchip_core_id, offchip_bw=everything_to_dram_bw) # basically DRAM
 
-parallel_links_flag = True # Aya: added this to selectively choose if the exploration includes multiple parallel links between a pair of cores or just the shortest links..
+parallel_links_flag = True # added this to selectively choose if the exploration includes multiple parallel links between a pair of cores or just the shortest links..
 
 nb_rows= 2 
 nb_cols= 1 

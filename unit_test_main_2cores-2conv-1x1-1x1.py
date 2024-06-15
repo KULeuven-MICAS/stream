@@ -36,7 +36,7 @@ workload_path = "unit_tests_workloads/conv2_1x1_C_512_K_256-1x1_C_256_K_256_work
 mapping_path = "unit_tests_accelerators/two_cores_mapping.yaml"
 #mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
 
-# Aya: added this to customize the path to the output
+# added this to customize the path to the output
 example_name = "2cores-2conv-1x1-1x1"
 results_path = "unit_tests_results/" + example_name
 
@@ -104,15 +104,15 @@ mainstage = MainStage(
     plot_data_transfer=plot_data_transfer,
     cn_define_mode=CN_define_mode,
     hint_loops=hint_loops,
-    scheduler_candidate_selection="memory",  # Aya: used by the scheduler in the IntraCoreMapping stage
+    scheduler_candidate_selection="memory",  # used by the scheduler in the IntraCoreMapping stage
     operands_to_prefetch=[],
     split_W_percentage=split_W_percentage,
-    results_path=results_path, # Aya: added this to define the path to the results
-    memTile_flag = False,  # Aya: added this to make it easy to add or remove memTiles
+    results_path=results_path, # added this to define the path to the results
+    memTile_flag = False,  # dded this to make it easy to add or remove memTiles
     memTile_prefetch_flag=False,
     memTile_prefetch_count=4,
     memTile_eviction_flag=False,
-    idle_num_for_mem_tile=2, # Aya: represents the number of idle offchip links after which we start to go through the memTile
+    idle_num_for_mem_tile=2, # represents the number of idle offchip links after which we start to go through the memTile
 )
 
 # Launch the MainStage
