@@ -24,8 +24,8 @@ graph:
   offchip_core_id: 2
   parallel_links_flag: True
   use_shared_mem_flag: True
-  offchip_read_channels_num: 2
-  offchip_write_channels_num: 2
+  offchip_read_channels_num: 3
+  offchip_write_channels_num: 3
   memTile_read_channels_num: 6
   memTile_write_channels_num: 4
 

@@ -129,16 +129,24 @@ class CommunicationLink:
         valid_windows = []
         ## Check if this tensor has already been transferred on this link before
         # If so, check duration and earliest timestep requirements of this call
-        for tensor in tensors:
-            if tensor in self.tensors:
-                previous_events = self.tensors[tensor]
-                for previous_event in previous_events:
-                    # Previous event needs to be long enough
-                    duration_valid = previous_event.duration >= duration
-                    # Previous event needs to have happened at late enough time
-                    earliest_t_valid = previous_event.start >= earliest_t
-                    if duration_valid and earliest_t_valid:
-                        valid_windows.append((previous_event.start, previous_event.end))
+        ## Check if this tensor has already been transferred on this link before
+        # If so, check duration and earliest timestep requirements of this call
+        if len(tensors) == 1:   # if there are more than one tensors, then they must be the future_tensors we are prefetching to the memTile and in this case we do not want to broadcast
+            for tensor in tensors:
+                is_broadcast_flag = False  # added a flag to be appended in valid_windows to be True if we are broadcasting
+                if tensor in self.tensors:
+                    previous_events = self.tensors[tensor]
+                    for previous_event in previous_events:
+                        # Previous event needs to be long enough
+                        duration_valid = previous_event.duration >= duration
+                        # Previous event needs to have happened at late enough time
+                        earliest_t_valid = previous_event.start >= earliest_t
+                        if duration_valid and earliest_t_valid:
+                            is_broadcast_flag = True
+                            valid_windows.append((previous_event.start, previous_event.end, is_broadcast_flag))
+        
+        is_broadcast_flag = False  # Aya: added a flag to be appended in valid_windows to be True if we are broadcasting
+
         ## Check other possible periods given the activity
         activities = np.cumsum(self.active_deltas)
         earliest_t_index = np.searchsorted(self.active_ts, earliest_t, side="right")
@@ -156,7 +164,7 @@ class CommunicationLink:
         for idx in idxs:
             end = updated_ts[idx]
             if end - start >= duration:
-                valid_windows.append((start, end))
+                valid_windows.append((start, end, is_broadcast_flag))
             try:
                 start = updated_ts[idx + 1]
             except:

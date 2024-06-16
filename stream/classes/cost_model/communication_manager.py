@@ -317,10 +317,17 @@ class CommunicationManager:
                 
                 all_idle_intersections.append(idle_intersections[0][0]) # contains a copy of all intersections of every path
                 
-                if idle_intersections[0][0] < best_idle_intersections[0][0]:
+                 #  added this to define a rule for deciding which path to choose
+                        #  I'm doing it after the loop since the above loop is meant to go through the multiple links inside one path, in case the cores are not directly connected 
+                if windows[0][2] is True:   # favor broadcasting
                     best_idle_intersections = idle_intersections
                     best_duration = duration
                     best_link = path
+                else:
+                    if idle_intersections[0][0] < best_idle_intersections[0][0]:
+                        best_idle_intersections = idle_intersections
+                        best_duration = duration
+                        best_link = path
             else:
                 if not duration:
                     duration = ceil(total_tensors_size / path.bandwidth)
@@ -332,10 +339,17 @@ class CommunicationManager:
 
                 all_idle_intersections.append(idle_intersections[0][0]) # contains a copy of all intersections of every path
 
-                if idle_intersections[0][0] < best_idle_intersections[0][0]:
-                        best_idle_intersections = idle_intersections
-                        best_duration = duration
-                        best_link = path
+                #  added this to define a rule for deciding which path to choose
+                        #  I'm doing it after the loop since the above loop is meant to go through the multiple links inside one path, in case the cores are not directly connected 
+                if windows[0][2] is True:   # favor broadcasting
+                    best_idle_intersections = idle_intersections
+                    best_duration = duration
+                    best_link = path
+                else:
+                    if idle_intersections[0][0] < best_idle_intersections[0][0]:
+                            best_idle_intersections = idle_intersections
+                            best_duration = duration
+                            best_link = path
 
         # Convert the best_link from dict to list of CLs
         if isinstance(best_link, dict):
