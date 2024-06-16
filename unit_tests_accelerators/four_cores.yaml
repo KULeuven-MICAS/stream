@@ -1,0 +1,40 @@
+# This file is licensed under the terms of the MIT license.
+# For a copy, see <https://opensource.org/licenses/MIT>.
+ 
+#
+# Copyright (C) 2024, Advanced Micro Devices, Inc.
+#
+#===----------------------------------------------------------------------===//
+
+
+name: three_cores
+cores:
+  # index corresponds to core ID
+  - tpu_like.yaml  # bad naming because of constrained validation check but internally models the aie core
+  - tpu_like.yaml
+  - tpu_like.yaml
+  - tpu_like.yaml
+  - offchip.yaml  # bad naming because of constrained validation check but internally models the shim_dma
+
+graph:
+  type: 2d_mesh
+  nb_rows: 4
+  nb_cols: 1
+  bandwidth: 512
+  unit_energy_cost: 0
+  offchip_core_id: 4
+  parallel_links_flag: True
+  use_shared_mem_flag: True
+  offchip_read_channels_num: 2
+  offchip_write_channels_num: 2
+  memTile_read_channels_num: 6
+  memTile_write_channels_num: 4
+
+cores_type:
+  # each line corresponds to one line from the above cores field: The convention of type is: 0: Compute, 1: MemTile, 2: Offchip
+  - 0
+  - 0
+  - 0
+  - 0
+  - 1
+

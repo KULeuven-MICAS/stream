@@ -2,6 +2,8 @@ import numpy as np
 
 from stream.classes.cost_model.communication_manager import CommunicationLinkEvent
 
+from stream.classes.hardware.architecture.stream_core import Core
+
 
 class CommunicationLink:
     """Represents a fixed-bandwidth communication link used to communicate between two cores."""
@@ -70,6 +72,8 @@ class CommunicationLink:
         start: int,
         duration: int,
         tensors: list,
+        sender: Core,
+        receiver: Core,
         activity: int = 100,
     ):
         """Block this communication link from start timestep for a given duration.
@@ -78,6 +82,8 @@ class CommunicationLink:
             start (int): The timestep at which the blocking starts.
             duration (int): The duration of the blocking.
             tensors (list): A list of tensors for which we are blocking the link.
+            sender(Core): sender core
+            receiver(Core): receiver core
             activity (int): The bandwidth activity in bits/cc.
         """
         end = start + duration
@@ -88,6 +94,8 @@ class CommunicationLink:
             end=end,
             tensors=tensors,
             energy=tensors[0].origin.get_offchip_energy(),
+            sender=sender,
+            receiver=receiver,
             activity=activity,
         )
         self.update_activity(event)
@@ -121,7 +129,7 @@ class CommunicationLink:
             self.tensors[tensor] = self.tensors.get(tensor, []) + [event]
         self.events.append(event)
 
-    def get_idle_window(self, activity, duration, earliest_t, tensors):
+    def get_idle_window(self, activity, duration, earliest_t, tensors, sender, receiver):
         """
         Get the earliest time window of duration 'duration' from 'earliest_t'
         with atleast 'activity' percent available.
@@ -146,29 +154,46 @@ class CommunicationLink:
                             valid_windows.append((previous_event.start, previous_event.end, is_broadcast_flag))
         
         is_broadcast_flag = False  # Aya: added a flag to be appended in valid_windows to be True if we are broadcasting
+        link_is_free = True  # it will be False if any of the sender and receiver of the overlapping events are the same as the current sender and receiver
+        for event in self.events:
+            # Previous event needs to be long enough
+            event_duration_valid = event.duration >= duration
+            # Previous event needs to have happened at late enough time
+            event_earliest_t_valid = event.start >= earliest_t
+            # skip if the event is not overlapping
+            if not event_duration_valid or not event_earliest_t_valid:
+                continue
+            # compare the sender and receiver of this event to the new ones that we are currently checking the idle_window for
+            if event.sender == sender or event.receiver == receiver:
+                link_is_free = False
 
-        ## Check other possible periods given the activity
-        activities = np.cumsum(self.active_deltas)
-        earliest_t_index = np.searchsorted(self.active_ts, earliest_t, side="right")
-        relevant_ts = self.active_ts[earliest_t_index:]
-        updated_ts = relevant_ts.copy()
-        relevant_activities = activities[earliest_t_index:]
-        # Insert the earliest timestep and the activity at that timestep
-        updated_ts = np.insert(updated_ts, 0, earliest_t)
-        updated_activities = np.insert(relevant_activities, 0, activities[earliest_t_index - 1])
-        updated_activities = updated_activities + activity
-        idxs = np.argwhere(updated_activities > self.bandwidth)
-        idxs = [idx[0] for idx in idxs]
-        idxs.append(len(updated_ts) - 1)
-        start = earliest_t
-        for idx in idxs:
-            end = updated_ts[idx]
-            if end - start >= duration:
-                valid_windows.append((start, end, is_broadcast_flag))
-            try:
-                start = updated_ts[idx + 1]
-            except:
-                break
+        if link_is_free:
+            # issue the transfer immediately
+            end = earliest_t + duration
+            valid_windows.append((earliest_t, end, is_broadcast_flag))
+        else:
+            ## Check other possible periods given the activity
+            activities = np.cumsum(self.active_deltas)
+            earliest_t_index = np.searchsorted(self.active_ts, earliest_t, side="right")
+            relevant_ts = self.active_ts[earliest_t_index:]
+            updated_ts = relevant_ts.copy()
+            relevant_activities = activities[earliest_t_index:]
+            # Insert the earliest timestep and the activity at that timestep
+            updated_ts = np.insert(updated_ts, 0, earliest_t)
+            updated_activities = np.insert(relevant_activities, 0, activities[earliest_t_index - 1])
+            updated_activities = updated_activities + activity
+            idxs = np.argwhere(updated_activities > self.bandwidth)
+            idxs = [idx[0] for idx in idxs]
+            idxs.append(len(updated_ts) - 1)
+            start = earliest_t
+            for idx in idxs:
+                end = updated_ts[idx]
+                if end - start >= duration:
+                    valid_windows.append((start, end, is_broadcast_flag))
+                try:
+                    start = updated_ts[idx + 1]
+                except:
+                    break
         if not valid_windows:
             raise ValueError(f"There are no valid windows of activity {activity} and duration {duration} for {self}.")
         return valid_windows

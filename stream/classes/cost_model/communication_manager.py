@@ -50,11 +50,13 @@ class CommunicationLinkEvent:
         - a list of tensors relevant for the event:
             * the tensor being transferred
             * the tensor(s) for which we are blocking
+        - sender core making the transfer over the link
+        - receiver core receiving the transfer over the link
         - an activity percentage:
             * the percentage of the link bandwidth used
     """
 
-    def __init__(self, type, start, end, tensors, energy, activity=100) -> None:
+    def __init__(self, type, start, end, tensors, energy, sender, receiver, activity=100) -> None:
         self.type = type
         self.start = start
         self.end = end
@@ -62,6 +64,9 @@ class CommunicationLinkEvent:
         self.tensors = tensors
         self.energy = energy
         self.activity = activity
+
+        self.sender = sender
+        self.receiver = receiver
 
     def __str__(self) -> str:
         return f"CommunicationLinkEvent(type={self.type}, start={self.start}, end={self.end}, tensors={self.tensors}, energy={self.energy:.2e}, activity={self.activity:.2f})"
@@ -203,6 +208,8 @@ class CommunicationManager:
                 end=end_timestep,
                 tensors=[tensor],
                 energy=duration * link.unit_energy_cost,
+                sender=sender,
+                receiver=receiver,
             )
             for link in links
         ]
@@ -265,7 +272,7 @@ class CommunicationManager:
             layer_op = cn.memory_operand_links.mem_to_layer_op(mem_op)
             tensors.append(cn.operand_tensors[layer_op])
         # Get idle window of the involved links
-        block_start, new_duration, used_link, all_links_transfer_start_end  = self.get_links_idle_window(links_to_block, start_timestep, duration, tensors)
+        block_start, new_duration, used_link, all_links_transfer_start_end  = self.get_links_idle_window(links_to_block, start_timestep, tensors, offchip_core, core, duration)
 
         for link, req_bw in links_to_block.items():
             req_bw = ceil(req_bw)
@@ -273,8 +280,7 @@ class CommunicationManager:
         used_link.block(block_start, new_duration, tensors, offchip_core, core, activity=req_bw)  # changed it to the duration returned from the get_links_idle_window function
         return block_start
 
-    #def get_links_idle_window(self, links: dict, best_case_start: int, duration: int, tensors: list[Tensor]) -> int:
-    def get_links_idle_window(self, links: list, best_case_start: int, tensors: list, duration: int=None, ) -> int:
+    def get_links_idle_window(self, links: list, best_case_start: int, tensors: list, sender: Core, receiver: Core, duration: int=None, ) -> int:
         """Return the timestep at which tensor can be transfered across the links.
         Both links must have an idle window large enough for the transfer.
         The timestep must be greater than or equal to best_case_start.
@@ -282,6 +288,8 @@ class CommunicationManager:
         Args:
             links (dict): CommunicationLinks involved in the transfer and their required bandwidth.
             best_case_start (int): The best case start timestep of the transfer.
+            sender (Core): Sender
+            receiver (Core): Receiver
             duration (int): The required duration of the idle window.
             tensors (list): The tensors to be transferred. Used to broadcast from previous transfer.
         """
@@ -304,7 +312,7 @@ class CommunicationManager:
                 duration = max([ceil(total_tensors_size / link.bandwidth) for link in path])
                 for i, (link, req_bw) in enumerate(path.items()):
                     req_bw = min(req_bw, link.bandwidth)  # ceil the bw
-                    windows = link.get_idle_window(req_bw, duration, best_case_start, tensors)
+                    windows = link.get_idle_window(req_bw, duration, best_case_start, tensors, sender, receiver)
                     
                     if i == 0:
                         idle_intersections = windows
@@ -334,7 +342,7 @@ class CommunicationManager:
                 link = path
                 req_bw = path.bandwidth
                 req_bw = min(req_bw, link.bandwidth)  # ceil the bw
-                windows = link.get_idle_window(req_bw, duration, best_case_start, tensors)
+                windows = link.get_idle_window(req_bw, duration, best_case_start, tensors, sender, receiver)
                 idle_intersections = windows
 
                 all_idle_intersections.append(idle_intersections[0][0]) # contains a copy of all intersections of every path

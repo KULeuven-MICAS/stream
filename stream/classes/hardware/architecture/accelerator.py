@@ -327,7 +327,7 @@ class Accelerator:
         links = links_nested
         
         transfer_start, transfer_duration, chosen_links, all_links_transfer_start_end = self.communication_manager.get_links_idle_window(
-                links, evictions_complete_timestep, [tensor,]
+                links, evictions_complete_timestep, [tensor,], sender_core, receiving_core
         )
    
         transfer_end = transfer_start + transfer_duration
