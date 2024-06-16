@@ -18,3 +18,4 @@ graph:
   pooling_core_id: 4
   simd_core_id: 5
   offchip_core_id: 6
+

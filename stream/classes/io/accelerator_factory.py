@@ -35,7 +35,6 @@ class AcceleratorFactory:
                 core.core_type = 0
             i += 1
             cores.append(core)
-
         
         if self.data["graph"]["type"] == "2d_mesh":
             cores_graph = self.create_2d_mesh(cores)
@@ -45,8 +44,13 @@ class AcceleratorFactory:
             raise ValueError(f"Invalid graph type {self.data['graph']['type']}.")
 
         offchip_core_id: int | None = self.data["graph"]["offchip_core_id"]
+
+        if "parallel_links_flag" in self.data["graph"]:
+            parallel_links_flag=self.data["graph"]["parallel_links_flag"]
+        else:
+            parallel_links_flag=True # default is true
         
-        return Accelerator(name=self.data["name"], cores=cores_graph, offchip_core_id=offchip_core_id)
+        return Accelerator(name=self.data["name"], cores=cores_graph, nb_rows=self.data["graph"]["nb_rows"], nb_cols=self.data["graph"]["nb_cols"], parallel_links_flag=parallel_links_flag, offchip_core_id=offchip_core_id)
 
     def create_2d_mesh(self, cores: list[Core]):
         pooling_core_id: int | None = self.data["graph"]["pooling_core_id"]
@@ -66,6 +70,36 @@ class AcceleratorFactory:
         if offchip_core is not None:
             cores.remove(offchip_core)
 
+        if "parallel_links_flag" in self.data["graph"]:
+            parallel_links_flag=self.data["graph"]["parallel_links_flag"]
+        else:
+            parallel_links_flag=None
+
+        if "use_shared_mem_flag" in self.data["graph"]:
+            use_shared_mem_flag=self.data["graph"]["use_shared_mem_flag"]
+        else:
+            use_shared_mem_flag=None
+
+        if "offchip_read_channels_num" in self.data["graph"]:
+            offchip_read_channels_num=self.data["graph"]["offchip_read_channels_num"]
+        else:
+            offchip_read_channels_num=1
+
+        if "offchip_write_channels_num" in self.data["graph"]:
+            offchip_write_channels_num=self.data["graph"]["offchip_write_channels_num"]
+        else:
+            offchip_write_channels_num=1
+
+        if "memTile_read_channels_num" in self.data["graph"]:
+            memTile_read_channels_num=self.data["graph"]["memTile_read_channels_num"]
+        else:
+            memTile_read_channels_num=0
+
+        if "memTile_write_channels_num" in self.data["graph"]:
+            memTile_write_channels_num=self.data["graph"]["memTile_write_channels_num"]
+        else:
+            memTile_write_channels_num=0
+
         cores_graph = get_2d_mesh(
             cores=cores,
             nb_rows=self.data["graph"]["nb_rows"],
@@ -75,6 +109,12 @@ class AcceleratorFactory:
             pooling_core=pooling_core,
             simd_core=simd_core,
             offchip_core=offchip_core,
+            parallel_links_flag=parallel_links_flag,
+            use_shared_mem_flag=use_shared_mem_flag,
+            offchip_read_channels_num = offchip_read_channels_num,
+            offchip_write_channels_num = offchip_write_channels_num,
+            memTile_read_channels_num = memTile_read_channels_num,
+            memTile_write_channels_num = memTile_write_channels_num,
         )
 
         return cores_graph

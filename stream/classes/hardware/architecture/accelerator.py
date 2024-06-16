@@ -1,6 +1,6 @@
 from math import ceil
 from typing import Iterator
-from networkx import DiGraph
+from networkx import DiGraph, MultiDiGraph
 
 from zigzag.datatypes import MemoryOperand
 
@@ -24,14 +24,22 @@ class Accelerator:
     def __init__(
         self,
         name: str,
-        cores: DiGraph,
+        cores, # this could be a Digraph or MultiDigraph depending on the parallel_links_flag 
+        nb_rows,
+        nb_cols,
+        parallel_links_flag=True,
         offchip_core_id: int | None = None,
     ):
         self.name = name
         self.cores = cores
         self.offchip_core_id = offchip_core_id
         self.memory_manager = MemoryManager(self)
+        self.parallel_links_flag = parallel_links_flag 
+
         self.communication_manager = CommunicationManager(self)
+
+        self.nb_rows = nb_rows
+        self.nb_cols = nb_cols
 
     def __str__(self) -> str:
         return f"Accelerator({self.name})"
@@ -304,17 +312,24 @@ class Accelerator:
         # TODO there will be multiple possible cores to transfer between.
         # TODO For now, we take the first one
         sender_core = sender_cores[0]
+        
+        
         links = self.communication_manager.get_links_for_pair(sender_core, receiving_core)
-        links = {link: link.bandwidth for link in links}
-        transfer_duration = max([ceil(tensor.size / link.bandwidth) for link in links])
-        transfer_start = self.communication_manager.get_links_idle_window(
-            links,
-            evictions_complete_timestep,
-            transfer_duration,
-            [
-                tensor,
-            ],
+        # links = {link: link.bandwidth for link in links}
+        # transfer_duration = max([ceil(tensor.size / link.bandwidth) for link in links])
+        links_nested = []
+        for path in links:
+            if hasattr(path, '__iter__'):
+                links_nested.append({link: link.bandwidth for link in path})  # to support multiple parallel paths between a pair of cores where each path could be made of multiple links (i.e., if the pair of cores are not directly connected)
+            else:
+                links_nested.append({path: path.bandwidth})
+        # links = {link: link.bandwidth for link in links} # added for broadcasting
+        links = links_nested
+        
+        transfer_start, transfer_duration, chosen_links, all_links_transfer_start_end = self.communication_manager.get_links_idle_window(
+                links, evictions_complete_timestep, [tensor,]
         )
+   
         transfer_end = transfer_start + transfer_duration
         ################################# STEP 5 #################################
         # Spawn the tensor on the receiving core
@@ -331,6 +346,7 @@ class Accelerator:
             tensor_operand,
             transfer_start,
             transfer_duration,
+            chosen_links,
         )
         ################################# STEP 7 #################################
         # Remove the transfered tensor from the sender core (excluding DRAM)

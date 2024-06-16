@@ -30,20 +30,18 @@ _logging_format = (
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 #################################
-accelerator = "unit_tests_accelerators/two_cores.yaml"
-#accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
-workload_path = "unit_tests_workloads/conv2_1x1_C_512_K_256-1x1_C_256_K_256_workload.onnx"
-mapping_path = "unit_tests_accelerators/two_cores_mapping.yaml"
-#mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
+accelerator = "unit_tests_accelerators/three_cores.yaml"
+workload_path = "unit_tests_workloads/conv2_1x1_C_256_K_64-3x3_C_64_K_64_workload.onnx"
+mapping_path = "unit_tests_accelerators/three_cores_mapping.yaml"
 
 # added this to customize the path to the output
-example_name = "2cores-2conv-1x1-1x1"
+example_name = "3cores-2conv-1x1-3x3"
 results_path = "unit_tests_results/" + example_name
 
 
 # Parameters determining the granularity of the layers splitting
 CN_define_mode = 1 # automatically split layers if too big to fit: # manually define outer CN size for all cores and all layers
-split_W_percentage = 0.5 # max percentage of capacity a single node's weights can be
+split_W_percentage = 0.1 # max percentage of capacity a single node's weights can be
 hint_loops = [("OY", "all")] # outer CN loops, with error in resnet18 plotting
 
 nb_ga_individuals = 16  # number of individuals in each generation

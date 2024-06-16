@@ -7,21 +7,21 @@
 #===----------------------------------------------------------------------===//
 
 
-name: two_cores
+name: three_cores
 cores:
   # index corresponds to core ID
-  - tpu_like.yaml # bad naming because of constrained validation check but internally models the aie core
+  - tpu_like.yaml  # bad naming because of constrained validation check but internally models the aie core
   - tpu_like.yaml
-  - offchip.yaml # bad naming because of constrained validation check but internally models the shim_dma
-
+  - tpu_like.yaml
+  - offchip.yaml  # bad naming because of constrained validation check but internally models the shim_dma
 
 graph:
   type: 2d_mesh
-  nb_rows: 2
+  nb_rows: 3
   nb_cols: 1
   bandwidth: 512
   unit_energy_cost: 0
-  offchip_core_id: 2
+  offchip_core_id: 3
   parallel_links_flag: True
   use_shared_mem_flag: True
   offchip_read_channels_num: 2
@@ -31,6 +31,7 @@ graph:
 
 cores_type:
   # each line corresponds to one line from the above cores field: The convention of type is: 0: Compute, 1: MemTile, 2: Offchip
+  - 0
   - 0
   - 0
   - 1

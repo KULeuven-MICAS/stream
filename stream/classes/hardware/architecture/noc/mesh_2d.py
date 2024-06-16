@@ -49,8 +49,12 @@ def get_2d_mesh(
     pooling_core: Core | None = None,
     simd_core: Core | None = None,
     offchip_core: Core | None = None,
-    parallel_links_flag: bool | None = False, # if this is True, the exploration will consider multiple parallel links
+    parallel_links_flag: bool | None = True, # if this is True, the exploration will consider multiple parallel links
     use_shared_mem_flag: bool | None = True, # if this is True, the exploration will consider multiple parallel links
+    offchip_read_channels_num = 2,
+    offchip_write_channels_num = 2,
+    memTile_read_channels_num = 0,
+    memTile_write_channels_num = 0,
 ):
     """Return a 2D mesh graph of the cores where each core is connected to its N, E, S, W neighbour.
     We build the mesh by iterating through the row and then moving to the next column.
@@ -75,10 +79,7 @@ def get_2d_mesh(
     ########### Beginning of the logic for adding the links representing the shared memory
     # At the moment there is a shared memory link in 4 directions
 
-    offchip_read_channels_num = 2
-    offchip_write_channels_num = 2
-    memTile_read_channels_num = 2
-    memTile_write_channels_num = 2
+    
 
     cores_array = np.asarray(cores).reshape((nb_rows, nb_cols), order="C")
     edges = []

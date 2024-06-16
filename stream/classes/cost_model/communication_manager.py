@@ -6,6 +6,8 @@ import networkx as nx
 from stream.classes.workload.computation_node import ComputationNode
 from zigzag.datatypes import Constants, MemoryOperand
 
+import sys
+
 #from zigzag.hardware.architecture.Core import Core
 from stream.classes.hardware.architecture.stream_core import Core
 
@@ -98,12 +100,36 @@ class CommunicationManager:
         return shortest_paths
 
     def get_links_for_all_core_pairs(self):
-        communication_links = {}
-        for pair, path in self.shortest_paths.items():
-            traversed_edges = [(i, j) for i, j in zip(path, path[1:])]
-            communication_links[pair] = [
-                self.accelerator.cores.edges[traversed_edge]["cl"] for traversed_edge in traversed_edges
-            ]
+        # communication_links = {}
+        # for pair, path in self.shortest_paths.items():
+        #     traversed_edges = [(i, j) for i, j in zip(path, path[1:])]
+        #     communication_links[pair] = [
+        #         self.accelerator.cores.edges[traversed_edge]["cl"] for traversed_edge in traversed_edges
+        #     ]
+        # return communication_links
+        # commented the above code to return multiple parallel links instead of one
+        cores_pairs = [(producer_core, consumer_core) for producer_core, consumer_core in itertools.product(
+            self.accelerator.cores.nodes(), self.accelerator.cores.nodes()
+        )]
+        communication_links = dict.fromkeys(cores_pairs, []) 
+        #print("==== Printing the edges inside get_links_for_all_core_pairs() ====")
+        # print(communication_links)
+        
+        if(self.accelerator.parallel_links_flag == True):
+            for producer, consumer, edge_idx in self.accelerator.cores.edges:
+                if(communication_links[(producer, consumer)]) == []:
+                        communication_links[(producer, consumer)] = [(self.accelerator.cores.edges[(producer, consumer, edge_idx)]["cl"])]#multi_link_cores.edges[(producer, consumer, edge_idx)])] 
+                else:
+                        communication_links[(producer, consumer)].append(self.accelerator.cores.edges[(producer, consumer, edge_idx)]["cl"])#multi_link_cores.edges[(producer, consumer, edge_idx)])
+        else:
+            for producer, consumer in self.accelerator.cores.edges:
+                if(communication_links[(producer, consumer)]) == []:
+                        communication_links[(producer, consumer)] = [(self.accelerator.cores.edges[(producer, consumer)]["cl"])]#multi_link_cores.edges[(producer, consumer, edge_idx)])] 
+                else:
+                        communication_links[(producer, consumer)].append(self.accelerator.cores.edges[(producer, consumer)]["cl"])#multi_link_cores.edges[(producer, consumer, edge_idx)])
+            
+        #print(communication_links)
+        #print("====================================")
         return communication_links
 
     def get_links_for_pair(self, sender: Core, receiver: Core):
@@ -139,6 +165,7 @@ class CommunicationManager:
         receiver_memory_operand: str,
         start_timestep: int,
         duration: int,
+        chosen_links=None,
     ) -> tuple[int, int, float, float]:
         """Update the links for transfer of a tensor between sender and receiver core at a given timestep.
         A CommunicationEvent is created containing one or more CommunicationLinkEvents,
@@ -151,6 +178,7 @@ class CommunicationManager:
             receiver_memory_operand (str): The memory operand storing the tensor on the receiving end of the transfer.
             start_timestep (int): The timestep at which to start the data transfer.
             duration (int): Duration of the transfer
+            chosen_links: Which link was chosen by the get_idle function out of the multiple links that we can choose from.
 
         Returns:
             int: The timestep at which the transfer is complete.
@@ -160,6 +188,10 @@ class CommunicationManager:
             sender = self.accelerator.get_core(sender)
         if isinstance(receiver, int):
             receiver = self.accelerator.get_core(receiver)
+        if not chosen_links:
+            links = self.get_links_for_pair(sender, receiver)
+        else:
+            links = chosen_links
         links = self.get_links_for_pair(sender, receiver)
         if not links:  # When sender == receiver
             return 0, 0
@@ -233,14 +265,16 @@ class CommunicationManager:
             layer_op = cn.memory_operand_links.mem_to_layer_op(mem_op)
             tensors.append(cn.operand_tensors[layer_op])
         # Get idle window of the involved links
-        block_start = self.get_links_idle_window(links_to_block, start_timestep, duration, tensors)
-        # Get the
+        block_start, new_duration, used_link, all_links_transfer_start_end  = self.get_links_idle_window(links_to_block, start_timestep, duration, tensors)
+
         for link, req_bw in links_to_block.items():
             req_bw = ceil(req_bw)
-            link.block(block_start, duration, tensors, activity=req_bw)
+            #link.block(block_start, duration, tensors, activity=req_bw)
+        used_link.block(block_start, new_duration, tensors, offchip_core, core, activity=req_bw)  # changed it to the duration returned from the get_links_idle_window function
         return block_start
 
-    def get_links_idle_window(self, links: dict, best_case_start: int, duration: int, tensors: list[Tensor]) -> int:
+    #def get_links_idle_window(self, links: dict, best_case_start: int, duration: int, tensors: list[Tensor]) -> int:
+    def get_links_idle_window(self, links: list, best_case_start: int, tensors: list, duration: int=None, ) -> int:
         """Return the timestep at which tensor can be transfered across the links.
         Both links must have an idle window large enough for the transfer.
         The timestep must be greater than or equal to best_case_start.
@@ -253,12 +287,69 @@ class CommunicationManager:
         """
         assert len(links) > 0
         idle_intersections = []
-        for i, (link, req_bw) in enumerate(links.items()):
-            req_bw = min(req_bw, link.bandwidth)  # ceil the bw
-            windows = link.get_idle_window(req_bw, duration, best_case_start, tensors)
-            if i == 0:
-                idle_intersections = windows
+
+        best_idle_intersections = []
+        best_idle_intersections.append((sys.maxsize, sys.maxsize))
+        best_duration = sys.maxsize
+
+        all_idle_intersections = []
+
+        total_tensors_size = 0
+        for t in tensors:
+            total_tensors_size += t.size
+
+        # added this to support the potential of having multiple links
+        for path in links:
+            if hasattr(path, '__iter__'):
+                duration = max([ceil(total_tensors_size / link.bandwidth) for link in path])
+                for i, (link, req_bw) in enumerate(path.items()):
+                    req_bw = min(req_bw, link.bandwidth)  # ceil the bw
+                    windows = link.get_idle_window(req_bw, duration, best_case_start, tensors)
+                    
+                    if i == 0:
+                        idle_intersections = windows
+                    else:
+                        idle_intersections = intersections(idle_intersections, windows)
+                        idle_intersections = [
+                            period for period in idle_intersections
+                            if period[1] - period[0] >= duration
+                        ]
+                
+                all_idle_intersections.append(idle_intersections[0][0]) # contains a copy of all intersections of every path
+                
+                if idle_intersections[0][0] < best_idle_intersections[0][0]:
+                    best_idle_intersections = idle_intersections
+                    best_duration = duration
+                    best_link = path
             else:
-                idle_intersections = intersections(idle_intersections, windows)
-                idle_intersections = [period for period in idle_intersections if period[1] - period[0] >= duration]
-        return idle_intersections[0][0]
+                if not duration:
+                    duration = ceil(total_tensors_size / path.bandwidth)
+                link = path
+                req_bw = path.bandwidth
+                req_bw = min(req_bw, link.bandwidth)  # ceil the bw
+                windows = link.get_idle_window(req_bw, duration, best_case_start, tensors, sender, receiver)
+                idle_intersections = windows
+
+                all_idle_intersections.append(idle_intersections[0][0]) # contains a copy of all intersections of every path
+
+                if idle_intersections[0][0] < best_idle_intersections[0][0]:
+                        best_idle_intersections = idle_intersections
+                        best_duration = duration
+                        best_link = path
+
+        # Convert the best_link from dict to list of CLs
+        if isinstance(best_link, dict):
+            best_link = list(best_link.keys())
+
+        return best_idle_intersections[0][0], best_duration, best_link, all_idle_intersections
+
+
+        # for i, (link, req_bw) in enumerate(links.items()):
+        #     req_bw = min(req_bw, link.bandwidth)  # ceil the bw
+        #     windows = link.get_idle_window(req_bw, duration, best_case_start, tensors)
+        #     if i == 0:
+        #         idle_intersections = windows
+        #     else:
+        #         idle_intersections = intersections(idle_intersections, windows)
+        #         idle_intersections = [period for period in idle_intersections if period[1] - period[0] >= duration]
+        # return idle_intersections[0][0]
