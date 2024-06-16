@@ -327,7 +327,7 @@ class CommunicationManager:
                 link = path
                 req_bw = path.bandwidth
                 req_bw = min(req_bw, link.bandwidth)  # ceil the bw
-                windows = link.get_idle_window(req_bw, duration, best_case_start, tensors, sender, receiver)
+                windows = link.get_idle_window(req_bw, duration, best_case_start, tensors)
                 idle_intersections = windows
 
                 all_idle_intersections.append(idle_intersections[0][0]) # contains a copy of all intersections of every path
