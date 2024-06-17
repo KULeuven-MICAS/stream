@@ -27,7 +27,7 @@ from stream.utils import load_scme, save_scme
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,
 )
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 from zigzag.workload.layer_attributes import LayerDimSizes
 
 logger = logging.getLogger(__name__)

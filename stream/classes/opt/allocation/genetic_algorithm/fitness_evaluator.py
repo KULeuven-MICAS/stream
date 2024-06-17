@@ -7,7 +7,7 @@ from zigzag.hardware.architecture.Core import Core
 from zigzag.utils import pickle_deepcopy
 
 from stream.utils import get_too_large_operands
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 
 
 class FitnessEvaluator:

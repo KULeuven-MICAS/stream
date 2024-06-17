@@ -1,5 +1,5 @@
 from typing import Any
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 from zigzag.workload.layer_node import LayerNode
 from stream.classes.workload.computation_node import ComputationNode
 

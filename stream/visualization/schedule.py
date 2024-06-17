@@ -13,7 +13,7 @@ import networkx as nx
 import argparse
 from itertools import cycle
 
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 
 if TYPE_CHECKING:
     from stream.classes.cost_model.cost_model import StreamCostModelEvaluation

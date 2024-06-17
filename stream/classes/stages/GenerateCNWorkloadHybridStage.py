@@ -10,7 +10,7 @@ from rtree import index
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.opt.splitting.TemporalLoop import TemporalLoop
 from stream.classes.workload.node import Node
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 from zigzag.datatypes import Constants, LayerDim, LayerOperand
 from zigzag.utils import pickle_deepcopy
 from stream.classes.workload.elementwise_node import ElementwiseNode

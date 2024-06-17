@@ -1,5 +1,5 @@
 from zigzag.workload.LayerNodeABC import LayerNodeABC
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 from typing import Any
 
 
