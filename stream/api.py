@@ -1,4 +1,4 @@
-from zigzag.stages import *
+from zigzag.stages.MainStage import MainStage
 from stream.classes.stages import *
 import re
 
