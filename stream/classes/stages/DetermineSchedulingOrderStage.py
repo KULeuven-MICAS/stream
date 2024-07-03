@@ -28,7 +28,7 @@ class DetermineSchedulingOrderStage(Stage):
             logger.warn("Scheduling order for layer stacks not implemented.")
         # Generate a list of node ids from highest priority to lowest
         # We give higher priority to nodes deeper in the graph
-        self.scheduling_order = sorted((n.id for n in self.workload.nodes()), reverse=True)
+        self.scheduling_order = sorted(((n.id, n.sub_id) for n in self.workload.nodes()), reverse=True)
 
         self.kwargs["accelerator"] = self.accelerator
         self.kwargs["workload"] = self.workload

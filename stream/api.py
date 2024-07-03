@@ -1,4 +1,4 @@
-from zigzag.stages import *
+from zigzag.stages.MainStage import MainStage
 from stream.classes.stages import *
 import re
 
@@ -47,21 +47,15 @@ def get_hardware_performance_stream(
 
 
 if __name__ == "__main__":
-    # accelerator = 'inputs.examples.hardware.TPU_like_quad_core'
-    # workload = 'inputs.examples.workload.resnet18_few_layers'
-    # mapping = 'inputs.examples.mapping.tpu_like_quad_core'
-
     CN_define_mode = 1
     hint_loops = [("OY", "all")]
 
-    accelerator = "inputs.testing.hardware.dual_testing_core_offchip"
-    workload = "inputs.testing.workload.testing_workload_for_2_cores"
-    mapping = "inputs.testing.mapping.testing_mapping"
+    accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
+    workload = "stream/inputs/examples/workload/resnet18.yaml"
+    mapping = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
 
-    # hint_loops = []
-
-    hw_name = accelerator.split(".")[-1]
-    wl_name = re.split(r"/|\.", workload)[-1]
+    hw_name = "tpu_like_quad_core"
+    wl_name = "resnet18"
     experiment_id = (
         f"{hw_name}-{wl_name}-CNmode_{CN_define_mode}-hintloop_{str(hint_loops)}"
     )
