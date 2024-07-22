@@ -21,7 +21,7 @@ from stream.classes.workload.dummy_node import DummyNode
 
 import logging
 
-from zigzag.workload.Workload import Workload
+from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 from zigzag.workload.layer_node import LayerNode
 
 logger = logging.getLogger(__name__)

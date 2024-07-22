@@ -4,7 +4,7 @@ from networkx import DiGraph
 from stream.classes.hardware.architecture.accelerator import Accelerator
 
 from stream.classes.workload.computation_node import ComputationNode
-from zigzag.workload.Workload import Workload
+from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 
 CONSTANT_MEMORY_OPERAND = "I2"
 

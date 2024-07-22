@@ -25,17 +25,19 @@ class ReshapeNode(Node, LayerNodeABC):
             input_names The input names of this node.
             output_names: The output names of this node.
         """
-        super().__init__(
+        Node.__init__(
+            self,
             node_id=node_id,
             node_name=node_name,
             type="reshape",
             onchip_energy=0,
             offchip_energy=0,
             runtime=0,
-            core_allocation=[-1],
+            possible_core_allocation=[-1],
             input_names=input_names,
             output_names=output_names,
         )
+        LayerNodeABC.__init__(self, node_id=node_id, node_name=node_name)
 
         self.shape = shape
         self.input_operand_source = {LayerOperand("I"): predecessor}

@@ -1,5 +1,5 @@
 from typing import Any
-from zigzag.workload.Workload import Workload
+from zigzag.workload.DNNWorkload import DNNWorkload
 from zigzag.workload.layer_node import LayerNode
 from stream.classes.workload.computation_node import ComputationNode
 
@@ -8,7 +8,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-class DNNWorkloadStream(Workload):
+class DNNWorkloadStream(DNNWorkload):
     def __init__(self, nodes: list[LayerNode], **attr: Any):
         """
         Collect all the algorithmic workload information here.

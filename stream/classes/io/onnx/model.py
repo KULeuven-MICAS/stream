@@ -9,12 +9,12 @@ from stream.classes.io.onnx.simd import SimdParser
 from stream.classes.io.onnx.transpose import TransposeParser
 from stream.classes.io.onnx.lpnormalization import LpNormalizationParser
 from stream.classes.io.onnx.default import DefaultNodeParser
-from zigzag.parser.onnx.utils import parse_onnx_model_from_path, get_onnx_tensor_type
-from zigzag.stages.WorkloadParserStage import WorkloadParserStage
 from stream.classes.io.onnx.gemm import GemmParser
 from stream.classes.io.onnx.matmul import MatMulParser
 from stream.classes.io.onnx.conv import ConvParser
 from stream.classes.workload.onnx_workload import ONNXWorkload
+from zigzag.parser.onnx.utils import parse_onnx_model_from_path, get_onnx_tensor_type
+from zigzag.stages.WorkloadParserStage import WorkloadParserStage
 
 
 import logging
@@ -171,7 +171,7 @@ class ONNXModelParser:
                         node.name,
                     )
             elif node.op_type in ["Transpose"]:
-                parser = TransposeParser(node_id, node, nodes_outputs, self.mapping_data, self.onnx_model)
+                parser = TransposeParser(node_id, node, nodes_outputs, self.onnx_model)
                 logger.info("Parsed Transpose node %s.", node.name)
             elif node.op_type in ["LpNormalization"]:
                 parser = LpNormalizationParser(node_id, node, nodes_outputs, self.mapping_data, self.onnx_model)

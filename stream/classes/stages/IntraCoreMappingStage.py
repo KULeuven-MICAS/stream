@@ -27,7 +27,7 @@ from stream.utils import load_scme, save_scme
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,
 )
-from zigzag.workload.Workload import Workload
+from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 from zigzag.workload.layer_attributes import LayerDimSizes
 
 logger = logging.getLogger(__name__)
@@ -364,6 +364,7 @@ class IntraCoreMappingStage(Stage):
         Returns:
             int: the required memory capacity in the top memory of the core for operands_stored_in_offchip
         """
+
         def get_lowest_level_unrolled_memory_capacity(memory_operand: MemoryOperand):
             memory_level = core.memory_hierarchy.get_memory_levels(memory_operand)[0]
             return memory_level.memory_instance.size * memory_level.unroll_count

@@ -1,31 +1,43 @@
 from typing import Any
 import numpy as np
 from stream.classes.workload.node import Node
+from zigzag.datatypes import LayerOperand
+from zigzag.workload.LayerNodeABC import LayerNodeABC
 
 
-class TransposeNode(Node):
+class TransposeNode(Node, LayerNodeABC):
     """Class that represents an onnx Transpose node."""
 
-    def __init__(self, predecessors, input_names, output_names) -> None:
+    def __init__(
+        self,
+        node_id: int,
+        node_name: str,
+        predecessor: int,
+        input_names: list[str],
+        output_names: list[str],
+    ) -> None:
         """Initialize the TransposeNode
 
         Args:
-            predecessors (list): The predecessors of this node.
-            input_names (list) The input names of this node.
-            output_names (list): The output names of this node.
+            predecessors: The predecessors of this node.
+            input_names The input names of this node.
+            output_names: The output names of this node.
         """
-        raise NotImplementedError
 
-        super().__init__(
-            "transpose",
+        Node.__init__(
+            self,
+            node_id=node_id,
+            node_name=node_name,
+            type="reshape",
             onchip_energy=0,
             offchip_energy=0,
             runtime=0,
-            core_allocation=-1,
+            possible_core_allocation=[-1],
             input_names=input_names,
             output_names=output_names,
         )
-        self.input_operand_source = {"I": predecessors}
+        LayerNodeABC.__init__(self, node_id=node_id, node_name=node_name)
+        self.input_operand_source = {LayerOperand("I"): predecessor}
 
     def transpose(self, input_tensor: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
         """Transpose an input tensor.
