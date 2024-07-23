@@ -9,6 +9,7 @@ import numpy as np
 from rtree import index
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.opt.splitting.TemporalLoop import TemporalLoop
+from stream.classes.workload.gather_node import GatherNode
 from stream.classes.workload.node import Node
 from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 from zigzag.datatypes import Constants, LayerDim, LayerOperand
@@ -692,6 +693,8 @@ class GenerateCNWorkloadHybridStage(Stage):
             output_tensor = node.flatten(input_tensor)
         elif isinstance(node, ElementwiseNode):
             output_tensor = input_tensor.copy()
+        elif isinstance(node, GatherNode):
+            output_tensor = node.gather_operand_tensor(input_tensor)
         else:
             raise NotImplementedError(f"Tensor propagation not implemented for node {node.name}.")
         return output_tensor

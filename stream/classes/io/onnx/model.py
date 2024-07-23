@@ -3,6 +3,7 @@ from typing import Any
 from onnx import ModelProto, NodeProto
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.io.onnx.flatten import FlattenParser
+from stream.classes.io.onnx.gather import GatherParser
 from stream.classes.io.onnx.pooling import PoolingParser
 from stream.classes.io.onnx.reshape import ReshapeParser
 from stream.classes.io.onnx.simd import SimdParser
@@ -12,6 +13,7 @@ from stream.classes.io.onnx.default import DefaultNodeParser
 from stream.classes.io.onnx.gemm import GemmParser
 from stream.classes.io.onnx.matmul import MatMulParser
 from stream.classes.io.onnx.conv import ConvParser
+from stream.classes.workload.gather_node import GatherNode
 from stream.classes.workload.onnx_workload import ONNXWorkload
 from zigzag.parser.onnx.utils import parse_onnx_model_from_path, get_onnx_tensor_type
 from zigzag.stages.WorkloadParserStage import WorkloadParserStage
@@ -74,7 +76,6 @@ class ONNXModelParser:
         workload = ONNXWorkload()
 
         for node_id, node in enumerate(self.onnx_model.graph.node):
-            node_id_tuple = (node_id,)
             # If this node has no inputs, don't take it into consideration (e.g. Constant operator has no inputs)
             if not node.input:
                 continue
@@ -141,8 +142,17 @@ class ONNXModelParser:
                     onnx_model=self.onnx_model,
                 )
                 logger.info("Parsed Flatten node %s.", node.name)
+            elif node.op_type in ["Gather"]:
+                parser = GatherParser(
+                    node_id=node_id,
+                    node=node,
+                    nodes_outputs=nodes_outputs,
+                    onnx_model=self.onnx_model,
+                )
+                logger.info("Parsed Gather node %s.", node.name)
             elif node.op_type in ["Add", "Mul"]:
-                # TODO: a temporary fix an element-wise Add or Mul which has asymmetric input data -> treat it as a DummyNode.
+                # TODO: a temporary fix an element-wise Add or Mul which has asymmetric input data
+                # TODO: -> treat it as a  DummyNode.
                 #  Future to support node with asymmetric input data.
                 if has_asymmetric_input_data(node, self.onnx_model):
                     parser = DefaultNodeParser(
