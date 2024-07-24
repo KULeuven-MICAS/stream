@@ -3,17 +3,13 @@ from stream.classes.stages import *
 import re
 
 
-def get_hardware_performance_stream(
-    hardware, workload, mapping, CN_define_mode, hint_loops, node_hw_cost_pkl_name
-):
+def get_hardware_performance_stream(hardware, workload, mapping, CN_define_mode, hint_loops, node_hw_cost_pkl_name):
     # Initialize the logger
     import logging as _logging
 
     _logging_level = _logging.INFO
     # _logging_format = '%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s'
-    _logging_format = (
-        "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-    )
+    _logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
     _logging.basicConfig(level=_logging_level, format=_logging_format)
 
     mainstage = MainStage(
@@ -28,7 +24,7 @@ def get_hardware_performance_stream(
         accelerator=hardware,  # required by AcceleratorParserStage
         workload_path=workload,  # required by ModelParserStage
         mapping_path=mapping,  # required by ModelParserStage
-        loma_lpf_limit=6,  # required by LomaStage
+        loma_lpf_limit=6,  # required by LomaEngine
         nb_ga_individuals=128,  # number of individuals in each genetic algorithm generation
         nb_ga_generations=100,  # number of genetic algorithm generations
         node_hw_performances_path=f"outputs/{node_hw_cost_pkl_name}.pickle",  # saved node_hw_performances to skip re-computation
@@ -56,9 +52,7 @@ if __name__ == "__main__":
 
     hw_name = "tpu_like_quad_core"
     wl_name = "resnet18"
-    experiment_id = (
-        f"{hw_name}-{wl_name}-CNmode_{CN_define_mode}-hintloop_{str(hint_loops)}"
-    )
+    experiment_id = f"{hw_name}-{wl_name}-CNmode_{CN_define_mode}-hintloop_{str(hint_loops)}"
     node_hw_cost_pkl_name = f"saved_CN_HW_cost-{experiment_id}"
 
     scme, _ = get_hardware_performance_stream(
