@@ -13,6 +13,7 @@ class TransposeParser(ONNXOperatorParser):
         assert len(predecessors) == 1, "An ONNX transpose node with multiple input nodes is not supported"
         predecessor = predecessors.pop()
 
+        permute_axes = self.get_permute_indices()
         input_names = [self.node.input[0]]
         output_names = [self.node.output[0]]
 
@@ -22,4 +23,13 @@ class TransposeParser(ONNXOperatorParser):
             predecessor=predecessor,
             input_names=input_names,
             output_names=output_names,
+            permute_axes=permute_axes,
         )
+
+    def get_permute_indices(self):
+        """`perm` can be attached as an attribute of a transpose node"""
+        try:
+            perm_attr = next(filter(lambda x: x.name == "perm", self.node.attribute))
+            return list(perm_attr.ints)
+        except StopIteration:
+            return None

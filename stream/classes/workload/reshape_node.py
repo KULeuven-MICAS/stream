@@ -16,6 +16,7 @@ class ReshapeNode(Node, LayerNodeABC):
         shape: list[int],
         input_names: list[str],
         output_names: list[str],
+        allow_zero: bool = False,
     ) -> None:
         """Initialize the ReshapeNode
 
@@ -24,6 +25,7 @@ class ReshapeNode(Node, LayerNodeABC):
             shape: The output tensor's shape.
             input_names The input names of this node.
             output_names: The output names of this node.
+            allow_zero: wether the output shape can be 0 at some dimensions. Iff True, shape `[2,0,3]` becomes `[2,3]`
         """
         Node.__init__(
             self,
@@ -39,6 +41,7 @@ class ReshapeNode(Node, LayerNodeABC):
         )
         LayerNodeABC.__init__(self, node_id=node_id, node_name=node_name)
 
+        self.allow_zero = allow_zero
         self.shape = shape
         self.input_operand_source = {LayerOperand("I"): predecessor}
 
@@ -47,4 +50,7 @@ class ReshapeNode(Node, LayerNodeABC):
         new_shape = self.shape
         if not new_shape:
             new_shape = tensor.shape
+
+        if not self.allow_zero:
+            new_shape = [x for x in new_shape if x != 0]
         return np.reshape(tensor, new_shape)

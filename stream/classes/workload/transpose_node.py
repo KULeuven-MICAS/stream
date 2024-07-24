@@ -15,6 +15,7 @@ class TransposeNode(Node, LayerNodeABC):
         predecessor: int,
         input_names: list[str],
         output_names: list[str],
+        permute_axes: list[int] | None = None,
     ) -> None:
         """Initialize the TransposeNode
 
@@ -37,6 +38,8 @@ class TransposeNode(Node, LayerNodeABC):
             output_names=output_names,
         )
         LayerNodeABC.__init__(self, node_id=node_id, node_name=node_name)
+
+        self.permute_axes = permute_axes
         self.input_operand_source = {LayerOperand("I"): predecessor}
 
     def transpose(self, input_tensor: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
@@ -45,4 +48,4 @@ class TransposeNode(Node, LayerNodeABC):
         Args:
             input_tensor (np.ndarray): The input tensor
         """
-        return np.transpose(input_tensor)
+        return np.transpose(input_tensor, axes=self.permute_axes)

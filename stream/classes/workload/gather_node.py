@@ -14,7 +14,7 @@ class GatherNode(Node, LayerNodeABC):
         node_name: str,
         predecessors: list[int],
         gather_axis: int,
-        gather_indices: list[int],
+        gather_indices: int | list[int],
         input_names: list[str],
         output_names: list[str],
     ) -> None:
