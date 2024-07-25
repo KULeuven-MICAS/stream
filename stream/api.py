@@ -8,7 +8,6 @@ from stream.classes.stages.ModelParserStage import UserDefinedModelParserStage
 
 
 def get_hardware_performance_stream(hardware, workload, mapping, CN_define_mode, hint_loops, node_hw_cost_pkl_name):
-    # Initialize the logger
     import logging as _logging
 
     _logging_level = _logging.INFO

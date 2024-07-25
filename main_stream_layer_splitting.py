@@ -1,6 +1,5 @@
 """ This main file uses a fixed layer-core allocation with the last layer split across multiple cores"""
 
-# Initialize the logger
 import logging as _logging
 import pickle
 import re

@@ -1,4 +1,3 @@
-# Initialize the logger
 import logging as _logging
 import re
 
