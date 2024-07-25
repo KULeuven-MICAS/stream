@@ -123,6 +123,6 @@ def convert_outer_cn_loops_with_k(outer_cn_loops: list, layer: ComputationNode, 
     if not isinstance(split_factor, int):
         raise ValueError("The number of K splits should be an integer.")
     if split_factor > 1:
-        outer_cn_loops += [(LayerDim("K"), split_factor)]
+        outer_cn_loops += [("K", split_factor)]
     outer_loops = convert_outer_cn_loops(outer_cn_loops, layer)
     return outer_loops

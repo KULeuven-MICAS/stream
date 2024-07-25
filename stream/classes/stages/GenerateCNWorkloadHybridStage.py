@@ -185,7 +185,7 @@ class GenerateCNWorkloadHybridStage(Stage):
             # layer ids 0 to 3 will use [("OY", "all")] and layer id 4 will use [("OY", "all), ("K", "all")]
             # Find which sublist this layer should use
             try:
-                outer_cn_loops = next(v for k, v in self.hint_loops if layer.id in k)
+                outer_cn_loops = next(v for k, v in self.hint_loops.items() if layer.id in k)
             except StopIteration:
                 raise ValueError(f"Layer id {layer.id} not in hint_loops: {self.hint_loops}")
             outer_loops = convert_outer_cn_loops(outer_cn_loops, layer)
