@@ -24,7 +24,7 @@ class LpNormalizationNode(Node):
             onchip_energy=0,
             offchip_energy=0,
             runtime=0,
-            core_allocation=[-1],
+            possible_core_allocation=[-1],
             input_names=input_names,
             output_names=output_names,
         )
