@@ -1,3 +1,5 @@
+- name: default
+  core_allocation: (1,)
 - name: /avgpool/GlobalAveragePool
   core_allocation: (4,)
 - name: /conv1/Conv
