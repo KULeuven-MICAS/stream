@@ -1,6 +1,9 @@
+from typing import Any, Iterator
+import networkx as nx
+
 from zigzag.workload.LayerNodeABC import LayerNodeABC
 from zigzag.workload.ONNXWorkload import ONNXWorkload as ONNXWorkloadZigZag
-from typing import Any
+from stream.classes.workload.node import Node
 
 
 class ONNXWorkload(ONNXWorkloadZigZag):
@@ -34,3 +37,7 @@ class ONNXWorkload(ONNXWorkloadZigZag):
             edges.append((parent_node_obj, node_obj))
             node_obj.input_operand_source[op] = parent_id  # parent_node_obj
             self.add_workload_edges_from(edges)
+
+    def all_simple_paths(self, producer: Node, consumer: Node) -> Iterator[list[Node]]:
+        """Wraps nx.all_simple_paths with type annotations. Gives all paths from producer to consumer node."""
+        return nx.all_simple_paths(self, source=producer, target=consumer)  # type: ignore

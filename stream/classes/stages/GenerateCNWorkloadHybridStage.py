@@ -5,6 +5,7 @@ from re import L
 from typing import Any, List
 import networkx as nx
 from networkx import DiGraph
+import logging
 import numpy as np
 from rtree import index
 from stream.classes.hardware.architecture.accelerator import Accelerator
@@ -17,6 +18,7 @@ from zigzag.utils import pickle_deepcopy
 from stream.classes.workload.elementwise_node import ElementwiseNode
 from stream.classes.workload.flatten_node import FlattenNode
 from stream.classes.workload.lpnormalization_node import LpNormalizationNode
+from stream.classes.workload.onnx_workload import ONNXWorkload
 from stream.classes.workload.reshape_node import ReshapeNode
 from stream.classes.workload.transpose_node import TransposeNode
 from stream.classes.workload.tensor import Tensor
@@ -28,11 +30,14 @@ from stream.classes.opt.splitting.splitting import (
     convert_outer_cn_loops,
     convert_outer_cn_loops_with_k,
 )
-
-import logging
+from stream.utils import ARRAY_T
 
 
 logger = logging.getLogger(__name__)
+
+
+class TensorDimensionMismatchException(Exception):
+    """Facilitates error handling in case incorrect tensor dimensions are passed on"""
 
 
 class GenerateCNWorkloadHybridStage(Stage):
@@ -44,7 +49,7 @@ class GenerateCNWorkloadHybridStage(Stage):
         self,
         list_of_callables: list[StageCallable],
         *,
-        workload: Workload,
+        workload: ONNXWorkload,
         accelerator: Accelerator,
         cn_define_mode: int,
         hint_loops: list[tuple[LayerDim, str | int]],
@@ -97,7 +102,7 @@ class GenerateCNWorkloadHybridStage(Stage):
             unique_finer_nodes += unique_nodes
             # Compute the edges between nodes originating from one bigger node (intra-edges)
             intra_edges = self.get_intra_edges(finer_nodes)
-            G.add_edges_from(intra_edges)
+            G.add_workload_edges_from(intra_edges)
             # If there is only one finer node for this layer, add the node to the graph
             if not intra_edges:
                 G.add_nodes_from(finer_nodes)
@@ -108,7 +113,7 @@ class GenerateCNWorkloadHybridStage(Stage):
             finer_producers = self.finer_nodes_dict[producer]
             finer_consumers = self.finer_nodes_dict[consumer]
             if is_complex:
-                inter_edges = self.get_inter_edges_numpy(producer, consumer, finer_producers, finer_consumers)
+                inter_edges = self.get_inter_edges_numpy(producer, consumer)
             else:
                 inter_edges = self.get_inter_edges_rtree(producer, consumer, finer_producers, finer_consumers)
             G.add_edges_from(inter_edges)
@@ -627,46 +632,51 @@ class GenerateCNWorkloadHybridStage(Stage):
         self,
         producer: ComputationNode,
         consumer: ComputationNode,
-        finer_producers: list[ComputationNode],
-        finer_consumers: list[ComputationNode],
     ):
-        numpy_tensors: dict[ComputationNode, dict] = {}
-        # Get the paths from producer to consumer
-        paths_between_generator = nx.all_simple_paths(self.workload, source=producer, target=consumer)
-        all_inter_edges: list[tuple[ComputationNode, ComputationNode, dict[str, Any]]] = []
-        for path_between in paths_between_generator:
-            dependent_operand = Constants.OUTPUT_LAYER_OP
-            # FIRST NODE
-            # First node in the path is a ComputationNode, of which we extract the output operand dependency tensor
-            node = path_between[0]
-            assert isinstance(node, ComputationNode), "First node in path should be ComputationNode"
+        numpy_tensors: dict[ComputationNode, dict[LayerOperand, ARRAY_T]] = {}
+        all_inter_edges: list[tuple[ARRAY_T, ARRAY_T, dict[str, Any]]] = []
+
+        def get_tensor_cn_for_op(node: ComputationNode, dependent_operand: LayerOperand):
+            """And update the known tensors of computation nodes"""
             if node in numpy_tensors:
                 tensor_cns = numpy_tensors[node]
             else:
                 finer_nodes = self.finer_nodes_dict[node]
                 tensor_cns = self.get_tensor_cns(node, finer_nodes)
+                # Store result for later use
                 numpy_tensors[node] = tensor_cns
-                tensor = tensor_cns[Constants.OUTPUT_LAYER_OP]
-            # INTERMEDIATE NON-COMPUTATION NODES
+            tensor = tensor_cns[dependent_operand]
+            return tensor
+
+        for path_between in self.workload.all_simple_paths(producer, consumer):
+            # First node in the path is a ComputationNode, of which we extract the output operand dependency tensor
+            node = path_between[0]
+            assert isinstance(node, ComputationNode), "First node in path should be ComputationNode"
+            tensor = get_tensor_cn_for_op(node, dependent_operand=Constants.OUTPUT_LAYER_OP)
+
+            # Propagate through intermediate, non-computation nodes
             for _, node in enumerate(path_between[1:-1], start=1):
                 if isinstance(node, ComputationNode):
                     raise ValueError("Intermediate nodes should not be of type ComputationNode.")
                 tensor = self.propagate_cn_production_for_non_cn(node, tensor)
-            # LAST NODE IN PATH
-            last_node: Node = path_between[-1]
-            # Find the operand for which this last node connects to its predecessor
 
+            # Last node: Computation node
+            last_node = path_between[-1]
+            assert isinstance(last_node, ComputationNode), "Last node in path should be ComputationNode"
+            # Find the operand for which this last node connects to its predecessor
             dependent_operand = next(
                 op for op, dependent_node_id in last_node.input_operand_source.items() if dependent_node_id == node.id
             )
-            if last_node in numpy_tensors:
-                tensor_cns = numpy_tensors[last_node]
-            else:
-                finer_nodes = self.finer_nodes_dict[last_node]
-                tensor_cns = self.get_tensor_cns(last_node, finer_nodes)
-                numpy_tensors[node] = tensor_cns
-            last_tensor = tensor_cns[dependent_operand]
-            inter_edges = self.get_inter_edges_tensor_based(tensor, last_tensor)
+
+            try:
+                last_tensor = get_tensor_cn_for_op(last_node, dependent_operand)
+                inter_edges = self.get_inter_edges_tensor_based(tensor, last_tensor)
+            except TensorDimensionMismatchException:
+                # Possible cause: Sources for `W` and `I` operand are swapped for this node -> try the other one
+                dependent_operand = next(op for op in last_node.input_operand_source if op != dependent_operand)
+                last_tensor = get_tensor_cn_for_op(last_node, dependent_operand)
+                inter_edges = self.get_inter_edges_tensor_based(tensor, last_tensor)
+
             for prod, cons in inter_edges:
                 all_inter_edges.append(
                     (
@@ -711,9 +721,9 @@ class GenerateCNWorkloadHybridStage(Stage):
             producer_output_tensor (np.ndarray): A tensor containing for each position which CNs will produce it
             consumer_input_tensor (np.ndarray): A tensor containing for each position which CNs will consume it
         """
-        assert (
-            producer_output_tensor.shape == consumer_input_tensor.shape
-        ), "Arrays to construct inter-layer edges must be equal shape."
+        if producer_output_tensor.shape != consumer_input_tensor.shape:
+            raise TensorDimensionMismatchException("Arrays to construct inter-layer edges must be equal shape.")
+
         inter_edges: set[tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]] = set()
         for producer_set, consumer_set in zip(producer_output_tensor.flat, consumer_input_tensor.flat):
             if consumer_set is None:  # Happens for downsample layers (e.g. ComputationNode((16,)) for MBNetV2)
