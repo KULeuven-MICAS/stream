@@ -22,7 +22,7 @@ logger = _logging.getLogger(__name__)
 ####################################################################################
 
 ############################## Provide inputs ######################################
-workload_path = "lab2/inputs/workload/workload.yaml"
+workload_path = "lab2/inputs/workload/resnet18_3_residuals.onnx"
 accelerator = "lab2/inputs/hardware/hda_bus.yaml"
 mapping_path = "lab2/inputs/mapping/mapping.yaml"
 timeline_fig_path_plotly = f"lab2/outputs/timeline.html"
@@ -45,16 +45,16 @@ node_hw_performances_path = f"lab2/outputs/{node_hw_cost_pkl_name}.pickle"
 visualize_node_hw_performances_path = (
     f"lab2/outputs/{node_hw_cost_pkl_name}_visualization.png"
 )
-nb_ga_generations = 16
-nb_ga_individuals = 16
+nb_ga_generations = 4
+nb_ga_individuals = 4
 ####################################################################################
 
 
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
         AcceleratorParserStage,  # Parses the accelerator
-        # StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-        UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
+        StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+        # UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
         # ProfileWorkloadStage,
         GenerateCNWorkloadHybridStage,
         IntraCoreMappingStage,
