@@ -1,13 +1,14 @@
+import logging
 from itertools import combinations
 from typing import TYPE_CHECKING, Any
-import numpy as np
-import logging
 
-from stream.classes.workload.tensor import Tensor
+import numpy as np
 from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.Core import Core
-from zigzag.hardware.architecture.MemoryInstance import MemoryInstance
 from zigzag.hardware.architecture.memory_level import MemoryLevel
+from zigzag.hardware.architecture.MemoryInstance import MemoryInstance
+
+from stream.classes.workload.tensor import Tensor
 
 if TYPE_CHECKING:
     from stream.classes.hardware.architecture.accelerator import Accelerator

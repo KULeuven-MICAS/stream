@@ -1,18 +1,18 @@
+import argparse
+import logging
+import pickle
+from itertools import cycle
+from math import isnan
 from typing import TYPE_CHECKING
+
+import networkx as nx
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
 from brokenaxes import brokenaxes
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
-from math import isnan
-import numpy as np
-import logging
-import plotly.graph_objects as go
 from plotly.express.colors import sample_colorscale
-import pandas as pd
-import pickle
-import networkx as nx
-import argparse
-from itertools import cycle
-
 from zigzag.workload.Workload import Workload
 
 if TYPE_CHECKING:

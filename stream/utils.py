@@ -1,12 +1,13 @@
-import pickle
-from networkx import DiGraph
 import os
+import pickle
 import pprint
+
+from networkx import DiGraph
+from zigzag.cost_model.cost_model import CostModelEvaluation
+from zigzag.datatypes import MemoryOperand
 
 from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 from stream.classes.hardware.architecture.accelerator import Accelerator
-from zigzag.cost_model.cost_model import CostModelEvaluation
-from zigzag.datatypes import MemoryOperand
 
 
 def get_too_large_operands(cme: CostModelEvaluation, accelerator: Accelerator, core_id: int) -> list[MemoryOperand]:

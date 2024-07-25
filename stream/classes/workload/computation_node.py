@@ -1,13 +1,13 @@
-from typing import Any, TypeAlias
 from math import prod
+from typing import Any, TypeAlias
 
 import numpy as np
-
-from stream.classes.workload.node import Node
-from stream.classes.workload.tensor import Tensor
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 from zigzag.workload.layer_attributes import LayerPadding
 from zigzag.workload.layer_node import LayerNode, LayerNodeAttributes
+
+from stream.classes.workload.node import Node
+from stream.classes.workload.tensor import Tensor
 
 OperandTensorReshape: TypeAlias = dict[LayerOperand, tuple[int, int, int, int]]
 LoopRanges: TypeAlias = dict[LayerDim, tuple[int, int]]

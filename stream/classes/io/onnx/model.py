@@ -1,24 +1,22 @@
+import logging
 from typing import Any
 
 from onnx import ModelProto, NodeProto
+from zigzag.parser.onnx.utils import get_onnx_tensor_type, parse_onnx_model_from_path
+from zigzag.stages.WorkloadParserStage import WorkloadParserStage
+
 from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.io.onnx.conv import ConvParser
+from stream.classes.io.onnx.default import DefaultNodeParser
 from stream.classes.io.onnx.flatten import FlattenParser
+from stream.classes.io.onnx.gemm import GemmParser
+from stream.classes.io.onnx.lpnormalization import LpNormalizationParser
+from stream.classes.io.onnx.matmul import MatMulParser
 from stream.classes.io.onnx.pooling import PoolingParser
 from stream.classes.io.onnx.reshape import ReshapeParser
 from stream.classes.io.onnx.simd import SimdParser
 from stream.classes.io.onnx.transpose import TransposeParser
-from stream.classes.io.onnx.lpnormalization import LpNormalizationParser
-from stream.classes.io.onnx.default import DefaultNodeParser
-from zigzag.parser.onnx.utils import parse_onnx_model_from_path, get_onnx_tensor_type
-from zigzag.stages.WorkloadParserStage import WorkloadParserStage
-from stream.classes.io.onnx.gemm import GemmParser
-from stream.classes.io.onnx.matmul import MatMulParser
-from stream.classes.io.onnx.conv import ConvParser
 from stream.classes.workload.onnx_workload import ONNXWorkload
-
-
-import logging
-
 
 logger = logging.getLogger(__name__)
 

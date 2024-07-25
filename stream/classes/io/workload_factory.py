@@ -1,6 +1,8 @@
-from stream.classes.workload.dnn_workload import DNNWorkloadStream
-from zigzag.parser.workload_factory import LayerNodeFactory, WorkloadFactory as ZigZagWorkloadFactory
+from zigzag.parser.workload_factory import LayerNodeFactory
+from zigzag.parser.workload_factory import WorkloadFactory as ZigZagWorkloadFactory
 from zigzag.workload.layer_node import LayerNode
+
+from stream.classes.workload.dnn_workload import DNNWorkloadStream
 
 
 class WorkloadFactoryStream(ZigZagWorkloadFactory):

@@ -1,9 +1,9 @@
+from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.hardware.architecture.mesh_2d import get_2d_mesh
+from stream.inputs.examples.hardware.cores.offchip_dual_port import get_offchip_core
 from stream.inputs.testing.hardware.cores.testing_core1 import (
     get_core as get_testing_core1,
 )
-from stream.inputs.examples.hardware.cores.offchip_dual_port import get_offchip_core
-from stream.classes.hardware.architecture.mesh_2d import get_2d_mesh
-from stream.classes.hardware.architecture.accelerator import Accelerator
 
 cores = [get_testing_core1(id) for id in range(4)]  # 4 cores
 offchip_core_id = 4

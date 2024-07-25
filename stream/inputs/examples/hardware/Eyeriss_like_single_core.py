@@ -1,11 +1,12 @@
 from inputs.examples.hardware.cores.Eyeriss_like import (
     get_core as get_eyeriss_like_core,
 )
+from inputs.examples.hardware.cores.offchip import get_offchip_core
 from inputs.examples.hardware.cores.pooling import get_core as get_pooling_core
 from inputs.examples.hardware.cores.simd import get_core as get_simd_core
-from inputs.examples.hardware.cores.offchip import get_offchip_core
-from stream.classes.hardware.architecture.mesh_2d import get_2d_mesh
+
 from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.hardware.architecture.mesh_2d import get_2d_mesh
 
 cores = [get_eyeriss_like_core(id) for id in range(1)]  # 1 core
 pooling_core = get_pooling_core(id=1)

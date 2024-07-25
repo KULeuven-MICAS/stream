@@ -1,33 +1,33 @@
-from copy import deepcopy
 import itertools
+import logging
 import math
+from copy import deepcopy
 from typing import Any, List
+
 import networkx as nx
 import numpy as np
 from rtree import index
-from stream.classes.hardware.architecture.accelerator import Accelerator
-from stream.classes.opt.splitting.TemporalLoop import TemporalLoop
-from stream.classes.workload.node import Node
-from zigzag.workload.Workload import Workload
 from zigzag.datatypes import Constants, LayerDim, LayerOperand
-from zigzag.utils import pickle_deepcopy
-from stream.classes.workload.elementwise_node import ElementwiseNode
-from stream.classes.workload.flatten_node import FlattenNode
-from stream.classes.workload.lpnormalization_node import LpNormalizationNode
-from stream.classes.workload.reshape_node import ReshapeNode
-from stream.classes.workload.transpose_node import TransposeNode
-from stream.classes.workload.tensor import Tensor
-from stream.classes.workload.computation_node import ComputationNode, LoopRanges
 from zigzag.stages.Stage import Stage, StageCallable
-from stream.classes.workload.dummy_node import DummyNode
+from zigzag.utils import pickle_deepcopy
+from zigzag.workload.Workload import Workload
+
+from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.opt.splitting.splitting import (
     convert_inner_cn_loops,
     convert_outer_cn_loops,
     convert_outer_cn_loops_with_k,
 )
-
-import logging
-
+from stream.classes.opt.splitting.TemporalLoop import TemporalLoop
+from stream.classes.workload.computation_node import ComputationNode, LoopRanges
+from stream.classes.workload.dummy_node import DummyNode
+from stream.classes.workload.elementwise_node import ElementwiseNode
+from stream.classes.workload.flatten_node import FlattenNode
+from stream.classes.workload.lpnormalization_node import LpNormalizationNode
+from stream.classes.workload.node import Node
+from stream.classes.workload.reshape_node import ReshapeNode
+from stream.classes.workload.tensor import Tensor
+from stream.classes.workload.transpose_node import TransposeNode
 
 logger = logging.getLogger(__name__)
 

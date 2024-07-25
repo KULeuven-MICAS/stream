@@ -1,8 +1,7 @@
-from matplotlib import pyplot as plt
-from matplotlib.gridspec import GridSpec
 import numpy as np
 from brokenaxes import brokenaxes
-
+from matplotlib import pyplot as plt
+from matplotlib.gridspec import GridSpec
 
 SMALL_SIZE = 8
 MEDIUM_SIZE = 10

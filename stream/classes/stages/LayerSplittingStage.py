@@ -1,22 +1,19 @@
+import logging
 import os
 from math import ceil
 from typing import Any
+
 import numpy as np
 import onnx
-from onnx import helper, numpy_helper
-from onnx import ModelProto
+from onnx import ModelProto, helper, numpy_helper
 from onnx.shape_inference import infer_shapes
-
-from stream.classes.workload.computation_node import ComputationNode
 from zigzag.datatypes import Constants, LayerOperand
 from zigzag.stages.Stage import Stage, StageCallable
-from stream.classes.workload.onnx_workload import ONNXWorkload
+
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.stages import utils
-
-
-import logging
-
+from stream.classes.workload.computation_node import ComputationNode
+from stream.classes.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)
 

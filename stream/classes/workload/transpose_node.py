@@ -1,5 +1,7 @@
 from typing import Any
+
 import numpy as np
+
 from stream.classes.workload.node import Node
 
 

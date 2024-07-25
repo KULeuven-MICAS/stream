@@ -1,9 +1,9 @@
 import numpy as np
 from networkx import DiGraph
-
-from stream.classes.hardware.architecture.noc.communication_link import CommunicationLink
 from zigzag.datatypes import Constants
 from zigzag.hardware.architecture.Core import Core
+
+from stream.classes.hardware.architecture.noc.communication_link import CommunicationLink
 
 
 def have_shared_memory(a, b):

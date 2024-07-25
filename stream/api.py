@@ -1,9 +1,10 @@
 from zigzag.stages.MainStage import MainStage
+
 from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage
-from stream.classes.stages.ModelParserStage import UserDefinedModelParserStage
 from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
-from stream.classes.stages.IntraCoreMappingStage import IntraCoreMappingStage
 from stream.classes.stages.InterCoreMappingStage import InterCoreMappingStage
+from stream.classes.stages.IntraCoreMappingStage import IntraCoreMappingStage
+from stream.classes.stages.ModelParserStage import UserDefinedModelParserStage
 
 
 def get_hardware_performance_stream(hardware, workload, mapping, CN_define_mode, hint_loops, node_hw_cost_pkl_name):
@@ -67,8 +68,8 @@ if __name__ == "__main__":
         node_hw_cost_pkl_name,
     )
 
-    from stream.visualization.schedule import plot_timeline_brokenaxes
     from stream.visualization.memory_usage import plot_memory_usage
+    from stream.visualization.schedule import plot_timeline_brokenaxes
 
     plot_full_schedule = True
     draw_dependencies = True

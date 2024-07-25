@@ -1,10 +1,10 @@
+import logging
+
 import numpy as np
 from onnx import helper, numpy_helper
-
-from stream.classes.workload.computation_node import ComputationNode
 from zigzag.stages.Stage import Stage
 
-import logging
+from stream.classes.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 

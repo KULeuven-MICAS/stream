@@ -1,9 +1,9 @@
-from stream.classes.opt.splitting.TemporalLoop import TemporalLoop
-from stream.classes.workload.computation_node import ComputationNode
-from zigzag.datatypes import LayerDim
-
 import logging
 
+from zigzag.datatypes import LayerDim
+
+from stream.classes.opt.splitting.TemporalLoop import TemporalLoop
+from stream.classes.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 

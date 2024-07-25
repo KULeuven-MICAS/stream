@@ -1,7 +1,9 @@
 from typing import Any
+
 import numpy as np
-from stream.classes.workload.node import Node
 from zigzag.datatypes import LayerOperand
+
+from stream.classes.workload.node import Node
 
 
 class LpNormalizationNode(Node):

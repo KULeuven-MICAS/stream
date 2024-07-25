@@ -1,13 +1,13 @@
+import logging
 from operator import itemgetter
-from networkx import DiGraph
 
+from networkx import DiGraph
 from zigzag.datatypes import LayerOperand, MemoryOperand
 from zigzag.hardware.architecture.Core import Core
+
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.workload.tensor import Tensor
-import logging
-
 
 logger = logging.getLogger(__name__)
 

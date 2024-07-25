@@ -1,7 +1,6 @@
-import os
 import logging
+import os
 
-from stream.classes.hardware.architecture.accelerator import Accelerator
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.Core import Core
@@ -11,17 +10,18 @@ from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.stages.CostModelStage import CostModelStage
 from zigzag.stages.LomaStage import LomaStage
 from zigzag.stages.MainStage import MainStage
+from zigzag.stages.reduce_stages import MinimalLatencyStage
 from zigzag.stages.SpatialMappingGeneratorStage import SpatialMappingGeneratorStage
 from zigzag.stages.Stage import Stage
-from stream.classes.workload.computation_node import ComputationNode
-from zigzag.stages.reduce_stages import MinimalLatencyStage
 from zigzag.utils import pickle_deepcopy
-from stream.utils import load_scme, save_scme
+from zigzag.workload.Workload import Workload
 
+from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.workload.computation_node import ComputationNode
+from stream.utils import load_scme, save_scme
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,
 )
-from zigzag.workload.Workload import Workload
 
 logger = logging.getLogger(__name__)
 

@@ -1,13 +1,14 @@
 import itertools
 from math import ceil
 from typing import TYPE_CHECKING
-import networkx as nx
 
-from stream.classes.workload.computation_node import ComputationNode
+import networkx as nx
 from zigzag.datatypes import Constants, MemoryOperand
 from zigzag.hardware.architecture.Core import Core
-from stream.classes.workload.tensor import Tensor
+
 from stream.classes.hardware.architecture.utils import intersections
+from stream.classes.workload.computation_node import ComputationNode
+from stream.classes.workload.tensor import Tensor
 
 if TYPE_CHECKING:
     from stream.classes.hardware.architecture.accelerator import Accelerator

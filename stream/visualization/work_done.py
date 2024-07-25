@@ -1,7 +1,8 @@
 from typing import List
+
 import numpy as np
-import plotly.express as px
 import pandas as pd
+import plotly.express as px
 
 from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 from stream.utils import load_scme

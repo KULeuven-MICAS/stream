@@ -1,5 +1,6 @@
-from stream.classes.workload.lpnormalization_node import LpNormalizationNode
 from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
+
+from stream.classes.workload.lpnormalization_node import LpNormalizationNode
 
 
 class LpNormalizationParser(ONNXOperatorParser):

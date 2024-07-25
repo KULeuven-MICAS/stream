@@ -1,7 +1,8 @@
-from stream.classes.hardware.architecture.simd_array import SimdArray
-from zigzag.hardware.architecture.MemoryHierarchy import MemoryHierarchy
-from zigzag.hardware.architecture.memory_instance import MemoryInstance
 from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.memory_instance import MemoryInstance
+from zigzag.hardware.architecture.MemoryHierarchy import MemoryHierarchy
+
+from stream.classes.hardware.architecture.simd_array import SimdArray
 from stream.classes.hardware.architecture.simd_unit import SimdUnit
 
 

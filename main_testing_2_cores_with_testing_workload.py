@@ -1,17 +1,17 @@
-from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
-from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
-from zigzag.stages.MainStage import MainStage
-from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
-from stream.classes.stages.IntraCoreMappingStage import IntraCoreMappingStage
-from stream.classes.stages.InterCoreMappingStage import InterCoreMappingStage
-from stream.classes.stages.ModelParserStage import UserDefinedModelParserStage
-
-from stream.visualization.schedule import visualize_timeline_plotly
-from stream.visualization.memory_usage import plot_memory_usage
-import re
-
 # Initialize the logger
 import logging as _logging
+import re
+
+from zigzag.stages.MainStage import MainStage
+
+from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
+from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
+from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
+from stream.classes.stages.InterCoreMappingStage import InterCoreMappingStage
+from stream.classes.stages.IntraCoreMappingStage import IntraCoreMappingStage
+from stream.classes.stages.ModelParserStage import UserDefinedModelParserStage
+from stream.visualization.memory_usage import plot_memory_usage
+from stream.visualization.schedule import visualize_timeline_plotly
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"

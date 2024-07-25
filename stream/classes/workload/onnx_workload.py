@@ -1,6 +1,7 @@
+from typing import Any
+
 from zigzag.workload.LayerNodeABC import LayerNodeABC
 from zigzag.workload.Workload import Workload
-from typing import Any
 
 
 class ONNXWorkload(Workload):

@@ -1,7 +1,8 @@
-from stream.classes.workload.computation_node import ComputationNode
+import logging
+
 from zigzag.stages.Stage import Stage
 
-import logging
+from stream.classes.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 

@@ -1,20 +1,20 @@
 import logging
 
-
-from stream.classes.hardware.architecture.accelerator import Accelerator
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import LayerOperand
 from zigzag.hardware.architecture.Core import Core
 from zigzag.stages.Stage import Stage, StageCallable
-from stream.classes.workload.computation_node import ComputationNode
-from stream.classes.opt.allocation.genetic_algorithm.genetic_algorithm import (
-    GeneticAlgorithm,
-)
+from zigzag.workload.Workload import Workload
+
+from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.opt.allocation.genetic_algorithm.fitness_evaluator import (
     StandardFitnessEvaluator,
 )
+from stream.classes.opt.allocation.genetic_algorithm.genetic_algorithm import (
+    GeneticAlgorithm,
+)
+from stream.classes.workload.computation_node import ComputationNode
 from stream.utils import get_too_large_operands
-from zigzag.workload.Workload import Workload
 
 logger = logging.getLogger(__name__)
 

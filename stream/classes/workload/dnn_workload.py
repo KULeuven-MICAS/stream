@@ -1,9 +1,10 @@
-from typing import Any
-from zigzag.workload.Workload import Workload
-from zigzag.workload.layer_node import LayerNode
-from stream.classes.workload.computation_node import ComputationNode
-
 import logging
+from typing import Any
+
+from zigzag.workload.layer_node import LayerNode
+from zigzag.workload.Workload import Workload
+
+from stream.classes.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 

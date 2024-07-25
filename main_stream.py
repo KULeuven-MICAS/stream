@@ -1,24 +1,23 @@
+# Initialize the logger
+import logging as _logging
+import pickle
+import re
+
 from zigzag.stages.MainStage import MainStage
+
 from stream.classes.stages.AcceleratorParserStage import (
     AcceleratorParserStage as AcceleratorParserStage_,
 )
-from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
-from stream.classes.stages.IntraCoreMappingStage import IntraCoreMappingStage
-from stream.classes.stages.InterCoreMappingStage import InterCoreMappingStage
-from stream.classes.stages.ModelParserStage import ONNXModelParserStage as StreamONNXModelParserStage
 from stream.classes.stages.DetermineSchedulingOrderStage import DetermineSchedulingOrderStage
-
+from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
+from stream.classes.stages.InterCoreMappingStage import InterCoreMappingStage
+from stream.classes.stages.IntraCoreMappingStage import IntraCoreMappingStage
+from stream.classes.stages.ModelParserStage import ONNXModelParserStage as StreamONNXModelParserStage
+from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import (
     plot_timeline_brokenaxes,
     visualize_timeline_plotly,
 )
-from stream.visualization.memory_usage import plot_memory_usage
-import re
-import pickle
-
-# Initialize the logger
-import logging as _logging
-
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"

@@ -1,10 +1,7 @@
-from deap import algorithms
-from deap import base
-from deap import creator
-from deap import tools
-
 import array
 import random
+
+from deap import algorithms, base, creator, tools
 
 from stream.classes.opt.allocation.genetic_algorithm.statistics_evaluator import (
     StatisticsEvaluator,

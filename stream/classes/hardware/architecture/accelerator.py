@@ -1,14 +1,15 @@
 from math import ceil
 from typing import Iterator
-from networkx import DiGraph
 
+from networkx import DiGraph
 from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.Core import Core
-from stream.classes.cost_model.memory_manager import MemoryManager
-from stream.classes.cost_model.communication_manager import CommunicationManager
-from stream.classes.workload.tensor import Tensor
 from zigzag.hardware.architecture.MemoryInstance import MemoryInstance
 from zigzag.mapping.spatial_mapping import SpatialMapping
+
+from stream.classes.cost_model.communication_manager import CommunicationManager
+from stream.classes.cost_model.memory_manager import MemoryManager
+from stream.classes.workload.tensor import Tensor
 
 
 class Accelerator:
