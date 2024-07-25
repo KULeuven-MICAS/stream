@@ -1,6 +1,6 @@
 name: core_c
 
-multipliers:
+operational_array:
   input_precision: [8, 8]
   multiplier_energy: 1 # pJ
   multiplier_area: 1 # unit
