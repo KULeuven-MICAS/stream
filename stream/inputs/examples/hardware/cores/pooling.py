@@ -69,9 +69,7 @@ def get_operational_array():
     pooling_energy = 0.1
     pooling_area = 0.01
     dimensions = {"D1": 3, "D2": 3}
-    pooling_unit = PoolingUnit(
-        pooling_unit_input_precision, pooling_energy, pooling_area
-    )
+    pooling_unit = PoolingUnit(pooling_unit_input_precision, pooling_energy, pooling_area)
     pooling_array = PoolingArray(pooling_unit, dimensions)
     return pooling_array
 

@@ -1,5 +1,4 @@
 import numpy as np
-import networkx as nx
 from networkx import DiGraph
 
 from stream.classes.hardware.architecture.noc.communication_link import CommunicationLink
@@ -50,7 +49,8 @@ def get_2d_mesh(
         nb_rows (int): the number of rows in the 2D mesh
         nb_cols (int): the number of columns in the 2D mesh
         bandwidth (int): bandwidth of each created directional link in bits per clock cycle
-        unit_energy_cost (float): The unit energy cost of having a communication-link active. This does not include the involved memory read/writes.
+        unit_energy_cost (float): The unit energy cost of having a communication-link active. This does not include the
+        involved memory read/writes.
         pooling_core (Core, optional): If provided, the pooling core that is added.
         simd_core (Core, optional): If provided, the simd core that is added.
         offchip_core (Core, optional): If provided, the offchip core that is added.

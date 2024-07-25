@@ -15,6 +15,4 @@ offchip_core = get_offchip_core(id=offchip_core_id)
 
 cores_graph = get_2d_mesh(cores, 1, 1, 32, 0, pooling_core, simd_core, offchip_core)
 
-accelerator = Accelerator(
-    "Eyeriss-like-single-core", cores_graph, offchip_core_id=offchip_core_id
-)
+accelerator = Accelerator("Eyeriss-like-single-core", cores_graph, offchip_core_id=offchip_core_id)

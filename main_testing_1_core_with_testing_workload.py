@@ -1,7 +1,11 @@
 from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
 from zigzag.stages.MainStage import MainStage
-from stream.classes.stages import *
+from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
+from stream.classes.stages.IntraCoreMappingStage import IntraCoreMappingStage
+from stream.classes.stages.InterCoreMappingStage import InterCoreMappingStage
+from stream.classes.stages.ModelParserStage import UserDefinedModelParserStage
+
 from stream.visualization.schedule import visualize_timeline_plotly
 from stream.visualization.memory_usage import plot_memory_usage
 import re
@@ -47,7 +51,7 @@ mainstage = MainStage(
     loma_lpf_limit=6,  # required by LomaStage
     nb_ga_individuals=4,  # number of individuals in each genetic algorithm generation
     nb_ga_generations=1,  # number of genetic algorithm generations
-    node_hw_performances_path=f"outputs/{node_hw_cost_pkl_name}.pickle",  # saved node_hw_performances to skip re-computation
+    node_hw_performances_path=f"outputs/{node_hw_cost_pkl_name}.pickle",  # saved results to skip re-computation
     plot_hof=True,  # Save schedule and memory usage plot of each individual in the Genetic Algorithm hall of fame
     plot_file_name=plot_file_name,
     plot_full_schedule=plot_full_schedule,

@@ -2,7 +2,8 @@ from stream.classes.workload.node import Node
 
 
 class CommunicationNode(Node):
-    """Class that represents a communcation node which is inserted between two nodes but doesn't have any computational information."""
+    """Class that represents a communcation node which is inserted between two nodes but doesn't have any computational
+    information."""
 
     def __init__(self, communication_core_id, input_names, output_names) -> None:
         """Initialize the communication node.

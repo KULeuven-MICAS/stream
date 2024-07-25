@@ -55,9 +55,7 @@ def get_operational_array():
     multiplier_energy = float("inf")
     multiplier_area = 0
     dimensions = {"D1": 1, "D2": 1}
-    multiplier = Multiplier(
-        multiplier_input_precision, multiplier_energy, multiplier_area
-    )
+    multiplier = Multiplier(multiplier_input_precision, multiplier_energy, multiplier_area)
     multiplier_array = MultiplierArray(multiplier, dimensions)
 
     return multiplier_array

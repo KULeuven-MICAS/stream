@@ -19,7 +19,8 @@ class ReshapeParser(ONNXOperatorParser):
                 if node_input in self.nodes_outputs[n]:
                     predecessors.append(n)
 
-        # Get the shape of the operator (this is saved as the second input of the reshape operator, so we need to get the input's dimension shape)
+        # Get the shape of the operator (this is saved as the second input of the reshape operator, so we need to get
+        # the input's dimension shape)
         shape = get_node_input_output_dimension_shapes(self.node, self.onnx_model)[1]
         # Get the input names of the operator
         input_names = [self.node.input[0]]

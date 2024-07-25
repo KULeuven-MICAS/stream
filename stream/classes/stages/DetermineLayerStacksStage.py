@@ -1,12 +1,4 @@
-import os
-from math import ceil
-import numpy as np
-import onnx
-from onnx import helper, numpy_helper
-from onnx.shape_inference import infer_shapes
-
 from stream.classes.workload.computation_node import ComputationNode
-from stream.classes.workload.dummy_node import DummyNode
 from zigzag.stages.Stage import Stage
 
 import logging
@@ -73,7 +65,7 @@ class DetermineLayerStacksStage(Stage):
                 id = n.id
                 try:
                     op = next(op for op in n.constant_operands)
-                except:
+                except StopIteration:
                     current_stack.append(id)
                     continue
                 size = n.operand_size_bit[op]
@@ -106,7 +98,7 @@ class DetermineLayerStacksStage(Stage):
                     continue
                 try:
                     op = next(op for op in n.constant_operands)
-                except:
+                except StopIteration:
                     current_stack.append(id)
                     continue
                 size = n.operand_size_bit[op]
@@ -128,7 +120,7 @@ class DetermineLayerStacksStage(Stage):
         """
         layers will be fused based on ids in stack cutoffs. if ratio of weights > 1, we switch to layer by layer
         """
-        assert not self.stack_cutoff is None, "stack_cutoff should be defined."
+        assert self.stack_cutoff is not None, "stack_cutoff should be defined."
         stacks = []
         current_stack = []
         for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
@@ -148,7 +140,7 @@ class DetermineLayerStacksStage(Stage):
         """
         Only the first set of layers will be fused until fixed id, rest layer by layer
         """
-        assert not self.stack_cutoffs is None, "stack_cutoff should be defined."
+        assert self.stack_cutoffs is not None, "stack_cutoff should be defined."
         stacks = []
         current_stack = []
         assert len(self.stack_cutoffs) > 0
@@ -174,7 +166,7 @@ class DetermineLayerStacksStage(Stage):
                         lbl = True
                 try:
                     op = next(op for op in n.constant_operands)
-                except:
+                except StopIteration:
                     if id not in current_stack:
                         current_stack.append(id)
                     continue

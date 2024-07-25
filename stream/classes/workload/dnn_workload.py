@@ -24,7 +24,6 @@ class DNNWorkloadStream(Workload):
         # workload_saved = copy.deepcopy(workload)
 
         for node in nodes:
-
             # Create ComputationNode
             node_name = f"{node.type}_{node.id}"
             node_input_names = [

@@ -4,8 +4,7 @@ from typing import Any
 from onnx import ModelProto, NodeProto
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
-from stream.classes.workload.computation_node import ComputationNode, OperandTensorReshape
-from zigzag.datatypes import LayerOperand
+from stream.classes.workload.computation_node import ComputationNode
 from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 from zigzag.parser.onnx.utils import (
     get_attribute_ints_with_name,

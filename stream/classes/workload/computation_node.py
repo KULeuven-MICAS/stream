@@ -41,7 +41,6 @@ class ComputationNode(LayerNode, Node):
         # To distinguish alternative versions of this node
         sub_id: int = -1,
     ):
-
         LayerNode.__init__(self, layer_id=node_id, node_name=node_name, node_attr=node_attr)
         Node.__init__(
             self,
@@ -216,6 +215,7 @@ class ComputationNode(LayerNode, Node):
         self.nb_real_predecessors = nb_real_predecessors
 
     def update_loop_ranges(self, new_ranges: LoopRanges):
-        """Override the loop ranges with a new value for each of the given LayerDims. Keep the old range for the LayerDims not defined in `new_ranges`"""
+        """Override the loop ranges with a new value for each of the given LayerDims. Keep the old range for the
+        LayerDims not defined in `new_ranges`"""
         for layer_dim in new_ranges:
             self.loop_ranges[layer_dim] = new_ranges[layer_dim]

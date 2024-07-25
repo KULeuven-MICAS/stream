@@ -1,6 +1,10 @@
 from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
 from zigzag.stages.MainStage import MainStage
-from stream.classes.stages import *
+from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
+from stream.classes.stages.IntraCoreMappingStage import IntraCoreMappingStage
+from stream.classes.stages.InterCoreMappingStage import InterCoreMappingStage
+from stream.classes.stages.ModelParserStage import UserDefinedModelParserStage
+
 from stream.visualization.schedule import visualize_timeline_plotly
 from stream.visualization.memory_usage import plot_memory_usage
 

@@ -12,7 +12,8 @@ cores = [get_testing_core1(0), get_testing_core2(1)]  # 2 cores
 offchip_core_id = 2
 offchip_core = get_offchip_core(id=offchip_core_id)
 
-# Comment out the offchip_bandwidth because we can get this attribute from the offchip_core (if it is defined), thus no need to manually define it
+# Comment out the offchip_bandwidth because we can get this attribute from the offchip_core (if it is defined), thus no
+# need to manually define it
 cores_graph = get_2d_mesh(
     cores,
     nb_rows=1,
@@ -22,6 +23,4 @@ cores_graph = get_2d_mesh(
     offchip_core=offchip_core,
 )  # , offchip_bandwidth=32)
 
-accelerator = Accelerator(
-    "Testing-2-core-with-offchip", cores_graph, offchip_core_id=offchip_core_id
-)
+accelerator = Accelerator("Testing-2-core-with-offchip", cores_graph, offchip_core_id=offchip_core_id)

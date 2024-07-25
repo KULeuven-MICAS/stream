@@ -1,15 +1,13 @@
-from operator import attrgetter, itemgetter
-from networkx import DiGraph, Graph
+from operator import itemgetter
+from networkx import DiGraph
 
 from zigzag.datatypes import LayerOperand, MemoryOperand
 from zigzag.hardware.architecture.Core import Core
-from stream.classes.cost_model.memory_manager import MemoryManager
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.workload.tensor import Tensor
 import logging
 
-from zigzag.workload.Workload import Workload
 
 logger = logging.getLogger(__name__)
 
@@ -187,7 +185,8 @@ def check_for_removal(
                         # If wanting to discard it from offchip, look at the max end time across all successors
                         nodes_that_needed_tensor = [n for n in G.successors(origin) if n.id != origin.id]
                     else:
-                        # If discarding it from a regular core, look at the max end time successors that used it from that instance
+                        # If discarding it from a regular core, look at the max end time successors that used it from
+                        # that instance
                         nodes_that_needed_tensor = [
                             n
                             for n in G.successors(origin)
@@ -344,7 +343,8 @@ def schedule_graph(
             total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
 
         # Step 3
-        # Check if we had any operands that were too large to store in the core's memory, block the relevant off-chip link for the duration
+        # Check if we had any operands that were too large to store in the core's memory, block the relevant off-chip
+        # link for the duration
         # This might again delay the execution if the offchip link was already blocked by another core
         timestep = accelerator.block_offchip_links(
             best_candidate.too_large_operands,
@@ -356,7 +356,8 @@ def schedule_graph(
 
         # Step 4
         # Make space for the output tensor of this computation node and spawn it when evictions are complete
-        # If the output operand is in the too large operands, add it to off-chip, otherwise add it to this core's output memory
+        # If the output operand is in the too large operands, add it to off-chip, otherwise add it to this core's
+        # output memory
         output_layer_operand = best_candidate.output_operand
         output_memory_operand = best_candidate.memory_operand_links[output_layer_operand]
         output_tensor = best_candidate.operand_tensors[output_layer_operand]
@@ -415,10 +416,11 @@ def schedule_graph(
 
         # Step 7
         # Memory usage: When the node ends:
-        # If this node is a sink node (node that has no successors and that produces a final output), transfer final outputs to offchip
+        # If this node is a sink node (node that has no successors and that produces a final output), transfer final
+        # outputs to offchip
         if best_candidate in sink_layer_nodes:
             # Only push back sink node outputs if they're generated and stored on the core
-            if not best_candidate.output_operand in best_candidate.too_large_operands:
+            if best_candidate.output_operand not in best_candidate.too_large_operands:
                 (
                     current_timestep,
                     link_energy_cost,

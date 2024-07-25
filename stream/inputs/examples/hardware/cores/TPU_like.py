@@ -1,10 +1,7 @@
-import os
 from zigzag.hardware.architecture.MemoryHierarchy import MemoryHierarchy
-from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.operational_unit import Multiplier
 from zigzag.hardware.architecture.operational_array import MultiplierArray
 from zigzag.hardware.architecture.memory_instance import MemoryInstance
-from zigzag.hardware.architecture.Accelerator import Accelerator
 from zigzag.hardware.architecture.Core import Core
 
 
@@ -109,13 +106,9 @@ def get_memory_hierarchy(multiplier_array):
     memory_hierarchy_graph.add_memory(
         memory_instance=reg_O_1K,
         operands=("O",),
-        port_alloc=(
-            {"fh": "w_port_1", "tl": "r_port_1", "fl": "w_port_2", "th": "r_port_2"},
-        ),
+        port_alloc=({"fh": "w_port_1", "tl": "r_port_1", "fl": "w_port_2", "th": "r_port_2"},),
         served_dimensions={(0, 1)},
     )
-
-    ##################################### on-chip highest memory hierarchy initialization #####################################
 
     memory_hierarchy_graph.add_memory(
         memory_instance=sram_64K_with_16_4K_bank_128_1r_1w,
@@ -145,10 +138,6 @@ def get_memory_hierarchy(multiplier_array):
 
     ####################################################################################################################
 
-    from zigzag.visualization.graph.memory_hierarchy import (
-        visualize_memory_hierarchy_graph,
-    )
-
     # visualize_memory_hierarchy_graph(memory_hierarchy_graph)
     return memory_hierarchy_graph
 
@@ -159,9 +148,7 @@ def get_operational_array():
     multiplier_energy = 0.04
     multiplier_area = 1
     dimensions = {"D1": 32, "D2": 32}  # {'D1': ('K', 32), 'D2': ('C', 32)}
-    multiplier = Multiplier(
-        multiplier_input_precision, multiplier_energy, multiplier_area
-    )
+    multiplier = Multiplier(multiplier_input_precision, multiplier_energy, multiplier_area)
     multiplier_array = MultiplierArray(multiplier, dimensions)
 
     return multiplier_array

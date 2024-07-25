@@ -1,6 +1,10 @@
 from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
 from zigzag.stages.MainStage import MainStage
-from stream.classes.stages import *
+from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
+from stream.classes.stages.IntraCoreMappingStage import IntraCoreMappingStage
+from stream.classes.stages.InterCoreMappingStage import InterCoreMappingStage
+from stream.classes.stages.ModelParserStage import ONNXModelParserStage as StreamONNXModelParserStage
+
 from stream.visualization.schedule import (
     plot_timeline_brokenaxes,
     visualize_timeline_plotly,

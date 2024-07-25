@@ -13,6 +13,4 @@ offchip_core = get_offchip_core(id=offchip_core_id)
 
 cores_graph = get_2d_mesh(cores, 2, 2, 64, 0, pooling_core, simd_core, offchip_core)
 
-accelerator = Accelerator(
-    "TPU-like-quad-core", cores_graph, offchip_core_id=offchip_core_id
-)
+accelerator = Accelerator("TPU-like-quad-core", cores_graph, offchip_core_id=offchip_core_id)

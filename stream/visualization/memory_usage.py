@@ -3,7 +3,6 @@ from matplotlib.gridspec import GridSpec
 import numpy as np
 from brokenaxes import brokenaxes
 
-from stream.classes.cost_model.memory_manager import MemoryManager
 
 SMALL_SIZE = 8
 MEDIUM_SIZE = 10
@@ -78,17 +77,13 @@ def plot_memory_usage(
     # Calculate the brokenaxes x ranges based on the given start and show percentage
     x_starts = [int((start / 100) * latency) for start in section_start_percent]
     x_ends = [
-        int(((start + percent) / 100) * latency)
-        for (start, percent) in zip(section_start_percent, percent_shown)
+        int(((start + percent) / 100) * latency) for (start, percent) in zip(section_start_percent, percent_shown)
     ]
     xlims = tuple(zip(x_starts, x_ends))
 
     fig = plt.figure(figsize=fig_size)
     gridspecs = GridSpec(total_nb_of_top_instances, 1)
-    baxs = [
-        brokenaxes(xlims=xlims, subplot_spec=gridspec, wspace=0.05, d=0.005)
-        for gridspec in gridspecs
-    ]
+    baxs = [brokenaxes(xlims=xlims, subplot_spec=gridspec, wspace=0.05, d=0.005) for gridspec in gridspecs]
 
     fig.suptitle("Memory usage through time (Bytes)")
 
@@ -98,9 +93,7 @@ def plot_memory_usage(
         (ti_cores, cores_for_this_ti),
         (ti_memory_operands, memory_operands_for_this_ti),
     ) in zip(baxs, cpti.items(), mopti.items()):
-        assert (
-            ti_cores is ti_memory_operands
-        ), "Sanity check for same ordering of memory manager dicts failed."
+        assert ti_cores is ti_memory_operands, "Sanity check for same ordering of memory manager dicts failed."
         ti = ti_cores
         ti_cumsum = memory_manager.top_instance_stored_cumsum[ti]
         ti_cumsum_bytes = ti_cumsum.astype(float)
@@ -111,12 +104,8 @@ def plot_memory_usage(
         peak_usages_bytes[ti] = peak_usage_bytes
         if not peak_usage_bytes > 0:
             continue  # Happens for weight memory on pooling core because it's encoded as zero bit
-        assert (
-            min(stored_bytes) >= 0
-        ), f"We used negative amount of memory on top instance {ti}."
-        ax.plot(
-            timesteps, stored_bytes, drawstyle="steps-post"
-        )  # Plot the timesteps and used memory through time
+        assert min(stored_bytes) >= 0, f"We used negative amount of memory on top instance {ti}."
+        ax.plot(timesteps, stored_bytes, drawstyle="steps-post")  # Plot the timesteps and used memory through time
         ax.axhline(
             y=peak_usage_bytes,
             xmin=min(timesteps),
@@ -126,11 +115,7 @@ def plot_memory_usage(
         )
         memory_capacity_bytes = memory_manager.top_instance_capacities[ti] / 8
         if show_human_bytes:
-            mem_text = (
-                humanbytes(peak_usage_bytes)
-                + " / "
-                + humanbytes(np.array(memory_capacity_bytes))
-            )
+            mem_text = humanbytes(peak_usage_bytes) + " / " + humanbytes(np.array(memory_capacity_bytes))
         else:
             mem_text = f"{peak_usage_bytes} B /  {np.array(memory_capacity_bytes)} B"
         ax.text(
@@ -144,10 +129,7 @@ def plot_memory_usage(
         )
         core_memory_operand_zipped = zip(cores_for_this_ti, memory_operands_for_this_ti)
         formatted_str = "\n".join(
-            [
-                f"{core}: {memory_operands}"
-                for core, memory_operands in core_memory_operand_zipped
-            ]
+            [f"{core}: {memory_operands}" for core, memory_operands in core_memory_operand_zipped]
         )
         y_label = f"{ti.name}\n{formatted_str}"
         # ax.set_xlim(left=0, right=max(timesteps))

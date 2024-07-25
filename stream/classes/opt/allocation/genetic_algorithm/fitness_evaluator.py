@@ -2,7 +2,6 @@ from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode
 from zigzag.cost_model.cost_model import CostModelEvaluation
-from zigzag.datatypes import LayerOperand
 from zigzag.hardware.architecture.Core import Core
 from zigzag.utils import pickle_deepcopy
 
@@ -69,7 +68,8 @@ class StandardFitnessEvaluator(FitnessEvaluator):
 
     def set_node_core_allocations(self, core_allocations: list[int]):
         """Sets the core allocation of all nodes in self.workload according to core_allocations.
-        This will only set the energy, runtime and core_allocation of the nodes which are flexible in their core allocation.
+        This will only set the energy, runtime and core_allocation of the nodes which are flexible in their core
+        allocation.
         We assume the energy, runtime and core_allocation of the other nodes are already set.
 
         Args:
@@ -93,7 +93,8 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                     cme = self.node_hw_performances[equivalent_unique_node][core]
                 except KeyError:
                     raise KeyError(
-                        f"The given node_hw_performances doesn't have information for core_allocation={core_allocation} of node={node}"
+                        f"The given node_hw_performances doesn't have information for "
+                        f"core_allocation={core_allocation} of node={node}"
                     )
                 onchip_energy = cme.energy_total  # Initialize on-chip energy as total energy
                 latency = cme.latency_total1

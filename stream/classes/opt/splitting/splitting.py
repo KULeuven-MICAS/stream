@@ -10,7 +10,8 @@ logger = logging.getLogger(__name__)
 
 def get_rest_loops(total_loop_dim: dict[str, int], to_be_excluded_loops: list[TemporalLoop]) -> list[TemporalLoop]:
     """
-    This function return a list of the rest temporal loops after remove the to_be_excluded_loops from the total_loop_dim.
+    This function return a list of the rest temporal loops after remove the to_be_excluded_loops from
+    the total_loop_dim.
     """
     rest_loops = []
     to_be_excluded_loops = {TM_loop.dimension: TM_loop.size for TM_loop in to_be_excluded_loops}
@@ -63,9 +64,10 @@ def convert_inner_cn_loops(inner_cn_loops: list, layer: ComputationNode):
                     )
                     inner_loops.append(TemporalLoop(loop_name, new_loop_size))
                     logger.info(
-                        f"For layer {int(layer.id)}, the inner CN dimension {loop_name} size is adjusted from {loop_size} to {new_loop_size}."
+                        f"For layer {int(layer.id)}, the inner CN dimension {loop_name} size is adjusted from "
+                        f"{loop_size} to {new_loop_size}."
                     )
-                except:
+                except IndexError:
                     raise ValueError(f"({loop_name}, {loop_size}) is not a valid inner CN loop.")
     outer_loops = get_rest_loops(layer.layer_dim_sizes, inner_loops)
     return outer_loops

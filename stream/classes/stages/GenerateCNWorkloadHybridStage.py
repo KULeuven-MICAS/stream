@@ -1,10 +1,8 @@
 from copy import deepcopy
 import itertools
-from math import ceil, prod
-from re import L
+import math
 from typing import Any, List
 import networkx as nx
-from networkx import DiGraph
 import numpy as np
 from rtree import index
 from stream.classes.hardware.architecture.accelerator import Accelerator
@@ -73,7 +71,7 @@ class GenerateCNWorkloadHybridStage(Stage):
         if cn_define_mode == 4:
             try:
                 self.split_W_percentage = self.kwargs["split_W_percentage"]
-            except:
+            except KeyError:
                 self.split_W_percentage = 1
             # compute the on-chip weight capacities of the different cores (assumes 'I2' is for weights)
             self.weight_capacities = self.get_weight_capacities()
@@ -208,7 +206,8 @@ class GenerateCNWorkloadHybridStage(Stage):
 
     def get_non_type_predecessors(self, node: Node, types: list[type]) -> list[Node]:
         """Find all self.workload nodes that are not of any type in types.
-        If a node of any type in types is a predecessor, we cascade back through the graph until only non-types type preds are found.
+        If a node of any type in types is a predecessor, we cascade back through the graph until only non-types type
+        preds are found.
 
         Args:
             node (Node): the node for which we intend to find all preds that are not of a type in types
@@ -274,9 +273,10 @@ class GenerateCNWorkloadHybridStage(Stage):
             # Check if this node's "dim" size is divisible by the outer-cn loop size
             node_dim_size = finer_node_attrs.layer_dim_sizes[outer_dim]
             q, rem = divmod(node_dim_size, outer_size)  # returns x//y, x%y
-            assert (
-                rem == 0
-            ), f"Node {original_node} dim {outer_dim} of size {node_dim_size} is not divisible by outer-cn temporal loop {outer_tl}"
+            assert rem == 0, (
+                f"Node {original_node} dim {outer_dim} of size {node_dim_size} is not divisible by outer-cn temporal "
+                f"loop {outer_tl}"
+            )
             finer_node_attrs.layer_dim_sizes[outer_dim] = q
 
         # Loop dimension + size of the finer nodes (called span here)
@@ -289,7 +289,7 @@ class GenerateCNWorkloadHybridStage(Stage):
         stop_values = [temporal_loop.size for temporal_loop in outer_temporal_loops]
 
         # Number of cns there will be
-        nb_cns = int(prod(stop_values))
+        nb_cns = int(math.prod(stop_values))
 
         # Compute the data_reuse_factor (will be used as base_priority later) for the constant operands of all CNs
         tensor_reuse_factors = deduce_tensor_reuse_factors(original_node, outer_temporal_loops)
@@ -304,7 +304,7 @@ class GenerateCNWorkloadHybridStage(Stage):
             inner_span = finer_span[loop_dim] if loop_dim in finer_span else 1
             lower_outer_cn_loops = outer_temporal_loops[:i]
             # Returns 1 if empty list
-            outer_span = prod(
+            outer_span = math.prod(
                 [temporal_loop.size for temporal_loop in lower_outer_cn_loops if temporal_loop.dimension == loop_dim]
             )
             mult_factors.append(int(inner_span * outer_span))
@@ -317,7 +317,7 @@ class GenerateCNWorkloadHybridStage(Stage):
             for i, outer_loop in enumerate(outer_temporal_loops):
                 loop_dim = outer_loop.dimension
                 stop_value = outer_loop.size
-                m = prod(stop_values[:i])
+                m = math.prod(stop_values[:i])
                 outer_loop_values.append(int((n // m) % stop_value))
             dim_min_max: LoopRanges = {}
             for loop_dim in loop_dims:
@@ -389,18 +389,21 @@ class GenerateCNWorkloadHybridStage(Stage):
                 if not replaced:
                     tensors.append(tensor)
 
-            # Compute the output data produced by each finer node, assuming that all the data produced by different CNs are unique
+            # Compute the output data produced by each finer node, assuming that all the data produced by different CNs
+            # are unique
             finer_node.data_produced_unique = (
                 finer_node.operand_size_elem[Constants.OUTPUT_LAYER_OP]
                 * finer_node.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
             )
 
-            # TODO Compute the unique input data consumed by each finer node. Note that it is not necessarily that the data consumed by different CNs are unique
+            # TODO Compute the unique input data consumed by each finer node. Note that it is not necessarily that the
+            # TODO data consumed by different CNs are unique
             # finer_node.data_consumed_unique = ... (for now it is 0)
 
             finer_nodes.append(finer_node)
 
-        # TODO Just take the first node as they are all equal for now. If some are different, this should be done more smartly
+        # TODO Just take the first node as they are all equal for now. If some are different, this should be done more
+        # TODO smartly
         unique_finer_nodes = [finer_nodes[0]]
 
         return finer_nodes, unique_finer_nodes
@@ -769,10 +772,12 @@ class GenerateCNWorkloadHybridStage(Stage):
                 window = tuple(
                     [slice(max(0, start), stop) for (start, stop) in op_dim_ranges]
                 )  # start can be negative for padding which, makes np flip
-                # Count how many nans we have in this window, as this is the amount of unique data consumed/produced by this finer_node
+                # Count how many nans we have in this window, as this is the amount of unique data consumed/produced by
+                # this finer_node
                 nb_unique_data_bits = np.sum(tensors_cns[op][window] == set()) * precision
                 nb_unique_data_seen += nb_unique_data_bits
-                # Add this amount of unique data to the "data_consumed_unique" or "data_produced_unique" depending on input/output operand
+                # Add this amount of unique data to the "data_consumed_unique" or "data_produced_unique" depending on
+                # input/output operand
                 setattr(
                     finer_node,
                     attr_to_add_to,
@@ -783,9 +788,9 @@ class GenerateCNWorkloadHybridStage(Stage):
                     range(max(0, start), min(max_stop, stop))
                     for ((start, stop), max_stop) in zip(op_dim_ranges, op_dim_ranges_max_stop)
                 ]
-                for index in itertools.product(*bounded_op_dim_ranges):
-                    tensors_cns[op][index] |= {finer_node}  # Union of the existing set with the newly added node
-            if nb_unique_data_seen != (prod(tensor_shapes[op]) * precision):
+                for idx in itertools.product(*bounded_op_dim_ranges):
+                    tensors_cns[op][idx] |= {finer_node}  # Union of the existing set with the newly added node
+            if nb_unique_data_seen != (math.prod(tensor_shapes[op]) * precision):
                 logger.warn(f"Downsampling node detected: {node}, operand= {op}.")
 
         # The dimensionality order of this input/output operand might include
@@ -872,7 +877,9 @@ class GenerateCNWorkloadHybridStage(Stage):
             weight_size = node.operand_size_bit[constant_operand]
             if weight_size == 0:
                 continue
-            split_factor = ceil(weight_size / (self.split_W_percentage * min_core_capacity))  # 0.5 for double buffering
+            split_factor = math.ceil(
+                weight_size / (self.split_W_percentage * min_core_capacity)
+            )  # 0.5 for double buffering
             if split_factor == 1:
                 continue
             # Check if the split_factor is a divisor of the number of output channels
@@ -891,14 +898,16 @@ class GenerateCNWorkloadHybridStage(Stage):
 def deduce_tensor_reuse_factors(
     original_node: ComputationNode, outer_temporal_loops: list[TemporalLoop]
 ) -> dict[LayerOperand, list[int]]:
-    """This function is used to generate a list of inter-CN data reuse factor for each CN's constant operand, like W, based on the outer-CN loops and the r, ir relations.
+    """This function is used to generate a list of inter-CN data reuse factor for each CN's constant operand, like W,
+      based on the outer-CN loops and the r, ir relations.
 
     Args:
         original_node (ComputationNode): the original layer node before tilling
         outer_temporal_loops (list[TemporalLoop]): the outer CN temporal loops
 
     Returns:
-        data_reuse_factor (dict[list[int]]): a list of data reuse factor (base priority) for constant operands of each CN
+        data_reuse_factor (dict[list[int]]): a list of data reuse factor (base priority) for constant operands of each
+        CN
     """
 
     # If there is no loop in the r_ir_loop, meaning that there is no outer-CN loop -> layer-by-layer
@@ -908,7 +917,8 @@ def deduce_tensor_reuse_factors(
     if not original_node.constant_operands:
         return {}
 
-    # Transfer the outer_temporal_loops to r_ir_loop. An example can be r_ir_loop = {'W': [('ir', 3), ('r', 2), ('ir', 3)]}.
+    # Transfer the outer_temporal_loops to r_ir_loop.
+    #  An example can be r_ir_loop = {'W': [('ir', 3), ('r', 2), ('ir', 3)]}.
     r_ir_LUT = original_node.loop_relevancy_info
     constant_operands = original_node.constant_operands
     r_ir_loop: dict[LayerOperand, list[tuple[str, int]]] = {}
@@ -922,12 +932,12 @@ def deduce_tensor_reuse_factors(
 
     # total_reuse_factor is the upper bound of the reuse factor that current layer CNs can reach
     total_reuse_factors = {
-        op: prod([reuse_factor for (loop_type, reuse_factor) in r_ir_loop[op] if loop_type == "ir"])
+        op: math.prod([reuse_factor for (loop_type, reuse_factor) in r_ir_loop[op] if loop_type == "ir"])
         for op in r_ir_loop.keys()
     }
 
     # total number of nodes that will be generated
-    nb_nodes = prod([tl.size for tl in outer_temporal_loops])
+    nb_nodes = math.prod([tl.size for tl in outer_temporal_loops])
 
     # tensor reuse factor will be set to the total reuse factor for each node
     # whenveer a cn will be scheduled, the tensor reuse factor will decrease

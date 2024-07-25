@@ -1,11 +1,7 @@
-import os
-from math import ceil
 import numpy as np
-import onnx
 from onnx import helper, numpy_helper
 
 from stream.classes.workload.computation_node import ComputationNode
-from stream.classes.workload.dummy_node import DummyNode
 from zigzag.stages.Stage import Stage
 
 import logging
@@ -76,7 +72,8 @@ class DetermineHintLoopsStage(Stage):
     @staticmethod
     def split_operator(model, node_name, num_splits):
         """
-        Replaces an ONNX Conv or Gemm operator in an ONNX model with a sequence of Conv operators with smaller kernel sizes
+        Replaces an ONNX Conv or Gemm operator in an ONNX model with a sequence of Conv operators with smaller kernel
+        sizes
         that are concatenated together. The output channels of each new operator are equal to the output channels
         of the original operator divided by num_splits. Returns the names of the output tensors of the new
         operators and the name of the output tensor of the new Concat operator.
