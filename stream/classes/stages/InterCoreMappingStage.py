@@ -17,7 +17,7 @@ from stream.classes.opt.allocation.genetic_algorithm.fitness_evaluator import (
     StandardFitnessEvaluator,
 )
 from stream.utils import get_too_large_operands
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ class InterCoreMappingStage(Stage):
         self,
         list_of_callables: list[StageCallable],
         *,
-        workload: Workload,
+        workload: WorkloadABC,
         accelerator: Accelerator,
         node_hw_performances: dict[ComputationNode, dict[Core, CostModelEvaluation]],
         nb_ga_generations: int,

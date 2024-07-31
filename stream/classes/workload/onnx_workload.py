@@ -1,9 +1,9 @@
 from zigzag.workload.LayerNodeABC import LayerNodeABC
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 from typing import Any
 
 
-class ONNXWorkload(Workload):
+class ONNXWorkload(WorkloadABC):
     def __init__(self, **attr: Any):
         """
         Collect all the algorithmic workload information here.
@@ -14,7 +14,6 @@ class ONNXWorkload(Workload):
         super().__init__(**attr)
 
         self.node_id_to_obj: dict[int, LayerNodeABC] = {}
-        self.node_list: list[LayerNodeABC] = []
 
     def add(self, node_id: int, node_obj: LayerNodeABC):
         """

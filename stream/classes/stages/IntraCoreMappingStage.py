@@ -14,7 +14,7 @@ from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocati
 from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.stages import *
 from zigzag.stages.CostModelStage import CostModelStage
-from zigzag.stages.LomaStage import LomaStage
+from zigzag.stages.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
 from zigzag.stages.MainStage import MainStage
 from zigzag.stages.SpatialMappingGeneratorStage import SpatialMappingGeneratorStage
 from zigzag.stages.Stage import Stage
@@ -27,7 +27,7 @@ from stream.utils import load_scme, save_scme
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,
 )
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 from zigzag.workload.layer_attributes import LayerDimSizes
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ class IntraCoreMappingStage(Stage):
     """
 
     def __init__(
-        self, list_of_callables, *, workload: Workload, accelerator: Accelerator, loma_lpf_limit: int, **kwargs
+        self, list_of_callables, *, workload: WorkloadABC, accelerator: Accelerator, loma_lpf_limit: int, **kwargs
     ):
         """
         Initialize the stage by:
@@ -204,12 +204,12 @@ class IntraCoreMappingStage(Stage):
                 MinimalLatencyStage,
                 SpatialMappingGeneratorStage,  # Generates multiple spatial mappings (SM)
                 MinimalLatencyStage,  # Reduces all CMEs, returning minimal latency one
-                LomaStage,  # Generates multiple temporal mappings (TM)
+                TemporalMappingGeneratorStage,  # Generates multiple temporal mappings (TM)
                 CostModelStage,  # Evaluates generated SM and TM through cost model
             ],
             layer=node,
             accelerator=accelerator,  # required by a number of stages
-            loma_lpf_limit=self.loma_lpf_limit,  # required by LomaStage
+            loma_lpf_limit=self.loma_lpf_limit,  # required by TemporalMappingGeneratorStage
             loma_show_progress_bar=self.loma_show_progress_bar,
         )
         return main_stage

@@ -4,7 +4,7 @@ from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.cost_model.scheduler import schedule_graph
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import plot_timeline_brokenaxes
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 
 
 class StreamCostModelEvaluation:
@@ -15,7 +15,7 @@ class StreamCostModelEvaluation:
 
     def __init__(
         self,
-        workload: Workload,
+        workload: WorkloadABC,
         accelerator: Accelerator,
         operands_to_prefetch: list[str],
         scheduling_order: list[int],

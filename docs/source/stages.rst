@@ -15,7 +15,7 @@ Stages within Stream are used to modularly and easily adapt the functionality of
         [  # Initializes the MainStage as entry point
             AcceleratorParserStage,  # Parses the accelerator
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-            LayerSplittingStage,  # Split the workload
+            GenerateCNWorkloadHybridStage,  # Split the workload into finer CNs
             StreamONNXModelParserStage,  # Parses the potentially split ONNX model into the workload
             GenerateCNWorkloadHybridStage,  # Generate fine-grained CN workload graph
             IntraCoreMappingStage,  # Find the optimal CME for each valid layer-core assignment
@@ -24,7 +24,7 @@ Stages within Stream are used to modularly and easily adapt the functionality of
         accelerator=accelerator,  # required by AcceleratorParserStage
         workload_path=workload_path,  # required by ModelParserStage
         mapping_path=mapping_path,  # required by ModelParserStage
-        loma_lpf_limit=6,  # required by LomaStage
+        loma_lpf_limit=6,  # required by TemporalMappingGeneratorStage
         nb_ga_individuals=32,  # number of individuals in each genetic algorithm generation
         nb_ga_generations=100,  # number of genetic algorithm generations
         node_hw_performances_path=node_hw_performances_path,  # saved node_hw_performances to skip re-computation
