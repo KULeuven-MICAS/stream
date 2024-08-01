@@ -8,6 +8,7 @@ from stream.classes.workload.tensor import Tensor
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 from zigzag.workload.layer_attributes import LayerPadding
 from zigzag.workload.layer_node import LayerNode, LayerNodeAttributes
+from zigzag.visualization.results.plot_cme import shorten_onnx_layer_name
 
 OperandTensorReshape: TypeAlias = dict[LayerOperand, tuple[int, int, int, int]]
 LoopRanges: TypeAlias = dict[LayerDim, tuple[int, int]]
@@ -120,6 +121,10 @@ class ComputationNode(LayerNode, Node):
         except KeyError:
             return None
 
+    @property
+    def short_name(self) -> str:
+        return shorten_onnx_layer_name(self.name)
+
     def __str__(self):
         return f"ComputationNode{self.id}_{self.sub_id}"
 
@@ -216,6 +221,7 @@ class ComputationNode(LayerNode, Node):
         self.nb_real_predecessors = nb_real_predecessors
 
     def update_loop_ranges(self, new_ranges: LoopRanges):
-        """Override the loop ranges with a new value for each of the given LayerDims. Keep the old range for the LayerDims not defined in `new_ranges`"""
+        """Override the loop ranges with a new value for each of the given LayerDims. Keep the old range for the
+        LayerDims not defined in `new_ranges`"""
         for layer_dim in new_ranges:
             self.loop_ranges[layer_dim] = new_ranges[layer_dim]
