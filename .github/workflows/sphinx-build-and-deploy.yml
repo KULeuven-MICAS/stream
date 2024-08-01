@@ -15,6 +15,7 @@ on:
 
 permissions:
   contents: write
+  pages: write
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -26,7 +27,7 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
       # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       # Runs a set of commands using the runners shell
       - name: directly build sphinx
@@ -37,6 +38,6 @@ jobs:
           sphinx-build -b html source build
           cp source/images/interactive-plotly-visualization.html build/
       - name: Deploy 🚀
-        uses: JamesIves/github-pages-deploy-action@v4
+        uses: JamesIves/github-pages-deploy-action@v4.6.3
         with:
           folder: docs/build/ # The folder the action should deploy.

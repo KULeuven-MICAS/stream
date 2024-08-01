@@ -4,7 +4,7 @@ from networkx import DiGraph
 from stream.classes.hardware.architecture.accelerator import Accelerator
 
 from stream.classes.workload.computation_node import ComputationNode
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 
 CONSTANT_MEMORY_OPERAND = "I2"
 
@@ -19,7 +19,7 @@ def fits(occupations, core_capacities, occupation_factor):
     return not any([occupations[core_id] >= core_capacities[core_id] * occupation_factor for core_id in occupations])
 
 
-def update_occupations(workload: Workload, occupations, layer_id: int, group_ids: list[int]):
+def update_occupations(workload: WorkloadABC, occupations, layer_id: int, group_ids: list[int]):
     for group_id in group_ids:
         # Find a node that has this layer and group id and extract its constant op size
         node = next(n for n in workload.nodes() if n.id == layer_id and n.group == group_id)

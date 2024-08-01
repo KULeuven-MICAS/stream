@@ -9,7 +9,7 @@ from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.workload.tensor import Tensor
 import logging
 
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 
 logger = logging.getLogger(__name__)
 

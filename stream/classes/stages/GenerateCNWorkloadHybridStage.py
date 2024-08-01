@@ -10,7 +10,7 @@ from rtree import index
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.opt.splitting.TemporalLoop import TemporalLoop
 from stream.classes.workload.node import Node
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 from zigzag.datatypes import Constants, LayerDim, LayerOperand
 from zigzag.utils import pickle_deepcopy
 from stream.classes.workload.elementwise_node import ElementwiseNode
@@ -43,7 +43,7 @@ class GenerateCNWorkloadHybridStage(Stage):
         self,
         list_of_callables: list[StageCallable],
         *,
-        workload: Workload,
+        workload: WorkloadABC,
         accelerator: Accelerator,
         cn_define_mode: int,
         hint_loops: list[tuple[LayerDim, str | int]],
@@ -83,7 +83,7 @@ class GenerateCNWorkloadHybridStage(Stage):
     def run(self):
         unique_finer_nodes: list[ComputationNode] = []
         # For each node get all the finer nodes and set the intra edges
-        G = Workload()
+        G = WorkloadABC()
         for node in self.workload.topological_sort():
             # If other node types shouldn't be included in finer node graph, add here
             if not isinstance(node, ComputationNode):
@@ -134,11 +134,11 @@ class GenerateCNWorkloadHybridStage(Stage):
         yield None, None
 
     @staticmethod
-    def get_scheduling_order(workload: Workload):
+    def get_scheduling_order(workload: WorkloadABC):
         return sorted(((n.id, n.sub_id) for n in workload.nodes()), reverse=True)
 
     @staticmethod
-    def get_all_node_pairs(G: Workload) -> tuple[tuple[ComputationNode, ComputationNode, bool], ...]:
+    def get_all_node_pairs(G: WorkloadABC) -> tuple[tuple[ComputationNode, ComputationNode, bool], ...]:
         pairs: list[tuple[ComputationNode, ComputationNode, bool]] = []
         for node in G.topological_sort():
             if not isinstance(node, ComputationNode):
@@ -801,7 +801,7 @@ class GenerateCNWorkloadHybridStage(Stage):
         return tensors_cns
 
     @staticmethod
-    def set_base_priority_of_nodes(G: Workload, finer_nodes_dict: dict[ComputationNode, list[ComputationNode]]):
+    def set_base_priority_of_nodes(G: WorkloadABC, finer_nodes_dict: dict[ComputationNode, list[ComputationNode]]):
         """Set the base_priority of all stored tensors of variable operands in every node in finer_nodes
          based on the amount of real (excluding same layer edges) edges.
 
@@ -820,7 +820,7 @@ class GenerateCNWorkloadHybridStage(Stage):
                     tensor.set_base_priorities(len(successors))
             nb_seen_nodes_per_layer_id[layer_id] += 1
 
-    def set_nb_real_predecessors(self, G: Workload):
+    def set_nb_real_predecessors(self, G: WorkloadABC):
         """Set nb_real_predecessors attribute for each node in G.
         A real predecessor is a predecessor coming from a different layer.
 

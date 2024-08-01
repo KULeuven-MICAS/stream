@@ -13,7 +13,7 @@ import networkx as nx
 import argparse
 from itertools import cycle
 
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 
 if TYPE_CHECKING:
     from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
@@ -46,7 +46,7 @@ def plot_timeline_brokenaxes(
     plot_data_transfer: bool = False,
     fig_path: str = "outputs/schedule_plot.png",
 ) -> None:
-    G: Workload = scme.workload
+    G: WorkloadABC = scme.workload
     accelerator: Accelerator = scme.accelerator
 
     nb_layers = len(set(iter([n.id for n in G.nodes()])))

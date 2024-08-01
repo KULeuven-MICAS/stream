@@ -7,13 +7,13 @@ from zigzag.hardware.architecture.Core import Core
 from zigzag.utils import pickle_deepcopy
 
 from stream.utils import get_too_large_operands
-from zigzag.workload.Workload import Workload
+from zigzag.workload.Workload import WorkloadABC
 
 
 class FitnessEvaluator:
     def __init__(
         self,
-        workload: Workload | None = None,
+        workload: WorkloadABC | None = None,
         accelerator: Accelerator | None = None,
         node_hw_performances: dict[ComputationNode, dict[Core, CostModelEvaluation]] | None = None,
     ) -> None:
@@ -31,7 +31,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
 
     def __init__(
         self,
-        workload: Workload | None,
+        workload: WorkloadABC | None,
         accelerator: Accelerator | None,
         node_hw_performances: dict[ComputationNode, dict[Core, CostModelEvaluation]] | None,
         layer_groups_flexible,
