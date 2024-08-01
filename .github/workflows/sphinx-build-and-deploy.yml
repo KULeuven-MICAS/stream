@@ -37,6 +37,6 @@ jobs:
           sphinx-build -b html source build
           cp source/images/interactive-plotly-visualization.html build/
       - name: Deploy 🚀
-        uses: JamesIves/github-pages-deploy-action@v4
+        uses: JamesIves/github-pages-deploy-action@v4.6.3
         with:
           folder: docs/build/ # The folder the action should deploy.
