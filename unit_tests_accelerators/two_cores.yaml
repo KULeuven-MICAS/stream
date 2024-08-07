@@ -1,0 +1,30 @@
+# This file is licensed under the terms of the MIT license.
+# For a copy, see <https://opensource.org/licenses/MIT>.
+ 
+#
+# Copyright (C) 2024, Advanced Micro Devices, Inc.
+#
+#===----------------------------------------------------------------------===//
+
+
+name: two_cores
+cores:
+  # index corresponds to core ID
+  - tpu_like.yaml
+  - tpu_like.yaml
+  - offchip.yaml
+
+graph:
+  type: 2d_mesh
+  nb_rows: 2
+  nb_cols: 1
+  bandwidth: 32
+  unit_energy_cost: 0
+  offchip_core_id: 2
+
+cores_type:
+  # each line corresponds to one line from the above cores field: The convention of type is: 0: Compute, 1: MemTile, 2: Offchip
+  - 0
+  - 0
+  - 1
+
