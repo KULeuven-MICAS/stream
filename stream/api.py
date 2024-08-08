@@ -27,7 +27,7 @@ def get_hardware_performance_stream(hardware, workload, mapping, CN_define_mode,
         accelerator=hardware,  # required by AcceleratorParserStage
         workload_path=workload,  # required by ModelParserStage
         mapping_path=mapping,  # required by ModelParserStage
-        loma_lpf_limit=6,  # required by LomaStage
+        loma_lpf_limit=6,  # required by LomaEngine
         nb_ga_individuals=128,  # number of individuals in each genetic algorithm generation
         nb_ga_generations=100,  # number of genetic algorithm generations
         node_hw_performances_path=f"outputs/{node_hw_cost_pkl_name}.pickle",  # saves results to skip re-computation

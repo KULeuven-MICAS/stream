@@ -4,7 +4,7 @@ from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import LayerOperand
 from zigzag.hardware.architecture.Core import Core
 from zigzag.stages.Stage import Stage, StageCallable
-from zigzag.workload.Workload import Workload
+from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.opt.allocation.genetic_algorithm.fitness_evaluator import (

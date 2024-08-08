@@ -1,13 +1,17 @@
 import os
 import pickle
 import pprint
+from typing import Any, TypeAlias
 
+import numpy as np
 from networkx import DiGraph
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
 
 from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 from stream.classes.hardware.architecture.accelerator import Accelerator
+
+ARRAY_T: TypeAlias = np.ndarray[Any, Any]
 
 
 def get_too_large_operands(cme: CostModelEvaluation, accelerator: Accelerator, core_id: int) -> list[MemoryOperand]:

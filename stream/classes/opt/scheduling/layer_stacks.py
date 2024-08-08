@@ -2,7 +2,7 @@ from enum import Enum
 
 import networkx as nx
 from networkx import DiGraph
-from zigzag.workload.Workload import Workload
+from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode

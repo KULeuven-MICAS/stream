@@ -13,7 +13,7 @@ from brokenaxes import brokenaxes
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 from plotly.express.colors import sample_colorscale
-from zigzag.workload.Workload import Workload
+from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 
 if TYPE_CHECKING:
     from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
@@ -455,7 +455,7 @@ def get_dataframe_from_scme(scme, layer_ids, add_communication=False):
         tensors = get_real_input_tensors(node, scme.workload)
         task_type = "compute"
         d = dict(
-            Task=str(node),
+            Task=node.short_name,
             Start=start,
             End=end,
             Resource=f"Core {core_id}",

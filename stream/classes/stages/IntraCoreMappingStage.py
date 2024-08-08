@@ -8,13 +8,13 @@ from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
 from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.stages.CostModelStage import CostModelStage
-from zigzag.stages.LomaStage import LomaStage
 from zigzag.stages.MainStage import MainStage
 from zigzag.stages.reduce_stages import MinimalLatencyStage
 from zigzag.stages.SpatialMappingGeneratorStage import SpatialMappingGeneratorStage
 from zigzag.stages.Stage import Stage
+from zigzag.stages.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
 from zigzag.utils import pickle_deepcopy
-from zigzag.workload.Workload import Workload
+from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode
@@ -200,12 +200,12 @@ class IntraCoreMappingStage(Stage):
                 MinimalLatencyStage,
                 SpatialMappingGeneratorStage,  # Generates multiple spatial mappings (SM)
                 MinimalLatencyStage,  # Reduces all CMEs, returning minimal latency one
-                LomaStage,  # Generates multiple temporal mappings (TM)
+                TemporalMappingGeneratorStage,  # Generates multiple temporal mappings (TM)
                 CostModelStage,  # Evaluates generated SM and TM through cost model
             ],
             layer=node,
             accelerator=accelerator,  # required by a number of stages
-            loma_lpf_limit=self.loma_lpf_limit,  # required by LomaStage
+            loma_lpf_limit=self.loma_lpf_limit,  # required by LomaEngine
             loma_show_progress_bar=self.loma_show_progress_bar,
         )
         return main_stage

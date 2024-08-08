@@ -9,11 +9,11 @@ from onnx import ModelProto, helper, numpy_helper
 from onnx.shape_inference import infer_shapes
 from zigzag.datatypes import Constants, LayerOperand
 from zigzag.stages.Stage import Stage, StageCallable
+from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.stages import utils
 from stream.classes.workload.computation_node import ComputationNode
-from stream.classes.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class LayerSplittingStage(Stage):
         *,
         accelerator: Accelerator,
         onnx_model: ModelProto,
-        workload: ONNXWorkload,
+        workload: Workload,
         **kwargs: Any,
     ):
         super().__init__(list_of_callables, **kwargs)

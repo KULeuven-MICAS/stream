@@ -1,10 +1,17 @@
-from typing import Any
+from typing import Any, Iterator
 
+import networkx as nx
 from zigzag.workload.LayerNodeABC import LayerNodeABC
-from zigzag.workload.Workload import Workload
+from zigzag.workload.ONNXWorkload import ONNXWorkload as ONNXWorkloadZigZag
+
+from stream.classes.workload.node import Node
 
 
-class ONNXWorkload(Workload):
+class ONNXWorkload(ONNXWorkloadZigZag):
+    """
+    TODO fold into ONNXWorkloadZigZag
+    """
+
     def __init__(self, **attr: Any):
         """
         Collect all the algorithmic workload information here.
@@ -15,14 +22,12 @@ class ONNXWorkload(Workload):
         super().__init__(**attr)
 
         self.node_id_to_obj: dict[int, LayerNodeABC] = {}
-        self.node_list: list[LayerNodeABC] = []
 
     def add(self, node_id: int, node_obj: LayerNodeABC):
         """
         Add a node object to the ONNX workload graph.
         This can be a different object based on if it's an "accelerateable" node or not.
         """
-        self.node_list.append(node_obj)
         self.node_id_to_obj[node_id] = node_obj
 
         self.add_workload_node(node_obj)
@@ -33,3 +38,7 @@ class ONNXWorkload(Workload):
             edges.append((parent_node_obj, node_obj))
             node_obj.input_operand_source[op] = parent_id  # parent_node_obj
             self.add_workload_edges_from(edges)
+
+    def all_simple_paths(self, producer: Node, consumer: Node) -> Iterator[list[Node]]:
+        """Wraps nx.all_simple_paths with type annotations. Gives all paths from producer to consumer node."""
+        return nx.all_simple_paths(self, source=producer, target=consumer)  # type: ignore

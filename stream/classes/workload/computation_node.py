@@ -3,6 +3,7 @@ from typing import Any, TypeAlias
 
 import numpy as np
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
+from zigzag.visualization.results.plot_cme import shorten_onnx_layer_name
 from zigzag.workload.layer_attributes import LayerPadding
 from zigzag.workload.layer_node import LayerNode, LayerNodeAttributes
 
@@ -118,6 +119,10 @@ class ComputationNode(LayerNode, Node):
             }
         except KeyError:
             return None
+
+    @property
+    def short_name(self) -> str:
+        return shorten_onnx_layer_name(self.name)
 
     def __str__(self):
         return f"ComputationNode{self.id}_{self.sub_id}"

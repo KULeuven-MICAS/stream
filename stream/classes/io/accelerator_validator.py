@@ -19,7 +19,7 @@ class AcceleratorValidator:
             "required": True,
             "schema": {
                 "type": "string",
-                "regex": r"^(?:[a-zA-Z0-9_\-\.]+|(\.\/|\.\.\/)[a-zA-Z0-9_\-\.\/]*)$",
+                "regex": r"^(?:[a-zA-Z0-9_\-]+|[a-zA-Z0-9_\-\///]+(\.yaml|\.yml))$",
             },
         },
         "graph": {
