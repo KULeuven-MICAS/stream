@@ -1,13 +1,14 @@
+import logging
 from itertools import combinations
 from typing import TYPE_CHECKING, Any
-import numpy as np
-import logging
 
-from stream.classes.workload.tensor import Tensor
+import numpy as np
 from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.Core import Core
-from zigzag.hardware.architecture.MemoryInstance import MemoryInstance
 from zigzag.hardware.architecture.memory_level import MemoryLevel
+from zigzag.hardware.architecture.MemoryInstance import MemoryInstance
+
+from stream.classes.workload.tensor import Tensor
 
 if TYPE_CHECKING:
     from stream.classes.hardware.architecture.accelerator import Accelerator
@@ -20,7 +21,8 @@ class MemoryManager:
 
     def __init__(self, accelerator: "Accelerator") -> None:
         self.accelerator = accelerator
-        # For each core in the accelerator, create a list containing the top level memories, instances, which memory operands they store and their capacity
+        # For each core in the accelerator, create a list containing the top level memories, instances, which memory
+        # operands they store and their capacity
         # top level memory of each core
         self.top_levels: dict[Core, list[MemoryLevel]] = {}
         self.top_instances: dict[Core, list[MemoryInstance]] = {}
@@ -270,10 +272,11 @@ class MemoryManager:
             idx_satisfying_min_size_to_evict = next(
                 (i for i, size_sum in enumerate(evictable_tensors_size_sums) if size_sum >= min_size_to_evict)
             )
-        except StopIteration:
+        except StopIteration as exc:
             raise ValueError(
-                f"The evictable tensors {evictable_tensors} and their sizes {evictable_tensors_size} are too small to evict a size of {min_size_to_evict}."
-            )
+                f"The evictable tensors {evictable_tensors} and their sizes {evictable_tensors_size} are too small to "
+                f"evict a size of {min_size_to_evict}."
+            ) from exc
         tensors_to_evict = evictable_tensors[:idx_satisfying_min_size_to_evict]
         return tensors_to_evict
 
@@ -330,7 +333,8 @@ class MemoryManager:
         return
 
     def get_top_level_idx(self, core: Core, memory_operand: MemoryOperand):
-        """Return the index of the top memory that stores memory_operand, index referring to the order in which they are stored in the list for this core"""
+        """Return the index of the top memory that stores memory_operand, index referring to the order in which they
+        are stored in the list for this core"""
         return next(
             (
                 idx

@@ -1,9 +1,10 @@
+import logging
 from typing import Any
+
 from zigzag.workload.DNNWorkload import DNNWorkload
 from zigzag.workload.layer_node import LayerNode
-from stream.classes.workload.computation_node import ComputationNode
 
-import logging
+from stream.classes.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +25,6 @@ class DNNWorkloadStream(DNNWorkload):
         # workload_saved = copy.deepcopy(workload)
 
         for node in nodes:
-
             # Create ComputationNode
             node_name = f"{node.type}_{node.id}"
             node_input_names = [

@@ -1,28 +1,19 @@
+import logging
 import os
 from math import ceil
 from typing import Any
+
 import numpy as np
 import onnx
-from onnx import helper, numpy_helper
-from onnx import ModelProto
+from onnx import ModelProto, helper, numpy_helper
 from onnx.shape_inference import infer_shapes
-
-from stream.classes.workload.computation_node import ComputationNode
 from zigzag.datatypes import Constants, LayerOperand
 from zigzag.stages.Stage import Stage, StageCallable
-from stream.classes.workload.onnx_workload import ONNXWorkload
-from stream.classes.workload.node import Node
-from stream.classes.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.classes.hardware.architecture.accelerator import Accelerator
-from zigzag.utils import pickle_deepcopy
-from stream.classes.stages import utils
-
-from stream.classes.workload.dummy_node import DummyNode
-
-import logging
-
 from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
-from zigzag.workload.layer_node import LayerNode
+
+from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.stages import utils
+from stream.classes.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +25,7 @@ class LayerSplittingStage(Stage):
         *,
         accelerator: Accelerator,
         onnx_model: ModelProto,
-        workload: ONNXWorkload,
+        workload: Workload,
         **kwargs: Any,
     ):
         super().__init__(list_of_callables, **kwargs)
@@ -118,12 +109,13 @@ class LayerSplittingStage(Stage):
                 operator_name = corresponding_onnx_operator.name
                 # print(workload_node.name)
                 if "W" in workload_node.constant_operands:
-                    constant_operand = "W"
+                    pass
                 elif "B" in workload_node.constant_operands:
-                    constant_operand = "B"
+                    pass
                 else:
                     raise NotImplementedError(
-                        f"Layer splitting not implemented for {workload_node} with constant operands= {workload_node.constant_operands}."
+                        f"Layer splitting not implemented for {workload_node} with constant operands= "
+                        f"{workload_node.constant_operands}."
                     )
                 if workload_node in self.split_factors:
                     split_factor = self.split_factors[workload_node]
@@ -135,7 +127,8 @@ class LayerSplittingStage(Stage):
                     ) = self.split_operator(self.onnx_model, operator_name, split_factor)
 
                     logger.info(
-                        f"Split {workload_node.name} into {split_factor} Conv nodes: {split_node_names} and Concat node: {concat_name}."
+                        f"Split {workload_node.name} into {split_factor} Conv nodes: {split_node_names} and Concat "
+                        f"node: {concat_name}."
                     )
 
         # Infer the model tensor shapes
@@ -152,14 +145,11 @@ class LayerSplittingStage(Stage):
             yield cme, extra_info
         # yield None, None
 
-    # Temporarily make this stage a leaf stage such that we can experiment only the pattern matching stage with other stages commented out
-    # def is_leaf(self) -> bool:
-    #     return True
-
     @staticmethod
     def split_operator(model, node_name, num_splits):
         """
-        Replaces an ONNX Conv or Gemm operator in an ONNX model with a sequence of Conv operators with smaller kernel sizes
+        Replaces an ONNX Conv or Gemm operator in an ONNX model with a sequence of Conv operators with smaller kernel
+        sizes
         that are concatenated together. The output channels of each new operator are equal to the output channels
         of the original operator divided by num_splits. Returns the names of the output tensors of the new
         operators and the name of the output tensor of the new Concat operator.

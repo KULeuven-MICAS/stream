@@ -1,10 +1,11 @@
-from typing import Any
 import logging
+from typing import Any
+
 from onnx import ModelProto, NodeProto
-from stream.classes.hardware.architecture.accelerator import Accelerator
-from stream.classes.workload.computation_node import ComputationNode
 from zigzag.parser.onnx.MatMulParser import MatMulParser as MatMulParserZigZag
 
+from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 

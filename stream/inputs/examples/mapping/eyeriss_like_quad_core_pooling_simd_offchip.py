@@ -7,5 +7,5 @@ mapping = {
     },
     "simd": {
         "core_allocation": 5,
-    }
+    },
 }

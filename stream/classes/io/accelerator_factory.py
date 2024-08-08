@@ -1,11 +1,11 @@
 from typing import Any
-from stream.classes.hardware.architecture.accelerator import Accelerator
-from stream.classes.hardware.architecture.noc.mesh_2d import get_2d_mesh
-from stream.classes.hardware.architecture.noc.bus import get_bus
+
 from zigzag.hardware.architecture.Core import Core
-
-
 from zigzag.parser.accelerator_factory import CoreFactory
+
+from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.hardware.architecture.noc.bus import get_bus
+from stream.classes.hardware.architecture.noc.mesh_2d import get_2d_mesh
 
 
 class AcceleratorFactory:

@@ -1,11 +1,8 @@
+import logging
 from math import ceil
 from typing import Any
 
 from onnx import ModelProto, NodeProto
-
-from stream.classes.hardware.architecture.accelerator import Accelerator
-from stream.classes.workload.computation_node import ComputationNode, OperandTensorReshape
-from zigzag.datatypes import LayerOperand
 from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 from zigzag.parser.onnx.utils import (
     get_attribute_ints_with_name,
@@ -13,7 +10,8 @@ from zigzag.parser.onnx.utils import (
 )
 from zigzag.parser.workload_factory import LayerNodeFactory
 
-import logging
+from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 

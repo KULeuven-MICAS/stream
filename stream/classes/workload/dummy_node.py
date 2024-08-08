@@ -1,5 +1,6 @@
-from stream.classes.workload.node import Node
 from zigzag.workload.DummyNode import DummyNode as DummyNodeZigZag
+
+from stream.classes.workload.node import Node
 
 
 class DummyNode(DummyNodeZigZag, Node):

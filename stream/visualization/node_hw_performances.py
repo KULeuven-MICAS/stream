@@ -1,10 +1,9 @@
+import logging
 import os
 import pickle
-import matplotlib
+
 import matplotlib.pyplot as plt
-from matplotlib import cm
 import numpy as np
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -130,7 +129,7 @@ def visualize_node_hw_performances_pickle(pickle_filepath, scale_factors=None, f
                 core_latencies.append(0)
                 core_energies.append(0)
         for ax, y_values in zip(axs, [core_latencies, core_energies]):
-            rects = ax.bar(x + offset, y_values, width, label=f"{core}", color=colors[core])
+            ax.bar(x + offset, y_values, width, label=f"{core}", color=colors[core])
     for ax in axs:
         ax.set_xticks(x)
         ax.set_xticklabels(node_labels)

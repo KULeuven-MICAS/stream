@@ -1,34 +1,27 @@
-from enum import unique
-import os
-import pickle
-from typing import Any
-import networkx as nx
 import logging
+import os
 
-from stream.classes.hardware.architecture.accelerator import Accelerator
 from zigzag.cost_model.cost_model import CostModelEvaluation
-from zigzag.datatypes import LayerDim, LayerOperand, MemoryOperand, UnrollFactor
+from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.Core import Core
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
 from zigzag.mapping.spatial_mapping import SpatialMapping
-from zigzag.stages import *
 from zigzag.stages.CostModelStage import CostModelStage
-from zigzag.stages.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
 from zigzag.stages.MainStage import MainStage
+from zigzag.stages.reduce_stages import MinimalLatencyStage
 from zigzag.stages.SpatialMappingGeneratorStage import SpatialMappingGeneratorStage
 from zigzag.stages.Stage import Stage
-from stream.classes.workload.computation_node import ComputationNode
-from zigzag.stages.reduce_stages import MinimalLatencyStage
+from zigzag.stages.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
 from zigzag.utils import pickle_deepcopy
-from zigzag.mapping.mapping_assist_funcs import SpatialMappingPerMemLvl, decouple_pr_loop
-from stream.utils import load_scme, save_scme
+from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 
+from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.workload.computation_node import ComputationNode
+from stream.utils import load_scme, save_scme
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,
 )
-from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
-from zigzag.workload.layer_attributes import LayerDimSizes
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +68,8 @@ class IntraCoreMappingStage(Stage):
             assert isinstance(node.possible_core_allocation, list), f"Core allocation is not a list for node {node}."
             self.valid_allocations[node] = node.possible_core_allocation
 
-        # Initialize dict that will store for all unique nodes their intra-core HW performance for the valid node-core allocations.
+        # Initialize dict that will store for all unique nodes their intra-core HW performance for the valid node-core
+        #  allocations.
         self.node_hw_performances: dict[ComputationNode, dict[Core, CostModelEvaluation]] = {
             unique_node: {} for unique_node in self.unique_nodes
         }  # look-up table
@@ -85,7 +79,7 @@ class IntraCoreMappingStage(Stage):
         if self.node_hw_performances_path:
             try:
                 self.given_node_hw_performances = load_scme(self.node_hw_performances_path)
-            except:
+            except FileNotFoundError:
                 self.given_node_hw_performances = None
         else:
             self.given_node_hw_performances = None
@@ -109,7 +103,8 @@ class IntraCoreMappingStage(Stage):
                 # Offchip memory core doesn't have operational units
                 if core.operational_array.total_area == 0:
                     continue
-                # It's possible this node might not fully fit within the core's top level memories. If so, we update the core
+                # It's possible this node might not fully fit within the core's top level memories. If so, we update
+                #  the core
                 too_large_operands_for_cme = self.check_core_capacity_for_node(core, node)
                 # Check if this (node, core) combination is present in the loaded performances pickle
                 if (
@@ -147,7 +142,8 @@ class IntraCoreMappingStage(Stage):
                         node.set_core_allocation(core_id)
                         # Set the node's spatial mapping to the possible spatial mappings of the current core
                         node.spatial_mapping = core.dataflows if core.dataflows is not None else SpatialMapping.empty()
-                        # Initialize the flow that will be followed to extract the optimal HW performance of every unique node-core allocation
+                        # Initialize the flow that will be followed to extract the optimal HW performance of every
+                        #  unique node-core allocation
                         main_stage = self.get_intra_core_mapping_flow(
                             node=node,
                             too_large_operands=too_large_operands_for_cme,
@@ -165,7 +161,7 @@ class IntraCoreMappingStage(Stage):
         kwargs["accelerator"] = self.accelerator
         kwargs["node_hw_performances"] = self.node_hw_performances
 
-        logger.info(f"Finished IntraCoreMappingStage.")
+        logger.info("Finished IntraCoreMappingStage.")
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
@@ -217,15 +213,19 @@ class IntraCoreMappingStage(Stage):
     def check_given_node_hw_performances(self):
         """Check if the given node_hw_performances nodes have the same characteristics as our current given mapping.
         Right now, this just checks if every unique node is present in this dictionary. If not, the user should rerun.
-        A more accurate check would be to check the CME's inside of node_hw_performances and make sure the cores are the same as the ones we have now.
-        In this function, we can't use the equality operator on the two nodes, as the current nodes might not yet have a core allocation.
+        A more accurate check would be to check the CME's inside of node_hw_performances and make sure the cores are the
+          same as the ones we have now.
+        In this function, we can't use the equality operator on the two nodes, as the current nodes might not yet have a
+          core allocation.
         Args:
-            node_hw_performances (dict): A dictionary containing for every unique node a dict like {core:optimal_CME for core in valid_cores}
+            node_hw_performances (dict): A dictionary containing for every unique node a dict like {core:optimal_CME for
+              core in valid_cores}
         """
         for unique_node in self.unique_nodes:
-            if not unique_node in self.given_node_hw_performances.keys():
+            if unique_node not in self.given_node_hw_performances.keys():
                 raise ValueError(
-                    f"Given node_hw_performances don't match current unique nodes. There is no entry for unique_node {unique_node}."
+                    f"Given node_hw_performances don't match current unique nodes. There is no entry for unique_node "
+                    f"{unique_node}."
                 )
 
     def check_core_capacity_for_node(self, core: Core, node: ComputationNode) -> list[MemoryOperand]:
@@ -247,7 +247,8 @@ class IntraCoreMappingStage(Stage):
         top_memories = [memory[-1] for (mem_op, memory) in memory_hierarchy_dict.items()]
         unique_top_memories = set(top_memories)
 
-        # Step 2: for each top level memory, for each operand this memory holds, calculate the required capacity (in bit) for holding them
+        # Step 2: for each top level memory, for each operand this memory holds, calculate the required capacity
+        # (in bit) for holding them
         memory_operand_link = node.memory_operand_links
         constant_operands = node.constant_operands
         output_operand = node.output_operand
@@ -257,10 +258,12 @@ class IntraCoreMappingStage(Stage):
             layer_operands = [memory_operand_link.mem_to_layer_op(mem_operand) for mem_operand in memory_operands]
             bits_to_be_stored_in_top_level = {}
             for layer_operand, memory_operand in zip(layer_operands, memory_operands):
-                # if the operand is constant operand (e.g. 'W' and the first layer's 'I') or output operand, required capacity is gotten from the node directly
+                # if the operand is constant operand (e.g. 'W' and the first layer's 'I') or output operand, required
+                # capacity is gotten from the node directly
                 if layer_operand in constant_operands + [output_operand]:
                     bits_to_be_stored_in_top_level[memory_operand] = node.operand_size_bit[layer_operand]
-                # if the operand is variable input operand, required capacity is calculated by summing up the the total data amount on the in edges,
+                # if the operand is variable input operand, required capacity is calculated by summing up the the total
+                #  data amount on the in edges,
                 # which can be larger than the ideal required data size
                 else:
                     bits_to_be_stored_in_top_level[memory_operand] = 0
@@ -274,7 +277,8 @@ class IntraCoreMappingStage(Stage):
                 pass
             else:
                 # when the memory capacity is smaller than the requirement,
-                # sort the required capacity of each operand that shares this memory based on the operand's required size, from small to large
+                # sort the required capacity of each operand that shares this memory based on the operand's required
+                #  size, from small to large
                 # fit the operands to the memory from small to large
                 bits_to_be_stored_in_top_level = {
                     k: v for k, v in sorted(bits_to_be_stored_in_top_level.items(), key=lambda item: item[1])
@@ -289,8 +293,9 @@ class IntraCoreMappingStage(Stage):
                 operands_stored_in_top_level = list(bits_to_be_stored_in_top_level.keys())[:nb_operands_in_top_level]
                 operands_stored_in_offchip = list(bits_to_be_stored_in_top_level.keys())[nb_operands_in_top_level:]
 
-                # Step 4: Check when some operand(s) fit in the top level core memory, and some cannot fit (too_large_operands),
-                # the top level core memory has enough space for supporting the SU of not-fitted operands
+                # Step 4: Check when some operand(s) fit in the top level core memory, and some cannot fit
+                # (too_large_operands), the top level core memory has enough space for supporting the SU of not-fitted
+                #  operands
                 if not operands_stored_in_top_level or not operands_stored_in_offchip:
                     pass
                 else:

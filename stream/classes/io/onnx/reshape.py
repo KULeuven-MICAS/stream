@@ -1,6 +1,7 @@
-from stream.classes.workload.reshape_node import ReshapeNode
 from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 from zigzag.parser.onnx.utils import get_node_input_output_dimension_shapes
+
+from stream.classes.workload.reshape_node import ReshapeNode
 
 
 class ReshapeParser(ONNXOperatorParser):

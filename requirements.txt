@@ -6,3 +6,4 @@ brokenaxes
 plotly
 pandas
 cerberus
+pre-commit

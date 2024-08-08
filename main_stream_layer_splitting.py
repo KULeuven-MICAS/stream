@@ -1,25 +1,28 @@
 """ This main file uses a fixed layer-core allocation with the last layer split across multiple cores"""
 
-from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
+import logging as _logging
+import pickle
+import re
+
 from zigzag.stages.MainStage import MainStage
-from stream.classes.stages import *
+
+from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
+from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
+from stream.classes.stages.InterCoreMappingStage import InterCoreMappingStage
+from stream.classes.stages.IntraCoreMappingStage import IntraCoreMappingStage
+from stream.classes.stages.ModelParserStage import ONNXModelParserStage as StreamONNXModelParserStage
+from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import (
     plot_timeline_brokenaxes,
     visualize_timeline_plotly,
 )
-from stream.visualization.memory_usage import plot_memory_usage
-import re
-import pickle
-
-# Initialize the logger
-import logging as _logging
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 ################################INPUTS################################
-accelerator = "stream/inputs/examples/hardware/TPU_like_quad_core.yaml"
+accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core_resnet18_fixed_split.yaml"
 CN_define_mode = 4  # automatically split layers if too big to fit

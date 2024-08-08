@@ -1,14 +1,15 @@
 from math import ceil
 from typing import Iterator
-from networkx import DiGraph
 
+from networkx import DiGraph
 from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.Core import Core
-from stream.classes.cost_model.memory_manager import MemoryManager
-from stream.classes.cost_model.communication_manager import CommunicationManager
-from stream.classes.workload.tensor import Tensor
 from zigzag.hardware.architecture.MemoryInstance import MemoryInstance
 from zigzag.mapping.spatial_mapping import SpatialMapping
+
+from stream.classes.cost_model.communication_manager import CommunicationManager
+from stream.classes.cost_model.memory_manager import MemoryManager
+from stream.classes.workload.tensor import Tensor
 
 
 class Accelerator:
@@ -71,7 +72,8 @@ class Accelerator:
             core (Core): The core on which to spawn the tensor.
             memory_op (str): The memory operand on the core where the tensor will spawn.
             initial_timestep (int): The timestep at which space will be reserved for the tensor.
-            available_timestep (int): The timestep at which the tensor will become available. Different from initial_timestep when it is transferred.
+            available_timestep (int): The timestep at which the tensor will become available. Different from
+            initial_timestep when it is transferred.
         """
         self.memory_manager.add_tensor_to_core(tensor, core, initial_timestep, available_timestep, memory_op)
 
@@ -144,7 +146,7 @@ class Accelerator:
         # stored_tensors = self.stored_tensors[core][top_level_idx]
         t = timestep
         for tensor in self.memory_manager.get_tensors_stored_at_timestep(top_instance, timestep):
-            if not tensor in exceptions:
+            if tensor not in exceptions:
                 t, link_energy_cost, memory_energy_cost = self.remove(
                     tensor, core, memory_operand, t, write_back_to_offchip
                 )

@@ -1,8 +1,8 @@
 import logging
 import os
 from typing import Any
-from cerberus import Validator
 
+from cerberus import Validator
 from zigzag.parser.AcceleratorValidator import AcceleratorValidator as CoreValidator
 from zigzag.utils import open_yaml
 
@@ -53,8 +53,8 @@ class AcceleratorValidator:
     def __init__(self, data: Any, accelerator_path: str):
         """Initialize Validator object, assign schema and store normalize user-given data"""
         self.validator = Validator()
-        self.validator.schema = AcceleratorValidator.SCHEMA
-        self.data: dict[str, Any] = self.validator.normalized(data)
+        self.validator.schema = AcceleratorValidator.SCHEMA  # type: ignore
+        self.data: dict[str, Any] = self.validator.normalized(data)  # type: ignore
         self.is_valid = True
         self.accelerator_dirname = os.path.dirname(accelerator_path)
 
@@ -67,8 +67,8 @@ class AcceleratorValidator:
         return true iff valid.
         """
         # Validate according to schema
-        validate_success = self.validator.validate(self.data)
-        errors = self.validator.errors
+        validate_success = self.validator.validate(self.data)  # type: ignore
+        errors = self.validator.errors  # type: ignore
         if not validate_success:
             self.invalidate(f"The following restrictions apply: {errors}")
 
@@ -107,9 +107,9 @@ class AcceleratorValidator:
                 self.invalidate("graph of type 2d_mesh must contain 'nb_rows' and 'nb_cols'.")
 
     def check_2d_mesh_layout(self):
+        """Check wether the 2d mesh layout works with the given number of cores"""
         if self.data["graph"]["type"] != "2d_mesh":
             return
-        """Check wether the 2d mesh layout works with the given number of cores"""
         nb_special_cores = (
             (1 if self.data["graph"]["pooling_core_id"] is not None else 0)
             + (1 if self.data["graph"]["simd_core_id"] is not None else 0)

@@ -1,10 +1,13 @@
 from zigzag.stages.MainStage import MainStage
-from stream.classes.stages import *
-import re
+
+from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage
+from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
+from stream.classes.stages.InterCoreMappingStage import InterCoreMappingStage
+from stream.classes.stages.IntraCoreMappingStage import IntraCoreMappingStage
+from stream.classes.stages.ModelParserStage import UserDefinedModelParserStage
 
 
 def get_hardware_performance_stream(hardware, workload, mapping, CN_define_mode, hint_loops, node_hw_cost_pkl_name):
-    # Initialize the logger
     import logging as _logging
 
     _logging_level = _logging.INFO
@@ -27,7 +30,7 @@ def get_hardware_performance_stream(hardware, workload, mapping, CN_define_mode,
         loma_lpf_limit=6,  # required by LomaEngine
         nb_ga_individuals=128,  # number of individuals in each genetic algorithm generation
         nb_ga_generations=100,  # number of genetic algorithm generations
-        node_hw_performances_path=f"outputs/{node_hw_cost_pkl_name}.pickle",  # saved node_hw_performances to skip re-computation
+        node_hw_performances_path=f"outputs/{node_hw_cost_pkl_name}.pickle",  # saves results to skip re-computation
         plot_hof=True,  # Save schedule and memory usage plot of each individual in the Genetic Algorithm hall of fame
         plot_file_name=True,
         plot_full_schedule=True,
@@ -64,11 +67,8 @@ if __name__ == "__main__":
         node_hw_cost_pkl_name,
     )
 
-    from stream.visualization.schedule import plot_timeline_brokenaxes
     from stream.visualization.memory_usage import plot_memory_usage
-    from stream.visualization.plot_scme import (
-        bar_plot_stream_cost_model_evaluations_breakdown,
-    )
+    from stream.visualization.schedule import plot_timeline_brokenaxes
 
     plot_full_schedule = True
     draw_dependencies = True

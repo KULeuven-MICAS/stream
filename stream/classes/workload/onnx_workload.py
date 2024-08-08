@@ -1,8 +1,9 @@
 from typing import Any, Iterator
-import networkx as nx
 
+import networkx as nx
 from zigzag.workload.LayerNodeABC import LayerNodeABC
 from zigzag.workload.ONNXWorkload import ONNXWorkload as ONNXWorkloadZigZag
+
 from stream.classes.workload.node import Node
 
 

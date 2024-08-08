@@ -1,11 +1,11 @@
-from typing import Any
 import logging
+from typing import Any
+
 from onnx import ModelProto, NodeProto
+from zigzag.parser.onnx.GemmParser import GemmParser as GemmParserZigZag
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode
-from zigzag.parser.onnx.GemmParser import GemmParser as GemmParserZigZag
-
 
 logger = logging.getLogger(__name__)
 

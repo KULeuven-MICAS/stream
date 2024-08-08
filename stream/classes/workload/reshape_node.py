@@ -1,8 +1,10 @@
 from typing import Any
+
 import numpy as np
-from stream.classes.workload.node import Node
 from zigzag.datatypes import LayerOperand
 from zigzag.workload.LayerNodeABC import LayerNodeABC
+
+from stream.classes.workload.node import Node
 
 
 class ReshapeNode(Node, LayerNodeABC):
