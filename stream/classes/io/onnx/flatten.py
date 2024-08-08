@@ -1,7 +1,7 @@
-from networkx import predecessor
-from stream.classes.workload.flatten_node import FlattenNode
 from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 from zigzag.parser.onnx.utils import get_attribute_ints_with_name
+
+from stream.classes.workload.flatten_node import FlattenNode
 
 
 class FlattenParser(ONNXOperatorParser):

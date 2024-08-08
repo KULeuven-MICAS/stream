@@ -1,13 +1,13 @@
+import logging
 from typing import Any
 
-from stream.classes.io.workload_factory import WorkloadFactoryStream
-from stream.classes.workload.dnn_workload import DNNWorkloadStream
 from zigzag.stages.Stage import Stage, StageCallable
 from zigzag.stages.WorkloadParserStage import WorkloadParserStage as ZigZagWorkloadParserStage
+
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.io.onnx.model import ONNXModelParser
-
-import logging
+from stream.classes.io.workload_factory import WorkloadFactoryStream
+from stream.classes.workload.dnn_workload import DNNWorkloadStream
 
 logger = logging.getLogger(__name__)
 

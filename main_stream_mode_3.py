@@ -1,16 +1,19 @@
-from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
+import logging as _logging
+import pickle
+import re
+
 from zigzag.stages.MainStage import MainStage
-from stream.classes.stages import *
+
+from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
+from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
+from stream.classes.stages.InterCoreMappingStage import InterCoreMappingStage
+from stream.classes.stages.IntraCoreMappingStage import IntraCoreMappingStage
+from stream.classes.stages.ModelParserStage import ONNXModelParserStage as StreamONNXModelParserStage
+from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import (
     plot_timeline_brokenaxes,
     visualize_timeline_plotly,
 )
-from stream.visualization.memory_usage import plot_memory_usage
-import re
-import pickle
-
-# Initialize the logger
-import logging as _logging
 
 _logging_level = _logging.INFO
 _logging_format = (
@@ -19,24 +22,25 @@ _logging_format = (
 )
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
-################################INPUTS################################
+################################ INPUTS################################
 accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
 CN_define_mode = 3  # manually define outer-CN loops
-hint_loops = [[("OY", "all")], [("K", 2)]]
-layer_cutoffs = [30]  # layer_id >= 30 will use second entry
+hint_loops = {(0, 1, 2, 3): [("OY", "all")], tuple(range(4, 49)): [("K", 4)]}
 nb_ga_individuals = 16  # number of individuals in each generation
 nb_ga_generations = 16  # number of genetic algorithm generations
 ######################################################################
 
-################################PARSING###############################
+################################ PARSING###############################
 hw_name = accelerator.split(".")[-1]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
     wl_name = re.split(r"/|\.", workload_path)[-2]
 hint_loops_str_list = []
-if isinstance(hint_loops[0], list):
+if isinstance(hint_loops, dict):
+    hint_loops_nested = list(hint_loops.values())
+elif isinstance(hint_loops[0], list):
     hint_loops_nested = hint_loops
 else:
     hint_loops_nested = [hint_loops]
@@ -49,7 +53,7 @@ node_hw_cost_pkl_name = f"{experiment_id}-saved_cn_hw_cost"
 scme_pkl_name = f"{experiment_id}-scme"
 ######################################################################
 
-############PLOTTING#############
+############ PLOTTING#############
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
 draw_dependencies = True
@@ -59,7 +63,7 @@ percent_shown = (100,)
 #################################
 
 
-################################PATHS################################
+################################ PATHS################################
 node_hw_performances_path = f"outputs/{node_hw_cost_pkl_name}.pickle"
 scme_path = f"outputs/{scme_pkl_name}.pickle"
 timeline_fig_path_plotly = f"outputs/{experiment_id}-schedule.html"
@@ -89,7 +93,6 @@ mainstage = MainStage(
     plot_data_transfer=plot_data_transfer,
     cn_define_mode=CN_define_mode,
     hint_loops=hint_loops,
-    layer_cutoffs=layer_cutoffs,
     scheduler_candidate_selection="memory",
     operands_to_prefetch=[],
 )

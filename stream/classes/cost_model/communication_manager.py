@@ -1,13 +1,14 @@
 import itertools
 from math import ceil
 from typing import TYPE_CHECKING
-import networkx as nx
 
-from stream.classes.workload.computation_node import ComputationNode
+import networkx as nx
 from zigzag.datatypes import Constants, MemoryOperand
 from zigzag.hardware.architecture.Core import Core
-from stream.classes.workload.tensor import Tensor
+
 from stream.classes.hardware.architecture.utils import intersections
+from stream.classes.workload.computation_node import ComputationNode
+from stream.classes.workload.tensor import Tensor
 
 if TYPE_CHECKING:
     from stream.classes.hardware.architecture.accelerator import Accelerator
@@ -59,7 +60,10 @@ class CommunicationLinkEvent:
         self.activity = activity
 
     def __str__(self) -> str:
-        return f"CommunicationLinkEvent(type={self.type}, start={self.start}, end={self.end}, tensors={self.tensors}, energy={self.energy:.2e}, activity={self.activity:.2f})"
+        return (
+            f"CommunicationLinkEvent(type={self.type}, start={self.start}, end={self.end}, tensors={self.tensors}, "
+            f"energy={self.energy:.2e}, activity={self.activity:.2f})"
+        )
 
     def __repr__(self) -> str:
         return str(self)
@@ -184,7 +188,8 @@ class CommunicationManager:
             link_energy_cost += transfer_energy_cost
         # Energy cost of memory reads/writes on sender/receiver
         # For this we need to know the memory operand in order to know where in the sender/receiver the tensor is stored
-        # We assume the tensor to be sent is defined from the sender perspective, so we take its operand as the sender memory operand
+        # We assume the tensor to be sent is defined from the sender perspective, so we take its operand as the sender
+        # memory operand
         sender_memory_operand = tensor.memory_operand
         memory_energy_cost = self.accelerator.get_memory_energy_cost_of_transfer(
             tensor, sender, receiver, sender_memory_operand, receiver_memory_operand

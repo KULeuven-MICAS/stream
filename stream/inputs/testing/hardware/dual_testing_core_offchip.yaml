@@ -5,7 +5,8 @@ cores:
   - testing_core2.yaml
   - offchip.yaml
 
-2d_mesh:
+graph:
+  type: 2d_mesh
   nb_rows: 1
   nb_cols: 2
   bandwidth: 64

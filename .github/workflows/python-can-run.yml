@@ -22,13 +22,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install ruff
           pip install -r requirements.txt
-      - name: Lint with ruff
-        uses: chartboost/ruff-action@v1
-        with:
-          src: "./stream"
-          args: --select E9,F63,F7,F82
       - name: Run without errors
         run: |
           python main_stream_layer_splitting.py

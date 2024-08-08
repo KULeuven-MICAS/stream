@@ -1,23 +1,20 @@
-from operator import attrgetter
 import logging
 
-from yaml import Node
-
-from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
-from stream.classes.hardware.architecture.accelerator import Accelerator
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import LayerOperand
 from zigzag.hardware.architecture.Core import Core
 from zigzag.stages.Stage import Stage, StageCallable
-from stream.classes.workload.computation_node import ComputationNode
-from stream.classes.opt.allocation.genetic_algorithm.genetic_algorithm import (
-    GeneticAlgorithm,
-)
+from zigzag.workload.Workload import Workload
+
+from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.opt.allocation.genetic_algorithm.fitness_evaluator import (
     StandardFitnessEvaluator,
 )
+from stream.classes.opt.allocation.genetic_algorithm.genetic_algorithm import (
+    GeneticAlgorithm,
+)
+from stream.classes.workload.computation_node import ComputationNode
 from stream.utils import get_too_large_operands
-from zigzag.workload.Workload import Workload
 
 logger = logging.getLogger(__name__)
 
@@ -25,9 +22,11 @@ logger = logging.getLogger(__name__)
 class InterCoreMappingStage(Stage):
     """
     Class that finds the best inter-core mapping using a genetic algorithm.
-    From the IntraCoreMappingStage we receive the `node_hw_performances`, containing for each node and its valid core allocations the best CME.
+    From the IntraCoreMappingStage we receive the `node_hw_performances`, containing for each node and its valid core
+      allocations the best CME.
     We then initialize the genetic algorithm.
-    TODO A separate "GeneticAlgorithmStage" should be added where we parse all GA-related info and this stage then calls that stage.
+    TODO A separate "GeneticAlgorithmStage" should be added where we parse all GA-related info and this stage then calls
+    TODO that stage.
     """
 
     def __init__(
@@ -52,7 +51,8 @@ class InterCoreMappingStage(Stage):
             list_of_callables (list): List of the substages to be called. This should be empty as this is a leaf stage.
             workload (DiGraph): The NetworkX DiGraph representing the workload to be scheduled
             accelerator (Accelerator): The hardware accelerator onto which we schedule the workload
-            node_hw_performances (dict): A nested dict containing for each node a dict with for each valid core its best HW performance
+            node_hw_performances (dict): A nested dict containing for each node a dict with for each valid core its best
+              HW performance
             nb_ga_generations (int): The number of generations considered by the genetic algorithm
             nb_ga_individuals (int): The number of individuals in each genetic algorithm generation
         """
@@ -75,7 +75,8 @@ class InterCoreMappingStage(Stage):
         # self.coarse_node_ids contains all the original node (aka layers) ids of the original graph
         self.unique_nodes = list(set((n for n, _ in self.node_hw_performances.items())))
         self.coarse_node_ids: list[int] = [id for id in self.layer_groups]
-        # self.coarse_node_ids_flexible contains only those original node ids that have flexibility: they can be allocated to more than one core
+        # self.coarse_node_ids_flexible contains only those original node ids that have flexibility: they can be
+        # allocated to more than one core
         # TODO is this sorting key correct?
         self.unique_nodes_flexible: list[ComputationNode] = sorted(
             set((n for n, hw_performances in self.node_hw_performances.items() if len(hw_performances.keys()) > 1)),
@@ -98,7 +99,8 @@ class InterCoreMappingStage(Stage):
                 self.layer_groups_flexible.append((layer_id, group_id))
                 self.valid_allocations.append(valid_core_ids)
 
-        # Set the hardware performance and core_allocation of nodes in the workload that only have a single possible core allocation
+        # Set the hardware performance and core_allocation of nodes in the workload that only have a single possible
+        # core allocation
         self.set_hw_performance_non_flexible_nodes()
 
         # Initialize the fitness evaluator of different core allocations
@@ -162,7 +164,8 @@ class InterCoreMappingStage(Stage):
         logger.info("Finished InterCoreMappingStage.")
 
     def set_hw_performance_non_flexible_nodes(self):
-        """Set the energy, runtime and core_allocation of the nodes in self.workload that only have a single possible core allocation."""
+        """Set the energy, runtime and core_allocation of the nodes in self.workload that only have a single possible
+        core allocation."""
         non_flexible_unique_nodes: set[ComputationNode] = set(self.unique_nodes) - set(self.unique_nodes_flexible)
         for non_flexible_unique_node in non_flexible_unique_nodes:
             hw_performances = self.node_hw_performances[non_flexible_unique_node]

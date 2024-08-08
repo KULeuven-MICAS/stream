@@ -1,5 +1,6 @@
-from stream.classes.workload.computation_node import ComputationNode
 from zigzag.workload.layer_node import LayerNodeAttributes
+
+from stream.classes.workload.computation_node import ComputationNode
 
 
 class SimdNode(ComputationNode):

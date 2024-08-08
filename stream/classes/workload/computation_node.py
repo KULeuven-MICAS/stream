@@ -1,13 +1,13 @@
-from typing import Any, TypeAlias
 from math import prod
+from typing import Any, TypeAlias
 
 import numpy as np
-
-from stream.classes.workload.node import Node
-from stream.classes.workload.tensor import Tensor
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 from zigzag.workload.layer_attributes import LayerPadding
 from zigzag.workload.layer_node import LayerNode, LayerNodeAttributes
+
+from stream.classes.workload.node import Node
+from stream.classes.workload.tensor import Tensor
 
 OperandTensorReshape: TypeAlias = dict[LayerOperand, tuple[int, int, int, int]]
 LoopRanges: TypeAlias = dict[LayerDim, tuple[int, int]]
@@ -41,7 +41,6 @@ class ComputationNode(LayerNode, Node):
         # To distinguish alternative versions of this node
         sub_id: int = -1,
     ):
-
         LayerNode.__init__(self, layer_id=node_id, node_name=node_name, node_attr=node_attr)
         Node.__init__(
             self,
@@ -216,6 +215,7 @@ class ComputationNode(LayerNode, Node):
         self.nb_real_predecessors = nb_real_predecessors
 
     def update_loop_ranges(self, new_ranges: LoopRanges):
-        """Override the loop ranges with a new value for each of the given LayerDims. Keep the old range for the LayerDims not defined in `new_ranges`"""
+        """Override the loop ranges with a new value for each of the given LayerDims. Keep the old range for the
+        LayerDims not defined in `new_ranges`"""
         for layer_dim in new_ranges:
             self.loop_ranges[layer_dim] = new_ranges[layer_dim]

@@ -1,5 +1,6 @@
-from stream.classes.workload.transpose_node import TransposeNode
 from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
+
+from stream.classes.workload.transpose_node import TransposeNode
 
 
 class TransposeParser(ONNXOperatorParser):

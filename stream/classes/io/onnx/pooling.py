@@ -1,13 +1,15 @@
 from typing import Any
+
 from onnx import ModelProto, NodeProto
-from stream.classes.hardware.architecture.accelerator import Accelerator
-from stream.classes.workload.pooling_node import PoolingNode
 from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 from zigzag.parser.onnx.utils import (
     get_attribute_ints_with_name,
     get_node_input_output_dimension_shapes,
 )
 from zigzag.parser.workload_factory import LayerNodeFactory
+
+from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.workload.pooling_node import PoolingNode
 
 
 class PoolingParser(ONNXOperatorParser):
@@ -116,7 +118,6 @@ class PoolingParser(ONNXOperatorParser):
         return data
 
     def generate_layer_node_for_pooling(self):
-
         # Get the input and output activation shapes
         ia_dimension_shape, oa_dimension_shape = get_node_input_output_dimension_shapes(self.node, self.onnx_model)
 

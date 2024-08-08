@@ -1,4 +1,5 @@
 from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
+
 from stream.classes.workload.dummy_node import DummyNode
 
 

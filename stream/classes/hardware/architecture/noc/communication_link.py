@@ -159,7 +159,7 @@ class CommunicationLink:
                 valid_windows.append((start, end))
             try:
                 start = updated_ts[idx + 1]
-            except:
+            except IndexError:
                 break
         if not valid_windows:
             raise ValueError(f"There are no valid windows of activity {activity} and duration {duration} for {self}.")

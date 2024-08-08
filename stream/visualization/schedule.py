@@ -1,18 +1,18 @@
+import argparse
+import logging
+import pickle
+from itertools import cycle
+from math import isnan
 from typing import TYPE_CHECKING
+
+import networkx as nx
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
 from brokenaxes import brokenaxes
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
-from math import isnan
-import numpy as np
-import logging
-import plotly.graph_objects as go
 from plotly.express.colors import sample_colorscale
-import pandas as pd
-import pickle
-import networkx as nx
-import argparse
-from itertools import cycle
-
 from zigzag.workload.Workload import Workload
 
 if TYPE_CHECKING:
@@ -77,7 +77,7 @@ def plot_timeline_brokenaxes(
     # total EDP of the SCME
     edp = latency * energy
 
-    fig = plt.figure(figsize=(20, 6))
+    plt.figure(figsize=(20, 6))
 
     x_starts = [int((start / 100) * latency) for start in section_start_percent]
     x_ends = [
@@ -251,20 +251,14 @@ def plot_timeline_brokenaxes(
     """ Plot inter-layer CN data dependency line """
     for prod, cons in G.edges():
         p_l = prod.id
-        c_l = cons.id
         p_core = prod.chosen_core_allocation
         c_core = cons.chosen_core_allocation
         if not PLOT_DEPENDENCY_LINES_SAME_CORE and p_core == c_core:
             continue
-        p_start = prod.start
-        p_duration = prod.runtime
         p_end = prod.end
         c_start = cons.start
-        c_duration = cons.runtime
         x1 = p_end
-        y1 = p_core
         x2 = c_start
-        y2 = c_core
         if draw_dependencies:
             for ax_idx in range(nb_axs):  # go through the different broken axes
                 ax = axs[ax_idx]
@@ -319,7 +313,7 @@ def legend_without_duplicate_labels(bax, loc, ncol):
     handles, labels = zip(*bax.get_legend_handles_labels())
     handles = [item for sublist in handles for item in sublist]
     labels = [item for sublist in labels for item in sublist]
-    unique = [(h, l) for i, (h, l) in enumerate(zip(handles, labels)) if l not in labels[:i]]
+    unique = [(handle, label) for i, (handle, label) in enumerate(zip(handles, labels)) if label not in labels[:i]]
     unique.sort(key=lambda x: int(x[1].split(" ")[1]))  # Sort the labels based on the layer number
     bax.legend(*zip(*unique), loc=loc, ncol=ncol)
 
@@ -372,12 +366,9 @@ def add_dependencies(fig, scme, colors, layer_ids):
             p_l = pred.id
             if p_l == c_l:
                 continue  # Ignore intra layer edges
-            p_start = pred.start
-            p_runtime = pred.runtime
             p_end = pred.end
             p_core = pred.chosen_core_allocation
             c_start = node.start
-            c_runtime = node.runtime
             c_core = node.chosen_core_allocation
             legendgroup = f"Layer {c_l}"
             legendgrouptitle_text = legendgroup
@@ -560,7 +551,10 @@ def visualize_timeline_plotly(
     # Title
     edp = scme.latency * scme.energy
     fig.update_layout(
-        title_text=f"Computation Schedule.\t\t\tLatency = {scme.latency:.3e}\t\t\tEnergy = {scme.energy:.3e}\t\t\tEDP = {edp:.3e}"
+        title_text=(
+            f"Computation Schedule.\t\t\tLatency = {scme.latency:.3e}\t\t\tEnergy = {scme.energy:.3e}\t\t\t"
+            f"EDP = {edp:.3e}"
+        )
     )
     # for bar in fig_timeline.data:
     #     fig.add_trace(go.Bar(bar), row=1,col=1)

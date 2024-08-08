@@ -1,11 +1,8 @@
-import os
-from zigzag.hardware.architecture.MemoryHierarchy import MemoryHierarchy
-from zigzag.hardware.architecture.memory_level import MemoryLevel
-from zigzag.hardware.architecture.operational_unit import Multiplier
-from zigzag.hardware.architecture.operational_array import MultiplierArray
-from zigzag.hardware.architecture.memory_instance import MemoryInstance
-from zigzag.hardware.architecture.Accelerator import Accelerator
 from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.memory_instance import MemoryInstance
+from zigzag.hardware.architecture.MemoryHierarchy import MemoryHierarchy
+from zigzag.hardware.architecture.operational_array import MultiplierArray
+from zigzag.hardware.architecture.operational_unit import Multiplier
 
 
 def get_memory_hierarchy(multiplier_array):
@@ -106,8 +103,6 @@ def get_memory_hierarchy(multiplier_array):
         min_w_granularity=64,
     )
 
-    #######################################################################################################################
-
     # dram = MemoryInstance(name="dram", size=10000000000, r_bw=64, w_bw=64, r_cost=700, w_cost=750, area=0,
     #                       r_port=0, w_port=0, rw_port=1, latency=1)
 
@@ -138,8 +133,6 @@ def get_memory_hierarchy(multiplier_array):
         served_dimensions={(0, 1)},
     )
 
-    ##################################### on-chip highest memory hierarchy initialization #####################################
-
     memory_hierarchy_graph.add_memory(
         memory_instance=sram_64KB_with_8_8K_64_1r_1w,
         operands=("I2",),
@@ -168,21 +161,6 @@ def get_memory_hierarchy(multiplier_array):
         ),
         served_dimensions="all",
     )
-
-    ####################################################################################################################
-
-    # memory_hierarchy_graph.add_memory(memory_instance=dram, operands=('I1', 'I2', 'O'),
-    #                                   port_alloc=({'fh': 'rw_port_1', 'tl': 'rw_port_1', 'fl': None, 'th': None},
-    #                                               {'fh': 'rw_port_1', 'tl': 'rw_port_1', 'fl': None, 'th': None},
-    #                                               {'fh': 'rw_port_1', 'tl': 'rw_port_1', 'fl': 'rw_port_1', 'th': 'rw_port_1'},),
-    #                                   served_dimensions='all')
-
-    from zigzag.visualization.graph.memory_hierarchy import (
-        visualize_memory_hierarchy_graph,
-    )
-
-    # visualize_memory_hierarchy_graph(memory_hierarchy_graph)
-    return memory_hierarchy_graph
 
 
 def get_operational_array():

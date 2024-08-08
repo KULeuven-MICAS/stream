@@ -1,4 +1,5 @@
 from typing import List
+
 from zigzag.hardware.architecture.operational_unit import OperationalUnit
 
 

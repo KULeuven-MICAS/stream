@@ -1,10 +1,8 @@
-from zigzag.hardware.architecture.MemoryHierarchy import MemoryHierarchy
-from zigzag.hardware.architecture.memory_level import MemoryLevel
-from zigzag.hardware.architecture.operational_unit import Multiplier
-from zigzag.hardware.architecture.operational_array import MultiplierArray
-from zigzag.hardware.architecture.memory_instance import MemoryInstance
-from zigzag.hardware.architecture.Accelerator import Accelerator
 from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.memory_instance import MemoryInstance
+from zigzag.hardware.architecture.MemoryHierarchy import MemoryHierarchy
+from zigzag.hardware.architecture.operational_array import MultiplierArray
+from zigzag.hardware.architecture.operational_unit import Multiplier
 
 
 def get_memory_hierarchy(multiplier_array):
@@ -36,7 +34,7 @@ def get_memory_hierarchy(multiplier_array):
         rw_port=1,
         latency=1,
     )  # rd E per bit 0.0625
-    # lb1 = MemoryInstance(name="sram_64KB", size=524288, r_bw=128, w_bw=128, r_cost=20, w_cost=25, area=6, r_port=1, w_port=1, rw_port=0, latency=1)  # rd E per bit 0.16
+
     lb2 = MemoryInstance(
         name="sram_8KB",
         size=65536,
@@ -113,9 +111,7 @@ def get_memory_hierarchy(multiplier_array):
     memory_hierarchy_graph.add_memory(
         memory_instance=rf2,
         operands=("O",),
-        port_alloc=(
-            {"fh": "rw_port_1", "tl": "r_port_1", "fl": "w_port_1", "th": "rw_port_1"},
-        ),
+        port_alloc=({"fh": "rw_port_1", "tl": "r_port_1", "fl": "w_port_1", "th": "rw_port_1"},),
         served_dimensions=set(),
     )
 
@@ -179,9 +175,7 @@ def get_operational_array():
     multiplier_energy = 0.5
     multiplier_area = 0.1
     dimensions = {"D1": 14, "D2": 12}
-    multiplier = Multiplier(
-        multiplier_input_precision, multiplier_energy, multiplier_area
-    )
+    multiplier = Multiplier(multiplier_input_precision, multiplier_energy, multiplier_area)
     multiplier_array = MultiplierArray(multiplier, dimensions)
 
     return multiplier_array

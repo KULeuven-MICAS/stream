@@ -1,5 +1,6 @@
-from stream.classes.workload.elementwise_node import ElementwiseNode
 from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
+
+from stream.classes.workload.elementwise_node import ElementwiseNode
 
 
 class ElementwiseParser(ONNXOperatorParser):

@@ -1,10 +1,9 @@
-from networkx import DiGraph
+from zigzag.workload.Workload import Workload
 
-from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.cost_model.scheduler import schedule_graph
+from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import plot_timeline_brokenaxes
-from zigzag.workload.Workload import Workload
 
 
 class StreamCostModelEvaluation:
@@ -45,7 +44,8 @@ class StreamCostModelEvaluation:
 
     def run(self):
         """Run the SCME by scheduling the graph through time.
-        The scheduler takes into account inter-core data movement and also tracks energy and memory through the memory manager.
+        The scheduler takes into account inter-core data movement and also tracks energy and memory through the memory
+        manager.
         This assumes each node in the graph has an energy and runtime of the core to which they are allocated to.
         """
         results = schedule_graph(

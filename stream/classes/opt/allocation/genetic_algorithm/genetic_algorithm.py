@@ -1,13 +1,7 @@
-import itertools
-import logging
-
-from deap import algorithms
-from deap import base
-from deap import creator
-from deap import tools
-
 import array
 import random
+
+from deap import algorithms, base, creator, tools
 
 from stream.classes.opt.allocation.genetic_algorithm.statistics_evaluator import (
     StatisticsEvaluator,
@@ -25,12 +19,8 @@ class GeneticAlgorithm:
         pop=[],
     ) -> None:
         self.num_generations = num_generations  # number of generations
-        self.num_individuals = (
-            num_individuals  # number of individuals in initial generation
-        )
-        self.para_mu = int(
-            num_individuals / 2
-        )  # number of indiviuals taken from previous generation
+        self.num_individuals = num_individuals  # number of individuals in initial generation
+        self.para_mu = int(num_individuals / 2)  # number of indiviuals taken from previous generation
         self.para_lambda = num_individuals  # number of indiviuals in generation
         self.prob_crossover = 0.3  # probablility to perform corssover
         self.prob_mutation = 0.7  # probablility to perform mutation
@@ -38,26 +28,21 @@ class GeneticAlgorithm:
 
         self.individual_length = individual_length
 
-        self.fitness_evaluator = (
-            fitness_evaluator  # class to evaluate fitness of each indiviual
-        )
-        self.statistics_evaluator = StatisticsEvaluator(
-            self.fitness_evaluator
-        )  # class to track statistics of certain generations
+        self.fitness_evaluator = fitness_evaluator  # class to evaluate fitness of each indiviual
+        # class to track statistics of certain generations
+        self.statistics_evaluator = StatisticsEvaluator(self.fitness_evaluator)
 
-        creator.create(
-            "FitnessMulti", base.Fitness, weights=self.fitness_evaluator.weights
-        )  # define target of fitness function
-        creator.create(
-            "Individual", array.array, typecode="i", fitness=creator.FitnessMulti
-        )  # define individual in population
+        # define target of fitness function
+        creator.create("FitnessMulti", base.Fitness, weights=self.fitness_evaluator.weights)
+        # define individual in population
+        creator.create("Individual", array.array, typecode="i", fitness=creator.FitnessMulti)
 
         self.toolbox = base.Toolbox()  # initialize DEAP toolbox
         self.hof = tools.ParetoFront()  # initialize Hall-of-Fame as Pareto Front
 
-        # Create a function that returns a random individual by randomly choosing from the valid allocations of each node
         def get_random_individual():
-            return (random.choice(l) for l in valid_allocations)
+            """rReturns a random individual by randomly choosing from the valid allocations of each node"""
+            return (random.choice(x) for x in valid_allocations)
 
         # attribute generator
         self.toolbox.register(
@@ -76,13 +61,9 @@ class GeneticAlgorithm:
         self.toolbox.register("evaluate", self.fitness_evaluator.get_fitness)
 
         if self.individual_length > 10:
-            self.toolbox.register(
-                "mate", tools.cxOrdered
-            )  # for big graphs use cxOrdered crossover function
+            self.toolbox.register("mate", tools.cxOrdered)  # for big graphs use cxOrdered crossover function
         else:
-            self.toolbox.register(
-                "mate", tools.cxTwoPoint
-            )  # for small graphs use two point crossover function
+            self.toolbox.register("mate", tools.cxTwoPoint)  # for small graphs use two point crossover function
 
         # link user defined mutation function to toolbox
         self.toolbox.register("mutate", self.mutate)
@@ -122,7 +103,7 @@ class GeneticAlgorithm:
         )
         # stats.register("saved", self.save_population)
 
-        logbook = algorithms.eaMuPlusLambda(
+        algorithms.eaMuPlusLambda(
             self.pop,
             self.toolbox,
             mu=self.para_mu,
@@ -165,12 +146,11 @@ class GeneticAlgorithm:
         # change one of the position's core allocation
         if random.random() < 0.75:
             for position in range(len(list(individual))):
-                old_value = individual[position]
+                individual[position]
                 if random.random() < prob_mutation:
                     current_core_allocation = individual[position]
                     valid_new_core_allocations = sorted(
-                        set(self.valid_allocations[position])
-                        - set([current_core_allocation])
+                        set(self.valid_allocations[position]) - set([current_core_allocation])
                     )
                     individual[position] = random.choice(valid_new_core_allocations)
         # swap the core allocation of two randomly chosen positions
@@ -183,11 +163,7 @@ class GeneticAlgorithm:
         return (individual,)
 
     def save_population(self, x):
-        if (
-            self.statistics_evaluator.current_generation
-            % self.statistics_evaluator.evaluation_periode
-            == 0
-        ):
+        if self.statistics_evaluator.current_generation % self.statistics_evaluator.evaluation_periode == 0:
             self.statistics_evaluator.append_generation(list(self.pop))
             self.statistics_evaluator.current_generation += 1
             return True

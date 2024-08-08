@@ -1,7 +1,8 @@
-from stream.classes.hardware.architecture.pooling_array import PoolingArray
-from zigzag.hardware.architecture.MemoryHierarchy import MemoryHierarchy
-from zigzag.hardware.architecture.memory_instance import MemoryInstance
 from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.memory_instance import MemoryInstance
+from zigzag.hardware.architecture.MemoryHierarchy import MemoryHierarchy
+
+from stream.classes.hardware.architecture.pooling_array import PoolingArray
 from stream.classes.hardware.architecture.pooling_unit import PoolingUnit
 
 
@@ -69,9 +70,7 @@ def get_operational_array():
     pooling_energy = 0.1
     pooling_area = 0.01
     dimensions = {"D1": 3, "D2": 3}
-    pooling_unit = PoolingUnit(
-        pooling_unit_input_precision, pooling_energy, pooling_area
-    )
+    pooling_unit = PoolingUnit(pooling_unit_input_precision, pooling_energy, pooling_area)
     pooling_array = PoolingArray(pooling_unit, dimensions)
     return pooling_array
 

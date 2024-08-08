@@ -44,6 +44,7 @@ def get_core_capacities(accelerator, mem_op: str, core_ids: list):
         core_capacities[core_name] = top_instance.size
     return core_capacities
 
+
 if __name__ == "__main__":
     a = [(8, 10), (13, 15), (17, 20)]
     b = [(0, 9), (14, 18)]

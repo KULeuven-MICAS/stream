@@ -1,16 +1,17 @@
-from stream.classes.opt.splitting.TemporalLoop import TemporalLoop
-from stream.classes.workload.computation_node import ComputationNode
-from zigzag.datatypes import LayerDim
-
 import logging
 
+from zigzag.datatypes import LayerDim
+
+from stream.classes.opt.splitting.TemporalLoop import TemporalLoop
+from stream.classes.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 
 
 def get_rest_loops(total_loop_dim: dict[str, int], to_be_excluded_loops: list[TemporalLoop]) -> list[TemporalLoop]:
     """
-    This function return a list of the rest temporal loops after remove the to_be_excluded_loops from the total_loop_dim.
+    This function return a list of the rest temporal loops after remove the to_be_excluded_loops from
+    the total_loop_dim.
     """
     rest_loops = []
     to_be_excluded_loops = {TM_loop.dimension: TM_loop.size for TM_loop in to_be_excluded_loops}
@@ -63,9 +64,10 @@ def convert_inner_cn_loops(inner_cn_loops: list, layer: ComputationNode):
                     )
                     inner_loops.append(TemporalLoop(loop_name, new_loop_size))
                     logger.info(
-                        f"For layer {int(layer.id)}, the inner CN dimension {loop_name} size is adjusted from {loop_size} to {new_loop_size}."
+                        f"For layer {int(layer.id)}, the inner CN dimension {loop_name} size is adjusted from "
+                        f"{loop_size} to {new_loop_size}."
                     )
-                except:
+                except IndexError:
                     raise ValueError(f"({loop_name}, {loop_size}) is not a valid inner CN loop.")
     outer_loops = get_rest_loops(layer.layer_dim_sizes, inner_loops)
     return outer_loops
@@ -121,6 +123,6 @@ def convert_outer_cn_loops_with_k(outer_cn_loops: list, layer: ComputationNode, 
     if not isinstance(split_factor, int):
         raise ValueError("The number of K splits should be an integer.")
     if split_factor > 1:
-        outer_cn_loops += [(LayerDim("K"), split_factor)]
+        outer_cn_loops += [("K", split_factor)]
     outer_loops = convert_outer_cn_loops(outer_cn_loops, layer)
     return outer_loops

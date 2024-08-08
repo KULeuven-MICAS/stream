@@ -138,7 +138,7 @@ class StatisticsEvaluator:
             + str(numpy.format_float_scientific(max_x, precision=2))
             + "]"
         )
-        min_max_z = (
+        (
             "["
             + str(numpy.format_float_scientific(min_z, precision=2))
             + ", "

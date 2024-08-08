@@ -1,13 +1,13 @@
-import pickle
-from networkx import DiGraph
-import json
 import os
+import pickle
 import pprint
+
+from networkx import DiGraph
+from zigzag.cost_model.cost_model import CostModelEvaluation
+from zigzag.datatypes import MemoryOperand
 
 from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 from stream.classes.hardware.architecture.accelerator import Accelerator
-from zigzag.cost_model.cost_model import CostModelEvaluation
-from zigzag.datatypes import MemoryOperand
 
 
 def get_too_large_operands(cme: CostModelEvaluation, accelerator: Accelerator, core_id: int) -> list[MemoryOperand]:
@@ -21,9 +21,9 @@ def get_too_large_operands(cme: CostModelEvaluation, accelerator: Accelerator, c
     too_large_operands: list[MemoryOperand] = []
     core = accelerator.get_core(core_id)
     core_nb_memory_levels = core.memory_hierarchy.nb_levels
-    for layer_operand, l in cme.mapping.data_elem_per_level.items():
+    for layer_operand, lvl in cme.mapping.data_elem_per_level.items():
         memory_operand = cme.layer.memory_operand_links.layer_to_mem_op(layer_operand)
-        if len(l) > core_nb_memory_levels[memory_operand] + 1:  # +1 because of spatial level
+        if len(lvl) > core_nb_memory_levels[memory_operand] + 1:  # +1 because of spatial level
             too_large_operands.append(memory_operand)
     return too_large_operands
 

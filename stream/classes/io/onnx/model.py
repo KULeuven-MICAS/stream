@@ -1,24 +1,22 @@
+import logging
 from typing import Any
 
 from onnx import ModelProto, NodeProto
+from zigzag.parser.onnx.utils import get_onnx_tensor_type, parse_onnx_model_from_path
+from zigzag.stages.WorkloadParserStage import WorkloadParserStage
+
 from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.io.onnx.conv import ConvParser
+from stream.classes.io.onnx.default import DefaultNodeParser
 from stream.classes.io.onnx.flatten import FlattenParser
+from stream.classes.io.onnx.gemm import GemmParser
+from stream.classes.io.onnx.lpnormalization import LpNormalizationParser
+from stream.classes.io.onnx.matmul import MatMulParser
 from stream.classes.io.onnx.pooling import PoolingParser
 from stream.classes.io.onnx.reshape import ReshapeParser
 from stream.classes.io.onnx.simd import SimdParser
 from stream.classes.io.onnx.transpose import TransposeParser
-from stream.classes.io.onnx.lpnormalization import LpNormalizationParser
-from stream.classes.io.onnx.default import DefaultNodeParser
-from zigzag.parser.onnx.utils import parse_onnx_model_from_path, get_onnx_tensor_type
-from zigzag.stages.WorkloadParserStage import WorkloadParserStage
-from stream.classes.io.onnx.gemm import GemmParser
-from stream.classes.io.onnx.matmul import MatMulParser
-from stream.classes.io.onnx.conv import ConvParser
 from stream.classes.workload.onnx_workload import ONNXWorkload
-
-
-import logging
-
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +72,6 @@ class ONNXModelParser:
         workload = ONNXWorkload()
 
         for node_id, node in enumerate(self.onnx_model.graph.node):
-            node_id_tuple = (node_id,)
             # If this node has no inputs, don't take it into consideration (e.g. Constant operator has no inputs)
             if not node.input:
                 continue
@@ -142,7 +139,8 @@ class ONNXModelParser:
                 )
                 logger.info("Parsed Flatten node %s.", node.name)
             elif node.op_type in ["Add", "Mul"]:
-                # TODO: a temporary fix an element-wise Add or Mul which has asymmetric input data -> treat it as a DummyNode.
+                # TODO: a temporary fix an element-wise Add or Mul which has asymmetric input data -> treat it as a
+                # TODO DummyNode.
                 #  Future to support node with asymmetric input data.
                 if has_asymmetric_input_data(node, self.onnx_model):
                     parser = DefaultNodeParser(
@@ -207,7 +205,6 @@ class ONNXModelParser:
 
 
 def has_asymmetric_input_data(node: NodeProto, onnx_model: ModelProto):
-
     input_name1 = node.input[0]
     input_name2 = node.input[1]
     input_shape1 = get_onnx_tensor_type(input_name1, onnx_model).shape
