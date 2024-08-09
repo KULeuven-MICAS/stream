@@ -58,6 +58,7 @@ class ComputationNode(LayerNode, Node):
 
         self.sub_id = sub_id
         self.group = group_id
+        self.__hash_value = hash((self.id, self.sub_id))
         self.operand_tensor_reshape = (
             operand_tensor_reshape if operand_tensor_reshape is not None else self.get_operand_tensor_reshape_default()
         )
@@ -131,11 +132,15 @@ class ComputationNode(LayerNode, Node):
         """The hash operator of a node depending on its id. The id is a tuple that can be of variable depth.
 
         Returns:
-            int: the computed hash
+            int: the pre-computed hash
         """
-        return hash((self.id, self.sub_id))
+        return self.__hash_value
 
-    def __eq__(self, other: object) -> bool:
+    def __eq__(self, other: object):
+        """Fast equality comparison between two nodes"""
+        return self.__hash_value == hash(other)
+
+    def is_equal_extended(self, other: object) -> bool:
         """Compare the equality between two nodes.
         Two nodes are considered equal if they have equal hardware performance, which happens following attributes are
         equal:

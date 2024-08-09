@@ -1,7 +1,6 @@
-from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
-
 from stream.classes.cost_model.scheduler import schedule_graph
 from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.workload.onnx_workload import ComputationNodeWorkload
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import plot_timeline_brokenaxes
 
@@ -14,7 +13,7 @@ class StreamCostModelEvaluation:
 
     def __init__(
         self,
-        workload: Workload,
+        workload: ComputationNodeWorkload,
         accelerator: Accelerator,
         operands_to_prefetch: list[str],
         scheduling_order: list[int],
@@ -22,18 +21,18 @@ class StreamCostModelEvaluation:
         # Initialize the SCME by setting the workload graph to be scheduled
         self.workload = workload
         self.accelerator = accelerator
-        self.energy = None
-        self.total_cn_onchip_energy = None
-        self.total_cn_offchip_link_energy = None
-        self.total_cn_offchip_memory_energy = None
-        self.total_eviction_to_offchip_link_energy = None
-        self.total_eviction_to_offchip_memory_energy = None
-        self.total_sink_layer_output_offchip_link_energy = None
-        self.total_sink_layer_output_offchip_memory_energy = None
-        self.total_core_to_core_link_energy = None
-        self.total_core_to_core_memory_energy = None
+        self.energy: float | None = None
+        self.total_cn_onchip_energy: float | None = None
+        self.total_cn_offchip_link_energy: float | None = None
+        self.total_cn_offchip_memory_energy: float | None = None
+        self.total_eviction_to_offchip_link_energy: float | None = None
+        self.total_eviction_to_offchip_memory_energy: float | None = None
+        self.total_sink_layer_output_offchip_link_energy: float | None = None
+        self.total_sink_layer_output_offchip_memory_energy: float | None = None
+        self.total_core_to_core_link_energy: float | None = None
+        self.total_core_to_core_memory_energy: float | None = None
 
-        self.latency = None
+        self.latency: int | None = None
         self.max_memory_usage = None
         self.core_timesteps_delta_cumsums = None
         self.operands_to_prefetch = operands_to_prefetch
@@ -79,20 +78,19 @@ class StreamCostModelEvaluation:
 
     def plot_schedule(
         self,
-        plot_full_schedule=False,
-        draw_dependencies=True,
-        plot_data_transfer=False,
-        section_start_percent=(0, 50, 95),
-        percent_shown=(5, 5, 5),
-        fig_path="outputs/schedule_plot.png",
+        plot_full_schedule: bool = False,
+        draw_dependencies: bool = True,
+        plot_data_transfer: bool = False,
+        section_start_percent: tuple[int, ...] = (0, 50, 95),
+        percent_shown: tuple[int, ...] = (5, 5, 5),
+        fig_path: str = "outputs/schedule_plot.png",
     ):
         """Plot the schedule of this SCME."""
         if plot_full_schedule:
             section_start_percent = (0,)
             percent_shown = (100,)
         plot_timeline_brokenaxes(
-            self.workload,
-            self.accelerator,
+            self,
             draw_dependencies,
             section_start_percent,
             percent_shown,
@@ -100,6 +98,6 @@ class StreamCostModelEvaluation:
             fig_path,
         )
 
-    def plot_memory_usage(self, fig_path="outputs/memory_usage_plot.png"):
+    def plot_memory_usage(self, fig_path: str = "outputs/memory_usage_plot.png"):
         """Plot the memory usage of this SCME."""
         plot_memory_usage(self.accelerator.memory_manager, fig_path)

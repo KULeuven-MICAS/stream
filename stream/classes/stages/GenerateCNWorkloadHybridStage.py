@@ -1,7 +1,7 @@
 import itertools
 import logging
-import math
 from copy import deepcopy
+from math import ceil, prod
 from typing import Any, List
 
 import networkx as nx
@@ -296,7 +296,7 @@ class GenerateCNWorkloadHybridStage(Stage):
         stop_values = [temporal_loop.size for temporal_loop in outer_temporal_loops]
 
         # Number of cns there will be
-        nb_cns = int(math.prod(stop_values))
+        nb_cns = int(prod(stop_values))
 
         # Compute the data_reuse_factor (will be used as base_priority later) for the constant operands of all CNs
         tensor_reuse_factors = deduce_tensor_reuse_factors(original_node, outer_temporal_loops)
@@ -311,7 +311,7 @@ class GenerateCNWorkloadHybridStage(Stage):
             inner_span = finer_span[loop_dim] if loop_dim in finer_span else 1
             lower_outer_cn_loops = outer_temporal_loops[:i]
             # Returns 1 if empty list
-            outer_span = math.prod(
+            outer_span = prod(
                 [temporal_loop.size for temporal_loop in lower_outer_cn_loops if temporal_loop.dimension == loop_dim]
             )
             mult_factors.append(int(inner_span * outer_span))
@@ -324,7 +324,7 @@ class GenerateCNWorkloadHybridStage(Stage):
             for i, outer_loop in enumerate(outer_temporal_loops):
                 loop_dim = outer_loop.dimension
                 stop_value = outer_loop.size
-                m = math.prod(stop_values[:i])
+                m = prod(stop_values[:i])
                 outer_loop_values.append(int((n // m) % stop_value))
             dim_min_max: LoopRanges = {}
             for loop_dim in loop_dims:
@@ -681,14 +681,14 @@ class GenerateCNWorkloadHybridStage(Stage):
                 last_tensor = get_tensor_cn_for_op(last_node, dependent_operand)
                 inter_edges = self.get_inter_edges_tensor_based(tensor, last_tensor)
 
-            for prod, cons in inter_edges:
+            for producer, cons in inter_edges:
                 all_inter_edges.append(
                     (
-                        prod,
+                        producer,
                         cons,
                         {
                             "operand": dependent_operand,
-                            "bits": prod.data_produced_unique,
+                            "bits": producer.data_produced_unique,
                         },
                     )
                 )
@@ -732,8 +732,8 @@ class GenerateCNWorkloadHybridStage(Stage):
         for producer_set, consumer_set in zip(producer_output_tensor.flat, consumer_input_tensor.flat):
             if consumer_set is None:  # Happens for downsample layers (e.g. ComputationNode((16,)) for MBNetV2)
                 continue
-            for prod, cons in itertools.product(producer_set, consumer_set):
-                inter_edges.add((prod, cons))
+            for producer, cons in itertools.product(producer_set, consumer_set):
+                inter_edges.add((producer, cons))
         return inter_edges
 
     def get_tensor_cns(
@@ -746,7 +746,7 @@ class GenerateCNWorkloadHybridStage(Stage):
         tensor_dims = {op: node.operand_dimensionality_order[op] for op in variable_operands}
         all_loop_dim_sizes = node.layer_dim_sizes + node.pr_layer_dim_sizes  # union
         tensor_shapes = {op: tuple([all_loop_dim_sizes[dim] for dim in dims]) for (op, dims) in tensor_dims.items()}
-        tensors_cns: dict[LayerOperand, np.ndarray[Any, Any]] = {
+        tensors_cns: dict[LayerOperand, ARRAY_T] = {
             op: np.ndarray(shape, dtype=set) for (op, shape) in tensor_shapes.items()
         }  # Initial arrays
         # Fill the initial arrays with an empty set in each position
@@ -774,18 +774,16 @@ class GenerateCNWorkloadHybridStage(Stage):
                 finer_nodes_list = list(reversed(finer_nodes))  # list in reversed order
                 should_add_to_tensor_list = [True for _ in finer_nodes_list]
                 attr_to_add_to = "data_consumed_unique"
-                precision = node.operand_precision[op] * (
-                    not is_source_node
-                )  # if this layer is the first layer, we assume the inputs are streamed and "free"
+                # if this layer is the first layer, we assume the inputs are streamed and "free"
+                precision = node.operand_precision[op] * (not is_source_node)
             nb_unique_data_seen = 0
             for finer_node, should_add_to_tensor in zip(finer_nodes_list, should_add_to_tensor_list):
                 if not should_add_to_tensor:
                     continue  # Skip if we're not at the max ir loop value for output
                 op_dim_ranges = [finer_node.loop_ranges[loop_dim] for loop_dim in dims]
                 op_dim_ranges_max_stop = tuple(tensor_shapes[op])
-                window = tuple(
-                    [slice(max(0, start), stop) for (start, stop) in op_dim_ranges]
-                )  # start can be negative for padding which, makes np flip
+                # start can be negative for padding which, makes np flip
+                window = tuple([slice(max(0, start), stop) for (start, stop) in op_dim_ranges])
                 # Count how many nans we have in this window, as this is the amount of unique data consumed/produced by
                 # this finer_node
                 nb_unique_data_bits = np.sum(tensors_cns[op][window] == set()) * precision
@@ -804,7 +802,7 @@ class GenerateCNWorkloadHybridStage(Stage):
                 ]
                 for idx in itertools.product(*bounded_op_dim_ranges):
                     tensors_cns[op][idx] |= {finer_node}  # Union of the existing set with the newly added node
-            if nb_unique_data_seen != (math.prod(tensor_shapes[op]) * precision):
+            if nb_unique_data_seen != (prod(tensor_shapes[op]) * precision):
                 logger.warn(f"Downsampling node detected: {node}, operand= {op}.")
 
         # The dimensionality order of this input/output operand might include
@@ -884,9 +882,7 @@ class GenerateCNWorkloadHybridStage(Stage):
             weight_size = node.operand_size_bit[constant_operand]
             if weight_size == 0:
                 continue
-            split_factor = math.ceil(
-                weight_size / (self.split_W_percentage * min_core_capacity)
-            )  # 0.5 for double buffering
+            split_factor = ceil(weight_size / (self.split_W_percentage * min_core_capacity))  # 0.5 for double buffering
             if split_factor == 1:
                 continue
             # Check if the split_factor is a divisor of the number of output channels
@@ -939,12 +935,12 @@ def deduce_tensor_reuse_factors(
 
     # total_reuse_factor is the upper bound of the reuse factor that current layer CNs can reach
     total_reuse_factors = {
-        op: math.prod([reuse_factor for (loop_type, reuse_factor) in r_ir_loop[op] if loop_type == "ir"])
+        op: prod([reuse_factor for (loop_type, reuse_factor) in r_ir_loop[op] if loop_type == "ir"])
         for op in r_ir_loop.keys()
     }
 
     # total number of nodes that will be generated
-    nb_nodes = math.prod([tl.size for tl in outer_temporal_loops])
+    nb_nodes = prod([tl.size for tl in outer_temporal_loops])
 
     # tensor reuse factor will be set to the total reuse factor for each node
     # whenveer a cn will be scheduled, the tensor reuse factor will decrease

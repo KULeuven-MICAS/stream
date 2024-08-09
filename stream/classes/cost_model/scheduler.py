@@ -222,7 +222,7 @@ def schedule_graph(
     G: ComputationNodeWorkload,
     accelerator: Accelerator,
     cores_idle_from: dict[int, int] | None = None,
-    operands_to_prefetch=[],
+    operands_to_prefetch: list[str] = [],
     scheduling_order=None,
 ):
     """Schedule the nodes of graph G across the cores in the system.
@@ -246,8 +246,9 @@ def schedule_graph(
     total_core_to_core_link_energy = 0
     total_core_to_core_memory_energy = 0
 
-    assert all([n.chosen_core_allocation is not None for n in G.node_list])
-    all_core_ids: list[int] = sorted(list(set(n.chosen_core_allocation for n in G.node_list)))
+    core_ids = (n.chosen_core_allocation for n in G.node_list)
+    assert all(x is not None for x in core_ids)
+    all_core_ids: list[int] = sorted(list(set(core_ids)))  # type: ignore
 
     if cores_idle_from is None:
         # Make it 0 for all cores
@@ -255,7 +256,7 @@ def schedule_graph(
 
     nb_graph_nodes = G.number_of_nodes()
     nb_scheduled_nodes = 0
-    scheduled_nodes = set()
+    scheduled_nodes: set[ComputationNode] = set()
 
     # List that keeps all possible candidate nodes for each core.
     candidates = []
@@ -463,11 +464,10 @@ def schedule_graph(
 
     # Step 9
     # The total schedule latency is the max of all CN end times and the link end times
-    cns_end_time = max((n.end for n in G.nodes()))
+    cns_end_time = max((n.end for n in G.node_list))
     links_end_time = max([event.end for event in accelerator.communication_manager.events], default=0)
     latency = max(cns_end_time, links_end_time)
-    # print("Scheduling completed")
-    # print(f"Latency found = {latency}")
+
     return (
         latency,
         total_cn_onchip_energy,

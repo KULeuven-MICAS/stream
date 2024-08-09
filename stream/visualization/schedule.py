@@ -13,9 +13,11 @@ from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 from plotly.express.colors import sample_colorscale
 from zigzag.datatypes import LayerOperand
-from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
-from stream.classes.hardware.architecture.accelerator import Accelerator
-from stream.classes.workload.onnx_workload import ONNXWorkload
+
+if TYPE_CHECKING:
+    from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
+    from stream.classes.hardware.architecture.accelerator import Accelerator
+    from stream.classes.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -440,7 +442,7 @@ def get_real_input_tensors(n, G):
     return inputs
 
 
-def get_dataframe_from_scme(scme: StreamCostModelEvaluation, layer_ids, add_communication: bool = False):
+def get_dataframe_from_scme(scme: "StreamCostModelEvaluation", layer_ids, add_communication: bool = False):
     nodes = scme.workload.topological_sort()
     dicts = []
     for node in nodes:
