@@ -2,29 +2,32 @@ import logging
 from operator import itemgetter
 
 from networkx import DiGraph
-from zigzag.datatypes import LayerOperand, MemoryOperand
+from zigzag.datatypes import Constants, LayerOperand, MemoryOperand
 from zigzag.hardware.architecture.Core import Core
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode
+from stream.classes.workload.onnx_workload import ComputationNodeWorkload
 from stream.classes.workload.tensor import Tensor
 
 logger = logging.getLogger(__name__)
 
 
-def initialize_priorities(G: DiGraph, accelerator: Accelerator):
-    for n in G.nodes():
-        for op, tensor in n.operand_tensors.items():
-            tensor.initialize_instance_priorities(G, n, accelerator)
+def initialize_priorities(workload: ComputationNodeWorkload, accelerator: Accelerator):
+    for n in workload.node_list:
+        for tensor in n.operand_tensors.values():
+            tensor.initialize_instance_priorities(workload, n, accelerator)
 
 
-def initialize_offchip_tensors(G: DiGraph, accelerator: Accelerator):
+def initialize_offchip_tensors(workload: ComputationNodeWorkload, accelerator: Accelerator):
     offchip_core_id = accelerator.offchip_core_id
+    assert offchip_core_id is not None, "No offchip core found for this accelerator"
     offchip_core = accelerator.get_core(offchip_core_id)
     offchip_top_instances = accelerator.get_top_instances_of_core(offchip_core_id)
-    for n in G.nodes():
+    for n in workload.node_list:
         for op, tensor in n.operand_tensors.items():
-            if op in n.constant_operands:
+            # For constant operands or inputs of first node
+            if op in n.constant_operands or (op != Constants.OUTPUT_LAYER_OP and len(workload.in_edges(n)) == 0):
                 if not any(
                     (
                         accelerator.contains_tensor(tensor, offchip_top_instance)
@@ -41,20 +44,21 @@ def initialize_offchip_tensors(G: DiGraph, accelerator: Accelerator):
                     )
 
 
-def prefetch_constant_operands(G: DiGraph, accelerator: Accelerator, operands_to_prefetch: list[str]):
+def prefetch_constant_operands(G: ComputationNodeWorkload, accelerator: Accelerator, operands_to_prefetch: list[str]):
     operands_to_prefetch_converted = [LayerOperand(x) for x in operands_to_prefetch]
     total_cn_offchip_link_energy = 0
     total_cn_offchip_memory_energy = 0
     total_eviction_to_offchip_link_energy = 0
     total_eviction_to_offchip_memory_energy = 0
-    for n in G.nodes():
+    for n in G.node_list:
         for op, tensor in n.operand_tensors.items():
             if op in n.constant_operands and op in operands_to_prefetch_converted:
                 core_allocation = n.chosen_core_allocation
+                assert core_allocation is not None, "Core should be allocated"
                 memory_op = n.memory_operand_links.layer_to_mem_op(op)
                 if not accelerator.contains_tensor(tensor, core_allocation):
                     (
-                        transfer_complete_timestep,
+                        _,
                         transfer_link_energy_cost,
                         transfer_memory_energy_cost,
                         eviction_link_energy_cost,
@@ -88,7 +92,7 @@ def get_best_candidate(candidates: list[ComputationNode], scheduling_order: list
     return best_candidate, preds_end
 
 
-def get_tensors_needed_for_node(node: ComputationNode, G: DiGraph):
+def get_tensors_needed_for_node(node: ComputationNode, G: ComputationNodeWorkload):
     """Determine all the tensors needed to compute a node.
     The node might need multiple outputs from previous nodes, depending on the graph.
 
@@ -99,7 +103,7 @@ def get_tensors_needed_for_node(node: ComputationNode, G: DiGraph):
     Returns:
         tuple: A tuple of tensors and a tuple of memory operands for the node.
     """
-    tensors_this_candidate_needs = []
+    tensors_this_candidate_needs: list[Tensor] = []
     tensors_operands: list[MemoryOperand] = []
     # Constant operands
     for layer_op in node.constant_operands:
@@ -127,7 +131,13 @@ def get_tensors_needed_for_node(node: ComputationNode, G: DiGraph):
     return tensors_this_candidate_needs, tensors_operands
 
 
-def clear_memories(accelerator: Accelerator, core: Core, memory_operands, timestep, exceptions=[]):
+def clear_memories(
+    accelerator: Accelerator,
+    core: Core,
+    memory_operands: list[MemoryOperand],
+    timestep: int,
+    exceptions: list[Tensor] = [],
+):
     total_eviction_to_offchip_link_energy = 0
     total_eviction_to_offchip_memory_energy = 0
     for too_large_operand in memory_operands:
@@ -147,13 +157,14 @@ def clear_memories(accelerator: Accelerator, core: Core, memory_operands, timest
 
 def decrease_priority(
     tensors: list[Tensor],
-    tensors_operands: list,
+    tensors_operands: list[MemoryOperand],
     accelerator: Accelerator,
     node: ComputationNode,
 ):
     for tensor_used_by_node, tensor_memory_operand in zip(tensors, tensors_operands):
         # TODO: tensor_memory_operand will be 'O' for activation tensors.
         # TODO: If the memory between input and output is not shared, this will give a wrong instance.
+        assert node.chosen_core_allocation is not None
         top_instance = accelerator.get_top_instance_of_core(node.chosen_core_allocation, tensor_memory_operand)
         tensor_used_by_node.instance_priorities[top_instance] -= 1
 
@@ -208,7 +219,7 @@ def check_for_removal(
 
 
 def schedule_graph(
-    G: DiGraph,
+    G: ComputationNodeWorkload,
     accelerator: Accelerator,
     cores_idle_from: dict[int, int] | None = None,
     operands_to_prefetch=[],
@@ -235,8 +246,8 @@ def schedule_graph(
     total_core_to_core_link_energy = 0
     total_core_to_core_memory_energy = 0
 
-    assert all([n.chosen_core_allocation is not None for n in G.nodes()])
-    all_core_ids: list[int] = sorted(list(set(n.chosen_core_allocation for n in G.nodes())))
+    assert all([n.chosen_core_allocation is not None for n in G.node_list])
+    all_core_ids: list[int] = sorted(list(set(n.chosen_core_allocation for n in G.node_list)))
 
     if cores_idle_from is None:
         # Make it 0 for all cores

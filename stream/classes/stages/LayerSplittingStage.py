@@ -9,11 +9,11 @@ from onnx import ModelProto, helper, numpy_helper
 from onnx.shape_inference import infer_shapes
 from zigzag.datatypes import Constants, LayerOperand
 from zigzag.stages.Stage import Stage, StageCallable
-from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.stages import utils
 from stream.classes.workload.computation_node import ComputationNode
+from stream.classes.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class LayerSplittingStage(Stage):
         *,
         accelerator: Accelerator,
         onnx_model: ModelProto,
-        workload: Workload,
+        workload: ComputationNodeWorkload,
         **kwargs: Any,
     ):
         super().__init__(list_of_callables, **kwargs)
@@ -41,7 +41,7 @@ class LayerSplittingStage(Stage):
 
         # Create subfolders for split model save path if they don't exist
         assert self.split_onnx_model_path is not None
-        dir_name = os.path.dirname(os.path.abspath(self.split_onnx_model_path))
+        dir_name: str = os.path.dirname(os.path.abspath(self.split_onnx_model_path))  # type: ignore
         if not os.path.isdir(dir_name):
             os.makedirs(dir_name)
 
@@ -52,18 +52,15 @@ class LayerSplittingStage(Stage):
 
         # Get the weight capacity of all cores
         weight_capacities: dict[int, int] = {}
-        for core in self.accelerator.core_iterator:
+        for core in self.accelerator.core_list:
             if core.id == self.accelerator.offchip_core_id:
                 continue  # skip offchip core
             core_weight_capacity = core.memory_hierarchy.get_operand_top_level(Constants.MEM_OP_2).memory_instance.size
             weight_capacities[core.id] = core_weight_capacity
 
         # Get for each layer the split factor we need to be able to fit weights on possible cores
-        split_factors = {}
-        for node in self.workload.node_iterator:
-            # Get the weight capacity of all possible core allocations of this node
-            if not isinstance(node, ComputationNode):
-                continue
+        split_factors: dict[ComputationNode, int] = {}
+        for node in self.workload.node_list:
             core_allocations = node.possible_core_allocation
             core_capacities = [weight_capacities[core_id] for core_id in core_allocations]
             min_core_capacity = min(core_capacities)
@@ -95,7 +92,7 @@ class LayerSplittingStage(Stage):
         self.weight_size_bits = top_level.memory_instance.size
 
     def run(self):
-        for workload_node in self.workload.node_iterator:
+        for workload_node in self.workload.node_list:
             if workload_node.type == "conv" or workload_node.type == "gemm":
                 try:
                     corresponding_onnx_operator = next(
@@ -107,16 +104,16 @@ class LayerSplittingStage(Stage):
                         (n for n in self.onnx_model.graph.node if n.input == input_names)
                     )
                 operator_name = corresponding_onnx_operator.name
-                # print(workload_node.name)
-                if "W" in workload_node.constant_operands:
-                    pass
-                elif "B" in workload_node.constant_operands:
-                    pass
-                else:
+
+                if not (
+                    LayerOperand("W") in workload_node.constant_operands
+                    or LayerOperand("B") in workload_node.constant_operands
+                ):
                     raise NotImplementedError(
                         f"Layer splitting not implemented for {workload_node} with constant operands= "
                         f"{workload_node.constant_operands}."
                     )
+
                 if workload_node in self.split_factors:
                     split_factor = self.split_factors[workload_node]
                     if not split_factor > 1:
@@ -133,7 +130,7 @@ class LayerSplittingStage(Stage):
 
         # Infer the model tensor shapes
         self.onnx_model = infer_shapes(self.onnx_model)
-        onnx.save(self.onnx_model, self.split_onnx_model_path)
+        onnx.save(self.onnx_model, self.split_onnx_model_path)  # type: ignore
 
         self.kwargs["accelerator"] = self.accelerator
         sub_stage = self.list_of_callables[0](
@@ -143,10 +140,9 @@ class LayerSplittingStage(Stage):
         )
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
-        # yield None, None
 
     @staticmethod
-    def split_operator(model, node_name, num_splits):
+    def split_operator(model: ModelProto, node_name: str, num_splits: int):
         """
         Replaces an ONNX Conv or Gemm operator in an ONNX model with a sequence of Conv operators with smaller kernel
         sizes

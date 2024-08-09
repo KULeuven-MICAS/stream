@@ -1,16 +1,18 @@
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal, TypeVar, overload
 
 import networkx as nx
 from zigzag.workload.LayerNodeABC import LayerNodeABC
 from zigzag.workload.ONNXWorkload import ONNXWorkload as ONNXWorkloadZigZag
+from zigzag.workload.Workload import WorkloadABC as WorkloadABCZigZag
 
+from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.workload.node import Node
+
+T = TypeVar("T", bound=Node)
 
 
 class ONNXWorkload(ONNXWorkloadZigZag):
-    """
-    TODO fold into ONNXWorkloadZigZag
-    """
+    """Wraps and extends the ONNXWorkload class of ZigZag"""
 
     def __init__(self, **attr: Any):
         """
@@ -42,3 +44,27 @@ class ONNXWorkload(ONNXWorkloadZigZag):
     def all_simple_paths(self, producer: Node, consumer: Node) -> Iterator[list[Node]]:
         """Wraps nx.all_simple_paths with type annotations. Gives all paths from producer to consumer node."""
         return nx.all_simple_paths(self, source=producer, target=consumer)  # type: ignore
+
+
+class WorkloadABC(WorkloadABCZigZag[T]):
+    """Wraps and extends the Workload Abstract Bass Class of ZigZag"""
+
+    def in_edges(self, node: T, data: bool = False) -> list[tuple[T, T]] | list[tuple[T, T, dict[str, Any]]]:  # type: ignore
+        """Overwrite DiGraph method with type hints"""
+        return super().in_edges(node, data)  # type: ignore
+
+    @overload
+    def in_edges(self, node: T, data: Literal[True]) -> list[tuple[T, T, dict[str, Any]]]:
+        ...  # type: ignore
+
+    @overload
+    def in_edges(self, node: T, data: Literal[False]) -> list[tuple[T, T]]:
+        ...  # type: ignore
+
+    @overload
+    def in_edges(self, node: T) -> list[tuple[T, T]]:
+        ...  # type: ignore
+
+
+class ComputationNodeWorkload(WorkloadABC[ComputationNode]):
+    """Workload graph with only ComputationNodes"""

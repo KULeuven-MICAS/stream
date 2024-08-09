@@ -1,5 +1,6 @@
 import logging
 import os
+from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
@@ -11,13 +12,13 @@ from zigzag.stages.CostModelStage import CostModelStage
 from zigzag.stages.MainStage import MainStage
 from zigzag.stages.reduce_stages import MinimalLatencyStage
 from zigzag.stages.SpatialMappingGeneratorStage import SpatialMappingGeneratorStage
-from zigzag.stages.Stage import Stage
+from zigzag.stages.Stage import Stage, StageCallable
 from zigzag.stages.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
 from zigzag.utils import pickle_deepcopy
-from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode
+from stream.classes.workload.onnx_workload import ComputationNodeWorkload
 from stream.utils import load_scme, save_scme
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,
@@ -32,7 +33,13 @@ class IntraCoreMappingStage(Stage):
     """
 
     def __init__(
-        self, list_of_callables, *, workload: Workload, accelerator: Accelerator, loma_lpf_limit: int, **kwargs
+        self,
+        list_of_callables: list[StageCallable],
+        *,
+        workload: ComputationNodeWorkload,
+        accelerator: Accelerator,
+        loma_lpf_limit: int,
+        **kwargs: Any,
     ):
         """
         Initialize the stage by:
@@ -48,9 +55,7 @@ class IntraCoreMappingStage(Stage):
 
         # Extract all unique nodes that will have to be evaluated
         self.unique_nodes: list[ComputationNode] = []
-        for node in self.workload.nodes():
-            if not isinstance(node, ComputationNode):
-                continue
+        for node in self.workload.node_list:
             equal_nodes = list(
                 (
                     unique_node
@@ -88,14 +93,6 @@ class IntraCoreMappingStage(Stage):
             # TODO This should never evaluate to true: enforce core_allocation as list everywhere
             if isinstance(self.valid_allocations[node], tuple):
                 raise ValueError
-                # try:
-                #     core_ids = (self.valid_allocations[node][node.group],)
-                # except IndexError:
-                #     nb_groups = len(set((n.group for n in self.workload.nodes() if n.id == node)))
-                #     assert (
-                #         len(self.valid_allocations[node]) == 1
-                #     ), f"Fixed mapping for {node.name} should contain {nb_groups} entries."
-                #     core_ids = (self.valid_allocations[node][0],)
             else:
                 core_ids = self.valid_allocations[node]
             for core_id in core_ids:
@@ -240,11 +237,11 @@ class IntraCoreMappingStage(Stage):
         Returns:
             list: A list of memory operands for which the capacity on the core is insufficient.
         """
-        too_large_operands_for_cme = []
+        too_large_operands_for_cme: list[MemoryOperand] = []
 
         # Step 1: get all the unique top level memories of the core
         memory_hierarchy_dict = core.mem_hierarchy_dict
-        top_memories = [memory[-1] for (mem_op, memory) in memory_hierarchy_dict.items()]
+        top_memories = [memory[-1] for (_, memory) in memory_hierarchy_dict.items()]
         unique_top_memories = set(top_memories)
 
         # Step 2: for each top level memory, for each operand this memory holds, calculate the required capacity
@@ -256,26 +253,31 @@ class IntraCoreMappingStage(Stage):
             top_level_capacity = top_memory.memory_instance.size
             memory_operands = list(top_memory.mem_level_of_operands.keys())
             layer_operands = [memory_operand_link.mem_to_layer_op(mem_operand) for mem_operand in memory_operands]
-            bits_to_be_stored_in_top_level = {}
+            bits_to_be_stored_in_top_level: dict[MemoryOperand, int] = {}
             for layer_operand, memory_operand in zip(layer_operands, memory_operands):
-                # if the operand is constant operand (e.g. 'W' and the first layer's 'I') or output operand, required
-                # capacity is gotten from the node directly
+                # Case 1: constant operand (e.g. 'W' and the first layer's 'I') or output operand
                 if layer_operand in constant_operands + [output_operand]:
-                    bits_to_be_stored_in_top_level[memory_operand] = node.operand_size_bit[layer_operand]
-                # if the operand is variable input operand, required capacity is calculated by summing up the the total
-                #  data amount on the in edges,
-                # which can be larger than the ideal required data size
-                else:
-                    bits_to_be_stored_in_top_level[memory_operand] = 0
+                    nb_bits = node.operand_size_bit[layer_operand]
+                # Case 2: variable operand -> sum up the the total data amount on the in edges
+                # (can be larger than the ideal required data size)
+                elif len(self.workload.in_edges(node)) > 0:
                     in_edges_data = [data for (_, _, data) in self.workload.in_edges(node, data=True)]
-                    for edge_data in (d for d in in_edges_data if "operand" in d and d["operand"] == layer_operand):
-                        bits_to_be_stored_in_top_level[memory_operand] += edge_data["bits"]
+                    nb_bits = sum(
+                        [
+                            data["bits"]
+                            for data in in_edges_data
+                            if "operand" in data and data["operand"] == layer_operand
+                        ]
+                    )
+                # Case 3: not constant, but no edges found
+                else:
+                    nb_bits = node.operand_size_bit[layer_operand]
+
+                bits_to_be_stored_in_top_level[memory_operand] = nb_bits
             total_required_capacity = sum(bits_to_be_stored_in_top_level.values())
 
             # Step 3: compare the total required capacity with the top level memory capacity
-            if total_required_capacity <= top_level_capacity:
-                pass
-            else:
+            if top_level_capacity < total_required_capacity:
                 # when the memory capacity is smaller than the requirement,
                 # sort the required capacity of each operand that shares this memory based on the operand's required
                 #  size, from small to large
@@ -305,7 +307,7 @@ class IntraCoreMappingStage(Stage):
                         top_level_capacity,
                     )
                     required_capacity = self.get_too_large_operands_minimal_required_capacity_in_top_level_memory(
-                        operands_stored_in_offchip, core.dataflows, node, core
+                        operands_stored_in_offchip, core
                     )
                     while rest_capacity < required_capacity:
                         # put_the_largest operands_stored_in_top_level to operands_stored_in_offchip
@@ -324,7 +326,7 @@ class IntraCoreMappingStage(Stage):
                             top_level_capacity,
                         )
                         required_capacity = self.get_too_large_operands_minimal_required_capacity_in_top_level_memory(
-                            operands_stored_in_offchip, core.dataflows, node
+                            operands_stored_in_offchip, core
                         )
 
                 too_large_operands_for_cme += operands_stored_in_offchip
@@ -332,9 +334,9 @@ class IntraCoreMappingStage(Stage):
 
     @staticmethod
     def get_top_level_memory_rest_capacity(
-        operands_stored_in_top_level,
-        bits_to_be_stored_in_top_level,
-        top_level_capacity_bits,
+        operands_stored_in_top_level: list[MemoryOperand],
+        bits_to_be_stored_in_top_level: dict[MemoryOperand, int],
+        top_level_capacity_bits: int,
     ) -> int:
         """Calculate the remaining capacity in the top level core memory after storing the operands_stored_in_top_level
 
@@ -354,8 +356,6 @@ class IntraCoreMappingStage(Stage):
     def get_too_large_operands_minimal_required_capacity_in_top_level_memory(
         self,
         operands_stored_in_offchip: list[MemoryOperand],
-        dataflows: SpatialMapping,
-        node: ComputationNode,
         core: Core,
     ) -> int:
         """Calculate the required capacity in the top level core memory for operands_stored_in_offchip due to spatial

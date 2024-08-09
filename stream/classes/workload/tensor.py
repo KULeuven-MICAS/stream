@@ -36,7 +36,7 @@ class Tensor:
         self.memory_operand = self.origin.memory_operand_links.layer_to_mem_op(layer_operand)
         self.loop_dimensions = loop_dimensions
         self.loop_ranges = loop_ranges
-        self.base_priority = None  # Will be set when we know how many successors this node has (static)
+        self.base_priority: None | int = None  # Will be set when we know how many successors this node has (static)
         self.instance_priorities = {}
         self.id = (self.origin.id, self.origin.sub_id, layer_operand)
 
@@ -64,7 +64,7 @@ class Tensor:
     def equality_hash(self):
         return hash((self.origin.id, self.layer_operand, self.loop_ranges))
 
-    def set_base_priorities(self, base_priority):
+    def set_base_priorities(self, base_priority: int):
         self.base_priority = base_priority
 
     def get_instance_priority(self, top_instance, memory_manager):

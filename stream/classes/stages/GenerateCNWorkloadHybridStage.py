@@ -26,7 +26,7 @@ from stream.classes.workload.flatten_node import FlattenNode
 from stream.classes.workload.gather_node import GatherNode
 from stream.classes.workload.lpnormalization_node import LpNormalizationNode
 from stream.classes.workload.node import Node
-from stream.classes.workload.onnx_workload import ONNXWorkload
+from stream.classes.workload.onnx_workload import ComputationNodeWorkload, ONNXWorkload
 from stream.classes.workload.reshape_node import ReshapeNode
 from stream.classes.workload.tensor import Tensor
 from stream.classes.workload.transpose_node import TransposeNode
@@ -88,7 +88,7 @@ class GenerateCNWorkloadHybridStage(Stage):
     def run(self):
         unique_finer_nodes: list[ComputationNode] = []
         # For each node get all the finer nodes and set the intra edges
-        G = Workload()
+        G = ComputationNodeWorkload()
         for node in self.workload.topological_sort():
             # If other node types shouldn't be included in finer node graph, add here
             if not isinstance(node, ComputationNode):
@@ -820,7 +820,9 @@ class GenerateCNWorkloadHybridStage(Stage):
         return tensors_cns
 
     @staticmethod
-    def set_base_priority_of_nodes(G: Workload, finer_nodes_dict: dict[ComputationNode, list[ComputationNode]]):
+    def set_base_priority_of_nodes(
+        G: ComputationNodeWorkload, finer_nodes_dict: dict[ComputationNode, list[ComputationNode]]
+    ):
         """Set the base_priority of all stored tensors of variable operands in every node in finer_nodes
          based on the amount of real (excluding same layer edges) edges.
 
@@ -839,14 +841,14 @@ class GenerateCNWorkloadHybridStage(Stage):
                     tensor.set_base_priorities(len(successors))
             nb_seen_nodes_per_layer_id[layer_id] += 1
 
-    def set_nb_real_predecessors(self, G: Workload):
+    def set_nb_real_predecessors(self, G: ComputationNodeWorkload):
         """Set nb_real_predecessors attribute for each node in G.
         A real predecessor is a predecessor coming from a different layer.
 
         Args:
             G (DiGraph): Graph containing the nodes and edges.
         """
-        for n in G.nodes():
+        for n in G.node_list:
             nb_real_predecessors = len(list(pred for pred in G.predecessors(n) if pred.id != n.id))
             n.set_nb_real_predecessors(nb_real_predecessors)
 
@@ -862,12 +864,12 @@ class GenerateCNWorkloadHybridStage(Stage):
 
     def get_layer_split_factors_k(self):
         # Get for each layer the split factor we need to be able to fit weights on possible cores
-        split_factors = {}
-        for node in self.workload.nodes():
-            # Get the weight capacity of all possible core allocations of this node
-            core_allocations = node.possible_core_allocation
+        split_factors: dict[ComputationNode, int] = {}
+        for node in self.workload.node_list:
             if isinstance(node, DummyNode):
                 continue
+            # Get the weight capacity of all possible core allocations of this node
+            core_allocations = node.possible_core_allocation
             # for fixed single allocation don't consider the splitting
             if len(core_allocations) == 1:
                 continue
@@ -879,15 +881,6 @@ class GenerateCNWorkloadHybridStage(Stage):
                 continue
 
             constant_operand = node.constant_operands[0]
-            # if "W" in node.constant_operands:
-            #     constant_operand = "W"
-            # elif "B" in node.constant_operands:
-            #     constant_operand = "B"
-            # else:
-            #     raise NotImplementedError(
-            #         f"Layer splitting not implemented for {node} with constant operands= {node.constant_operands}."
-            #     )
-
             weight_size = node.operand_size_bit[constant_operand]
             if weight_size == 0:
                 continue

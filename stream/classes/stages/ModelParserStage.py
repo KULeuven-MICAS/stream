@@ -44,54 +44,6 @@ class ONNXModelParserStage(Stage):
             yield cme, extra_info
 
 
-# def parse_workload_from_path(workload_path: str, mapping_path: str, accelerator: Accelerator):
-#     """
-#     Parse the input workload residing in workload_path.
-#     """
-
-#     # If workload_path is a string, then it is a path to a workload file
-#     if isinstance(workload_path, str):
-#         module = importlib.import_module(workload_path)
-#         workload = module.workload
-
-#     else:
-#         raise NotImplementedError(f"Provided workload format ({type(workload_path)}) is not supported.")
-
-#     module = importlib.import_module(mapping_path)
-#     mapping = module.mapping
-
-#     workload = DNNWorkload(workload, mapping, accelerator)
-#     logger.info(
-#         f"Created workload graph with {workload.number_of_nodes()} nodes and {workload.number_of_edges()} edges."
-#     )
-
-#     return workload
-
-
-# class UserDefinedModelParserStage(Stage):
-#     def __init__(
-#         self,
-#         list_of_callables: list[StageCallable],
-#         *,
-#         workload_path: str,
-#         mapping_path: str,
-#         accelerator: Accelerator,
-#         **kwargs: Any,
-#     ):
-#         super().__init__(list_of_callables, **kwargs)
-#         self.workload_path = workload_path
-#         self.mapping_path = mapping_path
-#         self.accelerator = accelerator
-
-#     def run(self):
-#         workload = parse_workload_from_path(self.workload_path, self.mapping_path, self.accelerator)
-
-#         self.kwargs["accelerator"] = self.accelerator
-#         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], workload=workload, **self.kwargs)
-#         for cme, extra_info in sub_stage.run():
-#             yield cme, extra_info
-
-
 class UserDefinedModelParserStage(ZigZagWorkloadParserStage):
     """Parses a user-provided workload from a yaml file.
     This class is very similar to WorkloadParserStage from ZigZag, the main difference being that this class creates a
@@ -122,13 +74,3 @@ class UserDefinedModelParserStage(ZigZagWorkloadParserStage):
         mapping_data = self._parse_mapping_data()
         factory = WorkloadFactoryStream(workload_data, mapping_data)
         return factory.create()
-
-    # def __parse_workload_data(self) -> list[dict[str, Any]]:
-    #     """Parse, validate and normalize workload"""
-    #     workload_data = open_yaml(self.workload_yaml_path)
-    #     workload_validator = WorkloadValidator(workload_data)
-    #     workload_data = workload_validator.normalized_data
-    #     workload_validate_succes = workload_validator.validate()
-    #     if not workload_validate_succes:
-    #         raise ValueError("Failed to validate user provided workload.")
-    #     return workload_data

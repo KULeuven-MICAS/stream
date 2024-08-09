@@ -5,7 +5,6 @@ from itertools import cycle
 from math import isnan
 from typing import TYPE_CHECKING
 
-import networkx as nx
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -13,11 +12,10 @@ from brokenaxes import brokenaxes
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 from plotly.express.colors import sample_colorscale
-from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
-
-if TYPE_CHECKING:
-    from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
-    from stream.classes.hardware.architecture.accelerator import Accelerator
+from zigzag.datatypes import LayerOperand
+from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
+from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +44,7 @@ def plot_timeline_brokenaxes(
     plot_data_transfer: bool = False,
     fig_path: str = "outputs/schedule_plot.png",
 ) -> None:
-    G: Workload = scme.workload
+    G: ONNXWorkload = scme.workload
     accelerator: Accelerator = scme.accelerator
 
     nb_layers = len(set(iter([n.id for n in G.nodes()])))
@@ -96,7 +94,7 @@ def plot_timeline_brokenaxes(
     layer_ids_seen = []
     legend_labels = []
     height = 0.5
-    for cn in G.nodes():
+    for cn in G.node_list:
         layer_id = cn.id
         # Get the colour for this layer
         if layer_id not in layer_ids_seen:
@@ -197,7 +195,10 @@ def plot_timeline_brokenaxes(
                 end = event.end
                 runtime = end - start
                 tensors = event.tensors
-                weight_transfer = task_type.lower() == "transfer" and tensors[0].layer_operand in ["W", "B"]
+                weight_transfer = task_type.lower() == "transfer" and tensors[0].layer_operand in [
+                    LayerOperand("W"),
+                    LayerOperand("B"),
+                ]
                 layer_id = tensors[0].origin.id
                 node_id = tensors[0].origin.sub_id
                 if layer_id not in layer_ids_seen:
@@ -439,8 +440,8 @@ def get_real_input_tensors(n, G):
     return inputs
 
 
-def get_dataframe_from_scme(scme, layer_ids, add_communication=False):
-    nodes = list(nx.topological_sort(scme.workload))
+def get_dataframe_from_scme(scme: StreamCostModelEvaluation, layer_ids, add_communication: bool = False):
+    nodes = scme.workload.topological_sort()
     dicts = []
     for node in nodes:
         id = node.id
