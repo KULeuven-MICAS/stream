@@ -246,9 +246,9 @@ def schedule_graph(
     total_core_to_core_link_energy = 0
     total_core_to_core_memory_energy = 0
 
-    core_ids = (n.chosen_core_allocation for n in G.node_list)
-    assert all(x is not None for x in core_ids)
-    all_core_ids: list[int] = sorted(list(set(core_ids)))  # type: ignore
+    core_ids = set(n.chosen_core_allocation for n in G.node_list)
+    assert None not in core_ids
+    all_core_ids: list[int] = sorted(list(core_ids))  # type: ignore
 
     if cores_idle_from is None:
         # Make it 0 for all cores
@@ -259,17 +259,16 @@ def schedule_graph(
     scheduled_nodes: set[ComputationNode] = set()
 
     # List that keeps all possible candidate nodes for each core.
-    candidates = []
+    candidates: list[tuple[int, ComputationNode]] = []
 
     # Put the very first nodes of a layer that doesn't have any incoming edges as the first candidates
     for source_node in (n for n, d in G.in_degree() if d == 0):
         core_allocation = source_node.chosen_core_allocation
-        # core_candidates[core_allocation].append((cores_idle_from[core_allocation], source_node))
         candidates.append((cores_idle_from[core_allocation], source_node))
 
     # Get all the nodes with no successors that produce final outputs, used for off-loading final outputs
     sink_layers = sorted(set(n.id for n, d in G.out_degree() if d == 0))
-    sink_layer_nodes = set((n for n in G.nodes() if (n.id in sink_layers) and n.produces_final_output))
+    sink_layer_nodes = set((n for n in G.node_list if (n.id in sink_layers) and n.produces_final_output))
 
     # Get the offchip core id and core
     offchip_core_id = accelerator.offchip_core_id
