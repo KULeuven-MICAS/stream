@@ -1,6 +1,6 @@
 from math import ceil
-from typing import Iterator
 
+import networkx as nx
 from networkx import DiGraph
 from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.Core import Core
@@ -9,7 +9,19 @@ from zigzag.mapping.spatial_mapping import SpatialMapping
 
 from stream.classes.cost_model.communication_manager import CommunicationManager
 from stream.classes.cost_model.memory_manager import MemoryManager
+from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.workload.tensor import Tensor
+
+
+class CoreGraph(DiGraph):
+    """Represents the core structure of an accelerator"""
+
+    @property
+    def node_list(self) -> list[Core]:
+        return list(self.nodes())  # type: ignore
+
+    def shortest_path(self, producer: Core, consumer: Core) -> list[Core]:
+        return nx.shortest_path(self, producer, consumer)  # type: ignore
 
 
 class Accelerator:
@@ -22,7 +34,7 @@ class Accelerator:
     def __init__(
         self,
         name: str,
-        cores: DiGraph,
+        cores: CoreGraph,
         offchip_core_id: int | None = None,
     ):
         self.name = name
@@ -48,35 +60,35 @@ class Accelerator:
         Return the core with id 'core_id'.
         Raises ValueError() when a core_id is not found in the available cores.
         """
-        core = next((core for core in self.core_iterator if core.id == core_id), None)
+        core = next((core for core in self.core_list if core.id == core_id), None)
         if core is None:
             raise ValueError(f"Requested core with id {core_id} is not present in accelerator.")
         return core
 
-    @property
-    def core_iterator(self) -> Iterator[Core]:
-        return self.cores.nodes()  # type: ignore
+    # @property
+    # def core_iterator(self) -> Iterator[Core]:
+    #     return self.cores.nodes()  # type: ignore
 
     @property
-    def core_list(self) -> list[Core]:
-        return list(self.cores.nodes())  # type: ignore
+    def core_list(self):
+        return self.cores.node_list
 
     def spawn(
         self,
         tensor: Tensor,
         core: Core,
-        memory_op: str,
+        memory_op: MemoryOperand,
         initial_timestep: int,
         available_timestep: int,
     ):
         """Spawns a tensor on a core.
 
         Args:
-            tensor (Tensor): The tensor to be spawned.
-            core (Core): The core on which to spawn the tensor.
-            memory_op (str): The memory operand on the core where the tensor will spawn.
-            initial_timestep (int): The timestep at which space will be reserved for the tensor.
-            available_timestep (int): The timestep at which the tensor will become available. Different from
+            tensor: The tensor to be spawned.
+            core: The core on which to spawn the tensor.
+            memory_op: The memory operand on the core where the tensor will spawn.
+            initial_timestep: The timestep at which space will be reserved for the tensor.
+            available_timestep: The timestep at which the tensor will become available. Different from
             initial_timestep when it is transferred.
         """
         self.memory_manager.add_tensor_to_core(tensor, core, initial_timestep, available_timestep, memory_op)
@@ -93,6 +105,7 @@ class Accelerator:
             timestep (int): The timestep to remove the tensor at.
             write_back_to_offchip (bool, optional): Write the tensor to offchip before removal. Defaults to False.
         """
+        assert self.offchip_core_id is not None
         ################################# STEP 1 #################################
         # Transfer the tensor to off-chip if required and not present there
         link_energy_cost = 0
@@ -234,7 +247,7 @@ class Accelerator:
         tensor_operand: MemoryOperand,
         non_evictable_tensors: list[Tensor],
         sending_core_id: int | None = None,
-    ):
+    ) -> tuple[int, float, float, float, float, bool]:
         """
         Transfer a tensor to a given core id.
         If the tensor is already present on the receiving core, nothing happens.
@@ -275,10 +288,7 @@ class Accelerator:
                 tensor.equality_hash()
             ]
         else:
-            (
-                _,
-                available_since_timesteps,
-            ) = self.find_tensor_in_top_instances(tensor)
+            (_, available_since_timesteps) = self.find_tensor_in_top_instances(tensor)
             # Pick the core that has stored the tensor the longest
             available_since_timestep = min(available_since_timesteps.values())
             storing_instance = next(
@@ -323,9 +333,7 @@ class Accelerator:
             links,
             evictions_complete_timestep,
             transfer_duration,
-            [
-                tensor,
-            ],
+            [tensor],
         )
         transfer_end = transfer_start + transfer_duration
         ################################# STEP 5 #################################
@@ -401,7 +409,14 @@ class Accelerator:
 
         return sender_energy + receiver_energy
 
-    def block_offchip_links(self, too_large_operands, core_id, start_timestep, duration, cn) -> int:
+    def block_offchip_links(
+        self,
+        too_large_operands: list[MemoryOperand],
+        core_id: int,
+        start_timestep: int,
+        duration: int,
+        cn: ComputationNode,
+    ) -> int:
         return self.communication_manager.block_offchip_links(too_large_operands, core_id, start_timestep, duration, cn)
 
     def contains_tensor(self, tensor: Tensor, top_instance: int | MemoryInstance):

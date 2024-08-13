@@ -98,7 +98,7 @@ class IntraCoreMappingStage(Stage):
             for core_id in core_ids:
                 core = self.accelerator.get_core(core_id)
                 # Offchip memory core doesn't have operational units
-                if core.operational_array.total_area == 0:
+                if core.operational_array.total_unit_count == 0:
                     continue
                 # It's possible this node might not fully fit within the core's top level memories. If so, we update
                 #  the core
@@ -148,7 +148,8 @@ class IntraCoreMappingStage(Stage):
                         )
                         answers = main_stage.run()
                         assert len(answers) == 1, "IntraCoreMappingStage's subflow returned more than one CME"
-                        cme = answers[0][0]
+                        cme: CostModelEvaluation = answers[0][0]  # type: ignore
+                        # TODO should this be `chosen_core_allocation`?
                         node.core_allocation = None  # Reset the node's core allocation
                         self.node_hw_performances[node][core] = cme
                         self.save_node_hw_performances()  # Save the hw performances dict after every node is finished
@@ -175,7 +176,7 @@ class IntraCoreMappingStage(Stage):
             if "visualize_node_hw_performances_path":
                 # Get the scale factors
                 scale_factors = {
-                    n.id: len(list(cn for cn in self.workload if cn == n)) for n in self.node_hw_performances
+                    n.id: len([cn for cn in self.workload.node_list if cn == n]) for n in self.node_hw_performances
                 }
                 # Run the visualization
                 visualize_node_hw_performances_pickle(

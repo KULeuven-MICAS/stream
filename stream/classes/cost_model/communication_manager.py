@@ -2,7 +2,6 @@ import itertools
 from math import ceil
 from typing import TYPE_CHECKING, Any
 
-import networkx as nx
 from zigzag.datatypes import Constants, MemoryOperand
 from zigzag.hardware.architecture.Core import Core
 
@@ -12,6 +11,7 @@ from stream.classes.workload.tensor import Tensor
 
 if TYPE_CHECKING:
     from stream.classes.hardware.architecture.accelerator import Accelerator
+    from stream.classes.hardware.architecture.noc.communication_link import CommunicationLink
 
 
 class CommunicationEvent:
@@ -50,7 +50,9 @@ class CommunicationLinkEvent:
             * the percentage of the link bandwidth used
     """
 
-    def __init__(self, type, start, end, tensors, energy, activity=100) -> None:
+    def __init__(
+        self, type: str, start: int, end: int, tensors: list[Tensor], energy: float, activity: float = 100
+    ) -> None:
         self.type = type
         self.start = start
         self.end = end
@@ -89,12 +91,10 @@ class CommunicationManager:
 
     def get_shortest_paths(self):
         # For each core pair save a shortest path
-        shortest_paths: dict[tuple[Core, Core], Any] = {}
-        for producer_core, consumer_core in itertools.product(
-            self.accelerator.cores.nodes(), self.accelerator.cores.nodes()
-        ):
-            shortest_paths[(producer_core, consumer_core)] = nx.shortest_path(
-                self.accelerator.cores, producer_core, consumer_core
+        shortest_paths: dict[tuple[Core, Core], list[Core]] = {}
+        for producer_core, consumer_core in itertools.product(self.accelerator.core_list, self.accelerator.core_list):
+            shortest_paths[(producer_core, consumer_core)] = self.accelerator.cores.shortest_path(
+                producer_core, consumer_core
             )
         return shortest_paths
 
@@ -137,7 +137,7 @@ class CommunicationManager:
         tensor: Tensor,
         sender: Core | int,
         receiver: Core | int,
-        receiver_memory_operand: str,
+        receiver_memory_operand: MemoryOperand,
         start_timestep: int,
         duration: int,
     ) -> tuple[int, int, float, float]:
@@ -163,7 +163,7 @@ class CommunicationManager:
             receiver = self.accelerator.get_core(receiver)
         links = self.get_links_for_pair(sender, receiver)
         if not links:  # When sender == receiver
-            return 0, 0
+            return 0, 0, 0, 0
 
         cles = [
             CommunicationLinkEvent(
@@ -214,7 +214,7 @@ class CommunicationManager:
             duration (int): The duration of the blocking in cycles.
             cn (ComputationNode): The computational node for which we are blocking the links.
         """
-        links_to_block = dict()
+        links_to_block: dict["CommunicationLink", int] = {}
         core = self.accelerator.get_core(core_id)
         offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
         if Constants.OUTPUT_MEM_OP in too_large_operands:
@@ -230,7 +230,7 @@ class CommunicationManager:
         if not too_large_operands:
             return start_timestep
         # Get the tensors for which we are blocking based on the operands
-        tensors = []
+        tensors: list[Tensor] = []
         for mem_op in too_large_operands:
             layer_op = cn.memory_operand_links.mem_to_layer_op(mem_op)
             tensors.append(cn.operand_tensors[layer_op])
@@ -242,7 +242,9 @@ class CommunicationManager:
             link.block(block_start, duration, tensors, activity=req_bw)
         return block_start
 
-    def get_links_idle_window(self, links: dict, best_case_start: int, duration: int, tensors: list[Tensor]) -> int:
+    def get_links_idle_window(
+        self, links: dict["CommunicationLink", int], best_case_start: int, duration: int, tensors: list[Tensor]
+    ) -> int:
         """Return the timestep at which tensor can be transfered across the links.
         Both links must have an idle window large enough for the transfer.
         The timestep must be greater than or equal to best_case_start.
@@ -254,7 +256,7 @@ class CommunicationManager:
             tensors (list): The tensors to be transferred. Used to broadcast from previous transfer.
         """
         assert len(links) > 0
-        idle_intersections = []
+        idle_intersections: list[tuple[int, int]] = []
         for i, (link, req_bw) in enumerate(links.items()):
             req_bw = min(req_bw, link.bandwidth)  # ceil the bw
             windows = link.get_idle_window(req_bw, duration, best_case_start, tensors)

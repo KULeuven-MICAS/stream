@@ -1,25 +1,27 @@
 import logging
 from operator import itemgetter
+from typing import TYPE_CHECKING
 
-from networkx import DiGraph
 from zigzag.datatypes import Constants, LayerOperand, MemoryOperand
 from zigzag.hardware.architecture.Core import Core
 
-from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.workload.onnx_workload import ComputationNodeWorkload
 from stream.classes.workload.tensor import Tensor
 
+if TYPE_CHECKING:
+    from stream.classes.hardware.architecture.accelerator import Accelerator
+
 logger = logging.getLogger(__name__)
 
 
-def initialize_priorities(workload: ComputationNodeWorkload, accelerator: Accelerator):
+def initialize_priorities(workload: ComputationNodeWorkload, accelerator: "Accelerator"):
     for n in workload.node_list:
         for tensor in n.operand_tensors.values():
             tensor.initialize_instance_priorities(workload, n, accelerator)
 
 
-def initialize_offchip_tensors(workload: ComputationNodeWorkload, accelerator: Accelerator):
+def initialize_offchip_tensors(workload: ComputationNodeWorkload, accelerator: "Accelerator"):
     offchip_core_id = accelerator.offchip_core_id
     assert offchip_core_id is not None, "No offchip core found for this accelerator"
     offchip_core = accelerator.get_core(offchip_core_id)
@@ -44,7 +46,7 @@ def initialize_offchip_tensors(workload: ComputationNodeWorkload, accelerator: A
                     )
 
 
-def prefetch_constant_operands(G: ComputationNodeWorkload, accelerator: Accelerator, operands_to_prefetch: list[str]):
+def prefetch_constant_operands(G: ComputationNodeWorkload, accelerator: "Accelerator", operands_to_prefetch: list[str]):
     operands_to_prefetch_converted = [LayerOperand(x) for x in operands_to_prefetch]
     total_cn_offchip_link_energy = 0
     total_cn_offchip_memory_energy = 0
@@ -78,11 +80,14 @@ def prefetch_constant_operands(G: ComputationNodeWorkload, accelerator: Accelera
     )
 
 
-def get_best_candidate(candidates: list[ComputationNode], scheduling_order: list[int]) -> tuple[ComputationNode, int]:
+def get_best_candidate(
+    candidates: list[tuple[int, ComputationNode]], scheduling_order: list[tuple[int, int]]
+) -> tuple[ComputationNode, int]:
     # If this core doesn't have any candidates, continue to the next core
     if not candidates:
         raise ValueError("There are no candidates to schedule.")
     preds_ends, cn_candidates = zip(*candidates)
+    cn_candidates: list[ComputationNode]
     idxs = [scheduling_order.index((n.id, n.sub_id)) for n in cn_candidates]
     best_candidate_idx = idxs.index(min(idxs))
     best_candidate = cn_candidates[best_candidate_idx]
@@ -132,7 +137,7 @@ def get_tensors_needed_for_node(node: ComputationNode, G: ComputationNodeWorkloa
 
 
 def clear_memories(
-    accelerator: Accelerator,
+    accelerator: "Accelerator",
     core: Core,
     memory_operands: list[MemoryOperand],
     timestep: int,
@@ -158,7 +163,7 @@ def clear_memories(
 def decrease_priority(
     tensors: list[Tensor],
     tensors_operands: list[MemoryOperand],
-    accelerator: Accelerator,
+    accelerator: "Accelerator",
     node: ComputationNode,
 ):
     for tensor_used_by_node, tensor_memory_operand in zip(tensors, tensors_operands):
@@ -171,18 +176,15 @@ def decrease_priority(
 
 def check_for_removal(
     tensors: list[Tensor],
-    accelerator: Accelerator,
+    accelerator: "Accelerator",
     node: ComputationNode,
-    G: DiGraph,
+    G: ComputationNodeWorkload,
     timestep: int,
 ):
     offchip_core_id = accelerator.offchip_core_id
     for tensor_used_by_node in tensors:
         if tensor_used_by_node.get_total_priority() == 0:
-            (
-                instances_storing_tensor,
-                _,
-            ) = accelerator.memory_manager.find_tensor_in_top_instances(tensor_used_by_node)
+            instances_storing_tensor, _ = accelerator.memory_manager.find_tensor_in_top_instances(tensor_used_by_node)
             for instance_storing_tensor in instances_storing_tensor:
                 core_ids_of_instance = [
                     core.id for core in accelerator.memory_manager.cores_per_top_instance[instance_storing_tensor]
@@ -220,11 +222,11 @@ def check_for_removal(
 
 def schedule_graph(
     G: ComputationNodeWorkload,
-    accelerator: Accelerator,
+    accelerator: "Accelerator",
     cores_idle_from: dict[int, int] | None = None,
     operands_to_prefetch: list[str] = [],
-    scheduling_order=None,
-):
+    scheduling_order: list[tuple[int, int]] | None = None,
+) -> tuple[int, float, float, float, float, float, float, float, float, float]:
     """Schedule the nodes of graph G across the cores in the system.
     Each node should have a core_allocation and runtime set.
 
@@ -264,7 +266,7 @@ def schedule_graph(
     # Put the very first nodes of a layer that doesn't have any incoming edges as the first candidates
     for source_node in (n for n, d in G.in_degree() if d == 0):
         core_allocation = source_node.chosen_core_allocation
-        candidates.append((cores_idle_from[core_allocation], source_node))
+        candidates.append((cores_idle_from[core_allocation], source_node))  # type: ignore
 
     # Get all the nodes with no successors that produce final outputs, used for off-loading final outputs
     sink_layers = sorted(set(n.id for n, d in G.out_degree() if d == 0))
@@ -272,6 +274,7 @@ def schedule_graph(
 
     # Get the offchip core id and core
     offchip_core_id = accelerator.offchip_core_id
+    assert offchip_core_id is not None
     offchip_core = accelerator.get_core(offchip_core_id)
 
     # Schedule preparation:
@@ -433,7 +436,7 @@ def schedule_graph(
             # Only push back sink node outputs if they're generated and stored on the core
             if best_candidate.output_operand not in best_candidate.too_large_operands:
                 (
-                    current_timestep,
+                    _,
                     link_energy_cost,
                     memory_energy_cost,
                 ) = accelerator.remove(

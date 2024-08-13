@@ -23,9 +23,6 @@ class ComputationNode(LayerNode, Node):
     On top of that, some new information is added for correct dependency generation
     for the finer graph that is built when a layer is split into one and is a
     producer/consumer of another layer.
-
-    Args:
-        LayerNode (_type_): _description_
     """
 
     def __init__(
@@ -58,17 +55,16 @@ class ComputationNode(LayerNode, Node):
 
         self.sub_id = sub_id
         self.group = group_id
-        self.__hash_value = hash((self.id, self.sub_id))
+        self.__static_hash_value = hash((self.id, self.sub_id))
         self.operand_tensor_reshape = (
             operand_tensor_reshape if operand_tensor_reshape is not None else self.get_operand_tensor_reshape_default()
         )
         # Whether this ComputationNode produces a final output
         self.produces_final_output = produces_final_output
 
-        # self.loop_ranges: dict[str, tuple] = node_attrs.get(
-        #     "loop_ranges", {dim: (0, size) for dim, size in self.loop_dim_size.items()}
-        # )
-        self.loop_ranges: LoopRanges = {layer_dim: (0, size) for layer_dim, size in self.layer_dim_sizes.items()}
+        self.loop_ranges: LoopRanges = {  # type: ignore
+            layer_dim: (0, size) for layer_dim, size in self.layer_dim_sizes.items()
+        }
 
         # adds pr dimensions loop ranges to self.loop_ranges
         self.calculate_pr_loop_ranges()
@@ -129,16 +125,16 @@ class ComputationNode(LayerNode, Node):
         return f"ComputationNode{self.id}_{self.sub_id}"
 
     def __hash__(self) -> int:
-        """The hash operator of a node depending on its id. The id is a tuple that can be of variable depth.
+        """The hash operator of a node.
 
         Returns:
-            int: the pre-computed hash
+            the pre-computed hash
         """
-        return self.__hash_value
+        return self.__static_hash_value
 
     def __eq__(self, other: object):
         """Fast equality comparison between two nodes"""
-        return self.__hash_value == hash(other)
+        return self.__static_hash_value == hash(other)
 
     def is_equal_extended(self, other: object) -> bool:
         """Compare the equality between two nodes.
@@ -202,11 +198,10 @@ class ComputationNode(LayerNode, Node):
             # Assume that there is always 2 dimensions involved in the calculation of a pr dimension
             pr_dim_val_min = -padding_begin
             pr_dim_val_max = -padding_begin
-            for related_dimension, scaling_factor in related_dims_and_scalings.items():
+            for related_dimension, scaling_factor in related_dims_and_scalings:
                 pr_dim_val_min += scaling_factor * self.loop_ranges[related_dimension][0]
-                pr_dim_val_max += scaling_factor * (
-                    self.loop_ranges[related_dimension][1] - 1
-                )  # convert to inclusive upper limit
+                # convert to inclusive upper limit
+                pr_dim_val_max += scaling_factor * (self.loop_ranges[related_dimension][1] - 1)
             pr_dim_val_max += 1  # convert to exclusive upper range
             self.loop_ranges[pr_dim] = (pr_dim_val_min, pr_dim_val_max)
 

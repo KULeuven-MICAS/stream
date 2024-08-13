@@ -69,11 +69,37 @@ class WorkloadABC(WorkloadABCZigZag[T]):
         """Overwrite DiGraph method with type hints"""
         return super().in_edges(node, data)  # type: ignore
 
+    @overload
+    def out_edges(self, node: T, data: Literal[True]) -> list[tuple[T, T, dict[str, Any]]]:
+        ...  # type: ignore
+
+    @overload
+    def out_edges(self, node: T, data: Literal[False]) -> list[tuple[T, T]]:
+        ...  # type: ignore
+
+    @overload
+    def out_edges(self, node: T) -> list[tuple[T, T]]:
+        ...  # type: ignore
+
+    def out_edges(  # type: ignore
+        self,
+        node: T,
+        data: bool = False,
+    ) -> list[tuple[T, T]] | list[tuple[T, T, dict[str, Any]]]:
+        """Overwrite DiGraph method with type hints"""
+        return super().out_edges(node, data)  # type: ignore
+
     def in_degree(self) -> Iterator[tuple[T, int]]:  # type: ignore
         return super().in_degree()  # type:ignore
 
     def out_degree(self) -> Iterator[tuple[T, int]]:  # type: ignore
         return super().out_degree()  # type:ignore
+
+    def successors(self, node: T) -> Iterator[T]:  # type: ignore
+        return super().successors(node)  # type: ignore
+
+    def predecessors(self, node: T) -> Iterator[T]:  # type: ignore
+        return super().predecessors(node)  # type: ignore
 
 
 class ComputationNodeWorkload(WorkloadABC[ComputationNode]):

@@ -16,7 +16,7 @@ class StreamCostModelEvaluation:
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
         operands_to_prefetch: list[str],
-        scheduling_order: list[int],
+        scheduling_order: list[tuple[int, int]],
     ) -> None:
         # Initialize the SCME by setting the workload graph to be scheduled
         self.workload = workload
