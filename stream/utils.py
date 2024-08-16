@@ -156,9 +156,11 @@ class NodeTensor(np.ndarray[Any, Any]):
         return tensor_shape + (self.full_shape[-1],)
 
     def get_nb_empty_elements(self, slices: tuple[slice, ...]):
+        """Returns the number of points for which there are no ComputationNodes."""
         assert self.is_valid_shape_dimension(slices), "Last dimension of tensor is reserved for CNs"
-        all_empty = np.all(self == 0, axis=-1)
-        return np.sum(all_empty)
+        all_empty_mask = np.all(self.as_ndarray() == 0, axis=-1)
+        all_empty_this_slice = all_empty_mask[slices]
+        return int(np.sum(all_empty_this_slice))
 
     def extend_with_node(self, slices: tuple[slice, ...], node: object):
         assert self.is_valid_shape_dimension(slices), "Last dimension of tensor is reserved for CNs"
@@ -203,12 +205,10 @@ class DiGraphWrapper(Generic[T], DiGraph):
     """Wraps the DiGraph class with type annotations for the nodes"""
 
     @overload
-    def in_edges(self, node: T, data: Literal[False]) -> list[tuple[T, T]]:
-        ...  # type: ignore
+    def in_edges(self, node: T, data: Literal[False]) -> list[tuple[T, T]]: ...  # type: ignore
 
     @overload
-    def in_edges(self, node: T) -> list[tuple[T, T]]:
-        ...  # type: ignore
+    def in_edges(self, node: T) -> list[tuple[T, T]]: ...  # type: ignore
 
     def in_edges(  # type: ignore
         self,
@@ -218,16 +218,13 @@ class DiGraphWrapper(Generic[T], DiGraph):
         return super().in_edges(node, data)  # type: ignore
 
     @overload
-    def out_edges(self, node: T, data: Literal[True]) -> list[tuple[T, T, dict[str, Any]]]:
-        ...  # type: ignore
+    def out_edges(self, node: T, data: Literal[True]) -> list[tuple[T, T, dict[str, Any]]]: ...  # type: ignore
 
     @overload
-    def out_edges(self, node: T, data: Literal[False]) -> list[tuple[T, T]]:
-        ...  # type: ignore
+    def out_edges(self, node: T, data: Literal[False]) -> list[tuple[T, T]]: ...  # type: ignore
 
     @overload
-    def out_edges(self, node: T) -> list[tuple[T, T]]:
-        ...  # type: ignore
+    def out_edges(self, node: T) -> list[tuple[T, T]]: ...  # type: ignore
 
     def out_edges(  # type: ignore
         self,
