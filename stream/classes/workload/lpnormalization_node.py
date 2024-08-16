@@ -1,9 +1,8 @@
-from typing import Any
-
 import numpy as np
 from zigzag.datatypes import LayerOperand
 
 from stream.classes.workload.node import Node
+from stream.utils import NodeTensor
 
 
 class LpNormalizationNode(Node):
@@ -32,16 +31,9 @@ class LpNormalizationNode(Node):
         )
         self.input_operand_source = {LayerOperand("I"): predecessor}
 
-    # def lpnormalization(self, input_tensor):
-    #    """Reshape an input tensor
-
-    #    Args:
-    #        input_tensor (np.ndarray): The input tensor
-    #    """
-    #    return softmax(input_tensor,axis=-1)
-
-    def lpnormalization_operand_tensor(self, tensor: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
+    def lpnormalization_operand_tensor(self, tensor: NodeTensor) -> NodeTensor:
         """Propagate the input tensor dependencies."""
+        raise NotImplementedError("TODO: make sure this is bug-free after transformer changes")
         temp = tensor.copy()
         size_hor = np.size(temp, 0)
         size_ver = np.size(temp, 1)

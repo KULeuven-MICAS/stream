@@ -1,10 +1,8 @@
-from typing import Any
-
-import numpy as np
 from zigzag.datatypes import LayerOperand
 from zigzag.workload.LayerNodeABC import LayerNodeABC
 
 from stream.classes.workload.node import Node
+from stream.utils import NodeTensor
 
 
 class TransposeNode(Node, LayerNodeABC):
@@ -44,10 +42,10 @@ class TransposeNode(Node, LayerNodeABC):
         self.permute_axes = permute_axes
         self.input_operand_source = {LayerOperand("I"): predecessor}
 
-    def transpose(self, input_tensor: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
+    def transpose(self, input_tensor: NodeTensor) -> NodeTensor:
         """Transpose an input tensor.
 
         Args:
             input_tensor (np.ndarray): The input tensor
         """
-        return np.transpose(input_tensor, axes=self.permute_axes)
+        return input_tensor.transpose(axes=self.permute_axes)

@@ -4,13 +4,10 @@ from copy import deepcopy
 from math import ceil, prod
 from typing import Any, List
 
-import networkx as nx
-import numpy as np
 from rtree import index
 from zigzag.datatypes import Constants, LayerDim, LayerOperand
 from zigzag.stages.Stage import Stage, StageCallable
 from zigzag.utils import pickle_deepcopy
-from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.opt.splitting.splitting import (
@@ -30,7 +27,7 @@ from stream.classes.workload.onnx_workload import ComputationNodeWorkload, ONNXW
 from stream.classes.workload.reshape_node import ReshapeNode
 from stream.classes.workload.tensor import Tensor
 from stream.classes.workload.transpose_node import TransposeNode
-from stream.utils import ARRAY_T
+from stream.utils import NodeTensor
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +98,7 @@ class GenerateCNWorkloadHybridStage(Stage):
             unique_finer_nodes += unique_nodes
             # Compute the edges between nodes originating from one bigger node (intra-edges)
             intra_edges = self.get_intra_edges(finer_nodes)
-            G.add_workload_edges_from(intra_edges)
+            G.add_edges_from(intra_edges)
             # If there is only one finer node for this layer, add the node to the graph
             if not intra_edges:
                 G.add_nodes_from(finer_nodes)
@@ -139,11 +136,11 @@ class GenerateCNWorkloadHybridStage(Stage):
         yield None, None
 
     @staticmethod
-    def get_scheduling_order(workload: Workload):
-        return sorted(((n.id, n.sub_id) for n in workload.nodes()), reverse=True)
+    def get_scheduling_order(workload: ComputationNodeWorkload):
+        return sorted(((n.id, n.sub_id) for n in workload.node_list), reverse=True)
 
     @staticmethod
-    def get_all_node_pairs(G: Workload) -> tuple[tuple[ComputationNode, ComputationNode, bool], ...]:
+    def get_all_node_pairs(G: ONNXWorkload) -> tuple[tuple[ComputationNode, ComputationNode, bool], ...]:
         pairs: list[tuple[ComputationNode, ComputationNode, bool]] = []
         for node in G.topological_sort():
             if not isinstance(node, ComputationNode):
@@ -160,7 +157,7 @@ class GenerateCNWorkloadHybridStage(Stage):
 
             # Now we have all ComputationNode successors
             for successor in successors:
-                intermediates = nx.shortest_path(G, node, successor)[1:-1]
+                intermediates = G.shortest_path(node, successor)[1:-1]
                 complex_pair = False
                 for intermediate in intermediates:
                     if not isinstance(intermediate, DummyNode):
@@ -318,7 +315,7 @@ class GenerateCNWorkloadHybridStage(Stage):
 
         finer_nodes: list[ComputationNode] = []
         groups = {}
-        tensors = []
+        tensors: list[Tensor] = []
         for n in range(nb_cns):
             outer_loop_values: list[int] = []
             for i, outer_loop in enumerate(outer_temporal_loops):
@@ -560,14 +557,6 @@ class GenerateCNWorkloadHybridStage(Stage):
             finer_producers (list): list of finer producer nodes
             finer_consumers (list): list of finer consumer nodes
         """
-        # _dims = self.get_nb_input_dimensions(finer_consumers[0])
-        # assert all(
-        #     [
-        #         len(_producer.operand_dimensionality_order[Constants.OUTPUT_LAYER_OP]) == _dims
-        #         for _producer in finer_producers
-        #     ]
-        # )
-
         # Check all the different input operands of the consumer node that stem from the producer node
         # The direct predecessor of an input operand might be a DummyNode so we need to propagate back
         dependent_input_operands: list[LayerOperand] = []
@@ -637,8 +626,8 @@ class GenerateCNWorkloadHybridStage(Stage):
         producer: ComputationNode,
         consumer: ComputationNode,
     ):
-        numpy_tensors: dict[ComputationNode, dict[LayerOperand, ARRAY_T]] = {}
-        all_inter_edges: list[tuple[ARRAY_T, ARRAY_T, dict[str, Any]]] = []
+        numpy_tensors: dict[ComputationNode, dict[LayerOperand, NodeTensor]] = {}
+        all_inter_edges: list[tuple[ComputationNode, ComputationNode, dict[str, Any]]] = []
 
         def get_tensor_cn_for_op(node: ComputationNode, dependent_operand: LayerOperand):
             """And update the known tensors of computation nodes"""
@@ -664,22 +653,25 @@ class GenerateCNWorkloadHybridStage(Stage):
                     raise ValueError("Intermediate nodes should not be of type ComputationNode.")
                 tensor = self.propagate_cn_production_for_non_cn(node, tensor)
 
-            # Last node: Computation node
-            last_node = path_between[-1]
-            assert isinstance(last_node, ComputationNode), "Last node in path should be ComputationNode"
+            # Final node: Computation node
+            final_node = path_between[-1]
+            assert isinstance(final_node, ComputationNode), "Last node in path should be ComputationNode"
             # Find the operand for which this last node connects to its predecessor
             dependent_operand = next(
-                op for op, dependent_node_id in last_node.input_operand_source.items() if dependent_node_id == node.id
+                op for op, dependent_node_id in final_node.input_operand_source.items() if dependent_node_id == node.id
             )
 
             try:
-                last_tensor = get_tensor_cn_for_op(last_node, dependent_operand)
-                inter_edges = self.get_inter_edges_tensor_based(tensor, last_tensor)
-            except TensorDimensionMismatchException:
-                # Possible cause: Sources for `W` and `I` operand are swapped for this node -> try the other one
-                dependent_operand = next(op for op in last_node.input_operand_source if op != dependent_operand)
-                last_tensor = get_tensor_cn_for_op(last_node, dependent_operand)
-                inter_edges = self.get_inter_edges_tensor_based(tensor, last_tensor)
+                final_tensor = get_tensor_cn_for_op(final_node, dependent_operand)
+                inter_edges = self.get_inter_edges_tensor_based(tensor, final_tensor)
+            except TensorDimensionMismatchException as exc:
+                try:
+                    # Possible cause: Sources for `W` and `I` operand are swapped for this node -> try the other one
+                    dependent_operand = next(op for op in final_node.input_operand_source if op != dependent_operand)
+                    final_tensor = get_tensor_cn_for_op(final_node, dependent_operand)
+                    inter_edges = self.get_inter_edges_tensor_based(tensor, final_tensor)
+                except StopIteration:
+                    raise exc
 
             for producer, cons in inter_edges:
                 all_inter_edges.append(
@@ -694,9 +686,7 @@ class GenerateCNWorkloadHybridStage(Stage):
                 )
         return all_inter_edges
 
-    def propagate_cn_production_for_non_cn(
-        self, node: Node, input_tensor: np.ndarray[Any, Any]
-    ) -> np.ndarray[Any, Any]:
+    def propagate_cn_production_for_non_cn(self, node: Node, input_tensor: NodeTensor) -> NodeTensor:
         if isinstance(node, ReshapeNode):
             output_tensor = node.reshape_operand_tensor(input_tensor)
         elif isinstance(node, TransposeNode):
@@ -714,9 +704,7 @@ class GenerateCNWorkloadHybridStage(Stage):
         return output_tensor
 
     @staticmethod
-    def get_inter_edges_tensor_based(
-        producer_output_tensor: np.ndarray[Any, Any], consumer_input_tensor: np.ndarray[Any, Any]
-    ):
+    def get_inter_edges_tensor_based(producer_output_tensor: NodeTensor, consumer_input_tensor: NodeTensor):
         """This method obtains the edges between a producer and consumer.
         This is done by iterating through all finer consumer nodes,
         for each consumer node we create a window and get all the producer nodes that produced this data window.
@@ -725,47 +713,44 @@ class GenerateCNWorkloadHybridStage(Stage):
             producer_output_tensor (np.ndarray): A tensor containing for each position which CNs will produce it
             consumer_input_tensor (np.ndarray): A tensor containing for each position which CNs will consume it
         """
-        if producer_output_tensor.shape != consumer_input_tensor.shape:
+        if producer_output_tensor.tensor_shape != consumer_input_tensor.tensor_shape:
             raise TensorDimensionMismatchException("Arrays to construct inter-layer edges must be equal shape.")
 
-        inter_edges: set[tuple[np.ndarray[Any, Any], np.ndarray[Any, Any]]] = set()
-        for producer_set, consumer_set in zip(producer_output_tensor.flat, consumer_input_tensor.flat):
-            if consumer_set is None:  # Happens for downsample layers (e.g. ComputationNode((16,)) for MBNetV2)
-                continue
-            for producer, cons in itertools.product(producer_set, consumer_set):
+        inter_edges: set[tuple[ComputationNode, ComputationNode]] = set()
+        for consumer_array, producer_array in zip(producer_output_tensor.flat, consumer_input_tensor.flat):
+            for producer, cons in itertools.product(consumer_array, producer_array):
+                if not producer or not cons:
+                    # The producer/consumer array may contain a lot of 0
+                    continue
                 inter_edges.add((producer, cons))
         return inter_edges
 
     def get_tensor_cns(
         self, node: ComputationNode, finer_nodes: list[ComputationNode]
-    ) -> dict[LayerOperand, np.ndarray[Any, Any]]:
+    ) -> dict[LayerOperand, NodeTensor]:
         is_source_node = len(self.get_non_type_predecessors(node, [DummyNode])) == 0
         variable_operands = [op for op in node.input_operands if op not in node.constant_operands] + [
             node.output_operand
         ]
         tensor_dims = {op: node.operand_dimensionality_order[op] for op in variable_operands}
         all_loop_dim_sizes = node.layer_dim_sizes + node.pr_layer_dim_sizes  # union
-        tensor_shapes = {op: tuple([all_loop_dim_sizes[dim] for dim in dims]) for (op, dims) in tensor_dims.items()}
-        tensors_cns: dict[LayerOperand, ARRAY_T] = {
-            op: np.ndarray(shape, dtype=set) for (op, shape) in tensor_shapes.items()
-        }  # Initial arrays
-        # Fill the initial arrays with an empty set in each position
-        for op in variable_operands:
-            shape = tensor_shapes[op]
-            for idx in itertools.product(*(range(s) for s in shape)):
-                tensors_cns[op][idx] = set()
+        tensor_shapes = {op: tuple(all_loop_dim_sizes[dim] for dim in dims) for (op, dims) in tensor_dims.items()}
+
+        # Initial arrays.
+        tensors_cns: dict[LayerOperand, NodeTensor] = {
+            op: NodeTensor.initialize_empty(shape) for (op, shape) in tensor_shapes.items()
+        }
 
         # For each input operand iterate through the finer_nodes in reverse order
         # because we want the first cn with a dependency saved in the tensor
         # For the output operand iterate through the finer_nodes in regular order
         # because we want the last CN that handles an output tensor window to be saved
-        for op in variable_operands:
-            dims = tensor_dims[op]
+        for op, dims in tensor_dims.items():
             if op == node.output_operand:
                 ir_dims_output = node.loop_relevancy_info.get_ir_layer_dims(Constants.OUTPUT_LAYER_OP)
                 finer_nodes_list = finer_nodes  # list in regular order
                 should_add_to_tensor_list = [
-                    all([finer_node.loop_ranges[ir_dim][1] >= node.loop_ranges[ir_dim][1] for ir_dim in ir_dims_output])
+                    all(finer_node.loop_ranges[ir_dim][1] >= node.loop_ranges[ir_dim][1] for ir_dim in ir_dims_output)
                     for finer_node in finer_nodes_list
                 ]
                 attr_to_add_to = "data_produced_unique"
@@ -776,6 +761,7 @@ class GenerateCNWorkloadHybridStage(Stage):
                 attr_to_add_to = "data_consumed_unique"
                 # if this layer is the first layer, we assume the inputs are streamed and "free"
                 precision = node.operand_precision[op] * (not is_source_node)
+
             nb_unique_data_seen = 0
             for finer_node, should_add_to_tensor in zip(finer_nodes_list, should_add_to_tensor_list):
                 if not should_add_to_tensor:
@@ -786,7 +772,7 @@ class GenerateCNWorkloadHybridStage(Stage):
                 window = tuple([slice(max(0, start), stop) for (start, stop) in op_dim_ranges])
                 # Count how many nans we have in this window, as this is the amount of unique data consumed/produced by
                 # this finer_node
-                nb_unique_data_bits = np.sum(tensors_cns[op][window] == set()) * precision
+                nb_unique_data_bits = tensors_cns[op].get_nb_empty_elements(window) * precision
                 nb_unique_data_seen += nb_unique_data_bits
                 # Add this amount of unique data to the "data_consumed_unique" or "data_produced_unique" depending on
                 # input/output operand
@@ -796,12 +782,12 @@ class GenerateCNWorkloadHybridStage(Stage):
                     getattr(finer_node, attr_to_add_to) + nb_unique_data_bits,
                 )
                 # Set this window of the tensor to indicate it will be consumed/produced by this finer node
-                bounded_op_dim_ranges = [
-                    range(max(0, start), min(max_stop, stop))
+                bounded_op_dim_ranges = tuple(
+                    slice(max(0, start), min(max_stop, stop))
                     for ((start, stop), max_stop) in zip(op_dim_ranges, op_dim_ranges_max_stop)
-                ]
-                for idx in itertools.product(*bounded_op_dim_ranges):
-                    tensors_cns[op][idx] |= {finer_node}  # Union of the existing set with the newly added node
+                )
+                tensors_cns[op] = tensors_cns[op].extend_with_node(bounded_op_dim_ranges, finer_node)
+
             if nb_unique_data_seen != (prod(tensor_shapes[op]) * precision):
                 logger.warn(f"Downsampling node detected: {node}, operand= {op}.")
 
@@ -852,8 +838,8 @@ class GenerateCNWorkloadHybridStage(Stage):
 
     def get_weight_capacities(self):
         # Get the weight capacity of all cores
-        weight_capacities = {}
-        for core in self.accelerator.cores.nodes():
+        weight_capacities: dict[int, int] = {}
+        for core in self.accelerator.cores.node_list:
             if core.id == self.accelerator.offchip_core_id:
                 continue  # skip offchip core
             core_weight_capacity = core.memory_hierarchy.get_operand_top_level(Constants.MEM_OP_2).memory_instance.size

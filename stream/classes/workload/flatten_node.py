@@ -1,10 +1,9 @@
-from typing import Any
-
 import numpy as np
 from zigzag.datatypes import LayerOperand
 from zigzag.workload.LayerNodeABC import LayerNodeABC
 
 from stream.classes.workload.node import Node
+from stream.utils import NodeTensor
 
 
 class FlattenNode(Node, LayerNodeABC):
@@ -39,13 +38,13 @@ class FlattenNode(Node, LayerNodeABC):
         if predecessor is not None:
             self.input_operand_source = {LayerOperand("I"): predecessor}
 
-    def flatten(self, input_tensor: np.ndarray[Any, Any]) -> np.ndarray[Any, Any]:
+    def flatten(self, input_tensor: NodeTensor) -> NodeTensor:
         """Reshape an input tensor
 
         Args:
             input_tensor (np.ndarray): The input tensor
         """
-        shape = input_tensor.shape
+        shape = input_tensor.tensor_shape
         # taken from https://github.com/onnx/onnx/blob/main/docs/Operators.md#examples-51
         new_shape = (1, -1) if self.axis == 0 else (np.prod(shape[0 : self.axis]).astype(int), -1)
-        return np.reshape(input_tensor, new_shape)
+        return input_tensor.reshape(new_shape)

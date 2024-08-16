@@ -49,7 +49,7 @@ def plot_timeline_brokenaxes(
     G: ONNXWorkload = scme.workload
     accelerator: Accelerator = scme.accelerator
 
-    nb_layers = len(set(iter([n.id for n in G.nodes()])))
+    nb_layers = len(set(iter([n.id for n in G.node_list])))
     nb_cores = accelerator.cores.number_of_nodes()
 
     plt.rc("font", size=SMALL_SIZE)  # controls default text sizes
@@ -169,7 +169,7 @@ def plot_timeline_brokenaxes(
             legend_labels.append(f"Layer {layer_id}")
     # print("Rectangles done...", end="")
 
-    core_and_transfer_link_ids = sorted([core.id for core in accelerator.cores.nodes()])
+    core_and_transfer_link_ids = sorted([core.id for core in accelerator.cores.node_list])
     hline_loc = core_and_transfer_link_ids[-1] - 0.5
     core_and_transfer_link_ids = core_and_transfer_link_ids[:-1]
     # Always define the last core as DRAM, not including DRAM in the core
@@ -358,7 +358,7 @@ def add_dependency_button(fig):
 
 
 def add_dependencies(fig, scme, colors, layer_ids):
-    for node in scme.workload.nodes():
+    for node in scme.workload.node_list:
         c_id = node.id
         c_l = node.id
         if c_l not in layer_ids:
@@ -494,7 +494,7 @@ def visualize_timeline_plotly(
     layer_ids=None,
 ):
     if not layer_ids:
-        layer_ids = sorted(set(n.id for n in scme.workload.nodes()))
+        layer_ids = sorted(set(n.id for n in scme.workload.node_list))
     df = get_dataframe_from_scme(scme, layer_ids, draw_communication)
     # We get all the layer ids to get a color mapping for them
     layer_ids = sorted(list(set(df["Layer"].tolist())))

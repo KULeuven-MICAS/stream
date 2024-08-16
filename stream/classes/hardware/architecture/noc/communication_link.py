@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
@@ -14,7 +14,12 @@ class CommunicationLink:
     """Represents a fixed-bandwidth communication link used to communicate between two cores."""
 
     def __init__(
-        self, sender: "Core", receiver: "Core", bandwidth: int, unit_energy_cost: float, bidirectional: bool = False
+        self,
+        sender: "Core | Literal['Any']",
+        receiver: "Core | Literal['Any']",
+        bandwidth: int | float,
+        unit_energy_cost: float,
+        bidirectional: bool = False,
     ) -> None:
         self.sender = sender
         self.receiver = receiver

@@ -1,14 +1,24 @@
 import logging
+from typing import Any
 
-from zigzag.stages.Stage import Stage
+from zigzag.stages.Stage import Stage, StageCallable
 
+from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode
+from stream.classes.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 
 
 class DetermineSchedulingOrderStage(Stage):
-    def __init__(self, list_of_callables, *, accelerator, workload, **kwargs):
+    def __init__(
+        self,
+        list_of_callables: list[StageCallable],
+        *,
+        accelerator: Accelerator,
+        workload: ComputationNodeWorkload,
+        **kwargs: dict[str, Any],
+    ):
         super().__init__(list_of_callables, **kwargs)
         self.accelerator = accelerator
         self.workload = workload
@@ -21,7 +31,7 @@ class DetermineSchedulingOrderStage(Stage):
             logger.warn("Scheduling order for layer stacks not implemented.")
         # Generate a list of node ids from highest priority to lowest
         # We give higher priority to nodes deeper in the graph
-        self.scheduling_order = sorted(((n.id, n.sub_id) for n in self.workload.nodes()), reverse=True)
+        self.scheduling_order = sorted(((n.id, n.sub_id) for n in self.workload.node_list), reverse=True)
 
         self.kwargs["accelerator"] = self.accelerator
         self.kwargs["workload"] = self.workload
@@ -34,13 +44,13 @@ class DetermineSchedulingOrderStage(Stage):
             yield cme, extra_info
 
     def get_layer_stacks_lbl(self):
-        return [(id,) for id in sorted([n.id for n in self.workload.nodes() if isinstance(n, ComputationNode)])]
+        return [(id,) for id in sorted([n.id for n in self.workload.node_list if isinstance(n, ComputationNode)])]
 
     def get_layer_stacks_fused(self):
         cumsum = 0
-        stacks = []
-        current_stack = []
-        for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
+        stacks: list[tuple[int, ...]] = []
+        current_stack: list[int] = []
+        for n in sorted(list(self.workload.node_list), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
                 id = n.id
                 try:
@@ -66,10 +76,10 @@ class DetermineSchedulingOrderStage(Stage):
         """
         Only the first set of layers will be fused, rest layer by layer"""
         cumsum = 0
-        stacks = []
-        current_stack = []
+        stacks: list[tuple[int, ...]] = []
+        current_stack: list[int] = []
         first_complete = False
-        for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
+        for n in sorted(list(self.workload.node_list), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
                 id = n.id
                 if first_complete:
@@ -101,9 +111,9 @@ class DetermineSchedulingOrderStage(Stage):
         layers will be fused based on ids in stack cutoffs. if ratio of weights > 1, we switch to layer by layer
         """
         assert self.stack_cutoff is not None, "stack_cutoff should be defined."
-        stacks = []
-        current_stack = []
-        for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
+        stacks: list[tuple[int, ...]] = []
+        current_stack: list[int] = []
+        for n in sorted(list(self.workload.node_list), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
                 id = n.id
                 if id > self.stack_cutoff:
@@ -121,14 +131,14 @@ class DetermineSchedulingOrderStage(Stage):
         Only the first set of layers will be fused until fixed id, rest layer by layer
         """
         assert self.stack_cutoffs is not None, "stack_cutoff should be defined."
-        stacks = []
-        current_stack = []
+        stacks: list[tuple[int, ...]] = []
+        current_stack: list[int] = []
         assert len(self.stack_cutoffs) > 0
         stack_cutoff = self.stack_cutoffs[0]
         cutoff_idx = 1
         cumsum = 0
         lbl = False  # flag to switch to layer by layer
-        for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
+        for n in sorted(list(self.workload.node_list), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
                 id = n.id
                 if lbl:

@@ -1,7 +1,5 @@
 from math import ceil
 
-import networkx as nx
-from networkx import DiGraph
 from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.Core import Core
 from zigzag.hardware.architecture.MemoryInstance import MemoryInstance
@@ -11,17 +9,11 @@ from stream.classes.cost_model.communication_manager import CommunicationManager
 from stream.classes.cost_model.memory_manager import MemoryManager
 from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.workload.tensor import Tensor
+from stream.utils import DiGraphWrapper
 
 
-class CoreGraph(DiGraph):
+class CoreGraph(DiGraphWrapper[Core]):
     """Represents the core structure of an accelerator"""
-
-    @property
-    def node_list(self) -> list[Core]:
-        return list(self.nodes())  # type: ignore
-
-    def shortest_path(self, producer: Core, consumer: Core) -> list[Core]:
-        return nx.shortest_path(self, producer, consumer)  # type: ignore
 
 
 class Accelerator:
@@ -65,13 +57,9 @@ class Accelerator:
             raise ValueError(f"Requested core with id {core_id} is not present in accelerator.")
         return core
 
-    # @property
-    # def core_iterator(self) -> Iterator[Core]:
-    #     return self.cores.nodes()  # type: ignore
-
     @property
-    def core_list(self):
-        return self.cores.node_list
+    def core_list(self) -> list[Core]:
+        return list(self.cores.node_list)
 
     def spawn(
         self,

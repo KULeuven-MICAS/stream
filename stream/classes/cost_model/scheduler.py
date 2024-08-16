@@ -103,7 +103,7 @@ def get_tensors_needed_for_node(node: ComputationNode, G: ComputationNodeWorkloa
 
     Args:
         node (ComputationNode): The node to be computed.
-        G (DiGraph): The graph of all nodes.
+        G : The graph of all nodes.
 
     Returns:
         tuple: A tuple of tensors and a tuple of memory operands for the node.
@@ -231,7 +231,7 @@ def schedule_graph(
     Each node should have a core_allocation and runtime set.
 
     Args:
-        G (DiGraph): Graph containing the nodes to be scheduled.
+        G : Graph containing the nodes to be scheduled.
         accelerator (Accelerator): The accelerator to schedule the nodes on.
         cores_start_offset (dict, optional): A dict containing for each core_id its start offset. Defaults to None.
         operands_to_prefetch (list, optional): The layer operands that should be prefetched at the start of the

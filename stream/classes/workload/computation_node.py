@@ -1,7 +1,6 @@
 from math import prod
-from typing import Any, TypeAlias
+from typing import TypeAlias
 
-import numpy as np
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 from zigzag.visualization.results.plot_cme import shorten_onnx_layer_name
 from zigzag.workload.layer_attributes import LayerPadding
@@ -9,8 +8,9 @@ from zigzag.workload.layer_node import LayerNode, LayerNodeAttributes
 
 from stream.classes.workload.node import Node
 from stream.classes.workload.tensor import Tensor
+from stream.utils import NodeTensor
 
-OperandTensorReshape: TypeAlias = dict[LayerOperand, tuple[int, int, int, int]]
+OperandTensorReshape: TypeAlias = dict[LayerOperand, tuple[int, ...]]
 LoopRanges: TypeAlias = dict[LayerDim, tuple[int, int]]
 
 
@@ -55,7 +55,7 @@ class ComputationNode(LayerNode, Node):
 
         self.sub_id = sub_id
         self.group = group_id
-        self.__static_hash_value = hash((self.id, self.sub_id))
+        self._static_hash_value = hash((self.id, self.sub_id))
         self.operand_tensor_reshape = (
             operand_tensor_reshape if operand_tensor_reshape is not None else self.get_operand_tensor_reshape_default()
         )
@@ -130,11 +130,11 @@ class ComputationNode(LayerNode, Node):
         Returns:
             the pre-computed hash
         """
-        return self.__static_hash_value
+        return self._static_hash_value
 
     def __eq__(self, other: object):
         """Fast equality comparison between two nodes"""
-        return self.__static_hash_value == hash(other)
+        return self._static_hash_value == hash(other)
 
     def is_equal_extended(self, other: object) -> bool:
         """Compare the equality between two nodes.
@@ -205,13 +205,13 @@ class ComputationNode(LayerNode, Node):
             pr_dim_val_max += 1  # convert to exclusive upper range
             self.loop_ranges[pr_dim] = (pr_dim_val_min, pr_dim_val_max)
 
-    def reshape_operand_tensor(self, tensor: np.ndarray[Any, Any], operand: LayerOperand):
+    def reshape_operand_tensor(self, tensor: NodeTensor, operand: LayerOperand):
         """Reshape the tensor back to the representation needed for producer/consumer."""
         if self.operand_tensor_reshape is None or operand not in self.operand_tensor_reshape:
-            new_shape = tensor.shape
+            return tensor
         else:
             new_shape = self.operand_tensor_reshape[operand]
-        return np.reshape(tensor, new_shape)
+            return tensor.reshape(new_shape)
 
     def set_too_large_operands(self, too_large_operands: list[MemoryOperand]):
         self.too_large_operands = too_large_operands

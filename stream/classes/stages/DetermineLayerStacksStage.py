@@ -1,14 +1,25 @@
 import logging
+from typing import Any
 
-from zigzag.stages.Stage import Stage
+from zigzag.datatypes import MemoryOperand
+from zigzag.stages.Stage import Stage, StageCallable
 
+from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode
+from stream.classes.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 
 
 class DetermineLayerStacksStage(Stage):
-    def __init__(self, list_of_callables, *, accelerator, workload, **kwargs):
+    def __init__(
+        self,
+        list_of_callables: list[StageCallable],
+        *,
+        accelerator: Accelerator,
+        workload: ComputationNodeWorkload,
+        **kwargs: Any,
+    ):
         super().__init__(list_of_callables, **kwargs)
         self.accelerator = accelerator
         self.workload = workload
@@ -19,11 +30,11 @@ class DetermineLayerStacksStage(Stage):
         self.stack_cutoffs = kwargs.get("stack_cutoffs", None)
 
         # Get the weight capacity of all cores
-        weight_capacities = {}
-        for core in self.accelerator.cores.nodes():
+        weight_capacities: dict[int, int] = {}
+        for core in self.accelerator.cores.node_list:
             if core.id == self.accelerator.offchip_core_id:
                 continue  # skip offchip core
-            core_weight_capacity = core.memory_hierarchy.get_operand_top_level("I2").memory_instance.size
+            core_weight_capacity = core.memory_hierarchy.get_operand_top_level(MemoryOperand("I2")).memory_instance.size
             weight_capacities[core.id] = core_weight_capacity
 
         # Total weight capacity in bits
@@ -55,13 +66,13 @@ class DetermineLayerStacksStage(Stage):
             yield cme, extra_info
 
     def get_layer_stacks_lbl(self):
-        return [(id,) for id in sorted([n.id for n in self.workload.nodes() if isinstance(n, ComputationNode)])]
+        return [(id,) for id in sorted([n.id for n in self.workload.node_list if isinstance(n, ComputationNode)])]
 
     def get_layer_stacks_fused(self):
         cumsum = 0
         stacks = []
         current_stack = []
-        for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
+        for n in sorted(list(self.workload.node_list), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
                 id = n.id
                 try:
@@ -90,7 +101,7 @@ class DetermineLayerStacksStage(Stage):
         stacks = []
         current_stack = []
         first_complete = False
-        for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
+        for n in sorted(list(self.workload.node_list), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
                 id = n.id
                 if first_complete:
@@ -124,7 +135,7 @@ class DetermineLayerStacksStage(Stage):
         assert self.stack_cutoff is not None, "stack_cutoff should be defined."
         stacks = []
         current_stack = []
-        for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
+        for n in sorted(list(self.workload.node_list), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
                 id = n.id
                 if id > self.stack_cutoff:
@@ -149,7 +160,7 @@ class DetermineLayerStacksStage(Stage):
         cutoff_idx = 1
         cumsum = 0
         lbl = False  # flag to switch to layer by layer
-        for n in sorted(list(self.workload.nodes()), key=lambda n: n.id):
+        for n in sorted(list(self.workload.node_list), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
                 id = n.id
                 if lbl:

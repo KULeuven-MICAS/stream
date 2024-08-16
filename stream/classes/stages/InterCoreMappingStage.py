@@ -70,7 +70,7 @@ class InterCoreMappingStage(Stage):
         self.scheduling_order = kwargs.get("scheduling_order", None)
 
         # Determine the set of all (layer, group) combinations to be allocated separately
-        self.layer_groups: list[tuple[int, int]] = sorted(set((n.id, n.group) for n in self.workload.nodes()))
+        self.layer_groups: list[tuple[int, int]] = sorted(set((n.id, n.group) for n in self.workload.node_list))
 
         # self.coarse_node_ids contains all the original node (aka layers) ids of the original graph
         self.unique_nodes = list(set((n for n, _ in self.node_hw_performances.items())))
@@ -119,7 +119,7 @@ class InterCoreMappingStage(Stage):
         # Extract the value range each gene in the individual can have.
         # This ranges from 0 to the max core index.
         # TODO There might be some case where a core is not possible, so it shouldnt be tried by the GA
-        core_ids: list[int] = sorted([core.id for core in self.accelerator.cores.nodes()])
+        core_ids: list[int] = sorted([core.id for core in self.accelerator.cores.node_list])
         self.core_id_range = (min(core_ids), max(core_ids))
         self.nb_cores = max(core_ids) - min(core_ids) + 1  # Assuming they are incrementing with step size 1
 
@@ -191,7 +191,7 @@ class InterCoreMappingStage(Stage):
 
             nodes: list[ComputationNode] = [
                 n
-                for n in self.workload.nodes()
+                for n in self.workload.node_list
                 if n == non_flexible_unique_node and n.group == non_flexible_unique_node.group
             ]
             for node in nodes:

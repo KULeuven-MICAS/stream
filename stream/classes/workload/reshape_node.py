@@ -1,10 +1,8 @@
-from typing import Any
-
-import numpy as np
 from zigzag.datatypes import LayerOperand
 from zigzag.workload.LayerNodeABC import LayerNodeABC
 
 from stream.classes.workload.node import Node
+from stream.utils import NodeTensor
 
 
 class ReshapeNode(Node, LayerNodeABC):
@@ -15,7 +13,7 @@ class ReshapeNode(Node, LayerNodeABC):
         node_id: int,
         node_name: str,
         predecessor: int,
-        shape: list[int],
+        shape: tuple[int, ...],
         input_names: list[str],
         output_names: list[str],
         allow_zero: bool = False,
@@ -47,12 +45,12 @@ class ReshapeNode(Node, LayerNodeABC):
         self.shape = shape
         self.input_operand_source = {LayerOperand("I"): predecessor}
 
-    def reshape_operand_tensor(self, tensor: np.ndarray[Any, Any]):
+    def reshape_operand_tensor(self, tensor: NodeTensor):
         """Reshape the tensor back to the representation needed for producer/consumer."""
         new_shape = self.shape
         if not new_shape:
-            new_shape = tensor.shape
+            return tensor
 
         if not self.allow_zero:
-            new_shape = [x for x in new_shape if x != 0]
-        return np.reshape(tensor, new_shape)
+            new_shape = tuple(x for x in new_shape if x != 0)
+        return tensor.reshape(new_shape)

@@ -1,7 +1,7 @@
-from networkx import DiGraph
 from zigzag.datatypes import Constants
 from zigzag.hardware.architecture.Core import Core
 
+from stream.classes.hardware.architecture.accelerator import CoreGraph
 from stream.classes.hardware.architecture.noc.communication_link import CommunicationLink
 
 
@@ -147,6 +147,4 @@ def get_bus(
             edges.append((offchip_core, simd_core, {"cl": from_offchip_link}))
 
     # Build the graph using the constructed list of edges
-    H = DiGraph(edges)
-
-    return H
+    return CoreGraph(edges)

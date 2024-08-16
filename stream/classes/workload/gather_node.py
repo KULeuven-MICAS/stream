@@ -1,10 +1,8 @@
-from typing import Any
-
-import numpy as np
 from zigzag.datatypes import LayerOperand
 from zigzag.workload.LayerNodeABC import LayerNodeABC
 
 from stream.classes.workload.node import Node
+from stream.utils import NodeTensor
 
 
 class GatherNode(Node, LayerNodeABC):
@@ -56,6 +54,6 @@ class GatherNode(Node, LayerNodeABC):
             case _:
                 raise ValueError("More than two inputs for GatherNode")
 
-    def gather_operand_tensor(self, tensor: np.ndarray[Any, Any]):
+    def gather_operand_tensor(self, tensor: NodeTensor) -> NodeTensor:
         """Perform gather operation on the tensor."""
-        return np.take(tensor, self.gather_indices, axis=self.gather_axis)
+        return tensor.gather(self.gather_indices, axis=self.gather_axis)

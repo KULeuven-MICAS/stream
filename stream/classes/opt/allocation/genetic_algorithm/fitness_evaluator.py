@@ -81,7 +81,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
             # Find all nodes of this coarse id and set their core_allocation, energy and runtime
             nodes = (
                 node
-                for node in self.workload.nodes()
+                for node in self.workload.node_list
                 if isinstance(node, ComputationNode) and node.id == layer_id and node.group == group_id
             )
             for node in nodes:
