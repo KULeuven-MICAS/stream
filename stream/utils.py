@@ -116,7 +116,7 @@ class NodeTensor(np.ndarray[Any, Any]):
     def __new__(cls, x: np.ndarray[Any, Any]):
         return x.view(cls)
 
-    def as_ndarray(self) -> np.ndarray[Any, Any]:
+    def as_ndarray(self) -> NDArray[Any]:
         """Typecast to superclass. This is necessary because numpy dispatches methods based on the instance's type"""
         return self.view(np.ndarray)  # type: ignore
 
@@ -158,9 +158,10 @@ class NodeTensor(np.ndarray[Any, Any]):
     def get_nb_empty_elements(self, slices: tuple[slice, ...]):
         """Returns the number of points for which there are no ComputationNodes."""
         assert self.is_valid_shape_dimension(slices), "Last dimension of tensor is reserved for CNs"
-        all_empty_mask = np.all(self.as_ndarray() == 0, axis=-1)
-        all_empty_this_slice = all_empty_mask[slices]
-        return int(np.sum(all_empty_this_slice))
+        tensor_slice = self.as_ndarray()[slices][:]
+        # all_empty_mask = np.all(tensor_slice == 0, axis=-1)
+        all_empty_mask = np.logical_and.reduce(tensor_slice == 0, axis=-1)
+        return int(np.sum(all_empty_mask))
 
     def extend_with_node(self, slices: tuple[slice, ...], node: object):
         assert self.is_valid_shape_dimension(slices), "Last dimension of tensor is reserved for CNs"
@@ -205,10 +206,16 @@ class DiGraphWrapper(Generic[T], DiGraph):
     """Wraps the DiGraph class with type annotations for the nodes"""
 
     @overload
-    def in_edges(self, node: T, data: Literal[False]) -> list[tuple[T, T]]: ...  # type: ignore
+    def in_edges(self, node: T, data: Literal[False]) -> list[tuple[T, T]]:
+        ...  # type: ignore
 
     @overload
-    def in_edges(self, node: T) -> list[tuple[T, T]]: ...  # type: ignore
+    def in_edges(self, node: T, data: Literal[True]) -> list[tuple[T, T, dict[str, Any]]]:
+        ...  # type: ignore
+
+    @overload
+    def in_edges(self, node: T) -> list[tuple[T, T]]:
+        ...  # type: ignore
 
     def in_edges(  # type: ignore
         self,
@@ -218,13 +225,16 @@ class DiGraphWrapper(Generic[T], DiGraph):
         return super().in_edges(node, data)  # type: ignore
 
     @overload
-    def out_edges(self, node: T, data: Literal[True]) -> list[tuple[T, T, dict[str, Any]]]: ...  # type: ignore
+    def out_edges(self, node: T, data: Literal[True]) -> list[tuple[T, T, dict[str, Any]]]:
+        ...  # type: ignore
 
     @overload
-    def out_edges(self, node: T, data: Literal[False]) -> list[tuple[T, T]]: ...  # type: ignore
+    def out_edges(self, node: T, data: Literal[False]) -> list[tuple[T, T]]:
+        ...  # type: ignore
 
     @overload
-    def out_edges(self, node: T) -> list[tuple[T, T]]: ...  # type: ignore
+    def out_edges(self, node: T) -> list[tuple[T, T]]:
+        ...  # type: ignore
 
     def out_edges(  # type: ignore
         self,

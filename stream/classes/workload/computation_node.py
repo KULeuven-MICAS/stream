@@ -134,7 +134,10 @@ class ComputationNode(LayerNode, Node):
 
     def __eq__(self, other: object):
         """Fast equality comparison between two nodes"""
-        return self._static_hash_value == hash(other)
+        # Optimization: this method is used many times to compare with `0`, to count empty tensor elements
+        if not other:
+            return False
+        return isinstance(other, ComputationNode) and self._static_hash_value == other._static_hash_value
 
     def is_equal_extended(self, other: object) -> bool:
         """Compare the equality between two nodes.

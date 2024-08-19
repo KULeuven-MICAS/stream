@@ -1,4 +1,3 @@
-import itertools
 import logging
 from copy import deepcopy
 from math import ceil, prod
@@ -9,6 +8,7 @@ from zigzag.datatypes import Constants, LayerDim, LayerOperand
 from zigzag.stages.Stage import Stage, StageCallable
 from zigzag.utils import pickle_deepcopy
 
+from stream.classes.cost_model.group_allocation import GroupIdManager
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.opt.splitting.splitting import (
     convert_inner_cn_loops,
@@ -231,42 +231,9 @@ class GenerateCNWorkloadHybridStage(Stage):
         return preds
 
     @staticmethod
-    def get_group_id(node: ComputationNode, loop_ranges: LoopRanges, groups: dict) -> tuple[int, dict]:
-        """Return the group id for the given loop ranges.
-        The group id is determined based on the relevant constant operand dimension loop ranges.
-        If there is no constant operand, we return 0.
-        If there is more than one constant operand, we only consider the last one's loop ranges.
-        If those loop ranges are already contained within 'groups' we return that group id.
-        Else we add it to the groups dict with an incremented group id.
-
-        Args:
-            node (ComputationNode): The original (layer) CN.
-            loop_ranges (dict): A dictionary containing the loop range for each dimension
-            groups (dict): The group ids for the already seen loop ranges.
-
-        Returns:
-            int: The group id for the given loop ranges
-        """
-        constant_operands = node.constant_operands
-        if not constant_operands:
-            return 0, groups
-        constant_operand = constant_operands[-1]
-        # relevant_dims = node.operand_loop_dim[constant_operand]["r"]
-        relevant_dims = node.loop_relevancy_info.get_r_layer_dims(constant_operand)
-        relevant_ranges = tuple([loop_ranges[dim] for dim in relevant_dims])
-        if relevant_ranges in groups:
-            return groups[relevant_ranges], groups
-        max_group_id = max(groups.values(), default=-1)
-        new_group_id = max_group_id + 1
-        groups[relevant_ranges] = new_group_id
-        return new_group_id, groups
-
-    @staticmethod
     def get_finer_nodes(
         original_node: ComputationNode, outer_temporal_loops: list[TemporalLoop]
     ) -> tuple[list[ComputationNode], list[ComputationNode]]:
-        # Extract the original node id. This should be a tuple of length one.
-        # The finer nodes we generate will have a tuple of length two, of format (original_node_id, finer_node_id)
         original_node_id = original_node.id
 
         # Take away the outer_temporal_loops to create finer CNs for this node
@@ -285,14 +252,8 @@ class GenerateCNWorkloadHybridStage(Stage):
 
         # Loop dimension + size of the finer nodes (called span here)
         finer_span = finer_node_attrs.layer_dim_sizes
-
-        # Get all loop dimensions that the original node has
         loop_dims = original_node.layer_dims
-
-        # Stop value of the outer-cn loops
         stop_values = [temporal_loop.size for temporal_loop in outer_temporal_loops]
-
-        # Number of cns there will be
         nb_cns = int(prod(stop_values))
 
         # Compute the data_reuse_factor (will be used as base_priority later) for the constant operands of all CNs
@@ -314,8 +275,8 @@ class GenerateCNWorkloadHybridStage(Stage):
             mult_factors.append(int(inner_span * outer_span))
 
         finer_nodes: list[ComputationNode] = []
-        groups = {}
         tensors: list[Tensor] = []
+        group_id_manager = GroupIdManager()
         for n in range(nb_cns):
             outer_loop_values: list[int] = []
             for i, outer_loop in enumerate(outer_temporal_loops):
@@ -343,9 +304,7 @@ class GenerateCNWorkloadHybridStage(Stage):
 
             # Add the loop ranges for this cn to a copy of the finer node attributes
             finer_node_attrs_copy = deepcopy(finer_node_attrs)
-
-            # Determine the group id of this layer based on the loop ranges
-            group_id, groups = GenerateCNWorkloadHybridStage.get_group_id(original_node, dim_min_max, groups)
+            group_id = group_id_manager.get_group_id(original_node, dim_min_max)
 
             # Create the computation node object with the computed ranges of the loop dimensions
             node_name = original_node.name
@@ -717,12 +676,16 @@ class GenerateCNWorkloadHybridStage(Stage):
             raise TensorDimensionMismatchException("Arrays to construct inter-layer edges must be equal shape.")
 
         inter_edges: set[tuple[ComputationNode, ComputationNode]] = set()
-        for consumer_array, producer_array in zip(producer_output_tensor.flat, consumer_input_tensor.flat):
-            for producer, cons in itertools.product(consumer_array, producer_array):
-                if not producer or not cons:
-                    # The producer/consumer array may contain a lot of 0
+        for producer_array, consumer_array in zip(producer_output_tensor.flat, consumer_input_tensor.flat):
+            for producer in producer_array:
+                # The producer/consumer array may contain a lot of 0
+                if not producer:
                     continue
-                inter_edges.add((producer, cons))
+                for consumer in consumer_array:
+                    if not consumer:
+                        continue
+
+                    inter_edges.add((producer, consumer))
         return inter_edges
 
     def get_tensor_cns(
