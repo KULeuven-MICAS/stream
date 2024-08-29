@@ -69,3 +69,9 @@ operational_array:
   multiplier_area: 1 # unit
   dimensions: [D1, D2]
   sizes: [32, 32]
+
+dataflows:
+  D1:
+    - K, 32
+  D2:
+    - C, 32
