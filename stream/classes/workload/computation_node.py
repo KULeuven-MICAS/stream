@@ -139,7 +139,7 @@ class ComputationNode(LayerNode, Node):
             return False
         return isinstance(other, ComputationNode) and self._static_hash_value == other._static_hash_value
 
-    def is_equal_extended(self, other: object) -> bool:
+    def has_same_performance(self, other: object) -> bool:
         """Compare the equality between two nodes.
         Two nodes are considered equal if they have equal hardware performance, which happens following attributes are
         equal:

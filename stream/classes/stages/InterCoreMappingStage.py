@@ -1,10 +1,10 @@
 import logging
+from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import LayerOperand
 from zigzag.hardware.architecture.Core import Core
 from zigzag.stages.Stage import Stage, StageCallable
-from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.opt.allocation.genetic_algorithm.fitness_evaluator import (
@@ -14,6 +14,7 @@ from stream.classes.opt.allocation.genetic_algorithm.genetic_algorithm import (
     GeneticAlgorithm,
 )
 from stream.classes.workload.computation_node import ComputationNode
+from stream.classes.workload.onnx_workload import ONNXWorkload
 from stream.utils import get_too_large_operands
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class InterCoreMappingStage(Stage):
         self,
         list_of_callables: list[StageCallable],
         *,
-        workload: Workload,
+        workload: ONNXWorkload,
         accelerator: Accelerator,
         node_hw_performances: dict[ComputationNode, dict[Core, CostModelEvaluation]],
         nb_ga_generations: int,
@@ -43,7 +44,7 @@ class InterCoreMappingStage(Stage):
         plot_full_schedule: bool = False,
         plot_data_transfer: bool = False,
         operands_to_prefetch: list[LayerOperand],
-        **kwargs,
+        **kwargs: Any,
     ):
         """Initialize the InterCoreMappingStage.
 
@@ -134,10 +135,6 @@ class InterCoreMappingStage(Stage):
             logger.info("Evaluating fixed layer-core allocation.")
             core_allocations = []
             (energy, latency, scme) = self.fitness_evaluator.get_fitness(core_allocations, return_scme=True)
-            # scme.plot_schedule(plot_full_schedule=self.plot_full_schedule,
-            #                    plot_data_transfer=self.plot_data_transfer,
-            #                    fig_path=f"outputs/schedule_plot{self.fig_path}fixed.png")
-            # scme.plot_memory_usage(fig_path=f"outputs/memory_usage_plot{self.fig_path}fixed.png")
             yield scme, None
         else:
             logger.info("Running Inter-Core Allocation Optimization with Genetic Algorithm.")
