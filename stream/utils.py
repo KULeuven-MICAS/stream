@@ -174,9 +174,7 @@ class NodeTensor(np.ndarray[Any, Any]):
         """Returns the number of points for which there are no ComputationNodes."""
         assert self.is_valid_shape_dimension(slices), "Last dimension of tensor is reserved for CNs"
         extended_slices = slices + (slice(0, self.__node_count),)
-        # tensor_slice = self.as_ndarray()[slices][: self.__node_count]
         tensor_slice = self.as_ndarray()[extended_slices]
-        # all_empty_mask = np.all(tensor_slice == 0, axis=-1)
         all_empty_mask = np.logical_and.reduce(tensor_slice == 0, axis=-1)
         return int(np.sum(all_empty_mask))
 
@@ -191,20 +189,11 @@ class NodeTensor(np.ndarray[Any, Any]):
         except IndexError:
             # Happens when all allocated space has been used up. Create new one and double allocated space
             new_tensor_np = np.concat((self, np.zeros(self.full_shape, dtype=object)), axis=-1)
-            assert new_tensor_np.shape[-1] == 2 * self.__pre_allocation_size
             new_tensor = NodeTensor(new_tensor_np, pre_allocation_size=2 * self.__pre_allocation_size)
             # Update the node pointer
-            assert self.__node_count == self.__pre_allocation_size
             new_tensor.__node_count = self.__node_count
             new_tensor = new_tensor.extend_with_node(slices, node)
-            print(f"EXTENDING TENSORNODE: {self.__pre_allocation_size}->{new_tensor.__pre_allocation_size}")
             return new_tensor
-
-        # # Slice of thickness 1
-        # new_tensor_slice = np.zeros(self.tensor_shape + (1,), dtype=object)
-        # new_tensor_slice[slices] = node
-
-        # return NodeTensor(np.concat((self, new_tensor_slice), axis=-1))
 
     def reshape(self, new_shape: tuple[int, ...] | None) -> "NodeTensor":  # type: ignore
         """Wrap the numpy reshape method such that the user is agnostic to the last dimension on which nodes are
@@ -227,6 +216,15 @@ class NodeTensor(np.ndarray[Any, Any]):
     def gather(self, gather_indices: int | list[int], axis: int) -> "NodeTensor":
         axis = axis - 1 if axis < 0 else axis
         return (np.take(self.as_ndarray(), gather_indices, axis=axis)).view(NodeTensor)
+
+    def concat_with_empty(self, shape: tuple[int, ...], axis: int, variable_input_first: bool):
+        emtpy_shape = self.convert_to_full_shape(shape)
+        empty_tensor = np.zeros(emtpy_shape, dtype=object)
+        axis = axis - 1 if axis < 0 else axis
+        if variable_input_first:
+            return np.concat((empty_tensor, self.as_ndarray()), axis=axis).view(NodeTensor)
+        else:
+            return np.concat((self.as_ndarray(), empty_tensor), axis=axis).view(NodeTensor)
 
     def __repr__(self):
         return f"TensorNode{self.tensor_shape}[depth={self.__node_count}]"

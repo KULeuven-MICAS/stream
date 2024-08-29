@@ -4,7 +4,7 @@ from stream.classes.workload.transpose_node import TransposeNode
 
 
 class TransposeParser(ONNXOperatorParser):
-    """Parses an onnx reshape operator into a ReshapeNode."""
+    """Parses an onnx reshape operator into a TransposeNode."""
 
     def run(self):
         return self.generate_layer_node_for_transpose()

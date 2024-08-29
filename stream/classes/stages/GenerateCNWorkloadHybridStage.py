@@ -17,6 +17,7 @@ from stream.classes.opt.splitting.splitting import (
 )
 from stream.classes.opt.splitting.TemporalLoop import TemporalLoop
 from stream.classes.workload.computation_node import ComputationNode, LoopRanges
+from stream.classes.workload.concat_node import ConcatNode
 from stream.classes.workload.dummy_node import DummyNode
 from stream.classes.workload.elementwise_node import ElementwiseNode
 from stream.classes.workload.flatten_node import FlattenNode
@@ -602,9 +603,9 @@ class GenerateCNWorkloadHybridStage(Stage):
 
         for path_between in self.workload.all_simple_paths(producer, consumer):
             # First node in the path is a ComputationNode, of which we extract the output operand dependency tensor
-            node = path_between[0]
-            assert isinstance(node, ComputationNode), "First node in path should be ComputationNode"
-            tensor = get_tensor_cn_for_op(node, dependent_operand=Constants.OUTPUT_LAYER_OP)
+            first_node = path_between[0]
+            assert isinstance(first_node, ComputationNode), "First node in path should be ComputationNode"
+            tensor = get_tensor_cn_for_op(first_node, dependent_operand=Constants.OUTPUT_LAYER_OP)
 
             # Propagate through intermediate, non-computation nodes
             for _, node in enumerate(path_between[1:-1], start=1):
@@ -613,24 +614,64 @@ class GenerateCNWorkloadHybridStage(Stage):
                 tensor = self.propagate_cn_production_for_non_cn(node, tensor)
 
             # Final node: Computation node
-            final_node = path_between[-1]
+            final_node: ComputationNode = path_between[-1]  # type: ignore
             assert isinstance(final_node, ComputationNode), "Last node in path should be ComputationNode"
+
             # Find the operand for which this last node connects to its predecessor
             dependent_operand = next(
                 op for op, dependent_node_id in final_node.input_operand_source.items() if dependent_node_id == node.id
             )
 
-            try:
+            # Error handling of shape mismatches in tensor propagation
+            def get_final_tensor_alt_operand():
+                """Error handling case 1: sources for `W` and `I` operand are swapped for this node
+                -> try the other one"""
+                try:
+                    alt_operand = next(op for op in final_node.input_operand_source if op != dependent_operand)
+                except StopIteration:
+                    # No alt operand was found -> we're still in trouble
+                    raise TensorDimensionMismatchException
+                return get_tensor_cn_for_op(final_node, alt_operand)
+
+            def get_shape_inferred_propagated_tensor(tensor: NodeTensor, final_tensor: NodeTensor):
+                """Error handling case 2: dimensions of ComputationNode (`final_tensor`) were altered by stream
+                (e.g. to be properly divisible) but this is not reflected in `ConcatNode` with constant shape.
+                 -> manually fix shape"""
+                if not any(isinstance(node, ConcatNode) for node in path_between[1:-1]):
+                    raise TensorDimensionMismatchException(
+                        "This function only solves the case of errors due to constant shapes in ConcatNode"
+                    )
+
+                target_shape = final_tensor.tensor_shape
+                propagated_shape = tensor.tensor_shape
+                extension_axis = next(i for i in range(len(target_shape)) if target_shape[i] != propagated_shape[i])
+                extension_value = target_shape[extension_axis] - propagated_shape[extension_axis]
+                if extension_value <= 0:
+                    raise TensorDimensionMismatchException(
+                        "Propagated shape cannot be larger than (extended) found shape"
+                    )
+                extension_shape = tuple(
+                    val if i != extension_axis else extension_value for i, val in enumerate(target_shape)
+                )
+                return tensor.concat_with_empty(extension_shape, extension_axis, variable_input_first=False)
+
+            try:  # Regular case
                 final_tensor = get_tensor_cn_for_op(final_node, dependent_operand)
                 inter_edges = self.get_inter_edges_tensor_based(tensor, final_tensor)
-            except TensorDimensionMismatchException as exc:
-                try:
-                    # Possible cause: Sources for `W` and `I` operand are swapped for this node -> try the other one
-                    dependent_operand = next(op for op in final_node.input_operand_source if op != dependent_operand)
-                    final_tensor = get_tensor_cn_for_op(final_node, dependent_operand)
+            except TensorDimensionMismatchException:
+                try:  # Error case 1
+                    final_tensor = get_final_tensor_alt_operand()
                     inter_edges = self.get_inter_edges_tensor_based(tensor, final_tensor)
-                except StopIteration:
-                    raise exc
+                except TensorDimensionMismatchException:
+                    try:  # Error case 2
+                        final_tensor = get_tensor_cn_for_op(final_node, dependent_operand)
+                        tensor = get_shape_inferred_propagated_tensor(tensor, final_tensor)
+                        inter_edges = self.get_inter_edges_tensor_based(tensor, final_tensor)
+                    except TensorDimensionMismatchException:
+                        # Error case 1 and 2 combined
+                        final_tensor = get_final_tensor_alt_operand()
+                        tensor = get_shape_inferred_propagated_tensor(tensor, final_tensor)
+                        inter_edges = self.get_inter_edges_tensor_based(tensor, final_tensor)
 
             for producer, cons in inter_edges:
                 all_inter_edges.append(
@@ -646,21 +687,23 @@ class GenerateCNWorkloadHybridStage(Stage):
         return all_inter_edges
 
     def propagate_cn_production_for_non_cn(self, node: Node, input_tensor: NodeTensor) -> NodeTensor:
-        if isinstance(node, ReshapeNode):
-            output_tensor = node.reshape_operand_tensor(input_tensor)
-        elif isinstance(node, TransposeNode):
-            output_tensor = node.transpose(input_tensor)
-        elif isinstance(node, LpNormalizationNode):
-            output_tensor = node.lpnormalization_operand_tensor(input_tensor)
-        elif isinstance(node, FlattenNode):
-            output_tensor = node.flatten(input_tensor)
-        elif isinstance(node, ElementwiseNode):
-            output_tensor = input_tensor.copy()
-        elif isinstance(node, GatherNode):
-            output_tensor = node.gather_operand_tensor(input_tensor)
-        else:
-            raise NotImplementedError(f"Tensor propagation not implemented for node {node.name}.")
-        return output_tensor
+        match node:
+            case ReshapeNode():
+                return node.reshape_operand_tensor(input_tensor)
+            case TransposeNode():
+                return node.transpose(input_tensor)
+            case LpNormalizationNode():
+                return node.lpnormalization_operand_tensor(input_tensor)
+            case FlattenNode():
+                return node.flatten(input_tensor)
+            case ElementwiseNode():
+                return input_tensor.copy()
+            case GatherNode():
+                return node.gather_operand_tensor(input_tensor)
+            case ConcatNode():
+                return node.concat(input_tensor)
+            case _:
+                raise NotImplementedError(f"Tensor propagation not implemented for node {node.name}.")
 
     @staticmethod
     def get_inter_edges_tensor_based(producer_output_tensor: NodeTensor, consumer_input_tensor: NodeTensor):
