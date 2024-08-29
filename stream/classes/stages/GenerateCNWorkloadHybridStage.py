@@ -18,6 +18,7 @@ from stream.classes.opt.splitting.splitting import (
 from stream.classes.opt.splitting.TemporalLoop import TemporalLoop
 from stream.classes.workload.computation_node import ComputationNode, LoopRanges
 from stream.classes.workload.concat_node import ConcatNode
+from stream.classes.workload.dnn_workload import DNNWorkloadStream
 from stream.classes.workload.dummy_node import DummyNode
 from stream.classes.workload.elementwise_node import ElementwiseNode
 from stream.classes.workload.flatten_node import FlattenNode
@@ -141,7 +142,7 @@ class GenerateCNWorkloadHybridStage(Stage):
         return sorted(((n.id, n.sub_id) for n in workload.node_list), reverse=True)
 
     @staticmethod
-    def get_all_node_pairs(G: ONNXWorkload) -> tuple[tuple[ComputationNode, ComputationNode, bool], ...]:
+    def get_all_node_pairs(G: DNNWorkloadStream) -> tuple[tuple[ComputationNode, ComputationNode, bool], ...]:
         pairs: list[tuple[ComputationNode, ComputationNode, bool]] = []
         for node in G.topological_sort():
             if not isinstance(node, ComputationNode):

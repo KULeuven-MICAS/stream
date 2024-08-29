@@ -1,15 +1,15 @@
 import logging
 from typing import Any
 
-from zigzag.workload.DNNWorkload import DNNWorkload
 from zigzag.workload.layer_node import LayerNode
 
 from stream.classes.workload.computation_node import ComputationNode
+from stream.utils import DiGraphWrapper
 
 logger = logging.getLogger(__name__)
 
 
-class DNNWorkloadStream(DNNWorkload):
+class DNNWorkloadStream(DiGraphWrapper[ComputationNode]):
     def __init__(self, nodes: list[LayerNode], **attr: Any):
         """
         Collect all the algorithmic workload information here.
@@ -17,12 +17,10 @@ class DNNWorkloadStream(DNNWorkload):
 
         :return (self): Directed Graph with nodes the layers and edges the connections between layers.
         """
-        super().__init__(**attr)
+        super().__init__()  # type: ignore
 
         layer_id_to_obj: dict[int, ComputationNode] = {}
         self.layer_node_list = nodes
-
-        # workload_saved = copy.deepcopy(workload)
 
         for node in nodes:
             # Create ComputationNode
@@ -37,8 +35,7 @@ class DNNWorkloadStream(DNNWorkload):
                 node_input_names = ["the_first_input"]
 
             # Assume always define the final layer in the end
-            # produces_final_output = not layer_output_names # TODO don't understand this old piece of code
-            produces_final_output = False
+            produces_final_output = not node_output_names
 
             op_type = node.type.lower()
             node_attr = node.extract_node_attr()
@@ -55,14 +52,14 @@ class DNNWorkloadStream(DNNWorkload):
             # Add to graph
             logger.info("Parsed layer node %s | INPUT %s | OUTPUT %s", node_name, node_input_names, node_output_names)
             layer_id_to_obj[computation_node.id] = computation_node
-            self.add_workload_node(computation_node)
+            self.add_node(computation_node)
 
             # Find all of its operand sources and add edges accordingly
-            edges: list[tuple[LayerNode, LayerNode]] = []
+            edges: list[tuple[ComputationNode, ComputationNode]] = []
             for _, parent_id in node.input_operand_source.items():
                 # for parent_id in parent_list:
                 if parent_id not in layer_id_to_obj:
                     raise ValueError(f"Illegal reference to non-existent layer with id {parent_id}")
                 parent_node = layer_id_to_obj[parent_id]
                 edges.append((parent_node, computation_node))
-            self.add_workload_edges_from(edges)
+            self.add_edges_from(edges)
