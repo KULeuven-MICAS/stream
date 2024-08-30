@@ -63,9 +63,15 @@ memories:
         th: r_port_1
     served_dimensions: [D1, D2]
 
-multipliers:
+operational_array:
   input_precision: [8, 8]
   multiplier_energy: 0.04 # pJ
   multiplier_area: 1 # unit
   dimensions: [D1, D2]
   sizes: [32, 32]
+
+dataflows:
+  D1:
+    - K, 32
+  D2:
+    - C, 32

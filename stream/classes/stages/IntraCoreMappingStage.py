@@ -1,5 +1,6 @@
 import logging
 import os
+from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
@@ -8,16 +9,16 @@ from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
 from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.stages.CostModelStage import CostModelStage
-from zigzag.stages.LomaStage import LomaStage
 from zigzag.stages.MainStage import MainStage
 from zigzag.stages.reduce_stages import MinimalLatencyStage
 from zigzag.stages.SpatialMappingGeneratorStage import SpatialMappingGeneratorStage
-from zigzag.stages.Stage import Stage
+from zigzag.stages.Stage import Stage, StageCallable
+from zigzag.stages.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
 from zigzag.utils import pickle_deepcopy
-from zigzag.workload.Workload import Workload
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode
+from stream.classes.workload.onnx_workload import ComputationNodeWorkload
 from stream.utils import load_scme, save_scme
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,
@@ -32,7 +33,13 @@ class IntraCoreMappingStage(Stage):
     """
 
     def __init__(
-        self, list_of_callables, *, workload: Workload, accelerator: Accelerator, loma_lpf_limit: int, **kwargs
+        self,
+        list_of_callables: list[StageCallable],
+        *,
+        workload: ComputationNodeWorkload,
+        accelerator: Accelerator,
+        loma_lpf_limit: int,
+        **kwargs: Any,
     ):
         """
         Initialize the stage by:
@@ -48,9 +55,7 @@ class IntraCoreMappingStage(Stage):
 
         # Extract all unique nodes that will have to be evaluated
         self.unique_nodes: list[ComputationNode] = []
-        for node in self.workload.nodes():
-            if not isinstance(node, ComputationNode):
-                continue
+        for node in self.workload.node_list:
             equal_nodes = list(
                 (
                     unique_node
@@ -88,20 +93,12 @@ class IntraCoreMappingStage(Stage):
             # TODO This should never evaluate to true: enforce core_allocation as list everywhere
             if isinstance(self.valid_allocations[node], tuple):
                 raise ValueError
-                # try:
-                #     core_ids = (self.valid_allocations[node][node.group],)
-                # except IndexError:
-                #     nb_groups = len(set((n.group for n in self.workload.nodes() if n.id == node)))
-                #     assert (
-                #         len(self.valid_allocations[node]) == 1
-                #     ), f"Fixed mapping for {node.name} should contain {nb_groups} entries."
-                #     core_ids = (self.valid_allocations[node][0],)
             else:
                 core_ids = self.valid_allocations[node]
             for core_id in core_ids:
                 core = self.accelerator.get_core(core_id)
                 # Offchip memory core doesn't have operational units
-                if core.operational_array.total_area == 0:
+                if core.operational_array.total_unit_count == 0:
                     continue
                 # It's possible this node might not fully fit within the core's top level memories. If so, we update
                 #  the core
@@ -117,44 +114,51 @@ class IntraCoreMappingStage(Stage):
                         raise TypeError(f"Given node_hw_performances for node {node} and core {core} is not a CME.")
                     cme = self.given_node_hw_performances[node][core]
                     self.node_hw_performances[node][core] = cme
-                # Check if this (node, core) combination has already been optimized during this run
-                elif self.node_hw_performances and any(
-                    (node == processed_node for processed_node in self.node_hw_performances)
-                ):
-                    equal_node = next(
-                        processed_node for processed_node in self.node_hw_performances if node == processed_node
-                    )
-                    if self.node_hw_performances[equal_node] and any(
-                        (core == processed_core for processed_core in self.node_hw_performances[equal_node])
-                    ):
-                        # Find the core that is equal
-                        equal_core = next(
-                            processed_core
-                            for processed_core in self.node_hw_performances[equal_node]
-                            if core == processed_core
+                else:
+                    # Check if this (node, core) combination has already been optimized during this run
+                    try:
+                        equal_node = next(
+                            processed_node
+                            for processed_node in self.node_hw_performances
+                            if node.has_same_performance(processed_node)
                         )
-                        cme = self.node_hw_performances[equal_node][equal_core]
-                        self.node_hw_performances[node][core] = cme
-                        self.save_node_hw_performances()
-                    # Compute this (node, core) combination's optimal mapping
-                    else:
-                        # Set the node's core allocation to the core_id we want to extract hw performance for
-                        node.set_core_allocation(core_id)
-                        # Set the node's spatial mapping to the possible spatial mappings of the current core
-                        node.spatial_mapping = core.dataflows if core.dataflows is not None else SpatialMapping.empty()
-                        # Initialize the flow that will be followed to extract the optimal HW performance of every
-                        #  unique node-core allocation
-                        main_stage = self.get_intra_core_mapping_flow(
-                            node=node,
-                            too_large_operands=too_large_operands_for_cme,
-                            core_id=core_id,
-                        )
-                        answers = main_stage.run()
-                        assert len(answers) == 1, "IntraCoreMappingStage's subflow returned more than one CME"
-                        cme = answers[0][0]
-                        node.core_allocation = None  # Reset the node's core allocation
-                        self.node_hw_performances[node][core] = cme
-                        self.save_node_hw_performances()  # Save the hw performances dict after every node is finished
+
+                        try:
+                            # Find the core that is equal
+                            equal_core = next(
+                                processed_core
+                                for processed_core in self.node_hw_performances[equal_node]
+                                if core == processed_core
+                            )
+                            cme = self.node_hw_performances[equal_node][equal_core]
+                            self.node_hw_performances[node][core] = cme
+                            self.save_node_hw_performances()
+                        # else:
+                        except StopIteration or KeyError:
+                            # Compute this (node, core) combination's optimal mapping
+                            # Set the node's core allocation to the core_id we want to extract hw performance for
+                            node.set_core_allocation(core_id)
+                            # Set the node's spatial mapping to the possible spatial mappings of the current core
+                            node.spatial_mapping = (
+                                core.dataflows if core.dataflows is not None else SpatialMapping.empty()
+                            )
+                            # Initialize the flow that will be followed to extract the optimal HW performance of every
+                            #  unique node-core allocation
+                            main_stage = self.get_intra_core_mapping_flow(
+                                node=node,
+                                too_large_operands=too_large_operands_for_cme,
+                                core_id=core_id,
+                            )
+                            answers = main_stage.run()
+                            assert len(answers) == 1, "IntraCoreMappingStage's subflow returned more than one CME"
+                            cme: CostModelEvaluation = answers[0][0]  # type: ignore
+                            # TODO should this be `chosen_core_allocation`?
+                            node.core_allocation = None  # Reset the node's core allocation
+                            self.node_hw_performances[node][core] = cme
+                            self.save_node_hw_performances()
+                    except StopIteration:
+                        # No equal node found in node hardware performances
+                        pass
         self.visualize_node_hw_performances()
         kwargs = self.kwargs.copy()
         kwargs["workload"] = self.workload
@@ -178,7 +182,7 @@ class IntraCoreMappingStage(Stage):
             if "visualize_node_hw_performances_path":
                 # Get the scale factors
                 scale_factors = {
-                    n.id: len(list(cn for cn in self.workload if cn == n)) for n in self.node_hw_performances
+                    n.id: len([cn for cn in self.workload.node_list if cn == n]) for n in self.node_hw_performances
                 }
                 # Run the visualization
                 visualize_node_hw_performances_pickle(
@@ -200,12 +204,12 @@ class IntraCoreMappingStage(Stage):
                 MinimalLatencyStage,
                 SpatialMappingGeneratorStage,  # Generates multiple spatial mappings (SM)
                 MinimalLatencyStage,  # Reduces all CMEs, returning minimal latency one
-                LomaStage,  # Generates multiple temporal mappings (TM)
+                TemporalMappingGeneratorStage,  # Generates multiple temporal mappings (TM)
                 CostModelStage,  # Evaluates generated SM and TM through cost model
             ],
             layer=node,
             accelerator=accelerator,  # required by a number of stages
-            loma_lpf_limit=self.loma_lpf_limit,  # required by LomaStage
+            loma_lpf_limit=self.loma_lpf_limit,  # required by LomaEngine
             loma_show_progress_bar=self.loma_show_progress_bar,
         )
         return main_stage
@@ -240,11 +244,11 @@ class IntraCoreMappingStage(Stage):
         Returns:
             list: A list of memory operands for which the capacity on the core is insufficient.
         """
-        too_large_operands_for_cme = []
+        too_large_operands_for_cme: list[MemoryOperand] = []
 
         # Step 1: get all the unique top level memories of the core
         memory_hierarchy_dict = core.mem_hierarchy_dict
-        top_memories = [memory[-1] for (mem_op, memory) in memory_hierarchy_dict.items()]
+        top_memories = [memory[-1] for (_, memory) in memory_hierarchy_dict.items()]
         unique_top_memories = set(top_memories)
 
         # Step 2: for each top level memory, for each operand this memory holds, calculate the required capacity
@@ -256,26 +260,31 @@ class IntraCoreMappingStage(Stage):
             top_level_capacity = top_memory.memory_instance.size
             memory_operands = list(top_memory.mem_level_of_operands.keys())
             layer_operands = [memory_operand_link.mem_to_layer_op(mem_operand) for mem_operand in memory_operands]
-            bits_to_be_stored_in_top_level = {}
+            bits_to_be_stored_in_top_level: dict[MemoryOperand, int] = {}
             for layer_operand, memory_operand in zip(layer_operands, memory_operands):
-                # if the operand is constant operand (e.g. 'W' and the first layer's 'I') or output operand, required
-                # capacity is gotten from the node directly
+                # Case 1: constant operand (e.g. 'W' and the first layer's 'I') or output operand
                 if layer_operand in constant_operands + [output_operand]:
-                    bits_to_be_stored_in_top_level[memory_operand] = node.operand_size_bit[layer_operand]
-                # if the operand is variable input operand, required capacity is calculated by summing up the the total
-                #  data amount on the in edges,
-                # which can be larger than the ideal required data size
-                else:
-                    bits_to_be_stored_in_top_level[memory_operand] = 0
+                    nb_bits = node.operand_size_bit[layer_operand]
+                # Case 2: variable operand -> sum up the the total data amount on the in edges
+                # (can be larger than the ideal required data size)
+                elif len(self.workload.in_edges(node)) > 0:
                     in_edges_data = [data for (_, _, data) in self.workload.in_edges(node, data=True)]
-                    for edge_data in (d for d in in_edges_data if "operand" in d and d["operand"] == layer_operand):
-                        bits_to_be_stored_in_top_level[memory_operand] += edge_data["bits"]
+                    nb_bits = sum(
+                        [
+                            data["bits"]
+                            for data in in_edges_data
+                            if "operand" in data and data["operand"] == layer_operand
+                        ]
+                    )
+                # Case 3: not constant, but no edges found
+                else:
+                    nb_bits = node.operand_size_bit[layer_operand]
+
+                bits_to_be_stored_in_top_level[memory_operand] = nb_bits
             total_required_capacity = sum(bits_to_be_stored_in_top_level.values())
 
             # Step 3: compare the total required capacity with the top level memory capacity
-            if total_required_capacity <= top_level_capacity:
-                pass
-            else:
+            if top_level_capacity < total_required_capacity:
                 # when the memory capacity is smaller than the requirement,
                 # sort the required capacity of each operand that shares this memory based on the operand's required
                 #  size, from small to large
@@ -305,7 +314,7 @@ class IntraCoreMappingStage(Stage):
                         top_level_capacity,
                     )
                     required_capacity = self.get_too_large_operands_minimal_required_capacity_in_top_level_memory(
-                        operands_stored_in_offchip, core.dataflows, node, core
+                        operands_stored_in_offchip, core
                     )
                     while rest_capacity < required_capacity:
                         # put_the_largest operands_stored_in_top_level to operands_stored_in_offchip
@@ -324,7 +333,7 @@ class IntraCoreMappingStage(Stage):
                             top_level_capacity,
                         )
                         required_capacity = self.get_too_large_operands_minimal_required_capacity_in_top_level_memory(
-                            operands_stored_in_offchip, core.dataflows, node
+                            operands_stored_in_offchip, core
                         )
 
                 too_large_operands_for_cme += operands_stored_in_offchip
@@ -332,9 +341,9 @@ class IntraCoreMappingStage(Stage):
 
     @staticmethod
     def get_top_level_memory_rest_capacity(
-        operands_stored_in_top_level,
-        bits_to_be_stored_in_top_level,
-        top_level_capacity_bits,
+        operands_stored_in_top_level: list[MemoryOperand],
+        bits_to_be_stored_in_top_level: dict[MemoryOperand, int],
+        top_level_capacity_bits: int,
     ) -> int:
         """Calculate the remaining capacity in the top level core memory after storing the operands_stored_in_top_level
 
@@ -354,8 +363,6 @@ class IntraCoreMappingStage(Stage):
     def get_too_large_operands_minimal_required_capacity_in_top_level_memory(
         self,
         operands_stored_in_offchip: list[MemoryOperand],
-        dataflows: SpatialMapping,
-        node: ComputationNode,
         core: Core,
     ) -> int:
         """Calculate the required capacity in the top level core memory for operands_stored_in_offchip due to spatial

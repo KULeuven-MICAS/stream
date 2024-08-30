@@ -1,10 +1,10 @@
 import logging
+from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import LayerOperand
 from zigzag.hardware.architecture.Core import Core
 from zigzag.stages.Stage import Stage, StageCallable
-from zigzag.workload.Workload import Workload
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.opt.allocation.genetic_algorithm.fitness_evaluator import (
@@ -14,6 +14,7 @@ from stream.classes.opt.allocation.genetic_algorithm.genetic_algorithm import (
     GeneticAlgorithm,
 )
 from stream.classes.workload.computation_node import ComputationNode
+from stream.classes.workload.onnx_workload import ONNXWorkload
 from stream.utils import get_too_large_operands
 
 logger = logging.getLogger(__name__)
@@ -33,7 +34,7 @@ class InterCoreMappingStage(Stage):
         self,
         list_of_callables: list[StageCallable],
         *,
-        workload: Workload,
+        workload: ONNXWorkload,
         accelerator: Accelerator,
         node_hw_performances: dict[ComputationNode, dict[Core, CostModelEvaluation]],
         nb_ga_generations: int,
@@ -43,7 +44,7 @@ class InterCoreMappingStage(Stage):
         plot_full_schedule: bool = False,
         plot_data_transfer: bool = False,
         operands_to_prefetch: list[LayerOperand],
-        **kwargs,
+        **kwargs: Any,
     ):
         """Initialize the InterCoreMappingStage.
 
@@ -70,7 +71,7 @@ class InterCoreMappingStage(Stage):
         self.scheduling_order = kwargs.get("scheduling_order", None)
 
         # Determine the set of all (layer, group) combinations to be allocated separately
-        self.layer_groups: list[tuple[int, int]] = sorted(set((n.id, n.group) for n in self.workload.nodes()))
+        self.layer_groups: list[tuple[int, int]] = sorted(set((n.id, n.group) for n in self.workload.node_list))
 
         # self.coarse_node_ids contains all the original node (aka layers) ids of the original graph
         self.unique_nodes = list(set((n for n, _ in self.node_hw_performances.items())))
@@ -119,7 +120,7 @@ class InterCoreMappingStage(Stage):
         # Extract the value range each gene in the individual can have.
         # This ranges from 0 to the max core index.
         # TODO There might be some case where a core is not possible, so it shouldnt be tried by the GA
-        core_ids: list[int] = sorted([core.id for core in self.accelerator.cores.nodes()])
+        core_ids: list[int] = sorted([core.id for core in self.accelerator.cores.node_list])
         self.core_id_range = (min(core_ids), max(core_ids))
         self.nb_cores = max(core_ids) - min(core_ids) + 1  # Assuming they are incrementing with step size 1
 
@@ -134,10 +135,6 @@ class InterCoreMappingStage(Stage):
             logger.info("Evaluating fixed layer-core allocation.")
             core_allocations = []
             (energy, latency, scme) = self.fitness_evaluator.get_fitness(core_allocations, return_scme=True)
-            # scme.plot_schedule(plot_full_schedule=self.plot_full_schedule,
-            #                    plot_data_transfer=self.plot_data_transfer,
-            #                    fig_path=f"outputs/schedule_plot{self.fig_path}fixed.png")
-            # scme.plot_memory_usage(fig_path=f"outputs/memory_usage_plot{self.fig_path}fixed.png")
             yield scme, None
         else:
             logger.info("Running Inter-Core Allocation Optimization with Genetic Algorithm.")
@@ -191,7 +188,7 @@ class InterCoreMappingStage(Stage):
 
             nodes: list[ComputationNode] = [
                 n
-                for n in self.workload.nodes()
+                for n in self.workload.node_list
                 if n == non_flexible_unique_node and n.group == non_flexible_unique_node.group
             ]
             for node in nodes:

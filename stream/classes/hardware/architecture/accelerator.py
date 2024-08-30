@@ -1,7 +1,5 @@
 from math import ceil
-from typing import Iterator
 
-from networkx import DiGraph
 from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.Core import Core
 from zigzag.hardware.architecture.MemoryInstance import MemoryInstance
@@ -9,7 +7,13 @@ from zigzag.mapping.spatial_mapping import SpatialMapping
 
 from stream.classes.cost_model.communication_manager import CommunicationManager
 from stream.classes.cost_model.memory_manager import MemoryManager
+from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.workload.tensor import Tensor
+from stream.utils import DiGraphWrapper
+
+
+class CoreGraph(DiGraphWrapper[Core]):
+    """Represents the core structure of an accelerator"""
 
 
 class Accelerator:
@@ -22,7 +26,7 @@ class Accelerator:
     def __init__(
         self,
         name: str,
-        cores: DiGraph,
+        cores: CoreGraph,
         offchip_core_id: int | None = None,
     ):
         self.name = name
@@ -48,36 +52,38 @@ class Accelerator:
         Return the core with id 'core_id'.
         Raises ValueError() when a core_id is not found in the available cores.
         """
-        core = next((core for core in self.core_iterator if core.id == core_id), None)
+        core = next((core for core in self.core_list if core.id == core_id), None)
         if core is None:
             raise ValueError(f"Requested core with id {core_id} is not present in accelerator.")
         return core
 
     @property
-    def core_iterator(self) -> Iterator[Core]:
-        return self.cores.nodes()
+    def core_list(self) -> list[Core]:
+        return list(self.cores.node_list)
 
     def spawn(
         self,
         tensor: Tensor,
         core: Core,
-        memory_op: str,
+        memory_op: MemoryOperand,
         initial_timestep: int,
         available_timestep: int,
     ):
         """Spawns a tensor on a core.
 
         Args:
-            tensor (Tensor): The tensor to be spawned.
-            core (Core): The core on which to spawn the tensor.
-            memory_op (str): The memory operand on the core where the tensor will spawn.
-            initial_timestep (int): The timestep at which space will be reserved for the tensor.
-            available_timestep (int): The timestep at which the tensor will become available. Different from
+            tensor: The tensor to be spawned.
+            core: The core on which to spawn the tensor.
+            memory_op: The memory operand on the core where the tensor will spawn.
+            initial_timestep: The timestep at which space will be reserved for the tensor.
+            available_timestep: The timestep at which the tensor will become available. Different from
             initial_timestep when it is transferred.
         """
         self.memory_manager.add_tensor_to_core(tensor, core, initial_timestep, available_timestep, memory_op)
 
-    def remove(self, tensor, core, memory_op, timestep, write_back_to_offchip=False):
+    def remove(
+        self, tensor: Tensor, core: Core, memory_op: MemoryOperand, timestep: int, write_back_to_offchip: bool = False
+    ):
         """Remove tensor from core. If required, transfer to offchip before removal.
 
         Args:
@@ -87,7 +93,7 @@ class Accelerator:
             timestep (int): The timestep to remove the tensor at.
             write_back_to_offchip (bool, optional): Write the tensor to offchip before removal. Defaults to False.
         """
-
+        assert self.offchip_core_id is not None
         ################################# STEP 1 #################################
         # Transfer the tensor to off-chip if required and not present there
         link_energy_cost = 0
@@ -96,6 +102,7 @@ class Accelerator:
         should_be_written_to_offchip = write_back_to_offchip and not self.contains_tensor(tensor, offchip_instance)
         current_timestep = timestep
         if should_be_written_to_offchip:
+            assert self.offchip_core_id is not None
             (
                 transfer_end,
                 transfer_link_energy_cost,
@@ -129,7 +136,14 @@ class Accelerator:
 
         return current_timestep, link_energy_cost, memory_energy_cost
 
-    def remove_all(self, core, memory_operand, timestep, exceptions=[], write_back_to_offchip=False):
+    def remove_all(
+        self,
+        core: Core,
+        memory_operand: MemoryOperand,
+        timestep: int,
+        exceptions: list[Tensor] = [],
+        write_back_to_offchip: bool = False,
+    ):
         """Remove all tensors from a core's memory with the given memory operand.
         If required, the tensors are written back to offchip before removal.
 
@@ -160,7 +174,7 @@ class Accelerator:
         core: Core,
         memory_op: MemoryOperand,
         timestep: int,
-        tensors_to_avoid_evicting: list = [],
+        tensors_to_avoid_evicting: list[Tensor] = [],
     ):
         """Make space for the given tensor on the given core by evicting already stored tensors if necessary.
 
@@ -221,7 +235,7 @@ class Accelerator:
         tensor_operand: MemoryOperand,
         non_evictable_tensors: list[Tensor],
         sending_core_id: int | None = None,
-    ):
+    ) -> tuple[int, float, float, float, float, bool]:
         """
         Transfer a tensor to a given core id.
         If the tensor is already present on the receiving core, nothing happens.
@@ -262,10 +276,7 @@ class Accelerator:
                 tensor.equality_hash()
             ]
         else:
-            (
-                instances_storing_tensor,
-                available_since_timesteps,
-            ) = self.find_tensor_in_top_instances(tensor)
+            (_, available_since_timesteps) = self.find_tensor_in_top_instances(tensor)
             # Pick the core that has stored the tensor the longest
             available_since_timestep = min(available_since_timesteps.values())
             storing_instance = next(
@@ -310,9 +321,7 @@ class Accelerator:
             links,
             evictions_complete_timestep,
             transfer_duration,
-            [
-                tensor,
-            ],
+            [tensor],
         )
         transfer_end = transfer_start + transfer_duration
         ################################# STEP 5 #################################
@@ -365,10 +374,10 @@ class Accelerator:
     def get_memory_energy_cost_of_transfer(
         self,
         tensor: Tensor,
-        sender: Core or int,
-        receiver: Core or int,
-        sender_memory_operand: str,
-        receiver_memory_operand: str,
+        sender: Core | int,
+        receiver: Core | int,
+        sender_memory_operand: MemoryOperand,
+        receiver_memory_operand: MemoryOperand,
     ):
         # Convert given sender and receiver to Core object if given as ids
         if isinstance(sender, int):
@@ -388,7 +397,14 @@ class Accelerator:
 
         return sender_energy + receiver_energy
 
-    def block_offchip_links(self, too_large_operands, core_id, start_timestep, duration, cn) -> int:
+    def block_offchip_links(
+        self,
+        too_large_operands: list[MemoryOperand],
+        core_id: int,
+        start_timestep: int,
+        duration: int,
+        cn: ComputationNode,
+    ) -> int:
         return self.communication_manager.block_offchip_links(too_large_operands, core_id, start_timestep, duration, cn)
 
     def contains_tensor(self, tensor: Tensor, top_instance: int | MemoryInstance):
@@ -404,14 +420,14 @@ class Accelerator:
     def find_tensor_in_top_instances(self, tensor: Tensor):
         return self.memory_manager.find_tensor_in_top_instances(tensor)
 
-    def has_shared_memory(self, core_id_a, core_id_b, mem_op_a, mem_op_b):
+    def has_shared_memory(self, core_id_a: int, core_id_b: int, mem_op_a: MemoryOperand, mem_op_b: MemoryOperand):
         """Check whether two cores have a shared top level memory instance for a given memory operand.
 
         Args:
-            core_id_a (int): The first core id.
-            core_id_b (int): The second core id.
-            mem_op_a (str): The memory operand for the tensor in core a.
-            mem_op_b (str): The memory operand for the tensor in core b.
+            core_id_a : The first core id.
+            core_id_b : The second core id.
+            mem_op_a : The memory operand for the tensor in core a.
+            mem_op_b : The memory operand for the tensor in core b.
         """
         core_a = self.get_core(core_id_a)
         core_b = self.get_core(core_id_b)

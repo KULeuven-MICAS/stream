@@ -1,7 +1,7 @@
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.hardware.architecture.Core import Core
 from zigzag.utils import pickle_deepcopy
-from zigzag.workload.Workload import Workload
+from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 
 from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 from stream.classes.hardware.architecture.accelerator import Accelerator
@@ -81,7 +81,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
             # Find all nodes of this coarse id and set their core_allocation, energy and runtime
             nodes = (
                 node
-                for node in self.workload.nodes()
+                for node in self.workload.node_list
                 if isinstance(node, ComputationNode) and node.id == layer_id and node.group == group_id
             )
             for node in nodes:

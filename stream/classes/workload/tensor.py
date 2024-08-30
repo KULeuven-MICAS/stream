@@ -1,11 +1,14 @@
 from typing import TYPE_CHECKING
 
-from networkx import DiGraph
 from zigzag.datatypes import LayerDim, LayerOperand
 
 if TYPE_CHECKING:
+    from zigzag.hardware.architecture.MemoryInstance import MemoryInstance
+
+    from stream.classes.cost_model.memory_manager import MemoryManager
     from stream.classes.hardware.architecture.accelerator import Accelerator
     from stream.classes.workload.computation_node import ComputationNode
+    from stream.classes.workload.onnx_workload import ComputationNodeWorkload
 
 
 class Tensor:
@@ -36,8 +39,8 @@ class Tensor:
         self.memory_operand = self.origin.memory_operand_links.layer_to_mem_op(layer_operand)
         self.loop_dimensions = loop_dimensions
         self.loop_ranges = loop_ranges
-        self.base_priority = None  # Will be set when we know how many successors this node has (static)
-        self.instance_priorities = {}
+        self.base_priority: None | int = None  # Will be set when we know how many successors this node has (static)
+        self.instance_priorities: dict[MemoryInstance, int] = {}
         self.id = (self.origin.id, self.origin.sub_id, layer_operand)
 
     def __str__(self) -> str:
@@ -55,19 +58,13 @@ class Tensor:
     def __lt__(self, __o: object) -> bool:
         return isinstance(__o, Tensor) and self.size < __o.size
 
-    # def __eq__(self, __o: object) -> bool:
-    #     return isinstance(__o, Tensor) and \
-    #         self.origin.id == __o.origin.id and \
-    #         self.layer_operand == __o.layer_operand and \
-    #         self.loop_ranges == __o.loop_ranges
-
     def equality_hash(self):
         return hash((self.origin.id, self.layer_operand, self.loop_ranges))
 
-    def set_base_priorities(self, base_priority):
+    def set_base_priorities(self, base_priority: int):
         self.base_priority = base_priority
 
-    def get_instance_priority(self, top_instance, memory_manager):
+    def get_instance_priority(self, top_instance: "MemoryInstance", memory_manager: "MemoryManager"):
         if top_instance in self.instance_priorities:
             return self.instance_priorities[top_instance]
         else:
@@ -80,7 +77,9 @@ class Tensor:
             )
             return not_storing_priority
 
-    def initialize_instance_priorities(self, G: DiGraph, node: "ComputationNode", accelerator: "Accelerator"):
+    def initialize_instance_priorities(
+        self, G: "ComputationNodeWorkload", node: "ComputationNode", accelerator: "Accelerator"
+    ):
         if self.layer_operand == node.output_operand:
             out_edges = [(succ, d) for n, succ, d in G.out_edges(node, data=True) if succ.id != n.id]
             for successor, data in out_edges:

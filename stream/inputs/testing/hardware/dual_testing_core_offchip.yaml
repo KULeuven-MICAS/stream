@@ -1,8 +1,8 @@
 name: testing-2-core-with-offchip
 cores:
   # index corresponds to core ID
-  - testing_core1.yaml
-  - testing_core2.yaml
+  - stream/inputs/testing/hardware/cores/testing_core1.yaml
+  - stream/inputs/testing/hardware/cores/testing_core2.yaml
   - offchip.yaml
 
 graph:

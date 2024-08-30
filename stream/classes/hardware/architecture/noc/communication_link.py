@@ -1,12 +1,26 @@
+from typing import TYPE_CHECKING, Literal
+
 import numpy as np
 
 from stream.classes.cost_model.communication_manager import CommunicationLinkEvent
+
+if TYPE_CHECKING:
+    from zigzag.hardware.architecture.Core import Core
+
+    from stream.classes.workload.tensor import Tensor
 
 
 class CommunicationLink:
     """Represents a fixed-bandwidth communication link used to communicate between two cores."""
 
-    def __init__(self, sender, receiver, bandwidth, unit_energy_cost, bidirectional=False) -> None:
+    def __init__(
+        self,
+        sender: "Core | Literal['Any']",
+        receiver: "Core | Literal['Any']",
+        bandwidth: int | float,
+        unit_energy_cost: float,
+        bidirectional: bool = False,
+    ) -> None:
         self.sender = sender
         self.receiver = receiver
         self.bandwidth = bandwidth
@@ -36,8 +50,8 @@ class CommunicationLink:
             )
         )
 
-    def __eq__(self, other) -> bool:
-        return (self.sender, self.receiver, self.bandwidth) == (
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, CommunicationLink) and (self.sender, self.receiver, self.bandwidth) == (
             other.sender,
             other.receiver,
             other.bandwidth,
@@ -54,9 +68,9 @@ class CommunicationLink:
         The transfer can take longer than necessary for this link if another lower-bandwidth link is involved.
 
         Args:
-            tensor (Tensor): The tensor to be transferred.
-            start (int): The timestep in clock cyles to start the transfer.
-            duration (int): The duration of the transfer.
+            tensor : The tensor to be transferred.
+            start : The timestep in clock cyles to start the transfer.
+            duration : The duration of the transfer.
 
         Returns:
             int: The end time when communication on this link is finished
@@ -69,7 +83,7 @@ class CommunicationLink:
         self,
         start: int,
         duration: int,
-        tensors: list,
+        tensors: list["Tensor"],
         activity: int = 100,
     ):
         """Block this communication link from start timestep for a given duration.
@@ -121,12 +135,12 @@ class CommunicationLink:
             self.tensors[tensor] = self.tensors.get(tensor, []) + [event]
         self.events.append(event)
 
-    def get_idle_window(self, activity, duration, earliest_t, tensors):
+    def get_idle_window(self, activity: float, duration: int, earliest_t: int, tensors: list["Tensor"]):
         """
         Get the earliest time window of duration 'duration' from 'earliest_t'
         with atleast 'activity' percent available.
         """
-        valid_windows = []
+        valid_windows: list[tuple[int, int]] = []
         ## Check if this tensor has already been transferred on this link before
         # If so, check duration and earliest timestep requirements of this call
         for tensor in tensors:
@@ -154,11 +168,11 @@ class CommunicationLink:
         idxs.append(len(updated_ts) - 1)
         start = earliest_t
         for idx in idxs:
-            end = updated_ts[idx]
+            end: int = updated_ts[idx]
             if end - start >= duration:
                 valid_windows.append((start, end))
             try:
-                start = updated_ts[idx + 1]
+                start: int = updated_ts[idx + 1]
             except IndexError:
                 break
         if not valid_windows:

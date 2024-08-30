@@ -28,7 +28,7 @@ class MemoryManager:
         self.top_instances: dict[Core, list[MemoryInstance]] = {}
         # memory operand stored by every top level memory
         self.memory_operands: dict[Core, list[list[MemoryOperand]]] = {}
-        for _, core in sorted([(core.id, core) for core in self.accelerator.core_iterator]):
+        for _, core in sorted([(core.id, core) for core in self.accelerator.core_list]):
             top_levels: list[MemoryLevel] = list(
                 (level for level, out_degree in core.memory_hierarchy.out_degree() if out_degree == 0)
             )
@@ -101,13 +101,10 @@ class MemoryManager:
         return instances_storing_tensor, available_since_timesteps
 
     def find_tensor(self, tensor: Tensor):
-        (
-            instances_storing_tensor,
-            available_since_timesteps,
-        ) = self.find_tensor_in_top_instances(tensor)
-        cores_storing_tensor = []
-        top_instance_idxs = []
-        available_since = []
+        instances_storing_tensor, available_since_timesteps = self.find_tensor_in_top_instances(tensor)
+        cores_storing_tensor: list[int] = []
+        top_instance_idxs: list[int] = []
+        available_since: list[int] = []
         # Find which cores have these instances as their top instance
         for core, top_instances in self.top_instances.items():
             for top_instance_idx, top_instance in enumerate(top_instances):
@@ -297,12 +294,9 @@ class MemoryManager:
                 )
             )
         except StopIteration:
-            # raise ValueError(
-            #     f"No tensor found equal to {tensor} in top instance {top_instance}."
-            # )
-            # If the tensor is not present, we don't have to remove it.
-            # This is possible because in "Accelerator.transfer_tensor_to_core(...)"
-            # it removes a tensor on a sender core if detects it's no longer needed there.
+            # If the tensor is not present, we don't have to remove it. # This is possible because in
+            # `Accelerator.transfer_tensor_to_core(...)` it removes a tensor on a sender core if detects it's no longer
+            # needed there.
             return
         self.top_instance_stored_tensors[top_instance].remove(equivalent_tensor)
         del self.top_instance_available_since_timestep[top_instance][tensor.equality_hash()]

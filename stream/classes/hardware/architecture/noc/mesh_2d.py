@@ -1,12 +1,12 @@
 import numpy as np
-from networkx import DiGraph
 from zigzag.datatypes import Constants
 from zigzag.hardware.architecture.Core import Core
 
+from stream.classes.hardware.architecture.accelerator import CoreGraph
 from stream.classes.hardware.architecture.noc.communication_link import CommunicationLink
 
 
-def have_shared_memory(a, b):
+def have_shared_memory(a: Core, b: Core):
     """Returns True if core a and core b have a shared top level memory
 
     Args:
@@ -59,7 +59,7 @@ def get_2d_mesh(
 
     cores_array = np.asarray(cores).reshape((nb_rows, nb_cols), order="F")
 
-    edges = []
+    edges: list[tuple[Core, Core, dict[str, CommunicationLink]]] = []
     # Horizontal edges
     for row in cores_array:
         # From left to right
@@ -115,8 +115,6 @@ def get_2d_mesh(
 
     # If there is a pooling core, also add two edges from each core to the pooling core: one in each direction
     if pooling_core:
-        if not isinstance(pooling_core, Core):
-            raise ValueError("The given pooling_core is not a Core object.")
         for core in cores:
             if not have_shared_memory(core, pooling_core):
                 edges.append(
@@ -139,8 +137,6 @@ def get_2d_mesh(
     simd_bandwidth = float("inf")
     simd_unit_energy_cost = 0
     if simd_core:
-        if not isinstance(simd_core, Core):
-            raise ValueError("The given simd_core is not a Core object.")
         for core in cores:
             if not have_shared_memory(core, simd_core):
                 edges.append(
@@ -207,8 +203,7 @@ def get_2d_mesh(
         else:
             to_offchip_link = CommunicationLink("Any", offchip_core, offchip_write_bandwidth, unit_energy_cost)
             from_offchip_link = CommunicationLink(offchip_core, "Any", offchip_read_bandwidth, unit_energy_cost)
-        if not isinstance(offchip_core, Core):
-            raise ValueError("The given offchip_core is not a Core object.")
+
         for core in cores:
             edges.append((core, offchip_core, {"cl": to_offchip_link}))
             edges.append((offchip_core, core, {"cl": from_offchip_link}))
@@ -220,6 +215,4 @@ def get_2d_mesh(
             edges.append((offchip_core, simd_core, {"cl": from_offchip_link}))
 
     # Build the graph using the constructed list of edges
-    H = DiGraph(edges)
-
-    return H
+    return CoreGraph(edges)

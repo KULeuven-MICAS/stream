@@ -4,7 +4,7 @@ from stream.classes.workload.lpnormalization_node import LpNormalizationNode
 
 
 class LpNormalizationParser(ONNXOperatorParser):
-    """Parses an onnx reshape operator into a ReshapeNode."""
+    """Parses an onnx reshape operator into a LpNormalizationNode."""
 
     def __init__(self, node_id, node, nodes_outputs, mapping, onnx_model) -> None:
         raise NotImplementedError

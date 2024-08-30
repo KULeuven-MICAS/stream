@@ -5,7 +5,6 @@ from itertools import cycle
 from math import isnan
 from typing import TYPE_CHECKING
 
-import networkx as nx
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
@@ -13,11 +12,12 @@ from brokenaxes import brokenaxes
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 from plotly.express.colors import sample_colorscale
-from zigzag.workload.Workload import Workload
+from zigzag.datatypes import LayerOperand
 
 if TYPE_CHECKING:
     from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
     from stream.classes.hardware.architecture.accelerator import Accelerator
+    from stream.classes.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +46,10 @@ def plot_timeline_brokenaxes(
     plot_data_transfer: bool = False,
     fig_path: str = "outputs/schedule_plot.png",
 ) -> None:
-    G: Workload = scme.workload
+    G: ONNXWorkload = scme.workload
     accelerator: Accelerator = scme.accelerator
 
-    nb_layers = len(set(iter([n.id for n in G.nodes()])))
+    nb_layers = len(set(iter([n.id for n in G.node_list])))
     nb_cores = accelerator.cores.number_of_nodes()
 
     plt.rc("font", size=SMALL_SIZE)  # controls default text sizes
@@ -96,7 +96,7 @@ def plot_timeline_brokenaxes(
     layer_ids_seen = []
     legend_labels = []
     height = 0.5
-    for cn in G.nodes():
+    for cn in G.node_list:
         layer_id = cn.id
         # Get the colour for this layer
         if layer_id not in layer_ids_seen:
@@ -169,7 +169,7 @@ def plot_timeline_brokenaxes(
             legend_labels.append(f"Layer {layer_id}")
     # print("Rectangles done...", end="")
 
-    core_and_transfer_link_ids = sorted([core.id for core in accelerator.cores.nodes()])
+    core_and_transfer_link_ids = sorted([core.id for core in accelerator.cores.node_list])
     hline_loc = core_and_transfer_link_ids[-1] - 0.5
     core_and_transfer_link_ids = core_and_transfer_link_ids[:-1]
     # Always define the last core as DRAM, not including DRAM in the core
@@ -197,7 +197,10 @@ def plot_timeline_brokenaxes(
                 end = event.end
                 runtime = end - start
                 tensors = event.tensors
-                weight_transfer = task_type.lower() == "transfer" and tensors[0].layer_operand in ["W", "B"]
+                weight_transfer = task_type.lower() == "transfer" and tensors[0].layer_operand in [
+                    LayerOperand("W"),
+                    LayerOperand("B"),
+                ]
                 layer_id = tensors[0].origin.id
                 node_id = tensors[0].origin.sub_id
                 if layer_id not in layer_ids_seen:
@@ -355,7 +358,7 @@ def add_dependency_button(fig):
 
 
 def add_dependencies(fig, scme, colors, layer_ids):
-    for node in scme.workload.nodes():
+    for node in scme.workload.node_list:
         c_id = node.id
         c_l = node.id
         if c_l not in layer_ids:
@@ -439,8 +442,8 @@ def get_real_input_tensors(n, G):
     return inputs
 
 
-def get_dataframe_from_scme(scme, layer_ids, add_communication=False):
-    nodes = list(nx.topological_sort(scme.workload))
+def get_dataframe_from_scme(scme: "StreamCostModelEvaluation", layer_ids, add_communication: bool = False):
+    nodes = scme.workload.topological_sort()
     dicts = []
     for node in nodes:
         id = node.id
@@ -455,7 +458,7 @@ def get_dataframe_from_scme(scme, layer_ids, add_communication=False):
         tensors = get_real_input_tensors(node, scme.workload)
         task_type = "compute"
         d = dict(
-            Task=str(node),
+            Task=node.short_name,
             Start=start,
             End=end,
             Resource=f"Core {core_id}",
@@ -491,7 +494,7 @@ def visualize_timeline_plotly(
     layer_ids=None,
 ):
     if not layer_ids:
-        layer_ids = sorted(set(n.id for n in scme.workload.nodes()))
+        layer_ids = sorted(set(n.id for n in scme.workload.node_list))
     df = get_dataframe_from_scme(scme, layer_ids, draw_communication)
     # We get all the layer ids to get a color mapping for them
     layer_ids = sorted(list(set(df["Layer"].tolist())))

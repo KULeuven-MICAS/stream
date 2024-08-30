@@ -1,15 +1,16 @@
 from math import prod
-from typing import Any, TypeAlias
+from typing import TypeAlias
 
-import numpy as np
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
+from zigzag.visualization.results.plot_cme import shorten_onnx_layer_name
 from zigzag.workload.layer_attributes import LayerPadding
 from zigzag.workload.layer_node import LayerNode, LayerNodeAttributes
 
 from stream.classes.workload.node import Node
 from stream.classes.workload.tensor import Tensor
+from stream.utils import NodeTensor
 
-OperandTensorReshape: TypeAlias = dict[LayerOperand, tuple[int, int, int, int]]
+OperandTensorReshape: TypeAlias = dict[LayerOperand, tuple[int, ...]]
 LoopRanges: TypeAlias = dict[LayerDim, tuple[int, int]]
 
 
@@ -22,9 +23,6 @@ class ComputationNode(LayerNode, Node):
     On top of that, some new information is added for correct dependency generation
     for the finer graph that is built when a layer is split into one and is a
     producer/consumer of another layer.
-
-    Args:
-        LayerNode (_type_): _description_
     """
 
     def __init__(
@@ -57,16 +55,16 @@ class ComputationNode(LayerNode, Node):
 
         self.sub_id = sub_id
         self.group = group_id
+        self._static_hash_value = hash((self.id, self.sub_id))
         self.operand_tensor_reshape = (
             operand_tensor_reshape if operand_tensor_reshape is not None else self.get_operand_tensor_reshape_default()
         )
         # Whether this ComputationNode produces a final output
         self.produces_final_output = produces_final_output
 
-        # self.loop_ranges: dict[str, tuple] = node_attrs.get(
-        #     "loop_ranges", {dim: (0, size) for dim, size in self.loop_dim_size.items()}
-        # )
-        self.loop_ranges: LoopRanges = {layer_dim: (0, size) for layer_dim, size in self.layer_dim_sizes.items()}
+        self.loop_ranges: LoopRanges = {  # type: ignore
+            layer_dim: (0, size) for layer_dim, size in self.layer_dim_sizes.items()
+        }
 
         # adds pr dimensions loop ranges to self.loop_ranges
         self.calculate_pr_loop_ranges()
@@ -119,18 +117,29 @@ class ComputationNode(LayerNode, Node):
         except KeyError:
             return None
 
+    @property
+    def short_name(self) -> str:
+        return shorten_onnx_layer_name(self.name)
+
     def __str__(self):
         return f"ComputationNode{self.id}_{self.sub_id}"
 
     def __hash__(self) -> int:
-        """The hash operator of a node depending on its id. The id is a tuple that can be of variable depth.
+        """The hash operator of a node.
 
         Returns:
-            int: the computed hash
+            the pre-computed hash
         """
-        return hash((self.id, self.sub_id))
+        return self._static_hash_value
 
-    def __eq__(self, other: object) -> bool:
+    def __eq__(self, other: object):
+        """Fast equality comparison between two nodes"""
+        # Optimization: this method is used many times to compare with `0`, to count empty tensor elements
+        if not other:
+            return False
+        return isinstance(other, ComputationNode) and self._static_hash_value == other._static_hash_value
+
+    def has_same_performance(self, other: object) -> bool:
         """Compare the equality between two nodes.
         Two nodes are considered equal if they have equal hardware performance, which happens following attributes are
         equal:
@@ -192,21 +201,20 @@ class ComputationNode(LayerNode, Node):
             # Assume that there is always 2 dimensions involved in the calculation of a pr dimension
             pr_dim_val_min = -padding_begin
             pr_dim_val_max = -padding_begin
-            for related_dimension, scaling_factor in related_dims_and_scalings.items():
+            for related_dimension, scaling_factor in related_dims_and_scalings:
                 pr_dim_val_min += scaling_factor * self.loop_ranges[related_dimension][0]
-                pr_dim_val_max += scaling_factor * (
-                    self.loop_ranges[related_dimension][1] - 1
-                )  # convert to inclusive upper limit
+                # convert to inclusive upper limit
+                pr_dim_val_max += scaling_factor * (self.loop_ranges[related_dimension][1] - 1)
             pr_dim_val_max += 1  # convert to exclusive upper range
             self.loop_ranges[pr_dim] = (pr_dim_val_min, pr_dim_val_max)
 
-    def reshape_operand_tensor(self, tensor: np.ndarray[Any, Any], operand: LayerOperand):
+    def reshape_operand_tensor(self, tensor: NodeTensor, operand: LayerOperand):
         """Reshape the tensor back to the representation needed for producer/consumer."""
         if self.operand_tensor_reshape is None or operand not in self.operand_tensor_reshape:
-            new_shape = tensor.shape
+            return tensor
         else:
             new_shape = self.operand_tensor_reshape[operand]
-        return np.reshape(tensor, new_shape)
+            return tensor.reshape(new_shape)
 
     def set_too_large_operands(self, too_large_operands: list[MemoryOperand]):
         self.too_large_operands = too_large_operands

@@ -65,7 +65,7 @@ class DetermineHintLoopsStage(Stage):
         return hint_loops
 
     def get_nb_computation_nodes(self, stack):
-        nodes = [n for n in self.workload.nodes() if n.id in stack]
+        nodes = [n for n in self.workload.node_list if n.id in stack]
         nb_computation_nodes = sum([isinstance(n, ComputationNode) for n in nodes])
         return nb_computation_nodes
 
