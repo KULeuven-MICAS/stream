@@ -1,37 +1,19 @@
 from typing import Any
 
-from onnx import ModelProto, NodeProto
-from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 from zigzag.parser.onnx.utils import (
     get_attribute_ints_with_name,
     get_node_input_output_dimension_shapes,
 )
 from zigzag.parser.workload_factory import LayerNodeFactory
 
-from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.io.onnx.operator_parser import OnnxOperatorParser
 from stream.classes.workload.pooling_node import PoolingNode
 
 
-class PoolingParser(ONNXOperatorParser):
+class PoolingParser(OnnxOperatorParser):
     """Parses an onnx pooling operator into a PoolingNode.
     e.g. MaxPool, AveragePool, etc.
     """
-
-    def __init__(
-        self,
-        node_id: int,
-        node: NodeProto,
-        nodes_outputs: dict[int, Any],
-        mapping_data: list[dict[str, Any]],
-        onnx_model: ModelProto,
-        accelerator: Accelerator,
-    ) -> None:
-        super().__init__(node_id, node, nodes_outputs, onnx_model)
-        self.onnx_model = onnx_model
-        self.mapping_data = mapping_data
-        self.accelerator = accelerator
-        self.op_type = self.node.op_type
-        self.node_name = f"Layer{self.node_id}"
 
     def run(self):
         return self.generate_layer_node_for_pooling()
@@ -71,8 +53,8 @@ class PoolingParser(ONNXOperatorParser):
 
         data: dict[str, Any] = {}
         data["id"] = self.node_id
-        data["name"] = self.node_name
-        data["operator_type"] = self.op_type
+        data["name"] = self.node.name
+        data["operator_type"] = self.node.op_type
         data["equation"] = "O[b][k][oy][ox]+=W[fy][fx]*I[b][k][iy][ix]"
         # Get dimension sizes from input parameters
         assert ia_shape[0] == oa_shape[0], "Batch size is different for input and output activations."
@@ -149,7 +131,7 @@ class PoolingParser(ONNXOperatorParser):
 
         return PoolingNode(
             node_id=self.node_id,
-            node_name=self.node_name,
+            node_name=self.node.name,
             node_attr=node_attrs,
             input_names=node_input_names,
             output_names=node_output_names,

@@ -1,4 +1,4 @@
-from typing import Any
+from typing import Any, Iterator
 
 from zigzag.parser.onnx.utils import (
     get_node_input_output_dimension_shapes,
@@ -6,15 +6,14 @@ from zigzag.parser.onnx.utils import (
 from zigzag.parser.workload_factory import LayerNodeFactory
 
 from stream.classes.io.onnx.operator_parser import OnnxOperatorParser
+from stream.classes.workload.computation_node import ComputationNode
 from stream.classes.workload.simd_node import SimdNode
 
 
-class SimdParser(OnnxOperatorParser):
-    """Parses an ONNXOperatorParser operator representing an elementwise operation (simd) into a SimdNode.
-    e.g. Add, etc.
-    """
+class SoftmaxParser(OnnxOperatorParser):
+    """Parses the Softmax operator"""
 
-    def run(self):
+    def run(self) -> Iterator[ComputationNode]:
         return self.generate_node()
 
     def get_layer_node_input_format(self, ia_shape: list[int], oa_shape: list[int]):

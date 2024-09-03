@@ -1,9 +1,8 @@
-from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
-
+from stream.classes.io.onnx.operator_parser import OnnxOperatorParser
 from stream.classes.workload.lpnormalization_node import LpNormalizationNode
 
 
-class LpNormalizationParser(ONNXOperatorParser):
+class LpNormalizationParser(OnnxOperatorParser):
     """Parses an onnx reshape operator into a LpNormalizationNode."""
 
     def __init__(self, node_id, node, nodes_outputs, mapping, onnx_model) -> None:

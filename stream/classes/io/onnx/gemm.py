@@ -5,24 +5,30 @@ from onnx import ModelProto, NodeProto
 from zigzag.parser.onnx.GemmParser import GemmParser as GemmParserZigZag
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.io.onnx.operator_parser import OnnxOperatorParser
 from stream.classes.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 
 
-class GemmParser(GemmParserZigZag):
+class GemmParser(GemmParserZigZag, OnnxOperatorParser):
     """Parses an ONNX Gemm operator into a ComputationNode"""
 
     def __init__(
         self,
         node_id: int,
         node: NodeProto,
-        nodes_outputs: dict[int, list[str]],
-        mapping_data: list[dict[str, Any]],
+        nodes_outputs: dict[int, Any],
         onnx_model: ModelProto,
+        *,
+        mapping_data: list[dict[str, Any]],
         accelerator: Accelerator,
     ) -> None:
-        super().__init__(node_id, node, nodes_outputs, mapping_data, onnx_model)
+        self.node_id = node_id
+        self.node = node
+        self.nodes_outputs = nodes_outputs
+        self.onnx_model = onnx_model
+        self.mapping_data = mapping_data
         self.accelerator = accelerator
 
     def run(self):

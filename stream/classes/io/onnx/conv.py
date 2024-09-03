@@ -2,37 +2,22 @@ import logging
 from math import ceil
 from typing import Any
 
-from onnx import ModelProto, NodeProto
-from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 from zigzag.parser.onnx.utils import (
     get_attribute_ints_with_name,
     get_node_input_output_dimension_shapes,
 )
 from zigzag.parser.workload_factory import LayerNodeFactory
 
-from stream.classes.hardware.architecture.accelerator import Accelerator
+from stream.classes.io.onnx.operator_parser import OnnxOperatorParser
 from stream.classes.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 
 
-class ConvParser(ONNXOperatorParser):
+class ConvParser(OnnxOperatorParser):
     """Parser for ONNX Conv and QLinearConv nodes into LayerNode."""
 
-    def __init__(
-        self,
-        node_id: int,
-        node: NodeProto,
-        nodes_outputs: dict[int, Any],
-        mapping_data: list[dict[str, Any]],
-        onnx_model: ModelProto,
-        accelerator: Accelerator,
-    ) -> None:
-        super().__init__(node_id, node, nodes_outputs, onnx_model)
-        self.onnx_model = onnx_model
-        self.mapping_data = mapping_data
-        self.accelerator = accelerator
-        self.op_type = "conv"
+    OP_TYPE = "conv"
 
     def run(self) -> ComputationNode:
         """Run the parser and return the created LayerNode object."""
@@ -57,7 +42,7 @@ class ConvParser(ONNXOperatorParser):
         data: dict[str, Any] = {}
         data["id"] = self.node_id
         data["name"] = f"Layer{self.node_id}"
-        data["operator_type"] = self.op_type
+        data["operator_type"] = ConvParser.OP_TYPE
         # IMPORTANT: If any of the input loops require padding, they should be defined as the rightmost dimensions in
         # the equation. This is because we construct the dimensionality order and then add the padding to those last
         # dimensions in the order
@@ -168,6 +153,6 @@ class ConvParser(ONNXOperatorParser):
             node_attr=node_attrs,
             input_names=node_input_names,
             output_names=node_output_names,
-            op_type=self.op_type,
+            op_type=ConvParser.OP_TYPE,
             operand_tensor_reshape=None,
         )
