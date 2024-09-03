@@ -35,7 +35,7 @@ nb_ga_generations = 16  # number of genetic algorithm generations
 ######################################################################
 
 ################################ PARSING###############################
-hw_name = accelerator.split(".")[-1]
+hw_name = accelerator.split("/")[-1].split(".")[0]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
     wl_name = re.split(r"/|\.", workload_path)[-2]

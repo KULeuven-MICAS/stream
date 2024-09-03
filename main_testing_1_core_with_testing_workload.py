@@ -26,7 +26,7 @@ mapping_path = "stream/inputs/testing/mapping/testing_mapping.yaml"
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
 hint_loops = [("OY", "all")]  # outer CN loops, with error in resnet18 plotting
 
-hw_name = accelerator.split(".")[-1]
+hw_name = accelerator.split("/")[-1].split(".")[0]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 experiment_id = f"{hw_name}-{wl_name}-CNmode_{CN_define_mode}-hintloop_{str(hint_loops)}"
 node_hw_cost_pkl_name = f"saved_CN_HW_cost-{experiment_id}"
