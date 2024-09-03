@@ -26,12 +26,16 @@ class SchedulingOrderGenerationStage(Stage):
         self.scheduling_order = None
 
     def run(self):
-        # TODO: Take into account the layer stacks
         if self.layer_stacks:
-            logger.warn("Scheduling order for layer stacks not implemented.")
-        # Generate a list of node ids from highest priority to lowest
-        # We give higher priority to nodes deeper in the graph
-        self.scheduling_order = sorted(((n.id, n.sub_id) for n in self.workload.node_list), reverse=True)
+            # All nodes of earlier stacks should be scheduled before later stacks
+            self.scheduling_order = []
+            for layer_stack in self.layer_stacks:
+                nodes = [n for n in self.workload.nodes() if n.id in layer_stack]
+                self.scheduling_order.extend(sorted(((n.id, n.sub_id) for n in nodes), reverse=True))
+        else:
+            # Generate a list of node ids from highest priority to lowest
+            # We give higher priority to nodes deeper in the graph
+            self.scheduling_order = sorted(((n.id, n.sub_id) for n in self.workload.nodes()), reverse=True)
 
         self.kwargs["accelerator"] = self.accelerator
         self.kwargs["workload"] = self.workload
