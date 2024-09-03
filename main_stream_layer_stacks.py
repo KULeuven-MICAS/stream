@@ -31,6 +31,7 @@ mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
 mode = "fused"
 nb_ga_individuals = 4  # number of individuals in each generation
 nb_ga_generations = 4  # number of genetic algorithm generations
+layer_stacks = [tuple(range(0, 42)), (43,), (44,), (46,), (48,)]  # can be None for automatic layer stacks
 ######################################################################
 
 ################################PARSING###############################
@@ -88,6 +89,7 @@ mainstage = MainStage(
     scheduler_candidate_selection="memory",
     operands_to_prefetch=[],
     mode=mode,
+    layer_stacks=layer_stacks,
 )
 
 # Launch the MainStage
