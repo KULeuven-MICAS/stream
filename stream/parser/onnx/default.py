@@ -1,9 +1,10 @@
-from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
+from stream.workload.dummy_node import DummyNode
 
 from stream.workload.dummy_node import DummyNode
 
 
-class DefaultNodeParser(ONNXOperatorParser):
+class DefaultNodeParser(OnnxOperatorParser):
     """Parse an ONNX node into a DummyNode."""
 
     def run(self):

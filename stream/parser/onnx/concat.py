@@ -1,10 +1,10 @@
-from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 from zigzag.parser.onnx.utils import OnnxTensorCategory, get_onnx_tensor_type
 
+from stream.io.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.concat_node import ConcatNode
 
 
-class ConcatParser(ONNXOperatorParser):
+class ConcatParser(OnnxOperatorParser):
     """Parses an onnx gather operator into a ConcatNode."""
 
     def run(self):

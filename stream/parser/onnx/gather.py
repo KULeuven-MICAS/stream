@@ -1,10 +1,10 @@
 from onnx import numpy_helper
-from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 
+from stream.classes.io.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.gather_node import GatherNode
 
 
-class GatherParser(ONNXOperatorParser):
+class GatherParser(OnnxOperatorParser):
     """Parses an onnx gather operator into a GatherNode."""
 
     def run(self):

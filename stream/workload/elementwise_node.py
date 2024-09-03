@@ -4,7 +4,6 @@ from stream.workload.node import Node
 
 
 class ElementwiseNode(Node):
-    """Class that represents an onnx Reshape node."""
 
     def __init__(
         self, node_id: int, node_name: str, predecessor: int, input_names: list[str], output_names: list[str]

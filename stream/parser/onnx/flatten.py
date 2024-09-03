@@ -1,10 +1,10 @@
-from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 from zigzag.parser.onnx.utils import get_attribute_ints_with_name
 
+from stream.classes.io.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.flatten_node import FlattenNode
 
 
-class FlattenParser(ONNXOperatorParser):
+class FlattenParser(OnnxOperatorParser):
     """Parses an onnx flatten operator into a FlattenNode."""
 
     def run(self):
