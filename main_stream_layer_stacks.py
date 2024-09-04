@@ -7,8 +7,8 @@ from zigzag.stages.MainStage import MainStage
 from stream.classes.stages.AcceleratorParserStage import (
     AcceleratorParserStage as AcceleratorParserStage_,
 )
-from stream.classes.stages.DetermineLayerStacksStage import DetermineLayerStacksStage
 from stream.classes.stages.DetermineHintLoopsStage import DetermineHintLoopsStage
+from stream.classes.stages.DetermineLayerStacksStage import DetermineLayerStacksStage
 from stream.classes.stages.DetermineSchedulingOrderStage import DetermineSchedulingOrderStage
 from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
 from stream.classes.stages.InterCoreMappingStage import InterCoreMappingStage
