@@ -4,22 +4,22 @@ import re
 
 from zigzag.stages.MainStage import MainStage
 
-from stream.stages.parsing.accelerator_parser import (
-    AcceleratorParserStage as AcceleratorParserStage_,
-)
+from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
+from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
 from stream.stages.generation.hint_loops_generation import HintLoopsGenerationStage
-from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
-from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
 from stream.stages.generation.hint_loops_partitioned_workload_generation import (
     HintLoopsPartitionedWorkloadGenerationStage,
 )
-from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
-from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
+from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
+from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
+from stream.stages.parsing.accelerator_parser import (
+    AcceleratorParserStage as AcceleratorParserStage_,
+)
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
-from stream.visualization.memory_usage import plot_memory_usage # type: ignore
+from stream.visualization.memory_usage import plot_memory_usage  # type: ignore
 from stream.visualization.schedule import (
     plot_timeline_brokenaxes,
-    visualize_timeline_plotly, # type: ignore
+    visualize_timeline_plotly,  # type: ignore
 )
 
 _logging_level = _logging.INFO
