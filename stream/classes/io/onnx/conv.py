@@ -8,22 +8,18 @@ from zigzag.parser.onnx.utils import (
 )
 from zigzag.parser.workload_factory import LayerNodeFactory
 
-from stream.classes.io.onnx.operator_parser import OnnxOperatorParser
+from stream.classes.io.onnx.operator_parser import OnnxComputeOperatorParser
 from stream.classes.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 
 
-class ConvParser(OnnxOperatorParser):
+class ConvParser(OnnxComputeOperatorParser):
     """Parser for ONNX Conv and QLinearConv nodes into LayerNode."""
 
     OP_TYPE = "conv"
 
-    def run(self) -> ComputationNode:
-        """Run the parser and return the created LayerNode object."""
-        return self.generate_layer_node_for_conv()
-
-    def get_layer_node_input_format(
+    def get_layer_node_user_format(  # type: ignore
         self,
         kernel_shape: list[int],
         strides: list[int],
@@ -111,7 +107,7 @@ class ConvParser(OnnxOperatorParser):
 
         return data
 
-    def generate_layer_node_for_conv(self):
+    def generate_node(self):
         attrs = self.node.attribute
         kernel_shape: list[int] = get_attribute_ints_with_name("kernel_shape", attrs, default=None)  # type:ignore
         strides: list[int] = get_attribute_ints_with_name("strides", attrs, default=[1, 1])  # type:ignore
@@ -125,7 +121,7 @@ class ConvParser(OnnxOperatorParser):
         # Get the input and output activation and weight data type (precision) # TODO not used?
         # ia_data_type, oa_data_type, w_data_type = get_input_output_weight_data_type(self.node, self.onnx_model)
 
-        node_data: dict[str, Any] = self.get_layer_node_input_format(
+        node_data: dict[str, Any] = self.get_layer_node_user_format(
             kernel_shape,
             strides,
             dilations,

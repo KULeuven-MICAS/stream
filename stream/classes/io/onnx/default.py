@@ -5,11 +5,7 @@ from stream.classes.workload.dummy_node import DummyNode
 class DefaultNodeParser(OnnxOperatorParser):
     """Parse an ONNX node into a DummyNode."""
 
-    def run(self):
-        """Run the parser"""
-        return self.generate_dummy_node()
-
-    def generate_dummy_node(self):
+    def generate_node(self):
         predecessors = self.get_node_predecessors()
         input_names = list(self.node.input)
         output_names = list(self.node.output)

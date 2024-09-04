@@ -139,3 +139,6 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
 
     def set_offchip_bandwidth(self, offchip_bw: float):
         self.offchip_bw = offchip_bw
+
+    def __repr__(self):
+        return self.name

@@ -7,12 +7,8 @@ from stream.classes.workload.gather_node import GatherNode
 class GatherParser(OnnxOperatorParser):
     """Parses an onnx gather operator into a GatherNode."""
 
-    def run(self):
-        return self.generate_node()
-
     def generate_node(self):
         predecessors = self.get_node_predecessors()
-
         axis = self.get_axis_value()
         indices = self.get_indices_value()
 

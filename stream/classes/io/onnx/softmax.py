@@ -1,103 +1,97 @@
-from typing import Any, Iterator
+from typing import Any
 
-from zigzag.parser.onnx.utils import (
-    get_node_input_output_dimension_shapes,
-)
-from zigzag.parser.workload_factory import LayerNodeFactory
+from zigzag.datatypes import Constants
 
-from stream.classes.io.onnx.operator_parser import OnnxOperatorParser
-from stream.classes.workload.computation_node import ComputationNode
-from stream.classes.workload.simd_node import SimdNode
+from stream.classes.io.onnx.operator_parser import OnnxComputeOperatorParser
+from stream.classes.io.onnx.reduce_1d import Reduce1DParser
 
 
-class SoftmaxParser(OnnxOperatorParser):
-    """Parses the Softmax operator"""
+class SoftmaxParser(OnnxComputeOperatorParser):
+    """Parses the Softmax operator. Softmax works on full rows and can be computed as follows:
+    (1) m <- max(row[0:L])
+    (2) e[0:L] <- exp(row[0:L] - m)
+    (3) s <- sum(e[0:L])
+    (4) r[0:L] <- e[0:L] / s
+    It is split up in four distinct computation nodes.
+    """
 
-    def run(self) -> Iterator[ComputationNode]:
-        return self.generate_node()
+    def run(self):
+        for node in self.get_nodes():
+            yield node
 
-    def get_layer_node_input_format(self, ia_shape: list[int], oa_shape: list[int]):
+    def get_nodes(self):
+        node_types = ["max", "exp", "sum", "div"]
+        parser_classes = [Reduce1DParser, SoftmaxExpParser, Reduce1DParser, SoftmaxDivParser]
+
+        node_ids = [self.node_id + i for i in range(4)]
+        parsers = [
+            parser(
+                node_id=node_id,
+                node=self.node,
+                nodes_outputs=self.nodes_outputs,  # TODO now, the node_outputs does not contain the current id
+                onnx_model=self.onnx_model,
+                mapping_data=self.mapping_data,
+                accelerator=self.accelerator,
+            )
+            for parser, node_id in zip(parser_classes, node_ids)
+        ]
+        nodes = [next(parser.run()) for parser in parsers]
+
+        # Give correct op type and name
+        for node, node_type in zip(nodes, node_types):
+            node.type = node_type
+            node.name += f"-{node_type}"
+
+        # Override dependencies
+        op_I = Constants.LAYER_OP_I
+        op_W = Constants.LAYER_OP_W
+        id_max, id_exp, id_sum, _ = node_ids
+        prev_node_id = nodes[0].input_operand_source[op_I]  # Node before max
+        nodes[1].input_operand_source = {op_I: prev_node_id, op_W: id_max}  # Exp
+        nodes[2].input_operand_source = {op_I: id_exp, op_W: id_sum}  # Sum
+        nodes[3].input_operand_source = {op_I: id_exp, op_W: id_sum}  # Div
+
+        return nodes
+
+
+class SoftmaxExpParser(OnnxComputeOperatorParser):
+    """Parses a softmax node into a ComputationNode for the element-wise operation exp(row-m) where m is the max value
+    of the row.
+    """
+
+    def get_layer_node_user_format(self, input_shape: list[int], output_shape: list[int]):
         """
         Generate the necessary dictionary items required for the LayerNode creation.
         """
-        assert ia_shape == oa_shape, "Input and output of simd operation should be identical."
-        predecessors = self.get_node_predecessors()
-        assert len(predecessors) > 0, "Undefined behavior for Simd node with no inputs"
-        # Nodes with only 1 input (e.g. Relu, Max, add/mul with constant, etc) have an empty `W` part in equation
-        has_single_input = len(predecessors) == 1
 
         data: dict[str, Any] = {}
         data["id"] = self.node_id
         data["name"] = self.node.name
         data["operator_type"] = self.node.op_type
-        data["loop_sizes"] = oa_shape
+        data["operand_source"] = self.get_operand_source_input_format()
+        data["operand_precision"] = self.get_operand_precision_input_format()
         data["dimension_relations"] = []
+        data["loop_sizes"] = input_shape
 
-        match len(oa_shape):
-            case 1:
-                data["equation"] = f"O[k]+=I[k]*W{'[]' if has_single_input else '[k]'}"
-                data["loop_dims"] = ["K"]
+        # C is the row dimension, so W should not have this as there is only 1 max value for each row
+        match len(input_shape):
             case 2:
-                data["equation"] = f"O[d][k]+=I[d][k]*W{'[]' if has_single_input else '[d][k]'}"
-                data["loop_dims"] = ["D", "K"]
+                data["equation"] = "O[k][c]+=I[k][c]+W[k]"
+                data["loop_dims"] = ["K", "C"]
             case 3:
-                data["equation"] = f"O[b][d][k]+=I[b][d][k]*W{'[]' if has_single_input else '[b][d][k]'}"
-                data["loop_dims"] = ["B", "D", "k"]
+                data["equation"] = "O[b][k][c]+=I[b][k][c]+W[b][k]"
+                data["loop_dims"] = ["B", "C", "k"]
             case 4:
-                data["equation"] = f"O[b][h][d][k]+=I[b][h][d][k]*W{'[]' if has_single_input else '[b][h][d][k]'}"
-                data["loop_dims"] = ["B", "H", "D", "k"]
+                data["equation"] = "O[b][h][k][c]+=I[b][h][k][c]+W[b][h][k]"
+                data["loop_dims"] = ["B", "H", "C", "k"]
             case _:
                 raise NotImplementedError
 
-        act_precision = self.get_activation_precision()
-        weight_precision = self.get_weight_precision()
-        intermediate_output_precision = self.get_intermediate_output_precision()
-        match len(predecessors):
-            case 1:
-                # One source operand, one constant
-                data["operand_source"] = {"W": self.node_id, "I": predecessors[0]}
-                data["operand_precision"] = {
-                    "W": weight_precision,
-                    "I": act_precision,
-                    "O_final": act_precision,
-                    "O": intermediate_output_precision,
-                }
-            case 2:
-                # Two source operands, none are constant (W and I can be swapped)
-                data["operand_source"] = {"W": predecessors[0], "I": predecessors[1]}
-                data["operand_precision"] = {
-                    "W": act_precision,
-                    "I": act_precision,
-                    "O_final": act_precision,
-                    "O": intermediate_output_precision,
-                }
-
-            case _:
-                raise ValueError("No more than 2 layer predecessors expected")
-
         return data
 
-    def generate_node(self):
-        # Get the input and output activation shapes
-        ia_dimension_shape, oa_dimension_shape = get_node_input_output_dimension_shapes(self.node, self.onnx_model)
 
-        node_data = self.get_layer_node_input_format(ia_dimension_shape, oa_dimension_shape)
-        node_factory = LayerNodeFactory(node_data, self.mapping_data)
-        node_attrs = node_factory.create_node_attr()
-
-        # Override spatial mapping by the one defined in the core's dataflows
-        core_allocation = node_attrs.core_allocation
-        spatial_mapping = self.accelerator.get_spatial_mapping_from_core(core_allocation)
-        node_attrs.spatial_mapping = spatial_mapping
-
-        node_input_names = list(self.node.input)
-        node_output_names = list(self.node.output)
-
-        return SimdNode(
-            node_id=self.node_id,
-            node_name=self.node.name,
-            node_attr=node_attrs,
-            input_names=node_input_names,
-            output_names=node_output_names,
-            op_type=self.node.op_type,
-        )
+class SoftmaxDivParser(SoftmaxExpParser):
+    """Parses a softmax node into a ComputationNode for the element-wise operation div(row, s) where s is the sum value
+    of the row.
+    The equation is identical to the one from SoftmaxExpParser
+    """
