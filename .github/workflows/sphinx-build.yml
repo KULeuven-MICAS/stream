@@ -4,8 +4,8 @@ name: Sphinx CD
 
 # Controls when the workflow will run
 on:
-  # Triggers the workflow on push events but only for the "master" branch
-  push:
+  # Triggers the workflow on pull request events but only for the "master" branch
+  pull_request:
     branches:
       - master
 
@@ -35,7 +35,3 @@ jobs:
           sphinx-build --version
           sphinx-build -b html source build
           cp source/images/interactive-plotly-visualization.html build/
-      - name: Deploy 🚀
-        uses: JamesIves/github-pages-deploy-action@v4
-        with:
-          folder: docs/build/ # The folder the action should deploy.
