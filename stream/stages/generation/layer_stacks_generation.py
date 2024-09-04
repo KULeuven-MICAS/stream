@@ -34,7 +34,8 @@ class LayerStacksGenerationStage(Stage):
         for core in self.accelerator.cores.node_list:
             if core.id == self.accelerator.offchip_core_id:
                 continue  # skip offchip core
-            core_weight_capacity = core.memory_hierarchy.get_operand_top_level(MemoryOperand("I2")).memory_instance.size
+            mem_op = MemoryOperand("I2")
+            core_weight_capacity = core.memory_hierarchy.get_operand_top_level(mem_op).memory_instance.size
             weight_capacities[core.id] = core_weight_capacity
 
         # Total weight capacity in bits

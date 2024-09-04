@@ -26,7 +26,7 @@ CN_define_mode = 1  # manually define outer CN size for all cores and all layers
 # hint_loops = [('OY', 'all')]  # outer CN loops, with error in resnet18 plotting
 hint_loops = []
 
-hw_name = accelerator.split(".")[-1]
+hw_name = accelerator.split("/")[-1].split(".")[0]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
     wl_name = re.split(r"/|\.", workload_path)[-2]

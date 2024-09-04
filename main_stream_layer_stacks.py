@@ -1,5 +1,3 @@
-""" This main file uses a fixed layer-core allocation with the last layer split across multiple cores"""
-
 import logging as _logging
 import pickle
 import re
@@ -8,15 +6,20 @@ from zigzag.stages.MainStage import MainStage
 
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
+from stream.stages.generation.hint_loops_generation import HintLoopsGenerationStage
 from stream.stages.generation.hint_loops_partitioned_workload_generation import (
     HintLoopsPartitionedWorkloadGenerationStage,
 )
-from stream.stages.parsing.accelerator_parser import AcceleratorParserStage as AcceleratorParserStage_
+from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
+from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
+from stream.stages.parsing.accelerator_parser import (
+    AcceleratorParserStage as AcceleratorParserStage_,
+)
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
-from stream.visualization.memory_usage import plot_memory_usage
+from stream.visualization.memory_usage import plot_memory_usage  # type: ignore
 from stream.visualization.schedule import (
     plot_timeline_brokenaxes,
-    visualize_timeline_plotly,
+    visualize_timeline_plotly,  # type: ignore
 )
 
 _logging_level = _logging.INFO
@@ -26,12 +29,11 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 ################################INPUTS################################
 accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 workload_path = "stream/inputs/examples/workload/resnet18.onnx"
-mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core_resnet18_fixed_split.yaml"
-CN_define_mode = 4  # automatically split layers if too big to fit
-split_W_percentage = 0.5  # max percentage of capacity a single node's weights can be
-hint_loops = []
-nb_ga_individuals = 16  # number of individuals in each generation
-nb_ga_generations = 16  # number of genetic algorithm generations
+mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
+mode = "fused"
+nb_ga_individuals = 4  # number of individuals in each generation
+nb_ga_generations = 4  # number of genetic algorithm generations
+layer_stacks = [tuple(range(0, 42)), (43,), (44,), (46,), (48,)]  # can be None for automatic layer stacks
 ######################################################################
 
 ################################PARSING###############################
@@ -39,11 +41,7 @@ hw_name = accelerator.split("/")[-1].split(".")[0]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
     wl_name = re.split(r"/|\.", workload_path)[-2]
-hint_loops_str_list = []
-for dim, size in hint_loops:
-    hint_loops_str_list.extend([str(dim).lower(), str(size)])
-hint_loops_str = "_".join(hint_loops_str_list)
-experiment_id = f"{hw_name}-{wl_name}-hintloop_{hint_loops_str}-fixed-split"
+experiment_id = f"{hw_name}-{wl_name}-{mode}-auto-layer-stacks"
 node_hw_cost_pkl_name = f"{experiment_id}-saved_cn_hw_cost"
 scme_pkl_name = f"{experiment_id}-scme"
 ######################################################################
@@ -66,19 +64,23 @@ timeline_fig_path_matplotlib = f"outputs/{experiment_id}-schedule.png"
 memory_fig_path = f"outputs/{experiment_id}-memory.png"
 #####################################################################
 
+
 mainstage = MainStage(
     [  # Initializes the MainStage as entry point
         AcceleratorParserStage_,  # Parses the accelerator
         StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+        LayerStacksGenerationStage,
+        HintLoopsGenerationStage,
         # UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
         HintLoopsPartitionedWorkloadGenerationStage,
         ZigZagCoreMappingEstimationStage,
+        SchedulingOrderGenerationStage,
         GeneticAlgorithmAllocationStage,
     ],
     accelerator=accelerator,  # required by AcceleratorParserStage
     workload_path=workload_path,  # required by ModelParserStage
     mapping_path=mapping_path,  # required by ModelParserStage
-    loma_lpf_limit=6,  # required by LomaEngine
+    loma_lpf_limit=6,  # required by LomaStage
     nb_ga_individuals=nb_ga_individuals,  # number of individuals in each genetic algorithm generation
     nb_ga_generations=nb_ga_generations,  # number of genetic algorithm generations
     node_hw_performances_path=node_hw_performances_path,  # saved node_hw_performances to skip re-computation
@@ -86,11 +88,10 @@ mainstage = MainStage(
     plot_file_name=plot_file_name,
     plot_full_schedule=plot_full_schedule,
     plot_data_transfer=plot_data_transfer,
-    cn_define_mode=CN_define_mode,
-    hint_loops=hint_loops,
     scheduler_candidate_selection="memory",
     operands_to_prefetch=[],
-    split_W_percentage=split_W_percentage,
+    mode=mode,
+    layer_stacks=layer_stacks,
 )
 
 # Launch the MainStage

@@ -28,6 +28,7 @@ class HintLoopsGenerationStage(Stage):
         elif self.mode == "lbl":
             if self.hint_loops is None:
                 self.hint_loops = self.get_hint_loops_lbl()
+                self.kwargs["cn_define_mode"] = 3
         else:
             raise ValueError("Unsupported mode for hint loops determination.")
 

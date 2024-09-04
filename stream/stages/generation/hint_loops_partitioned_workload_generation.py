@@ -162,6 +162,10 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                 intermediates = G.shortest_path(node, successor)[1:-1]
                 complex_pair = False
                 for intermediate in intermediates:
+                    if isinstance(intermediate, ComputationNode):
+                        raise ValueError(
+                            "Intermediate node between two ComputationNodes should not be a ComputationNode."
+                        )
                     if not isinstance(intermediate, DummyNode):
                         complex_pair = True
                 pairs.append((node, successor, complex_pair))
@@ -602,7 +606,15 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
             tensor = tensor_cns[dependent_operand]
             return tensor
 
-        for path_between in self.workload.all_simple_paths(producer, consumer):
+        paths_between = list(self.workload.all_simple_paths(producer, consumer))
+        # Remove paths between that contain a ComputationNode as intermediate
+        paths_between = [
+            path for path in paths_between if not any(isinstance(node, ComputationNode) for node in path[1:-1])
+        ]
+        assert (
+            len(paths_between) > 0
+        ), "No paths between producer and consumer found without ComputationNode in intermediates."
+        for path_between in paths_between:
             # First node in the path is a ComputationNode, of which we extract the output operand dependency tensor
             first_node = path_between[0]
             assert isinstance(first_node, ComputationNode), "First node in path should be ComputationNode"
