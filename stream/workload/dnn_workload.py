@@ -3,8 +3,8 @@ from typing import Any
 
 from zigzag.workload.layer_node import LayerNode
 
-from stream.workload.computation_node import ComputationNode
 from stream.utils import DiGraphWrapper
+from stream.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 

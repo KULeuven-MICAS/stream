@@ -1,8 +1,8 @@
 import numpy as np
 from zigzag.datatypes import LayerOperand
 
-from stream.workload.node import Node
 from stream.utils import NodeTensor
+from stream.workload.node import Node
 
 
 class LpNormalizationNode(Node):

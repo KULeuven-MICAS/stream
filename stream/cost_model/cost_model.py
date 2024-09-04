@@ -1,8 +1,8 @@
 from stream.cost_model.scheduler import schedule_graph
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.workload.onnx_workload import ComputationNodeWorkload
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import plot_timeline_brokenaxes
+from stream.workload.onnx_workload import ComputationNodeWorkload
 
 
 class StreamCostModelEvaluation:

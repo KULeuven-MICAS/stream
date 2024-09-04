@@ -5,8 +5,8 @@ from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.workload.computation_node import ComputationNode
 from stream.utils import get_too_large_operands
+from stream.workload.computation_node import ComputationNode
 
 
 class FitnessEvaluator:

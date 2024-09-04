@@ -10,12 +10,13 @@ from zigzag.utils import pickle_deepcopy
 
 from stream.cost_model.group_allocation import GroupIdManager
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.opt.partitioning.TemporalLoop import TemporalLoop
 from stream.opt.partitioning.utils import (
     convert_inner_cn_loops,
     convert_outer_cn_loops,
     convert_outer_cn_loops_with_k,
 )
-from stream.opt.partitioning.TemporalLoop import TemporalLoop
+from stream.utils import NodeTensor
 from stream.workload.computation_node import ComputationNode, LoopRanges
 from stream.workload.concat_node import ConcatNode
 from stream.workload.dnn_workload import DNNWorkloadStream
@@ -29,7 +30,6 @@ from stream.workload.onnx_workload import ComputationNodeWorkload, ONNXWorkload
 from stream.workload.reshape_node import ReshapeNode
 from stream.workload.tensor import Tensor
 from stream.workload.transpose_node import TransposeNode
-from stream.utils import NodeTensor
 
 logger = logging.getLogger(__name__)
 

@@ -1,8 +1,8 @@
 from zigzag.datatypes import LayerOperand
 from zigzag.workload.LayerNodeABC import LayerNodeABC
 
-from stream.workload.node import Node
 from stream.utils import NodeTensor
+from stream.workload.node import Node
 
 
 class ReshapeNode(Node, LayerNodeABC):

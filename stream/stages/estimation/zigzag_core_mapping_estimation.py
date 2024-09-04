@@ -17,12 +17,12 @@ from zigzag.stages.temporal_mapping_generator_stage import TemporalMappingGenera
 from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.workload.computation_node import ComputationNode
-from stream.workload.onnx_workload import ComputationNodeWorkload
 from stream.utils import load_scme, save_scme
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,
 )
+from stream.workload.computation_node import ComputationNode
+from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 

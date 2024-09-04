@@ -6,9 +6,9 @@ from zigzag.visualization.results.plot_cme import shorten_onnx_layer_name
 from zigzag.workload.layer_attributes import LayerPadding
 from zigzag.workload.layer_node import LayerNode, LayerNodeAttributes
 
+from stream.utils import NodeTensor
 from stream.workload.node import Node
 from stream.workload.tensor import Tensor
-from stream.utils import NodeTensor
 
 OperandTensorReshape: TypeAlias = dict[LayerOperand, tuple[int, ...]]
 LoopRanges: TypeAlias = dict[LayerDim, tuple[int, int]]

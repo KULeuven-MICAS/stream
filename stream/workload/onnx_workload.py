@@ -1,8 +1,8 @@
 from typing import Any, TypeVar
 
+from stream.utils import DiGraphWrapper
 from stream.workload.computation_node import ComputationNode
 from stream.workload.node import Node
-from stream.utils import DiGraphWrapper
 
 T = TypeVar("T", bound=Node)
 

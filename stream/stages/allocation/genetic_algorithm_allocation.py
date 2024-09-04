@@ -13,9 +13,9 @@ from stream.opt.allocation.genetic_algorithm.fitness_evaluator import (
 from stream.opt.allocation.genetic_algorithm.genetic_algorithm import (
     GeneticAlgorithm,
 )
+from stream.utils import get_too_large_operands
 from stream.workload.computation_node import ComputationNode
 from stream.workload.onnx_workload import ONNXWorkload
-from stream.utils import get_too_large_operands
 
 logger = logging.getLogger(__name__)
 
