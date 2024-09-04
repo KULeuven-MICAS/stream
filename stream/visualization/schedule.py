@@ -15,9 +15,9 @@ from plotly.express.colors import sample_colorscale
 from zigzag.datatypes import LayerOperand
 
 if TYPE_CHECKING:
-    from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
-    from stream.classes.hardware.architecture.accelerator import Accelerator
-    from stream.classes.workload.onnx_workload import ONNXWorkload
+    from stream.cost_model.cost_model import StreamCostModelEvaluation
+    from stream.hardware.architecture.accelerator import Accelerator
+    from stream.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)
 
