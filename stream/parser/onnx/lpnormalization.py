@@ -10,10 +10,7 @@ class LpNormalizationParser(OnnxOperatorParser):
 
         super().__init__(node_id, node, nodes_outputs, mapping, onnx_model)
 
-    def run(self):
-        return self.generate_lpnormalization_node()
-
-    def generate_lpnormalization_node(self):
+    def generate_node(self):
         # Get the predecessors of this node
         predecessors = []
         for node_input in self.node.input:

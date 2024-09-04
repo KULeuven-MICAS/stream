@@ -7,9 +7,6 @@ from stream.workload.concat_node import ConcatNode
 class ConcatParser(OnnxOperatorParser):
     """Parses an onnx gather operator into a ConcatNode."""
 
-    def run(self):
-        return self.generate_node()
-
     def generate_node(self):
         predecessors = self.get_node_predecessors()
 

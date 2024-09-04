@@ -6,17 +6,14 @@ from zigzag.parser.onnx.utils import (
 )
 from zigzag.parser.workload_factory import LayerNodeFactory
 
-from stream.io.onnx.operator_parser import OnnxOperatorParser
+from stream.io.onnx.operator_parser import OnnxComputeOperatorParser
 from stream.workload.pooling_node import PoolingNode
 
 
-class PoolingParser(OnnxOperatorParser):
+class PoolingParser(OnnxComputeOperatorParser):
     """Parses an onnx pooling operator into a PoolingNode.
     e.g. MaxPool, AveragePool, etc.
     """
-
-    def run(self):
-        return self.generate_layer_node_for_pooling()
 
     def get_kernel_shape(self, attrs, ia_dimension_shape) -> list[int]:
         """Return the kernel shape of the pooling operator depending on the type of node
@@ -36,7 +33,7 @@ class PoolingParser(OnnxOperatorParser):
             )
         return kernel_shape
 
-    def get_layer_node_input_format(
+    def get_layer_node_user_format(
         self,
         kernel_shape: list[int],
         strides: list[int],
@@ -99,7 +96,7 @@ class PoolingParser(OnnxOperatorParser):
 
         return data
 
-    def generate_layer_node_for_pooling(self):
+    def generate_node(self):
         # Get the input and output activation shapes
         ia_dimension_shape, oa_dimension_shape = get_node_input_output_dimension_shapes(self.node, self.onnx_model)
 
@@ -109,7 +106,7 @@ class PoolingParser(OnnxOperatorParser):
         dilations: list[int] = get_attribute_ints_with_name("dilations", attrs, default=[1, 1])  # type: ignore
         padding: list[int] = get_attribute_ints_with_name("pads", attrs, default=[0, 0, 0, 0])  # type: ignore
 
-        node_data: dict[str, Any] = self.get_layer_node_input_format(
+        node_data: dict[str, Any] = self.get_layer_node_user_format(
             kernel_shape,
             strides,
             dilations,

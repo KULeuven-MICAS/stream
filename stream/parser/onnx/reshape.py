@@ -7,9 +7,6 @@ from stream.workload.reshape_node import ReshapeNode
 class ReshapeParser(OnnxOperatorParser):
     """Parses an onnx reshape operator into a ReshapeNode."""
 
-    def run(self):
-        return self.generate_node()
-
     def generate_node(self):
         predecessors = self.get_node_predecessors()
         assert len(predecessors) == 1, "An ONNX reshape node with multiple input nodes is not supported"

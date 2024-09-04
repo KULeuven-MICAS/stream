@@ -5,9 +5,6 @@ from stream.classes.workload.transpose_node import TransposeNode
 class TransposeParser(OnnxOperatorParser):
     """Parses an onnx reshape operator into a TransposeNode."""
 
-    def run(self):
-        return self.generate_layer_node_for_transpose()
-
     def generate_layer_node_for_transpose(self):
         predecessors = self.get_node_predecessors()
         assert len(predecessors) == 1, "An ONNX transpose node with multiple input nodes is not supported"

@@ -13,10 +13,7 @@ class ElementwiseParser(OnnxOperatorParser):
         self.type = node.op_type.lower()
         self.name = node.name
 
-    def run(self):
-        return self.generate_elementwise_node()
-
-    def generate_elementwise_node(self):
+    def generate_node(self):
         # Get the predecessors of this node
         predecessors = []
         for node_input in self.node.input:
