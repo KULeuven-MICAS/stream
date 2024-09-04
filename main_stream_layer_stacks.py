@@ -4,20 +4,22 @@ import re
 
 from zigzag.stages.MainStage import MainStage
 
-from stream.classes.stages.AcceleratorParserStage import (
+from stream.stages.parsing.accelerator_parser import (
     AcceleratorParserStage as AcceleratorParserStage_,
 )
-from stream.classes.stages.DetermineHintLoopsStage import DetermineHintLoopsStage
-from stream.classes.stages.DetermineLayerStacksStage import DetermineLayerStacksStage
-from stream.classes.stages.DetermineSchedulingOrderStage import DetermineSchedulingOrderStage
-from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage
-from stream.classes.stages.InterCoreMappingStage import InterCoreMappingStage
-from stream.classes.stages.IntraCoreMappingStage import IntraCoreMappingStage
-from stream.classes.stages.ModelParserStage import ONNXModelParserStage as StreamONNXModelParserStage
-from stream.visualization.memory_usage import plot_memory_usage
+from stream.stages.generation.hint_loops_generation import HintLoopsGenerationStage
+from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
+from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
+from stream.stages.generation.hint_loops_partitioned_workload_generation import (
+    HintLoopsPartitionedWorkloadGenerationStage,
+)
+from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
+from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
+from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
+from stream.visualization.memory_usage import plot_memory_usage # type: ignore
 from stream.visualization.schedule import (
     plot_timeline_brokenaxes,
-    visualize_timeline_plotly,
+    visualize_timeline_plotly, # type: ignore
 )
 
 _logging_level = _logging.INFO
@@ -67,13 +69,13 @@ mainstage = MainStage(
     [  # Initializes the MainStage as entry point
         AcceleratorParserStage_,  # Parses the accelerator
         StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-        DetermineLayerStacksStage,
-        DetermineHintLoopsStage,
+        LayerStacksGenerationStage,
+        HintLoopsGenerationStage,
         # UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
-        GenerateCNWorkloadHybridStage,
-        IntraCoreMappingStage,
-        DetermineSchedulingOrderStage,
-        InterCoreMappingStage,
+        HintLoopsPartitionedWorkloadGenerationStage,
+        ZigZagCoreMappingEstimationStage,
+        SchedulingOrderGenerationStage,
+        GeneticAlgorithmAllocationStage,
     ],
     accelerator=accelerator,  # required by AcceleratorParserStage
     workload_path=workload_path,  # required by ModelParserStage
