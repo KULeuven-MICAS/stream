@@ -1,4 +1,4 @@
-name: Python can run
+name: Python main testing
 
 # Controls when the workflow will run
 on: [push]
@@ -25,10 +25,6 @@ jobs:
           pip install -r requirements.txt
       - name: Run without errors
         run: |
-          python main_stream_layer_splitting.py
-          python main_stream_mode_3.py
-          python main_stream_mode_4.py
-          python main_stream.py
           python main_testing_1_core_with_testing_workload.py
           python main_testing_2_cores_shared.py
           python main_testing_2_cores_with_testing_workload_3_layers.py
