@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 
-from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
+from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.utils import load_scme
 
 

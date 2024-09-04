@@ -3,7 +3,7 @@ from typing import List
 import matplotlib.pyplot as plt
 import numpy as np
 
-from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
+from stream.cost_model.cost_model import StreamCostModelEvaluation
 
 
 def bar_plot_stream_cost_model_evaluations_breakdown(scmes: List[StreamCostModelEvaluation], fig_path: str):

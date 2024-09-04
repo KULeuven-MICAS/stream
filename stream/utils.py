@@ -12,9 +12,9 @@ from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
 
 if TYPE_CHECKING:
-    from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
-    from stream.classes.hardware.architecture.accelerator import Accelerator
-    from stream.classes.workload.onnx_workload import ComputationNodeWorkload
+    from stream.cost_model.cost_model import StreamCostModelEvaluation
+    from stream.hardware.architecture.accelerator import Accelerator
+    from stream.workload.onnx_workload import ComputationNodeWorkload
 
 ARRAY_T: TypeAlias = NDArray[Any]
 
