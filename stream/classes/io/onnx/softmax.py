@@ -120,10 +120,10 @@ class SoftmaxExpParser(OnnxComputeOperatorParser):
                 data["loop_dims"] = ["K", "C"]
             case 3:
                 data["equation"] = "O[b][k][c]+=I[b][k][c]+W[b][k]"
-                data["loop_dims"] = ["B", "C", "k"]
+                data["loop_dims"] = ["B", "K", "C"]
             case 4:
                 data["equation"] = "O[b][h][k][c]+=I[b][h][k][c]+W[b][h][k]"
-                data["loop_dims"] = ["B", "H", "C", "k"]
+                data["loop_dims"] = ["B", "H", "K", "C"]
             case _:
                 raise NotImplementedError
 
