@@ -19,9 +19,9 @@ class LpNormalizationParser(OnnxOperatorParser):
                 if node_input in self.nodes_outputs[n]:
                     predecessors.append(n)
 
-        # Get the input names of the operator
-        input_names = [self.node.input[0]]
-        # Get the output names of the operator
-        output_names = [self.node.output[0]]
-        node_obj = LpNormalizationNode(predecessors, input_names, output_names)
+        node_obj = LpNormalizationNode(
+            node_id=self.node_id,
+            node_name=self.node_name,
+            predecessor=self.predecessor,
+        )
         return node_obj

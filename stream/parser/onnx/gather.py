@@ -12,17 +12,12 @@ class GatherParser(OnnxOperatorParser):
         axis = self.get_axis_value()
         indices = self.get_indices_value()
 
-        input_names = [self.node.input[0]]
-        output_names = [self.node.output[0]]
-
         return GatherNode(
             node_id=self.node_id,
             node_name=self.node.name,
             predecessors=predecessors,
             gather_axis=axis,
             gather_indices=indices,
-            input_names=input_names,
-            output_names=output_names,
         )
 
     def get_indices_value(self):

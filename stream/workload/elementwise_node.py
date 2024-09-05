@@ -6,7 +6,10 @@ from stream.workload.node import Node
 class ElementwiseNode(Node):
 
     def __init__(
-        self, node_id: int, node_name: str, predecessor: int, input_names: list[str], output_names: list[str]
+        self,
+        node_id: int,
+        node_name: str,
+        predecessor: int,
     ) -> None:
         super().__init__(
             node_id=node_id,
@@ -16,8 +19,6 @@ class ElementwiseNode(Node):
             offchip_energy=0,
             runtime=0,
             possible_core_allocation=[-1],
-            input_names=input_names,
-            output_names=output_names,
         )
         self.input_operand_source = {LayerOperand("I"): predecessor}
 

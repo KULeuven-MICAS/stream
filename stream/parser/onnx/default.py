@@ -9,14 +9,10 @@ class DefaultNodeParser(OnnxOperatorParser):
 
     def generate_node(self):
         predecessors = self.get_node_predecessors()
-        input_names = list(self.node.input)
-        output_names = list(self.node.output)
 
         return DummyNode(
             node_id=self.node_id,
             node_name=self.node.name,
             predecessors=predecessors,
-            input_names=input_names,
-            output_names=output_names,
             op_type=self.node.op_type.lower(),
         )

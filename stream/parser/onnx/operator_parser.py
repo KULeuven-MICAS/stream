@@ -97,14 +97,9 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
         spatial_mapping = self.accelerator.get_spatial_mapping_from_core(core_allocation)
         node_attrs.spatial_mapping = spatial_mapping
 
-        node_input_names = list(self.node.input)
-        node_output_names = list(self.node.output)
-
         return ComputationNode(
             node_id=self.node_id,
             node_name=self.node.name,
             node_attr=node_attrs,
-            input_names=node_input_names,
-            output_names=node_output_names,
             op_type=self.node.op_type,
         )

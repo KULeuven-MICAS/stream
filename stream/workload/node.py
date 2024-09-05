@@ -17,8 +17,6 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         offchip_energy: float,
         runtime: int,
         possible_core_allocation: list[int],
-        input_names: list[str],
-        output_names: list[str],
         chosen_core_allocation: int | None = None,
     ) -> None:
         """Initialize the Node metaclass
@@ -49,8 +47,6 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         # number of data (in bits) only this node produces (not produced by any other node)
         self.data_produced_unique = 0
 
-        # self.input_names = input_names # TODO restore
-        # self.output_names = output_names
         # will be set together with the core allocation
         self.offchip_bw = None
 

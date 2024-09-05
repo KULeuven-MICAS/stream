@@ -13,8 +13,6 @@ class DummyNode(DummyNodeZigZag, Node):
         node_id: int,
         node_name: str,
         predecessors: list[int],
-        input_names: list[str],
-        output_names: list[str],
         op_type: str = "dummy",
     ) -> None:
         DummyNodeZigZag.__init__(
@@ -33,6 +31,4 @@ class DummyNode(DummyNodeZigZag, Node):
             offchip_energy=0,
             runtime=0,
             possible_core_allocation=[-1],
-            input_names=None,  # input_names,
-            output_names=None,  # output_names,
         )
