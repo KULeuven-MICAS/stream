@@ -314,8 +314,8 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
 
             # Create the computation node object with the computed ranges of the loop dimensions
             node_name = original_node.name
-            node_input_names = original_node.input_names
-            node_output_names = original_node.output_names
+            node_input_names = None  # original_node.input_names # TODO restore
+            node_output_names = None  # original_node.output_names
             # If all the output irrelevant loops are at a max, this is producing a final output, so set a flag
             original_node_output_ir_dims = original_node.loop_relevancy_info.get_ir_layer_dims(
                 Constants.OUTPUT_LAYER_OP
@@ -433,10 +433,21 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
             bounds = self.get_bounding_box_dimensions(producer, consumer, dimensions, inclusive_ranges)
             yield (i, bounds, None)
 
-    def get_nb_input_dimensions(self, node: ComputationNode):
-        """Return the number of input dimensions this node has. We take the first non-constant input operand."""
-        input_operand = list(set(node.input_operands) - set(node.constant_operands))[0]
-        dims = node.operand_dimensionality_order[input_operand]
+    def get_nb_input_dimensions(self, node: ComputationNode, operand: LayerOperand):
+        """Return the number of input dimensions this node has.
+        # We take the first non-constant input operand."""
+        dims = node.operand_dimensionality_order[operand]
+
+        # try:
+        #     input_operand = (
+        #         Constants.LAYER_OP_I if Constants.LAYER_OP_I not in node.constant_operands else Constants.LAYER_OP_W
+        #     )
+        #     dims = node.operand_dimensionality_order[Constants.LAYER_OP_I]
+        # except KeyError:
+        #     # This is dead code since input operands can only be I or W
+        #     input_operand = list(set(node.input_operands) - set(node.constant_operands))[0]
+        #     dims = node.operand_dimensionality_order[input_operand]
+
         if LayerDim("G") in dims and (LayerDim("C") in dims or LayerDim("K") in dims):
             # because later the generator will merge them into a single channel dim
             return len(dims) - 1
@@ -451,7 +462,7 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         """
         props = index.Property()
         # We assume all nodes in 'nodes' have identical dimensions
-        props.dimension = self.get_nb_input_dimensions(nodes[0])
+        props.dimension = self.get_nb_input_dimensions(nodes[0], operand)
 
         rtree = index.Index(self.bounding_box_generator(producer, consumer, nodes, operand), properties=props)
         return rtree
@@ -527,10 +538,10 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         dependent_input_operands: list[LayerOperand] = []
         for operand, parent_node_id in consumer.input_operand_source.items():
             parent_node = self.workload.get_node_with_id(parent_node_id)
-            assert isinstance(parent_node, Node)
             if parent_node == producer:
                 dependent_input_operands.append(operand)
-            elif parent_node:
+            elif not isinstance(parent_node, ComputationNode):
+                # Propagate to the first parent CN
                 non_dummy_parents = self.get_non_type_predecessors(parent_node, [DummyNode])
                 if producer in non_dummy_parents:
                     dependent_input_operands.append(operand)

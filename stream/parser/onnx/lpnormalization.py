@@ -12,6 +12,7 @@ class LpNormalizationParser(OnnxOperatorParser):
 
     def generate_node(self):
         # Get the predecessors of this node
+        # TODO use superclass' `get_node_predecessors`
         predecessors = []
         for node_input in self.node.input:
             for n in self.nodes_outputs:

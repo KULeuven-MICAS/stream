@@ -24,10 +24,9 @@ class ONNXWorkload(DiGraphWrapper[Node]):
 
         self.add_node(node_obj)
         edges: list[tuple[Node, Node]] = []
-        for op, parent_id in node_obj.input_operand_source.items():
+        for parent_id in node_obj.input_operand_source.values():
             parent_node_obj = self.node_id_to_obj[parent_id]
             edges.append((parent_node_obj, node_obj))
-            node_obj.input_operand_source[op] = parent_id
             self.add_edges_from(edges)
 
 
