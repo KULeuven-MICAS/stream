@@ -13,18 +13,8 @@ class TransposeNode(Node, LayerNodeABC):
         node_id: int,
         node_name: str,
         predecessor: int,
-        input_names: list[str],
-        output_names: list[str],
         permute_axes: list[int] | None = None,
     ) -> None:
-        """Initialize the TransposeNode
-
-        Args:
-            predecessors: The predecessors of this node.
-            input_names The input names of this node.
-            output_names: The output names of this node.
-        """
-
         Node.__init__(
             self,
             node_id=node_id,
@@ -34,8 +24,6 @@ class TransposeNode(Node, LayerNodeABC):
             offchip_energy=0,
             runtime=0,
             possible_core_allocation=[-1],
-            input_names=input_names,
-            output_names=output_names,
         )
         LayerNodeABC.__init__(self, node_id=node_id, node_name=node_name)
 

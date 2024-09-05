@@ -94,17 +94,6 @@ class LayerSplittingStage(Stage):
     def run(self):
         for workload_node in self.workload.node_list:
             if workload_node.type == "conv" or workload_node.type == "gemm":
-                try:
-                    corresponding_onnx_operator = next(
-                        (n for n in self.onnx_model.graph.node if n.name == workload_node.name)
-                    )
-                except StopIteration:
-                    input_names = workload_node.input_names
-                    corresponding_onnx_operator = next(
-                        (n for n in self.onnx_model.graph.node if n.input == input_names)
-                    )
-                operator_name = corresponding_onnx_operator.name
-
                 if not (
                     LayerOperand("W") in workload_node.constant_operands
                     or LayerOperand("B") in workload_node.constant_operands
@@ -118,10 +107,15 @@ class LayerSplittingStage(Stage):
                     split_factor = self.split_factors[workload_node]
                     if not split_factor > 1:
                         continue
-                    (
-                        split_node_names,
-                        concat_name,
-                    ) = self.split_operator(self.onnx_model, operator_name, split_factor)
+
+                    assert any(n.name == workload_node.name for n in self.onnx_model.graph.node), (
+                        "Some conv or gemm node has been initialized with a name other than the corresponding "
+                        "ONNX node name"
+                    )
+
+                    split_node_names, concat_name = self.split_operator(
+                        self.onnx_model, workload_node.name, split_factor
+                    )
 
                     logger.info(
                         f"Split {workload_node.name} into {split_factor} Conv nodes: {split_node_names} and Concat "
@@ -142,7 +136,7 @@ class LayerSplittingStage(Stage):
             yield cme, extra_info
 
     @staticmethod
-    def split_operator(model: ModelProto, node_name: str, num_splits: int):
+    def split_operator(model: ModelProto, node_name: str, num_splits: int) -> tuple[tuple[str, ...], str]:
         """
         Replaces an ONNX Conv or Gemm operator in an ONNX model with a sequence of Conv operators with smaller kernel
         sizes

@@ -23,19 +23,7 @@ class DNNWorkloadStream(DiGraphWrapper[ComputationNode]):
         self.layer_node_list = nodes
 
         for node in nodes:
-            # Create ComputationNode
             node_name = f"{node.type}_{node.id}"
-            node_input_names = [
-                f"{other_layer_node.type}_{other_layer_node.id}"
-                for other_layer_node in nodes
-                if other_layer_node.id in node.input_operand_source.values()
-            ]
-            node_output_names = [f"{node_name}_output"]
-            if len(node_input_names) == 0:
-                node_input_names = ["the_first_input"]
-
-            # Assume always define the final layer in the end
-            produces_final_output = not node_output_names
 
             op_type = node.type.lower()
             node_attr = node.extract_node_attr()
@@ -43,14 +31,11 @@ class DNNWorkloadStream(DiGraphWrapper[ComputationNode]):
                 node_id=node.id,
                 node_name=node_name,
                 node_attr=node_attr,
-                input_names=node_input_names,
-                output_names=node_output_names,
                 op_type=op_type,
-                produces_final_output=produces_final_output,
             )
 
             # Add to graph
-            logger.info("Parsed layer node %s | INPUT %s | OUTPUT %s", node_name, node_input_names, node_output_names)
+            logger.info("Parsed layer node %s", node_name)
             layer_id_to_obj[computation_node.id] = computation_node
             self.add_node(computation_node)
 

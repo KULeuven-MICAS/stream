@@ -11,15 +11,11 @@ class TransposeParser(OnnxOperatorParser):
         predecessor = predecessors.pop()
 
         permute_axes = self.get_permute_indices()
-        input_names = [self.node.input[0]]
-        output_names = [self.node.output[0]]
 
         return TransposeNode(
             node_id=self.node_id,
             node_name=self.node.name,
             predecessor=predecessor,
-            input_names=input_names,
-            output_names=output_names,
             permute_axes=permute_axes,
         )
 

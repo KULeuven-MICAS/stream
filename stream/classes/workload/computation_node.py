@@ -30,8 +30,6 @@ class ComputationNode(LayerNode, Node):
         node_id: int,
         node_name: str,
         node_attr: LayerNodeAttributes,
-        input_names: list[str],
-        output_names: list[str],
         op_type: str = "computation",
         operand_tensor_reshape: OperandTensorReshape | None = None,
         produces_final_output: bool = False,
@@ -49,8 +47,6 @@ class ComputationNode(LayerNode, Node):
             offchip_energy=0,
             runtime=0,
             possible_core_allocation=node_attr.core_allocation,
-            input_names=input_names,
-            output_names=output_names,
         )
 
         self.sub_id = sub_id

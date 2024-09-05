@@ -15,8 +15,6 @@ class FlattenNode(Node, LayerNodeABC):
         node_name: str,
         predecessor: int | None,
         axis: int | None,
-        input_names: list[str],
-        output_names: list[str],
     ) -> None:
         """Initialize the FlattenNode
 
@@ -31,8 +29,6 @@ class FlattenNode(Node, LayerNodeABC):
             offchip_energy=0,
             runtime=0,
             possible_core_allocation=[-1],
-            input_names=input_names,
-            output_names=output_names,
         )
         self.axis = axis
         if predecessor is not None:

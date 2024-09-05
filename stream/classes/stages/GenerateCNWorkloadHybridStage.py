@@ -310,8 +310,6 @@ class GenerateCNWorkloadHybridStage(Stage):
 
             # Create the computation node object with the computed ranges of the loop dimensions
             node_name = original_node.name
-            node_input_names = None  # original_node.input_names # TODO restore
-            node_output_names = None  # original_node.output_names
             # If all the output irrelevant loops are at a max, this is producing a final output, so set a flag
             original_node_output_ir_dims = original_node.loop_relevancy_info.get_ir_layer_dims(
                 Constants.OUTPUT_LAYER_OP
@@ -326,8 +324,6 @@ class GenerateCNWorkloadHybridStage(Stage):
                 sub_id=n,
                 node_name=node_name,
                 node_attr=finer_node_attrs_copy,
-                input_names=node_input_names,
-                output_names=node_output_names,
                 op_type=original_node.type,
                 produces_final_output=produces_final_output,
                 group_id=group_id,

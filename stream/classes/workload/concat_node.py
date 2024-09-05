@@ -16,8 +16,6 @@ class ConcatNode(Node, LayerNodeABC):
         axis: int,
         constant_shape: tuple[int, ...],
         variable_input_first: bool,
-        input_names: list[str],
-        output_names: list[str],
     ) -> None:
         """Initialize the ConcatNode
 
@@ -27,8 +25,6 @@ class ConcatNode(Node, LayerNodeABC):
             constant_shape: the shape of the constant tensor
             variable_input_first: Wether the result is `concat(input, constant_tensor)` or
                 `concat(constant_tensor, input)`
-            input_names The input names of this node.
-            output_names: The output names of this node.
         """
         Node.__init__(
             self,
@@ -39,8 +35,6 @@ class ConcatNode(Node, LayerNodeABC):
             offchip_energy=0,
             runtime=0,
             possible_core_allocation=[-1],
-            input_names=input_names,
-            output_names=output_names,
         )
         LayerNodeABC.__init__(self, node_id=node_id, node_name=node_name)
 
