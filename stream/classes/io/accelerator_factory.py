@@ -1,6 +1,6 @@
 from typing import Any
 
-from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.core import Core
 from zigzag.parser.accelerator_factory import CoreFactory
 
 from stream.classes.hardware.architecture.accelerator import Accelerator

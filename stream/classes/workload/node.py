@@ -1,6 +1,6 @@
 from abc import ABCMeta
 
-from zigzag.workload.LayerNodeABC import LayerNodeABC
+from zigzag.workload.layer_node_abc import LayerNodeABC
 
 
 class Node(LayerNodeABC, metaclass=ABCMeta):

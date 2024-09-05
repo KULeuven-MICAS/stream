@@ -1,7 +1,7 @@
 import logging
 from typing import Any
 
-from zigzag.stages.Stage import Stage, StageCallable
+from zigzag.stages.stage import Stage, StageCallable
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.workload.computation_node import ComputationNode

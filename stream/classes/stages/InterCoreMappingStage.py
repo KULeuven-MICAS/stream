@@ -3,8 +3,8 @@ from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import LayerOperand
-from zigzag.hardware.architecture.Core import Core
-from zigzag.stages.Stage import Stage, StageCallable
+from zigzag.hardware.architecture.core import Core
+from zigzag.stages.stage import Stage, StageCallable
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.opt.allocation.genetic_algorithm.fitness_evaluator import (

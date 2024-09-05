@@ -1,7 +1,7 @@
 from zigzag.cost_model.cost_model import CostModelEvaluation
-from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.core import Core
 from zigzag.utils import pickle_deepcopy
-from zigzag.workload.ONNXWorkload import ONNXWorkload as Workload
+from zigzag.workload.onnx_workload import ONNXWorkload as Workload
 
 from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
 from stream.classes.hardware.architecture.accelerator import Accelerator

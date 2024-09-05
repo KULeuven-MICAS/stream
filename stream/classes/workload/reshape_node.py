@@ -1,5 +1,5 @@
 from zigzag.datatypes import Constants
-from zigzag.workload.LayerNodeABC import LayerNodeABC
+from zigzag.workload.layer_node_abc import LayerNodeABC
 
 from stream.classes.workload.node import Node
 from stream.utils import NodeTensor

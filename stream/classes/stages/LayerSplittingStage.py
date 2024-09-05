@@ -8,7 +8,7 @@ import onnx
 from onnx import ModelProto, helper, numpy_helper
 from onnx.shape_inference import infer_shapes
 from zigzag.datatypes import Constants, LayerOperand
-from zigzag.stages.Stage import Stage, StageCallable
+from zigzag.stages.stage import Stage, StageCallable
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.stages import utils

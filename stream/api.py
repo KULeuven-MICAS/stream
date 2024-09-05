@@ -1,4 +1,4 @@
-from zigzag.stages.MainStage import MainStage
+from zigzag.stages.main import MainStage
 
 from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage
 from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage

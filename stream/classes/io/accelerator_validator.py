@@ -3,7 +3,7 @@ import os
 from typing import Any
 
 from cerberus import Validator
-from zigzag.parser.AcceleratorValidator import AcceleratorValidator as CoreValidator
+from zigzag.parser.accelerator_validator import AcceleratorValidator as CoreValidator
 from zigzag.utils import open_yaml
 
 logger = logging.getLogger(__name__)

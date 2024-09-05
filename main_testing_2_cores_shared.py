@@ -1,7 +1,7 @@
 import logging as _logging
 import re
 
-from zigzag.stages.MainStage import MainStage
+from zigzag.stages.main import MainStage
 
 from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
 from stream.classes.stages.GenerateCNWorkloadHybridStage import GenerateCNWorkloadHybridStage

@@ -1,8 +1,8 @@
 import logging
 from typing import Any
 
-from zigzag.stages.Stage import Stage, StageCallable
-from zigzag.stages.WorkloadParserStage import WorkloadParserStage as ZigZagWorkloadParserStage
+from zigzag.stages.parser.workload_parser import WorkloadParserStage as ZigZagWorkloadParserStage
+from zigzag.stages.stage import Stage, StageCallable
 
 from stream.classes.hardware.architecture.accelerator import Accelerator
 from stream.classes.io.onnx.model import ONNXModelParser

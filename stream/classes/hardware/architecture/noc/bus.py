@@ -1,5 +1,5 @@
 from zigzag.datatypes import Constants
-from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.core import Core
 
 from stream.classes.hardware.architecture.accelerator import CoreGraph
 from stream.classes.hardware.architecture.noc.communication_link import CommunicationLink

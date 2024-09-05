@@ -3,7 +3,7 @@ from math import ceil
 from typing import TYPE_CHECKING, Any
 
 from zigzag.datatypes import Constants, MemoryOperand
-from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.core import Core
 
 from stream.classes.hardware.architecture.utils import intersections
 from stream.classes.workload.computation_node import ComputationNode

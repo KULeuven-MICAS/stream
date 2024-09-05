@@ -1,8 +1,8 @@
 from math import ceil
 
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.Core import Core
-from zigzag.hardware.architecture.MemoryInstance import MemoryInstance
+from zigzag.hardware.architecture.core import Core
+from zigzag.hardware.architecture.memory_instance import MemoryInstance
 from zigzag.mapping.spatial_mapping import SpatialMapping
 
 from stream.classes.cost_model.communication_manager import CommunicationManager
