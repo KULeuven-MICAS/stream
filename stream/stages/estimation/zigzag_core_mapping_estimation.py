@@ -4,16 +4,16 @@ from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.core import Core
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
 from zigzag.mapping.spatial_mapping import SpatialMapping
-from zigzag.stages.CostModelStage import CostModelStage
-from zigzag.stages.MainStage import MainStage
-from zigzag.stages.reduce_stages import MinimalLatencyStage
-from zigzag.stages.SpatialMappingGeneratorStage import SpatialMappingGeneratorStage
-from zigzag.stages.Stage import Stage, StageCallable
-from zigzag.stages.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
+from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
+from zigzag.stages.main import MainStage
+from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
+from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
+from zigzag.stages.results.reduce_stages import MinimalLatencyStage
+from zigzag.stages.stage import Stage, StageCallable
 from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator

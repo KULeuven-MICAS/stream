@@ -1,6 +1,6 @@
 import numpy as np
 from zigzag.datatypes import Constants
-from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.core import Core
 
 from stream.hardware.architecture.accelerator import CoreGraph
 from stream.hardware.architecture.noc.communication_link import CommunicationLink

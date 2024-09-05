@@ -4,9 +4,9 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.core import Core
+from zigzag.hardware.architecture.memory_instance import MemoryInstance
 from zigzag.hardware.architecture.memory_level import MemoryLevel
-from zigzag.hardware.architecture.MemoryInstance import MemoryInstance
 
 from stream.workload.tensor import Tensor
 

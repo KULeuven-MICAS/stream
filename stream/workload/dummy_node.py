@@ -1,4 +1,4 @@
-from zigzag.workload.DummyNode import DummyNode as DummyNodeZigZag
+from zigzag.workload.dummy_node import DummyNode as DummyNodeZigZag
 
 from stream.workload.node import Node
 

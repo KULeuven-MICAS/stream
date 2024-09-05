@@ -5,7 +5,7 @@ from typing import Any, List
 
 from rtree import index
 from zigzag.datatypes import Constants, LayerDim, LayerOperand
-from zigzag.stages.Stage import Stage, StageCallable
+from zigzag.stages.stage import Stage, StageCallable
 from zigzag.utils import pickle_deepcopy
 
 from stream.cost_model.group_allocation import GroupIdManager

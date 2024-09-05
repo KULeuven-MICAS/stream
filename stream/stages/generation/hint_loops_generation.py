@@ -2,7 +2,7 @@ import logging
 
 import numpy as np
 from onnx import ModelProto, helper, numpy_helper
-from zigzag.stages.Stage import Stage
+from zigzag.stages.stage import Stage
 
 from stream.workload.computation_node import ComputationNode
 

@@ -4,7 +4,7 @@ import logging as _logging
 import pickle
 import re
 
-from zigzag.stages.MainStage import MainStage
+from zigzag.stages.main import MainStage
 
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage

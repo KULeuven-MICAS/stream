@@ -1,7 +1,7 @@
 import logging
 from typing import Generator
 
-from zigzag.parser.onnx.GemmParser import GemmParser as GemmParserZigZag
+from zigzag.parser.onnx.gemm_parser import GemmParser as GemmParserZigZag
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.classes.io.onnx.operator_parser import OnnxComputeOperatorParser

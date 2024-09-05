@@ -2,7 +2,7 @@ import logging
 from typing import Any
 
 from zigzag.datatypes import MemoryOperand
-from zigzag.stages.Stage import Stage, StageCallable
+from zigzag.stages.stage import Stage, StageCallable
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.workload.computation_node import ComputationNode

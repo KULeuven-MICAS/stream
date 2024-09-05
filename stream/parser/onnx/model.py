@@ -3,7 +3,7 @@ from typing import Any, Type
 
 from onnx import ModelProto, NodeProto
 from zigzag.parser.onnx.utils import get_onnx_tensor_type, parse_onnx_model_from_path
-from zigzag.stages.WorkloadParserStage import WorkloadParserStage
+from zigzag.stages.parser.workload_parser import WorkloadParserStage
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.parser.onnx.concat import ConcatParser
