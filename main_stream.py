@@ -27,7 +27,6 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 ################################INPUTS################################
 accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 workload_path = "stream/inputs/examples/workload/resnet18.onnx"
-workload_path = "../transformer-dse/outputs/onnx/OPT-125M_B=8_SINGLELAYER_W4A16_prefill.onnx"
 mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
 CN_define_mode = 1  # manually define outer-CN loops
 hint_loops = [("OY", "all")]
