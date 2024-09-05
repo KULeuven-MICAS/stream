@@ -33,6 +33,6 @@ class DummyNode(DummyNodeZigZag, Node):
             offchip_energy=0,
             runtime=0,
             possible_core_allocation=[-1],
-            input_names=input_names,
-            output_names=output_names,
+            input_names=None,  # input_names,
+            output_names=None,  # output_names,
         )

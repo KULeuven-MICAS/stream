@@ -18,6 +18,7 @@ from stream.classes.io.onnx.operator_parser import OnnxOperatorParser
 from stream.classes.io.onnx.pooling import PoolingParser
 from stream.classes.io.onnx.reshape import ReshapeParser
 from stream.classes.io.onnx.simd import SimdParser
+from stream.classes.io.onnx.softmax import SoftmaxParser
 from stream.classes.io.onnx.transpose import TransposeParser
 from stream.classes.workload.onnx_workload import ONNXWorkload
 
@@ -37,13 +38,14 @@ class ONNXModelParser:
         "AveragePool": PoolingParser,
         "GlobalMaxPool": PoolingParser,
         "GlobalAveragePool": PoolingParser,
-        "Reshape": ReshapeParser,
-        "Flatten": FlattenParser,
-        "Gather": GatherParser,
         "Add": SimdParser,
         "Mul": SimdParser,
-        "Transpose": TransposeParser,
+        "Softmax": SoftmaxParser,
         "LpNormalization": LpNormalizationParser,
+        "Gather": GatherParser,
+        "Transpose": TransposeParser,
+        "Reshape": ReshapeParser,
+        "Flatten": FlattenParser,
         "Concat": ConcatParser,
     }
 

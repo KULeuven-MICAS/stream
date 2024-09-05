@@ -15,12 +15,20 @@ class SoftmaxParser(OnnxComputeOperatorParser):
     It is split up in four distinct computation nodes.
     """
 
+    NODE_TYPES = ["max", "exp", "sum", "div"]
+
     def run(self):
         for node in self.get_nodes():
             yield node
 
-    def get_nodes(self):
-        node_types = ["max", "exp", "sum", "div"]
+    def get_layer_node_user_format(self, input_shape: list[int], output_shape: list[int]) -> dict[str, Any]:
+        """Not used for this class, but abstract base class requires instantiation anyway"""
+        ...
+
+    def parse_into_subnodes(self):
+        """Prase the base ONNX node multiple times into the different Computation Nodes.
+        The CNs that result from this operation have some incorrect properties regarding the graph structure
+        """
         parser_classes = [Reduce1DParser, SoftmaxExpParser, Reduce1DParser, SoftmaxDivParser]
 
         node_ids = [self.node_id + i for i in range(4)]
@@ -35,23 +43,55 @@ class SoftmaxParser(OnnxComputeOperatorParser):
             )
             for parser, node_id in zip(parser_classes, node_ids)
         ]
-        nodes = [next(parser.run()) for parser in parsers]
+        self.nodes = tuple(next(parser.run()) for parser in parsers)
 
+    def get_nodes(self):
+        # Parse initial CNs
+        self.parse_into_subnodes()
         # Give correct op type and name
-        for node, node_type in zip(nodes, node_types):
-            node.type = node_type
-            node.name += f"-{node_type}"
-
+        self.set_nodes_name_and_type()
         # Override dependencies
+        self.correct_nodes_operand_source()
+        # self.correct_nodes_inputs_outputs()
+
+        return self.nodes
+
+    def set_nodes_name_and_type(self):
+        """Set the name and operator type of all Computation Nodes that stem from the base ONNX node"""
+        for node, node_type in zip(self.nodes, SoftmaxParser.NODE_TYPES):
+            node.type = node_type
+            node.name += f"-{node_type}/"
+
+    def correct_nodes_operand_source(self):
+        """Correct the `input_operand_source` and `constant_operands` of all Computation Nodes that stem from the base
+        ONNX node"""
         op_I = Constants.LAYER_OP_I
         op_W = Constants.LAYER_OP_W
-        id_max, id_exp, id_sum, _ = node_ids
-        prev_node_id = nodes[0].input_operand_source[op_I]  # Node before max
-        nodes[1].input_operand_source = {op_I: prev_node_id, op_W: id_max}  # Exp
-        nodes[2].input_operand_source = {op_I: id_exp, op_W: id_sum}  # Sum
-        nodes[3].input_operand_source = {op_I: id_exp, op_W: id_sum}  # Div
+        node_max, node_exp, node_sum, node_div = self.nodes
+        id_max, id_exp, id_sum, _ = [node.id for node in self.nodes]
+        prev_node_id = node_max.input_operand_source[op_I]  # Node before Softmax
 
-        return nodes
+        # Default after generation: input_operand_source = {op_I: prev_node_id} and constant_operands = [W]
+        node_exp.input_operand_source = {op_I: prev_node_id, op_W: id_max}
+        node_exp.constant_operands = []
+        node_sum.input_operand_source = {op_I: id_exp}
+        node_div.input_operand_source = {op_I: id_exp, op_W: id_sum}
+        node_div.constant_operands = []
+
+    def correct_nodes_inputs_outputs(self):
+        """Correct the `node_inputs` and `node_outputs` of all Computation Nodes that stem from the base
+        ONNX node"""
+        node_max, node_exp, node_sum, node_div = self.nodes
+        prev_node_name = node_max.input_names[0]  # Node before Softmax
+        next_node_name = node_max.output_names[0]  # Node after Softmax
+
+        node_max.output_names = [node_exp.name]
+        node_exp.input_names = [node_max.name, prev_node_name]
+        node_exp.output_names = [node_div.name, node_sum.name]
+        node_sum.input_names = [node_exp.name]
+        node_sum.output_names = [node_div.name]
+        node_div.input_names = [node_exp.name, node_sum.name]
+        node_div.output_names = [next_node_name]
 
 
 class SoftmaxExpParser(OnnxComputeOperatorParser):

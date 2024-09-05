@@ -133,7 +133,6 @@ class IntraCoreMappingStage(Stage):
                             cme = self.node_hw_performances[equal_node][equal_core]
                             self.node_hw_performances[node][core] = cme
                             self.save_node_hw_performances()
-                        # else:
                         except StopIteration or KeyError:
                             # Compute this (node, core) combination's optimal mapping
                             # Set the node's core allocation to the core_id we want to extract hw performance for

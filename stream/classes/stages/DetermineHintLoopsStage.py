@@ -1,7 +1,7 @@
 import logging
 
 import numpy as np
-from onnx import helper, numpy_helper
+from onnx import ModelProto, helper, numpy_helper
 from zigzag.stages.Stage import Stage
 
 from stream.classes.workload.computation_node import ComputationNode
@@ -70,7 +70,7 @@ class DetermineHintLoopsStage(Stage):
         return nb_computation_nodes
 
     @staticmethod
-    def split_operator(model, node_name, num_splits):
+    def split_operator(model: ModelProto, node_name: str, num_splits: int):
         """
         Replaces an ONNX Conv or Gemm operator in an ONNX model with a sequence of Conv operators with smaller kernel
         sizes
@@ -117,6 +117,7 @@ class DetermineHintLoopsStage(Stage):
 
         # Get the shape of the weight of the operator
         weight_input_shape = None
+        assert original_node is not None
         original_weight_name = original_node.input[node_weight_input_idx]
         for original_weight in graph.initializer:
             if original_weight.name == original_weight_name:
