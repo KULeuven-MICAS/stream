@@ -10,10 +10,13 @@ from networkx import DiGraph
 from numpy.typing import NDArray
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
+from zigzag.hardware.architecture.core import Core
+
 
 if TYPE_CHECKING:
     from stream.cost_model.cost_model import StreamCostModelEvaluation
     from stream.hardware.architecture.accelerator import Accelerator
+    from stream.workload.computation_node import ComputationNode
     from stream.workload.onnx_workload import ComputationNodeWorkload
 
 ARRAY_T: TypeAlias = NDArray[Any]
@@ -105,6 +108,85 @@ def save_core_allocation(
         raise ValueError(f"Invalid format: {format}.")
     return mapping
 
+def get_cme(node_hw_performances, node, core):
+    try:
+        equal_node = next(n for n in node_hw_performances if n == node)
+    except:
+        raise ValueError(f"{node} not in dict")
+    if not any((core.id == c.id and core.equals(c) for c in node_hw_performances[equal_node])):
+        raise ValueError(f"{core} not in dict")
+    equal_core = next(c for c in node_hw_performances[equal_node] if core.id == c.id and core.equals(c))
+    cme = node_hw_performances[equal_node][equal_core]
+    return cme
+
+class CostModelEvaluationLUT:
+    """A class to store the cost model evaluations in a look-up table.
+    The look-up table is a dictionary with the following structure:
+    {
+        node0: {
+            core0: CostModelEvaluation,
+            ...
+        },
+        ...
+    }
+    """
+    def __init__(self, cache_path: str | None, load: bool = True):
+        self.lut: dict["ComputationNode", dict[Core, CostModelEvaluation]] = {}
+        self.cache_path = cache_path
+        if load and self.cache_path and os.path.exists(self.cache_path):
+            self.load()
+    
+    def load(self):
+        if not self.cache_path:
+            raise ValueError("No cache_path provided.")
+        try:
+            with open(self.cache_path, "rb") as fp:
+                self.lut = pickle.load(fp)
+        except:
+            raise ValueError(f"Could not load look-up table from {self.cache_path}. This can be caused by project structure changes. Try removing the file.")
+
+    def save(self):
+        if not self.cache_path:
+            raise ValueError("No cache_path provided.")
+        with open(self.cache_path, "wb") as fp:
+            pickle.dump(self.lut, fp)
+
+    def add_cme(self, node: "ComputationNode", core: Core, cme: CostModelEvaluation, allow_overwrite: bool = True):
+        """Add a CostModelEvaluation to the look-up table for a given node and core.
+        If a node with equal performance already exists in the look-up table,
+        the CostModelEvaluation is added to that node."""
+        if not allow_overwrite and self.has_cme(node, core):
+            raise ValueError(f"CostModelEvaluation for node {node} and core {core} already exists.")
+        if not node in self.lut:
+            self.lut[node] = {}
+        self.lut[node][core] = cme
+
+    def has_cme(self, node: "ComputationNode", core: Core):
+        """Check if a CostModelEvaluation exists for a given node and core."""
+        return node in self.lut and core in self.lut[node]
+
+    def get_cme(self, node: "ComputationNode", core: Core):
+        """Retrieve the CostModelEvaluation for a given node and core."""
+        if not self.has_cme(node, core):
+            raise ValueError(f"No CostModelEvaluation found for node {node} and core {core}.")
+        return self.lut[node][core]
+        
+    def get_equal_node(self, node: "ComputationNode"):
+        """Retrieve the node in the look-up table that is equal to the given node."""
+        if any((n.has_same_performance(node) for n in self.lut)):
+            return next(n for n in self.lut if n.has_same_performance(node))
+        else:
+            return None
+        
+    def get_equal_core(self, node: "ComputationNode", core: Core):
+        """Retrieve the core in the look-up table that is equal to the given core."""
+        if any((c == core for c in self.lut[node])):
+            return next(c for c in self.lut[node] if c == core)
+        else:
+            return None
+    
+    def get_nodes(self):
+        return self.lut.keys()
 
 class NodeTensor(np.ndarray[Any, Any]):
     """An instance of this class stores all ComputationNodes that are needed for a certain element within the loop-
