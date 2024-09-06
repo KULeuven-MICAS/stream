@@ -18,9 +18,7 @@ from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.utils import load_scme, save_scme
-from stream.visualization.node_hw_performances import (
-    visualize_node_hw_performances_pickle,
-)
+from stream.visualization.node_hw_performances import visualize_node_hw_performances_pickle
 from stream.workload.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
@@ -93,8 +91,8 @@ class ZigZagCoreMappingEstimationStage(Stage):
             # TODO This should never evaluate to true: enforce core_allocation as list everywhere
             if isinstance(self.valid_allocations[node], tuple):
                 raise ValueError
-            else:
-                core_ids = self.valid_allocations[node]
+
+            core_ids = self.valid_allocations[node]
             for core_id in core_ids:
                 core = self.accelerator.get_core(core_id)
                 # Offchip memory core doesn't have operational units
