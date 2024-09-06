@@ -1,6 +1,6 @@
 import logging
 
-from stream.classes.io.onnx.gemm import GemmParser
+from stream.parser.onnx.gemm import GemmParser
 
 logger = logging.getLogger(__name__)
 

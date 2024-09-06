@@ -1,6 +1,6 @@
 from onnx import numpy_helper
 
-from stream.classes.io.onnx.operator_parser import OnnxOperatorParser
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.gather_node import GatherNode
 
 

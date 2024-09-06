@@ -36,7 +36,7 @@ class SoftmaxParser(OnnxComputeOperatorParser):
             parser(
                 node_id=node_id,
                 node=self.node,
-                nodes_outputs=self.nodes_outputs,  # TODO now, the node_outputs does not contain the current id
+                nodes_outputs=self.nodes_outputs,
                 onnx_model=self.onnx_model,
                 mapping_data=self.mapping_data,
                 accelerator=self.accelerator,

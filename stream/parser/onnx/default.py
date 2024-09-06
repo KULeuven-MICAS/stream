@@ -1,8 +1,6 @@
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.dummy_node import DummyNode
 
-from stream.workload.dummy_node import DummyNode
-
 
 class DefaultNodeParser(OnnxOperatorParser):
     """Parse an ONNX node into a DummyNode."""

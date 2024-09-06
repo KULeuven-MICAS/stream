@@ -1,6 +1,6 @@
 from typing import Any
 
-from stream.classes.io.onnx.operator_parser import OnnxComputeOperatorParser
+from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
 
 
 class Reduce1DParser(OnnxComputeOperatorParser):

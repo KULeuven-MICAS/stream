@@ -14,10 +14,12 @@ from stream.parser.onnx.gather import GatherParser
 from stream.parser.onnx.gemm import GemmParser
 from stream.parser.onnx.lpnormalization import LpNormalizationParser
 from stream.parser.onnx.matmul import MatMulParser
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.parser.onnx.pooling import PoolingParser
 from stream.parser.onnx.reshape import ReshapeParser
 from stream.parser.onnx.simd import SimdParser
 from stream.parser.onnx.transpose import TransposeParser
+from stream.workload.node import Node
 from stream.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)

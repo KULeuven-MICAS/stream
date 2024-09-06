@@ -1,6 +1,6 @@
 from zigzag.parser.onnx.utils import OnnxTensorCategory, get_onnx_tensor_type
 
-from stream.io.onnx.operator_parser import OnnxOperatorParser
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.concat_node import ConcatNode
 
 

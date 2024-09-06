@@ -8,8 +8,8 @@ from zigzag.parser.onnx.utils import (
 )
 from zigzag.parser.workload_factory import LayerNodeFactory
 
-from stream.classes.io.onnx.operator_parser import OnnxComputeOperatorParser
-from stream.classes.workload.computation_node import ComputationNode
+from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
+from stream.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 

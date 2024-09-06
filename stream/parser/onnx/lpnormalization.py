@@ -1,4 +1,4 @@
-from stream.classes.io.onnx.operator_parser import OnnxOperatorParser
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.lpnormalization_node import LpNormalizationNode
 
 
