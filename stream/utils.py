@@ -301,12 +301,6 @@ class DiGraphWrapper(Generic[T], DiGraph):
     def add_edges_from(self, edges: Sequence[tuple[T, T] | tuple[T, T, Any]]) -> None:  # type: ignore
         super().add_edges_from(edges)  # type: ignore
 
-    def successors(self, node: T) -> Iterator[T]:  # type: ignore
-        return super().successors(node)  # type: ignore
-
-    def predecessors(self, node: T) -> Iterator[T]:  # type: ignore
-        return super().predecessors(node)  # type: ignore
-
     def all_simple_paths(self, producer: T, consumer: T) -> Iterator[list[T]]:
         return nx.all_simple_paths(self, source=producer, target=consumer)  # type: ignore
 
