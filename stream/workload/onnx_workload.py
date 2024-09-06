@@ -1,10 +1,8 @@
-from typing import Any, TypeVar
+from typing import Any
 
 from stream.utils import DiGraphWrapper
 from stream.workload.computation_node import ComputationNode
 from stream.workload.node import Node
-
-T = TypeVar("T", bound=Node)
 
 
 class ONNXWorkload(DiGraphWrapper[Node]):

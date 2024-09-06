@@ -18,6 +18,7 @@ from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.parser.onnx.pooling import PoolingParser
 from stream.parser.onnx.reshape import ReshapeParser
 from stream.parser.onnx.simd import SimdParser
+from stream.parser.onnx.softmax import SoftmaxParser
 from stream.parser.onnx.transpose import TransposeParser
 from stream.workload.node import Node
 from stream.workload.onnx_workload import ONNXWorkload
@@ -38,13 +39,14 @@ class ONNXModelParser:
         "AveragePool": PoolingParser,
         "GlobalMaxPool": PoolingParser,
         "GlobalAveragePool": PoolingParser,
-        "Reshape": ReshapeParser,
-        "Flatten": FlattenParser,
-        "Gather": GatherParser,
         "Add": SimdParser,
         "Mul": SimdParser,
-        "Transpose": TransposeParser,
+        "Softmax": SoftmaxParser,
         "LpNormalization": LpNormalizationParser,
+        "Gather": GatherParser,
+        "Transpose": TransposeParser,
+        "Reshape": ReshapeParser,
+        "Flatten": FlattenParser,
         "Concat": ConcatParser,
     }
 
@@ -102,13 +104,13 @@ class ONNXModelParser:
 
         # Workload Graph
         workload = ONNXWorkload()
-
-        for node_id, node in enumerate(self.onnx_model.graph.node):
+        node_id = 0
+        for node in self.onnx_model.graph.node:
             # If this node has no inputs, don't take it into consideration (e.g. Constant operator has no inputs)
             if not node.input:
                 continue
+
             nodes_inputs[node_id] = node.input
-            nodes_outputs[node_id] = node.output
 
             parser_class = self.get_parser_class(node)
             parser = parser_class(
@@ -121,8 +123,12 @@ class ONNXModelParser:
             )
 
             logger.info("Parsed %s node %s.", node.op_type, node.name)
-            node_obj: Node = parser.run()
-            workload.add(node_id, node_obj)
+            for node_obj in parser.run():
+                # Parsers that yield multiple nodes increment the node id internally, so we must keep count here.
+                workload.add(node_id, node_obj)
+                node_id += 1
+
+            nodes_outputs[node_id - 1] = node.output
 
         logger.info(
             "Created ONNXWorkload graph with %i  nodes and %i  edges.",
