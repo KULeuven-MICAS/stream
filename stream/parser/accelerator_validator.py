@@ -3,7 +3,7 @@ import os
 from typing import Any
 
 from cerberus import Validator
-from zigzag.parser.AcceleratorValidator import AcceleratorValidator as CoreValidator
+from zigzag.parser.accelerator_validator import AcceleratorValidator as CoreValidator
 from zigzag.utils import open_yaml
 
 logger = logging.getLogger(__name__)
@@ -11,6 +11,7 @@ logger = logging.getLogger(__name__)
 
 class AcceleratorValidator:
     INPUT_DIR_LOCATION = "stream/inputs/"
+    GRAPH_TYPES = ["2d_mesh", "bus"]
 
     SCHEMA = {
         "name": {"type": "string", "required": True},
@@ -26,7 +27,7 @@ class AcceleratorValidator:
             "type": "dict",
             "required": True,
             "schema": {
-                "type": {"type": "string", "required": True},
+                "type": {"type": "string", "required": True, "allowed": GRAPH_TYPES},
                 "nb_rows": {"type": "integer", "required": False},
                 "nb_cols": {"type": "integer", "required": False},
                 "bandwidth": {"type": "integer", "required": True},

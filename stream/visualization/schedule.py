@@ -442,7 +442,7 @@ def get_real_input_tensors(n, G):
     return inputs
 
 
-def get_dataframe_from_scme(scme: "StreamCostModelEvaluation", layer_ids, add_communication: bool = False):
+def get_dataframe_from_scme(scme: "StreamCostModelEvaluation", layer_ids: list[int], add_communication: bool = False):
     nodes = scme.workload.topological_sort()
     dicts = []
     for node in nodes:
@@ -487,11 +487,11 @@ def get_sorted_y_labels(df):
 
 
 def visualize_timeline_plotly(
-    scme,
-    draw_dependencies=False,
-    draw_communication=True,
-    fig_path="outputs/schedule.html",
-    layer_ids=None,
+    scme: "StreamCostModelEvaluation",
+    draw_dependencies: bool = False,
+    draw_communication: bool = True,
+    fig_path: str = "outputs/schedule.html",
+    layer_ids: list[int] | None = None,
 ):
     if not layer_ids:
         layer_ids = sorted(set(n.id for n in scme.workload.node_list))

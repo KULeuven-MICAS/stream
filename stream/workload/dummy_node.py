@@ -1,4 +1,4 @@
-from zigzag.workload.DummyNode import DummyNode as DummyNodeZigZag
+from zigzag.workload.dummy_node import DummyNode as DummyNodeZigZag
 
 from stream.workload.node import Node
 
@@ -13,8 +13,6 @@ class DummyNode(DummyNodeZigZag, Node):
         node_id: int,
         node_name: str,
         predecessors: list[int],
-        input_names: list[str],
-        output_names: list[str],
         op_type: str = "dummy",
     ) -> None:
         DummyNodeZigZag.__init__(
@@ -33,6 +31,4 @@ class DummyNode(DummyNodeZigZag, Node):
             offchip_energy=0,
             runtime=0,
             possible_core_allocation=[-1],
-            input_names=input_names,
-            output_names=output_names,
         )

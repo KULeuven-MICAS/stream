@@ -4,23 +4,21 @@ from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.core import Core
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
 from zigzag.mapping.spatial_mapping import SpatialMapping
-from zigzag.stages.CostModelStage import CostModelStage
-from zigzag.stages.MainStage import MainStage
-from zigzag.stages.reduce_stages import MinimalLatencyStage
-from zigzag.stages.SpatialMappingGeneratorStage import SpatialMappingGeneratorStage
-from zigzag.stages.Stage import Stage, StageCallable
-from zigzag.stages.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
+from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
+from zigzag.stages.main import MainStage
+from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
+from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
+from zigzag.stages.results.reduce_stages import MinimalLatencyStage
+from zigzag.stages.stage import Stage, StageCallable
 from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.utils import load_scme, save_scme
-from stream.visualization.node_hw_performances import (
-    visualize_node_hw_performances_pickle,
-)
+from stream.visualization.node_hw_performances import visualize_node_hw_performances_pickle
 from stream.workload.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
@@ -93,8 +91,8 @@ class ZigZagCoreMappingEstimationStage(Stage):
             # TODO This should never evaluate to true: enforce core_allocation as list everywhere
             if isinstance(self.valid_allocations[node], tuple):
                 raise ValueError
-            else:
-                core_ids = self.valid_allocations[node]
+
+            core_ids = self.valid_allocations[node]
             for core_id in core_ids:
                 core = self.accelerator.get_core(core_id)
                 # Offchip memory core doesn't have operational units
@@ -133,7 +131,6 @@ class ZigZagCoreMappingEstimationStage(Stage):
                             cme = self.node_hw_performances[equal_node][equal_core]
                             self.node_hw_performances[node][core] = cme
                             self.save_node_hw_performances()
-                        # else:
                         except StopIteration or KeyError:
                             # Compute this (node, core) combination's optimal mapping
                             # Set the node's core allocation to the core_id we want to extract hw performance for

@@ -2,43 +2,24 @@ import logging
 from math import ceil
 from typing import Any
 
-from onnx import ModelProto, NodeProto
-from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 from zigzag.parser.onnx.utils import (
     get_attribute_ints_with_name,
     get_node_input_output_dimension_shapes,
 )
 from zigzag.parser.workload_factory import LayerNodeFactory
 
-from stream.hardware.architecture.accelerator import Accelerator
+from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
 from stream.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 
 
-class ConvParser(ONNXOperatorParser):
+class ConvParser(OnnxComputeOperatorParser):
     """Parser for ONNX Conv and QLinearConv nodes into LayerNode."""
 
-    def __init__(
-        self,
-        node_id: int,
-        node: NodeProto,
-        nodes_outputs: dict[int, Any],
-        mapping_data: list[dict[str, Any]],
-        onnx_model: ModelProto,
-        accelerator: Accelerator,
-    ) -> None:
-        super().__init__(node_id, node, nodes_outputs, onnx_model)
-        self.onnx_model = onnx_model
-        self.mapping_data = mapping_data
-        self.accelerator = accelerator
-        self.op_type = "conv"
+    OP_TYPE = "conv"
 
-    def run(self) -> ComputationNode:
-        """Run the parser and return the created LayerNode object."""
-        return self.generate_layer_node_for_conv()
-
-    def get_layer_node_input_format(
+    def get_layer_node_user_format(  # type: ignore
         self,
         kernel_shape: list[int],
         strides: list[int],
@@ -57,7 +38,7 @@ class ConvParser(ONNXOperatorParser):
         data: dict[str, Any] = {}
         data["id"] = self.node_id
         data["name"] = f"Layer{self.node_id}"
-        data["operator_type"] = self.op_type
+        data["operator_type"] = ConvParser.OP_TYPE
         # IMPORTANT: If any of the input loops require padding, they should be defined as the rightmost dimensions in
         # the equation. This is because we construct the dimensionality order and then add the padding to those last
         # dimensions in the order
@@ -126,7 +107,7 @@ class ConvParser(ONNXOperatorParser):
 
         return data
 
-    def generate_layer_node_for_conv(self):
+    def generate_node(self):
         attrs = self.node.attribute
         kernel_shape: list[int] = get_attribute_ints_with_name("kernel_shape", attrs, default=None)  # type:ignore
         strides: list[int] = get_attribute_ints_with_name("strides", attrs, default=[1, 1])  # type:ignore
@@ -140,7 +121,7 @@ class ConvParser(ONNXOperatorParser):
         # Get the input and output activation and weight data type (precision) # TODO not used?
         # ia_data_type, oa_data_type, w_data_type = get_input_output_weight_data_type(self.node, self.onnx_model)
 
-        node_data: dict[str, Any] = self.get_layer_node_input_format(
+        node_data: dict[str, Any] = self.get_layer_node_user_format(
             kernel_shape,
             strides,
             dilations,
@@ -158,16 +139,10 @@ class ConvParser(ONNXOperatorParser):
         spatial_mapping = self.accelerator.get_spatial_mapping_from_core(core_allocation)
         node_attrs.spatial_mapping = spatial_mapping
 
-        # Get the node's input(s) and output(s) tensor names
-        node_input_names = list(self.node.input)
-        node_output_names = list(self.node.output)
-
         return ComputationNode(
             node_id=self.node_id,
             node_name=self.node.name,
             node_attr=node_attrs,
-            input_names=node_input_names,
-            output_names=node_output_names,
-            op_type=self.op_type,
+            op_type=ConvParser.OP_TYPE,
             operand_tensor_reshape=None,
         )

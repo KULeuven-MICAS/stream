@@ -1,11 +1,11 @@
 from zigzag.datatypes import Constants
-from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.core import Core
 
 from stream.hardware.architecture.accelerator import CoreGraph
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 
 
-def have_shared_memory(a, b):
+def have_shared_memory(a: Core, b: Core):
     """Returns True if core a and core b have a shared top level memory
 
     Args:
@@ -25,12 +25,12 @@ def have_shared_memory(a, b):
 
 
 def get_bus(
-    cores,
-    bandwidth,
-    unit_energy_cost,
-    pooling_core=None,
-    simd_core=None,
-    offchip_core=None,
+    cores: list[Core],
+    bandwidth: int,
+    unit_energy_cost: float,
+    pooling_core: Core | None = None,
+    simd_core: Core | None = None,
+    offchip_core: Core | None = None,
 ):
     """Return a graph of the cores where each core is connected to a single bus.
 
@@ -46,7 +46,7 @@ def get_bus(
     """
     bus = CommunicationLink("Any", "Any", bandwidth, unit_energy_cost)
 
-    edges = []
+    edges: list[tuple[Core, Core, dict[str, CommunicationLink]]] = []
     pairs = [(a, b) for idx, a in enumerate(cores) for b in cores[idx + 1 :]]
     for pair in pairs:
         (sender, receiver) = pair

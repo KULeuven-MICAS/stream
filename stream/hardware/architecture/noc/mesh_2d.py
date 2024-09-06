@@ -1,6 +1,6 @@
 import numpy as np
 from zigzag.datatypes import Constants
-from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.core import Core
 
 from stream.hardware.architecture.accelerator import CoreGraph
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
@@ -35,7 +35,7 @@ def get_2d_mesh(
     simd_core: Core | None = None,
     offchip_core: Core | None = None,
 ):
-    """Return a 2D mesh graph of the cores where each core is connected to its N, E, S, W neighbour.
+    """Return a 2D mesh graph of the cores where each core is connected to its N, E, S, W neighbor.
     We build the mesh by iterating through the row and then moving to the next column.
     Each connection between two cores includes two links, one in each direction, each with specified bandwidth.
     Thus there are a total of ((nb_cols-1)*2*nb_rows + (nb_rows-1)*2*nb_cols) links in the noc.

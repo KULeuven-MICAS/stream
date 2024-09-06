@@ -1,6 +1,6 @@
 from typing import Any
 
-from zigzag.hardware.architecture.Core import Core
+from zigzag.hardware.architecture.core import Core
 from zigzag.parser.accelerator_factory import CoreFactory
 
 from stream.hardware.architecture.accelerator import Accelerator
@@ -23,12 +23,13 @@ class AcceleratorFactory:
             core = core_factory.create(core_id)
             cores.append(core)
 
-        if self.data["graph"]["type"] == "2d_mesh":
-            cores_graph = self.create_2d_mesh(cores)
-        elif self.data["graph"]["type"] == "bus":
-            cores_graph = self.create_bus(cores)
-        else:
-            raise ValueError(f"Invalid graph type {self.data['graph']['type']}.")
+        match self.data["graph"]["type"]:
+            case "2d_mesh":
+                cores_graph = self.create_2d_mesh(cores)
+            case "bus":
+                cores_graph = self.create_bus(cores)
+            case _:
+                raise ValueError(f"Invalid graph type {self.data['graph']['type']}.")
 
         offchip_core_id: int | None = self.data["graph"]["offchip_core_id"]
         return Accelerator(name=self.data["name"], cores=cores_graph, offchip_core_id=offchip_core_id)

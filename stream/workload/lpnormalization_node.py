@@ -9,14 +9,15 @@ class LpNormalizationNode(Node):
     """Class that represents an onnx LpNormalization node."""
 
     def __init__(
-        self, node_id: int, node_name: str, predecessor: int, input_names: list[str], output_names: list[str]
+        self,
+        node_id: int,
+        node_name: str,
+        predecessor: int,
     ) -> None:
         """Initialize the LpNormalization node.
 
         Args:
             predecessors (list): The predecessors of this node.
-            input_names (list) The input names of this node.
-            output_names (list): The output names of this node.
         """
         super().__init__(
             node_id=node_id,
@@ -26,8 +27,6 @@ class LpNormalizationNode(Node):
             offchip_energy=0,
             runtime=0,
             possible_core_allocation=[-1],
-            input_names=input_names,
-            output_names=output_names,
         )
         self.input_operand_source = {LayerOperand("I"): predecessor}
 

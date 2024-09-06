@@ -1,23 +1,16 @@
 from onnx import numpy_helper
-from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.gather_node import GatherNode
 
 
-class GatherParser(ONNXOperatorParser):
+class GatherParser(OnnxOperatorParser):
     """Parses an onnx gather operator into a GatherNode."""
-
-    def run(self):
-        return self.generate_node()
 
     def generate_node(self):
         predecessors = self.get_node_predecessors()
-
         axis = self.get_axis_value()
         indices = self.get_indices_value()
-
-        input_names = [self.node.input[0]]
-        output_names = [self.node.output[0]]
 
         return GatherNode(
             node_id=self.node_id,
@@ -25,8 +18,6 @@ class GatherParser(ONNXOperatorParser):
             predecessors=predecessors,
             gather_axis=axis,
             gather_indices=indices,
-            input_names=input_names,
-            output_names=output_names,
         )
 
     def get_indices_value(self):

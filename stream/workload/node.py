@@ -1,6 +1,6 @@
 from abc import ABCMeta
 
-from zigzag.workload.LayerNodeABC import LayerNodeABC
+from zigzag.workload.layer_node_abc import LayerNodeABC
 
 
 class Node(LayerNodeABC, metaclass=ABCMeta):
@@ -17,8 +17,6 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         offchip_energy: float,
         runtime: int,
         possible_core_allocation: list[int],
-        input_names: list[str],
-        output_names: list[str],
         chosen_core_allocation: int | None = None,
     ) -> None:
         """Initialize the Node metaclass
@@ -29,7 +27,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
             runtime (int): The runtime of this Node.
             possible_core_allocation (int): The core id on which this Node can be mapped.
             inputs: (List[str]): The names of the input tensors of this node
-            outpus: (List[str]): The names of the output tensors of this node.
+            outputs: (List[str]): The names of the output tensors of this node.
             chosen_core_allocation: The final core allocation of this node
         """
         super().__init__(node_id, node_name)
@@ -49,12 +47,8 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         # number of data (in bits) only this node produces (not produced by any other node)
         self.data_produced_unique = 0
 
-        self.input_names = input_names
-        self.output_names = output_names
-        self.offchip_bw = None  # will be set together with the core allocation
-
-    def __str__(self):
-        return f"{self.type.capitalize()}Node()"
+        # will be set together with the core allocation
+        self.offchip_bw = None
 
     def get_total_energy(self) -> float:
         """Get the total energy of running this node, including off-chip energy."""
@@ -79,9 +73,6 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
     def get_end(self):
         """Get the end time in cycles of this node."""
         return self.end
-
-    # def get_possible_core_allocation(self):
-    # return self.possible_core_allocation
 
     def set_onchip_energy(self, energy: float):
         """Set the on-chip energy of running this node.
@@ -108,7 +99,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         self.runtime = runtime
 
     def set_start(self, start: int):
-        """Set the start time in cyles of this node.
+        """Set the start time in cycles of this node.
 
         Args:
             start (int): start time in cycles
@@ -139,3 +130,9 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
 
     def set_offchip_bandwidth(self, offchip_bw: float):
         self.offchip_bw = offchip_bw
+
+    def __str__(self):
+        return self.name
+
+    def __repr__(self):
+        return self.name

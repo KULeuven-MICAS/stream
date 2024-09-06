@@ -1,20 +1,16 @@
-from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
 from zigzag.parser.onnx.utils import OnnxTensorCategory, get_onnx_tensor_type
 
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.concat_node import ConcatNode
 
 
-class ConcatParser(ONNXOperatorParser):
+class ConcatParser(OnnxOperatorParser):
     """Parses an onnx gather operator into a ConcatNode."""
-
-    def run(self):
-        return self.generate_node()
 
     def generate_node(self):
         predecessors = self.get_node_predecessors()
 
         axis = self.get_axis_value()
-        output_names = [self.node.output[0]]
 
         input_1, input_2 = self.node.input[0], self.node.input[1]
 
@@ -25,7 +21,6 @@ class ConcatParser(ONNXOperatorParser):
 
             constant_shape = tuple(constant_tensor.shape)
             variable_input_first = True
-            input_names = [input_2]
         except ValueError:  # Try second one as constant input
             constant_tensor = get_onnx_tensor_type(input_2, self.onnx_model)
             if constant_tensor.category != OnnxTensorCategory.HIDDEN or "constant" not in input_2.lower():
@@ -33,7 +28,6 @@ class ConcatParser(ONNXOperatorParser):
 
             constant_shape = tuple(constant_tensor.shape)
             variable_input_first = True
-            input_names = [input_1]
 
         return ConcatNode(
             node_id=self.node_id,
@@ -42,8 +36,6 @@ class ConcatParser(ONNXOperatorParser):
             axis=axis,
             constant_shape=constant_shape,
             variable_input_first=variable_input_first,
-            input_names=input_names,
-            output_names=output_names,
         )
 
     def get_axis_value(self):

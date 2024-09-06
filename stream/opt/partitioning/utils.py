@@ -104,7 +104,7 @@ def convert_outer_cn_loops(outer_cn_loops: list[tuple[str, int | str]], layer: C
                         new_layer_dim_size += 1
                     # Set the new loop size of the layer
                     logger.warn(
-                        f"Layer {layer}: {layer_dim} {layer.layer_dim_sizes[layer_dim]} -> {new_layer_dim_size}"
+                        f"Rounding {layer}: {layer_dim} {layer.layer_dim_sizes[layer_dim]} -> {new_layer_dim_size}"
                     )
                     layer.layer_dim_sizes[layer_dim] = new_layer_dim_size
                     outer_loops.append(TemporalLoop(layer_dim, loop_size))

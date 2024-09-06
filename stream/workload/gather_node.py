@@ -1,5 +1,5 @@
 from zigzag.datatypes import LayerOperand
-from zigzag.workload.LayerNodeABC import LayerNodeABC
+from zigzag.workload.layer_node_abc import LayerNodeABC
 
 from stream.utils import NodeTensor
 from stream.workload.node import Node
@@ -15,8 +15,6 @@ class GatherNode(Node, LayerNodeABC):
         predecessors: list[int],
         gather_axis: int,
         gather_indices: int | list[int],
-        input_names: list[str],
-        output_names: list[str],
     ) -> None:
         """Initialize the GatherNode
 
@@ -24,8 +22,6 @@ class GatherNode(Node, LayerNodeABC):
             predecessors: The id of this node's parent.
             gather_axis: Which axis to gather on.
             gather_indices: Indices of elements to be gathered.
-            input_names The input names of this node.
-            output_names: The output names of this node.
         """
         Node.__init__(
             self,
@@ -36,8 +32,6 @@ class GatherNode(Node, LayerNodeABC):
             offchip_energy=0,
             runtime=0,
             possible_core_allocation=[-1],
-            input_names=input_names,
-            output_names=output_names,
         )
         LayerNodeABC.__init__(self, node_id=node_id, node_name=node_name)
 

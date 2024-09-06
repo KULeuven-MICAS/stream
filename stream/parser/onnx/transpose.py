@@ -1,29 +1,21 @@
-from zigzag.parser.onnx.ONNXOperatorParser import ONNXOperatorParser
-
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.transpose_node import TransposeNode
 
 
-class TransposeParser(ONNXOperatorParser):
+class TransposeParser(OnnxOperatorParser):
     """Parses an onnx reshape operator into a TransposeNode."""
 
-    def run(self):
-        return self.generate_layer_node_for_transpose()
-
-    def generate_layer_node_for_transpose(self):
+    def generate_node(self):
         predecessors = self.get_node_predecessors()
         assert len(predecessors) == 1, "An ONNX transpose node with multiple input nodes is not supported"
         predecessor = predecessors.pop()
 
         permute_axes = self.get_permute_indices()
-        input_names = [self.node.input[0]]
-        output_names = [self.node.output[0]]
 
         return TransposeNode(
             node_id=self.node_id,
             node_name=self.node.name,
             predecessor=predecessor,
-            input_names=input_names,
-            output_names=output_names,
             permute_axes=permute_axes,
         )
 

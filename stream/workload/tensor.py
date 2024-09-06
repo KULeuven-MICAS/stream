@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING
 from zigzag.datatypes import LayerDim, LayerOperand
 
 if TYPE_CHECKING:
-    from zigzag.hardware.architecture.MemoryInstance import MemoryInstance
+    from zigzag.hardware.architecture.memory_instance import MemoryInstance
 
     from stream.cost_model.memory_manager import MemoryManager
     from stream.hardware.architecture.accelerator import Accelerator
