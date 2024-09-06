@@ -52,7 +52,6 @@ class SoftmaxParser(OnnxComputeOperatorParser):
         self.set_nodes_name_and_type()
         # Override dependencies
         self.correct_nodes_operand_source()
-        # self.correct_nodes_inputs_outputs()
 
         return self.nodes
 
@@ -77,21 +76,6 @@ class SoftmaxParser(OnnxComputeOperatorParser):
         node_sum.input_operand_source = {op_I: id_exp}
         node_div.input_operand_source = {op_I: id_exp, op_W: id_sum}
         node_div.constant_operands = []
-
-    # def correct_nodes_inputs_outputs(self):
-    #     """Correct the `node_inputs` and `node_outputs` of all Computation Nodes that stem from the base
-    #     ONNX node"""
-    #     node_max, node_exp, node_sum, node_div = self.nodes
-    #     prev_node_name = node_max.input_names[0]  # Node before Softmax
-    #     next_node_name = node_max.output_names[0]  # Node after Softmax
-
-    #     node_max.output_names = [node_exp.name]
-    #     node_exp.input_names = [node_max.name, prev_node_name]
-    #     node_exp.output_names = [node_div.name, node_sum.name]
-    #     node_sum.input_names = [node_exp.name]
-    #     node_sum.output_names = [node_div.name]
-    #     node_div.input_names = [node_exp.name, node_sum.name]
-    #     node_div.output_names = [next_node_name]
 
 
 class SoftmaxExpParser(OnnxComputeOperatorParser):
