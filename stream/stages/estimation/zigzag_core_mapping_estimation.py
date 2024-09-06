@@ -60,7 +60,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
                 (
                     unique_node
                     for unique_node in self.unique_nodes
-                    if node == unique_node and node.group == unique_node.group
+                    if node.has_same_performance(unique_node) and node.group == unique_node.group
                 )
             )
             if not equal_nodes:
@@ -94,18 +94,22 @@ class ZigZagCoreMappingEstimationStage(Stage):
                     continue
                 # If an equal performance has already been computed, we take it
                 equal_node = self.node_hw_performances.get_equal_node(node)
-                equal_core = self.node_hw_performances.get_equal_core(node, core)
-                if equal_node and equal_core:
-                    cme = self.node_hw_performances.get_cme(equal_node, equal_core)
-                    self.node_hw_performances.add_cme(node, core, cme, allow_overwrite=False)
-                    continue
+                if equal_node:
+                    equal_core = self.node_hw_performances.get_equal_core(equal_node, core)
+                    if equal_core:
+                        cme = pickle_deepcopy(self.node_hw_performances.get_cme(equal_node, equal_core))
+                        # Update the CME attributes for this node-core combination
+                        cme.layer.core_allocation = [core_id]
+                        cme.core_id = core_id
+                        self.node_hw_performances.add_cme(node, core, cme, allow_overwrite=False)
+                        continue
                 else:
                     # We need to compute the optimal performance for this node-core combination
                     # It's possible this node might not fully fit within the core's top level memories. 
                     # If so, we update the core
                     too_large_operands_for_cme = self.check_core_capacity_for_node(core, node)
                     original_core_allocation = node.core_allocation
-                    node.set_core_allocation(core_id)
+                    node.set_chosen_core_allocation(core_id)
                     # Set the node's spatial mapping to the possible spatial mappings of the current core
                     node.spatial_mapping = (
                         core.dataflows if core.dataflows is not None else SpatialMapping.empty()
@@ -120,7 +124,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
                     answers = main_stage.run()
                     assert len(answers) == 1, "IntraCoreMappingStage's subflow returned more than one CME"
                     cme: CostModelEvaluation = answers[0][0]  # type: ignore
-                    node.core_allocation = original_core_allocation  # Reset the node's core allocation
+                    node.set_chosen_core_allocation(None)  # Reset the node's chosen core allocation
                     self.node_hw_performances.add_cme(node, core, cme, allow_overwrite=False)
             self.node_hw_performances.save()
 

@@ -108,17 +108,6 @@ def save_core_allocation(
         raise ValueError(f"Invalid format: {format}.")
     return mapping
 
-def get_cme(node_hw_performances, node, core):
-    try:
-        equal_node = next(n for n in node_hw_performances if n == node)
-    except:
-        raise ValueError(f"{node} not in dict")
-    if not any((core.id == c.id and core.equals(c) for c in node_hw_performances[equal_node])):
-        raise ValueError(f"{core} not in dict")
-    equal_core = next(c for c in node_hw_performances[equal_node] if core.id == c.id and core.equals(c))
-    cme = node_hw_performances[equal_node][equal_core]
-    return cme
-
 class CostModelEvaluationLUT:
     """A class to store the cost model evaluations in a look-up table.
     The look-up table is a dictionary with the following structure:
@@ -180,13 +169,16 @@ class CostModelEvaluationLUT:
         
     def get_equal_core(self, node: "ComputationNode", core: Core):
         """Retrieve the core in the look-up table that is equal to the given core."""
-        if any((c == core for c in self.lut[node])):
-            return next(c for c in self.lut[node] if c == core)
+        if node and any((c.has_same_performance(core) for c in self.lut.get(node, {}))):
+            return next(c for c in self.lut[node] if c.has_same_performance(core))
         else:
             return None
     
     def get_nodes(self):
-        return self.lut.keys()
+        return list(self.lut.keys())
+    
+    def get_cores(self, node: "ComputationNode"):
+        return list(self.lut.get(node, {}).keys())
 
 class NodeTensor(np.ndarray[Any, Any]):
     """An instance of this class stores all ComputationNodes that are needed for a certain element within the loop-

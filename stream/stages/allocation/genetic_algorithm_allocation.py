@@ -13,9 +13,9 @@ from stream.opt.allocation.genetic_algorithm.fitness_evaluator import (
 from stream.opt.allocation.genetic_algorithm.genetic_algorithm import (
     GeneticAlgorithm,
 )
-from stream.utils import get_too_large_operands
+from stream.utils import CostModelEvaluationLUT, get_too_large_operands
 from stream.workload.computation_node import ComputationNode
-from stream.workload.onnx_workload import ONNXWorkload
+from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -34,9 +34,9 @@ class GeneticAlgorithmAllocationStage(Stage):
         self,
         list_of_callables: list[StageCallable],
         *,
-        workload: ONNXWorkload,
+        workload: ComputationNodeWorkload,
         accelerator: Accelerator,
-        node_hw_performances: dict[ComputationNode, dict[Core, CostModelEvaluation]],
+        node_hw_performances: CostModelEvaluationLUT,
         nb_ga_generations: int,
         nb_ga_individuals: int,
         plot_hof: bool,
@@ -52,8 +52,7 @@ class GeneticAlgorithmAllocationStage(Stage):
             list_of_callables (list): List of the substages to be called. This should be empty as this is a leaf stage.
             workload (DiGraph): The NetworkX DiGraph representing the workload to be scheduled
             accelerator (Accelerator): The hardware accelerator onto which we schedule the workload
-            node_hw_performances (dict): A nested dict containing for each node a dict with for each valid core its best
-              HW performance
+            node_hw_performances (CostModelEvaluationLUT): A LUT of CMEs for each unique node and their valid cores
             nb_ga_generations (int): The number of generations considered by the genetic algorithm
             nb_ga_individuals (int): The number of individuals in each genetic algorithm generation
         """
@@ -74,15 +73,16 @@ class GeneticAlgorithmAllocationStage(Stage):
         self.layer_groups: list[tuple[int, int]] = sorted(set((n.id, n.group) for n in self.workload.node_list))
 
         # self.coarse_node_ids contains all the original node (aka layers) ids of the original graph
-        self.unique_nodes = list(set((n for n, _ in self.node_hw_performances.items())))
+        self.unique_nodes = list(self.node_hw_performances.get_nodes())
         self.coarse_node_ids: list[int] = [id for id in self.layer_groups]
         # self.coarse_node_ids_flexible contains only those original node ids that have flexibility: they can be
         # allocated to more than one core
         # TODO is this sorting key correct?
-        self.unique_nodes_flexible: list[ComputationNode] = sorted(
-            set((n for n, hw_performances in self.node_hw_performances.items() if len(hw_performances.keys()) > 1)),
-            key=lambda x: (x.id, x.sub_id),
-        )
+        self.unique_nodes_flexible: list[ComputationNode] = []
+        for n in self.node_hw_performances.get_nodes():
+            if len(self.node_hw_performances.get_cores(n)) > 1:
+                self.unique_nodes_flexible.append(n)
+
         self.coarse_node_ids_flexible: list[int] = [n.id for n in self.unique_nodes_flexible]
         # For each unique node get the possible core allocations by getting the ids of the cores in node_hw_performances
         self.valid_allocations: list[list[int]] = []
@@ -93,10 +93,8 @@ class GeneticAlgorithmAllocationStage(Stage):
             # This assumes all the nodes of this layer are identical
             unique_node = next((n for n in self.unique_nodes if n.id == layer_id))
             if unique_node in self.unique_nodes_flexible:
-                hw_performances = self.node_hw_performances[unique_node]
-                valid_core_ids = [
-                    core.id for core in hw_performances.keys() if core.id < len(self.unique_nodes_flexible)
-                ]
+                cores = self.node_hw_performances.get_cores(unique_node)
+                valid_core_ids = [core.id for core in cores if core.id < len(self.unique_nodes_flexible)]
                 self.layer_groups_flexible.append((layer_id, group_id))
                 self.valid_allocations.append(valid_core_ids)
 
@@ -165,11 +163,11 @@ class GeneticAlgorithmAllocationStage(Stage):
         core allocation."""
         non_flexible_unique_nodes: set[ComputationNode] = set(self.unique_nodes) - set(self.unique_nodes_flexible)
         for non_flexible_unique_node in non_flexible_unique_nodes:
-            hw_performances = self.node_hw_performances[non_flexible_unique_node]
-            assert (
-                len(hw_performances.keys()) == 1
-            ), f"Non-flexible unique node {non_flexible_unique_node} has more than one entry in node_hw_performances."
-            (core, cme) = next((key, val) for key, val in hw_performances.items())
+            # We expect that each non-flexible unique node has only one core allocation
+            cores = self.node_hw_performances.get_cores(non_flexible_unique_node)
+            assert len(cores) == 1, f"Non-flexible unique node {non_flexible_unique_node} has more than one entry."
+            core = cores[0]
+            cme = self.node_hw_performances.get_cme(non_flexible_unique_node, core)
             onchip_energy = cme.energy_total  # Initialize the on-chip energy as total energy
             latency = cme.latency_total1
 
@@ -189,7 +187,7 @@ class GeneticAlgorithmAllocationStage(Stage):
             nodes: list[ComputationNode] = [
                 n
                 for n in self.workload.node_list
-                if n == non_flexible_unique_node and n.group == non_flexible_unique_node.group
+                if n.has_same_performance(non_flexible_unique_node) and n.group == non_flexible_unique_node.group
             ]
             for node in nodes:
                 self.set_hw_performance_node(node, onchip_energy, offchip_energy, latency, core.id)

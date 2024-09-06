@@ -117,7 +117,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
     def set_core_allocation(self, core_allocation: int):
         self.core_allocation = [core_allocation]
 
-    def set_chosen_core_allocation(self, core_allocation: int):
+    def set_chosen_core_allocation(self, core_allocation: int | None):
         self.chosen_core_allocation = core_allocation
 
     def has_end(self) -> bool:
