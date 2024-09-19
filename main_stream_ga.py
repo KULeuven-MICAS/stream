@@ -39,19 +39,19 @@ hw_name = accelerator.split("/")[-1].split(".")[0]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
     wl_name = re.split(r"/|\.", workload_path)[-2]
-experiment_id = f"{hw_name}-{wl_name}-{mode}-constraint_optimization"
+experiment_id = f"{hw_name}-{wl_name}-{mode}-genetic_algorithm"
 node_hw_cost_pkl_name = f"{experiment_id}-saved_cn_hw_cost"
 scme_pkl_name = f"{experiment_id}-scme"
 ######################################################################
 
-############PLOTTING#############
+##############PLOTTING###############
 plot_file_name = f"-{experiment_id}-"
 plot_full_schedule = True
 draw_dependencies = True
 plot_data_transfer = True
 section_start_percent = (0,)
 percent_shown = (100,)
-#################################
+#####################################
 
 
 ################################PATHS################################
@@ -86,7 +86,7 @@ mainstage = MainStage(
     node_hw_performances_path_with_split=node_hw_performances_path_with_split,
     visualize_node_hw_performances_path_with_split=visualize_node_hw_performances_path_with_split,
     mode=mode,
-    layer_stacks=[tuple(range(0, 5)), tuple(range(5, 22))] + list((i,) for i in range(22, 49))
+    layer_stacks=layer_stacks,
 )
 
 # Launch the MainStage
