@@ -1,3 +1,6 @@
+from zigzag.datatypes import MemoryOperand
+
+
 def intersections(a, b):
     """Get the intersections of two lists of ranges.
     https://stackoverflow.com/questions/40367461/intersection-of-two-lists-of-ranges-in-python
@@ -35,7 +38,7 @@ def intersections(a, b):
     return ranges
 
 
-def get_core_capacities(accelerator, mem_op: str, core_ids: list):
+def get_core_capacities(accelerator, mem_op: MemoryOperand, core_ids: list):
     core_capacities = {}
     for core_id in core_ids:
         core_name = f"Core {core_id}"

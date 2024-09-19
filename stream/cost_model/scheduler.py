@@ -46,15 +46,16 @@ def initialize_offchip_tensors(workload: ComputationNodeWorkload, accelerator: "
                     )
 
 
-def prefetch_constant_operands(G: ComputationNodeWorkload, accelerator: "Accelerator", operands_to_prefetch: list[str]):
-    operands_to_prefetch_converted = [LayerOperand(x) for x in operands_to_prefetch]
+def prefetch_constant_operands(
+    G: ComputationNodeWorkload, accelerator: "Accelerator", operands_to_prefetch: list[LayerOperand]
+):
     total_cn_offchip_link_energy = 0
     total_cn_offchip_memory_energy = 0
     total_eviction_to_offchip_link_energy = 0
     total_eviction_to_offchip_memory_energy = 0
     for n in G.node_list:
         for op, tensor in n.operand_tensors.items():
-            if op in n.constant_operands and op in operands_to_prefetch_converted:
+            if op in n.constant_operands and op in operands_to_prefetch:
                 core_allocation = n.chosen_core_allocation
                 assert core_allocation is not None, "Core should be allocated"
                 memory_op = n.memory_operand_links.layer_to_mem_op(op)
@@ -224,7 +225,7 @@ def schedule_graph(
     G: ComputationNodeWorkload,
     accelerator: "Accelerator",
     cores_idle_from: dict[int, int] | None = None,
-    operands_to_prefetch: list[str] = [],
+    operands_to_prefetch: list[LayerOperand] = [],
     scheduling_order: list[tuple[int, int]] | None = None,
 ) -> tuple[int, float, float, float, float, float, float, float, float, float]:
     """Schedule the nodes of graph G across the cores in the system.

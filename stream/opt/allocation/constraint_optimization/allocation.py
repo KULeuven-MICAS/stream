@@ -1,43 +1,61 @@
+import sys
 from typing import Dict, List, Tuple
+
 import gurobipy as gp
 from gurobipy import GRB
-import sys
-from zigzag.hardware.architecture.Core import Core
-from zigzag.cost_model.cost_model import CostModelEvaluation
-from stream.hardware.architecture.utils import get_core_capacities
-from stream.opt.allocation.constraint_optimization.utils import convert_ids, invert_ids_list, get_energies, get_latencies
-from stream.workload.computation_node import ComputationNode
-from stream.workload.onnx_workload import ONNXWorkload
-from stream.hardware.architecture.accelerator import Accelerator
+from zigzag.datatypes import LayerOperand, MemoryOperand
 
-def get_optimal_allocations(workload: ONNXWorkload, accelerator: Accelerator, node_hw_performances: dict[ComputationNode, dict[Core, CostModelEvaluation]], iterations: int, 
-                            gap: float = 0.5, time_limit: int = 600, 
-                            latency_attr: str = "latency_total1") -> List[Tuple[int, int, Tuple[int, int]]]:
+from stream.hardware.architecture.accelerator import Accelerator
+from stream.hardware.architecture.utils import get_core_capacities
+from stream.opt.allocation.constraint_optimization.utils import (
+    convert_ids,
+    get_energies,
+    get_latencies,
+    invert_ids_list,
+)
+from stream.utils import CostModelEvaluationLUT
+from stream.workload.onnx_workload import ONNXWorkload
+
+
+def get_optimal_allocations(
+    workload: ONNXWorkload,
+    accelerator: Accelerator,
+    node_hw_performances: CostModelEvaluationLUT,
+    iterations: int,
+    gap: float = 0.5,
+    time_limit: int = 600,
+    latency_attr: str = "latency_total1",
+) -> List[Tuple[int, int, Tuple[int, int]]]:
     core_ids = sorted((core.id for core in accelerator.cores.nodes() if core.id != accelerator.offchip_core_id))
-    core_names = [f"Core {id}" for id in core_ids]
-    core_capacities = get_core_capacities(accelerator, 'I2', core_ids, core_names)
-    
+    core_capacities = get_core_capacities(accelerator, MemoryOperand("I2"), core_ids)
+
     nodes = sorted(workload.nodes())
     ids = convert_ids(nodes)
-    
-    latencies, possible_allocation_splits = get_latencies(nodes, core_ids, accelerator, node_hw_performances, impossible_lat=0, ids=ids)
-    energies = get_energies(nodes, core_ids, accelerator, node_hw_performances, impossible_energy=0, ids=ids)
-    
-    dependencies = {(ids[p], ids[c]): p.operand_size_bit["O"] for p, c in workload.edges() if p in nodes and c in nodes}
 
-    layer_ids = sorted(set(n.id[0] for n in nodes))
+    latencies, possible_allocation_splits = get_latencies(
+        nodes, core_ids, accelerator, node_hw_performances, impossible_lat=0, ids=ids
+    )
+    energies = get_energies(nodes, core_ids, accelerator, node_hw_performances, impossible_energy=0, ids=ids)
+    output_operand = LayerOperand("O")
+    dependencies = {
+        (ids[p], ids[c]): p.operand_size_bit[output_operand] for p, c in workload.edges() if p in nodes and c in nodes
+    }
+
+    layer_ids = sorted(set(n.id for n in nodes))
     groups = {layer_id: [] for layer_id in layer_ids}
-    
+
     for node in nodes:
-        groups[node.id[0]].append(ids[node])
+        groups[node.id].append(ids[node])
 
     weights = {}
-    
+
     for layer_id, group in groups.items():
         assert len(group) > 0, "Empty group given"
         for i, node_id in enumerate(group):
             node = next(k for k, v in ids.items() if v == node_id)
-            constant_i2_ops = [op for op in node.constant_operands if node.memory_operand_links[op] == "I2"]
+            constant_i2_ops = [
+                op for op in node.constant_operands if node.memory_operand_links[op] == MemoryOperand("I2")
+            ]
             nb_weights = sum((node.operand_size_bit[op] for op in constant_i2_ops))
             if i == 0:
                 weights[node_id] = nb_weights
@@ -46,29 +64,43 @@ def get_optimal_allocations(workload: ONNXWorkload, accelerator: Accelerator, no
                 weights[node_id] = 0
 
     if len(nodes) == 1:
-        core_capacities = {core_name: 10e10 for core_name in core_names}
+        core_capacities = {core_name: 10e10 for core_name in [f"Core {i}" for i in core_ids]}
 
-    allocation = constraint_allocation_optimization(latencies, energies, weights, dependencies, core_capacities, groups, possible_allocation_splits, iterations, gap=gap, time_limit=time_limit)
+    allocation = constraint_allocation_optimization(
+        latencies,
+        energies,
+        weights,
+        dependencies,
+        core_capacities,
+        groups,
+        possible_allocation_splits,
+        iterations,
+        gap=gap,
+        time_limit=time_limit,
+    )
     allocation = invert_ids_list(allocation)
-    
+
     return allocation
 
 
-def constraint_allocation_optimization(latencies: Dict[Tuple[int, str, int], int], 
-                                       energies: Dict[Tuple[int, str], float], 
-                                       weights: Dict[int, int], 
-                                       dependencies: Dict[Tuple[int, int], int], 
-                                       core_capacities: Dict[str, float], 
-                                       groups: Dict[int, List[int]], 
-                                       possible_allocation_splits: Dict[int, Dict[str, Dict[int, int]]], 
-                                       N: int = 1, gap: float = 0.5, 
-                                       time_limit: int = 600) -> List[Tuple[int, int, int]]:
+def constraint_allocation_optimization(
+    latencies: Dict[Tuple[int, str, int], int],
+    energies: Dict[Tuple[int, str], float],
+    weights_per_id: Dict[int, int],
+    dependencies: Dict[Tuple[int, int], int],
+    core_capacities: Dict[str, float],
+    groups: Dict[int, List[int]],
+    possible_allocation_splits: Dict[int, Dict[str, Dict[int, int]]],
+    N: int = 1,
+    gap: float = 0.5,
+    time_limit: int = 600,
+) -> List[Tuple[int, int, int]]:
     """Get the optimal node-core allocation using constraint optimization.
     The timeline is divided into a number of slots. Each node will be assigned to one slot.
 
     Args:
         latencies (dict): Latency for each node in form {id: latency}
-        weights (dict): Weights (in bits) for each node in form {id: weights}
+        weights_per_id (dict): Weights (in bits) for each node in form {id: weights}
         dependencies (dict): Dependencies between nodes in form {(producer_id, consumer_id): tensor_size}
         core_capacities (dict): Weight capacity (in bits) of each core in form {core: capacity}
         allocations (dict): TODO: Add fixed allocation constraints
@@ -76,7 +108,7 @@ def constraint_allocation_optimization(latencies: Dict[Tuple[int, str, int], int
     """
     node_core_k_ids, lats = gp.multidict(latencies)
     node_ids = sorted(set([node_core_id[0] for node_core_id in node_core_k_ids]))
-    _, weights = gp.multidict(weights)
+    _, weights = gp.multidict(weights_per_id)
     cores, capacities = gp.multidict(core_capacities)
     slots = list(range(len(node_ids)))
     k_split_list = gp.tuplelist(range(1, len(cores) + 1))
@@ -88,66 +120,43 @@ def constraint_allocation_optimization(latencies: Dict[Tuple[int, str, int], int
     m.setParam("Threads", 1)
     # Number of K splits for each node through one-hot vector
     k_split_vec = m.addVars(node_ids, k_split_list, vtype=GRB.BINARY, name="k_split_vec")
-    m.addConstrs(
-        (
-            k_split_vec.sum(node_id, "*") == 1
-            for node_id in node_ids
-        )
-    )
+    m.addConstrs((k_split_vec.sum(node_id, "*") == 1 for node_id in node_ids))
     # Total number of K splits is the number of cores a node is allocated to
-    k_splits = m.addVars(
-        node_ids, vtype=GRB.INTEGER, ub=len(cores), name="k_splits"
-    )
+    k_splits = m.addVars(node_ids, vtype=GRB.INTEGER, ub=len(cores), name="k_splits")
     # FIX THE NUMBER OF K SPLITS TO 1 FOR COMPARISON WITH GENETIC ALGORITHM
     # k_splits = {node_id: 1 for node_id in node_ids}
     m.addConstrs(
-        (
-            k_splits[node_id] == gp.quicksum(k_split_vec[node_id, k] * k for k in k_split_list)
-            for node_id in node_ids
-        )
+        (k_splits[node_id] == gp.quicksum(k_split_vec[node_id, k] * k for k in k_split_list) for node_id in node_ids)
     )
     # Core assignments: to which cores is a node allocated (no notion of time slot yet)
     # This is linked to the assignments with slot below where 'assignments' is defined
-    core_assignments = m.addVars(
-        cores, node_ids, vtype=GRB.BINARY, name="core_assignments"
-    )
-    m.addConstrs(
-        (
-            core_assignments.sum("*", node_id) == k_splits[node_id]
-            for node_id in node_ids
-        )
-    )
+    core_assignments = m.addVars(cores, node_ids, vtype=GRB.BINARY, name="core_assignments")
+    m.addConstrs((core_assignments.sum("*", node_id) == k_splits[node_id] for node_id in node_ids))
     # Enfoce only the possible allocation - split combinations are allowed
 
     for node_id in node_ids:
         m.addConstrs(
             (
-                core_assignments[core, node_id] <= gp.quicksum(possible_allocation_splits[node_id][core][k] * k_split_vec[node_id, k] for k in k_split_list)
+                core_assignments[core, node_id]
+                <= gp.quicksum(
+                    possible_allocation_splits[node_id][core][k] * k_split_vec[node_id, k] for k in k_split_list
+                )
                 for core in cores
             )
-        )            
+        )
     # Latency of each K split on each core is determined through the given latency for entire node
-    lat_per_id_per_core = m.addVars(
-        node_ids, cores, vtype=GRB.INTEGER, name="lat_per_core_per_id"
-    )
+    lat_per_id_per_core = m.addVars(node_ids, cores, vtype=GRB.INTEGER, name="lat_per_core_per_id")
     for node_id in node_ids:
         m.addConstrs(
             (
-                lat_per_id_per_core[node_id, core] == gp.quicksum(k_split_vec[node_id, k] * lats[node_id, core, k] for k in k_split_list)
+                lat_per_id_per_core[node_id, core]
+                == gp.quicksum(k_split_vec[node_id, k] * lats[node_id, core, k] for k in k_split_list)
                 for core in cores
             )
         )
-    slot_assignments = m.addVars(
-        slots, node_ids, vtype=GRB.BINARY, name="node_assignments"
-    )
-    m.addConstrs(
-        (
-            slot_assignments.sum("*", node_id) == 1 for node_id in node_ids
-        )
-    )
-    assignments = m.addVars(
-        cores, slots, node_ids, vtype=GRB.BINARY, name="assignments"
-    )
+    slot_assignments = m.addVars(slots, node_ids, vtype=GRB.BINARY, name="node_assignments")
+    m.addConstrs((slot_assignments.sum("*", node_id) == 1 for node_id in node_ids))
+    assignments = m.addVars(cores, slots, node_ids, vtype=GRB.BINARY, name="assignments")
     m.addConstrs(
         (
             core_assignments[core, node_id] == assignments.sum(core, "*", node_id)
@@ -158,34 +167,19 @@ def constraint_allocation_optimization(latencies: Dict[Tuple[int, str, int], int
     # Each node should be assigned to one core and one slot
     m.addConstrs(
         (
-            slot_assignments[slot, node_id] * assignments.sum("*", slot, node_id) == slot_assignments[slot, node_id] * k_splits[node_id]
+            slot_assignments[slot, node_id] * assignments.sum("*", slot, node_id)
+            == slot_assignments[slot, node_id] * k_splits[node_id]
             for node_id in node_ids
             for slot in slots
         )
     )
-    m.addConstrs(
-        (
-            assignments.sum(core, slot, "*") <= 1
-            for core in cores
-            for slot in slots
-        )
-    )
-    m.addConstrs(
-        (
-            assignments.sum("*", "*", node_id) == k_splits[node_id]
-            for node_id in node_ids
-        )
-    )
+    m.addConstrs((assignments.sum(core, slot, "*") <= 1 for core in cores for slot in slots))
+    m.addConstrs((assignments.sum("*", "*", node_id) == k_splits[node_id] for node_id in node_ids))
     # Groups should have the same core allocation
     for _, group in groups.items():
         for pair in zip(group, group[1:]):
             node_i, node_j = pair
-            m.addConstrs(
-                (
-                    assignments.sum(core, "*", node_i) == assignments.sum(core, "*", node_j)
-                    for core in cores
-                )
-            )
+            m.addConstrs((assignments.sum(core, "*", node_i) == assignments.sum(core, "*", node_j) for core in cores))
     # # Force impossible allocations to zero:
     # for node_id, impossible_cores in impossible_allocations.items():
     #     m.addConstrs((assignments.sum(impossible_core, "*", node_id) == 0 for impossible_core in impossible_cores))
@@ -193,8 +187,7 @@ def constraint_allocation_optimization(latencies: Dict[Tuple[int, str, int], int
     slot_per_id = m.addVars(node_ids, vtype=GRB.INTEGER, name="slot_per_id")
     m.addConstrs(
         (
-            slot_per_id[node_id]
-            == gp.quicksum(slot * slot_assignments[slot, node_id] for slot in slots)
+            slot_per_id[node_id] == gp.quicksum(slot * slot_assignments[slot, node_id] for slot in slots)
             for node_id in node_ids
         )
     )
@@ -203,29 +196,20 @@ def constraint_allocation_optimization(latencies: Dict[Tuple[int, str, int], int
         m.addConstr(slot_per_id[c_id] >= slot_per_id[p_id] + 1)
     # Calculate the number of weights per K split
     weights_per_split = m.addVars(node_ids, vtype=GRB.INTEGER, name="weights_per_split")
-    m.addConstrs(
-        (
-            weights_per_split[node_id] * k_splits[node_id] >= weights[node_id]
-            for node_id in node_ids
-        )
-    )
+    m.addConstrs((weights_per_split[node_id] * k_splits[node_id] >= weights[node_id] for node_id in node_ids))
     # Calculate the number of weights on each core
     weights_per_core = m.addVars(cores, vtype=GRB.INTEGER, name="weights_per_core")
     m.addConstrs(
         (
             weights_per_core[core]
-            >= gp.quicksum(
-                weights_per_split[id] * assignments.sum(core, "*", id) for id in node_ids
-            )
+            >= gp.quicksum(weights_per_split[id] * assignments.sum(core, "*", id) for id in node_ids)
             for core in cores
         )
     )
     # Limit the number of weights on each core
     m.addConstrs((weights_per_core[core] <= capacities[core] for core in cores))
     # Calculate the latency of each slot depending on assigned id in the slot
-    lat_per_core_per_slot = m.addVars(
-        cores, slots, vtype=GRB.INTEGER, name="lat_per_core_per_slot"
-    )
+    lat_per_core_per_slot = m.addVars(cores, slots, vtype=GRB.INTEGER, name="lat_per_core_per_slot")
     m.addConstrs(
         (
             lat_per_core_per_slot[core, slot]
@@ -237,11 +221,8 @@ def constraint_allocation_optimization(latencies: Dict[Tuple[int, str, int], int
 
     lat_per_slot = m.addVars(slots, vtype=GRB.INTEGER, name="lat_per_slot")
     m.addConstrs(
-        (
-            lat_per_slot[slot]
-            == gp.max_(lat_per_core_per_slot[core, slot] for core in cores)
-            for slot in slots
-        )
+        lat_per_slot[slot] == gp.max_(lat_per_core_per_slot[core, slot] for core in cores)  # type: ignore
+        for slot in slots
     )
 
     lat = m.addVar(vtype=GRB.INTEGER, name="lat")
@@ -274,21 +255,12 @@ def constraint_allocation_optimization(latencies: Dict[Tuple[int, str, int], int
     M = len(node_ids) + eps
     idle_start = m.addVars(cores, slots, vtype=GRB.BINARY, name="idle_start")
     m.addConstrs(
-        1 >= sum_inclusive[core, slot] + eps - M * (1 - idle_start[core, slot])
-        for core in cores
-        for slot in slots
+        1 >= sum_inclusive[core, slot] + eps - M * (1 - idle_start[core, slot]) for core in cores for slot in slots
     )
-    m.addConstrs(
-        1 <= sum_inclusive[core, slot] + M * idle_start[core, slot]
-        for core in cores
-        for slot in slots
-    )
+    m.addConstrs(1 <= sum_inclusive[core, slot] + M * idle_start[core, slot] for core in cores for slot in slots)
     # Number of nodes assigned to core
     assignments_sum = m.addVars(cores, vtype=GRB.INTEGER, name="assignments_sum")
-    m.addConstrs(
-        assignments_sum[core] == assignments.sum(core, "*", "*")
-        for core in cores
-    )
+    m.addConstrs(assignments_sum[core] == assignments.sum(core, "*", "*") for core in cores)
     # Idle slots at the end
     idle_end = m.addVars(cores, slots, vtype=GRB.BINARY, name="idle_end")
     m.addConstrs(
@@ -305,13 +277,14 @@ def constraint_allocation_optimization(latencies: Dict[Tuple[int, str, int], int
     # Total idle time: sum of start and end idle times convert to latency of each slot
     idle_total = m.addVars(cores, vtype=GRB.INTEGER, name="idle_total")
     m.addConstrs(
-        idle_total[core] == gp.quicksum((idle_start[core, slot] + idle_end[core, slot]) * lat_per_slot[slot] for slot in slots)
+        idle_total[core]
+        == gp.quicksum((idle_start[core, slot] + idle_end[core, slot]) * lat_per_slot[slot] for slot in slots)
         for core in cores
     )
     # Minimum idle time across all cores = overlap possible between iterations
     idle_min = m.addVar(vtype=GRB.INTEGER, name="idle_min")
     m.addConstr(idle_min == gp.min_(idle_total))
-    
+
     total_lat = m.addVar(vtype=GRB.INTEGER, name="total_lat")
     m.addConstr(total_lat == N * lat - (N - 1) * idle_min)
 
@@ -360,13 +333,14 @@ def constraint_allocation_optimization(latencies: Dict[Tuple[int, str, int], int
     nSolutions = m.SolCount
     if nSolutions == 0:
         from pprint import pprint
+
         print("energies")
         pprint(energies)
-        print("impossible_allocations")
+        print("possible_allocation_splits")
         pprint(possible_allocation_splits)
-        iis = m.computeIIS()
+        m.computeIIS()
         m.write("iismodel.ilp")
-        raise ValueError("No solutions for constraint optimization.")
+        raise ValueError("No solutions for constraint optimization. Check iismodel.ilp")
     for e in range(nSolutions):
         m.setParam(GRB.Param.SolutionNumber, e)
         best_latencies.append(m.ObjVal)

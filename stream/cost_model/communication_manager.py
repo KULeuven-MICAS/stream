@@ -116,18 +116,6 @@ class CommunicationManager:
         """
         return self.pair_links[(sender, receiver)]
 
-    def get_links_for_pair_id(self, sender_id: int, receiver_id: int):
-        """Return the list of traversed CommunicationLinks for sending data from sender core to receiver core.
-
-        Args:
-            sender_id (int): the sending core id
-            receiver_id (int): the receiving core id
-        """
-        # Find the sender and receiver based on the given ids
-        sender = self.shortest_paths = self.get_shortest_paths().get_core(sender_id)
-        receiver = self.accelerator.get_core(receiver_id)
-        return self.get_links_for_pair(sender, receiver)
-
     def get_all_links(self):
         """Return all unique CommunicationLinks."""
         return list(set(d["cl"] for _, _, d in self.accelerator.cores.edges(data=True)))
@@ -140,7 +128,7 @@ class CommunicationManager:
         receiver_memory_operand: MemoryOperand,
         start_timestep: int,
         duration: int,
-    ) -> tuple[int, int, float, float]:
+    ) -> tuple[float, float]:
         """Update the links for transfer of a tensor between sender and receiver core at a given timestep.
         A CommunicationEvent is created containing one or more CommunicationLinkEvents,
         i.e. one CommunicationLinkEvent per involved CommunicationLink.
@@ -154,7 +142,7 @@ class CommunicationManager:
             duration (int): Duration of the transfer
 
         Returns:
-            int: The timestep at which the transfer is complete.
+            tuple: A tuple containing the link and memory energy costs associated with this transfer.
         """
         end_timestep = start_timestep + duration
         if isinstance(sender, int):
@@ -163,7 +151,7 @@ class CommunicationManager:
             receiver = self.accelerator.get_core(receiver)
         links = self.get_links_for_pair(sender, receiver)
         if not links:  # When sender == receiver
-            return 0, 0, 0, 0
+            return 0, 0
 
         cles = [
             CommunicationLinkEvent(
@@ -216,6 +204,7 @@ class CommunicationManager:
         """
         links_to_block: dict["CommunicationLink", int] = {}
         core = self.accelerator.get_core(core_id)
+        assert self.accelerator.offchip_core_id is not None, "Off-chip core id is not set."
         offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
         if Constants.OUTPUT_MEM_OP in too_large_operands:
             links_to_offchip = set(self.get_links_for_pair(core, offchip_core))

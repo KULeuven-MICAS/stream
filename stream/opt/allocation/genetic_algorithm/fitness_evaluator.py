@@ -1,18 +1,18 @@
-from zigzag.cost_model.cost_model import CostModelEvaluation
-from zigzag.hardware.architecture.core import Core
+from zigzag.datatypes import LayerOperand
+from zigzag.mapping.data_movement import MemoryAccesses
 from zigzag.utils import pickle_deepcopy
-from zigzag.workload.onnx_workload import ONNXWorkload as Workload
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.utils import CostModelEvaluationLUT, get_too_large_operands
 from stream.workload.computation_node import ComputationNode
+from stream.workload.onnx_workload import ComputationNodeWorkload
 
 
 class FitnessEvaluator:
     def __init__(
         self,
-        workload: Workload,
+        workload: ComputationNodeWorkload,
         accelerator: Accelerator,
         node_hw_performances: CostModelEvaluationLUT,
     ) -> None:
@@ -30,12 +30,12 @@ class StandardFitnessEvaluator(FitnessEvaluator):
 
     def __init__(
         self,
-        workload: Workload,
+        workload: ComputationNodeWorkload,
         accelerator: Accelerator,
         node_hw_performances: CostModelEvaluationLUT,
         layer_groups_flexible,
-        operands_to_prefetch: list[str],
-        scheduling_order: list[int] | None = None,
+        operands_to_prefetch: list[LayerOperand],
+        scheduling_order: list[tuple[int, int]],
     ) -> None:
         super().__init__(workload, accelerator, node_hw_performances)
 
@@ -101,9 +101,12 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                     offchip_energy += layer_operand_offchip_energy
                     onchip_energy -= layer_operand_offchip_energy
                 # If there was offchip memory added for too_large_operands, get the offchip bandwidth
-                offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
-                offchip_instance = next(v for k, v in offchip_core.mem_hierarchy_dict.items())[-1].memory_instance
-                offchip_bw = cme.get_total_inst_bandwidth(offchip_instance)
+                if self.accelerator.offchip_core_id is not None:
+                    offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
+                    offchip_instance = next(v for k, v in offchip_core.mem_hierarchy_dict.items())[-1].memory_instance
+                    offchip_bw = cme.get_total_inst_bandwidth(offchip_instance)
+                else:
+                    offchip_bw = MemoryAccesses(0, 0, 0, 0)
                 node.set_onchip_energy(onchip_energy)
                 node.set_offchip_energy(offchip_energy)
                 node.set_runtime(int(latency))

@@ -35,7 +35,13 @@ class GroupIdManager:
         """
         # No constant operand
         if not node.constant_operands:
-            return self.__get_and_raise_id()
+            # If the node can only be assigned to a single core, we give all nodes the same group id
+            # This is to prevent the CostModelEvaluationLUT from identifying each node as unique
+            # This is the case for e.g. 'Add' nodes if there is only a single 'Add' core
+            if len(node.core_allocation) == 1:
+                return 0
+            else:
+                return self.__get_and_raise_id()
 
         # Constant operand and known ranges
         constant_operand = node.constant_operands[-1]

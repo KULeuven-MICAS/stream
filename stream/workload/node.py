@@ -1,5 +1,6 @@
 from abc import ABCMeta
 
+from zigzag.mapping.data_movement import MemoryAccesses
 from zigzag.workload.layer_node_abc import LayerNodeABC
 
 
@@ -48,7 +49,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         self.data_produced_unique = 0
 
         # will be set together with the core allocation
-        self.offchip_bw = None
+        self.offchip_bw = MemoryAccesses(0, 0, 0, 0)
 
     def get_total_energy(self) -> float:
         """Get the total energy of running this node, including off-chip energy."""
@@ -128,7 +129,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         """
         return self.end is not None
 
-    def set_offchip_bandwidth(self, offchip_bw: float):
+    def set_offchip_bandwidth(self, offchip_bw: MemoryAccesses):
         self.offchip_bw = offchip_bw
 
     def __str__(self):

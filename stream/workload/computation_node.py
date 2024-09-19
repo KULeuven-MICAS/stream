@@ -79,7 +79,6 @@ class ComputationNode(LayerNode, Node):
 
         # Will be set by the InterCoreMappingStage or by the FitnessEvaluator
         self.too_large_operands = None
-        self.nb_real_predecessors = None
 
     def set_operand_tensors(self):
         for op in self.layer_operands:
@@ -144,7 +143,6 @@ class ComputationNode(LayerNode, Node):
         - operand_precision: The precision at which the operands are stored, which means the operand identifiers should
           be equal.
         - memory_operand_links: The link between memory operand (paths in mem hierarchy) and this node's operands
-        - nb_real_predecessors: The number of real predecessors this node has in the graph. This is required for
           accurate knowledge of the number of unique nodes.
 
         Args:
@@ -161,7 +159,6 @@ class ComputationNode(LayerNode, Node):
             and self.operand_precision == other.operand_precision
             and self.memory_operand_links == other.memory_operand_links
             and self.id == other.id
-            # and self.nb_real_predecessors == other.nb_real_predecessors
         )
 
     def __lt__(self, other: "ComputationNode"):
@@ -173,7 +170,7 @@ class ComputationNode(LayerNode, Node):
         Returns:
             bool: self < other
         """
-        return self.id < other.id
+        return (self.id, self.sub_id) < (other.id, other.sub_id)
 
     def get_operand_for_dim(self, dim: LayerDim) -> LayerOperand:
         """Return the first operand in the operand_list that has this dim as one of is dimensions
@@ -214,9 +211,6 @@ class ComputationNode(LayerNode, Node):
 
     def set_too_large_operands(self, too_large_operands: list[MemoryOperand]):
         self.too_large_operands = too_large_operands
-
-    def set_nb_real_predecessors(self, nb_real_predecessors: int):
-        self.nb_real_predecessors = nb_real_predecessors
 
     def update_loop_ranges(self, new_ranges: LoopRanges):
         """Override the loop ranges with a new value for each of the given LayerDims. Keep the old range for the

@@ -119,9 +119,6 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         # Set the base_priority value of all nodes in G
         self.set_base_priority_of_nodes(G, self.finer_nodes_dict)
 
-        # Set nb of real predecessors of all nodes in G
-        self.set_nb_real_predecessors(G)
-
         logger.info(f"Finer graph: {G}.")
 
         kwargs = self.kwargs.copy()
@@ -356,19 +353,24 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
 
             # Compute the output data produced by each finer node, assuming that all the data produced by different CNs
             # are unique
-            finer_node.data_produced_unique = (
+            finer_node.data_produced_unique = int(
                 finer_node.operand_size_elem[Constants.OUTPUT_LAYER_OP]
                 * finer_node.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
             )
 
-            # TODO Compute the unique input data consumed by each finer node. Note that it is not necessarily that the
-            # TODO data consumed by different CNs are unique
-            # finer_node.data_consumed_unique = ... (for now it is 0)
+            # If the core allocation is fixed, we need to set the chosen core allocation.
+            # It's possible the core allocation contains multiple entries.
+            # In that case, we select the core allocation based on the group id.
+            if original_node.core_allocation_is_fixed:
+                assert group_id < len(
+                    original_node.core_allocation
+                ), f"Group id {group_id} is not in the core allocation list {original_node.core_allocation}"
+                chosen_core_allocation = original_node.core_allocation[group_id]
+                finer_node.set_chosen_core_allocation(chosen_core_allocation)
 
             finer_nodes.append(finer_node)
 
-        # TODO Just take the first node as they are all equal for now. If some are different, this should be done more
-        # TODO smartly
+        # NOTE We take the first node as only unique one as they are all generated equally now.
         unique_finer_nodes = [finer_nodes[0]]
 
         return finer_nodes, unique_finer_nodes
@@ -850,17 +852,6 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                     successors = [succ for succ in G.successors(node) if succ.id != layer_id]
                     tensor.set_base_priorities(len(successors))
             nb_seen_nodes_per_layer_id[layer_id] += 1
-
-    def set_nb_real_predecessors(self, G: ComputationNodeWorkload):
-        """Set nb_real_predecessors attribute for each node in G.
-        A real predecessor is a predecessor coming from a different layer.
-
-        Args:
-            G (DiGraph): Graph containing the nodes and edges.
-        """
-        for n in G.node_list:
-            nb_real_predecessors = len(list(pred for pred in G.predecessors(n) if pred.id != n.id))
-            n.set_nb_real_predecessors(nb_real_predecessors)
 
     def get_weight_capacities(self):
         # Get the weight capacity of all cores

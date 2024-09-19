@@ -1,9 +1,7 @@
 import logging
 from typing import Any
 
-from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import LayerOperand
-from zigzag.hardware.architecture.core import Core
 from zigzag.stages.stage import Stage, StageCallable
 
 from stream.hardware.architecture.accelerator import Accelerator
@@ -13,7 +11,7 @@ from stream.opt.allocation.genetic_algorithm.fitness_evaluator import (
 from stream.opt.allocation.genetic_algorithm.genetic_algorithm import (
     GeneticAlgorithm,
 )
-from stream.utils import CostModelEvaluationLUT, get_too_large_operands
+from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
@@ -44,6 +42,7 @@ class GeneticAlgorithmAllocationStage(Stage):
         plot_full_schedule: bool = False,
         plot_data_transfer: bool = False,
         operands_to_prefetch: list[LayerOperand],
+        scheduling_order: list[tuple[int, int]],
         **kwargs: Any,
     ):
         """Initialize the InterCoreMappingStage.
@@ -67,14 +66,14 @@ class GeneticAlgorithmAllocationStage(Stage):
         self.plot_full_schedule = plot_full_schedule
         self.plot_data_transfer = plot_data_transfer
         self.operands_to_prefetch = operands_to_prefetch
-        self.scheduling_order = kwargs.get("scheduling_order", None)
+        self.scheduling_order = scheduling_order
 
         # Determine the set of all (layer, group) combinations to be allocated separately
         self.layer_groups: list[tuple[int, int]] = sorted(set((n.id, n.group) for n in self.workload.node_list))
 
         # self.coarse_node_ids contains all the original node (aka layers) ids of the original graph
         self.unique_nodes = list(self.node_hw_performances.get_nodes())
-        self.coarse_node_ids: list[int] = [id for id in self.layer_groups]
+        self.coarse_node_ids: list[int] = [id for id, _ in self.layer_groups]
         # self.coarse_node_ids_flexible contains only those original node ids that have flexibility: they can be
         # allocated to more than one core
         # TODO is this sorting key correct?
@@ -97,10 +96,6 @@ class GeneticAlgorithmAllocationStage(Stage):
                 valid_core_ids = [core.id for core in cores if core.id < len(self.unique_nodes_flexible)]
                 self.layer_groups_flexible.append((layer_id, group_id))
                 self.valid_allocations.append(valid_core_ids)
-
-        # Set the hardware performance and core_allocation of nodes in the workload that only have a single possible
-        # core allocation
-        self.set_hw_performance_non_flexible_nodes()
 
         # Initialize the fitness evaluator of different core allocations
         self.fitness_evaluator = StandardFitnessEvaluator(
@@ -157,64 +152,6 @@ class GeneticAlgorithmAllocationStage(Stage):
                     # scme.plot_memory_usage(fig_path=f"outputs/memory_usage_plot{self.fig_path}{i}.png")
             yield scme, None
         logger.info("Finished InterCoreMappingStage.")
-
-    def set_hw_performance_non_flexible_nodes(self):
-        """Set the energy, runtime and core_allocation of the nodes in self.workload that only have a single possible
-        core allocation."""
-        non_flexible_unique_nodes: set[ComputationNode] = set(self.unique_nodes) - set(self.unique_nodes_flexible)
-        for non_flexible_unique_node in non_flexible_unique_nodes:
-            # We expect that each non-flexible unique node has only one core allocation
-            cores = self.node_hw_performances.get_cores(non_flexible_unique_node)
-            assert len(cores) == 1, f"Non-flexible unique node {non_flexible_unique_node} has more than one entry."
-            core = cores[0]
-            cme = self.node_hw_performances.get_cme(non_flexible_unique_node, core)
-            onchip_energy = cme.energy_total  # Initialize the on-chip energy as total energy
-            latency = cme.latency_total1
-
-            too_large_operands = get_too_large_operands(cme, self.accelerator, core_id=core.id)
-            # If there is a too_large_operand, we separate the off-chip energy.
-            offchip_energy = 0
-            for too_large_operand in too_large_operands:
-                layer_operand = cme.layer.memory_operand_links.mem_to_layer_op(too_large_operand)
-                layer_operand_offchip_energy = cme.mem_energy_breakdown[layer_operand][-1]
-                offchip_energy += layer_operand_offchip_energy
-                onchip_energy -= layer_operand_offchip_energy
-            # If there was offchip memory added for too_large_operands, get the offchip bandwidth
-            offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
-            offchip_instance = next(v for k, v in offchip_core.mem_hierarchy_dict.items())[-1].memory_instance
-            offchip_bw = cme.get_total_inst_bandwidth(offchip_instance)
-
-            nodes: list[ComputationNode] = [
-                n
-                for n in self.workload.node_list
-                if n.has_same_performance(non_flexible_unique_node) and n.group == non_flexible_unique_node.group
-            ]
-            for node in nodes:
-                self.set_hw_performance_node(node, onchip_energy, offchip_energy, latency, core.id)
-                node.set_too_large_operands(too_large_operands.copy())
-                node.set_offchip_bandwidth(offchip_bw)
-
-    @staticmethod
-    def set_hw_performance_node(
-        node: ComputationNode,
-        onchip_energy: float,
-        offchip_energy: float,
-        runtime: int,
-        chosen_core_allocation: int,
-    ):
-        """Set the hardware performance and core_allocation of the given node.
-
-        Args:
-            node (Node): The node of which to set the
-            onchip_energy (float): on-chip energy of executing this node
-            offchip_energy (float): off-chip energy of executing this node
-            runtime (int): runtime of executing this node
-            core_allocation (int): the core_id on which this node will be ran
-        """
-        node.set_onchip_energy(onchip_energy)
-        node.set_offchip_energy(offchip_energy)
-        node.set_runtime(runtime)
-        node.set_chosen_core_allocation(chosen_core_allocation)
 
     def is_leaf(self) -> bool:
         return True

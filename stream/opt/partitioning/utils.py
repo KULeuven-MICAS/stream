@@ -73,6 +73,18 @@ def convert_inner_cn_loops(inner_cn_loops: list, layer: ComputationNode):
     return outer_loops
 
 
+def modify_layer_dim_for_op(layer_dim: LayerDim, layer: ComputationNode) -> LayerDim:
+    """Modify the layer_dim for the operator.
+
+    Args:
+        layer_dim (LayerDim): The layer dimension.
+        layer (ComputationNode): The original layer.
+    """
+    if layer.type == "add" and layer_dim == LayerDim("OY"):
+        return LayerDim("D")  # add operator does not have OY dimension
+    return layer_dim
+
+
 def convert_outer_cn_loops(outer_cn_loops: list[tuple[str, int | str]], layer: ComputationNode):
     """Converts a list of string-defined outer-cn loops to outer-cn TemporalLoop objects.
     "all" in ("K", "all") is converted to the size of that dimension for the layer.
@@ -85,7 +97,7 @@ def convert_outer_cn_loops(outer_cn_loops: list[tuple[str, int | str]], layer: C
     for layer_dim_str, loop_size in outer_cn_loops:
         assert isinstance(layer_dim_str, str)
         layer_dim = LayerDim(layer_dim_str)
-
+        layer_dim = modify_layer_dim_for_op(layer_dim, layer)
         if layer_dim in layer.layer_dim_sizes.layer_dims:
             if isinstance(loop_size, str):
                 if loop_size == "all":

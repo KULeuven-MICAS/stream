@@ -1,5 +1,4 @@
 import logging
-import os
 from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
@@ -17,7 +16,7 @@ from zigzag.stages.stage import Stage, StageCallable
 from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.utils import load_scme, save_scme, CostModelEvaluationLUT
+from stream.utils import CostModelEvaluationLUT
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,
 )
@@ -105,15 +104,12 @@ class ZigZagCoreMappingEstimationStage(Stage):
                         continue
                 else:
                     # We need to compute the optimal performance for this node-core combination
-                    # It's possible this node might not fully fit within the core's top level memories. 
+                    # It's possible this node might not fully fit within the core's top level memories.
                     # If so, we update the core
                     too_large_operands_for_cme = self.check_core_capacity_for_node(core, node)
-                    original_core_allocation = node.core_allocation
                     node.set_chosen_core_allocation(core_id)
                     # Set the node's spatial mapping to the possible spatial mappings of the current core
-                    node.spatial_mapping = (
-                        core.dataflows if core.dataflows is not None else SpatialMapping.empty()
-                    )
+                    node.spatial_mapping = core.dataflows if core.dataflows is not None else SpatialMapping.empty()
                     # Initialize the flow that will be followed to extract the optimal HW performance of every
                     #  unique node-core allocation
                     main_stage = self.get_intra_core_mapping_flow(
@@ -139,13 +135,13 @@ class ZigZagCoreMappingEstimationStage(Stage):
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
 
-
     def visualize_node_hw_performances(self):
         if "visualize_node_hw_performances_path" in self.kwargs:
             if "visualize_node_hw_performances_path":
                 # Get the scale factors
                 scale_factors = {
-                    n.id: len([cn for cn in self.workload.node_list if cn == n]) for n in self.node_hw_performances.get_nodes()
+                    n: len([cn for cn in self.workload.node_list if cn.has_same_performance(n)])
+                    for n in self.node_hw_performances.get_nodes()
                 }
                 # Run the visualization
                 visualize_node_hw_performances_pickle(

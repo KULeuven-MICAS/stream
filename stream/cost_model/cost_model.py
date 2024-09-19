@@ -1,3 +1,5 @@
+from zigzag.datatypes import LayerOperand
+
 from stream.cost_model.scheduler import schedule_graph
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.visualization.memory_usage import plot_memory_usage
@@ -15,7 +17,7 @@ class StreamCostModelEvaluation:
         self,
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
-        operands_to_prefetch: list[str],
+        operands_to_prefetch: list[LayerOperand],
         scheduling_order: list[tuple[int, int]],
     ) -> None:
         # Initialize the SCME by setting the workload graph to be scheduled
