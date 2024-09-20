@@ -48,14 +48,11 @@ class Accelerator:
         return {"name": self.name, "cores": self.cores}
 
     def get_core(self, core_id: int) -> Core:
-        """
+        """s
         Return the core with id 'core_id'.
         Raises ValueError() when a core_id is not found in the available cores.
         """
-        core = next((core for core in self.core_list if core.id == core_id), None)
-        if core is None:
-            raise ValueError(f"Requested core with id {core_id} is not present in accelerator.")
-        return core
+        return self.cores.get_node_with_id(core_id)
 
     @property
     def core_list(self) -> list[Core]:

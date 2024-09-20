@@ -237,7 +237,9 @@ T = TypeVar("T")
 
 
 class DiGraphWrapper(Generic[T], DiGraph):
-    """Wraps the DiGraph class with type annotations for the nodes"""
+    """Wraps the DiGraph class with type annotations for the nodes
+    # TODO move to zigzag
+    """
 
     @overload
     def in_edges(self, node: T, data: Literal[False]) -> list[tuple[T, T]]: ...  # type: ignore

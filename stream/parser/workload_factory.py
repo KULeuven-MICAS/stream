@@ -11,7 +11,7 @@ class WorkloadFactoryStream(ZigZagWorkloadFactory):
     DNNWorkload
     """
 
-    def create(self) -> DNNWorkloadStream:
+    def create(self) -> DNNWorkloadStream:  # type: ignore
         node_list: list[LayerNode] = []
 
         for layer_data in self.workload_data:

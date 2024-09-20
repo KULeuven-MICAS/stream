@@ -25,13 +25,13 @@ class CommunicationLink:
         self.receiver = receiver
         self.bandwidth = bandwidth
         self.unit_energy_cost = unit_energy_cost
-        self.bidirectional = bidirectional
+        self.bidirectional = bidirectional  # TODO this property is not in use?
 
-        self.events = []
+        self.events: list[CommunicationLinkEvent] = []
         self.active_periods = [(0, float("inf"), 0)]
         self.active_ts = np.array([0, float("inf")])
         self.active_deltas = np.array([0, 0])
-        self.tensors = {}
+        self.tensors: dict[Tensor, list[CommunicationLinkEvent]] = {}
 
     def __str__(self) -> str:
         return f"CommunicationLink({self.sender}, {self.receiver}, bw={self.bandwidth})"
@@ -40,15 +40,7 @@ class CommunicationLink:
         return str(self)
 
     def __hash__(self) -> int:
-        return hash(
-            (
-                self.sender,
-                self.receiver,
-                self.bandwidth,
-                self.unit_energy_cost,
-                self.bidirectional,
-            )
-        )
+        return hash((self.sender, self.receiver, self.bandwidth, self.unit_energy_cost, self.bidirectional))
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, CommunicationLink) and (self.sender, self.receiver, self.bandwidth) == (
@@ -63,7 +55,7 @@ class CommunicationLink:
         else:
             return f"{self.sender} -> {self.receiver}"
 
-    def transfer(self, cle: CommunicationLinkEvent) -> float:
+    def transfer(self, link_event: CommunicationLinkEvent) -> float:
         """Transfer data on this communication link at timestep.
         The transfer can take longer than necessary for this link if another lower-bandwidth link is involved.
 
@@ -75,8 +67,8 @@ class CommunicationLink:
         Returns:
             int: The end time when communication on this link is finished
         """
-        energy_cost = cle.energy
-        self.update_activity(cle)
+        energy_cost = link_event.energy
+        self.update_activity(link_event)
         return energy_cost
 
     def block(
@@ -89,10 +81,10 @@ class CommunicationLink:
         """Block this communication link from start timestep for a given duration.
 
         Args:
-            start (int): The timestep at which the blocking starts.
-            duration (int): The duration of the blocking.
-            tensors (list): A list of tensors for which we are blocking the link.
-            activity (int): The bandwidth activity in bits/cc.
+            start: The timestep at which the blocking starts.
+            duration: The duration of the blocking.
+            tensors: A list of tensors for which we are blocking the link.
+            activity: The percentage of the link bandwidth used
         """
         end = start + duration
         # Create a CLEvent
@@ -137,8 +129,8 @@ class CommunicationLink:
 
     def get_idle_window(self, activity: float, duration: int, earliest_t: int, tensors: list["Tensor"]):
         """
-        Get the earliest time window of duration 'duration' from 'earliest_t'
-        with atleast 'activity' percent available.
+        Get the earliest time window of duration `duration` from `earliest_t` with at least `activity` percent
+        available.
         """
         valid_windows: list[tuple[int, int]] = []
         ## Check if this tensor has already been transferred on this link before

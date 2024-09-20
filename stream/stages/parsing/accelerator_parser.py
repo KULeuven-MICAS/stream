@@ -14,21 +14,25 @@ logger = logging.getLogger(__name__)
 class AcceleratorParserStage(Stage):
     """Parse to parse an accelerator from a user-defined yaml file."""
 
-    def __init__(self, list_of_callables: list[StageCallable], *, accelerator: str, **kwargs: Any):
+    def __init__(self, list_of_callables: list[StageCallable], *, accelerator: str | Accelerator, **kwargs: Any):
         super().__init__(list_of_callables, **kwargs)
-        assert accelerator.split(".")[-1] == "yaml", "Expected a yaml file as accelerator input"
-        self.accelerator_yaml_path = accelerator
+        self.accelerator = accelerator
 
     def run(self):
-        accelerator = self.parse_accelerator()
+        if isinstance(self.accelerator, Accelerator):
+            accelerator = self.accelerator
+        else:
+            assert self.accelerator.split(".")[-1] == "yaml", "Expected a yaml file as accelerator input"
+            accelerator = self.parse_accelerator_from_yaml(self.accelerator)
+
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], accelerator=accelerator, **self.kwargs)
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
 
-    def parse_accelerator(self) -> Accelerator:
-        accelerator_data = open_yaml(self.accelerator_yaml_path)
+    def parse_accelerator_from_yaml(self, yaml_path: str) -> Accelerator:
+        accelerator_data = open_yaml(yaml_path)
 
-        validator = AcceleratorValidator(accelerator_data, self.accelerator_yaml_path)
+        validator = AcceleratorValidator(accelerator_data, yaml_path)
         accelerator_data = validator.normalized_data
         validate_success = validator.validate()
         if not validate_success:
