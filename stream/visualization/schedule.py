@@ -1,4 +1,5 @@
 import argparse
+from collections import defaultdict
 import logging
 import pickle
 from itertools import cycle
@@ -13,6 +14,7 @@ from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 from plotly.express.colors import sample_colorscale
 from zigzag.datatypes import LayerOperand
+from stream.workload.tensor import Tensor
 
 if TYPE_CHECKING:
     from stream.cost_model.cost_model import StreamCostModelEvaluation
@@ -421,6 +423,8 @@ def get_communication_dicts(scme):
                 continue
             d = dict(
                 Task=task_type.capitalize(),
+                Id=np.nan,
+                Sub_id=np.nan,
                 Start=start,
                 End=end,
                 Resource=resource,
@@ -459,6 +463,8 @@ def get_dataframe_from_scme(scme: "StreamCostModelEvaluation", layer_ids: list[i
         task_type = "compute"
         d = dict(
             Task=node.short_name,
+            Id=str(int(node.id)),
+            Sub_id=str(int(node.sub_id)),
             Start=start,
             End=end,
             Resource=f"Core {core_id}",
@@ -486,6 +492,25 @@ def get_sorted_y_labels(df):
     return sorted(computation_labels) + sorted(communication_labels)
 
 
+def format_tensors(tensors: list[Tensor]):
+    # Group tensors by their id attribute
+    tensor_groups = defaultdict(list)
+    for tensor in tensors:
+        layer_id = tensor.id[0]
+        tensor_groups[layer_id].append(tensor)
+
+    # Format the tensor groups
+    formatted_tensors = []
+    for tensor_id, tensor_list in tensor_groups.items():
+        if len(tensor_list) > 4:
+            # Limit to 2 tensors at the beginning and 2 at the end
+            formatted_tensors.append(f"{tensor_list[0]}, {tensor_list[1]}, ..., {tensor_list[-2]}, {tensor_list[-1]}")
+        else:
+            formatted_tensors.append(", ".join(map(str, tensor_list)))
+
+    return "<br>[".join(formatted_tensors) + "]<br>"
+
+
 def visualize_timeline_plotly(
     scme: "StreamCostModelEvaluation",
     draw_dependencies: bool = False,
@@ -504,6 +529,8 @@ def visualize_timeline_plotly(
     fig = go.Figure()
     seen_layers = []
     for idx, row in df.iterrows():
+        id = row["Id"]
+        sub_id = row["Sub_id"]
         start = row["Start"]
         runtime = row["Runtime"]
         energy = row["Energy"]
@@ -513,7 +540,7 @@ def visualize_timeline_plotly(
         name = row["Task"]
         legendgroup = f"Layer {layer}"
         legendgrouptitle_text = legendgroup
-        tensors = row["Tensors"]
+        tensors = format_tensors(row["Tensors"])
         task_type = row["Type"]
         hatch = PLOTLY_HATCH_TYPES[task_type]
         marker = {"color": color, "pattern": {"shape": hatch}}
@@ -528,6 +555,8 @@ def visualize_timeline_plotly(
         if not isnan(row["Activity"]):
             activity = int(row["Activity"])
             hovertext += f"<br><b>Activity:</b> {activity} %"
+        if isinstance((row["Id"]), str) and isinstance(row["Sub_id"], str):
+            hovertext += f"<br><b>Id:</b> {id}    <b>Sub_id:</b> {sub_id}"
         bar = go.Bar(
             base=[start],
             x=[runtime],
