@@ -50,8 +50,13 @@ class SetFixedAllocationPerformanceStage(Stage):
 
     def set_fixed_allocation_performance(self):
         for node in self.workload.nodes():
+            if isinstance(node.core_allocation, list) and len(node.core_allocation) == 1:
+                node.core_allocation_is_fixed = True
+                node.set_chosen_core_allocation(node.core_allocation[0])
             if node.core_allocation_is_fixed:
                 core_id = node.chosen_core_allocation
+                if core_id is None:
+                    raise ValueError(f"Node {node} has fixed allocation but the chosen_core_allocation was not set.")
                 equal_node = self.node_hw_performances.get_equal_node(node)
                 assert equal_node is not None, f"{node} has fixed allocation but no equal node found."
                 core = self.accelerator.get_core(core_id)

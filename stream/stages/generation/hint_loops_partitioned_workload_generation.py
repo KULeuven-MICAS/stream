@@ -363,9 +363,9 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
             # In that case, we select the core allocation based on the group id.
             if original_node.core_allocation_is_fixed:
                 assert group_id < len(
-                    original_node.core_allocation
+                    original_node.possible_core_allocation
                 ), f"Group id {group_id} is not in the core allocation list {original_node.core_allocation}"
-                chosen_core_allocation = original_node.core_allocation[group_id]
+                chosen_core_allocation = original_node.possible_core_allocation[group_id]
                 finer_node.set_chosen_core_allocation(chosen_core_allocation)
 
             finer_nodes.append(finer_node)

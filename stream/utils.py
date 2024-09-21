@@ -107,6 +107,21 @@ def save_core_allocation(
         raise ValueError(f"Invalid format: {format}.")
     return mapping
 
+def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNode"]:
+    """! Get the unique nodes from a workload."""
+    unique_nodes: list[ComputationNode] = []
+    for node in workload.node_list:
+        equal_nodes = list(
+            (
+                unique_node
+                for unique_node in unique_nodes
+                if node.has_same_performance(unique_node) and node.group == unique_node.group
+            )
+        )
+        if not equal_nodes:
+            unique_nodes.append(node)
+    return unique_nodes
+
 
 class CostModelEvaluationLUT:
     """A class to store the cost model evaluations in a look-up table.
@@ -182,6 +197,11 @@ class CostModelEvaluationLUT:
 
     def get_cores(self, node: "ComputationNode"):
         return list(self.lut.get(node, {}).keys())
+
+    def remove_cores_with_same_id(self, node, core):
+        """! Removes cores with the same id as core for node from the look-up table."""
+        if node in self.lut:
+            self.lut[node] = {c: v for c, v in self.lut[node].items() if c.id != core.id}
 
 
 class NodeTensor(np.ndarray[Any, Any]):

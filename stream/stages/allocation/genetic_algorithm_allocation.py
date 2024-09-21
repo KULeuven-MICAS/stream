@@ -11,7 +11,7 @@ from stream.opt.allocation.genetic_algorithm.fitness_evaluator import (
 from stream.opt.allocation.genetic_algorithm.genetic_algorithm import (
     GeneticAlgorithm,
 )
-from stream.utils import CostModelEvaluationLUT
+from stream.utils import CostModelEvaluationLUT, get_unique_nodes
 from stream.workload.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
@@ -37,7 +37,6 @@ class GeneticAlgorithmAllocationStage(Stage):
         node_hw_performances: CostModelEvaluationLUT,
         nb_ga_generations: int,
         nb_ga_individuals: int,
-        plot_hof: bool,
         plot_file_name: bool,
         plot_full_schedule: bool = False,
         plot_data_transfer: bool = False,
@@ -61,7 +60,6 @@ class GeneticAlgorithmAllocationStage(Stage):
         self.node_hw_performances = node_hw_performances
         self.nb_generations = nb_ga_generations
         self.nb_individuals = nb_ga_individuals
-        self.plot_hof = plot_hof
         self.fig_path = plot_file_name
         self.plot_full_schedule = plot_full_schedule
         self.plot_data_transfer = plot_data_transfer
@@ -72,14 +70,14 @@ class GeneticAlgorithmAllocationStage(Stage):
         self.layer_groups: list[tuple[int, int]] = sorted(set((n.id, n.group) for n in self.workload.node_list))
 
         # self.coarse_node_ids contains all the original node (aka layers) ids of the original graph
-        self.unique_nodes = list(self.node_hw_performances.get_nodes())
+        self.unique_nodes = get_unique_nodes(self.workload)
         self.coarse_node_ids: list[int] = [id for id, _ in self.layer_groups]
         # self.coarse_node_ids_flexible contains only those original node ids that have flexibility: they can be
         # allocated to more than one core
         # TODO is this sorting key correct?
         self.unique_nodes_flexible: list[ComputationNode] = []
-        for n in self.node_hw_performances.get_nodes():
-            if len(self.node_hw_performances.get_cores(n)) > 1:
+        for n in self.unique_nodes:
+            if not n.core_allocation_is_fixed and len(n.possible_core_allocation) > 1:
                 self.unique_nodes_flexible.append(n)
 
         self.coarse_node_ids_flexible: list[int] = [n.id for n in self.unique_nodes_flexible]
@@ -142,14 +140,10 @@ class GeneticAlgorithmAllocationStage(Stage):
             # Run the genetic algorithm and get the results
             pop, hof = self.genetic_algorithm.run()
             logger.info("Finished Genetic Algorithm.")
-            if self.plot_hof:
-                for i, core_allocations in enumerate(hof):
-                    results = self.fitness_evaluator.get_fitness(core_allocations, return_scme=True)
-                    scme = results[-1]
-                    # scme.plot_schedule(plot_full_schedule=self.plot_full_schedule,
-                    #                    plot_data_transfer=self.plot_data_transfer,
-                    #                    fig_path=f"outputs/schedule_plot{self.fig_path}{i}.png")
-                    # scme.plot_memory_usage(fig_path=f"outputs/memory_usage_plot{self.fig_path}{i}.png")
+            # Return the SCME of the last individual in the hall of fame
+            best_core_allocations = hof[-1]
+            results = self.fitness_evaluator.get_fitness(best_core_allocations, return_scme=True)
+            scme = results[-1]
             yield scme, None
         logger.info("Finished InterCoreMappingStage.")
 

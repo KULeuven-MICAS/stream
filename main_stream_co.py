@@ -31,7 +31,7 @@ accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
 mode = "fused"
-layer_stacks = [tuple(range(0, 5)), tuple(range(5, 22))] + list((i,) for i in range(22, 49))
+layer_stacks = [tuple(range(0, 11)), tuple(range(11, 22))] + list((i,) for i in range(22, 49))
 ##############################################################################################
 
 ################################PARSING###############################
@@ -86,7 +86,7 @@ mainstage = MainStage(
     node_hw_performances_path_with_split=node_hw_performances_path_with_split,
     visualize_node_hw_performances_path_with_split=visualize_node_hw_performances_path_with_split,
     mode=mode,
-    layer_stacks=[tuple(range(0, 5)), tuple(range(5, 22))] + list((i,) for i in range(22, 49))
+    layer_stacks=layer_stacks,
 )
 
 # Launch the MainStage

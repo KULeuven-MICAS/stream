@@ -56,7 +56,7 @@ class LayerStacksGenerationStage(Stage):
         else:
             raise ValueError("Unsupported mode for layer stack determination.")
 
-        self.keep_computation_node_ids()
+        self.only_keep_computation_node_ids()
 
         self.kwargs["accelerator"] = self.accelerator
         self.kwargs["workload"] = self.workload
@@ -68,7 +68,7 @@ class LayerStacksGenerationStage(Stage):
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
 
-    def keep_computation_node_ids(self):
+    def only_keep_computation_node_ids(self):
         """! Update the layer stacks to only keep ids of ComputationNodes"""
         updated_layer_stacks = []
         for stack in self.layer_stacks:

@@ -291,23 +291,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         nodes = filter(lambda n: n.id <= max(layer_ids), self.original_workload.nodes())
         original_workload_copy = pickle_deepcopy(self.original_workload.subgraph(nodes))
         # Set the correct allocations for the layers in the copied workload
-        for i, (layer_id, cores) in enumerate(zip(layer_ids, core_ids)):
-            n = next(n for n in original_workload_copy.nodes() if n.id == layer_id)
-            n.chosen_core_allocation = list(cores)
-            n.core_allocation_is_fixed = True
-        # Find any nodes that might not have been in the steady state allocation and need to be allocated manually
-        # These nodes will be allocated across all possible cores in the K dimension if possible
-        for n in original_workload_copy.nodes():
-            layer_id = n.id
-            if any((layer_id in stack for stack in self.layer_stacks)) and layer_id not in layer_ids:
-                assert isinstance(n.core_allocation, list)
-                n.chosen_core_allocation = n.core_allocation
-                n.core_allocation_is_fixed = True
-                assert 'K' in n.loop_dim_size
-                layer_ids_idx = np.searchsorted(layer_ids, layer_id)
-                layer_ids.insert(layer_ids_idx, layer_id)
-                core_ids.insert(layer_ids_idx, n.core_allocation)
-                logger.warning(f"{n} not in steady state allocation; allocated to: {n.core_allocation}.")
+        self.set_fixed_allocations_for_workload(original_workload_copy, layer_ids, core_ids)
 
         # Parameters for stages
         kwargs = self.kwargs.copy()
@@ -338,6 +322,30 @@ class ConstraintOptimizationAllocationStage(Stage):
         scme, _ = main_stage.run()
         scme = scme[0]
         return scme
+
+    def set_fixed_allocations_for_workload(self, workload: ComputationNodeWorkload, layer_ids: list[int], core_ids: list[int]):
+        """! Modify the workload to fix the core allocations to the given core_ids for the given layer_ids."""
+        assert len(layer_ids) == len(core_ids)
+        for (layer_id, cores) in zip(layer_ids, core_ids):
+            n = next(n for n in workload.nodes() if n.id == layer_id)
+            n.chosen_core_allocation = list(cores)
+            n.possible_core_allocation = list(cores)
+            n.core_allocation_is_fixed = True
+        # Find any layers that might not have been in the steady state allocation and need to be allocated manually
+        # The nodes of these layers will be allocated across all possible cores in the K dimension if possible
+        layer_ids_not_in_ss = [layer_id for stack in self.layer_stacks for layer_id in stack if layer_id not in layer_ids]
+        for layer_id_not_in_ss in layer_ids_not_in_ss:
+            layer_ids_idx = np.searchsorted(layer_ids, layer_id_not_in_ss)
+            for n in filter(lambda n: n.id == layer_id_not_in_ss, workload.nodes()):
+                assert isinstance(n.core_allocation, list)
+                n.chosen_core_allocation = n.core_allocation
+                n.possible_core_allocation = n.core_allocation
+                n.core_allocation_is_fixed = True
+                assert 'K' in n.loop_dim_size
+                layer_ids.insert(layer_ids_idx, layer_id_not_in_ss)
+                core_ids.insert(layer_ids_idx, n.core_allocation)
+                logger.warning(f"{n} not in steady state allocation; allocated to: {n.core_allocation}.")
+
 
     def get_hint_loops(self, layer_ids, core_ids):
         hint_loops = {}

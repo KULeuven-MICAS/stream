@@ -16,7 +16,7 @@ from zigzag.stages.stage import Stage, StageCallable
 from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.utils import CostModelEvaluationLUT
+from stream.utils import CostModelEvaluationLUT, get_unique_nodes
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,
 )
@@ -53,17 +53,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         self.node_hw_performances_path: str | None = kwargs.get("node_hw_performances_path", None)
 
         # Extract all unique nodes that will have to be evaluated
-        self.unique_nodes: list[ComputationNode] = []
-        for node in self.workload.node_list:
-            equal_nodes = list(
-                (
-                    unique_node
-                    for unique_node in self.unique_nodes
-                    if node.has_same_performance(unique_node) and node.group == unique_node.group
-                )
-            )
-            if not equal_nodes:
-                self.unique_nodes.append(node)
+        self.unique_nodes = get_unique_nodes(self.workload)
 
         # Initialize the valid node-core allocations.
         self.valid_allocations: dict[ComputationNode, list[int]] = {}
@@ -93,34 +83,36 @@ class ZigZagCoreMappingEstimationStage(Stage):
                     continue
                 # If an equal performance has already been computed, we take it
                 equal_node = self.node_hw_performances.get_equal_node(node)
-                if equal_node:
-                    equal_core = self.node_hw_performances.get_equal_core(equal_node, core)
-                    if equal_core:
-                        cme = pickle_deepcopy(self.node_hw_performances.get_cme(equal_node, equal_core))
-                        # Update the CME attributes for this node-core combination
-                        cme.layer.core_allocation = [core_id]
-                        cme.core_id = core_id
-                        self.node_hw_performances.add_cme(node, core, cme, allow_overwrite=False)
-                        continue
+                equal_core = self.node_hw_performances.get_equal_core(equal_node, core) if equal_node else None
+                if equal_node and equal_core:
+                    cme = pickle_deepcopy(self.node_hw_performances.get_cme(equal_node, equal_core))
+                    # Update the CME attributes for this node-core combination
+                    cme.layer.core_allocation = [core_id]
+                    cme.core_id = core_id
+                    self.node_hw_performances.add_cme(node, core, cme, allow_overwrite=False)
+                    continue
                 else:
+                    node_duplicate = pickle_deepcopy(node)
+                    # Remove duplicate cores with same id in case the core definition has changed
+                    self.node_hw_performances.remove_cores_with_same_id(node, core)
                     # We need to compute the optimal performance for this node-core combination
                     # It's possible this node might not fully fit within the core's top level memories.
                     # If so, we update the core
-                    too_large_operands_for_cme = self.check_core_capacity_for_node(core, node)
-                    node.set_chosen_core_allocation(core_id)
+                    too_large_operands_for_cme = self.check_core_capacity_for_node(core, node_duplicate)
+                    node_duplicate.set_chosen_core_allocation(core_id)
                     # Set the node's spatial mapping to the possible spatial mappings of the current core
-                    node.spatial_mapping = core.dataflows if core.dataflows is not None else SpatialMapping.empty()
+                    node_duplicate.spatial_mapping = core.dataflows if core.dataflows is not None else SpatialMapping.empty()
                     # Initialize the flow that will be followed to extract the optimal HW performance of every
                     #  unique node-core allocation
                     main_stage = self.get_intra_core_mapping_flow(
-                        node=node,
+                        node=node_duplicate,
                         too_large_operands=too_large_operands_for_cme,
                         core_id=core_id,
                     )
                     answers = main_stage.run()
                     assert len(answers) == 1, "IntraCoreMappingStage's subflow returned more than one CME"
                     cme: CostModelEvaluation = answers[0][0]  # type: ignore
-                    node.set_chosen_core_allocation(None)  # Reset the node's chosen core allocation
+                    node_duplicate.set_chosen_core_allocation(None)  # Reset the node's chosen core allocation
                     self.node_hw_performances.add_cme(node, core, cme, allow_overwrite=False)
             self.node_hw_performances.save()
 
@@ -137,18 +129,17 @@ class ZigZagCoreMappingEstimationStage(Stage):
 
     def visualize_node_hw_performances(self):
         if "visualize_node_hw_performances_path" in self.kwargs:
-            if "visualize_node_hw_performances_path":
-                # Get the scale factors
-                scale_factors = {
-                    n: len([cn for cn in self.workload.node_list if cn.has_same_performance(n)])
-                    for n in self.node_hw_performances.get_nodes()
-                }
-                # Run the visualization
-                visualize_node_hw_performances_pickle(
-                    self.node_hw_performances,
-                    scale_factors,
-                    self.kwargs["visualize_node_hw_performances_path"],
-                )
+            # Get the scale factors
+            scale_factors = {
+                n: len([cn for cn in self.workload.node_list if cn.has_same_performance(n)])
+                for n in self.node_hw_performances.get_nodes()
+            }
+            # Run the visualization
+            visualize_node_hw_performances_pickle(
+                self.node_hw_performances,
+                scale_factors,
+                self.kwargs["visualize_node_hw_performances_path"],
+            )
 
     def get_intra_core_mapping_flow(self, node: ComputationNode, too_large_operands: list[MemoryOperand], core_id: int):
         logger.info(f"Launching intra-core mapping optimization for {node} -> core {core_id} ...")
