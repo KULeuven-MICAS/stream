@@ -724,6 +724,8 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                 return node.gather_operand_tensor(input_tensor)
             case ConcatNode():
                 return node.concat(input_tensor)
+            case DummyNode():
+                return input_tensor
             case _:
                 raise NotImplementedError(f"Tensor propagation not implemented for node {node.name}.")
 
