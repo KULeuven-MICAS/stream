@@ -1,22 +1,24 @@
+import logging
+import os
 from itertools import cycle
+
 import numpy as np
 import plotly.graph_objects as go
 from plotly.express.colors import sample_colorscale
-import os
-from math import ceil
+
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.opt.allocation.constraint_optimization.utils import get_latencies
-
-import logging
-
 from stream.utils import CostModelEvaluationLUT
+
 logger = logging.getLogger(__name__)
 
 
-def visualize_waco(allocation, node_hw_performances: CostModelEvaluationLUT, accelerator: Accelerator, fig_path: str, iterations: int):
+def visualize_waco(
+    allocation, node_hw_performances: CostModelEvaluationLUT, accelerator: Accelerator, fig_path: str, iterations: int
+):
     """
     Allocation is a list of tuples, with each tuple being of form (timestep, allocation, node_id). Allocation is a core.
-    node_hw_performances is a nested dict storing for each node and each core the hardware performance. 
+    node_hw_performances is a nested dict storing for each node and each core the hardware performance.
     """
     pass
     # Extract the number of allocations (k splits) of all nodes
@@ -54,7 +56,7 @@ def visualize_waco(allocation, node_hw_performances: CostModelEvaluationLUT, acc
         for a in allocations:
             start = get_start_time_of_node(id, a, node_timesteps, timestep_latencies)
             starts[id, a] = start
-    total_lat = calculate_total_latency(starts, timestep_latencies, node_timesteps, iterations)
+    _ = calculate_total_latency(starts, timestep_latencies, node_timesteps, iterations)
     # Plot the nodes using Plotly rectangles
     color_cycle = cycle(sample_colorscale("rainbow", np.linspace(0, 1, len(node_hw_performances.get_nodes()))))
     colors = {layer_id: c for (layer_id, c) in zip(layer_ids, color_cycle)}
@@ -70,7 +72,9 @@ def visualize_waco(allocation, node_hw_performances: CostModelEvaluationLUT, acc
             layer_id = id[0]
             color = colors[layer_id]
             marker = {"color": color}
-            hovertext = f"<b>Task:</b> {name}<br><b>Start:</b> {start}<br><b>Runtime:</b> {runtime:.2e}<br><b>End:</b> {end}"
+            hovertext = (
+                f"<b>Task:</b> {name}<br><b>Start:</b> {start}<br><b>Runtime:</b> {runtime:.2e}<br><b>End:</b> {end}"
+            )
             bar = go.Bar(
                 base=[start],
                 x=[runtime],
@@ -91,14 +95,11 @@ def visualize_waco(allocation, node_hw_performances: CostModelEvaluationLUT, acc
             x=t_start,
             line_width=1,
             line_dash="dash",
-
         )
         t_start += timestep_latencies.get(timestep, 0)
 
     # Title
-    fig.update_layout(
-        title_text=f"Constraint optimization timeslot visualization"
-    )
+    fig.update_layout(title_text="Constraint optimization timeslot visualization")
 
     fig.update_yaxes(categoryorder="array", categoryarray=sorted(resources))
     fig.update_yaxes(autorange="reversed")
@@ -137,8 +138,7 @@ def calculate_total_latency(starts, timestep_latencies, node_timesteps, N):
         assert slack >= 0
         slacks[core] = slack
     min_slack = min(slacks.values())
-    period = T - min_slack
     total_lat = N * T - (N - 1) * min_slack
-    print(f"total_lat = N * T - (N - 1) * slack")
+    print("total_lat = N * T - (N - 1) * slack")
     print(f"{total_lat} = {N} * {T} - {N-1} * {min_slack}")
     return total_lat

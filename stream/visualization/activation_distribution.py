@@ -1,13 +1,13 @@
 import networkx as nx
-from networkx import DiGraph
 import pandas as pd
 import plotly.express as px
+from networkx import DiGraph
 
 from stream.workload.computation_node import ComputationNode
 from stream.workload.utils import prune_workload
 
 
-def plot_activation_distribution(workload: DiGraph, order: list=None, fig_path="outputs/distribution.html"):
+def plot_activation_distribution(workload: DiGraph, order: list = None, fig_path="outputs/distribution.html"):
     """
     Plot the output tensor sizes throughout the network depth.
     The depth is determined through the topological generations sort of the workload.
@@ -21,27 +21,41 @@ def plot_activation_distribution(workload: DiGraph, order: list=None, fig_path="
     # Plot the sizes
     nb_iterations = max(df["Iteration"])
     print(f"Activation distribution: {nb_iterations} iterations; {len(df)} bars; {max_size:.3e} max")
-    fig = px.bar(df, x="Layer", y="Size", animation_frame="Iteration", animation_group="Layer", hover_name="Size", range_y=[0, max_size])
+    fig = px.bar(
+        df,
+        x="Layer",
+        y="Size",
+        animation_frame="Iteration",
+        animation_group="Layer",
+        hover_name="Size",
+        range_y=[0, max_size],
+    )
     total_animation_time = 5000  # in ms
     transition_to_frame_ratio = 0.2
-    time_per_iteration = total_animation_time/nb_iterations
+    time_per_iteration = total_animation_time / nb_iterations
     frame_time = (1 - transition_to_frame_ratio) * time_per_iteration
     transition_time = transition_to_frame_ratio * time_per_iteration
-    fig.layout.updatemenus[0].buttons[0].args[1]['frame']['duration'] = frame_time
-    fig.layout.updatemenus[0].buttons[0].args[1]['transition']['duration'] = transition_time
+    fig.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = frame_time
+    fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["duration"] = transition_time
     fig.update_geos(projection_type="equirectangular", visible=True, resolution=110)
     fig.write_html(fig_path)
     pass
 
+
 def get_sizes_per_node(workload, order):
     data = []
-    workload = prune_workload(workload, keep_types=[ComputationNode,])
+    workload = prune_workload(
+        workload,
+        keep_types=[
+            ComputationNode,
+        ],
+    )
     node_ids = set(n.id for n in workload.nodes())
     order = [o for o in order if o in node_ids]
     layer_ids = [n.id[0] for n in workload.nodes()]
     source_layer_ids = [n.id[0] for n, in_degree in workload.in_degree() if in_degree == 0]
     source_nodes = [n for n in workload.nodes() if n.id[0] in source_layer_ids]
-    alive_tensors = set((t for n in source_nodes for op, t in n.operand_tensors.items() if op in ['I', 'A']))
+    alive_tensors = set((t for n in source_nodes for op, t in n.operand_tensors.items() if op in ["I", "A"]))
     alive_tensors = set()  # temp without first input
     nb_tensor_uses = {t: 1 for t in alive_tensors}
     nb_tensor_uses = {}  # temp without first input
@@ -69,12 +83,12 @@ def get_sizes_per_node(workload, order):
         #             alive_tensors.remove(t)
         # Output tensors from previous nodes
         for pred in workload.predecessors(node):
-            pred_output = next(t for op, t in pred.operand_tensors.items() if op == 'O')
+            pred_output = next(t for op, t in pred.operand_tensors.items() if op == "O")
             nb_tensor_uses[pred_output] -= 1
             if nb_tensor_uses[pred_output] == 0:
                 alive_tensors.remove(pred_output)
         # Tensors that will spawn by processing this node (assumes only one output tensor)
-        output = next(t for op, t in node.operand_tensors.items() if op == 'O')
+        output = next(t for op, t in node.operand_tensors.items() if op == "O")
         alive_tensors.add(output)
         nb_tensor_uses[output] = len([n for n in workload.successors(node) if n.id[0] != node.id[0]])
         it += 1

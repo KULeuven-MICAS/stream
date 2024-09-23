@@ -250,7 +250,9 @@ def schedule_graph(
     total_core_to_core_memory_energy = 0
 
     core_ids = set(n.chosen_core_allocation for n in G.node_list)
-    assert None not in core_ids, "Make sure all nodes have a core allocation. Insert SetFixedAllocationPerformanceStage."
+    assert (
+        None not in core_ids
+    ), "Make sure all nodes have a core allocation. Insert SetFixedAllocationPerformanceStage."
     all_core_ids: list[int] = sorted(list(core_ids))  # type: ignore
 
     if cores_idle_from is None:

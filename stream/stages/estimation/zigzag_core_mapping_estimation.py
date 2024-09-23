@@ -101,7 +101,9 @@ class ZigZagCoreMappingEstimationStage(Stage):
                     too_large_operands_for_cme = self.check_core_capacity_for_node(core, node_duplicate)
                     node_duplicate.set_chosen_core_allocation(core_id)
                     # Set the node's spatial mapping to the possible spatial mappings of the current core
-                    node_duplicate.spatial_mapping = core.dataflows if core.dataflows is not None else SpatialMapping.empty()
+                    node_duplicate.spatial_mapping = (
+                        core.dataflows if core.dataflows is not None else SpatialMapping.empty()
+                    )
                     # Initialize the flow that will be followed to extract the optimal HW performance of every
                     #  unique node-core allocation
                     main_stage = self.get_intra_core_mapping_flow(

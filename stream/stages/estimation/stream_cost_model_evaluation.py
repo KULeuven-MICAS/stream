@@ -4,9 +4,9 @@ from typing import Any
 from zigzag.datatypes import LayerOperand
 from zigzag.stages.stage import Stage, StageCallable
 
+from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.workload.onnx_workload import ComputationNodeWorkload
-from stream.cost_model.cost_model import StreamCostModelEvaluation
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,6 @@ class StreamCostModelEvaluationStage(Stage):
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
         operands_to_prefetch: list[LayerOperand],
-
         **kwargs: Any,
     ):
         """Initialize the InterCoreMappingStage.

@@ -107,6 +107,7 @@ def save_core_allocation(
         raise ValueError(f"Invalid format: {format}.")
     return mapping
 
+
 def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNode"]:
     """! Get the unique nodes from a workload."""
     unique_nodes: list[ComputationNode] = []

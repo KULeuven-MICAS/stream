@@ -1,15 +1,15 @@
 import logging
 from typing import Any
 
-from zigzag.stages.stage import Stage, StageCallable
+from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
 from zigzag.mapping.data_movement import MemoryAccesses
-from zigzag.cost_model.cost_model import CostModelEvaluation
+from zigzag.stages.stage import Stage, StageCallable
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.workload.onnx_workload import ComputationNodeWorkload
 from stream.utils import CostModelEvaluationLUT, get_too_large_operands
 from stream.workload.computation_node import ComputationNode
+from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,6 @@ class SetFixedAllocationPerformanceStage(Stage):
         accelerator: Accelerator,
         node_hw_performances: CostModelEvaluationLUT,
         **kwargs: Any,
-
     ):
         super().__init__(list_of_callables, **kwargs)
         self.accelerator = accelerator
@@ -36,7 +35,7 @@ class SetFixedAllocationPerformanceStage(Stage):
         # Set the performance of all nodes that have a fixed allocation
         self.set_fixed_allocation_performance()
         logger.info("Finished SetFixedAllocationPerformanceStage.")
-        
+
         kwargs = self.kwargs.copy()
         kwargs["workload"] = self.workload
         kwargs["accelerator"] = self.accelerator
@@ -70,18 +69,22 @@ class SetFixedAllocationPerformanceStage(Stage):
                 node.set_too_large_operands(too_large_operands.copy())
                 node.set_offchip_bandwidth(offchip_bandwidth)
 
-    def get_energy_distribution(self, cme: CostModelEvaluation, too_large_operands: list[MemoryOperand]) -> tuple[float, float]:
-            onchip_energy = cme.energy_total  # initialize the on-chip energy as total energy
-            # If there is a too_large_operand, we separate the off-chip energy.
-            offchip_energy = 0
-            for too_large_operand in too_large_operands:
-                layer_operand = cme.layer.memory_operand_links.mem_to_layer_op(too_large_operand)
-                layer_operand_offchip_energy = cme.mem_energy_breakdown[layer_operand][-1]
-                offchip_energy += layer_operand_offchip_energy
-                onchip_energy -= layer_operand_offchip_energy
-            return onchip_energy, offchip_energy
+    def get_energy_distribution(
+        self, cme: CostModelEvaluation, too_large_operands: list[MemoryOperand]
+    ) -> tuple[float, float]:
+        onchip_energy = cme.energy_total  # initialize the on-chip energy as total energy
+        # If there is a too_large_operand, we separate the off-chip energy.
+        offchip_energy = 0
+        for too_large_operand in too_large_operands:
+            layer_operand = cme.layer.memory_operand_links.mem_to_layer_op(too_large_operand)
+            layer_operand_offchip_energy = cme.mem_energy_breakdown[layer_operand][-1]
+            offchip_energy += layer_operand_offchip_energy
+            onchip_energy -= layer_operand_offchip_energy
+        return onchip_energy, offchip_energy
 
-    def get_offchip_bandwidth(self, cme: CostModelEvaluation, too_large_operands: list[MemoryOperand]) -> MemoryAccesses:
+    def get_offchip_bandwidth(
+        self, cme: CostModelEvaluation, too_large_operands: list[MemoryOperand]
+    ) -> MemoryAccesses:
         if not too_large_operands:
             return MemoryAccesses(0, 0, 0, 0)
         # If there was offchip memory added for some operands, get the offchip bandwidth required

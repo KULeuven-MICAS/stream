@@ -3,23 +3,26 @@ import logging
 import os
 from time import time
 from typing import Any
-from networkx import DiGraph
+
 import networkx as nx
 import numpy as np
-
-from stream.opt.allocation.constraint_optimization.allocation import get_optimal_allocations
-from stream.hardware.architecture.accelerator import Accelerator
-from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
-from stream.visualization.constraint_optimization import visualize_waco
-from stream.stages.estimation.stream_cost_model_evaluation import StreamCostModelEvaluationStage
-from stream.stages.generation.hint_loops_partitioned_workload_generation import HintLoopsPartitionedWorkloadGenerationStage
-from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
-from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
-from zigzag.stages.stage import Stage
-from zigzag.stages.main import MainStage
+from networkx import DiGraph
 from zigzag.datatypes import LayerDim
-from stream.workload.onnx_workload import ComputationNodeWorkload
+from zigzag.stages.main import MainStage
+from zigzag.stages.stage import Stage
+from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
+
+from stream.hardware.architecture.accelerator import Accelerator
+from stream.opt.allocation.constraint_optimization.allocation import get_optimal_allocations
+from stream.stages.estimation.stream_cost_model_evaluation import StreamCostModelEvaluationStage
+from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
+from stream.stages.generation.hint_loops_partitioned_workload_generation import (
+    HintLoopsPartitionedWorkloadGenerationStage,
+)
+from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 from stream.utils import CostModelEvaluationLUT
+from stream.visualization.constraint_optimization import visualize_waco
+from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +71,7 @@ class ConstraintOptimizationAllocationStage(Stage):
 
         # Which CME attribute to use for the node latencies
         self.latency_attr = kwargs.get("latency_attr", "latency_total1")
-        
+
         # Attributes that will be assigned throughout the stage
         self.ss_to_computes = {}
         self.hashes_per_sink_node = {}
@@ -80,15 +83,14 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.nb_macs_in_ss_per_stack = {}
         self.ss_mac_percentages_per_stack = {}
 
-
     def run(self):
-        logger.info(f"Start ConstraintOptimizationAllocationStage.")
+        logger.info("Start ConstraintOptimizationAllocationStage.")
         # For each layer stack, determine for each node in the last layer(s) how many nodes have to be computed and cached
-        
+
         self.extract_steady_state_per_stack()
         self.find_best_allocation_per_stack()
         scme = self.run_coala()
-            
+
         logger.info(f"STEADY STATE PERCENTAGES: {self.ss_mac_percentages_per_stack}")
         logger.info(f"TOTAL NUMBER OF MACS: {self.nb_macs_per_stack}")
         logger.info(f"TOTAL NUMBER OF MACS IN STEADY STATE: {self.nb_macs_in_ss_per_stack}")
@@ -118,8 +120,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             sg: DiGraph = self.workload.subgraph(nodes)
             sink_nodes = sorted(n for n in sg.nodes() if len(self.get_real_successors(n, sg)) == 0)
             sink_layer_ids = sorted(set(n.id for n in sink_nodes))
-            sink_layer_nodes = [tuple(sorted(n for n in sink_nodes if n.id == layer_id))
-                                for layer_id in sink_layer_ids]
+            sink_layer_nodes = [tuple(sorted(n for n in sink_nodes if n.id == layer_id)) for layer_id in sink_layer_ids]
             interlaced = [tuple(filter(lambda x: x is not None, t)) for t in itertools.zip_longest(*sink_layer_nodes)]
             computed = set()
             to_compute_sets = dict()
@@ -187,37 +188,46 @@ class ConstraintOptimizationAllocationStage(Stage):
         # Check if the allocation is already cached, if not: find it
         stack_str = "_".join([str(id) for id in stack])
         allocations_path = os.path.join(self.steady_state_visualization_path, f"steady_state-{stack_str}.pickle")
-        try:
+        if os.path.exists(allocations_path):
             allocation = pickle_load(allocations_path)
-        except:
+        else:
             sg = self.workload.subgraph(to_compute)
             logger.info(f"Optimizing allocation for {iterations} iterations of {len(to_compute)} ss nodes.")
             allocation = get_optimal_allocations(
-                sg, self.accelerator, self.node_hw_performances, iterations, time_limit=time_limit, latency_attr=self.latency_attr)
+                sg,
+                self.accelerator,
+                self.node_hw_performances,
+                iterations,
+                time_limit=time_limit,
+                latency_attr=self.latency_attr,
+            )
             pickle_save(allocation, allocations_path)
         fig_path = os.path.join(self.steady_state_visualization_path, f"groups_{self.mode}_{max(stack)}.html")
         print(f"stack = {stack}")
         visualize_waco(allocation, self.node_hw_performances, self.accelerator, fig_path, iterations)
         return allocation
 
-
     def get_scheduling_order(self, hint_loops):
         """
         Get the scheduling order of all ids that will exist in the transformed workload.
         Returns a list with all ids where the earlier the higher priority
         """
-        nb_nodes_per_layer = {layer_id: len(list(n for n in self.workload.nodes(
-        ) if n.id == layer_id)) for layer_id in sorted(n.id for n in self.workload.nodes())}
+        nb_nodes_per_layer = {
+            layer_id: len(list(n for n in self.workload.nodes() if n.id == layer_id))
+            for layer_id in sorted(n.id for n in self.workload.nodes())
+        }
         pass
         scheduling_order = []
         for stack, compute in self.compute_per_sink_node.items():
             hash_steady_state = self.steady_state_hashes[stack]
             allocation_steady_state = self.optimal_allocation_per_stack[stack]
             hashes_per_sink_node = self.hashes_per_sink_node[stack]
-            order = self.get_cn_order(allocation=allocation_steady_state,
-                                      compute_per_sink_node=compute,
-                                      hashes_per_sink_node=hashes_per_sink_node,
-                                      memoization_hash_ss=hash_steady_state)
+            order = self.get_cn_order(
+                allocation=allocation_steady_state,
+                compute_per_sink_node=compute,
+                hashes_per_sink_node=hashes_per_sink_node,
+                memoization_hash_ss=hash_steady_state,
+            )
             # Adjust the order such that if there is a K split in the transformed workload,
             # those ids are also present
             for layer_id in stack:
@@ -269,8 +279,10 @@ class ConstraintOptimizationAllocationStage(Stage):
     def get_order_steady_state(self, to_compute, layer_order_steady_state):
         assert len(to_compute) == len(layer_order_steady_state)
         # Obtain for each layer the nodes that have to be scheduled
-        nodes_per_layer = {layer_id: sorted(
-            n for n in to_compute if n.id == layer_id) for layer_id in sorted(set(layer_order_steady_state))}
+        nodes_per_layer = {
+            layer_id: sorted(n for n in to_compute if n.id == layer_id)
+            for layer_id in sorted(set(layer_order_steady_state))
+        }
         order = []
         for layer_id in layer_order_steady_state:
             first_node = nodes_per_layer[layer_id].pop(0)
@@ -279,7 +291,6 @@ class ConstraintOptimizationAllocationStage(Stage):
 
     def get_order_non_steady_state(self, to_compute):
         return [(n.id, n.sub_id) for n in sorted(to_compute, key=lambda x: (-x.id, -x.sub_id))]
-    
 
     def schedule_allocation(self, allocation):
         # Get the involved layer ids we want to schedule and their core allocations
@@ -323,17 +334,21 @@ class ConstraintOptimizationAllocationStage(Stage):
         scme = scme[0]
         return scme
 
-    def set_fixed_allocations_for_workload(self, workload: ComputationNodeWorkload, layer_ids: list[int], core_ids: list[int]):
+    def set_fixed_allocations_for_workload(
+        self, workload: ComputationNodeWorkload, layer_ids: list[int], core_ids: list[int]
+    ):
         """! Modify the workload to fix the core allocations to the given core_ids for the given layer_ids."""
         assert len(layer_ids) == len(core_ids)
-        for (layer_id, cores) in zip(layer_ids, core_ids):
+        for layer_id, cores in zip(layer_ids, core_ids):
             n = next(n for n in workload.nodes() if n.id == layer_id)
             n.chosen_core_allocation = list(cores)
             n.possible_core_allocation = list(cores)
             n.core_allocation_is_fixed = True
         # Find any layers that might not have been in the steady state allocation and need to be allocated manually
         # The nodes of these layers will be allocated across all possible cores in the K dimension if possible
-        layer_ids_not_in_ss = [layer_id for stack in self.layer_stacks for layer_id in stack if layer_id not in layer_ids]
+        layer_ids_not_in_ss = [
+            layer_id for stack in self.layer_stacks for layer_id in stack if layer_id not in layer_ids
+        ]
         for layer_id_not_in_ss in layer_ids_not_in_ss:
             layer_ids_idx = np.searchsorted(layer_ids, layer_id_not_in_ss)
             for n in filter(lambda n: n.id == layer_id_not_in_ss, workload.nodes()):
@@ -341,11 +356,10 @@ class ConstraintOptimizationAllocationStage(Stage):
                 n.chosen_core_allocation = n.core_allocation
                 n.possible_core_allocation = n.core_allocation
                 n.core_allocation_is_fixed = True
-                assert 'K' in n.loop_dim_size
+                assert "K" in n.loop_dim_size
                 layer_ids.insert(layer_ids_idx, layer_id_not_in_ss)
                 core_ids.insert(layer_ids_idx, n.core_allocation)
                 logger.warning(f"{n} not in steady state allocation; allocated to: {n.core_allocation}.")
-
 
     def get_hint_loops(self, layer_ids, core_ids):
         hint_loops = {}
@@ -359,7 +373,7 @@ class ConstraintOptimizationAllocationStage(Stage):
                 elif layer_node.layer_dim_sizes.data.get(LayerDim("K"), 1) > 1:
                     loop_dim = "K"
                 else:
-                    raise ValueError(f"Unknown what loop dim to split across cores")
+                    raise ValueError("Unknown what loop dim to split across cores")
                 updated_hint_loops.append((loop_dim, nb_cores))
             hint_loops[(layer_id,)] = updated_hint_loops
         return hint_loops

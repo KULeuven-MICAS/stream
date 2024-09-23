@@ -10,12 +10,12 @@ from stream.stages.generation.hint_loops_generation import HintLoopsGenerationSt
 from stream.stages.generation.hint_loops_partitioned_workload_generation import (
     HintLoopsPartitionedWorkloadGenerationStage,
 )
-from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
 from stream.stages.parsing.accelerator_parser import (
     AcceleratorParserStage as AcceleratorParserStage_,
 )
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
+from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import (
     plot_timeline_brokenaxes,

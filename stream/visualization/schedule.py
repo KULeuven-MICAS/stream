@@ -1,7 +1,7 @@
 import argparse
-from collections import defaultdict
 import logging
 import pickle
+from collections import defaultdict
 from itertools import cycle
 from math import isnan
 from typing import TYPE_CHECKING
@@ -14,6 +14,7 @@ from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 from plotly.express.colors import sample_colorscale
 from zigzag.datatypes import LayerOperand
+
 from stream.workload.tensor import Tensor
 
 if TYPE_CHECKING:
