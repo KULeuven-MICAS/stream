@@ -33,7 +33,7 @@ requires-python = ">=3.11"
 
 
 [project.optional-dependencies]
-dev = ["bumpver", "pip-tools", "build", "twine"]
+dev = ["bumpver", "pip-tools", "build", "twine", "pre-commit"]
 
 [project.urls]
 Homepage = "https://github.com/ZigZag-Project/stream"

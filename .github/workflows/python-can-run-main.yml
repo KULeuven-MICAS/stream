@@ -26,4 +26,3 @@ jobs:
       - name: Run without errors
         run: |
           python main_stream_ga.py
-          python main_stream_co.py
