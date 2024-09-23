@@ -65,9 +65,13 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.steady_state_visualization_path = kwargs.get("steady_state_visualization_path", "outputs/")
         self.node_hw_performances_path_with_split = node_hw_performances_path_with_split
         if "visualize_node_hw_performances_path_with_split" in kwargs:
-            self.visualize_node_hw_performances_path_with_split = kwargs["visualize_node_hw_performances_path_with_split"]
+            self.visualize_node_hw_performances_path_with_split = kwargs[
+                "visualize_node_hw_performances_path_with_split"
+            ]
         else:
-            node_hw_performances_visualization_path = os.path.splitext(self.node_hw_performances_path_with_split)[0] + ".png"
+            node_hw_performances_visualization_path = (
+                os.path.splitext(self.node_hw_performances_path_with_split)[0] + ".png"
+            )
             self.visualize_node_hw_performances_path_with_split = node_hw_performances_visualization_path
         self.hint_loops = hint_loops
         self.co_time_limit = kwargs.get("co_time_limit", 600)

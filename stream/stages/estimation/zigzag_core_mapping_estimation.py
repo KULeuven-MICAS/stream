@@ -51,7 +51,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         self.workload = workload
         self.accelerator = accelerator
         self.loma_lpf_limit = loma_lpf_limit
-        self.node_hw_performances_path= node_hw_performances_path
+        self.node_hw_performances_path = node_hw_performances_path
         if "visualize_node_hw_performances_path" in kwargs:
             self.visualize_node_hw_performances_path = kwargs["visualize_node_hw_performances_path"]
         else:

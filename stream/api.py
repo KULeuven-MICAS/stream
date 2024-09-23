@@ -1,9 +1,11 @@
+import logging as _logging
 import os
+
 from zigzag.stages.main import MainStage
 from zigzag.utils import pickle_load, pickle_save
 
-from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
+from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
 from stream.stages.generation.hint_loops_generation import HintLoopsGenerationStage
 from stream.stages.generation.hint_loops_partitioned_workload_generation import (
@@ -15,18 +17,19 @@ from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 
-import logging as _logging
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
 _logging.basicConfig(level=_logging_level, format=_logging_format)
+
 
 def _sanity_check_inputs(hardware: str, workload: str, mapping: str, mode: str, output_path: str):
     assert os.path.exists(hardware), f"Hardware file {hardware} does not exist"
     assert os.path.exists(workload), f"Workload file {workload} does not exist"
     assert os.path.exists(mapping), f"Mapping file {mapping} does not exist"
-    assert mode in ["lbl", "fused"], f"Mode must be either 'lbl' or 'fused'"
+    assert mode in ["lbl", "fused"], "Mode must be either 'lbl' or 'fused'"
     if not os.path.exists(output_path):
         os.makedirs(output_path)
+
 
 def optimize_allocation_ga(
     hardware: str,
@@ -81,6 +84,7 @@ def optimize_allocation_ga(
         pickle_save(scme, scme_path)
     return scme
 
+
 def optimize_allocation_co(
     hardware: str,
     workload: str,
@@ -132,6 +136,7 @@ def optimize_allocation_co(
         scme = answers[0][0]
         pickle_save(scme, scme_path)
     return scme
+
 
 if __name__ == "__main__":
     from stream.visualization.memory_usage import plot_memory_usage

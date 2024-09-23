@@ -13,7 +13,6 @@ from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.core import Core
 
 if TYPE_CHECKING:
-    from stream.cost_model.cost_model import StreamCostModelEvaluation
     from stream.hardware.architecture.accelerator import Accelerator
     from stream.workload.computation_node import ComputationNode
     from stream.workload.onnx_workload import ComputationNodeWorkload
@@ -37,7 +36,6 @@ def get_too_large_operands(cme: CostModelEvaluation, accelerator: "Accelerator",
         if len(lvl) > core_nb_memory_levels[memory_operand] + 1:  # +1 because of spatial level
             too_large_operands.append(memory_operand)
     return too_large_operands
-
 
 
 # TODO: Update this function to work with new mapping definition
