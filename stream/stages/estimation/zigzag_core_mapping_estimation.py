@@ -1,4 +1,5 @@
 import logging
+import os
 from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
@@ -38,6 +39,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
         loma_lpf_limit: int,
+        node_hw_performances_path: str,
         **kwargs: Any,
     ):
         """
@@ -49,8 +51,12 @@ class ZigZagCoreMappingEstimationStage(Stage):
         self.workload = workload
         self.accelerator = accelerator
         self.loma_lpf_limit = loma_lpf_limit
+        self.node_hw_performances_path= node_hw_performances_path
+        if "visualize_node_hw_performances_path" in kwargs:
+            self.visualize_node_hw_performances_path = kwargs["visualize_node_hw_performances_path"]
+        else:
+            self.visualize_node_hw_performances_path = os.path.splitext(self.node_hw_performances_path)[0] + ".png"
         self.loma_show_progress_bar: bool = kwargs.get("loma_show_progress_bar", False)
-        self.node_hw_performances_path: str | None = kwargs.get("node_hw_performances_path", None)
 
         # Extract all unique nodes that will have to be evaluated
         self.unique_nodes = get_unique_nodes(self.workload)

@@ -37,9 +37,6 @@ class GeneticAlgorithmAllocationStage(Stage):
         node_hw_performances: CostModelEvaluationLUT,
         nb_ga_generations: int,
         nb_ga_individuals: int,
-        plot_file_name: bool,
-        plot_full_schedule: bool = False,
-        plot_data_transfer: bool = False,
         operands_to_prefetch: list[LayerOperand],
         scheduling_order: list[tuple[int, int]],
         **kwargs: Any,
@@ -60,9 +57,6 @@ class GeneticAlgorithmAllocationStage(Stage):
         self.node_hw_performances = node_hw_performances
         self.nb_generations = nb_ga_generations
         self.nb_individuals = nb_ga_individuals
-        self.fig_path = plot_file_name
-        self.plot_full_schedule = plot_full_schedule
-        self.plot_data_transfer = plot_data_transfer
         self.operands_to_prefetch = operands_to_prefetch
         self.scheduling_order = scheduling_order
 
@@ -121,14 +115,13 @@ class GeneticAlgorithmAllocationStage(Stage):
         - if no: initialize and run the genetic algorithm
         """
 
-        logger.info("Start InterCoreMappingStage.")
+        logger.info("Start GeneticAlgorithmAllocationStage.")
         if self.individual_length == 0:
             logger.info("Evaluating fixed layer-core allocation.")
             core_allocations = []
             (energy, latency, scme) = self.fitness_evaluator.get_fitness(core_allocations, return_scme=True)
             yield scme, None
         else:
-            logger.info("Running Inter-Core Allocation Optimization with Genetic Algorithm.")
             # Initialize the genetic algorithm
             self.genetic_algorithm = GeneticAlgorithm(
                 self.fitness_evaluator,
@@ -145,7 +138,7 @@ class GeneticAlgorithmAllocationStage(Stage):
             results = self.fitness_evaluator.get_fitness(best_core_allocations, return_scme=True)
             scme = results[-1]
             yield scme, None
-        logger.info("Finished InterCoreMappingStage.")
+        logger.info("Finished GeneticAlgorithmAllocationStage.")
 
     def is_leaf(self) -> bool:
         return True

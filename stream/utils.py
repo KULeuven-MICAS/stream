@@ -39,28 +39,8 @@ def get_too_large_operands(cme: CostModelEvaluation, accelerator: "Accelerator",
     return too_large_operands
 
 
-def save_scme(scme: "StreamCostModelEvaluation", path: str):
-    """Saves anSCME to a pickle file.
 
-    Args:
-        scme (StreamCostModelEvaluation): The stream cost model evaluation.
-        path (str): The filepath to save the pickle to.
-    """
-    with open(path, "wb") as fp:
-        pickle.dump(scme, fp)
-
-
-def load_scme(path: str):
-    """Loads an SCME from a pickle file path.
-
-    Args:
-        path (str): The pickle filepath
-    """
-    with open(path, "rb") as fp:
-        scme = pickle.load(fp)
-    return scme
-
-
+# TODO: Update this function to work with new mapping definition
 def save_core_allocation(
     workload: "ComputationNodeWorkload", path: str, type: str = "fixed", format: str = "py"
 ) -> dict:

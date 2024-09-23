@@ -4,6 +4,7 @@ import re
 
 from zigzag.stages.main import MainStage
 
+from stream.api import optimize_allocation_co
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
 from stream.stages.generation.hint_loops_generation import HintLoopsGenerationStage
@@ -40,8 +41,6 @@ wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
     wl_name = re.split(r"/|\.", workload_path)[-2]
 experiment_id = f"{hw_name}-{wl_name}-{mode}-constraint_optimization"
-node_hw_cost_pkl_name = f"{experiment_id}-saved_cn_hw_cost"
-scme_pkl_name = f"{experiment_id}-scme"
 ######################################################################
 
 ############PLOTTING#############
@@ -55,64 +54,26 @@ percent_shown = (100,)
 
 
 ################################PATHS################################
-node_hw_performances_path = f"outputs/{node_hw_cost_pkl_name}.pickle"
-scme_path = f"outputs/{scme_pkl_name}.pickle"
 timeline_fig_path_plotly = f"outputs/{experiment_id}-schedule.html"
-timeline_fig_path_matplotlib = f"outputs/{experiment_id}-schedule.png"
 memory_fig_path = f"outputs/{experiment_id}-memory.png"
-# After constraint optimization paths
-node_hw_performances_path_with_split = f"outputs/{node_hw_cost_pkl_name}-with_split.pickle"
-visualize_node_hw_performances_path_with_split = f"outputs/{node_hw_cost_pkl_name}-with_split.png"
 #####################################################################
 
-
-mainstage = MainStage(
-    [  # Initializes the MainStage as entry point
-        AcceleratorParserStage_,  # Parses the accelerator
-        StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-        LayerStacksGenerationStage,
-        HintLoopsGenerationStage,
-        HintLoopsPartitionedWorkloadGenerationStage,
-        ZigZagCoreMappingEstimationStage,
-        SetFixedAllocationPerformanceStage,
-        ConstraintOptimizationAllocationStage,
-    ],
-    accelerator=accelerator,  # required by AcceleratorParserStage
-    workload_path=workload_path,  # required by ModelParserStage
-    mapping_path=mapping_path,  # required by ModelParserStage
-    loma_lpf_limit=6,  # required by LomaEngine
-    node_hw_performances_path=node_hw_performances_path,  # saved node_hw_performances to skip re-computation
-    operands_to_prefetch=[],
-    node_hw_performances_path_with_split=node_hw_performances_path_with_split,
-    visualize_node_hw_performances_path_with_split=visualize_node_hw_performances_path_with_split,
+scme = optimize_allocation_co(
+    hardware=accelerator,
+    workload=workload_path,
+    mapping=mapping_path,
     mode=mode,
     layer_stacks=layer_stacks,
+    experiment_id=experiment_id,
+    output_path="outputs",
 )
 
-# Launch the MainStage
-
-scme, _ = mainstage.run()
-scme = scme[0]
-
-# Save the scme to a pickle file
-with open(scme_path, "wb") as fp:
-    pickle.dump(scme, fp)
-
-# Plotting results using Plotly
+# Plotting schedule timeline of best SCME
 visualize_timeline_plotly(
     scme,
     draw_dependencies=draw_dependencies,
     draw_communication=plot_data_transfer,
     fig_path=timeline_fig_path_plotly,
 )
-
-# Ploting results using Matplotlib
-plot_timeline_brokenaxes(
-    scme,
-    draw_dependencies,
-    section_start_percent,
-    percent_shown,
-    plot_data_transfer,
-    fig_path=timeline_fig_path_matplotlib,
-)
+# Plotting memory usage of best SCME
 plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)

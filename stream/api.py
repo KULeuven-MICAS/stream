@@ -1,8 +1,9 @@
 import os
 from zigzag.stages.main import MainStage
-from zigzag.utils import pickle_load
+from zigzag.utils import pickle_load, pickle_save
 
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
+from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
 from stream.stages.generation.hint_loops_generation import HintLoopsGenerationStage
 from stream.stages.generation.hint_loops_partitioned_workload_generation import (
@@ -15,21 +16,41 @@ from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as Stre
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 
 import logging as _logging
+_logging_level = _logging.INFO
+_logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
+_logging.basicConfig(level=_logging_level, format=_logging_format)
 
-def optimize_allocation_ga(hardware, workload, mapping, mode, experiment_id, output_path):
+def _sanity_check_inputs(hardware: str, workload: str, mapping: str, mode: str, output_path: str):
+    assert os.path.exists(hardware), f"Hardware file {hardware} does not exist"
+    assert os.path.exists(workload), f"Workload file {workload} does not exist"
+    assert os.path.exists(mapping), f"Mapping file {mapping} does not exist"
+    assert mode in ["lbl", "fused"], f"Mode must be either 'lbl' or 'fused'"
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
 
-    _logging_level = _logging.INFO
-    # _logging_format = '%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s'
-    _logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-    _logging.basicConfig(level=_logging_level, format=_logging_format)
+def optimize_allocation_ga(
+    hardware: str,
+    workload: str,
+    mapping: str,
+    mode: str,
+    layer_stacks: list[tuple[int, ...]],
+    nb_ga_generations: int,
+    nb_ga_individuals: int,
+    experiment_id: str,
+    output_path: str,
+    skip_if_exists: bool = False,
+):
+    _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
+
+    logger = _logging.getLogger(__name__)
 
     # Output paths
-    plot_file_name = f"-{experiment_id}-ga"
     node_hw_performances_path = f"{output_path}/{experiment_id}-saved_cn_hw_cost.pickle"
     scme_path = f"{output_path}/{experiment_id}-scme.pickle"
 
-    if os.path.exists(scme_path):
+    if os.path.exists(scme_path) and skip_if_exists:
         scme = pickle_load(scme_path)
+        logger.info(f"Loaded SCME from {scme_path}")
     else:
         mainstage = MainStage(
             [  # Initializes the MainStage as entry point
@@ -47,17 +68,70 @@ def optimize_allocation_ga(hardware, workload, mapping, mode, experiment_id, out
             workload_path=workload,  # required by ModelParserStage
             mapping_path=mapping,  # required by ModelParserStage
             loma_lpf_limit=6,  # required by LomaEngine
-            nb_ga_individuals=16,  # number of individuals in each genetic algorithm generation
-            nb_ga_generations=16,  # number of genetic algorithm generations
-            node_hw_performances_path=node_hw_performances_path,
-            plot_file_name=plot_file_name,
+            nb_ga_generations=nb_ga_generations,  # number of genetic algorithm generations
+            nb_ga_individuals=nb_ga_individuals,  # number of individuals in each genetic algorithm generation
             mode=mode,
+            layer_stacks=layer_stacks,
+            node_hw_performances_path=node_hw_performances_path,
+            operands_to_prefetch=[],  # required by GeneticAlgorithmAllocationStage
         )
         # Launch the MainStage
         answers = mainstage.run()
-        scme = answers[0]
+        scme = answers[0][0]
+        pickle_save(scme, scme_path)
     return scme
 
+def optimize_allocation_co(
+    hardware: str,
+    workload: str,
+    mapping: str,
+    mode: str,
+    layer_stacks: list[tuple[int, ...]],
+    experiment_id: str,
+    output_path: str,
+    skip_if_exists: bool = False,
+):
+    _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
+
+    # Output paths
+    node_hw_performances_path = f"{output_path}/{experiment_id}-saved_cn_hw_cost.pickle"
+    scme_path = f"{output_path}/{experiment_id}-scme.pickle"
+    # After constraint optimization paths
+    node_hw_performances_path_with_split = f"outputs/{experiment_id}-saved_cn_hw_cost-with_split.pickle"
+
+    logger = _logging.getLogger(__name__)
+
+    if os.path.exists(scme_path) and skip_if_exists:
+        scme = pickle_load(scme_path)
+        logger.info(f"Loaded SCME from {scme_path}")
+    else:
+        mainstage = MainStage(
+            [  # Initializes the MainStage as entry point
+                AcceleratorParserStage,  # Parses the accelerator
+                StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+                LayerStacksGenerationStage,
+                HintLoopsGenerationStage,
+                HintLoopsPartitionedWorkloadGenerationStage,
+                ZigZagCoreMappingEstimationStage,
+                SetFixedAllocationPerformanceStage,
+                SchedulingOrderGenerationStage,
+                ConstraintOptimizationAllocationStage,
+            ],
+            accelerator=hardware,  # required by AcceleratorParserStage
+            workload_path=workload,  # required by ModelParserStage
+            mapping_path=mapping,  # required by ModelParserStage
+            loma_lpf_limit=6,  # required by LomaEngine
+            mode=mode,
+            layer_stacks=layer_stacks,
+            node_hw_performances_path=node_hw_performances_path,
+            node_hw_performances_path_with_split=node_hw_performances_path_with_split,
+            operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
+        )
+        # Launch the MainStage
+        answers = mainstage.run()
+        scme = answers[0][0]
+        pickle_save(scme, scme_path)
+    return scme
 
 if __name__ == "__main__":
     from stream.visualization.memory_usage import plot_memory_usage
@@ -72,12 +146,14 @@ if __name__ == "__main__":
     mode = "fused"
     experiment_id = f"{hw_name}-{wl_name}"
     output_path = "outputs"
+    layer_stacks = [tuple(range(0, 11)), tuple(range(11, 22))] + list((i,) for i in range(22, 49))
 
     scme, _ = optimize_allocation_ga(
         accelerator,
         workload,
         mapping,
         mode,
+        layer_stacks,
         experiment_id,
         output_path,
     )
