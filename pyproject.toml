@@ -28,6 +28,7 @@ dependencies = [
     'brokenaxes',
     'plotly',
     'pandas',
+    'gurobipy',
 ]
 requires-python = ">=3.11"
 
