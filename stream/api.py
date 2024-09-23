@@ -1,6 +1,7 @@
 import logging as _logging
 import os
 
+import gurobipy as gp
 from zigzag.stages.main import MainStage
 from zigzag.utils import pickle_load, pickle_save
 
@@ -29,6 +30,23 @@ def _sanity_check_inputs(hardware: str, workload: str, mapping: str, mode: str, 
     assert mode in ["lbl", "fused"], "Mode must be either 'lbl' or 'fused'"
     if not os.path.exists(output_path):
         os.makedirs(output_path)
+
+
+def _sanity_check_gurobi_license():
+    try:
+        # Try to create a simple optimization model
+        model = gp.Model()
+        # Check if the model was successfully created (license check)
+        model.optimize()
+        # If model.optimize() runs without a license issue, return
+        return
+    except gp.GurobiError as e:
+        # Catch any Gurobi errors, especially licensing errors
+        if e.errno == gp.GRB.Error.NO_LICENSE:
+            error_message = "No valid Gurobi license found. Get an academic WLS license at https://www.gurobi.com/academia/academic-program-and-licenses/"
+        else:
+            error_message = f"An unexpected Gurobi error occurred: {e.message}"
+        raise ValueError(error_message)
 
 
 def optimize_allocation_ga(
@@ -96,6 +114,7 @@ def optimize_allocation_co(
     skip_if_exists: bool = False,
 ):
     _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
+    _sanity_check_gurobi_license()
 
     # Output paths
     node_hw_performances_path = f"{output_path}/{experiment_id}-saved_cn_hw_cost.pickle"
