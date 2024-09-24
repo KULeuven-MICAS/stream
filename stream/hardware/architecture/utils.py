@@ -1,9 +1,9 @@
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any
 
 from zigzag.hardware.architecture.core import Core
 
-from stream.hardware.architecture.accelerator import Accelerator
-from stream.hardware.architecture.noc.communication_link import CommunicationLink
+if TYPE_CHECKING:
+    from stream.hardware.architecture.accelerator import Accelerator
 
 
 def intersections(a: list[Any], b: list[Any]):
@@ -43,7 +43,7 @@ def intersections(a: list[Any], b: list[Any]):
     return ranges
 
 
-def get_core_capacities(accelerator: Accelerator, mem_op: str, core_ids: list[int]):
+def get_core_capacities(accelerator: "Accelerator", mem_op: str, core_ids: list[int]):
     core_capacities = {}
     for core_id in core_ids:
         core_name = f"Core {core_id}"
@@ -65,35 +65,3 @@ def have_shared_memory(a: Core, b: Core):
         if memory_instance_a in top_level_memory_instances_b:
             return True
     return False
-
-
-def get_bidirectional_edges(
-    core_a: Core,
-    core_b: Core,
-    bandwidth: float,
-    unit_energy_cost: float,
-    link_type: Literal["bus"] | Literal["link"],
-) -> list[tuple[Core, Core, dict[str, CommunicationLink]]]:
-    """Create a list with two edges: from A to B and B to A."""
-    bus = CommunicationLink("Any", "Any", bandwidth, unit_energy_cost)
-    link_a_to_b = CommunicationLink(core_a, core_b, bandwidth, unit_energy_cost)
-    link_b_to_a = CommunicationLink(core_b, core_a, bandwidth, unit_energy_cost)
-
-    if have_shared_memory(core_a, core_b):
-        # No edge if the cores have a shared memory
-        return []
-
-    return [
-        #  A -> B
-        (
-            core_a,
-            core_b,
-            {"cl": bus if link_type == "bus" else link_a_to_b},
-        ),
-        # B -> A
-        (
-            core_b,
-            core_a,
-            {"cl": bus if link_type == "bus" else link_b_to_a},
-        ),
-    ]

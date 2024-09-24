@@ -1,0 +1,38 @@
+name: eyeriss_like_quad_core
+cores:
+  compute:
+  # Ofwel 1 core die herhaald wordt, ofwel ncol*nrow cores
+  - eyeriss_like.yaml
+  pooling:
+  - pooling.yaml
+  simd:
+  - simd.yaml
+  offchip:
+  - offchip.yaml
+
+graph:
+  type: 2d_mesh
+  nb_rows: 2
+  nb_cols: 2
+  bandwidth: 32
+  unit_energy_cost: 0
+
+
+
+name: eyeriss_like_quad_core
+cores:
+  compute:
+  # Ofwel 1 core die herhaald wordt, ofwel ncol*nrow cores
+  - eyeriss_like.yaml
+  paired:
+  - simd.yaml
+  offchip:
+  - offchip.yaml
+
+graph:
+  type: 2d_mesh_of_pairs
+  nb_rows: 2
+  nb_cols: 2
+  bandwidth: 32
+  unit_energy_cost: 0
+

@@ -3,11 +3,44 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 
 from stream.cost_model.communication_manager import CommunicationLinkEvent
+from stream.hardware.architecture.utils import have_shared_memory
 
 if TYPE_CHECKING:
     from zigzag.hardware.architecture.core import Core
 
     from stream.workload.tensor import Tensor
+
+
+def get_bidirectional_edges(
+    core_a: "Core",
+    core_b: "Core",
+    bandwidth: float,
+    unit_energy_cost: float,
+    link_type: Literal["bus"] | Literal["link"],
+) -> list[tuple["Core", "Core", dict[str, "CommunicationLink"]]]:
+    """Create a list with two edges: from A to B and B to A."""
+    bus = CommunicationLink("Any", "Any", bandwidth, unit_energy_cost)
+    link_a_to_b = CommunicationLink(core_a, core_b, bandwidth, unit_energy_cost)
+    link_b_to_a = CommunicationLink(core_b, core_a, bandwidth, unit_energy_cost)
+
+    if have_shared_memory(core_a, core_b):
+        # No edge if the cores have a shared memory
+        return []
+
+    return [
+        #  A -> B
+        (
+            core_a,
+            core_b,
+            {"cl": bus if link_type == "bus" else link_a_to_b},
+        ),
+        # B -> A
+        (
+            core_b,
+            core_a,
+            {"cl": bus if link_type == "bus" else link_b_to_a},
+        ),
+    ]
 
 
 class CommunicationLink:

@@ -2,8 +2,7 @@ from zigzag.datatypes import Constants
 from zigzag.hardware.architecture.core import Core
 
 from stream.hardware.architecture.accelerator import CoreGraph
-from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.hardware.architecture.utils import get_bidirectional_edges
+from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
 
 
 def get_bus(
