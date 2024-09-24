@@ -64,7 +64,9 @@ class ZigZagCoreMappingEstimationStage(Stage):
         # Initialize the valid node-core allocations.
         self.valid_allocations: dict[ComputationNode, list[int]] = {}
         for node in self.unique_nodes:
-            assert isinstance(node, ComputationNode), f"IntraCoreMapingStage received node {node} of type {type(node)}."
+            assert isinstance(
+                node, ComputationNode
+            ), f"ZigZagCoreMappingEstimationStage received node {node} of type {type(node)}."
             assert isinstance(node.possible_core_allocation, list), f"Core allocation is not a list for node {node}."
             self.valid_allocations[node] = node.possible_core_allocation
 
@@ -72,7 +74,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         self.node_hw_performances = CostModelEvaluationLUT(self.node_hw_performances_path)
 
     def run(self):
-        logger.info("Start IntraCoreMappingStage.")
+        logger.info("Start ZigZagCoreMappingEstimationStage.")
         for node in self.unique_nodes:
             # TODO This should never evaluate to true: enforce core_allocation as list everywhere
             if isinstance(self.valid_allocations[node], tuple):
@@ -118,7 +120,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
                         core_id=core_id,
                     )
                     answers = main_stage.run()
-                    assert len(answers) == 1, "IntraCoreMappingStage's subflow returned more than one CME"
+                    assert len(answers) == 1, "ZigZagCoreMappingEstimationStage's subflow returned more than one CME"
                     cme: CostModelEvaluation = answers[0][0]  # type: ignore
                     node_duplicate.set_chosen_core_allocation(None)  # Reset the node's chosen core allocation
                     self.node_hw_performances.add_cme(node, core, cme, allow_overwrite=False)
@@ -130,7 +132,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         kwargs["accelerator"] = self.accelerator
         kwargs["node_hw_performances"] = self.node_hw_performances
 
-        logger.info("Finished IntraCoreMappingStage.")
+        logger.info("Finished ZigZagCoreMappingEstimationStage.")
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
