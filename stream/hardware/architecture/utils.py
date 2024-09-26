@@ -1,7 +1,5 @@
 from typing import TYPE_CHECKING, Any
 
-from zigzag.hardware.architecture.core import Core
-
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
 
@@ -44,25 +42,10 @@ def intersections(a: list[Any], b: list[Any]):
 
 
 def get_core_capacities(accelerator: "Accelerator", mem_op: str, core_ids: list[int]):
-    core_capacities = {}
+    core_capacities: dict[str, int] = {}
     for core_id in core_ids:
         core_name = f"Core {core_id}"
         core = accelerator.get_core(core_id)
         top_instance = accelerator.get_top_instance_of_core(core, mem_op)
         core_capacities[core_name] = top_instance.size
     return core_capacities
-
-
-def have_shared_memory(a: Core, b: Core):
-    """Returns True if core a and core b have a shared top level memory
-    # TODO this code is no longer valid. Core memory sharing is now an explicit user-given property"""
-    top_level_memory_instances_a = set(
-        [level.memory_instance for level, out_degree in a.memory_hierarchy.out_degree() if out_degree == 0]
-    )
-    top_level_memory_instances_b = set(
-        [level.memory_instance for level, out_degree in b.memory_hierarchy.out_degree() if out_degree == 0]
-    )
-    for memory_instance_a in top_level_memory_instances_a:
-        if memory_instance_a in top_level_memory_instances_b:
-            return True
-    return False

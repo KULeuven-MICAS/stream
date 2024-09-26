@@ -1,4 +1,5 @@
 from math import ceil
+from typing import Any
 
 from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.core import Core
@@ -45,7 +46,7 @@ class Accelerator:
     def __repr__(self) -> str:
         return str(self)
 
-    def __jsonrepr__(self):
+    def __jsonrepr__(self) -> dict[str, Any]:
         """
         JSON representation used for saving this object to a json file.
         """
@@ -453,7 +454,7 @@ class Accelerator:
         top_instances = self.memory_manager.top_instances[core]
         return top_instances
 
-    def get_top_instance_of_core(self, core: Core | int, mem_op: MemoryOperand):
+    def get_top_instance_of_core(self, core: Core | int, mem_op: MemoryOperand) -> MemoryInstance:
         if isinstance(core, int):
             core = self.get_core(core)
         top_instances = self.memory_manager.top_instances[core]
@@ -473,27 +474,3 @@ class Accelerator:
                 return core.dataflows
 
         return SpatialMapping.empty()
-
-    # def get_cores_with_shared_mem(self, core: Core)->list[Core]:
-    #     """Return all cores that share the top level memory with the given core"""
-    #     core_id_pair = next(pair for pair in self.core_ids_with_shared_mem if core.id in pair, None)
-    #     if core_id_pair is not None:
-    #         return [self.get_core(core_id) for core_id in core_id_pair if core_id is not core.id]
-    #     return []
-
-    # def get_cores_with_unique_mem(self):
-    #     """The accelerator's `core_ids_with_shared_mem` indicates which cores have a shared memory. This method returns
-    #     a collection of cores such that taking the top memory instances of all returned cores gives all unique top
-    #     level memory instances.
-    #     i.e. the collection of cores such that no single core contains a shared memory with any other core
-    #     """
-    #     pair_list = self.core_ids_with_shared_mem
-    #     core_ids_with_unique_mem = {core.id for core in self.core_list}
-    #     for pair in pair_list:
-    #         reference = pair[0]
-    #         others = pair[1:]
-    #         if reference in core_ids_with_unique_mem:
-    #             for other in others:
-    #                 core_ids_with_unique_mem.remove(other)
-
-    #     return [self.get_core(core_id) for core_id in core_ids_with_unique_mem]

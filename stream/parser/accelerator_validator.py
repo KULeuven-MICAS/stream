@@ -63,9 +63,6 @@ class AcceleratorValidator:
 
         self.validate_core_connectivity()
         self.validate_core_mem_sharing()
-        # 2d mesh specific checks
-        # self.check_2d_mesh_schema()
-        # self.check_2d_mesh_layout()
 
         return self.is_valid
 
@@ -75,47 +72,6 @@ class AcceleratorValidator:
             self.invalidate("Invalid core id in `cores`: id is not a positive integer.")
         if len(core_ids) != max(core_ids) + 1:
             self.invalidate("Invalid core id in `cores`: not all core ids in range are in use.")
-
-    # def check_special_core_ids(self) -> None:
-    #     """Check wether the special cores (pooling, simd, offchip) have a valid id"""
-
-    #     pooling_core = self.data["graph"]["pooling_core_id"]
-    #     if pooling_core is not None and pooling_core >= len(self.data["cores"]):
-    #         self.invalidate(
-    #             f"Specified pooling core id {self.data['graph']['pooling_core_id']} exceeds length of list of cores."
-    #         )
-    #     simd_core = self.data["graph"]["simd_core_id"]
-    #     if simd_core is not None and simd_core >= len(self.data["cores"]):
-    #         self.invalidate(
-    #             f"Specified simd core id {self.data['graph']['simd_core_id']} exceeds length of list of cores."
-    #         )
-    #     offchip_core = self.data["graph"]["offchip_core_id"]
-    #     if offchip_core is not None and offchip_core >= len(self.data["cores"]):
-    #         self.invalidate(
-    #             f"Specified offchip core id {self.data['graph']['offchip_core_id']} exceeds length of list of cores."
-    #         )
-
-    # def check_2d_mesh_schema(self):
-    #     if self.data["graph"]["type"] == "2d_mesh":
-    #         if "nb_rows" not in self.data["graph"] or "nb_cols" not in self.data["graph"]:
-    #             self.invalidate("graph of type 2d_mesh must contain 'nb_rows' and 'nb_cols'.")
-
-    # def check_2d_mesh_layout(self):
-    #     """Check wether the 2d mesh layout works with the given number of cores"""
-    #     if self.data["graph"]["type"] != "2d_mesh":
-    #         return
-    #     nb_special_cores = (
-    #         (1 if self.data["graph"]["pooling_core_id"] is not None else 0)
-    #         + (1 if self.data["graph"]["simd_core_id"] is not None else 0)
-    #         + (1 if self.data["graph"]["offchip_core_id"] is not None else 0)
-    #     )
-    #     nb_regular_cores = len(self.data["cores"]) - nb_special_cores
-    #     mesh_size = self.data["graph"]["nb_rows"] * self.data["graph"]["nb_cols"]
-    #     if nb_regular_cores != mesh_size:
-    #         self.invalidate(
-    #             f"Number of cores (excl. pooling, simd, offchip) ({nb_regular_cores}) does not equal mesh size "
-    #             f"({mesh_size})"
-    #         )
 
     def validate_all_cores(self) -> None:
         """For all given core file paths:
