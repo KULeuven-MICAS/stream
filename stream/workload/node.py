@@ -6,7 +6,7 @@ from zigzag.workload.layer_node_abc import LayerNodeABC
 
 class Node(LayerNodeABC, metaclass=ABCMeta):
     """Abstract base class that represents a piece of an algorithmic workload.
-    Example: ComputationNode, CommunicationNode, etc.
+    Example: ComputationNode, etc.
     """
 
     def __init__(
