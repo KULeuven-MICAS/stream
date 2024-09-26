@@ -4,13 +4,23 @@ import numpy as np
 from onnx import ModelProto, helper, numpy_helper
 from zigzag.stages.stage import Stage
 
+from stream.hardware.architecture.accelerator import Accelerator
 from stream.workload.computation.computation_node import ComputationNode
+from stream.workload.dnn_workload import DNNWorkloadStream
 
 logger = logging.getLogger(__name__)
 
 
 class HintLoopsGenerationStage(Stage):
-    def __init__(self, list_of_callables, *, accelerator, workload, layer_stacks, **kwargs):
+    def __init__(
+        self,
+        list_of_callables,
+        *,
+        accelerator: Accelerator,
+        workload: DNNWorkloadStream,
+        layer_stacks: list[tuple[int, ...]],
+        **kwargs,
+    ):
         super().__init__(list_of_callables, **kwargs)
         self.accelerator = accelerator
         self.workload = workload
@@ -58,17 +68,21 @@ class HintLoopsGenerationStage(Stage):
         """
         hint_loops = {}
         for stack in self.layer_stacks:
-            nb_computation_nodes = self.get_nb_computation_nodes(stack)
-            if nb_computation_nodes > 1:
-                hint_loops[stack] = [("OY", "all")]
+            computation_nodes = self.get_computation_nodes(stack)
+            if len(computation_nodes) > 1:
+                for n in computation_nodes:
+                    # NOTE Take first entry of fusion_partition_dims for now
+                    hint_loops[(n.id,)] = [
+                        (n.fusion_partition_dims[0], "all"),
+                    ]
             else:
                 hint_loops[stack] = []
         return hint_loops
 
-    def get_nb_computation_nodes(self, stack):
+    def get_computation_nodes(self, stack: tuple[int, ...]) -> list[ComputationNode]:
         nodes = [n for n in self.workload.node_list if n.id in stack]
-        nb_computation_nodes = sum([isinstance(n, ComputationNode) for n in nodes])
-        return nb_computation_nodes
+        computation_nodes = [n for n in nodes if isinstance(n, ComputationNode)]
+        return computation_nodes
 
     @staticmethod
     def split_operator(model: ModelProto, node_name: str, num_splits: int):

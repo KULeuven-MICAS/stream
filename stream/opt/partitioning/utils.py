@@ -94,9 +94,7 @@ def convert_outer_cn_loops(outer_cn_loops: list[tuple[str, int | str]], layer: C
         layer (ComputationNode): The original layer.
     """
     outer_loops: list[TemporalLoop] = []
-    for layer_dim_str, loop_size in outer_cn_loops:
-        assert isinstance(layer_dim_str, str)
-        layer_dim = LayerDim(layer_dim_str)
+    for layer_dim, loop_size in outer_cn_loops:
         layer_dim = modify_layer_dim_for_op(layer_dim, layer)
         if layer_dim in layer.layer_dim_sizes.layer_dims:
             if isinstance(loop_size, str):

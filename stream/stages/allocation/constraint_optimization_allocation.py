@@ -246,7 +246,7 @@ class ConstraintOptimizationAllocationStage(Stage):
                     outer_loops = []
                 if outer_loops:
                     dim, size = outer_loops[-1]
-                    if (dim == "K" and size > 1) or (dim == "G" and size > 1):
+                    if (dim.name == "K" and size > 1) or (dim.name == "G" and size > 1):
                         inserted = 0
                         for i, id in enumerate(order.copy()):
                             l_id, n_id = id
@@ -376,9 +376,9 @@ class ConstraintOptimizationAllocationStage(Stage):
                 nb_cores = len(cores)
                 layer_node = next(n for n in self.original_workload.nodes() if n.id == layer_id)
                 if layer_node.layer_dim_sizes.data.get(LayerDim("G"), 1) > 1:
-                    loop_dim = "G"
+                    loop_dim = LayerDim("G")
                 elif layer_node.layer_dim_sizes.data.get(LayerDim("K"), 1) > 1:
-                    loop_dim = "K"
+                    loop_dim = LayerDim("K")
                 else:
                     raise ValueError("Unknown what loop dim to split across cores")
                 updated_hint_loops.append((loop_dim, nb_cores))
