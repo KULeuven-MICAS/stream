@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from zigzag.datatypes import Constants, LayerOperand, MemoryOperand
 from zigzag.hardware.architecture.core import Core
 
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 from stream.workload.tensor import Tensor
 

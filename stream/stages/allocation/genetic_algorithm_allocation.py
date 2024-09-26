@@ -12,7 +12,7 @@ from stream.opt.allocation.genetic_algorithm.genetic_algorithm import (
     GeneticAlgorithm,
 )
 from stream.utils import CostModelEvaluationLUT, get_unique_nodes
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)

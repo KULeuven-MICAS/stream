@@ -1,5 +1,5 @@
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
-from stream.workload.transpose_node import TransposeNode
+from stream.workload.dependency_propagation.transpose_node import TransposeNode
 
 
 class TransposeParser(OnnxOperatorParser):

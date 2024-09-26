@@ -1,6 +1,6 @@
 from zigzag.workload.layer_node import LayerNodeAttributes
 
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 
 
 class PoolingNode(ComputationNode):

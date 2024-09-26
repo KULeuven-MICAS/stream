@@ -14,7 +14,7 @@ from zigzag.hardware.architecture.core import Core
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
-    from stream.workload.computation_node import ComputationNode
+    from stream.workload.computation.computation_node import ComputationNode
     from stream.workload.onnx_workload import ComputationNodeWorkload
 
 ARRAY_T: TypeAlias = NDArray[Any]

@@ -17,19 +17,19 @@ from stream.opt.partitioning.utils import (
     convert_outer_cn_loops_with_k,
 )
 from stream.utils import NodeTensor
-from stream.workload.computation_node import ComputationNode, LoopRanges
-from stream.workload.concat_node import ConcatNode
+from stream.workload.computation.computation_node import ComputationNode, LoopRanges
+from stream.workload.dependency_propagation.concat_node import ConcatNode
+from stream.workload.dependency_propagation.dummy_node import DummyNode
+from stream.workload.dependency_propagation.elementwise_node import ElementwiseNode
+from stream.workload.dependency_propagation.flatten_node import FlattenNode
+from stream.workload.dependency_propagation.gather_node import GatherNode
+from stream.workload.dependency_propagation.lpnormalization_node import LpNormalizationNode
+from stream.workload.dependency_propagation.reshape_node import ReshapeNode
+from stream.workload.dependency_propagation.transpose_node import TransposeNode
 from stream.workload.dnn_workload import DNNWorkloadStream
-from stream.workload.dummy_node import DummyNode
-from stream.workload.elementwise_node import ElementwiseNode
-from stream.workload.flatten_node import FlattenNode
-from stream.workload.gather_node import GatherNode
-from stream.workload.lpnormalization_node import LpNormalizationNode
 from stream.workload.node import Node
 from stream.workload.onnx_workload import ComputationNodeWorkload, ONNXWorkload
-from stream.workload.reshape_node import ReshapeNode
 from stream.workload.tensor import Tensor
-from stream.workload.transpose_node import TransposeNode
 
 logger = logging.getLogger(__name__)
 

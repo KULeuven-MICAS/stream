@@ -25,6 +25,16 @@ class ComputationNode(LayerNode, Node):
     producer/consumer of another layer.
     """
 
+    # Map the node's op_type to the corresponding layer dimension to split on for fusion
+    FUSION_DIM_MAPPING: dict[str, list[LayerDim]] = {
+        "conv": [LayerDim("OY")],
+        "matmul": [LayerDim("D")],
+        "gemm": [LayerDim("D")],
+        "pooling": [LayerDim("OY")],
+        "add": [LayerDim("D")],
+        "mul": [LayerDim("D")],
+    }
+
     def __init__(
         self,
         node_id: int,
@@ -37,6 +47,7 @@ class ComputationNode(LayerNode, Node):
         # To distinguish alternative versions of this node
         sub_id: int = -1,
     ):
+        op_type = op_type.lower()
         LayerNode.__init__(self, layer_id=node_id, node_name=node_name, node_attr=node_attr)
         Node.__init__(
             self,
@@ -48,6 +59,10 @@ class ComputationNode(LayerNode, Node):
             runtime=0,
             possible_core_allocation=node_attr.core_allocation,
         )
+
+        self.fusion_partition_dims: list[LayerDim] = self.FUSION_DIM_MAPPING.get(op_type, None)
+        if self.fusion_partition_dims is None:
+            raise NotImplementedError(f"Fusion partitioning dimensions not defined for {op_type}")
 
         self.sub_id = sub_id
         self.group = group_id

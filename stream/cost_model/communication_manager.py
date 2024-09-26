@@ -6,7 +6,7 @@ from zigzag.datatypes import Constants, MemoryOperand
 from zigzag.hardware.architecture.core import Core
 
 from stream.hardware.architecture.utils import intersections
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.tensor import Tensor
 
 if TYPE_CHECKING:

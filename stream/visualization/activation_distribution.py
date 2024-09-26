@@ -3,7 +3,7 @@ import pandas as pd
 import plotly.express as px
 from networkx import DiGraph
 
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.utils import prune_workload
 
 

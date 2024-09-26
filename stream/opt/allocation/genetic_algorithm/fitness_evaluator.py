@@ -5,7 +5,7 @@ from zigzag.utils import pickle_deepcopy
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.utils import CostModelEvaluationLUT, get_too_large_operands
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
 

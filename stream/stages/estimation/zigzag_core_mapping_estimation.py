@@ -21,7 +21,7 @@ from stream.utils import CostModelEvaluationLUT, get_unique_nodes
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,
 )
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)

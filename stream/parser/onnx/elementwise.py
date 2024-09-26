@@ -1,5 +1,5 @@
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
-from stream.workload.elementwise_node import ElementwiseNode
+from stream.workload.dependency_propagation.elementwise_node import ElementwiseNode
 
 
 class ElementwiseParser(OnnxOperatorParser):

@@ -7,7 +7,7 @@ from zigzag.parser.onnx.utils import (
 from zigzag.parser.workload_factory import LayerNodeFactory
 
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
-from stream.workload.pooling_node import PoolingNode
+from stream.workload.computation.pooling_node import PoolingNode
 
 
 class PoolingParser(OnnxComputeOperatorParser):

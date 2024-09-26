@@ -7,7 +7,7 @@ from zigzag.parser.onnx.utils import get_node_input_output_dimension_shapes
 from zigzag.parser.workload_factory import LayerNodeFactory
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.node import Node
 
 

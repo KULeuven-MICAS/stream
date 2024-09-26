@@ -3,7 +3,7 @@ import logging
 from zigzag.datatypes import LayerDim
 
 from stream.opt.partitioning.TemporalLoop import TemporalLoop
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 

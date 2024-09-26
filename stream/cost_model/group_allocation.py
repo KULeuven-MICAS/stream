@@ -1,7 +1,7 @@
 import logging
 from typing import TypeAlias
 
-from stream.workload.computation_node import ComputationNode, LoopRanges
+from stream.workload.computation.computation_node import ComputationNode, LoopRanges
 
 logger = logging.getLogger(__name__)
 
