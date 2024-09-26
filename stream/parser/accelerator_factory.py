@@ -74,6 +74,7 @@ class AcceleratorFactory:
     def have_non_identical_top_memory(self, core_a: Core, core_b: Core):
         """Check wether the top level memories of two cores is exactly the same. This should be the case when the user
         has specified the cores share memory"""
+
         top_levels_a: list[MemoryLevel] = list(
             (level for level, out_degree in core_a.memory_hierarchy.out_degree() if out_degree == 0)
         )

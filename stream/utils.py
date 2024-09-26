@@ -188,8 +188,12 @@ class NodeTensor(np.ndarray[Any, Any]):
             return self
         except IndexError:
             # Happens when all allocated space has been used up. Create new one and double allocated space
-            new_tensor_np = np.concat((self, np.zeros(self.full_shape, dtype=object)), axis=-1)
+            new_pre_alloc_size = 2 * self.__pre_allocation_size
+            new_full_shape = self.full_shape[:-1] + (new_pre_alloc_size,)
+            new_tensor_np = np.zeros(new_full_shape, dtype=object)
+            new_tensor_np[..., : self.full_shape[-1]] = self
             new_tensor = NodeTensor(new_tensor_np, pre_allocation_size=2 * self.__pre_allocation_size)
+
             # Update the node pointer
             new_tensor.__node_count = self.__node_count
             new_tensor = new_tensor.extend_with_node(slices, node)

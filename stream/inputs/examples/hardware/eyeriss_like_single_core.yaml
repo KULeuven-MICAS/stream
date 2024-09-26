@@ -1,18 +1,13 @@
 name: eyeriss_like_single_core
 cores:
-  # index corresponds to core ID
-  - pooling.yaml
-  - simd.yaml
-  - offchip.yaml
-  - eyeriss_like.yaml
+  0: eyeriss_like.yaml
+  1: pooling.yaml
+  2: simd.yaml
+offchip_core: offchip.yaml
 
-graph:
-  type: 2d_mesh
-  nb_rows: 1
-  nb_cols: 1
-  bandwidth: 32
-  unit_energy_cost: 0
-  pooling_core_id: 0
-  simd_core_id: 1
-  offchip_core_id: 2
+core_connectivity:
+  - 0, 1
+  - 0, 2
 
+bandwidth: 32
+unit_energy_cost: 0

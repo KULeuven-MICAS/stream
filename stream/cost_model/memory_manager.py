@@ -38,7 +38,7 @@ class MemoryManager:
 
         self.unique_top_instances: set[MemoryInstance] = set()
         self.cores_per_top_instance: dict[MemoryInstance, list[Core]] = {}
-        self.memory_operands_per_core_per_top_instance: dict[MemoryInstance, list[tuple[MemoryOperand, ...]]] = {}
+        self.memory_operands_per_top_instance: dict[MemoryInstance, list[tuple[MemoryOperand, ...]]] = {}
 
         # Some top level memories instances might be shared, thus we keep info for each unique top memory instance
         self.top_instance_capacities: dict[MemoryInstance, int] = {}
@@ -54,7 +54,7 @@ class MemoryManager:
                 if top_instance not in self.unique_top_instances:
                     self.unique_top_instances.add(top_instance)
                     self.cores_per_top_instance[top_instance] = [core]
-                    self.memory_operands_per_core_per_top_instance[top_instance] = [tuple(top_level.operands)]
+                    self.memory_operands_per_top_instance[top_instance] = [tuple(top_level.operands)]
                     self.top_instance_capacities[top_instance] = top_instance.size
                     self.top_instance_available[top_instance] = top_instance.size
                     self.top_instance_stored_tensors[top_instance] = []
@@ -216,8 +216,8 @@ class MemoryManager:
         top_instance: MemoryInstance,
         tensor_to_add: Tensor,
         timestep: int,
-        exceptions,
-    ):
+        exceptions: list[Tensor],
+    ) -> list[Tensor]:
         # Get all tensors that were being stored at the given timestep
         stored_tensors = self.get_tensors_stored_at_timestep(top_instance, timestep)
 
@@ -236,7 +236,7 @@ class MemoryManager:
         if min_size_to_evict <= 0:  # no need to evict any tensor, the memory's space is enough
             return []
         evictable_tensors = [tensor for tensor in stored_tensors if tensor not in relevant_exceptions]
-        evictable_tensors_priority_size = []
+        evictable_tensors_priority_size: list[int] = []
         for tensor in evictable_tensors:
             instance_priority = tensor.get_instance_priority(top_instance, self)
             importance = instance_priority * tensor.size
@@ -317,7 +317,7 @@ class MemoryManager:
         return next(
             (
                 idx
-                for idx, operands_top_level in enumerate(self.memory_operands_per_core_per_core[core])
+                for idx, operands_top_level in enumerate(self.memory_operands_per_core[core])
                 if memory_operand in operands_top_level
             )
         )

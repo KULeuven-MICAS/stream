@@ -150,6 +150,8 @@ class AcceleratorValidator:
     def validate_core_mem_sharing(self):
         # Replace string of core ids with tuple of ints
         mem_sharing_data = self.data["core_memory_sharing"]
+        if len(mem_sharing_data) == 0:
+            return
         mem_sharing_groups = [tuple(int(i) for i in group.replace(" ", "").split(",")) for group in mem_sharing_data]
         self.data["core_memory_sharing"] = mem_sharing_groups
 
