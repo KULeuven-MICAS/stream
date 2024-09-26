@@ -1,38 +1,37 @@
 name: eyeriss_like_quad_core
 cores:
-  compute:
-  # Ofwel 1 core die herhaald wordt, ofwel ncol*nrow cores
-  - eyeriss_like.yaml
-  pooling:
-  - pooling.yaml
-  simd:
-  - simd.yaml
-  offchip:
-  - offchip.yaml
+  0: eyeriss_like.yaml
+  1: eyeriss_like.yaml
+  2: eyeriss_like.yaml
+  3: eyeriss_like.yaml
+  4: example_vec.yaml
+  5: example_vec.yaml
+  6: example_vec.yaml
+  7: example_vec.yaml
 
-graph:
-  type: 2d_mesh
-  nb_rows: 2
-  nb_cols: 2
-  bandwidth: 32
-  unit_energy_cost: 0
+# Bandwidth to/from offchip is the R/W bandwidth of the offchip's top level memory
+# Offchip core is connected to all other cores by default
+offchip_core: offchip.yaml
+
+core_connectivity:
+  # 2D mesh
+  - 0, 1
+  - 1, 2
+  - 2, 3
+  - 3, 0
 
 
+core_memory_sharing:
+  - 0, 4
+  - 1, 5
+  - 2, 6
+  - 3, 7
 
-name: eyeriss_like_quad_core
-cores:
-  compute:
-  # Ofwel 1 core die herhaald wordt, ofwel ncol*nrow cores
-  - eyeriss_like.yaml
-  paired:
-  - simd.yaml
-  offchip:
-  - offchip.yaml
+# graph:
+#   type: 2d_mesh
+#   nb_rows: 2
+#   nb_cols: 2
+bandwidth: 32
+unit_energy_cost: 0
 
-graph:
-  type: 2d_mesh_of_pairs
-  nb_rows: 2
-  nb_cols: 2
-  bandwidth: 32
-  unit_energy_cost: 0
 

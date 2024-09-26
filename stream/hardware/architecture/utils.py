@@ -54,7 +54,8 @@ def get_core_capacities(accelerator: "Accelerator", mem_op: str, core_ids: list[
 
 
 def have_shared_memory(a: Core, b: Core):
-    """Returns True if core a and core b have a shared top level memory"""
+    """Returns True if core a and core b have a shared top level memory
+    # TODO this code is no longer valid. Core memory sharing is now an explicit user-given property"""
     top_level_memory_instances_a = set(
         [level.memory_instance for level, out_degree in a.memory_hierarchy.out_degree() if out_degree == 0]
     )

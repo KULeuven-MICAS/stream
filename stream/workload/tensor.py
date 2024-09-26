@@ -53,7 +53,7 @@ class Tensor:
         return self.size
 
     def __hash__(self) -> int:
-        return hash((hash(self.origin), hash(self.layer_operand)))
+        return hash((self.origin, self.layer_operand))
 
     def __lt__(self, __o: object) -> bool:
         return isinstance(__o, Tensor) and self.size < __o.size

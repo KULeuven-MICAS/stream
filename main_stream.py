@@ -26,6 +26,9 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 ################################INPUTS################################
 accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
+# ! TODO restore old value
+accelerator = "stream/inputs/examples/hardware/example.yaml"
+
 workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
 CN_define_mode = 1  # manually define outer-CN loops

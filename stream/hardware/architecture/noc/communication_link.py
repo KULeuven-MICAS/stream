@@ -3,7 +3,6 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 
 from stream.cost_model.communication_manager import CommunicationLinkEvent
-from stream.hardware.architecture.utils import have_shared_memory
 
 if TYPE_CHECKING:
     from zigzag.hardware.architecture.core import Core
@@ -23,9 +22,9 @@ def get_bidirectional_edges(
     link_a_to_b = CommunicationLink(core_a, core_b, bandwidth, unit_energy_cost)
     link_b_to_a = CommunicationLink(core_b, core_a, bandwidth, unit_energy_cost)
 
-    if have_shared_memory(core_a, core_b):
-        # No edge if the cores have a shared memory
-        return []
+    # if have_shared_memory(core_a, core_b):
+    #     # No edge if the cores have a shared memory
+    #     return []
 
     return [
         #  A -> B
