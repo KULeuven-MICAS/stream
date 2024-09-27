@@ -1,7 +1,7 @@
 import numpy as np
 from zigzag.datatypes import LayerOperand
 
-from stream.utils import NodeTensor
+from stream.node_tensor import NodeTensor
 from stream.workload.node import Node
 
 

@@ -10,13 +10,13 @@ from zigzag.utils import pickle_deepcopy
 
 from stream.cost_model.group_allocation import GroupIdManager
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.node_tensor import NodeTensor
 from stream.opt.partitioning.TemporalLoop import TemporalLoop
 from stream.opt.partitioning.utils import (
     convert_inner_cn_loops,
     convert_outer_cn_loops,
     convert_outer_cn_loops_with_k,
 )
-from stream.utils import NodeTensor
 from stream.workload.computation_node import ComputationNode, LoopRanges
 from stream.workload.concat_node import ConcatNode
 from stream.workload.dnn_workload import DNNWorkloadStream
@@ -434,16 +434,6 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         # We take the first non-constant input operand."""
         dims = node.operand_dimensionality_order[operand]
 
-        # try:
-        #     input_operand = (
-        #         Constants.LAYER_OP_I if Constants.LAYER_OP_I not in node.constant_operands else Constants.LAYER_OP_W
-        #     )
-        #     dims = node.operand_dimensionality_order[Constants.LAYER_OP_I]
-        # except KeyError:
-        #     # This is dead code since input operands can only be I or W
-        #     input_operand = list(set(node.input_operands) - set(node.constant_operands))[0]
-        #     dims = node.operand_dimensionality_order[input_operand]
-
         if LayerDim("G") in dims and (LayerDim("C") in dims or LayerDim("K") in dims):
             # because later the generator will merge them into a single channel dim
             return len(dims) - 1
@@ -524,10 +514,10 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         A communication node is inserted between each producer and consumer node.
 
         Args:
-            producer (Node): the producer node
-            consumer (Node): the consumer node
-            finer_producers (list): list of finer producer nodes
-            finer_consumers (list): list of finer consumer nodes
+            producer: the producer node
+            consumer: the consumer node
+            finer_producers: list of finer producer nodes
+            finer_consumers: list of finer consumer nodes
         """
         # Check all the different input operands of the consumer node that stem from the producer node
         # The direct predecessor of an input operand might be a DummyNode so we need to propagate back

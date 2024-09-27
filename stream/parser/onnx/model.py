@@ -1,11 +1,12 @@
 import logging
 from typing import Any, Type
 
-from onnx import ModelProto, NodeProto
-from zigzag.parser.onnx.utils import get_onnx_tensor_type, parse_onnx_model_from_path
+from onnx import NodeProto
+from zigzag.parser.onnx.utils import parse_onnx_model_from_path
 from zigzag.stages.parser.workload_parser import WorkloadParserStage
 
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.parser.onnx.asymmetric_simd import AsymmetricSimdParser
 from stream.parser.onnx.concat import ConcatParser
 from stream.parser.onnx.conv import ConvParser
 from stream.parser.onnx.default import DefaultNodeParser
@@ -20,6 +21,7 @@ from stream.parser.onnx.reshape import ReshapeParser
 from stream.parser.onnx.simd import SimdParser
 from stream.parser.onnx.softmax import SoftmaxParser
 from stream.parser.onnx.transpose import TransposeParser
+from stream.utils import has_asymmetric_input_data
 from stream.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)
@@ -68,7 +70,7 @@ class ONNXModelParser:
         # A temporary fix an element-wise Add or Mul which has asymmetric input data -> treat it as a  DummyNode.
         # TODO support node with asymmetric input data.
         if node.op_type in ["Add", "Mul"] and has_asymmetric_input_data(node, self.onnx_model):
-            return DefaultNodeParser
+            return AsymmetricSimdParser
 
         parser_class = ONNXModelParser.PARSER_MAPPING.get(node.op_type)
         if not parser_class:
@@ -145,14 +147,3 @@ class ONNXModelParser:
 
     def get_workload(self):
         return self.workload
-
-
-def has_asymmetric_input_data(node: NodeProto, onnx_model: ModelProto):
-    """Return true iff the node has two inputs and the input nodes have a different shape"""
-    if len(node.input) != 2:
-        return False
-    input_name1 = node.input[0]
-    input_name2 = node.input[1]
-    input_shape1 = get_onnx_tensor_type(input_name1, onnx_model).shape
-    input_shape2 = get_onnx_tensor_type(input_name2, onnx_model).shape
-    return input_shape1 != input_shape2

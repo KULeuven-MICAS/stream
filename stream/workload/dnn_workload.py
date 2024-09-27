@@ -1,9 +1,9 @@
 import logging
 from typing import Any
 
+from zigzag.utils import DiGraphWrapper
 from zigzag.workload.layer_node import LayerNode
 
-from stream.utils import DiGraphWrapper
 from stream.workload.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)

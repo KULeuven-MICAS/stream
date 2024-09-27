@@ -5,10 +5,10 @@ from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.core import Core
 from zigzag.hardware.architecture.memory_instance import MemoryInstance
 from zigzag.mapping.spatial_mapping import SpatialMapping
+from zigzag.utils import DiGraphWrapper
 
 from stream.cost_model.communication_manager import CommunicationManager
 from stream.cost_model.memory_manager import MemoryManager
-from stream.utils import DiGraphWrapper
 from stream.workload.computation_node import ComputationNode
 from stream.workload.tensor import Tensor
 
@@ -451,13 +451,13 @@ class Accelerator:
 
     def get_top_instances_of_core(self, core_id: int):
         core = self.get_core(core_id)
-        top_instances = self.memory_manager.top_instances[core]
+        top_instances = self.memory_manager.top_instances_per_core[core]
         return top_instances
 
     def get_top_instance_of_core(self, core: Core | int, mem_op: MemoryOperand) -> MemoryInstance:
         if isinstance(core, int):
             core = self.get_core(core)
-        top_instances = self.memory_manager.top_instances[core]
+        top_instances = self.memory_manager.top_instances_per_core[core]
         for instance in top_instances:
             core_idx = self.memory_manager.cores_per_top_instance[instance].index(core)
             instance_mem_ops = self.memory_manager.memory_operands_per_top_instance[instance][core_idx]

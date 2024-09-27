@@ -1,6 +1,7 @@
 from typing import Any
 
-from stream.utils import DiGraphWrapper
+from zigzag.utils import DiGraphWrapper
+
 from stream.workload.computation_node import ComputationNode
 from stream.workload.node import Node
 
