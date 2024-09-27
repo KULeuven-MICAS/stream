@@ -62,6 +62,9 @@ class MemoryManager:
                     self.top_instance_available_since_timestep[top_instance] = {}
                     self.top_instance_stored_cumsum[top_instance] = np.array([[0, 0]])
                     self.top_instance_current_timestep[top_instance] = 0
+                else:
+                    self.cores_per_top_instance[top_instance].append(core)
+                    self.memory_operands_per_top_instance[top_instance].append(tuple(top_level.operands))
 
         self.offchip_core_id = self.accelerator.offchip_core_id
 
