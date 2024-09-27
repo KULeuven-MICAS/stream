@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 ARRAY_T: TypeAlias = NDArray[Any]
 
 
-def get_onnx_input_shapes(node: NodeProto, onnx_model: ModelProto):
+def get_onnx_input_shapes(node: NodeProto, onnx_model: ModelProto) -> tuple[list[int], list[int]]:
     if len(node.input) != 2:
         raise ValueError(f"Node {node.name} does not have two inputs")
     input_name1 = node.input[0]

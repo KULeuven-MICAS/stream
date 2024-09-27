@@ -21,7 +21,7 @@ from stream.parser.onnx.reshape import ReshapeParser
 from stream.parser.onnx.simd import SimdParser
 from stream.parser.onnx.softmax import SoftmaxParser
 from stream.parser.onnx.transpose import TransposeParser
-from stream.utils import has_asymmetric_input_data
+from stream.utils import get_onnx_input_shapes, has_asymmetric_input_data
 from stream.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)
@@ -70,7 +70,12 @@ class ONNXModelParser:
         # A temporary fix an element-wise Add or Mul which has asymmetric input data -> treat it as a  DummyNode.
         # TODO support node with asymmetric input data.
         if node.op_type in ["Add", "Mul"] and has_asymmetric_input_data(node, self.onnx_model):
-            return AsymmetricSimdParser
+            in_shape_1, in_shape_2 = get_onnx_input_shapes(node, self.onnx_model)
+            # In case only the batch dimension is missing. Other cases are not supported for now
+            if abs(len(in_shape_1) - len(in_shape_2)) == 1:
+                return AsymmetricSimdParser
+            else:
+                return DefaultNodeParser
 
         parser_class = ONNXModelParser.PARSER_MAPPING.get(node.op_type)
         if not parser_class:
