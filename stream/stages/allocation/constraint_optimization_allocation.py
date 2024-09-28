@@ -207,7 +207,6 @@ class ConstraintOptimizationAllocationStage(Stage):
                 self.node_hw_performances,
                 iterations,
                 time_limit=time_limit,
-                latency_attr=self.latency_attr,
             )
             pickle_save(allocation, allocations_path)
         fig_path = os.path.join(self.steady_state_visualization_path, f"groups_{self.mode}_{max(stack)}.html")
