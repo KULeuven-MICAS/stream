@@ -1,5 +1,7 @@
 from zigzag.datatypes import MemoryOperand
 
+from stream.hardware.architecture.accelerator import Accelerator
+
 
 def intersections(a, b):
     """Get the intersections of two lists of ranges.
@@ -38,8 +40,8 @@ def intersections(a, b):
     return ranges
 
 
-def get_core_capacities(accelerator, mem_op: MemoryOperand, core_ids: list):
-    core_capacities = {}
+def get_core_capacities(accelerator: Accelerator, mem_op: MemoryOperand, core_ids: list[int]):
+    core_capacities: dict[str, int] = {}
     for core_id in core_ids:
         core_name = f"Core {core_id}"
         core = accelerator.get_core(core_id)

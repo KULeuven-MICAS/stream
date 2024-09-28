@@ -36,7 +36,7 @@ def initialize_offchip_tensors(workload: ComputationNodeWorkload, accelerator: "
                         for offchip_top_instance in offchip_top_instances
                     )
                 ):
-                    memory_op = n.memory_operand_links[op]
+                    memory_op = n.memory_operand_links.layer_to_mem_op(op)
                     accelerator.spawn(
                         tensor=tensor,
                         core=offchip_core,
@@ -113,7 +113,7 @@ def get_tensors_needed_for_node(node: ComputationNode, G: ComputationNodeWorkloa
     tensors_operands: list[MemoryOperand] = []
     # Constant operands
     for layer_op in node.constant_operands:
-        memory_op = node.memory_operand_links[layer_op]
+        memory_op = node.memory_operand_links.layer_to_mem_op(layer_op)
         if memory_op in node.too_large_operands:
             continue
         tensors_this_candidate_needs.append(node.operand_tensors[layer_op])

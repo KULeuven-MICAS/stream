@@ -38,13 +38,13 @@ def get_too_large_operands(cme: CostModelEvaluation, accelerator: "Accelerator",
     return too_large_operands
 
 
-# TODO: Update this function to work with new mapping definition
 def save_core_allocation(
     workload: "ComputationNodeWorkload", path: str, type: str = "fixed", format: str = "py"
 ) -> dict:
     """Saves the core allocations of a workload to a python or pickle file.
     In fixed mode: if a layer has been split into multiple groups, the allocation of each group is saved to a tuple.
     In flexible mode: for each layer, the possible allocations are saved to a list.
+    # TODO: Update this function to work with new mapping definition
 
     Args:
         workload (DiGraph): The graph of CNs
@@ -177,7 +177,7 @@ class CostModelEvaluationLUT:
     def get_cores(self, node: "ComputationNode"):
         return list(self.lut.get(node, {}).keys())
 
-    def remove_cores_with_same_id(self, node, core):
+    def remove_cores_with_same_id(self, node: "ComputationNode", core: Core):
         """! Removes cores with the same id as core for node from the look-up table."""
         if node in self.lut:
             self.lut[node] = {c: v for c, v in self.lut[node].items() if c.id != core.id}

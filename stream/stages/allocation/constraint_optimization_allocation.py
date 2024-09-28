@@ -22,6 +22,7 @@ from stream.stages.generation.hint_loops_partitioned_workload_generation import 
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 from stream.utils import CostModelEvaluationLUT
 from stream.visualization.constraint_optimization import visualize_waco
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
@@ -40,10 +41,10 @@ class ConstraintOptimizationAllocationStage(Stage):
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
         node_hw_performances: CostModelEvaluationLUT,
-        layer_stacks: list[tuple],
+        layer_stacks: list[tuple[range, ...]],
         hint_loops: Any,
         node_hw_performances_path_with_split: str,
-        **kwargs,
+        **kwargs: dict[str, Any],
     ):
         """Initialize the ResourceAllocationStage.
 
@@ -108,7 +109,7 @@ class ConstraintOptimizationAllocationStage(Stage):
     def run_coala(self):
         combined_allocation = []
         timestep_offset = 0
-        for stack, optimal_allocation in self.optimal_allocation_per_stack.items():
+        for optimal_allocation in self.optimal_allocation_per_stack.values():
             # Update all timesteps in this allocation with the offset and add it to the combined allocation
             for t, a, id in optimal_allocation:
                 new_t = t + timestep_offset
@@ -296,10 +297,10 @@ class ConstraintOptimizationAllocationStage(Stage):
             order.append((first_node.id, first_node.sub_id))
         return order
 
-    def get_order_non_steady_state(self, to_compute):
+    def get_order_non_steady_state(self, to_compute: list[ComputationNode]):
         return [(n.id, n.sub_id) for n in sorted(to_compute, key=lambda x: (-x.id, -x.sub_id))]
 
-    def schedule_allocation(self, allocation):
+    def schedule_allocation(self, allocation) -> StreamCostModelEvaluationStage:
         # Get the involved layer ids we want to schedule and their core allocations
         layer_ids = sorted(set(id[0] for _, _, id in allocation))
         core_strs = [sorted(set((c for _, c, id in allocation if id[0] == layer_id))) for layer_id in layer_ids]
@@ -347,7 +348,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         """! Modify the workload to fix the core allocations to the given core_ids for the given layer_ids."""
         assert len(layer_ids) == len(core_ids)
         for layer_id, cores in zip(layer_ids, core_ids):
-            n = next(n for n in workload.nodes() if n.id == layer_id)
+            n = next(n for n in workload.node_list if n.id == layer_id)
             n.chosen_core_allocation = list(cores)
             n.possible_core_allocation = list(cores)
             n.core_allocation_is_fixed = True
@@ -358,7 +359,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         ]
         for layer_id_not_in_ss in layer_ids_not_in_ss:
             layer_ids_idx = np.searchsorted(layer_ids, layer_id_not_in_ss)
-            for n in filter(lambda n: n.id == layer_id_not_in_ss, workload.nodes()):
+            for n in filter(lambda n: n.id == layer_id_not_in_ss, workload.node_list):
                 assert isinstance(n.core_allocation, list)
                 n.chosen_core_allocation = n.core_allocation
                 n.possible_core_allocation = n.core_allocation

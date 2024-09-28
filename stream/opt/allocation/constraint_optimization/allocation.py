@@ -1,5 +1,4 @@
 import sys
-from typing import Dict, List, Tuple
 
 import gurobipy as gp
 from gurobipy import GRB
@@ -24,12 +23,11 @@ def get_optimal_allocations(
     iterations: int,
     gap: float = 0.5,
     time_limit: int = 600,
-    latency_attr: str = "latency_total1",
-) -> List[Tuple[int, int, Tuple[int, int]]]:
-    core_ids = sorted((core.id for core in accelerator.cores.nodes() if core.id != accelerator.offchip_core_id))
+) -> list[tuple[int, int, tuple[int, int]]]:
+    core_ids = sorted((core.id for core in accelerator.cores.node_list if core.id != accelerator.offchip_core_id))
     core_capacities = get_core_capacities(accelerator, MemoryOperand("I2"), core_ids)
 
-    nodes = sorted(workload.nodes())
+    nodes = sorted(workload.node_list)
     ids = convert_ids(nodes)
 
     latencies, possible_allocation_splits = get_latencies(
@@ -42,14 +40,14 @@ def get_optimal_allocations(
     }
 
     layer_ids = sorted(set(n.id for n in nodes))
-    groups = {layer_id: [] for layer_id in layer_ids}
+    groups: dict[int, list] = {layer_id: [] for layer_id in layer_ids}
 
     for node in nodes:
         groups[node.id].append(ids[node])
 
     weights = {}
 
-    for layer_id, group in groups.items():
+    for group in groups.values():
         assert len(group) > 0, "Empty group given"
         for i, node_id in enumerate(group):
             node = next(k for k, v in ids.items() if v == node_id)
@@ -84,17 +82,17 @@ def get_optimal_allocations(
 
 
 def constraint_allocation_optimization(
-    latencies: Dict[Tuple[int, str, int], int],
-    energies: Dict[Tuple[int, str], float],
-    weights_per_id: Dict[int, int],
-    dependencies: Dict[Tuple[int, int], int],
-    core_capacities: Dict[str, float],
-    groups: Dict[int, List[int]],
-    possible_allocation_splits: Dict[int, Dict[str, Dict[int, int]]],
+    latencies: dict[tuple[int, str, int], int],
+    energies: dict[tuple[int, str], float],
+    weights_per_id: dict[int, int],
+    dependencies: dict[tuple[int, int], int],
+    core_capacities: dict[str, float],
+    groups: dict[int, list[int]],
+    possible_allocation_splits: dict[int, dict[str, dict[int, int]]],
     N: int = 1,
     gap: float = 0.5,
     time_limit: int = 600,
-) -> List[Tuple[int, int, int]]:
+) -> list[tuple[int, int, int]]:
     """Get the optimal node-core allocation using constraint optimization.
     The timeline is divided into a number of slots. Each node will be assigned to one slot.
 

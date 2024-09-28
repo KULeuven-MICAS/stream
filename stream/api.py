@@ -5,6 +5,7 @@ import gurobipy as gp
 from zigzag.stages.main import MainStage
 from zigzag.utils import pickle_load, pickle_save
 
+from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
@@ -60,7 +61,7 @@ def optimize_allocation_ga(
     experiment_id: str,
     output_path: str,
     skip_if_exists: bool = False,
-):
+) -> StreamCostModelEvaluation:
     _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
 
     logger = _logging.getLogger(__name__)
@@ -112,7 +113,7 @@ def optimize_allocation_co(
     experiment_id: str,
     output_path: str,
     skip_if_exists: bool = False,
-):
+) -> StreamCostModelEvaluation:
     _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
     _sanity_check_gurobi_license()
 

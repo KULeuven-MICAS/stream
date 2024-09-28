@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, Generator
 
 from zigzag.datatypes import LayerOperand
 from zigzag.stages.stage import Stage, StageCallable
@@ -43,7 +43,7 @@ class StreamCostModelEvaluationStage(Stage):
 
         self.check_chosen_core_allocation()
 
-    def run(self):
+    def run(self) -> Generator[tuple[StreamCostModelEvaluation, Any], None, None]:
         """! Run the StreamCostModelEvaluation."""
         logger.info("Start StreamCostModelEvaluationStage.")
         scme = StreamCostModelEvaluation(
