@@ -209,7 +209,7 @@ class ConstraintOptimizationAllocationStage(Stage):
                 latency_attr=self.latency_attr,
             )
             pickle_save(allocation, allocations_path)
-        fig_path = os.path.join(self.steady_state_visualization_path, f"groups_{self.mode}_{max(stack)}.html")
+        fig_path = os.path.join(self.steady_state_visualization_path, f"steady_state-{stack_str}.html")
         print(f"stack = {stack}")
         visualize_waco(allocation, self.node_hw_performances, self.accelerator, fig_path, iterations)
         return allocation

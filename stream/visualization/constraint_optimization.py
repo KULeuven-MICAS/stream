@@ -110,8 +110,8 @@ def visualize_waco(
     if not os.path.isdir(dir_name):
         os.makedirs(dir_name)
 
-    # fig.write_html(fig_path)
-    # logger.info(f"Plotted co timeslots to {fig_path}")
+    fig.write_html(fig_path)
+    logger.info(f"Plotted WACO result to {fig_path}")
 
 
 def get_start_time_of_node(id, a, timesteps, timestep_latencies, t_start=0):
