@@ -8,7 +8,7 @@ from zigzag.mapping.spatial_mapping import SpatialMapping
 from stream.cost_model.communication_manager import CommunicationManager
 from stream.cost_model.memory_manager import MemoryManager
 from stream.utils import DiGraphWrapper
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.tensor import Tensor
 
 

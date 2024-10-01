@@ -1,4 +1,4 @@
-zigzag-dse==3.6.2
+zigzag-dse==3.6.3
 rtree
 deap
 matplotlib
@@ -7,3 +7,4 @@ plotly
 pandas
 cerberus
 pre-commit
+gurobipy

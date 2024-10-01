@@ -4,7 +4,7 @@ from typing import Generator
 from zigzag.parser.onnx.gemm_parser import GemmParser as GemmParserZigZag
 
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 

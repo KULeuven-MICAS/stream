@@ -1,7 +1,7 @@
 from typing import Any
 
 from stream.utils import DiGraphWrapper
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.node import Node
 
 

@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 from zigzag.datatypes import Constants, LayerOperand, MemoryOperand
 from zigzag.hardware.architecture.core import Core
 
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 from stream.workload.tensor import Tensor
 
@@ -36,7 +36,7 @@ def initialize_offchip_tensors(workload: ComputationNodeWorkload, accelerator: "
                         for offchip_top_instance in offchip_top_instances
                     )
                 ):
-                    memory_op = n.memory_operand_links[op]
+                    memory_op = n.memory_operand_links.layer_to_mem_op(op)
                     accelerator.spawn(
                         tensor=tensor,
                         core=offchip_core,
@@ -46,15 +46,16 @@ def initialize_offchip_tensors(workload: ComputationNodeWorkload, accelerator: "
                     )
 
 
-def prefetch_constant_operands(G: ComputationNodeWorkload, accelerator: "Accelerator", operands_to_prefetch: list[str]):
-    operands_to_prefetch_converted = [LayerOperand(x) for x in operands_to_prefetch]
+def prefetch_constant_operands(
+    G: ComputationNodeWorkload, accelerator: "Accelerator", operands_to_prefetch: list[LayerOperand]
+):
     total_cn_offchip_link_energy = 0
     total_cn_offchip_memory_energy = 0
     total_eviction_to_offchip_link_energy = 0
     total_eviction_to_offchip_memory_energy = 0
     for n in G.node_list:
         for op, tensor in n.operand_tensors.items():
-            if op in n.constant_operands and op in operands_to_prefetch_converted:
+            if op in n.constant_operands and op in operands_to_prefetch:
                 core_allocation = n.chosen_core_allocation
                 assert core_allocation is not None, "Core should be allocated"
                 memory_op = n.memory_operand_links.layer_to_mem_op(op)
@@ -112,7 +113,7 @@ def get_tensors_needed_for_node(node: ComputationNode, G: ComputationNodeWorkloa
     tensors_operands: list[MemoryOperand] = []
     # Constant operands
     for layer_op in node.constant_operands:
-        memory_op = node.memory_operand_links[layer_op]
+        memory_op = node.memory_operand_links.layer_to_mem_op(layer_op)
         if memory_op in node.too_large_operands:
             continue
         tensors_this_candidate_needs.append(node.operand_tensors[layer_op])
@@ -224,7 +225,7 @@ def schedule_graph(
     G: ComputationNodeWorkload,
     accelerator: "Accelerator",
     cores_idle_from: dict[int, int] | None = None,
-    operands_to_prefetch: list[str] = [],
+    operands_to_prefetch: list[LayerOperand] = [],
     scheduling_order: list[tuple[int, int]] | None = None,
 ) -> tuple[int, float, float, float, float, float, float, float, float, float]:
     """Schedule the nodes of graph G across the cores in the system.
@@ -249,7 +250,9 @@ def schedule_graph(
     total_core_to_core_memory_energy = 0
 
     core_ids = set(n.chosen_core_allocation for n in G.node_list)
-    assert None not in core_ids
+    assert (
+        None not in core_ids
+    ), "Make sure all nodes have a core allocation. Insert SetFixedAllocationPerformanceStage."
     all_core_ids: list[int] = sorted(list(core_ids))  # type: ignore
 
     if cores_idle_from is None:

@@ -4,7 +4,7 @@ import networkx as nx
 from zigzag.datatypes import Constants
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
 
