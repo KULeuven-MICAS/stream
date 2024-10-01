@@ -8,7 +8,7 @@ from stream.workload.utils import prune_workload
 
 
 def plot_activation_distribution(
-    workload: ComputationNodeWorkload, order: list = None, fig_path: str = "outputs/distribution.html"
+    workload: ComputationNodeWorkload, order: list = [], fig_path: str = "outputs/distribution.html"
 ):
     """
     Plot the output tensor sizes throughout the network depth.
@@ -17,7 +17,7 @@ def plot_activation_distribution(
     the nodes in the d'th topological generation.
     """
     # Generate order of processing if not provided
-    order = order or [node.id for gen in nx.toposlogical_generations(workload) for node in gen]
+    order = order or [node.id for gen in nx.topological_generations(workload) for node in gen]
     # Get the activation size per processed node
     df, max_size = get_sizes_per_node(workload, order=order)
     # Plot the sizes
@@ -92,12 +92,12 @@ def get_sizes_per_node(workload, order):
         # Tensors that will spawn by processing this node (assumes only one output tensor)
         output = next(t for op, t in node.operand_tensors.items() if op == "O")
         alive_tensors.add(output)
-        nb_tensor_uses[output] = len([n for n in workload.successors(node) if n.id[0] != node.id[0]])
+        nb_tensor_uses[output] = len([n for n in workload.successors(node) if n.id[0] != node.id])
         it += 1
     # Add state after processing last node
     alive_names_per_node.append(tuple((str(t) for t in alive_tensors)))
     alive_sizes_per_node.append(sum((t.size for t in alive_tensors)))
-    sizes = [sum((t.size for t in alive_tensors if t.origin.id[0] == layer_id)) for layer_id in layer_ids]
+    sizes = [sum((t.size for t in alive_tensors if t.origin.id == layer_id)) for layer_id in layer_ids]
     sizes_per_layer.append(sizes)
     max_size = max(max_size, max(sizes))
     data += [{"Iteration": it, "Layer": str(layer_id), "Size": size} for layer_id, size in zip(layer_ids, sizes)]
