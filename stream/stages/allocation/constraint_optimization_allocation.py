@@ -99,11 +99,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.find_best_allocation_per_stack()
         scme = self.run_coala()
 
-        logger.info(f"STEADY STATE PERCENTAGES: {self.ss_mac_percentages_per_stack}")
-        logger.info(f"TOTAL NUMBER OF MACS: {self.nb_macs_per_stack}")
-        logger.info(f"TOTAL NUMBER OF MACS IN STEADY STATE: {self.nb_macs_in_ss_per_stack}")
-        lens = [len(v) for v in self.ss_to_computes.values()]
-        logger.info(f"STEADY STATE NODES/TOTAL NODES: {sum(lens)}/{self.workload.number_of_nodes()}")
+        logger.info("End ConstraintOptimizationAllocationStage.")
         yield (scme, None)
 
     def run_coala(self):
@@ -181,6 +177,15 @@ class ConstraintOptimizationAllocationStage(Stage):
             self.hashes_per_sink_node[stack] = hashes_per_sink_pair
             self.steady_state_hashes[stack] = memoization_hash_ss
             self.compute_per_sink_node[stack] = to_compute_unique
+
+        nb_steady_state_nodes = sum(list(len(v) for v in self.ss_to_computes.values()))
+        nb_nodes = self.workload.number_of_nodes()
+        percentage_nodes = nb_steady_state_nodes / nb_nodes * 100
+        logger.info(f"Percentage of steady state nodes: {nb_steady_state_nodes}/{nb_nodes} = {percentage_nodes:.2f}%")
+        nb_steady_state_macs = sum(self.nb_macs_in_ss_per_stack.values())
+        nb_macs = sum(self.nb_macs_per_stack.values())
+        percentage_macs = nb_steady_state_macs / nb_macs * 100
+        logger.info(f"Percentage of steady state macs: {nb_steady_state_macs}/{nb_macs} = {percentage_macs:.2f}%")
 
     def find_best_allocation_per_stack(self):
         for stack, to_compute in self.ss_to_computes.items():

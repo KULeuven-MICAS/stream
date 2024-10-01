@@ -56,7 +56,7 @@ def visualize_waco(
         for a in allocations:
             start = get_start_time_of_node(id, a, node_timesteps, timestep_latencies)
             starts[id, a] = start
-    _ = calculate_total_latency(starts, timestep_latencies, node_timesteps, iterations)
+    _, total_lat_str = calculate_total_latency(starts, timestep_latencies, node_timesteps, iterations)
     # Plot the nodes using Plotly rectangles
     color_cycle = cycle(sample_colorscale("rainbow", np.linspace(0, 1, len(node_hw_performances.get_nodes()))))
     colors = {layer_id: c for (layer_id, c) in zip(layer_ids, color_cycle)}
@@ -99,7 +99,7 @@ def visualize_waco(
         t_start += timestep_latencies.get(timestep, 0)
 
     # Title
-    fig.update_layout(title_text="Constraint optimization timeslot visualization")
+    fig.update_layout(title_text=total_lat_str)
 
     fig.update_yaxes(categoryorder="array", categoryarray=sorted(resources))
     fig.update_yaxes(autorange="reversed")
@@ -122,7 +122,7 @@ def get_start_time_of_node(id, a, timesteps, timestep_latencies, t_start=0):
     return t_start
 
 
-def calculate_total_latency(starts, timestep_latencies, node_timesteps, N):
+def calculate_total_latency(starts, timestep_latencies, node_timesteps, N) -> tuple[int, str]:
     T = sum(timestep_latencies.values())
     cores = sorted(set(k[1] for k in starts))
     slacks = {}
@@ -139,6 +139,5 @@ def calculate_total_latency(starts, timestep_latencies, node_timesteps, N):
         slacks[core] = slack
     min_slack = min(slacks.values())
     total_lat = N * T - (N - 1) * min_slack
-    print("total_lat = N * T - (N - 1) * slack")
-    print(f"{total_lat} = {N} * {T} - {N-1} * {min_slack}")
-    return total_lat
+    total_lat_str = f"total_lat = N * T - (N - 1) * slack --> {total_lat} = {N} * {T} - {N-1} * {min_slack}"
+    return total_lat, total_lat_str
