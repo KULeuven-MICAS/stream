@@ -76,7 +76,7 @@ def get_optimal_allocations(
         gap=gap,
         time_limit=time_limit,
     )
-    allocation = invert_ids_list(allocation)
+    allocation = invert_ids_list(allocation, len(nodes))
 
     return allocation
 

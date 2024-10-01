@@ -1,4 +1,4 @@
-from math import prod
+from math import ceil, log10, prod
 
 from zigzag.datatypes import LayerDim, LayerOperand, UnrollFactor
 
@@ -7,13 +7,17 @@ from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 
 
-def convert_id(i: int, j: int) -> int:
-    k = 1000 * i + j
+def nearest_power_of_10(x: int):
+    return 10 ** ceil(log10(x))
+
+
+def convert_id(i: int, j: int, nb_nodes: int) -> int:
+    k = nearest_power_of_10(nb_nodes) * i + j
     return k
 
 
-def invert_id(k: int) -> tuple[int, int]:
-    i, j = divmod(k, 1000)
+def invert_id(k: int, nb_nodes: int) -> tuple[int, int]:
+    i, j = divmod(k, nearest_power_of_10(nb_nodes))
     return i, j
 
 
@@ -21,23 +25,16 @@ def convert_ids(nodes: list[ComputationNode]):
     ids: dict[ComputationNode, int] = {}
     for node in nodes:
         i, j = node.id, node.sub_id
-        new_id = convert_id(i, j)
+        new_id = convert_id(i, j, len(nodes))
         ids[node] = new_id
     return ids
 
 
-def invert_ids_list(ids_list: list[tuple[int, int, int]]) -> list[tuple[int, int, tuple[int, int]]]:
+def invert_ids_list(ids_list: list[tuple[int, int, int]], nb_nodes: int) -> list[tuple[int, int, tuple[int, int]]]:
     new_l: list[tuple[int, int, tuple[int, int]]] = []
     for slot, core, k in ids_list:
-        new_l.append((slot, core, invert_id(k)))
+        new_l.append((slot, core, invert_id(k, nb_nodes)))
     return new_l
-
-
-def invert_ids_dict(d: dict[int, int | float]):
-    new_d: dict[tuple[int, int], int | float] = {}
-    for id, val in d.items():
-        new_d[invert_id(id)] = val
-    return new_d
 
 
 def get_loop_size(loops: list[tuple[LayerDim, UnrollFactor]], dims: list[LayerDim]) -> int:
