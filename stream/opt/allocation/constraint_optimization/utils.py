@@ -1,10 +1,10 @@
 from math import prod
-from typing import Dict, List, Tuple, Union
 
 from zigzag.datatypes import LayerDim, LayerOperand, UnrollFactor
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.utils import CostModelEvaluationLUT
+from stream.workload.computation.computation_node import ComputationNode
 
 
 def convert_id(i: int, j: int) -> int:
@@ -12,13 +12,13 @@ def convert_id(i: int, j: int) -> int:
     return k
 
 
-def invert_id(k: int) -> Tuple[int, int]:
+def invert_id(k: int) -> tuple[int, int]:
     i, j = divmod(k, 1000)
     return i, j
 
 
-def convert_ids(nodes: List) -> Dict:
-    ids = {}
+def convert_ids(nodes: list[ComputationNode]):
+    ids: dict[ComputationNode, int] = {}
     for node in nodes:
         i, j = node.id, node.sub_id
         new_id = convert_id(i, j)
@@ -26,15 +26,15 @@ def convert_ids(nodes: List) -> Dict:
     return ids
 
 
-def invert_ids_list(ids_list: list[tuple[int, int, int]]) -> list[tuple[int, int, Tuple[int, int]]]:
-    new_l = []
+def invert_ids_list(ids_list: list[tuple[int, int, int]]) -> list[tuple[int, int, tuple[int, int]]]:
+    new_l: list[tuple[int, int, tuple[int, int]]] = []
     for slot, core, k in ids_list:
         new_l.append((slot, core, invert_id(k)))
     return new_l
 
 
-def invert_ids_dict(d: dict[int, Union[int, float]]) -> dict[Tuple[int, int], Union[int, float]]:
-    new_d = {}
+def invert_ids_dict(d: dict[int, int | float]):
+    new_d: dict[tuple[int, int], int | float] = {}
     for id, val in d.items():
         new_d[invert_id(id)] = val
     return new_d
@@ -45,12 +45,12 @@ def get_loop_size(loops: list[tuple[LayerDim, UnrollFactor]], dims: list[LayerDi
 
 
 def get_latencies(
-    nodes: list,
+    nodes: list[ComputationNode],
     core_ids: list[int],
     accelerator: Accelerator,
     node_hw_performances: CostModelEvaluationLUT,
     impossible_lat: float = 1e11,
-    ids: Dict = {},
+    ids: dict[ComputationNode, int] = {},
 ) -> tuple[dict[tuple[int, str, int], int], dict]:
     if not ids:
         ids = {node: node.id for node in nodes}
@@ -107,13 +107,13 @@ def get_latencies(
 
 
 def get_energies(
-    nodes: List,
-    core_ids: List[int],
+    nodes: list[ComputationNode],
+    core_ids: list[int],
     accelerator: Accelerator,
     node_hw_performances: CostModelEvaluationLUT,
     impossible_energy: float = 1e11,
-    ids: Dict = {},
-) -> Dict[Tuple[int, str], float]:
+    ids: dict[ComputationNode, int] = {},
+) -> dict[tuple[int, str], float]:
     if not ids:
         ids = {node.id: node.id for node in nodes}
     core_names = [f"Core {id}" for id in core_ids]

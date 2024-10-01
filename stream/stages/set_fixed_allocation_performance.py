@@ -48,7 +48,7 @@ class SetFixedAllocationPerformanceStage(Stage):
             yield cme, extra_info
 
     def set_fixed_allocation_performance(self):
-        for node in self.workload.nodes():
+        for node in self.workload.node_list:
             if isinstance(node.core_allocation, list) and len(node.core_allocation) == 1:
                 node.core_allocation_is_fixed = True
                 node.set_chosen_core_allocation(node.core_allocation[0])
@@ -90,7 +90,7 @@ class SetFixedAllocationPerformanceStage(Stage):
         # If there was offchip memory added for some operands, get the offchip bandwidth required
         assert self.accelerator.offchip_core_id is not None, "Off-chip core id is not set."
         offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
-        offchip_instance = next(v for k, v in offchip_core.mem_hierarchy_dict.items())[-1].memory_instance
+        offchip_instance = next(iter(offchip_core.mem_hierarchy_dict.values()))[-1].memory_instance
         offchip_bandwidth = cme.get_total_inst_bandwidth(offchip_instance)
         return offchip_bandwidth
 

@@ -1,13 +1,15 @@
 import networkx as nx
 import pandas as pd
 import plotly.express as px
-from networkx import DiGraph
 
 from stream.workload.computation.computation_node import ComputationNode
+from stream.workload.onnx_workload import ComputationNodeWorkload
 from stream.workload.utils import prune_workload
 
 
-def plot_activation_distribution(workload: DiGraph, order: list = None, fig_path="outputs/distribution.html"):
+def plot_activation_distribution(
+    workload: ComputationNodeWorkload, order: list = None, fig_path: str = "outputs/distribution.html"
+):
     """
     Plot the output tensor sizes throughout the network depth.
     The depth is determined through the topological generations sort of the workload.
@@ -15,7 +17,7 @@ def plot_activation_distribution(workload: DiGraph, order: list = None, fig_path
     the nodes in the d'th topological generation.
     """
     # Generate order of processing if not provided
-    order = order or [node.id for gen in nx.topological_generations(workload) for node in gen]
+    order = order or [node.id for gen in nx.toposlogical_generations(workload) for node in gen]
     # Get the activation size per processed node
     df, max_size = get_sizes_per_node(workload, order=order)
     # Plot the sizes
