@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.core import Core
+from zigzag.hardware.architecture.accelerator import Accelerator as Core
 from zigzag.hardware.architecture.memory_instance import MemoryInstance
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 

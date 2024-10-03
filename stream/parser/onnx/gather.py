@@ -1,7 +1,7 @@
 from onnx import numpy_helper
 
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
-from stream.workload.gather_node import GatherNode
+from stream.workload.dependency_propagation.gather_node import GatherNode
 
 
 class GatherParser(OnnxOperatorParser):

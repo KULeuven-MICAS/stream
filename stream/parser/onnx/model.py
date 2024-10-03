@@ -137,7 +137,7 @@ class ONNXModelParser:
             nodes_outputs[node_id - 1] = node.output
 
         logger.info(
-            "Created ONNXWorkload graph with %i  nodes and %i  edges.",
+            "Created ONNXWorkload graph with %i nodes and %i edges.",
             workload.number_of_nodes(),
             workload.number_of_edges(),  # type: ignore
         )

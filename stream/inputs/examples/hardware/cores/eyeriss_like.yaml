@@ -116,3 +116,9 @@ operational_array:
   multiplier_area: 0.1 # unit
   dimensions: [D1, D2]
   sizes: [14, 12]
+
+dataflows:
+  D1:
+    - K, 16
+  D2:
+    - C, 16

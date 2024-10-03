@@ -1,9 +1,9 @@
 from typing import Any
 
 from zigzag.datatypes import Constants
-from zigzag.hardware.architecture.core import Core
+from zigzag.hardware.architecture.accelerator import Accelerator as Core
 from zigzag.hardware.architecture.memory_level import MemoryLevel
-from zigzag.parser.accelerator_factory import CoreFactory
+from zigzag.parser.accelerator_factory import AcceleratorFactory as CoreFactory
 
 from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
 from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges

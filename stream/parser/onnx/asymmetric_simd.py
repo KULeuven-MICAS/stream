@@ -7,7 +7,7 @@ from zigzag.parser.workload_factory import LayerNodeFactory
 
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
 from stream.utils import get_onnx_input_shapes
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 
 
 class AsymmetricSimdParser(OnnxComputeOperatorParser):

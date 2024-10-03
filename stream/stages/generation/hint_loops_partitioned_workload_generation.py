@@ -17,19 +17,19 @@ from stream.opt.partitioning.utils import (
     convert_outer_cn_loops,
     convert_outer_cn_loops_with_k,
 )
-from stream.workload.computation_node import ComputationNode, LoopRanges
-from stream.workload.concat_node import ConcatNode
+from stream.workload.computation.computation_node import ComputationNode, LoopRanges
+from stream.workload.dependency_propagation.concat_node import ConcatNode
+from stream.workload.dependency_propagation.dummy_node import DummyNode
+from stream.workload.dependency_propagation.elementwise_node import ElementwiseNode
+from stream.workload.dependency_propagation.flatten_node import FlattenNode
+from stream.workload.dependency_propagation.gather_node import GatherNode
+from stream.workload.dependency_propagation.lpnormalization_node import LpNormalizationNode
+from stream.workload.dependency_propagation.reshape_node import ReshapeNode
+from stream.workload.dependency_propagation.transpose_node import TransposeNode
 from stream.workload.dnn_workload import DNNWorkloadStream
-from stream.workload.dummy_node import DummyNode
-from stream.workload.elementwise_node import ElementwiseNode
-from stream.workload.flatten_node import FlattenNode
-from stream.workload.gather_node import GatherNode
-from stream.workload.lpnormalization_node import LpNormalizationNode
 from stream.workload.node import Node
 from stream.workload.onnx_workload import ComputationNodeWorkload, ONNXWorkload
-from stream.workload.reshape_node import ReshapeNode
 from stream.workload.tensor import Tensor
-from stream.workload.transpose_node import TransposeNode
 
 logger = logging.getLogger(__name__)
 
@@ -118,9 +118,6 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
 
         # Set the base_priority value of all nodes in G
         self.set_base_priority_of_nodes(G, self.finer_nodes_dict)
-
-        # Set nb of real predecessors of all nodes in G
-        self.set_nb_real_predecessors(G)
 
         logger.info(f"Finer graph: {G}.")
 
@@ -356,19 +353,24 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
 
             # Compute the output data produced by each finer node, assuming that all the data produced by different CNs
             # are unique
-            finer_node.data_produced_unique = (
+            finer_node.data_produced_unique = int(
                 finer_node.operand_size_elem[Constants.OUTPUT_LAYER_OP]
                 * finer_node.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
             )
 
-            # TODO Compute the unique input data consumed by each finer node. Note that it is not necessarily that the
-            # TODO data consumed by different CNs are unique
-            # finer_node.data_consumed_unique = ... (for now it is 0)
+            # If the core allocation is fixed, we need to set the chosen core allocation.
+            # It's possible the core allocation contains multiple entries.
+            # In that case, we select the core allocation based on the group id.
+            if original_node.core_allocation_is_fixed:
+                assert group_id < len(
+                    original_node.possible_core_allocation
+                ), f"Group id {group_id} is not in the core allocation list {original_node.core_allocation}"
+                chosen_core_allocation = original_node.possible_core_allocation[group_id]
+                finer_node.set_chosen_core_allocation(chosen_core_allocation)
 
             finer_nodes.append(finer_node)
 
-        # TODO Just take the first node as they are all equal for now. If some are different, this should be done more
-        # TODO smartly
+        # NOTE We take the first node as only unique one as they are all generated equally now.
         unique_finer_nodes = [finer_nodes[0]]
 
         return finer_nodes, unique_finer_nodes
@@ -712,6 +714,8 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                 return node.gather_operand_tensor(input_tensor)
             case ConcatNode():
                 return node.concat(input_tensor)
+            case DummyNode():
+                return input_tensor
             case _:
                 raise NotImplementedError(f"Tensor propagation not implemented for node {node.name}.")
 
@@ -840,17 +844,6 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                     successors = [succ for succ in G.successors(node) if succ.id != layer_id]
                     tensor.set_base_priorities(len(successors))
             nb_seen_nodes_per_layer_id[layer_id] += 1
-
-    def set_nb_real_predecessors(self, G: ComputationNodeWorkload):
-        """Set nb_real_predecessors attribute for each node in G.
-        A real predecessor is a predecessor coming from a different layer.
-
-        Args:
-            G (DiGraph): Graph containing the nodes and edges.
-        """
-        for n in G.node_list:
-            nb_real_predecessors = len(list(pred for pred in G.predecessors(n) if pred.id != n.id))
-            n.set_nb_real_predecessors(nb_real_predecessors)
 
     def get_weight_capacities(self):
         # Get the weight capacity of all cores

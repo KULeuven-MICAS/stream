@@ -5,7 +5,7 @@ import numpy as np
 from stream.cost_model.communication_manager import CommunicationLinkEvent
 
 if TYPE_CHECKING:
-    from zigzag.hardware.architecture.core import Core
+    from zigzag.hardware.architecture.accelerator import Accelerator as Core
 
     from stream.workload.tensor import Tensor
 

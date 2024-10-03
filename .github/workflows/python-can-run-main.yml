@@ -25,8 +25,4 @@ jobs:
           pip install -r requirements.txt
       - name: Run without errors
         run: |
-          python main_stream_layer_splitting.py
-          python main_stream_mode_3.py
-          python main_stream_mode_4.py
-          python main_stream.py
-          python main_stream_layer_stacks.py
+          python main_stream_ga.py

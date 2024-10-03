@@ -4,7 +4,7 @@ from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.core import Core
+from zigzag.hardware.architecture.accelerator import Accelerator as Core
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
 from zigzag.mapping.spatial_mapping import SpatialMapping
@@ -17,9 +17,11 @@ from zigzag.stages.stage import Stage, StageCallable
 from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.utils import load_scme, save_scme
-from stream.visualization.node_hw_performances import visualize_node_hw_performances_pickle
-from stream.workload.computation_node import ComputationNode
+from stream.utils import CostModelEvaluationLUT, get_unique_nodes
+from stream.visualization.node_hw_performances import (
+    visualize_node_hw_performances_pickle,
+)
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
@@ -37,7 +39,8 @@ class ZigZagCoreMappingEstimationStage(Stage):
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
         loma_lpf_limit: int,
-        **kwargs: Any,
+        node_hw_performances_path: str,
+        **kwargs: dict[str, Any],
     ):
         """
         Initialize the stage by:
@@ -48,45 +51,30 @@ class ZigZagCoreMappingEstimationStage(Stage):
         self.workload = workload
         self.accelerator = accelerator
         self.loma_lpf_limit = loma_lpf_limit
+        self.node_hw_performances_path = node_hw_performances_path
+        if "visualize_node_hw_performances_path" in kwargs:
+            self.visualize_node_hw_performances_path = kwargs["visualize_node_hw_performances_path"]
+        else:
+            self.visualize_node_hw_performances_path = os.path.splitext(self.node_hw_performances_path)[0] + ".png"
         self.loma_show_progress_bar: bool = kwargs.get("loma_show_progress_bar", False)
-        self.node_hw_performances_path: str | None = kwargs.get("node_hw_performances_path", None)
 
         # Extract all unique nodes that will have to be evaluated
-        self.unique_nodes: list[ComputationNode] = []
-        for node in self.workload.node_list:
-            equal_nodes = list(
-                (
-                    unique_node
-                    for unique_node in self.unique_nodes
-                    if node == unique_node and node.group == unique_node.group
-                )
-            )
-            if not equal_nodes:
-                self.unique_nodes.append(node)
+        self.unique_nodes = get_unique_nodes(self.workload)
 
         # Initialize the valid node-core allocations.
         self.valid_allocations: dict[ComputationNode, list[int]] = {}
         for node in self.unique_nodes:
-            assert isinstance(node, ComputationNode), f"IntraCoreMapingStage received node {node} of type {type(node)}."
+            assert isinstance(
+                node, ComputationNode
+            ), f"ZigZagCoreMappingEstimationStage received node {node} of type {type(node)}."
             assert isinstance(node.possible_core_allocation, list), f"Core allocation is not a list for node {node}."
             self.valid_allocations[node] = node.possible_core_allocation
 
-        # Initialize dict that will store for all unique nodes their intra-core HW performance for the valid node-core
-        #  allocations.
-        self.node_hw_performances: dict[ComputationNode, dict[Core, CostModelEvaluation]] = {
-            unique_node: {} for unique_node in self.unique_nodes
-        }  # look-up table
+        # Initialize CostModelEvaluationLUT
+        self.node_hw_performances = CostModelEvaluationLUT(self.node_hw_performances_path)
 
     def run(self):
-        logger.info("Start IntraCoreMappingStage.")
-        if self.node_hw_performances_path:
-            try:
-                self.given_node_hw_performances = load_scme(self.node_hw_performances_path)
-            except FileNotFoundError:
-                self.given_node_hw_performances = None
-        else:
-            self.given_node_hw_performances = None
-
+        logger.info("Start ZigZagCoreMappingEstimationStage.")
         for node in self.unique_nodes:
             # TODO This should never evaluate to true: enforce core_allocation as list everywhere
             if isinstance(self.valid_allocations[node], tuple):
@@ -98,103 +86,78 @@ class ZigZagCoreMappingEstimationStage(Stage):
                 # Offchip memory core doesn't have operational units
                 if core.operational_array.total_unit_count == 0:
                     continue
-                # It's possible this node might not fully fit within the core's top level memories. If so, we update
-                #  the core
-                too_large_operands_for_cme = self.check_core_capacity_for_node(core, node)
-                # Check if this (node, core) combination is present in the loaded performances pickle
-                if (
-                    self.given_node_hw_performances is not None
-                    and node in self.given_node_hw_performances
-                    and self.given_node_hw_performances[node] is not None
-                    and core in self.given_node_hw_performances[node]
-                ):
-                    if not isinstance(self.given_node_hw_performances[node][core], CostModelEvaluation):
-                        raise TypeError(f"Given node_hw_performances for node {node} and core {core} is not a CME.")
-                    cme = self.given_node_hw_performances[node][core]
-                    self.node_hw_performances[node][core] = cme
+                # If the (node, core) combination has already been optimized, we skip it
+                if self.node_hw_performances.has_cme(node, core):
+                    continue
+                # If an equal performance has already been computed, we take it
+                equal_node = self.node_hw_performances.get_equal_node(node)
+                equal_core = self.node_hw_performances.get_equal_core(equal_node, core) if equal_node else None
+                if equal_node and equal_core:
+                    cme = pickle_deepcopy(self.node_hw_performances.get_cme(equal_node, equal_core))
+                    # Update the CME attributes for this node-core combination
+                    cme.layer.core_allocation = [core_id]
+                    cme.core_id = core_id
+                    self.node_hw_performances.add_cme(node, core, cme, allow_overwrite=False)
+                    continue
                 else:
-                    # Check if this (node, core) combination has already been optimized during this run
-                    try:
-                        equal_node = next(
-                            processed_node
-                            for processed_node in self.node_hw_performances
-                            if node.has_same_performance(processed_node)
-                        )
+                    node_duplicate = pickle_deepcopy(node)
+                    # Remove duplicate cores with same id in case the core definition has changed
+                    self.node_hw_performances.remove_cores_with_same_id(node, core)
+                    # We need to compute the optimal performance for this node-core combination
+                    # It's possible this node might not fully fit within the core's top level memories.
+                    # If so, we update the core
+                    too_large_operands_for_cme = self.check_core_capacity_for_node(core, node_duplicate)
+                    node_duplicate.set_chosen_core_allocation(core_id)
+                    # Set the node's spatial mapping to the possible spatial mappings of the current core
+                    node_duplicate.spatial_mapping = (
+                        core.dataflows if core.dataflows is not None else SpatialMapping.empty()
+                    )
+                    # Initialize the flow that will be followed to extract the optimal HW performance of every
+                    #  unique node-core allocation
+                    main_stage = self.get_intra_core_mapping_flow(
+                        node=node_duplicate,
+                        too_large_operands=too_large_operands_for_cme,
+                        core_id=core_id,
+                    )
+                    answers = main_stage.run()
+                    assert len(answers) == 1, "ZigZagCoreMappingEstimationStage's subflow returned more than one CME"
+                    cme: CostModelEvaluation = answers[0][0]  # type: ignore
+                    node_duplicate.set_chosen_core_allocation(None)  # Reset the node's chosen core allocation
+                    self.node_hw_performances.add_cme(node, core, cme, allow_overwrite=False)
+            self.node_hw_performances.save()
 
-                        try:
-                            # Find the core that is equal
-                            equal_core = next(
-                                processed_core
-                                for processed_core in self.node_hw_performances[equal_node]
-                                if core == processed_core
-                            )
-                            cme = self.node_hw_performances[equal_node][equal_core]
-                            self.node_hw_performances[node][core] = cme
-                            self.save_node_hw_performances()
-                        except StopIteration or KeyError:
-                            # Compute this (node, core) combination's optimal mapping
-                            # Set the node's core allocation to the core_id we want to extract hw performance for
-                            node.set_core_allocation(core_id)
-                            # Set the node's spatial mapping to the possible spatial mappings of the current core
-                            node.spatial_mapping = (
-                                core.dataflows if core.dataflows is not None else SpatialMapping.empty()
-                            )
-                            # Initialize the flow that will be followed to extract the optimal HW performance of every
-                            #  unique node-core allocation
-                            main_stage = self.get_intra_core_mapping_flow(
-                                node=node,
-                                too_large_operands=too_large_operands_for_cme,
-                                core_id=core_id,
-                            )
-                            answers = main_stage.run()
-                            assert len(answers) == 1, "IntraCoreMappingStage's subflow returned more than one CME"
-                            cme: CostModelEvaluation = answers[0][0]  # type: ignore
-                            # TODO should this be `chosen_core_allocation`?
-                            node.core_allocation = None  # Reset the node's core allocation
-                            self.node_hw_performances[node][core] = cme
-                            self.save_node_hw_performances()
-                    except StopIteration:
-                        # No equal node found in node hardware performances
-                        pass
         self.visualize_node_hw_performances()
         kwargs = self.kwargs.copy()
         kwargs["workload"] = self.workload
         kwargs["accelerator"] = self.accelerator
         kwargs["node_hw_performances"] = self.node_hw_performances
 
-        logger.info("Finished IntraCoreMappingStage.")
+        logger.info("Finished ZigZagCoreMappingEstimationStage.")
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
 
-    def save_node_hw_performances(self):
-        if self.node_hw_performances_path:
-            parent = os.path.dirname(self.node_hw_performances_path)
-            os.makedirs(parent, exist_ok=True)
-            save_scme(self.node_hw_performances, self.node_hw_performances_path)
-            logger.debug(f"Saved unique CN node HW performance to {self.node_hw_performances_path}.")
-
     def visualize_node_hw_performances(self):
         if "visualize_node_hw_performances_path" in self.kwargs:
-            if "visualize_node_hw_performances_path":
-                # Get the scale factors
-                scale_factors = {
-                    n.id: len([cn for cn in self.workload.node_list if cn == n]) for n in self.node_hw_performances
-                }
-                # Run the visualization
-                visualize_node_hw_performances_pickle(
-                    self.node_hw_performances,
-                    scale_factors,
-                    self.kwargs["visualize_node_hw_performances_path"],
-                )
+            # Get the scale factors
+            scale_factors = {
+                n: len([cn for cn in self.workload.node_list if cn.has_same_performance(n)])
+                for n in self.node_hw_performances.get_nodes()
+            }
+            # Run the visualization
+            visualize_node_hw_performances_pickle(
+                self.node_hw_performances,
+                scale_factors,
+                self.kwargs["visualize_node_hw_performances_path"],
+            )
 
     def get_intra_core_mapping_flow(self, node: ComputationNode, too_large_operands: list[MemoryOperand], core_id: int):
         logger.info(f"Launching intra-core mapping optimization for {node} -> core {core_id} ...")
 
+        core = self.accelerator.get_core(core_id)
+
         if too_large_operands:
-            accelerator = self.add_offchip_to_core(core_id, too_large_operands, node.id)
-        else:
-            accelerator = self.accelerator
+            core = self.add_offchip_to_core(core, too_large_operands, node.id)
 
         main_stage = MainStage(
             [  # Initializes the MainStage as entry point
@@ -205,29 +168,11 @@ class ZigZagCoreMappingEstimationStage(Stage):
                 CostModelStage,  # Evaluates generated SM and TM through cost model
             ],
             layer=node,
-            accelerator=accelerator,  # required by a number of stages
+            accelerator=core,  # Accelerator in zigzag corresponds to Core in stream
             loma_lpf_limit=self.loma_lpf_limit,  # required by LomaEngine
             loma_show_progress_bar=self.loma_show_progress_bar,
         )
         return main_stage
-
-    def check_given_node_hw_performances(self):
-        """Check if the given node_hw_performances nodes have the same characteristics as our current given mapping.
-        Right now, this just checks if every unique node is present in this dictionary. If not, the user should rerun.
-        A more accurate check would be to check the CME's inside of node_hw_performances and make sure the cores are the
-          same as the ones we have now.
-        In this function, we can't use the equality operator on the two nodes, as the current nodes might not yet have a
-          core allocation.
-        Args:
-            node_hw_performances (dict): A dictionary containing for every unique node a dict like {core:optimal_CME for
-              core in valid_cores}
-        """
-        for unique_node in self.unique_nodes:
-            if unique_node not in self.given_node_hw_performances.keys():
-                raise ValueError(
-                    f"Given node_hw_performances don't match current unique nodes. There is no entry for unique_node "
-                    f"{unique_node}."
-                )
 
     def check_core_capacity_for_node(self, core: Core, node: ComputationNode) -> list[MemoryOperand]:
         """Check if we need to add a DRAM memory to the given core for the given node.
@@ -384,7 +329,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
             unroll_dict[mem_operand] = capacity
         return round(sum(unroll_dict.values()))
 
-    def add_offchip_to_core(self, core_id: int, too_large_operands: list[MemoryOperand], layer_idx: int):
+    def add_offchip_to_core(self, core: Core, too_large_operands: list[MemoryOperand], layer_idx: int):
         """Add the offchip memory as the top level memory of the core with core_id in a copy of the accelerator
 
         Args:
@@ -392,12 +337,10 @@ class ZigZagCoreMappingEstimationStage(Stage):
             too_large_operands (list): The memory operands the off-chip memory should store.
             layer_idx (int): workload layer index.
         """
-        logger.warning(
-            f"Adding offchip memory for core_id={core_id}, layer={layer_idx}, memory_operands={too_large_operands}."
-        )
-        updated_accelerator: Accelerator = pickle_deepcopy(self.accelerator)
-        core: Core = updated_accelerator.get_core(core_id)
+        assert self.accelerator.offchip_core_id is not None
+        logger.warning(f"Adding offchip memory for {core}, layer={layer_idx}, memory_operands={too_large_operands}.")
         offchip_core: Core = pickle_deepcopy(self.accelerator.get_core(self.accelerator.offchip_core_id))
+
         # Sanity checks
         # Make sure that there is only one offchip memory
         offchip_memory_levels = offchip_core.memory_hierarchy.mem_level_list
@@ -417,13 +360,14 @@ class ZigZagCoreMappingEstimationStage(Stage):
         offchip_port_alloc = PortAllocation(offchip_port_alloc_raw)
         offchip_served_dimensions = offchip_memory_level.served_dimensions
 
-        # Easiest way to add the offchip memory level is to do an 'add_memory()' call to the MemoryHierarchy
-        core.memory_hierarchy.add_memory(
+        # Create new core with updated memory hierarchy
+        updated_core: Core = pickle_deepcopy(core)
+        updated_core.memory_hierarchy.add_memory(
             offchip_memory_instance,
             offchip_memory_operands,
             offchip_port_alloc,
             offchip_served_dimensions,
         )
-        core.recalculate_memory_hierarchy_information()  # Recalculates some internals of the Core object
+        updated_core.recalculate_memory_hierarchy_information()  # Recalculates some internals of the Core object
 
-        return updated_accelerator
+        return updated_core

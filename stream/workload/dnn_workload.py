@@ -4,7 +4,7 @@ from typing import Any
 from zigzag.utils import DiGraphWrapper
 from zigzag.workload.layer_node import LayerNode
 
-from stream.workload.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode
 
 logger = logging.getLogger(__name__)
 
