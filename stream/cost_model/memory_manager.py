@@ -256,11 +256,9 @@ class MemoryManager:
             instance_priority = tensor.get_instance_priority(top_instance, self)
             importance = instance_priority * tensor.size
             evictable_tensors_priority_size.append(importance)
-
-        else:
-            evictable_tensors_priority_size, evictable_tensors = zip(
-                *sorted(zip(evictable_tensors_priority_size, evictable_tensors))
-            )
+        evictable_tensors_priority_size, evictable_tensors = zip(
+            *sorted(zip(evictable_tensors_priority_size, evictable_tensors))
+        )
         evictable_tensors_size = [tensor.size for tensor in evictable_tensors]
         evictable_tensors_size_sums = [
             sum(evictable_tensors_size[:i]) for i in range(0, len(evictable_tensors_size) + 1)
