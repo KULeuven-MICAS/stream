@@ -6,18 +6,20 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 
+MODULATION_NUMBER = 10**3  # Must be higher than any node's sub id
+
 
 def nearest_power_of_10(x: int):
     return 10 ** ceil(log10(x))
 
 
-def convert_id(i: int, j: int, nb_nodes: int) -> int:
-    k = nearest_power_of_10(nb_nodes) * i + j
-    return k
+def convert_id(i: int, j: int) -> int:
+    assert 0 <= j < MODULATION_NUMBER
+    return MODULATION_NUMBER * i + j
 
 
-def invert_id(k: int, nb_nodes: int) -> tuple[int, int]:
-    i, j = divmod(k, nearest_power_of_10(nb_nodes))
+def invert_id(k: int) -> tuple[int, int]:
+    i, j = divmod(k, MODULATION_NUMBER)
     return i, j
 
 
@@ -25,7 +27,7 @@ def convert_ids(nodes: list[ComputationNode]):
     ids: dict[ComputationNode, int] = {}
     for node in nodes:
         i, j = node.id, node.sub_id
-        new_id = convert_id(i, j, len(nodes))
+        new_id = convert_id(i, j)
         ids[node] = new_id
     return ids
 
@@ -33,7 +35,7 @@ def convert_ids(nodes: list[ComputationNode]):
 def invert_ids_list(ids_list: list[tuple[int, int, int]], nb_nodes: int) -> list[tuple[int, int, tuple[int, int]]]:
     new_l: list[tuple[int, int, tuple[int, int]]] = []
     for slot, core, k in ids_list:
-        new_l.append((slot, core, invert_id(k, nb_nodes)))
+        new_l.append((slot, core, invert_id(k)))
     return new_l
 
 
@@ -53,7 +55,7 @@ def get_latencies(
         ids = {node: node.id for node in nodes}
     core_names = [f"Core {id}" for id in core_ids]
     latencies = {(ids[node], core_name): impossible_lat for node in nodes for core_name in core_names}
-    possible_allocations = {}
+    possible_allocations: dict[int, list[str]] = {}
     k_g_sizes = {}
 
     for node in nodes:

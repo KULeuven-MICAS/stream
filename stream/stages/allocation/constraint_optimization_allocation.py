@@ -1,3 +1,4 @@
+from typing import TypeAlias
 import itertools
 import logging
 import os
@@ -13,7 +14,7 @@ from zigzag.stages.stage import Stage
 from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.opt.allocation.constraint_optimization.allocation import get_optimal_allocations
+from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_T, get_optimal_allocations
 from stream.stages.estimation.stream_cost_model_evaluation import StreamCostModelEvaluationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
 from stream.stages.generation.hint_loops_partitioned_workload_generation import (
@@ -26,6 +27,8 @@ from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
+
+STACK_T: TypeAlias = tuple[int, ...]
 
 
 class ConstraintOptimizationAllocationStage(Stage):
@@ -75,21 +78,21 @@ class ConstraintOptimizationAllocationStage(Stage):
             )
             self.visualize_node_hw_performances_path_with_split = node_hw_performances_visualization_path
         self.hint_loops = hint_loops
-        self.co_time_limit = kwargs.get("co_time_limit", 600)
+        self.co_time_limit: int = kwargs.get("co_time_limit", 600)
 
         # Which CME attribute to use for the node latencies
         self.latency_attr = kwargs.get("latency_attr", "latency_total1")
 
         # Attributes that will be assigned throughout the stage
-        self.ss_to_computes = {}
-        self.hashes_per_sink_node = {}
-        self.steady_state_hashes = {}
-        self.compute_per_sink_node = {}
-        self.ss_iterations_per_stack = {}
-        self.optimal_allocation_per_stack = {}
-        self.nb_macs_per_stack = {}
-        self.nb_macs_in_ss_per_stack = {}
-        self.ss_mac_percentages_per_stack = {}
+        self.ss_to_computes: dict[STACK_T, set[ComputationNode]] = {}
+        self.hashes_per_sink_node: dict[STACK_T, dict[ComputationNode, int]] = {}
+        self.steady_state_hashes: dict[STACK_T, int] = {}
+        self.compute_per_sink_node: dict[STACK_T, ComputationNode] = {}
+        self.ss_iterations_per_stack: dict[STACK_T, int] = {}
+        self.optimal_allocation_per_stack: dict[STACK_T, ALLOCATION_T] = {}
+        self.nb_macs_per_stack: dict[STACK_T, int] = {}
+        self.nb_macs_in_ss_per_stack: dict[STACK_T, int] = {}
+        self.ss_mac_percentages_per_stack: dict[STACK_T, int] = {}
 
     def run(self):
         logger.info("Start ConstraintOptimizationAllocationStage.")
@@ -103,7 +106,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         yield (scme, None)
 
     def run_coala(self):
-        combined_allocation = []
+        combined_allocation: ALLOCATION_T = []
         timestep_offset = 0
         for optimal_allocation in self.optimal_allocation_per_stack.values():
             # Update all timesteps in this allocation with the offset and add it to the combined allocation
@@ -196,7 +199,9 @@ class ConstraintOptimizationAllocationStage(Stage):
             logger.info(f"Stack {stack}: {t_end - t_start:.3f} seconds")
             self.optimal_allocation_per_stack[stack] = optimal_allocation
 
-    def find_best_allocation(self, to_compute, iterations, stack=(0,), time_limit=600):
+    def find_best_allocation(
+        self, to_compute: set[ComputationNode], iterations: int, stack: STACK_T = (0,), time_limit: int = 600
+    ):
         # TODO: Implement overhead of tensor transfers between cores
         # Check if the allocation is already cached, if not: find it
         stack_str = "_".join([str(id) for id in stack])
@@ -279,7 +284,7 @@ class ConstraintOptimizationAllocationStage(Stage):
                 seen_ids.add(id)
 
         allocation_adjusted = sorted(allocation_adjusted, key=lambda x: (x[0], x[2], x[1]))
-        layer_order_steady_state = [layer_id for layer_id, node_id in [id for (t, c, id) in allocation_adjusted]]
+        layer_order_steady_state = [layer_id for layer_id, node_id in [id for (_, _, id) in allocation_adjusted]]
         for sink_node, to_compute in compute_per_sink_node.items():
             if hashes_per_sink_node[sink_node] == memoization_hash_ss:
                 order_i = self.get_order_steady_state(to_compute, layer_order_steady_state)
@@ -304,14 +309,14 @@ class ConstraintOptimizationAllocationStage(Stage):
     def get_order_non_steady_state(self, to_compute: list[ComputationNode]):
         return [(n.id, n.sub_id) for n in sorted(to_compute, key=lambda x: (-x.id, -x.sub_id))]
 
-    def schedule_allocation(self, allocation) -> StreamCostModelEvaluationStage:
+    def schedule_allocation(self, allocation: ALLOCATION_T) -> StreamCostModelEvaluationStage:
         # Get the involved layer ids we want to schedule and their core allocations
         layer_ids = sorted(set(id[0] for _, _, id in allocation))
         core_strs = [sorted(set((c for _, c, id in allocation if id[0] == layer_id))) for layer_id in layer_ids]
         core_ids = [[int(s.split(" ")[-1]) for s in core_str] for core_str in core_strs]
 
         # Create a modified workload with the correct number of k splits
-        nodes = filter(lambda n: n.id <= max(layer_ids), self.original_workload.nodes())
+        nodes = filter(lambda n: n.id <= max(layer_ids), self.original_workload.node_list)
         original_workload_copy = pickle_deepcopy(self.original_workload.subgraph(nodes))
         # Set the correct allocations for the layers in the copied workload
         self.set_fixed_allocations_for_workload(original_workload_copy, layer_ids, core_ids)
@@ -347,7 +352,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         return scme
 
     def set_fixed_allocations_for_workload(
-        self, workload: ComputationNodeWorkload, layer_ids: list[int], core_ids: list[int]
+        self, workload: ComputationNodeWorkload, layer_ids: list[int], core_ids: list[list[int]]
     ):
         """! Modify the workload to fix the core allocations to the given core_ids for the given layer_ids."""
         assert len(layer_ids) == len(core_ids)

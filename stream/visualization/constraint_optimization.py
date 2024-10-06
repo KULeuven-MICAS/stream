@@ -28,7 +28,7 @@ def visualize_waco(
     Allocation is a list of tuples, with each tuple being of form (timestep, allocation, node_id). Allocation is a core.
     node_hw_performances is a nested dict storing for each node and each core the hardware performance.
     """
-    pass
+    return
     # Extract the number of allocations (k splits) of all nodes
     k_splits: dict[int, list[Core]] = {}
     for _, core, id in allocation:
