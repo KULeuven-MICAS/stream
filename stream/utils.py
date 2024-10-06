@@ -183,9 +183,9 @@ class CostModelEvaluationLUT:
 
     def get_equal_core(self, node: "ComputationNode", core: Core):
         """Retrieve the core in the look-up table that is equal to the given core."""
-        if node and any((c.has_same_performance(core) for c in self.lut.get(node, {}))):
+        try:
             return next(c for c in self.lut[node] if c.has_same_performance(core))
-        else:
+        except StopIteration or KeyError:
             return None
 
     def get_nodes(self):

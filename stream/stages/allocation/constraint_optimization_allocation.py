@@ -1,9 +1,8 @@
-from typing import TypeAlias
 import itertools
 import logging
 import os
 from time import time
-from typing import Any
+from typing import Any, TypeAlias
 
 import networkx as nx
 import numpy as np
