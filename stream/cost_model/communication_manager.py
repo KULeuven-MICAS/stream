@@ -3,7 +3,7 @@ from math import ceil
 from typing import TYPE_CHECKING, Any
 
 from zigzag.datatypes import Constants, MemoryOperand
-from zigzag.hardware.architecture.core import Core
+from zigzag.hardware.architecture.accelerator import Accelerator as Core
 
 from stream.hardware.architecture.utils import intersections
 from stream.workload.computation.computation_node import ComputationNode
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 class CommunicationEvent:
     """Represents a communication event involving one or more CommunicationLinks."""
 
-    def __init__(self, id: int, tasks) -> None:
+    def __init__(self, id: int, tasks: list["CommunicationLinkEvent"]) -> None:
         # Sanity checks
         assert len(tasks) > 0
         assert all([t.type == tasks[0].type] for t in tasks)
@@ -81,6 +81,9 @@ class CommunicationLinkEvent:
 
 class CommunicationManager:
     """Manages the inter-core and offchip communication of an Accelerator."""
+
+    shortest_paths: dict[tuple[Core, Core], list[Core]]
+    events: list[CommunicationEvent]
 
     def __init__(self, accelerator: "Accelerator") -> None:
         self.accelerator = accelerator

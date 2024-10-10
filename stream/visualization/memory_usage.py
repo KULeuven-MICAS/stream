@@ -1,7 +1,13 @@
+from typing import TYPE_CHECKING
+
 import numpy as np
 from brokenaxes import brokenaxes
 from matplotlib import pyplot as plt
 from matplotlib.gridspec import GridSpec
+
+if TYPE_CHECKING:
+    from stream.cost_model.cost_model import StreamCostModelEvaluation
+
 
 SMALL_SIZE = 8
 MEDIUM_SIZE = 10
@@ -37,13 +43,13 @@ def humanbytes(B):
 
 
 def plot_memory_usage(
-    scme,
-    section_start_percent=(0,),
-    percent_shown=(100,),
-    show_dram=False,
-    show_human_bytes=True,
-    fig_path="outputs/memory_usage.png",
-    fig_size=(16, 9),
+    scme: "StreamCostModelEvaluation",
+    section_start_percent: tuple[int, ...] = (0,),
+    percent_shown: tuple[int, ...] = (100,),
+    show_dram: bool = False,
+    show_human_bytes: bool = True,
+    fig_path: str = "outputs/memory_usage.png",
+    fig_size: tuple[int, int] = (16, 9),
 ):
     memory_manager = scme.accelerator.memory_manager
     cpti = memory_manager.cores_per_top_instance.copy()

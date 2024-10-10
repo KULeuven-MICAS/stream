@@ -1,5 +1,6 @@
 import logging as _logging
 import os
+from typing import Literal
 
 import gurobipy as gp
 from zigzag.stages.main import MainStage
@@ -24,7 +25,9 @@ _logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(me
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
-def _sanity_check_inputs(hardware: str, workload: str, mapping: str, mode: str, output_path: str):
+def _sanity_check_inputs(
+    hardware: str, workload: str, mapping: str, mode: Literal["lbl"] | Literal["fused"], output_path: str
+):
     assert os.path.exists(hardware), f"Hardware file {hardware} does not exist"
     assert os.path.exists(workload), f"Workload file {workload} does not exist"
     assert os.path.exists(mapping), f"Mapping file {mapping} does not exist"
@@ -54,7 +57,7 @@ def optimize_allocation_ga(
     hardware: str,
     workload: str,
     mapping: str,
-    mode: str,
+    mode: Literal["lbl"] | Literal["fused"],
     layer_stacks: list[tuple[int, ...]],
     nb_ga_generations: int,
     nb_ga_individuals: int,
@@ -108,7 +111,7 @@ def optimize_allocation_co(
     hardware: str,
     workload: str,
     mapping: str,
-    mode: str,
+    mode: Literal["lbl"] | Literal["fused"],
     layer_stacks: list[tuple[int, ...]],
     experiment_id: str,
     output_path: str,

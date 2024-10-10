@@ -1,13 +1,14 @@
 from math import ceil
+from typing import Any
 
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.core import Core
+from zigzag.hardware.architecture.accelerator import Accelerator as Core
 from zigzag.hardware.architecture.memory_instance import MemoryInstance
 from zigzag.mapping.spatial_mapping import SpatialMapping
+from zigzag.utils import DiGraphWrapper
 
 from stream.cost_model.communication_manager import CommunicationManager
 from stream.cost_model.memory_manager import MemoryManager
-from stream.utils import DiGraphWrapper
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.tensor import Tensor
 
@@ -29,6 +30,10 @@ class Accelerator:
         cores: CoreGraph,
         offchip_core_id: int | None = None,
     ):
+        """
+        Args:
+            core_ids_with_shared_mem: indicate which cores (identified by core id) have a shared top level memory
+        """
         self.name = name
         self.cores = cores
         self.offchip_core_id = offchip_core_id
@@ -41,21 +46,18 @@ class Accelerator:
     def __repr__(self) -> str:
         return str(self)
 
-    def __jsonrepr__(self):
+    def __jsonrepr__(self) -> dict[str, Any]:
         """
         JSON representation used for saving this object to a json file.
         """
         return {"name": self.name, "cores": self.cores}
 
     def get_core(self, core_id: int) -> Core:
-        """
+        """s
         Return the core with id 'core_id'.
         Raises ValueError() when a core_id is not found in the available cores.
         """
-        core = next((core for core in self.core_list if core.id == core_id), None)
-        if core is None:
-            raise ValueError(f"Requested core with id {core_id} is not present in accelerator.")
-        return core
+        return self.cores.get_node_with_id(core_id)
 
     @property
     def core_list(self) -> list[Core]:
@@ -449,13 +451,13 @@ class Accelerator:
 
     def get_top_instances_of_core(self, core_id: int):
         core = self.get_core(core_id)
-        top_instances = self.memory_manager.top_instances[core]
+        top_instances = self.memory_manager.top_instances_per_core[core]
         return top_instances
 
-    def get_top_instance_of_core(self, core: Core | int, mem_op: MemoryOperand):
+    def get_top_instance_of_core(self, core: Core | int, mem_op: MemoryOperand) -> MemoryInstance:
         if isinstance(core, int):
             core = self.get_core(core)
-        top_instances = self.memory_manager.top_instances[core]
+        top_instances = self.memory_manager.top_instances_per_core[core]
         for instance in top_instances:
             core_idx = self.memory_manager.cores_per_top_instance[instance].index(core)
             instance_mem_ops = self.memory_manager.memory_operands_per_top_instance[instance][core_idx]
@@ -464,11 +466,12 @@ class Accelerator:
         raise ValueError(f"No top instance for {core} with memory operand {mem_op}.")
 
     def get_spatial_mapping_from_core(self, core_allocation: list[int]) -> SpatialMapping:
-        """If the given core allocation contains a single core, return the spatial mapping defined in that core.
-        Else, return an empty spatial mapping"""
-        if len(core_allocation) == 1:
-            core = self.get_core(core_allocation[0])
-            if core.dataflows is not None:
-                return core.dataflows
+        """Iff the dataflows of all given cores is the same, return that dataflow. Otherwise, throw an error"""
+        all_dataflows = [self.get_core(core_id).dataflows for core_id in core_allocation]
+        some_dataflow = all_dataflows.pop()
 
-        return SpatialMapping.empty()
+        # All cores have same dataflow
+        if some_dataflow is not None and all(some_dataflow == dataflow for dataflow in all_dataflows):
+            return some_dataflow
+
+        raise ValueError("Unclear which dataflow to return or no valid dataflow found.")
