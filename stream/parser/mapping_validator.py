@@ -20,18 +20,12 @@ class MappingValidator:
         "core_allocation_is_fixed": {"type": "boolean", "default": False},
         "inter_core_tiling": {
             "type": "list",
-            "schema": {
-                "type": "list",
-                "schema": {"type": "string", "regex": r"^[A-Z]+, \d+|\*+$"},
-            },
+            "schema": {"type": "string", "regex": r"^[A-Z]+, [\d+|\*]$"},
             "default": [],
         },
         "intra_core_tiling": {
             "type": "list",
-            "schema": {
-                "type": "list",
-                "schema": {"type": "string", "regex": r"^[A-Z]+, \d+|\*+$"},
-            },
+            "schema": {"type": "string", "regex": r"^[A-Z]+, [\d+|\*]$"},
             "default": [],
         },
         "spatial_mapping": {

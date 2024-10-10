@@ -365,6 +365,8 @@ class ConstraintOptimizationAllocationStage(Stage):
         layer_ids_not_in_ss = [
             layer_id for stack in self.layer_stacks for layer_id in stack if layer_id not in layer_ids
         ]
+
+        # TODO this piece of code is outdates
         for layer_id_not_in_ss in layer_ids_not_in_ss:
             layer_ids_idx = np.searchsorted(layer_ids, layer_id_not_in_ss)
             for n in filter(lambda n: n.id == layer_id_not_in_ss, workload.node_list):

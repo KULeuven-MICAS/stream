@@ -1,3 +1,4 @@
+from copy import deepcopy
 from math import prod
 from typing import TypeAlias
 
@@ -28,7 +29,7 @@ class ComputationNode(LayerNode, Node):
     producer/consumer of another layer.
     """
 
-    too_large_operands: list[LayerOperand]
+    too_large_operands: list[MemoryOperand]
 
     # Map the node's op_type to the corresponding layer dimension to split on for fusion
     FUSION_DIM_MAPPING: dict[str, list[LayerDim]] = {
@@ -253,7 +254,7 @@ class ComputationNode(LayerNode, Node):
             new_shape = self.operand_tensor_reshape[operand]
             return tensor.reshape(new_shape)
 
-    def set_too_large_operands(self, too_large_operands: list[MemoryOperand]):
+    def set_too_large_operands(self, too_large_operands: list[LayerOperand]):
         self.too_large_operands = too_large_operands
 
     def update_loop_ranges(self, new_ranges: LoopRanges):
@@ -261,3 +262,14 @@ class ComputationNode(LayerNode, Node):
         LayerDims not defined in `new_ranges`"""
         for layer_dim in new_ranges:
             self.loop_ranges[layer_dim] = new_ranges[layer_dim]
+
+    def extract_inter_core_mapping_attr(self):
+        mapping_attr = InterCoreMappingAttributes(
+            op_type=self.type,
+            spatial_mapping=self.spatial_mapping,
+            core_allocation=self.core_allocation,
+            core_allocation_is_fixed=self.core_allocation_is_fixed,
+            intra_core_tiling=self.intra_core_tiling,
+            inter_core_tiling=self.inter_core_tiling,
+        )
+        return deepcopy(mapping_attr)

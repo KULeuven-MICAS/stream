@@ -32,16 +32,17 @@ class HintLoopsGenerationStage(Stage):
         self.hint_loops = kwargs.get("hint_loops", None)
 
     def run(self):
-        if self.mode == "fused":
-            if self.hint_loops is None:
-                self.hint_loops = self.get_hint_loops_fused()
-                self.kwargs["cn_define_mode"] = 3
-        elif self.mode == "lbl":
-            if self.hint_loops is None:
-                self.hint_loops = self.get_hint_loops_lbl()
-                self.kwargs["cn_define_mode"] = 3
-        else:
-            raise ValueError("Unsupported mode for hint loops determination.")
+        match self.mode:
+            case "fused":
+                if self.hint_loops is None:
+                    self.hint_loops = self.get_hint_loops_fused()
+                    self.kwargs["cn_define_mode"] = 3
+            case "lbl":
+                if self.hint_loops is None:
+                    self.hint_loops = self.get_hint_loops_lbl()
+                    self.kwargs["cn_define_mode"] = 3
+            case _:
+                raise ValueError("Unsupported mode for hint loops determination.")
 
         self.kwargs["accelerator"] = self.accelerator
         self.kwargs["workload"] = self.workload
@@ -73,9 +74,7 @@ class HintLoopsGenerationStage(Stage):
             if len(computation_nodes) > 1:
                 for n in computation_nodes:
                     # NOTE Take first entry of fusion_partition_dims for now
-                    hint_loops[(n.id,)] = [
-                        (n.fusion_partition_dims[0], "all"),
-                    ]
+                    hint_loops[(n.id,)] = [(n.fusion_partition_dims[0], "all")]
             else:
                 hint_loops[stack] = []
         return hint_loops

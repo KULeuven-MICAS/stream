@@ -241,6 +241,8 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
 
         # Take away the outer_temporal_loops to create finer CNs for this node
         finer_node_attrs = original_node.extract_node_attr()
+        finer_node_mapping = original_node.extract_inter_core_mapping_attr()
+
         for outer_tl in outer_temporal_loops:
             outer_dim = outer_tl.dimension
             outer_size = outer_tl.size
@@ -305,8 +307,7 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                 dim_max = dim_min + (finer_span[loop_dim] if loop_dim in finer_span else 1)
                 dim_min_max[loop_dim] = (dim_min, dim_max)
 
-            # Add the loop ranges for this cn to a copy of the finer node attributes
-            finer_node_attrs_copy = deepcopy(finer_node_attrs)
+            # finer_node_mapping_copy = deepcopy(original_node.extract_mapping_attr())
             group_id = group_id_manager.get_group_id(original_node, dim_min_max)
 
             # Create the computation node object with the computed ranges of the loop dimensions
@@ -324,7 +325,8 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                 node_id=original_node_id,
                 sub_id=n,
                 node_name=node_name,
-                node_attr=finer_node_attrs_copy,
+                node_attr=finer_node_attrs,
+                mapping_attr=finer_node_mapping,
                 op_type=original_node.type,
                 produces_final_output=produces_final_output,
                 group_id=group_id,
