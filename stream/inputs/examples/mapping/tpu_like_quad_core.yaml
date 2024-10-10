@@ -1,24 +1,31 @@
-- name : default 
+- name: default
   core_allocation: [0, 1, 2, 3]
-    
-- name : Conv 
+  inter_core_tiling:
+    - K, 4
+  intra_core_tiling:
+    - D, 4
+
+- name: Conv
   core_allocation: [0, 1, 2, 3]
-    
-- name : Gemm 
+  inter_core_tiling:
+    - K, 4
+  intra_core_tiling:
+    - D, 4
+
+- name: Gemm
   core_allocation: [0, 1, 2, 3]
-    
-- name : Pool 
+
+- name: Pool
   core_allocation: [4]
-    
-- name : MaxPool 
+
+- name: MaxPool
   core_allocation: [4]
-    
-- name : AveragePool 
+
+- name: AveragePool
   core_allocation: [4]
-    
-- name : GlobalAveragePool 
+
+- name: GlobalAveragePool
   core_allocation: [4]
-    
-- name : Add 
+
+- name: Add
   core_allocation: [5]
-    

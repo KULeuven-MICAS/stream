@@ -3,10 +3,13 @@ from typing import TypeAlias
 
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 from zigzag.visualization.results.plot_cme import shorten_onnx_layer_name
-from zigzag.workload.layer_attributes import LayerPadding
+from zigzag.workload.layer_attributes import (
+    LayerPadding,
+)
 from zigzag.workload.layer_node import LayerNode, LayerNodeAttributes
 
 from stream.node_tensor import NodeTensor
+from stream.workload.mapping import INTRA_CORE_MAPPING_DEFAULT, InterCoreMappingAttributes
 from stream.workload.node import Node
 from stream.workload.tensor import Tensor
 
@@ -25,6 +28,8 @@ class ComputationNode(LayerNode, Node):
     producer/consumer of another layer.
     """
 
+    too_large_operands: list[LayerOperand]
+
     # Map the node's op_type to the corresponding layer dimension to split on for fusion
     FUSION_DIM_MAPPING: dict[str, list[LayerDim]] = {
         "conv": [LayerDim("OY")],
@@ -33,22 +38,30 @@ class ComputationNode(LayerNode, Node):
         "pooling": [LayerDim("OY")],
         "add": [LayerDim("D")],
         "mul": [LayerDim("D")],
-    }
+        "softmax": [LayerDim("K")],
+        "max": [LayerDim("K")],
+        "div": [LayerDim("K")],
+        "exp": [LayerDim("K")],
+        "sum": [LayerDim("K")],
+    }  # TODO default to "K" ?
 
     def __init__(
         self,
         node_id: int,
         node_name: str,
         node_attr: LayerNodeAttributes,
+        mapping_attr: InterCoreMappingAttributes,
         op_type: str = "computation",
         operand_tensor_reshape: OperandTensorReshape | None = None,
         produces_final_output: bool = False,
         group_id: int = 0,
-        # To distinguish alternative versions of this node
-        sub_id: int = -1,
+        sub_id: int = -1,  # To distinguish alternative versions of this node
     ):
         op_type = op_type.lower()
-        LayerNode.__init__(self, layer_id=node_id, node_name=node_name, node_attr=node_attr)
+
+        LayerNode.__init__(
+            self, layer_id=node_id, node_name=node_name, node_attr=node_attr, mapping_attr=INTRA_CORE_MAPPING_DEFAULT
+        )
         Node.__init__(
             self,
             node_id=node_id,
@@ -57,43 +70,45 @@ class ComputationNode(LayerNode, Node):
             onchip_energy=0,
             offchip_energy=0,
             runtime=0,
-            possible_core_allocation=node_attr.core_allocation,
+            possible_core_allocation=mapping_attr.core_allocation,
         )
 
-        self.fusion_partition_dims: list[LayerDim] = self.FUSION_DIM_MAPPING.get(op_type, None)
-        if self.fusion_partition_dims is None:
-            raise NotImplementedError(f"Fusion partitioning dimensions not defined for {op_type}")
+        # Overwrite default spatial mapping with given one
+        self.spatial_mapping = mapping_attr.spatial_mapping
+        # Unpack other mapping attributes
+        self.core_allocation_is_fixed = mapping_attr.core_allocation_is_fixed
+        self.intra_core_tiling = mapping_attr.intra_core_tiling
+        self.inter_core_tiling = mapping_attr.inter_core_tiling
 
         self.sub_id = sub_id
         self.group = group_id
-        self._static_hash_value = hash((self.id, self.sub_id))
+        self._static_hash_value = self.__compute_static_hash()
         self.operand_tensor_reshape = (
             operand_tensor_reshape if operand_tensor_reshape is not None else self.get_operand_tensor_reshape_default()
         )
-        # Whether this ComputationNode produces a final output
         self.produces_final_output = produces_final_output
-
         self.loop_ranges: LoopRanges = {  # type: ignore
             layer_dim: (0, size) for layer_dim, size in self.layer_dim_sizes.items()
+        }
+        self.operand_dimensionality_order: dict[LayerOperand, list[LayerDim]] = {
+            layer_op: self.equation.get_r_layer_dims(layer_op) for layer_op in self.equation.get_contained_operands()
         }
 
         # adds pr dimensions loop ranges to self.loop_ranges
         self.calculate_pr_loop_ranges()
-        # Rename methods mentioning layer to node
-        self.extract_node_info = self.extract_layer_info
         # Rename function
         self.get_node_operand = self.memory_operand_links.mem_to_layer_op
-        self.operand_dimensionality_order: dict[LayerOperand, list[LayerDim]] = {
-            layer_op: self.equation.get_r_layer_dims(layer_op) for layer_op in self.equation.get_contained_operands()
-        }
+        self.extract_node_info = self.extract_layer_info
+
+        try:
+            self.fusion_partition_dims = ComputationNode.FUSION_DIM_MAPPING[op_type]
+        except KeyError:
+            raise NotImplementedError(f"Fusion partitioning dimensions not defined for {op_type}")
 
         # Each ComputationNode will save a tensor for all its defined operands.
         # For example, a conv layer will have an I tensor, W tensor and O tensor.
         self.operand_tensors: dict[LayerOperand, Tensor] = {}
         self.set_operand_tensors()
-
-        # Will be set by the InterCoreMappingStage or by the FitnessEvaluator
-        self.too_large_operands = None
 
     def set_operand_tensors(self):
         for op in self.layer_operands:
@@ -131,6 +146,20 @@ class ComputationNode(LayerNode, Node):
     def short_name(self) -> str:
         return shorten_onnx_layer_name(self.name)
 
+    def __compute_static_hash(self):
+        """Return a value that can be used to identify unique nodes in sets, dicts and equality. It is pre-computed at
+        initialization time to speed up dict lookup and instance equality"""
+        return hash(
+            (
+                self.layer_dim_sizes,
+                frozenset(self.dimension_relations),
+                self.operand_precision,
+                self.memory_operand_links,
+                self.id,
+                self.sub_id,
+            )
+        )
+
     def __str__(self):
         return f"ComputationNode{self.id}_{self.sub_id}"
 
@@ -166,7 +195,6 @@ class ComputationNode(LayerNode, Node):
         Returns:
             bool: Whether the nodes are equal or not
         """
-
         return (
             isinstance(other, ComputationNode)
             and self.layer_dim_sizes == other.layer_dim_sizes
@@ -174,6 +202,7 @@ class ComputationNode(LayerNode, Node):
             and self.operand_precision == other.operand_precision
             and self.memory_operand_links == other.memory_operand_links
             and self.id == other.id
+            # NOTE: don't include sub_id
         )
 
     def __lt__(self, other: "ComputationNode"):

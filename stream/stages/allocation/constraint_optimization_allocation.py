@@ -119,7 +119,7 @@ class ConstraintOptimizationAllocationStage(Stage):
 
     def extract_steady_state_per_stack(self):
         for i, stack in enumerate(self.layer_stacks):
-            nodes = [n for n in self.workload.nodes() if n.id in stack]
+            nodes = [n for n in self.workload.node_list if n.id in stack]
             if len(nodes) == 0:
                 logger.warning(f"Stack {i} is empty.")
                 continue

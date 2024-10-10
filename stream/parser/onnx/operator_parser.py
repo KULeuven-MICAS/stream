@@ -8,6 +8,7 @@ from zigzag.parser.workload_factory import LayerNodeFactory
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.workload.computation.computation_node import ComputationNode
+from stream.workload.mapping import InterCoreMappingAttributes
 from stream.workload.node import Node
 
 
@@ -18,7 +19,7 @@ class OnnxOperatorParser(ONNXOperatorParserZigZag, metaclass=ABCMeta):
         node: NodeProto,
         nodes_outputs: dict[int, Any],
         onnx_model: ModelProto,
-        mapping_data: list[dict[str, Any]],
+        all_mappings: dict[str, InterCoreMappingAttributes],
         accelerator: Accelerator,
     ) -> None:
         """'overloads' the ONNXOperatorParserZigZag init method with the correct `accelerator` type"""
@@ -26,7 +27,7 @@ class OnnxOperatorParser(ONNXOperatorParserZigZag, metaclass=ABCMeta):
         self.node = node
         self.nodes_outputs = nodes_outputs
         self.onnx_model = onnx_model
-        self.mapping_data = mapping_data
+        self.all_mappings = all_mappings
         self.accelerator = accelerator
 
     def run(self) -> Generator[Node, None, None]:  # type: ignore
@@ -86,18 +87,24 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
         # Get the input and output activation shapes
         input_shape, output_shape = get_node_input_output_dimension_shapes(self.node, self.onnx_model)
 
+        # From the ONNX node
         node_data = self.get_layer_node_user_format(input_shape, output_shape)
-        node_factory = LayerNodeFactory(node_data, self.mapping_data)
+        node_factory = LayerNodeFactory(node_data, mapping_data=[])
         node_attrs = node_factory.create_node_attr()
 
+        mapping = self.all_mappings.get(self.node.op_type, self.all_mappings["default"])
+
         # Override spatial mapping by the one defined in the core's dataflows
-        core_allocation = node_attrs.core_allocation
-        spatial_mapping = self.accelerator.get_spatial_mapping_from_core(core_allocation)
-        node_attrs.spatial_mapping = spatial_mapping
+        try:
+            core_dataflow = self.accelerator.get_spatial_mapping_from_core(mapping.core_allocation)
+            mapping.spatial_mapping = core_dataflow
+        except ValueError:
+            pass
 
         return ComputationNode(
             node_id=self.node_id,
             node_name=self.node.name,
-            node_attr=node_attrs,
             op_type=self.node.op_type,
+            node_attr=node_attrs,
+            mapping_attr=mapping,
         )
