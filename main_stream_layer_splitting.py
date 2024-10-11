@@ -1,18 +1,19 @@
 """ This main file uses a fixed layer-core allocation with the last layer split across multiple cores"""
 
-from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
+# Initialize the logger
+import logging as _logging
+import pickle
+import re
+
 from zigzag.stages.MainStage import MainStage
+
 from stream.classes.stages import *
+from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
+from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import (
     plot_timeline_brokenaxes,
     visualize_timeline_plotly,
 )
-from stream.visualization.memory_usage import plot_memory_usage
-import re
-import pickle
-
-# Initialize the logger
-import logging as _logging
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
