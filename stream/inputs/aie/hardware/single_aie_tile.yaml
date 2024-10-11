@@ -1,10 +1,10 @@
 name: single_aie_tile
 cores:
   # index corresponds to core ID
-  - ./cores/aie_tile.yaml
-  - ./cores/pooling.yaml
-  - ./cores/simd.yaml
-  - ./cores/shim_dma.yaml
+  - aie_tile.yaml
+  - pooling.yaml
+  - simd.yaml
+  - shim_dma.yaml
 
 graph:
   type: 2d_mesh
