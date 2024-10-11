@@ -63,7 +63,7 @@ memories:
         tl: r_port_1
         fl: w_port_1
         th: r_port_2
-    served_dimensions: [D1, D2]
+    served_dimensions: [D1]
 
 operational_array:
   multiplier_energy: 0.5 # pJ
