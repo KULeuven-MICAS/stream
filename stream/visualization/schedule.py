@@ -1,23 +1,26 @@
+import argparse
+import logging
+import pickle
+from collections import defaultdict
+from itertools import cycle
+from math import isnan
 from typing import TYPE_CHECKING
+
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
 from brokenaxes import brokenaxes
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
-from math import isnan
-import numpy as np
-import logging
-import plotly.graph_objects as go
 from plotly.express.colors import sample_colorscale
-import pandas as pd
-import pickle
-import networkx as nx
-import argparse
-from itertools import cycle
+from zigzag.datatypes import LayerOperand
 
-from zigzag.workload.Workload import Workload
+from stream.workload.tensor import Tensor
 
 if TYPE_CHECKING:
-    from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
-    from stream.classes.hardware.architecture.accelerator import Accelerator
+    from stream.cost_model.cost_model import StreamCostModelEvaluation
+    from stream.hardware.architecture.accelerator import Accelerator
+    from stream.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +49,10 @@ def plot_timeline_brokenaxes(
     plot_data_transfer: bool = False,
     fig_path: str = "outputs/schedule_plot.png",
 ) -> None:
-    G: Workload = scme.workload
+    G: ONNXWorkload = scme.workload
     accelerator: Accelerator = scme.accelerator
 
-    nb_layers = len(set(iter([n.id for n in G.nodes()])))
+    nb_layers = len(set(iter([n.id for n in G.node_list])))
     nb_cores = accelerator.cores.number_of_nodes()
 
     plt.rc("font", size=SMALL_SIZE)  # controls default text sizes
@@ -77,7 +80,7 @@ def plot_timeline_brokenaxes(
     # total EDP of the SCME
     edp = latency * energy
 
-    fig = plt.figure(figsize=(20, 6))
+    plt.figure(figsize=(20, 6))
 
     x_starts = [int((start / 100) * latency) for start in section_start_percent]
     x_ends = [
@@ -96,7 +99,7 @@ def plot_timeline_brokenaxes(
     layer_ids_seen = []
     legend_labels = []
     height = 0.5
-    for cn in G.nodes():
+    for cn in G.node_list:
         layer_id = cn.id
         # Get the colour for this layer
         if layer_id not in layer_ids_seen:
@@ -169,7 +172,7 @@ def plot_timeline_brokenaxes(
             legend_labels.append(f"Layer {layer_id}")
     # print("Rectangles done...", end="")
 
-    core_and_transfer_link_ids = sorted([core.id for core in accelerator.cores.nodes()])
+    core_and_transfer_link_ids = sorted([core.id for core in accelerator.cores.node_list])
     hline_loc = core_and_transfer_link_ids[-1] - 0.5
     core_and_transfer_link_ids = core_and_transfer_link_ids[:-1]
     # Always define the last core as DRAM, not including DRAM in the core
@@ -197,7 +200,10 @@ def plot_timeline_brokenaxes(
                 end = event.end
                 runtime = end - start
                 tensors = event.tensors
-                weight_transfer = task_type.lower() == "transfer" and tensors[0].layer_operand in ["W", "B"]
+                weight_transfer = task_type.lower() == "transfer" and tensors[0].layer_operand in [
+                    LayerOperand("W"),
+                    LayerOperand("B"),
+                ]
                 layer_id = tensors[0].origin.id
                 node_id = tensors[0].origin.sub_id
                 if layer_id not in layer_ids_seen:
@@ -251,20 +257,14 @@ def plot_timeline_brokenaxes(
     """ Plot inter-layer CN data dependency line """
     for prod, cons in G.edges():
         p_l = prod.id
-        c_l = cons.id
         p_core = prod.chosen_core_allocation
         c_core = cons.chosen_core_allocation
         if not PLOT_DEPENDENCY_LINES_SAME_CORE and p_core == c_core:
             continue
-        p_start = prod.start
-        p_duration = prod.runtime
         p_end = prod.end
         c_start = cons.start
-        c_duration = cons.runtime
         x1 = p_end
-        y1 = p_core
         x2 = c_start
-        y2 = c_core
         if draw_dependencies:
             for ax_idx in range(nb_axs):  # go through the different broken axes
                 ax = axs[ax_idx]
@@ -319,7 +319,7 @@ def legend_without_duplicate_labels(bax, loc, ncol):
     handles, labels = zip(*bax.get_legend_handles_labels())
     handles = [item for sublist in handles for item in sublist]
     labels = [item for sublist in labels for item in sublist]
-    unique = [(h, l) for i, (h, l) in enumerate(zip(handles, labels)) if l not in labels[:i]]
+    unique = [(handle, label) for i, (handle, label) in enumerate(zip(handles, labels)) if label not in labels[:i]]
     unique.sort(key=lambda x: int(x[1].split(" ")[1]))  # Sort the labels based on the layer number
     bax.legend(*zip(*unique), loc=loc, ncol=ncol)
 
@@ -361,7 +361,7 @@ def add_dependency_button(fig):
 
 
 def add_dependencies(fig, scme, colors, layer_ids):
-    for node in scme.workload.nodes():
+    for node in scme.workload.node_list:
         c_id = node.id
         c_l = node.id
         if c_l not in layer_ids:
@@ -372,12 +372,9 @@ def add_dependencies(fig, scme, colors, layer_ids):
             p_l = pred.id
             if p_l == c_l:
                 continue  # Ignore intra layer edges
-            p_start = pred.start
-            p_runtime = pred.runtime
             p_end = pred.end
             p_core = pred.chosen_core_allocation
             c_start = node.start
-            c_runtime = node.runtime
             c_core = node.chosen_core_allocation
             legendgroup = f"Layer {c_l}"
             legendgrouptitle_text = legendgroup
@@ -427,6 +424,8 @@ def get_communication_dicts(scme):
                 continue
             d = dict(
                 Task=task_type.capitalize(),
+                Id=np.nan,
+                Sub_id=np.nan,
                 Start=start,
                 End=end,
                 Resource=resource,
@@ -448,8 +447,8 @@ def get_real_input_tensors(n, G):
     return inputs
 
 
-def get_dataframe_from_scme(scme, layer_ids, add_communication=False):
-    nodes = list(nx.topological_sort(scme.workload))
+def get_dataframe_from_scme(scme: "StreamCostModelEvaluation", layer_ids: list[int], add_communication: bool = False):
+    nodes = scme.workload.topological_sort()
     dicts = []
     for node in nodes:
         id = node.id
@@ -464,7 +463,9 @@ def get_dataframe_from_scme(scme, layer_ids, add_communication=False):
         tensors = get_real_input_tensors(node, scme.workload)
         task_type = "compute"
         d = dict(
-            Task=str(node),
+            Task=node.short_name,
+            Id=str(int(node.id)),
+            Sub_id=str(int(node.sub_id)),
             Start=start,
             End=end,
             Resource=f"Core {core_id}",
@@ -492,15 +493,34 @@ def get_sorted_y_labels(df):
     return sorted(computation_labels) + sorted(communication_labels)
 
 
+def format_tensors(tensors: list[Tensor]):
+    # Group tensors by their id attribute
+    tensor_groups = defaultdict(list)
+    for tensor in tensors:
+        layer_id = tensor.id[0]
+        tensor_groups[layer_id].append(tensor)
+
+    # Format the tensor groups
+    formatted_tensors = []
+    for tensor_id, tensor_list in tensor_groups.items():
+        if len(tensor_list) > 4:
+            # Limit to 2 tensors at the beginning and 2 at the end
+            formatted_tensors.append(f"{tensor_list[0]}, {tensor_list[1]}, ..., {tensor_list[-2]}, {tensor_list[-1]}")
+        else:
+            formatted_tensors.append(", ".join(map(str, tensor_list)))
+
+    return "<br>[".join(formatted_tensors) + "]<br>"
+
+
 def visualize_timeline_plotly(
-    scme,
-    draw_dependencies=False,
-    draw_communication=True,
-    fig_path="outputs/schedule.html",
-    layer_ids=None,
+    scme: "StreamCostModelEvaluation",
+    draw_dependencies: bool = False,
+    draw_communication: bool = True,
+    fig_path: str = "outputs/schedule.html",
+    layer_ids: list[int] | None = None,
 ):
     if not layer_ids:
-        layer_ids = sorted(set(n.id for n in scme.workload.nodes()))
+        layer_ids = sorted(set(n.id for n in scme.workload.node_list))
     df = get_dataframe_from_scme(scme, layer_ids, draw_communication)
     # We get all the layer ids to get a color mapping for them
     layer_ids = sorted(list(set(df["Layer"].tolist())))
@@ -510,6 +530,8 @@ def visualize_timeline_plotly(
     fig = go.Figure()
     seen_layers = []
     for idx, row in df.iterrows():
+        id = row["Id"]
+        sub_id = row["Sub_id"]
         start = row["Start"]
         runtime = row["Runtime"]
         energy = row["Energy"]
@@ -519,7 +541,7 @@ def visualize_timeline_plotly(
         name = row["Task"]
         legendgroup = f"Layer {layer}"
         legendgrouptitle_text = legendgroup
-        tensors = row["Tensors"]
+        tensors = format_tensors(row["Tensors"])
         task_type = row["Type"]
         hatch = PLOTLY_HATCH_TYPES[task_type]
         marker = {"color": color, "pattern": {"shape": hatch}}
@@ -534,6 +556,8 @@ def visualize_timeline_plotly(
         if not isnan(row["Activity"]):
             activity = int(row["Activity"])
             hovertext += f"<br><b>Activity:</b> {activity} %"
+        if isinstance((row["Id"]), str) and isinstance(row["Sub_id"], str):
+            hovertext += f"<br><b>Id:</b> {id}    <b>Sub_id:</b> {sub_id}"
         bar = go.Bar(
             base=[start],
             x=[runtime],
@@ -560,7 +584,10 @@ def visualize_timeline_plotly(
     # Title
     edp = scme.latency * scme.energy
     fig.update_layout(
-        title_text=f"Computation Schedule.\t\t\tLatency = {scme.latency:.3e}\t\t\tEnergy = {scme.energy:.3e}\t\t\tEDP = {edp:.3e}"
+        title_text=(
+            f"Computation Schedule.\t\t\tLatency = {scme.latency:.3e}\t\t\tEnergy = {scme.energy:.3e}\t\t\t"
+            f"EDP = {edp:.3e}"
+        )
     )
     # for bar in fig_timeline.data:
     #     fig.add_trace(go.Bar(bar), row=1,col=1)

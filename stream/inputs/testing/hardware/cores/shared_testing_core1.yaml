@@ -26,8 +26,7 @@ memories:
         th: r_port_1
     served_dimensions: [D1, D2]
 
-multipliers:
-  input_precision: [8, 8]
+operational_array:
   multiplier_energy: 0.04 # pJ
   multiplier_area: 1 # unit
   dimensions: [D1, D2]

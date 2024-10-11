@@ -28,12 +28,13 @@ dependencies = [
     'brokenaxes',
     'plotly',
     'pandas',
+    'gurobipy',
 ]
-requires-python = ">=3.9"
+requires-python = ">=3.11"
 
 
 [project.optional-dependencies]
-dev = ["bumpver", "pip-tools", "build", "twine"]
+dev = ["bumpver", "pip-tools", "build", "twine", "pre-commit"]
 
 [project.urls]
 Homepage = "https://github.com/ZigZag-Project/stream"
@@ -57,4 +58,8 @@ push = false
 "stream/__init__.py" = ["{version}"]
 
 
+[tool.ruff]
+line-length = 120
 
+[tool.black]
+line-length = 120

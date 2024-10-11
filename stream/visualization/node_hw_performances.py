@@ -1,10 +1,9 @@
+import logging
 import os
 import pickle
-import matplotlib
+
 import matplotlib.pyplot as plt
-from matplotlib import cm
 import numpy as np
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -67,15 +66,8 @@ def visualize_node_hw_performances_pickle(pickle_filepath, scale_factors=None, f
     else:
         node_hw_performances = pickle_filepath
 
-    # first_key = next(iter(node_hw_performances))
-    # node_hw_performances = {first_key: node_hw_performances[first_key]}
-
     if not scale_factors:
         scale_factors = {node: 1 for node in node_hw_performances}
-    else:
-        scale_factors = {
-            next(node for node in node_hw_performances if node.id == k): v for k, v in scale_factors.items()
-        }
 
     if not fig_path:
         basename = os.path.basename(pickle_filepath).split(".")[0]
@@ -85,21 +77,17 @@ def visualize_node_hw_performances_pickle(pickle_filepath, scale_factors=None, f
     cores = []
     min_latency_per_node = {}
     min_energy_per_node = {}
-    for node, hw_performances in node_hw_performances.items():
+    for node in node_hw_performances.get_nodes():
         node_labels.append(f"L{node.id}\nN{node.sub_id}\nx{scale_factors[node]}")
         min_latency_per_node[node] = float("inf")
         min_energy_per_node[node] = float("inf")
-        for core, cme in hw_performances.items():
+        for core in node_hw_performances.get_cores(node):
+            cme = node_hw_performances.get_cme(node, core)
             if core not in cores:
                 cores.append(core)
             if cme.latency_total2 < min_latency_per_node[node]:
                 min_latency_per_node[node] = cme.latency_total2
                 min_energy_per_node[node] = cme.energy_total
-        # print(
-        #     node.type,
-        #     node.id,
-        #     {k: cme.latency_total2 for k, cme in hw_performances.items()},
-        # )
     # Multiply the min_latency_per_node and min_energy_per_node with the scale factor
     for node in min_latency_per_node:
         min_latency_per_node[node] *= scale_factors[node]
@@ -122,15 +110,17 @@ def visualize_node_hw_performances_pickle(pickle_filepath, scale_factors=None, f
     for core, offset in zip(cores, offsets):
         core_latencies = []
         core_energies = []
-        for node, hw_performances in node_hw_performances.items():
-            if core in hw_performances:
-                core_latencies.append(scale_factors[node] * hw_performances[core].latency_total2)
-                core_energies.append(scale_factors[node] * hw_performances[core].energy_total)
+        for node in node_hw_performances.get_nodes():
+            node_cores = node_hw_performances.get_cores(node)
+            if core in node_cores:
+                cme = node_hw_performances.get_cme(node, core)
+                core_latencies.append(scale_factors[node] * cme.latency_total2)
+                core_energies.append(scale_factors[node] * cme.energy_total)
             else:
                 core_latencies.append(0)
                 core_energies.append(0)
         for ax, y_values in zip(axs, [core_latencies, core_energies]):
-            rects = ax.bar(x + offset, y_values, width, label=f"{core}", color=colors[core])
+            ax.bar(x + offset, y_values, width, label=f"{core}", color=colors[core])
     for ax in axs:
         ax.set_xticks(x)
         ax.set_xticklabels(node_labels)

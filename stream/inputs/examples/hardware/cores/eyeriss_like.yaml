@@ -112,7 +112,6 @@ memories:
     served_dimensions: [D1, D2]
 
 multipliers:
-  input_precision: [8, 8]
   multiplier_energy: 0.5 # pJ
   multiplier_area: 0.1 # unit
   dimensions: [D1, D2]

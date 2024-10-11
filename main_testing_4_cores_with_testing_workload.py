@@ -1,13 +1,18 @@
-from stream.classes.cost_model.cost_model import StreamCostModelEvaluation
-from stream.classes.stages.AcceleratorParserStage import AcceleratorParserStage as AcceleratorParserStage_
-from zigzag.stages.MainStage import MainStage
-from stream.classes.stages import *
-from stream.visualization.schedule import visualize_timeline_plotly
-from stream.visualization.memory_usage import plot_memory_usage
+import logging as _logging
 import re
 
-# Initialize the logger
-import logging as _logging
+from zigzag.stages.main import MainStage
+
+from stream.cost_model.cost_model import StreamCostModelEvaluation
+from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
+from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
+from stream.stages.generation.hint_loops_partitioned_workload_generation import (
+    HintLoopsPartitionedWorkloadGenerationStage,
+)
+from stream.stages.parsing.accelerator_parser import AcceleratorParserStage as AcceleratorParserStage_
+from stream.stages.parsing.onnx_model_parser import UserDefinedModelParserStage
+from stream.visualization.memory_usage import plot_memory_usage
+from stream.visualization.schedule import visualize_timeline_plotly
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
@@ -21,7 +26,7 @@ mapping_path = "stream/inputs/testing/mapping/testing_mapping.yaml"
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
 hint_loops = [("OY", "all")]  # outer CN loops, with error in resnet18 plotting
 
-hw_name = accelerator.split(".")[-1]
+hw_name = accelerator.split("/")[-1].split(".")[0]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 experiment_id = f"{hw_name}-{wl_name}-CNmode_{CN_define_mode}-hintloop_{str(hint_loops)}"
 node_hw_cost_pkl_name = f"saved_CN_HW_cost-{experiment_id}"
@@ -36,17 +41,17 @@ mainstage = MainStage(
         AcceleratorParserStage_,  # Parses the accelerator
         # StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
         UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
-        GenerateCNWorkloadHybridStage,
-        IntraCoreMappingStage,
-        InterCoreMappingStage,
+        HintLoopsPartitionedWorkloadGenerationStage,
+        ZigZagCoreMappingEstimationStage,
+        GeneticAlgorithmAllocationStage,
     ],
     accelerator=accelerator,  # required by AcceleratorParserStage
     workload_path=workload_path,  # required by ModelParserStage
     mapping_path=mapping_path,  # required by ModelParserStage
-    loma_lpf_limit=6,  # required by LomaStage
+    loma_lpf_limit=6,  # required by LomaEngine
     nb_ga_individuals=4,  # number of individuals in each genetic algorithm generation
     nb_ga_generations=1,  # number of genetic algorithm generations
-    node_hw_performances_path=f"outputs/{node_hw_cost_pkl_name}.pickle",  # saved node_hw_performances to skip re-computation
+    node_hw_performances_path=f"outputs/{node_hw_cost_pkl_name}.pickle",  # saves results to skip re-computation
     plot_hof=True,  # Save schedule and memory usage plot of each individual in the Genetic Algorithm hall of fame
     plot_file_name=plot_file_name,
     plot_full_schedule=plot_full_schedule,

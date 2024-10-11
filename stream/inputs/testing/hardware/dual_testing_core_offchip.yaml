@@ -1,11 +1,12 @@
 name: testing-2-core-with-offchip
 cores:
   # index corresponds to core ID
-  - testing_core1.yaml
-  - testing_core2.yaml
+  - stream/inputs/testing/hardware/cores/testing_core1.yaml
+  - stream/inputs/testing/hardware/cores/testing_core2.yaml
   - offchip.yaml
 
-2d_mesh:
+graph:
+  type: 2d_mesh
   nb_rows: 1
   nb_cols: 2
   bandwidth: 64

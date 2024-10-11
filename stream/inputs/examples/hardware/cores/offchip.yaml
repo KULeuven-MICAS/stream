@@ -24,8 +24,7 @@ memories:
         th: rw_port_1
     served_dimensions: [D1, D2]
 
-multipliers:
-  input_precision: [8, 8]
+operational_array:
   multiplier_energy: 0
   multiplier_area: 0
   dimensions: [D1, D2]
