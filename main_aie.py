@@ -1,29 +1,27 @@
+# Initialize the logger
+import logging as _logging
 import re
 
 from zigzag.classes.stages import *
+
 from stream.classes.stages import *
+from stream.utils import save_scme
+from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import (
     plot_timeline_brokenaxes,
     visualize_timeline_plotly,
 )
-from stream.visualization.memory_usage import plot_memory_usage
-from stream.utils import save_scme, load_scme
-
-# Initialize the logger
-import logging as _logging
 
 _logging_level = _logging.INFO
-_logging_format = (
-    "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-)
+_logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 #################################
 
 accelerator = "stream.inputs.aie.hardware.aie_col"
 workload_path = "stream.inputs.aie.single_gemm"
-workload_path="stream/inputs/aie/test_gemm.onnx"
-mapping_path="stream.inputs.aie.testing_mapping_bottleneck"
+workload_path = "stream/inputs/aie/test_gemm.onnx"
+mapping_path = "stream.inputs.aie.testing_mapping_bottleneck"
 # mapping_path = "stream.inputs.examples.mapping.tpu_like_quad_core"
 CN_define_mode = 1  # manually define outer CN size for all cores and all layers
 hint_loops = []  # outer CN loops, with error in resnet18 plotting

@@ -1,8 +1,8 @@
-from zigzag.classes.hardware.architecture.memory_hierarchy import MemoryHierarchy
-from zigzag.classes.hardware.architecture.operational_unit import Multiplier
-from zigzag.classes.hardware.architecture.operational_array import MultiplierArray
-from zigzag.classes.hardware.architecture.memory_instance import MemoryInstance
 from zigzag.classes.hardware.architecture.core import Core
+from zigzag.classes.hardware.architecture.memory_hierarchy import MemoryHierarchy
+from zigzag.classes.hardware.architecture.memory_instance import MemoryInstance
+from zigzag.classes.hardware.architecture.operational_array import MultiplierArray
+from zigzag.classes.hardware.architecture.operational_unit import Multiplier
 
 
 def get_memory_hierarchy(multiplier_array):
@@ -11,8 +11,8 @@ def get_memory_hierarchy(multiplier_array):
     dram = MemoryInstance(
         name="dram",
         size=10000000000,
-        r_bw=16*8,
-        w_bw=16*8,
+        r_bw=16 * 8,
+        w_bw=16 * 8,
         r_cost=1000,
         w_cost=1000,
         area=0,
@@ -55,9 +55,7 @@ def get_operational_array():
     multiplier_energy = float("inf")
     multiplier_area = 0
     dimensions = {"D1": 1, "D2": 1}
-    multiplier = Multiplier(
-        multiplier_input_precision, multiplier_energy, multiplier_area
-    )
+    multiplier = Multiplier(multiplier_input_precision, multiplier_energy, multiplier_area)
     multiplier_array = MultiplierArray(multiplier, dimensions)
 
     return multiplier_array
