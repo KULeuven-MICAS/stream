@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Literal, TypeAlias
 
 from zigzag.datatypes import (
     Constants,
@@ -11,11 +12,11 @@ from zigzag.workload.layer_attributes import (
 )
 from zigzag.workload.layer_node import MappingAttributes as IntraCoreMappingAttributes
 
+TILING_T: TypeAlias = list[tuple[LayerDim, int | Literal["*", "all"]]]
+
 INTRA_CORE_MAPPING_DEFAULT = IntraCoreMappingAttributes(
     spatial_mapping=SpatialMapping.empty(),
     spatial_mapping_hint=SpatialMappingHint.empty(),
-    core_allocation=[0],
-    core_allocation_is_fixed=False,
     temporal_ordering=LayerTemporalOrdering.empty(),
     memory_operand_links=MemoryOperandLinks(
         {
@@ -33,5 +34,5 @@ class InterCoreMappingAttributes:
     spatial_mapping: SpatialMapping
     core_allocation: list[int]
     core_allocation_is_fixed: bool
-    intra_core_tiling: list[tuple[LayerDim, int]]
-    inter_core_tiling: list[tuple[LayerDim, int]]
+    intra_core_tiling: TILING_T
+    inter_core_tiling: TILING_T

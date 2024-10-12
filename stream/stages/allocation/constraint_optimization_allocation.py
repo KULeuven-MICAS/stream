@@ -12,6 +12,7 @@ from zigzag.stages.main import MainStage
 from zigzag.stages.stage import Stage
 from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
 
+from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_T, get_optimal_allocations
 from stream.stages.estimation.stream_cost_model_evaluation import StreamCostModelEvaluationStage
@@ -23,6 +24,8 @@ from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPer
 from stream.utils import CostModelEvaluationLUT
 from stream.visualization.constraint_optimization import visualize_waco
 from stream.workload.computation.computation_node import ComputationNode
+from stream.workload.dnn_workload import DNNWorkloadStream
+from stream.workload.mapping import TILING_T
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
@@ -44,9 +47,9 @@ class ConstraintOptimizationAllocationStage(Stage):
         accelerator: Accelerator,
         node_hw_performances: CostModelEvaluationLUT,
         layer_stacks: list[tuple[range, ...]],
-        hint_loops: Any,
+        # hint_loops: list[...],
         node_hw_performances_path_with_split: str,
-        **kwargs: dict[str, Any],
+        **kwargs: Any,
     ):
         """Initialize the ResourceAllocationStage.
 
@@ -62,7 +65,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.accelerator = accelerator
         self.node_hw_performances = node_hw_performances
         self.layer_stacks = layer_stacks
-        self.original_workload = kwargs["original_workload"]
+        self.original_workload: ComputationNodeWorkload = kwargs["original_workload"]
         self.mode = kwargs.get("mode", "fused")  # assume default is fused
 
         self.steady_state_visualization_path = kwargs.get("steady_state_visualization_path", "outputs/")
@@ -76,7 +79,7 @@ class ConstraintOptimizationAllocationStage(Stage):
                 os.path.splitext(self.node_hw_performances_path_with_split)[0] + ".png"
             )
             self.visualize_node_hw_performances_path_with_split = node_hw_performances_visualization_path
-        self.hint_loops = hint_loops
+        # self.hint_loops = hint_loops
         self.co_time_limit: int = kwargs.get("co_time_limit", 600)
 
         # Which CME attribute to use for the node latencies
@@ -123,23 +126,27 @@ class ConstraintOptimizationAllocationStage(Stage):
             if len(nodes) == 0:
                 logger.warning(f"Stack {i} is empty.")
                 continue
+
+            # TODO initialize the subgraph of type DiGraphWrapper[ComputationNode]
             sg: DiGraph = self.workload.subgraph(nodes)
-            sink_nodes = sorted(n for n in sg.nodes() if len(self.get_real_successors(n, sg)) == 0)
+            sink_nodes: list[ComputationNode] = sorted(
+                n for n in sg.nodes() if len(self.get_real_successors(n, sg)) == 0  # type: ignore
+            )
             sink_layer_ids = sorted(set(n.id for n in sink_nodes))
             sink_layer_nodes = [tuple(sorted(n for n in sink_nodes if n.id == layer_id)) for layer_id in sink_layer_ids]
             interlaced = [tuple(filter(lambda x: x is not None, t)) for t in itertools.zip_longest(*sink_layer_nodes)]
-            computed = set()
-            to_compute_sets = dict()
-            memoization_hashes = dict()
-            to_compute_counts = dict()
-            state_ids = dict()
-            to_compute_unique = dict()
+            computed: set[ComputationNode] = set()
+            to_compute_sets: dict[int, set[ComputationNode]] = dict()
+            memoization_hashes: dict[int, frozenset[ComputationNode]] = dict()
+            to_compute_counts: dict[int, int] = dict()
+            state_ids: dict[int, list[int]] = dict()
+            to_compute_unique: dict[tuple[ComputationNode, ...], set[ComputationNode]] = dict()
             hashes_per_sink_pair = dict()
             for pair in interlaced:
-                needed_compute = set()
+                needed_compute: set[ComputationNode] = set()
                 for sink_node in pair:
-                    needed_compute |= nx.ancestors(sg, sink_node) | {sink_node}
-                to_compute = needed_compute - computed
+                    needed_compute |= nx.ancestors(sg, sink_node) | {sink_node}  # type: ignore
+                to_compute: set[ComputationNode] = needed_compute - computed  # type: ignore
                 to_compute_unique[pair] = to_compute
                 to_compute_ids = [n.id for n in to_compute]
                 to_compute_per_layer = {id: to_compute_ids.count(id) for id in stack}
@@ -154,8 +161,8 @@ class ConstraintOptimizationAllocationStage(Stage):
                     to_compute_counts[memoization_hash] = 1
                 state_ids[memoization_hash] = state_ids.get(memoization_hash, []) + [n.id for n in to_compute]
                 computed |= needed_compute
-                pass
-            scaled_counts = {}
+
+            scaled_counts: dict[int, int] = {}
             # Get the most important sink node to optimize for by looking at the importance
             total_nb_macs = 0
             for memoization_hash, count in to_compute_counts.items():
@@ -201,7 +208,7 @@ class ConstraintOptimizationAllocationStage(Stage):
     def find_best_allocation(
         self, to_compute: set[ComputationNode], iterations: int, stack: STACK_T = (0,), time_limit: int = 600
     ):
-        # TODO: Implement overhead of tensor transfers between cores
+        """# TODO: Implement overhead of tensor transfers between cores"""
         # Check if the allocation is already cached, if not: find it
         stack_str = "_".join([str(id) for id in stack])
         allocations_path = os.path.join(self.steady_state_visualization_path, f"steady_state-{stack_str}.pickle")
@@ -223,17 +230,17 @@ class ConstraintOptimizationAllocationStage(Stage):
         visualize_waco(allocation, self.node_hw_performances, self.accelerator, fig_path, iterations)
         return allocation
 
-    def get_scheduling_order(self, hint_loops):
+    def get_scheduling_order(self, unpartitioned_workload: DNNWorkloadStream) -> list[list[tuple[int, int]]]:
+        # ! This used to have the altered (intra and inter) hint loops before. SHould be OK, only needed to update order in case of K split in inter core tiling
         """
         Get the scheduling order of all ids that will exist in the transformed workload.
         Returns a list with all ids where the earlier the higher priority
+        The scheduling order is altered to accommodate the inter core tiling of the given workload
+
+        # TODO don't hardcode K and G
         """
-        nb_nodes_per_layer = {
-            layer_id: len(list(n for n in self.workload.nodes() if n.id == layer_id))
-            for layer_id in sorted(n.id for n in self.workload.nodes())
-        }
-        pass
-        scheduling_order = []
+
+        scheduling_order: list[tuple[int, int]] = []
         for stack, compute in self.compute_per_sink_node.items():
             hash_steady_state = self.steady_state_hashes[stack]
             allocation_steady_state = self.optimal_allocation_per_stack[stack]
@@ -244,30 +251,53 @@ class ConstraintOptimizationAllocationStage(Stage):
                 hashes_per_sink_node=hashes_per_sink_node,
                 memoization_hash_ss=hash_steady_state,
             )
+
             # Adjust the order such that if there is a K split in the transformed workload,
             # those ids are also present
-            for layer_id in stack:
-                try:
-                    outer_loops = hint_loops[(layer_id,)]
-                except KeyError:
-                    # If the layer_id is not present it means it was not in the allocation.
-                    # This happens if all nodes of the layer were not in the steady state
-                    outer_loops = []
+            for node in self.get_computation_nodes(stack, unpartitioned_workload):
+                # NOTE this uses `inter_core_tiling`, because the inter core tiling is added to the intra core tiling
+                # in `schedule_allocation` in order to alter the workload
+                outer_loops = node.inter_core_tiling
+
+                # try:
+                #     outer_loops = hint_loops[(layer_id,)]
+                # except KeyError:
+                #     # If the layer_id is not present it means it was not in the allocation.
+                #     # This happens if all nodes of the layer were not in the steady state
+                #     outer_loops = []
+
                 if outer_loops:
+                    # TODO why does this only work on the last outer loop? In this scope, outer loops contains all
+                    # TODO inter core loops that are new to this transformed workload
                     dim, size = outer_loops[-1]
                     if (dim.name == "K" and size > 1) or (dim.name == "G" and size > 1):
                         inserted = 0
                         for i, id in enumerate(order.copy()):
-                            l_id, n_id = id
-                            if l_id == layer_id:
+                            layer_id, node_id = id
+                            if layer_id == node.id:
+                                nb_nodes_this_layer = self.get_nb_nodes_for_layer(layer_id)
                                 for scale in range(1, size):
-                                    new_id = scale * nb_nodes_per_layer[layer_id] + n_id
-                                    order.insert(i + inserted + 1, (l_id, new_id))
+                                    new_id = scale * nb_nodes_this_layer + node_id
+                                    order.insert(i + inserted + 1, (layer_id, new_id))
                                     inserted += 1
             scheduling_order += order
         return scheduling_order
 
-    def get_cn_order(self, allocation, compute_per_sink_node, hashes_per_sink_node, memoization_hash_ss):
+    def get_nb_nodes_for_layer(self, layer_id: int):
+        return len(list(n for n in self.workload.node_list if n.id == layer_id))
+
+    def get_computation_nodes(self, stack: tuple[int, ...], workload: DNNWorkloadStream) -> list[ComputationNode]:
+        nodes = [n for n in workload.node_list if n.id in stack]
+        computation_nodes = [n for n in nodes if isinstance(n, ComputationNode)]
+        return computation_nodes
+
+    def get_cn_order(
+        self,
+        allocation: ALLOCATION_T,
+        compute_per_sink_node: dict[ComputationNode, int],
+        hashes_per_sink_node: dict[ComputationNode, int],
+        memoization_hash_ss: int,
+    ) -> list[tuple[int, int]]:
         """
         Get the scheduling orders of all cns of a stack based on the order in the steady state allocation.
         For nodes belonging to sink nodes that are not steady state, we sort by deepest id.
@@ -275,8 +305,8 @@ class ConstraintOptimizationAllocationStage(Stage):
         """
         order = []
         allocation = sorted(allocation, key=lambda x: (x[0], x[2], x[1]))
-        allocation_adjusted = []  # will hold allocation with removed k splits
-        seen_ids = set()
+        allocation_adjusted: ALLOCATION_T = []  # will hold allocation with removed k splits
+        seen_ids: set[int] = set()
         for t, c, id in allocation:
             if id not in seen_ids:
                 allocation_adjusted.append((t, c, id))
@@ -308,7 +338,7 @@ class ConstraintOptimizationAllocationStage(Stage):
     def get_order_non_steady_state(self, to_compute: list[ComputationNode]):
         return [(n.id, n.sub_id) for n in sorted(to_compute, key=lambda x: (-x.id, -x.sub_id))]
 
-    def schedule_allocation(self, allocation: ALLOCATION_T) -> StreamCostModelEvaluationStage:
+    def schedule_allocation(self, allocation: ALLOCATION_T) -> StreamCostModelEvaluation:
         # Get the involved layer ids we want to schedule and their core allocations
         layer_ids = sorted(set(id[0] for _, _, id in allocation))
         core_strs = [sorted(set((c for _, c, id in allocation if id[0] == layer_id))) for layer_id in layer_ids]
@@ -316,21 +346,44 @@ class ConstraintOptimizationAllocationStage(Stage):
 
         # Create a modified workload with the correct number of k splits
         nodes = filter(lambda n: n.id <= max(layer_ids), self.original_workload.node_list)
-        original_workload_copy = pickle_deepcopy(self.original_workload.subgraph(nodes))
+        unpartitioned_workload: DNNWorkloadStream = pickle_deepcopy(self.original_workload.subgraph(nodes))
         # Set the correct allocations for the layers in the copied workload
-        self.set_fixed_allocations_for_workload(original_workload_copy, layer_ids, core_ids)
+        self.set_fixed_allocations_for_workload(unpartitioned_workload, layer_ids, core_ids)
 
-        # Parameters for stages
-        kwargs = self.kwargs.copy()
-        cn_define_mode = 3
-        hint_loops = self.get_hint_loops(layer_ids, core_ids)
-        scheduling_order = self.get_scheduling_order(hint_loops)
+        # Generate/check inter core mapping for all nodes
+        for node in unpartitioned_workload.node_list:
+            # No allocation for this node (e.g. DummyNode)
+            if node.id not in layer_ids:
+                continue
+
+            core_allocation_this_node = next(
+                core_ids_this_node for core_ids_this_node, node_id in zip(core_ids, layer_ids) if node_id == node.id
+            )
+            nb_cores_split = len(core_allocation_this_node)
+
+            # TODO the case that inter_core_tiling == (D, *) -> split on D?
+            # ! unsure about this code
+            if not node.inter_core_tiling:
+                # Add default tiling if not defined by user
+                node.inter_core_tiling = self.generate_inter_core_tiling(node, nb_cores_split)
+            else:
+                node.inter_core_tiling = self.replace_wildcard_in_tiling(node.inter_core_tiling, nb_cores_split)
+
+            # Add inter-core tiling to intra-core mapping for the next run
+            node.intra_core_tiling += node.inter_core_tiling
+
+        # cn_define_mode = 3
+        # hint_loops = self.get_hint_loops(layer_ids, core_ids)
+
+        scheduling_order = self.get_scheduling_order(unpartitioned_workload)
+
         loma_lpf_limit = 7
-        kwargs["hint_loops"] = hint_loops
-        kwargs["cn_define_mode"] = cn_define_mode
+        kwargs = self.kwargs.copy()
+        # kwargs["hint_loops"] = hint_loops
+        # kwargs["cn_define_mode"] = cn_define_mode
         kwargs["loma_lpf_limit"] = loma_lpf_limit
         kwargs["accelerator"] = self.accelerator
-        kwargs["workload"] = original_workload_copy
+        kwargs["workload"] = unpartitioned_workload
         kwargs["scheduling_order"] = scheduling_order
         kwargs["node_hw_performances_path"] = self.node_hw_performances_path_with_split
         kwargs["visualize_node_hw_performances_path"] = self.visualize_node_hw_performances_path_with_split
@@ -339,7 +392,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         # Create stages that will run a single cost model evaluation (fixed core allocations)
         main_stage = MainStage(
             [
-                HintLoopsPartitionedWorkloadGenerationStage,
+                HintLoopsPartitionedWorkloadGenerationStage,  # Splits in intra-core mapping
                 ZigZagCoreMappingEstimationStage,
                 SetFixedAllocationPerformanceStage,
                 StreamCostModelEvaluationStage,
@@ -349,6 +402,20 @@ class ConstraintOptimizationAllocationStage(Stage):
         scme, _ = main_stage.run()
         scme = scme[0]
         return scme
+
+    def replace_wildcard_in_tiling(self, tiling: TILING_T, nb_cores_split: int):
+        """The user can define a wildcard `*` in the inter core tiling, meaning that the value found by the CO
+        must be used instead.
+        # TODO in case multiple splits are given (e.g. C and D), should the nb_cores_split be scaled?
+        """
+        tiling_replaced: TILING_T = []
+        for layer_dim, split_factor in tiling:
+            if split_factor == "*":
+                split_factor = nb_cores_split
+            elif split_factor == "all":
+                raise ValueError("inter core tiling should not contain `all`")
+            tiling_replaced.append((layer_dim, split_factor))
+        return tiling_replaced
 
     def set_fixed_allocations_for_workload(
         self, workload: ComputationNodeWorkload, layer_ids: list[int], core_ids: list[list[int]]
@@ -360,13 +427,14 @@ class ConstraintOptimizationAllocationStage(Stage):
             n.chosen_core_allocation = list(cores)
             n.possible_core_allocation = list(cores)
             n.core_allocation_is_fixed = True
+
         # Find any layers that might not have been in the steady state allocation and need to be allocated manually
         # The nodes of these layers will be allocated across all possible cores in the K dimension if possible
         layer_ids_not_in_ss = [
             layer_id for stack in self.layer_stacks for layer_id in stack if layer_id not in layer_ids
         ]
 
-        # TODO this piece of code is outdates
+        # TODO this piece of code is outdated
         for layer_id_not_in_ss in layer_ids_not_in_ss:
             layer_ids_idx = np.searchsorted(layer_ids, layer_id_not_in_ss)
             for n in filter(lambda n: n.id == layer_id_not_in_ss, workload.node_list):
@@ -379,29 +447,40 @@ class ConstraintOptimizationAllocationStage(Stage):
                 core_ids.insert(layer_ids_idx, n.core_allocation)
                 logger.warning(f"{n} not in steady state allocation; allocated to: {n.core_allocation}.")
 
-    def get_hint_loops(self, layer_ids, core_ids):
-        hint_loops = {}
-        for layer_id, cores in zip(layer_ids, core_ids):
-            updated_hint_loops = next(v for k, v in self.hint_loops.items() if layer_id in k).copy()
-            if len(cores) > 1:
-                nb_cores = len(cores)
-                layer_node = next(n for n in self.original_workload.nodes() if n.id == layer_id)
-                if layer_node.layer_dim_sizes.data.get(LayerDim("G"), 1) > 1:
-                    loop_dim = LayerDim("G")
-                elif layer_node.layer_dim_sizes.data.get(LayerDim("K"), 1) > 1:
-                    loop_dim = LayerDim("K")
-                else:
-                    raise ValueError("Unknown what loop dim to split across cores")
-                updated_hint_loops.append((loop_dim, nb_cores))
-            hint_loops[(layer_id,)] = updated_hint_loops
-        return hint_loops
+    # def get_hint_loops(self, layer_ids: list[int], core_ids: list[list[int]]):
+    #     hint_loops = {}
+    #     for layer_id, cores in zip(layer_ids, core_ids):
+    #         updated_hint_loops = next(v for k, v in self.hint_loops.items() if layer_id in k).copy()
+    #         if len(cores) > 1:
+    #             nb_cores = len(cores)
+    #             layer_node = next(n for n in self.original_workload.nodes() if n.id == layer_id)
+    #             if layer_node.layer_dim_sizes.data.get(LayerDim("G"), 1) > 1:
+    #                 loop_dim = LayerDim("G")
+    #             elif layer_node.layer_dim_sizes.data.get(LayerDim("K"), 1) > 1:
+    #                 loop_dim = LayerDim("K")
+    #             else:
+    #                 raise ValueError("Unknown what loop dim to split across cores")
+    #             updated_hint_loops.append((loop_dim, nb_cores))
+    #         hint_loops[(layer_id,)] = updated_hint_loops
+    #     return hint_loops
 
-    def get_real_predecessors(self, node, g=None):
+    def generate_inter_core_tiling(self, node: ComputationNode, split_over_n_cores: int) -> TILING_T:
+        # TODO don't hardcode G and K
+        if node.layer_dim_sizes.data.get(LayerDim("G"), 1) > 1:
+            loop_dim = LayerDim("G")
+        elif node.layer_dim_sizes.data.get(LayerDim("K"), 1) > 1:
+            loop_dim = LayerDim("K")
+        else:
+            raise ValueError("Unknown what loop dim to split across cores")
+
+        return [(loop_dim, split_over_n_cores)]
+
+    def get_real_predecessors(self, node: ComputationNode, g: ComputationNodeWorkload | None = None):
         if not g:
             g = self.workload
         return list(n for n in g.predecessors(node) if n.id != node.id)
 
-    def get_real_successors(self, node, g=None):
+    def get_real_successors(self, node: ComputationNode, g: ComputationNodeWorkload | None = None):
         if not g:
             g = self.workload
         return list(n for n in g.successors(node) if n.id != node.id)

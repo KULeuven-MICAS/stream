@@ -8,6 +8,7 @@ import plotly.graph_objects as go
 from plotly.express.colors import sample_colorscale
 
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_T
 from stream.opt.allocation.constraint_optimization.utils import get_latencies
 from stream.utils import CostModelEvaluationLUT
 
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 def visualize_waco(
-    allocation: list[tuple[int, "Core", int]],
+    allocation: ALLOCATION_T,
     node_hw_performances: CostModelEvaluationLUT,
     accelerator: Accelerator,
     fig_path: str,

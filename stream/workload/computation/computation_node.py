@@ -77,6 +77,7 @@ class ComputationNode(LayerNode, Node):
         # Overwrite default spatial mapping with given one
         self.spatial_mapping = mapping_attr.spatial_mapping
         # Unpack other mapping attributes
+        self.core_allocation = mapping_attr.core_allocation
         self.core_allocation_is_fixed = mapping_attr.core_allocation_is_fixed
         self.intra_core_tiling = mapping_attr.intra_core_tiling
         self.inter_core_tiling = mapping_attr.inter_core_tiling

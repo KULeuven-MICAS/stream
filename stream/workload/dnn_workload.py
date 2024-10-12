@@ -1,15 +1,15 @@
 import logging
 from typing import Any
 
-from zigzag.utils import DiGraphWrapper
 from zigzag.workload.layer_node import LayerNode
 
 from stream.workload.computation.computation_node import ComputationNode
+from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 
 
-class DNNWorkloadStream(DiGraphWrapper[ComputationNode]):
+class DNNWorkloadStream(ComputationNodeWorkload):
     def __init__(self, nodes: list[LayerNode], **attr: Any):
         """
         Collect all the algorithmic workload information here.
@@ -17,6 +17,7 @@ class DNNWorkloadStream(DiGraphWrapper[ComputationNode]):
 
         :return (self): Directed Graph with nodes the layers and edges the connections between layers.
         """
+        raise NotImplementedError("TODO")
         super().__init__()  # type: ignore
 
         layer_id_to_obj: dict[int, ComputationNode] = {}

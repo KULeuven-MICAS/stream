@@ -1,7 +1,7 @@
 import logging
 from copy import deepcopy
 from math import ceil, prod
-from typing import Any, List
+from typing import Any
 
 from rtree import index
 from zigzag.datatypes import Constants, LayerDim, LayerOperand
@@ -13,9 +13,7 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.node_tensor import NodeTensor
 from stream.opt.partitioning.TemporalLoop import TemporalLoop
 from stream.opt.partitioning.utils import (
-    convert_inner_cn_loops,
     convert_outer_cn_loops,
-    convert_outer_cn_loops_with_k,
 )
 from stream.workload.computation.computation_node import ComputationNode, LoopRanges
 from stream.workload.dependency_propagation.concat_node import ConcatNode
@@ -49,8 +47,8 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         *,
         workload: ONNXWorkload,
         accelerator: Accelerator,
-        cn_define_mode: int,
-        hint_loops: list[tuple[LayerDim, str | int]],
+        # cn_define_mode: int,
+        # hint_loops: list[tuple[LayerDim, str | int]],
         **kwargs: Any,
     ):
         """
@@ -68,26 +66,26 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         self.numpy_tensors = {}
 
         # for CN node size case study, will be used in the function of get_outer_tmap_loop_dimensions
-        if cn_define_mode not in [1, 2, 3, 4]:
-            raise ValueError(f"cn_define_mode can not be {self.cn_define_mode}.")
-        self.cn_define_mode = cn_define_mode
-        self.hint_loops = hint_loops  # can be outer-cn or inner-cn depending on cn_define_mode
+        # if cn_define_mode not in [1, 2, 3, 4]:
+        #     raise ValueError(f"cn_define_mode can not be {self.cn_define_mode}.")
+        # self.cn_define_mode = cn_define_mode
+        # self.hint_loops = hint_loops  # can be outer-cn or inner-cn depending on cn_define_mode
 
         # compute the weight capacities of the different cores and the number of splits required for each layer
-        if cn_define_mode == 4:
-            try:
-                self.split_W_percentage = self.kwargs["split_W_percentage"]
-            except KeyError:
-                self.split_W_percentage = 1
-            # compute the on-chip weight capacities of the different cores (assumes 'I2' is for weights)
-            self.weight_capacities = self.get_weight_capacities()
-            # compute the number of splits required for each layer in the original workload
-            self.layer_split_factors_k = self.get_layer_split_factors_k()
+        # if cn_define_mode == 4:
+        #     try:
+        #         self.split_W_percentage = self.kwargs["split_W_percentage"]
+        #     except KeyError:
+        #         self.split_W_percentage = 1
+        # compute the on-chip weight capacities of the different cores (assumes 'I2' is for weights)
+        # self.weight_capacities = self.get_weight_capacities()
+        # compute the number of splits required for each layer in the original workload
+        # self.layer_split_factors_k = self.get_layer_split_factors_k()
 
     def run(self):
         unique_finer_nodes: list[ComputationNode] = []
         # For each node get all the finer nodes and set the intra edges
-        G = ComputationNodeWorkload()
+        partitioned_workload = ComputationNodeWorkload()
         for node in self.workload.topological_sort():
             # If other node types shouldn't be included in finer node graph, add here
             if not isinstance(node, ComputationNode):
@@ -100,10 +98,10 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
             unique_finer_nodes += unique_nodes
             # Compute the edges between nodes originating from one bigger node (intra-edges)
             intra_edges = self.get_intra_edges(finer_nodes)
-            G.add_edges_from(intra_edges)
+            partitioned_workload.add_edges_from(intra_edges)
             # If there is only one finer node for this layer, add the node to the graph
             if not intra_edges:
-                G.add_nodes_from(finer_nodes)
+                partitioned_workload.add_nodes_from(finer_nodes)
 
         # Get all pairs of nodes that we have to extract inter edges for
         all_pairs = self.get_all_node_pairs(self.workload)
@@ -114,20 +112,21 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                 inter_edges = self.get_inter_edges_numpy(producer, consumer)
             else:
                 inter_edges = self.get_inter_edges_rtree(producer, consumer, finer_producers, finer_consumers)
-            G.add_edges_from(inter_edges)
+            partitioned_workload.add_edges_from(inter_edges)
 
         # Set the base_priority value of all nodes in G
-        self.set_base_priority_of_nodes(G, self.finer_nodes_dict)
+        self.set_base_priority_of_nodes(partitioned_workload, self.finer_nodes_dict)
 
-        logger.info(f"Finer graph: {G}.")
+        logger.info(f"Finer graph: {partitioned_workload}.")
 
         kwargs = self.kwargs.copy()
         kwargs["original_workload"] = pickle_deepcopy(self.workload)
-        kwargs["workload"] = G
+        kwargs["workload"] = partitioned_workload
         kwargs["accelerator"] = self.accelerator
-        kwargs["hint_loops"] = self.hint_loops
+        # kwargs["hint_loops"] = self.hint_loops
+
         if "scheduling_order" not in kwargs:
-            kwargs["scheduling_order"] = self.get_scheduling_order(G)
+            kwargs["scheduling_order"] = self.get_scheduling_order(partitioned_workload)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
@@ -168,47 +167,50 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                 pairs.append((node, successor, complex_pair))
         return tuple(pairs)
 
-    def get_outer_tmap_loop_dimensions(self, layer: ComputationNode) -> List[TemporalLoop]:
-        """Get the temporal loops that are outside a CN for this layer.
+    def get_outer_tmap_loop_dimensions(self, node: ComputationNode) -> list[TemporalLoop]:
+        """Get the temporal loops that are outside a CN for this node.
 
         Args:
-            layer (Node): layer node for which to return outer-cn loops
+            node: node for which to return outer-cn loops
 
         Returns:
-            List[TemporalLoop]: list of temporal loops outside of cn
+            temporal loops outside of cn
         """
-        outer_loops = []
-        if self.cn_define_mode == 1:
-            # outer_cn_loops identical for all layers
-            outer_cn_loops = self.hint_loops.copy()
-            outer_loops = convert_outer_cn_loops(outer_cn_loops, layer)
-        elif self.cn_define_mode == 2:
-            inner_cn_loops = self.hint_loops.copy()
-            outer_loops = convert_inner_cn_loops(inner_cn_loops, layer)
-        elif self.cn_define_mode == 3:
-            # Assume that self.hint_loops is a dict
-            # A key is a tuple containing the layer ids that should use the value as hint_loops
-            # So for self.hint_loops = {(0,1,2,3): [("OY", "all")], (4,): [("OY", "all"), ("K", "all")]}
-            # layer ids 0 to 3 will use [("OY", "all")] and layer id 4 will use [("OY", "all), ("K", "all")]
-            # Find which sublist this layer should use
-            try:
-                outer_cn_loops = next(v for k, v in self.hint_loops.items() if layer.id in k)
-            except StopIteration:
-                raise ValueError(f"Layer id {layer.id} not in hint_loops: {self.hint_loops}")
-            outer_loops = convert_outer_cn_loops(outer_cn_loops, layer)
-        elif self.cn_define_mode == 4:
-            # Assume we always split in the hint_loops dimensions
-            # Check if we need to split in K dimension for it to not block offchip during computation
-            outer_cn_loops = self.hint_loops.copy()
-            try:
-                split_factor = self.layer_split_factors_k[layer]
-            except KeyError:
-                split_factor = 1
-            outer_loops = convert_outer_cn_loops_with_k(outer_cn_loops, layer, split_factor)
-        else:
-            raise ValueError("This shouldn't be reached if initialization checks are correctly implemented.")
+        outer_loops = convert_outer_cn_loops(node.intra_core_tiling.copy(), node)
+
+        # if self.cn_define_mode == 1:
+        # outer_cn_loops identical for all layers
+        #     outer_cn_loops = self.hint_loops.copy()
+        #     outer_loops = convert_outer_cn_loops(outer_cn_loops, node)
+        # elif self.cn_define_mode == 2:
+        #     inner_cn_loops = self.hint_loops.copy()
+        #     outer_loops = convert_inner_cn_loops(inner_cn_loops, node)
+        # elif self.cn_define_mode == 3:
+        # Assume that self.hint_loops is a dict
+        # A key is a tuple containing the layer ids that should use the value as hint_loops
+        # So for self.hint_loops = {(0,1,2,3): [("OY", "all")], (4,): [("OY", "all"), ("K", "all")]}
+        # layer ids 0 to 3 will use [("OY", "all")] and layer id 4 will use [("OY", "all), ("K", "all")]
+        # Find which sublist this layer should use
+        # try:
+        #     outer_cn_loops = next(v for k, v in self.hint_loops.items() if layer.id in k)
+        # except StopIteration:
+        #     raise ValueError(f"Layer id {layer.id} not in hint_loops: {self.hint_loops}")
+        # outer_loops = convert_outer_cn_loops(outer_cn_loops, layer)
+        # elif self.cn_define_mode == 4:
+        #     # Assume we always split in the hint_loops dimensions
+        #     # Check if we need to split in K dimension for it to not block offchip during computation
+        #     outer_cn_loops = self.hint_loops.copy()
+        #     try:
+        #         split_factor = self.layer_split_factors_k[layer]
+        #     except KeyError:
+        #         split_factor = 1
+        #     outer_loops = convert_outer_cn_loops_with_k(outer_cn_loops, layer, split_factor)
+        # else:
+        #     raise ValueError("This shouldn't be reached if initialization checks are correctly implemented.")
+
         if not outer_loops:
-            outer_loops.append(TemporalLoop(layer.layer_dims[0], 1))
+            raise ValueError("Outer loops should be generated if inter_core_tiling is properly set")
+            outer_loops.append(TemporalLoop(node.layer_dims[0], 1))
         return outer_loops
 
     def get_non_type_predecessors(self, node: Node, types: list[type]) -> list[Node]:

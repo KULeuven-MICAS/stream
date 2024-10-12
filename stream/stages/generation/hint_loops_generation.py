@@ -7,20 +7,26 @@ from zigzag.stages.stage import Stage
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.dnn_workload import DNNWorkloadStream
+from stream.workload.mapping import TILING_T
+from stream.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)
 
+# HINT_LOOP_T: TypeAlias = dict[STACK_T, list[tuple[LayerDim, int | str]]]
+
 
 class HintLoopsGenerationStage(Stage):
+
+    # hint_loops: HINT_LOOP_T | None
+
     def __init__(
         self,
         list_of_callables,
         *,
         accelerator: Accelerator,
-        workload: DNNWorkloadStream,
+        workload: ONNXWorkload,
         layer_stacks: list[tuple[int, ...]],
-        **kwargs: dict[str, Any],
+        **kwargs: Any,
     ):
         super().__init__(list_of_callables, **kwargs)
         self.accelerator = accelerator
@@ -29,24 +35,40 @@ class HintLoopsGenerationStage(Stage):
         assert layer_stacks is not None
         self.layer_stacks = layer_stacks
         self.mode = kwargs.get("mode")
-        self.hint_loops = kwargs.get("hint_loops", None)
+        # self.hint_loops = kwargs.get("hint_loops", None)
 
     def run(self):
-        match self.mode:
-            case "fused":
-                if self.hint_loops is None:
-                    self.hint_loops = self.get_hint_loops_fused()
-                    self.kwargs["cn_define_mode"] = 3
-            case "lbl":
-                if self.hint_loops is None:
-                    self.hint_loops = self.get_hint_loops_lbl()
-                    self.kwargs["cn_define_mode"] = 3
-            case _:
-                raise ValueError("Unsupported mode for hint loops determination.")
+        for node in self.workload.node_list:
+            if not isinstance(node, ComputationNode):
+                continue
+
+            valid_tiling = self.adapt_tiling_to_layer_dims(node.intra_core_tiling, node)
+
+            if not valid_tiling:
+                match self.mode:
+                    case "lbl":
+                        valid_tiling = []
+                    case "fused":
+                        suggested_tiling: TILING_T = [(node.fusion_partition_dims[0], "all")]
+                        # Sanity check
+                        valid_tiling = self.adapt_tiling_to_layer_dims(suggested_tiling, node)
+                        assert valid_tiling, "The default tiling is invalid for this node"
+                    case _:
+                        raise ValueError("Unsupported mode for hint loops determination.")
+
+            node.intra_core_tiling = valid_tiling
+
+            #     if self.hint_loops is None:
+            #         self.hint_loops = self.get_hint_loops_fused()
+            #         self.kwargs["cn_define_mode"] = 3
+            # case "lbl":
+            #     if self.hint_loops is None:
+            #         self.hint_loops = self.get_hint_loops_lbl()
+            #         self.kwargs["cn_define_mode"] = 3
 
         self.kwargs["accelerator"] = self.accelerator
         self.kwargs["workload"] = self.workload
-        self.kwargs["hint_loops"] = self.hint_loops
+        # self.kwargs["hint_loops"] = self.hint_loops
         self.kwargs["layer_stacks"] = self.layer_stacks
 
         sub_stage = self.list_of_callables[0](
@@ -56,33 +78,69 @@ class HintLoopsGenerationStage(Stage):
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
 
-    def get_hint_loops_lbl(self):
-        hint_loops = {}
-        for stack in self.layer_stacks:
-            assert len(stack) == 1, "Stack contains more than one node in layer by layer case"
-            hint_loops[stack] = []
-        return hint_loops
+    # def get_hint_loops_lbl(self):
+    #     hint_loops: HINT_LOOP_T = {}
+    #     for stack in self.layer_stacks:
+    #         assert len(stack) == 1, "Stack contains more than one node in layer by layer case"
+    #         hint_loops[stack] = []
+    #     return hint_loops
 
-    def get_hint_loops_fused(self):
+    def adapt_tiling_to_layer_dims(self, given_tiling: TILING_T, node: ComputationNode):
+        """If the user-defined intra core tiling is not valid w.r.t. the node's layer dimensions and sizes, change
+        the tiling to a valid one"""
+        valid_tiling: TILING_T = []
+
+        for layer_dim, factor in given_tiling:
+            if layer_dim not in node.layer_dim_sizes:
+                # Invalid layer dim: don't include in valid tiling
+                logger.warn(
+                    f"Given intra core tiling {layer_dim, factor} for node {node} invalid: node does not contain {layer_dim}. Removing {layer_dim}",
+                )
+            else:
+                layer_dim_size = node.layer_dim_sizes[layer_dim]
+                if factor == "all":
+                    factor = layer_dim_size
+                elif isinstance(factor, str):
+                    raise ValueError("intra core tiling should be an integer or `all`")
+                elif layer_dim_size < factor:
+                    # Given tiling factor too large -> use max allowed
+                    factor = layer_dim_size
+                elif layer_dim_size % factor != 0:
+                    # Layer size is not a multiple of the tiling factor -> increase loop size of the layer
+                    new_layer_dim_size = node.layer_dim_sizes[layer_dim] + 1
+                    while new_layer_dim_size % factor != 0:
+                        new_layer_dim_size += 1
+                    logger.warn(f"Rounding {node}: {layer_dim} {layer_dim_size} -> {new_layer_dim_size}")
+                    node.layer_dim_sizes[layer_dim] = new_layer_dim_size
+
+                valid_tiling.append((layer_dim, factor))
+
+        return valid_tiling
+
+    def get_hint_loops_fused(self, node: ComputationNode) -> TILING_T:
         """
         Simple way to infer hint loops: assume only up until first cut is fused,
         rest is processed layer by layer.
         """
-        hint_loops = {}
+        # hint_loops: HINT_LOOP_T = {}
         for stack in self.layer_stacks:
-            computation_nodes = self.get_computation_nodes(stack)
-            if len(computation_nodes) > 1:
-                for n in computation_nodes:
-                    # NOTE Take first entry of fusion_partition_dims for now
-                    hint_loops[(n.id,)] = [(n.fusion_partition_dims[0], "all")]
-            else:
-                hint_loops[stack] = []
-        return hint_loops
+            if node.id in stack and len(stack) > 1:
+                return [(dim, "all") for dim in node.fusion_partition_dims]
+                # computation_nodes = self.get_computation_nodes(stack)
+                # if len(computation_nodes) > 1:
+                #     for n in computation_nodes:
+                # hint_loops[(n.id,)] = [(n.fusion_partition_dims[0], "all")]
 
-    def get_computation_nodes(self, stack: tuple[int, ...]) -> list[ComputationNode]:
-        nodes = [n for n in self.workload.node_list if n.id in stack]
-        computation_nodes = [n for n in nodes if isinstance(n, ComputationNode)]
-        return computation_nodes
+        # No stack found
+        return []
+        # else:
+        #     hint_loops[stack] = []
+        # return hint_loops
+
+    # def get_computation_nodes(self, stack: tuple[int, ...]) -> list[ComputationNode]:
+    #     nodes = [n for n in self.workload.node_list if n.id in stack]
+    #     computation_nodes = [n for n in nodes if isinstance(n, ComputationNode)]
+    #     return computation_nodes
 
     @staticmethod
     def split_operator(model: ModelProto, node_name: str, num_splits: int):

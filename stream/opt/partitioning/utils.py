@@ -4,6 +4,7 @@ from zigzag.datatypes import LayerDim
 
 from stream.opt.partitioning.TemporalLoop import TemporalLoop
 from stream.workload.computation.computation_node import ComputationNode
+from stream.workload.mapping import TILING_T
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ def find_the_closest_divisible_factor_within_a_range(total, factor, a_range):
     return new_factor
 
 
-def convert_inner_cn_loops(inner_cn_loops: list, layer: ComputationNode):
+def convert_inner_cn_loops(inner_cn_loops: TILING_T, layer: ComputationNode):
     """Converts a list of string-defined inner-cn loops to outer-cn TemporalLoop objects.
     "all" as a inner-cn dimension size is converted to the layer's dimension size.
 
@@ -49,7 +50,7 @@ def convert_inner_cn_loops(inner_cn_loops: list, layer: ComputationNode):
         inner_cn_loops (list): A list of string-defined inner-cn loops.
         layer (ComputationNode): The original layer.
     """
-    inner_loops = []
+    inner_loops: list[TemporalLoop] = []
     for loop_name, loop_size in inner_cn_loops:
         if loop_name in layer.layer_dims:
             if loop_size == "all" or layer.layer_dim_sizes[loop_name] < loop_size:
@@ -79,49 +80,56 @@ def modify_layer_dim_for_op(layer_dim: LayerDim, layer: ComputationNode) -> Laye
     Args:
         layer_dim (LayerDim): The layer dimension.
         layer (ComputationNode): The original layer.
+
+    # TODO this code can be omitted of proper intra core tilings are defined by the user
     """
     if layer.type == "add" and layer_dim == LayerDim("OY"):
         return LayerDim("D")  # add operator does not have OY dimension
     return layer_dim
 
 
-def convert_outer_cn_loops(outer_cn_loops: list[tuple[str, int | str]], layer: ComputationNode):
+def convert_outer_cn_loops(outer_cn_loops: TILING_T, node: ComputationNode):
     """Converts a list of string-defined outer-cn loops to outer-cn TemporalLoop objects.
-    "all" in ("K", "all") is converted to the size of that dimension for the layer.
+    "all" in ("K", "all") is converted to the size of that dimension for the node.
 
     Args:
         outer_cn_loops (list): The list of string-defined outer-cn loops
-        layer (ComputationNode): The original layer.
+        node: The original node.
+
+    NOTE `HintLoopGenerationStage` already clears out the invalid unrollings
     """
+    assert all(isinstance(factor, int) for _, factor in outer_cn_loops)
+    return [TemporalLoop(layer_dim, loop_size) for layer_dim, loop_size in outer_cn_loops]
+
     outer_loops: list[TemporalLoop] = []
     for layer_dim, loop_size in outer_cn_loops:
-        layer_dim = modify_layer_dim_for_op(layer_dim, layer)
-        if layer_dim in layer.layer_dim_sizes.layer_dims:
+        layer_dim = modify_layer_dim_for_op(layer_dim, node)
+        if layer_dim in node.layer_dim_sizes.layer_dims:
             if isinstance(loop_size, str):
                 if loop_size == "all":
-                    outer_loops.append(TemporalLoop(layer_dim, layer.layer_dim_sizes[layer_dim]))
+                    outer_loops.append(TemporalLoop(layer_dim, node.layer_dim_sizes[layer_dim]))
                 else:
                     raise ValueError("Loop hint is string but not 'all'")
             else:
-                if layer.layer_dim_sizes[layer_dim] < loop_size:
-                    outer_loops.append(TemporalLoop(layer_dim, layer.layer_dim_sizes[layer_dim]))
-                elif layer.layer_dim_sizes[layer_dim] % loop_size == 0:
+                if node.layer_dim_sizes[layer_dim] < loop_size:
+                    outer_loops.append(TemporalLoop(layer_dim, node.layer_dim_sizes[layer_dim]))
+                elif node.layer_dim_sizes[layer_dim] % loop_size == 0:
                     outer_loops.append(TemporalLoop(layer_dim, loop_size))
                 else:
                     # Increase the loop size of the layer until it is divisible by the outer loop
-                    new_layer_dim_size = layer.layer_dim_sizes[layer_dim] + 1
+                    new_layer_dim_size = node.layer_dim_sizes[layer_dim] + 1
                     while new_layer_dim_size % loop_size != 0:
                         new_layer_dim_size += 1
                     # Set the new loop size of the layer
                     logger.warn(
-                        f"Rounding {layer}: {layer_dim} {layer.layer_dim_sizes[layer_dim]} -> {new_layer_dim_size}"
+                        f"Rounding {node}: {layer_dim} {node.layer_dim_sizes[layer_dim]} -> {new_layer_dim_size}"
                     )
-                    layer.layer_dim_sizes[layer_dim] = new_layer_dim_size
+                    node.layer_dim_sizes[layer_dim] = new_layer_dim_size
                     outer_loops.append(TemporalLoop(layer_dim, loop_size))
     return outer_loops
 
 
-def convert_outer_cn_loops_with_k(outer_cn_loops: list, layer: ComputationNode, split_factor: int):
+def convert_outer_cn_loops_with_k(outer_cn_loops: TILING_T, layer: ComputationNode, split_factor: int):
     """Converts a list of string-defined outer-cn loops to outer-cn TemporalLoop objects.
     Adds output channel (K) outer-cn loops to the already provided outer-cn loops depending on the split factor.
 
@@ -130,6 +138,7 @@ def convert_outer_cn_loops_with_k(outer_cn_loops: list, layer: ComputationNode, 
         layer (ComputationNode): The original layer.
         split_factor (int): The number of output channel splits that will be added.
     """
+    raise DeprecationWarning("Still uses string representation for LayerOperand")
     if not isinstance(split_factor, int):
         raise ValueError("The number of K splits should be an integer.")
     if split_factor > 1:
