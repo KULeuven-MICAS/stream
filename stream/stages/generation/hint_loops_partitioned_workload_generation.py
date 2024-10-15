@@ -158,8 +158,10 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         """
         outer_loops = convert_outer_cn_loops(node.intra_core_tiling.copy(), node)
 
+        # In case no valid intra core tiling is found: add an arbitrary tiling of size 1
         if not outer_loops:
-            raise ValueError("Outer loops should be generated if inter_core_tiling is properly set")
+            outer_loops = [TemporalLoop(node.layer_dims[0], 1)]
+
         return outer_loops
 
     def get_non_type_predecessors(self, node: Node, types: list[type]) -> list[Node]:

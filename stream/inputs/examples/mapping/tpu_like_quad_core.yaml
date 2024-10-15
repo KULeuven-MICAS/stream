@@ -20,6 +20,8 @@
 
 - name: MaxPool
   core_allocation: [4]
+  intra_core_tiling:
+    - OY, 1
 
 - name: AveragePool
   core_allocation: [4]
@@ -29,3 +31,5 @@
 
 - name: Add
   core_allocation: [5]
+  intra_core_tiling:
+    - OY, 1

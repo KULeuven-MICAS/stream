@@ -385,7 +385,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             inter_core_tiling = self.check_and_generate_inter_core_tiling(node, nb_cores_split)
             node.inter_core_tiling = inter_core_tiling
             # Add inter core tiling to intra-core mapping for the next run
-            node.intra_core_tiling += node.inter_core_tiling
+            node.intra_core_tiling += inter_core_tiling
 
         scheduling_order = self.get_scheduling_order(unpartitioned_sub_workload)
 
@@ -414,11 +414,40 @@ class ConstraintOptimizationAllocationStage(Stage):
         return scme
 
     def check_and_generate_inter_core_tiling(self, node: ComputationNode, split_factor: int):
+        self.remove_invalid_entries_from_inter_core_tiling(node)
+
         if not node.inter_core_tiling:
             # Add default tiling if not defined by user
             return self.generate_inter_core_tiling(node, split_factor)
         else:
             return self.replace_wildcard_in_tiling(node.inter_core_tiling, split_factor)
+
+    def remove_invalid_entries_from_inter_core_tiling(self, node: ComputationNode):
+        """Check wether this node's inter core tiling has invalid entries: non-existent layer dimension for this node
+        or too large tiling size. Remove entry if this is the case
+        #TODO it would be more logical to put this code somewhere else
+        """
+        valid_tiling: TILING_T = []
+        for layer_dim, factor in node.inter_core_tiling:
+            # Tiling layer dim doesn't exist -> remove
+            if layer_dim not in node.layer_dim_sizes:
+                logger.warning(
+                    f"Inter core tiling ({layer_dim}, {factor}) of {node} invalid: {layer_dim} not in "
+                    f"this node's layer dim sizes. Removing {layer_dim}"
+                )
+                continue
+
+            # Tiling size too high -> reduce
+            layer_size = node.layer_dim_sizes[layer_dim]
+            if isinstance(factor, int) and factor > layer_size:
+                logger.warning(
+                    f"Inter core tiling ({layer_dim}, {factor}) of {node} invalid: {factor} exceeds the layer size of "
+                    f"{layer_size}. Reducing tiling size to {layer_size}"
+                )
+                factor = layer_size
+
+            valid_tiling.append((layer_dim, layer_size))
+        node.inter_core_tiling = valid_tiling
 
     def replace_wildcard_in_tiling(self, tiling: TILING_T, nb_cores_split: int):
         """The user can define a wildcard `*` in the inter core tiling, meaning that the value found by the CO
@@ -466,6 +495,7 @@ class ConstraintOptimizationAllocationStage(Stage):
 
     def generate_inter_core_tiling(self, node: ComputationNode, split_over_n_cores: int) -> TILING_T:
         # TODO don't hardcode G and K
+        # TODO check that the layer dim in the node's layer
         if node.layer_dim_sizes.data.get(LayerDim("G"), 1) > 1:
             loop_dim = LayerDim("G")
         elif node.layer_dim_sizes.data.get(LayerDim("K"), 1) > 1:
