@@ -7,7 +7,6 @@ from typing import Any, TypeAlias
 import networkx as nx
 import numpy as np
 from networkx import DiGraph
-from zigzag.datatypes import LayerDim
 from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
@@ -382,7 +381,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             nb_cores_split = len(core_allocation_this_node)
 
             # Set correct inter core tiling
-            inter_core_tiling = self.check_and_generate_inter_core_tiling(node, nb_cores_split)
+            inter_core_tiling = self.replace_wildcard_in_tiling(node.inter_core_tiling, nb_cores_split)
             node.inter_core_tiling = inter_core_tiling
             # Add inter core tiling to intra-core mapping for the next run
             node.intra_core_tiling += inter_core_tiling
@@ -412,56 +411,6 @@ class ConstraintOptimizationAllocationStage(Stage):
         scme, _ = main_stage.run()
         scme = scme[0]
         return scme
-
-    def check_and_generate_inter_core_tiling(self, node: ComputationNode, split_factor: int):
-        self.remove_invalid_entries_from_inter_core_tiling(node)
-
-        if not node.inter_core_tiling:
-            # Add default tiling if not defined by user
-            return self.generate_inter_core_tiling(node, split_factor)
-        else:
-            return self.replace_wildcard_in_tiling(node.inter_core_tiling, split_factor)
-
-    def remove_invalid_entries_from_inter_core_tiling(self, node: ComputationNode):
-        """Check wether this node's inter core tiling has invalid entries: non-existent layer dimension for this node
-        or too large tiling size. Remove entry if this is the case
-        #TODO it would be more logical to put this code somewhere else
-        """
-        valid_tiling: TILING_T = []
-        for layer_dim, factor in node.inter_core_tiling:
-            # Tiling layer dim doesn't exist -> remove
-            if layer_dim not in node.layer_dim_sizes:
-                logger.warning(
-                    f"Inter core tiling ({layer_dim}, {factor}) of {node} invalid: {layer_dim} not in "
-                    f"this node's layer dim sizes. Removing {layer_dim}"
-                )
-                continue
-
-            # Tiling size too high -> reduce
-            layer_size = node.layer_dim_sizes[layer_dim]
-            if isinstance(factor, int) and factor > layer_size:
-                logger.warning(
-                    f"Inter core tiling ({layer_dim}, {factor}) of {node} invalid: {factor} exceeds the layer size of "
-                    f"{layer_size}. Reducing tiling size to {layer_size}"
-                )
-                factor = layer_size
-
-            valid_tiling.append((layer_dim, factor))
-        node.inter_core_tiling = valid_tiling
-
-    def replace_wildcard_in_tiling(self, tiling: TILING_T, nb_cores_split: int):
-        """The user can define a wildcard `*` in the inter core tiling, meaning that the value found by the CO
-        must be used instead.
-        # TODO in case multiple splits are given (e.g. C and D), should the nb_cores_split be scaled?
-        """
-        tiling_replaced: TILING_T = []
-        for layer_dim, split_factor in tiling:
-            if split_factor == "*":
-                split_factor = nb_cores_split
-            elif split_factor == "all":
-                raise ValueError("inter core tiling should not contain `all`")
-            tiling_replaced.append((layer_dim, split_factor))
-        return tiling_replaced
 
     def set_fixed_allocations_for_workload(
         self, workload: ComputationNodeWorkload, layer_ids: list[int], core_ids: list[list[int]]
@@ -493,17 +442,19 @@ class ConstraintOptimizationAllocationStage(Stage):
                 core_ids.insert(layer_ids_idx, n.core_allocation)
                 logger.warning(f"{n} not in steady state allocation; allocated to: {n.core_allocation}.")
 
-    def generate_inter_core_tiling(self, node: ComputationNode, split_over_n_cores: int) -> TILING_T:
-        # TODO don't hardcode G and K
-        # TODO check that the layer dim in the node's layer
-        if node.layer_dim_sizes.data.get(LayerDim("G"), 1) > 1:
-            loop_dim = LayerDim("G")
-        elif node.layer_dim_sizes.data.get(LayerDim("K"), 1) > 1:
-            loop_dim = LayerDim("K")
-        else:
-            raise ValueError("Unknown what loop dim to split across cores")
-
-        return [(loop_dim, split_over_n_cores)]
+    def replace_wildcard_in_tiling(self, tiling: TILING_T, nb_cores_split: int):
+        """The user can define a wildcard `*` in the inter core tiling, meaning that the value found by the CO
+        must be used instead.
+        # TODO in case multiple splits are given (e.g. C and D), should the nb_cores_split be scaled?
+        """
+        tiling_replaced: TILING_T = []
+        for layer_dim, split_factor in tiling:
+            if split_factor == "*":
+                split_factor = nb_cores_split
+            elif split_factor == "all":
+                raise ValueError("inter core tiling should not contain `all`")
+            tiling_replaced.append((layer_dim, split_factor))
+        return tiling_replaced
 
     def get_real_predecessors(self, node: ComputationNode, g: ComputationNodeWorkload | None = None):
         if not g:
