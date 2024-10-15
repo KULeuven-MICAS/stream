@@ -230,13 +230,15 @@ class ConstraintOptimizationAllocationStage(Stage):
         visualize_waco(allocation, self.node_hw_performances, self.accelerator, fig_path, iterations)
         return allocation
 
-    def get_scheduling_order(self, unpartitioned_workload: DNNWorkloadStream) -> list[list[tuple[int, int]]]:
-        # ! This used to have the altered (intra and inter) hint loops before. SHould be OK, only needed to update order in case of K split in inter core tiling
+    def get_scheduling_order(self, unpartitioned_workload: DNNWorkloadStream) -> list[tuple[int, int]]:
         """
         Get the scheduling order of all ids that will exist in the transformed workload.
         Returns a list with all ids where the earlier the higher priority
         The scheduling order is altered to accommodate the inter core tiling of the given workload
 
+        Args:
+           unpartitioned_workload: original workload (before partitioning into finder nodes), used to extract the inter-
+                                   core tiling loops
         # TODO don't hardcode K and G
         """
 
@@ -252,36 +254,56 @@ class ConstraintOptimizationAllocationStage(Stage):
                 memoization_hash_ss=hash_steady_state,
             )
 
-            # Adjust the order such that if there is a K split in the transformed workload,
-            # those ids are also present
-            for node in self.get_computation_nodes(stack, unpartitioned_workload):
-                # NOTE this uses `inter_core_tiling`, because the inter core tiling is added to the intra core tiling
-                # in `schedule_allocation` in order to alter the workload
-                outer_loops = node.inter_core_tiling
+            adjusted_order = self.adjust_order_to_inter_core_tiling(stack, order, unpartitioned_workload)
+            scheduling_order += adjusted_order
 
-                # try:
-                #     outer_loops = hint_loops[(layer_id,)]
-                # except KeyError:
-                #     # If the layer_id is not present it means it was not in the allocation.
-                #     # This happens if all nodes of the layer were not in the steady state
-                #     outer_loops = []
-
-                if outer_loops:
-                    # TODO why does this only work on the last outer loop? In this scope, outer loops contains all
-                    # TODO inter core loops that are new to this transformed workload
-                    dim, size = outer_loops[-1]
-                    if (dim.name == "K" and size > 1) or (dim.name == "G" and size > 1):
-                        inserted = 0
-                        for i, id in enumerate(order.copy()):
-                            layer_id, node_id = id
-                            if layer_id == node.id:
-                                nb_nodes_this_layer = self.get_nb_nodes_for_layer(layer_id)
-                                for scale in range(1, size):
-                                    new_id = scale * nb_nodes_this_layer + node_id
-                                    order.insert(i + inserted + 1, (layer_id, new_id))
-                                    inserted += 1
-            scheduling_order += order
         return scheduling_order
+
+    def adjust_order_to_inter_core_tiling(
+        self, stack: STACK_T, order: list[tuple[int, int]], unpartitioned_workload: DNNWorkloadStream
+    ):
+        """Given an allocation order for a given stack, extend the order to extra outer loops that result from the
+        inter core tiling. This method anticipates the fact that later on, CNs will be split further to allow for inter-
+        core tiling, and adjusts the scheduling beforehand
+
+        Args:
+            stack: CN stack for which the order applies
+            order: scheduling order for this stack, without inter core tiling
+            unpartitioned_workload: original workload (before partitioning into finder nodes), used to extract the inter-
+                                    core tiling loops
+
+        # TODO don't hardcode K and G
+        """
+
+        for node in self.get_computation_nodes(stack, unpartitioned_workload):
+            # NOTE this uses `inter_core_tiling`, because the inter core tiling is added to the intra core tiling
+            # in `schedule_allocation` in order to alter the workload
+            outer_loops = node.inter_core_tiling
+
+            # try:
+            #     outer_loops = hint_loops[(layer_id,)]
+            # except KeyError:
+            #     # If the layer_id is not present it means it was not in the allocation.
+            #     # This happens if all nodes of the layer were not in the steady state
+            #     outer_loops = []
+
+            for _, factor in outer_loops:
+                assert isinstance(factor, int), "tiling options `*` and `all` should be replaced by now"
+                if factor == 1:
+                    # In case CO decides to not split up the node across cores
+                    continue
+
+                inserted = 0
+                for i, ids_in_stack in enumerate(order.copy()):
+                    layer_id, node_id = ids_in_stack
+                    if layer_id == node.id:
+                        nb_nodes_this_layer = self.get_nb_nodes_for_layer(layer_id)
+                        for scale in range(1, factor):
+                            new_node_id = scale * nb_nodes_this_layer + node_id
+                            order.insert(i + inserted + 1, (layer_id, new_node_id))
+                            inserted += 1
+
+        return order
 
     def get_nb_nodes_for_layer(self, layer_id: int):
         return len(list(n for n in self.workload.node_list if n.id == layer_id))

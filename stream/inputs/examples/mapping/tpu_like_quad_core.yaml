@@ -1,16 +1,16 @@
 - name: default
   core_allocation: [0, 1, 2, 3]
+  intra_core_tiling:
+    - K, 4
   inter_core_tiling:
     - K, *
-  intra_core_tiling:
-    - D, 4
 
 - name: Conv
   core_allocation: [0, 1, 2, 3]
-  inter_core_tiling:
-    - K, *
   intra_core_tiling:
     - D, 4
+  inter_core_tiling:
+    - K, *
 
 - name: Gemm
   core_allocation: [0, 1, 2, 3]

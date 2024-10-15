@@ -47,8 +47,6 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         *,
         workload: ONNXWorkload,
         accelerator: Accelerator,
-        # cn_define_mode: int,
-        # hint_loops: list[tuple[LayerDim, str | int]],
         **kwargs: Any,
     ):
         """
@@ -64,23 +62,6 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
 
         # Memoize the numpy tensors for dependency generation
         self.numpy_tensors = {}
-
-        # for CN node size case study, will be used in the function of get_outer_tmap_loop_dimensions
-        # if cn_define_mode not in [1, 2, 3, 4]:
-        #     raise ValueError(f"cn_define_mode can not be {self.cn_define_mode}.")
-        # self.cn_define_mode = cn_define_mode
-        # self.hint_loops = hint_loops  # can be outer-cn or inner-cn depending on cn_define_mode
-
-        # compute the weight capacities of the different cores and the number of splits required for each layer
-        # if cn_define_mode == 4:
-        #     try:
-        #         self.split_W_percentage = self.kwargs["split_W_percentage"]
-        #     except KeyError:
-        #         self.split_W_percentage = 1
-        # compute the on-chip weight capacities of the different cores (assumes 'I2' is for weights)
-        # self.weight_capacities = self.get_weight_capacities()
-        # compute the number of splits required for each layer in the original workload
-        # self.layer_split_factors_k = self.get_layer_split_factors_k()
 
     def run(self):
         unique_finer_nodes: list[ComputationNode] = []
@@ -123,7 +104,6 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         kwargs["original_workload"] = pickle_deepcopy(self.workload)
         kwargs["workload"] = partitioned_workload
         kwargs["accelerator"] = self.accelerator
-        # kwargs["hint_loops"] = self.hint_loops
 
         if "scheduling_order" not in kwargs:
             kwargs["scheduling_order"] = self.get_scheduling_order(partitioned_workload)
@@ -178,39 +158,8 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         """
         outer_loops = convert_outer_cn_loops(node.intra_core_tiling.copy(), node)
 
-        # if self.cn_define_mode == 1:
-        # outer_cn_loops identical for all layers
-        #     outer_cn_loops = self.hint_loops.copy()
-        #     outer_loops = convert_outer_cn_loops(outer_cn_loops, node)
-        # elif self.cn_define_mode == 2:
-        #     inner_cn_loops = self.hint_loops.copy()
-        #     outer_loops = convert_inner_cn_loops(inner_cn_loops, node)
-        # elif self.cn_define_mode == 3:
-        # Assume that self.hint_loops is a dict
-        # A key is a tuple containing the layer ids that should use the value as hint_loops
-        # So for self.hint_loops = {(0,1,2,3): [("OY", "all")], (4,): [("OY", "all"), ("K", "all")]}
-        # layer ids 0 to 3 will use [("OY", "all")] and layer id 4 will use [("OY", "all), ("K", "all")]
-        # Find which sublist this layer should use
-        # try:
-        #     outer_cn_loops = next(v for k, v in self.hint_loops.items() if layer.id in k)
-        # except StopIteration:
-        #     raise ValueError(f"Layer id {layer.id} not in hint_loops: {self.hint_loops}")
-        # outer_loops = convert_outer_cn_loops(outer_cn_loops, layer)
-        # elif self.cn_define_mode == 4:
-        #     # Assume we always split in the hint_loops dimensions
-        #     # Check if we need to split in K dimension for it to not block offchip during computation
-        #     outer_cn_loops = self.hint_loops.copy()
-        #     try:
-        #         split_factor = self.layer_split_factors_k[layer]
-        #     except KeyError:
-        #         split_factor = 1
-        #     outer_loops = convert_outer_cn_loops_with_k(outer_cn_loops, layer, split_factor)
-        # else:
-        #     raise ValueError("This shouldn't be reached if initialization checks are correctly implemented.")
-
         if not outer_loops:
             raise ValueError("Outer loops should be generated if inter_core_tiling is properly set")
-            outer_loops.append(TemporalLoop(node.layer_dims[0], 1))
         return outer_loops
 
     def get_non_type_predecessors(self, node: Node, types: list[type]) -> list[Node]:
