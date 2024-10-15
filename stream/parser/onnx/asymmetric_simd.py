@@ -54,17 +54,14 @@ class AsymmetricSimdParser(OnnxComputeOperatorParser):
             )
 
         node_data = self.get_layer_node_user_format(non_batched_input_shape, output_shape)
-        node_factory = LayerNodeFactory(node_data, self.mapping_data)
+        node_factory = LayerNodeFactory(node_data, mapping_data=None)
         node_attrs = node_factory.create_node_attr()
-
-        # Override spatial mapping by the one defined in the core's dataflows
-        core_allocation = node_attrs.core_allocation
-        spatial_mapping = self.accelerator.get_spatial_mapping_from_core(core_allocation)
-        node_attrs.spatial_mapping = spatial_mapping
+        mapping = self.get_mapping_this_node()
 
         return ComputationNode(
             node_id=self.node_id,
             node_name=self.node.name,
             node_attr=node_attrs,
+            mapping_attr=mapping,
             op_type=self.node.op_type,
         )

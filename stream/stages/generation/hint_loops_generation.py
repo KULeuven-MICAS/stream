@@ -12,12 +12,8 @@ from stream.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)
 
-# HINT_LOOP_T: TypeAlias = dict[STACK_T, list[tuple[LayerDim, int | str]]]
-
 
 class HintLoopsGenerationStage(Stage):
-
-    # hint_loops: HINT_LOOP_T | None
 
     def __init__(
         self,
@@ -35,7 +31,6 @@ class HintLoopsGenerationStage(Stage):
         assert layer_stacks is not None
         self.layer_stacks = layer_stacks
         self.mode = kwargs.get("mode")
-        # self.hint_loops = kwargs.get("hint_loops", None)
 
     def run(self):
         for node in self.workload.node_list:
@@ -58,17 +53,8 @@ class HintLoopsGenerationStage(Stage):
 
             node.intra_core_tiling = valid_tiling
 
-            #     if self.hint_loops is None:
-            #         self.hint_loops = self.get_hint_loops_fused()
-            #         self.kwargs["cn_define_mode"] = 3
-            # case "lbl":
-            #     if self.hint_loops is None:
-            #         self.hint_loops = self.get_hint_loops_lbl()
-            #         self.kwargs["cn_define_mode"] = 3
-
         self.kwargs["accelerator"] = self.accelerator
         self.kwargs["workload"] = self.workload
-        # self.kwargs["hint_loops"] = self.hint_loops
         self.kwargs["layer_stacks"] = self.layer_stacks
 
         sub_stage = self.list_of_callables[0](
@@ -77,13 +63,6 @@ class HintLoopsGenerationStage(Stage):
         )
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
-
-    # def get_hint_loops_lbl(self):
-    #     hint_loops: HINT_LOOP_T = {}
-    #     for stack in self.layer_stacks:
-    #         assert len(stack) == 1, "Stack contains more than one node in layer by layer case"
-    #         hint_loops[stack] = []
-    #     return hint_loops
 
     def adapt_tiling_to_layer_dims(self, given_tiling: TILING_T, node: ComputationNode):
         """If the user-defined intra core tiling is not valid w.r.t. the node's layer dimensions and sizes, change
@@ -122,25 +101,11 @@ class HintLoopsGenerationStage(Stage):
         Simple way to infer hint loops: assume only up until first cut is fused,
         rest is processed layer by layer.
         """
-        # hint_loops: HINT_LOOP_T = {}
         for stack in self.layer_stacks:
             if node.id in stack and len(stack) > 1:
                 return [(dim, "all") for dim in node.fusion_partition_dims]
-                # computation_nodes = self.get_computation_nodes(stack)
-                # if len(computation_nodes) > 1:
-                #     for n in computation_nodes:
-                # hint_loops[(n.id,)] = [(n.fusion_partition_dims[0], "all")]
 
-        # No stack found
         return []
-        # else:
-        #     hint_loops[stack] = []
-        # return hint_loops
-
-    # def get_computation_nodes(self, stack: tuple[int, ...]) -> list[ComputationNode]:
-    #     nodes = [n for n in self.workload.node_list if n.id in stack]
-    #     computation_nodes = [n for n in nodes if isinstance(n, ComputationNode)]
-    #     return computation_nodes
 
     @staticmethod
     def split_operator(model: ModelProto, node_name: str, num_splits: int):

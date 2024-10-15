@@ -118,9 +118,6 @@ class ConvParser(OnnxComputeOperatorParser):
         # Get the input and output activation shapes
         ia_dimension_shape, oa_dimension_shape = get_node_input_output_dimension_shapes(self.node, self.onnx_model)
 
-        # Get the input and output activation and weight data type (precision) # TODO not used?
-        # ia_data_type, oa_data_type, w_data_type = get_input_output_weight_data_type(self.node, self.onnx_model)
-
         node_data: dict[str, Any] = self.get_layer_node_user_format(
             kernel_shape,
             strides,

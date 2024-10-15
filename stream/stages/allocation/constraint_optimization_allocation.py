@@ -47,7 +47,6 @@ class ConstraintOptimizationAllocationStage(Stage):
         accelerator: Accelerator,
         node_hw_performances: CostModelEvaluationLUT,
         layer_stacks: list[tuple[range, ...]],
-        # hint_loops: list[...],
         node_hw_performances_path_with_split: str,
         **kwargs: Any,
     ):
@@ -79,7 +78,6 @@ class ConstraintOptimizationAllocationStage(Stage):
                 os.path.splitext(self.node_hw_performances_path_with_split)[0] + ".png"
             )
             self.visualize_node_hw_performances_path_with_split = node_hw_performances_visualization_path
-        # self.hint_loops = hint_loops
         self.co_time_limit: int = kwargs.get("co_time_limit", 600)
 
         # Which CME attribute to use for the node latencies
@@ -394,15 +392,10 @@ class ConstraintOptimizationAllocationStage(Stage):
             # Add inter-core tiling to intra-core mapping for the next run
             node.intra_core_tiling += node.inter_core_tiling
 
-        # cn_define_mode = 3
-        # hint_loops = self.get_hint_loops(layer_ids, core_ids)
-
         scheduling_order = self.get_scheduling_order(unpartitioned_workload)
 
         loma_lpf_limit = 7
         kwargs = self.kwargs.copy()
-        # kwargs["hint_loops"] = hint_loops
-        # kwargs["cn_define_mode"] = cn_define_mode
         kwargs["loma_lpf_limit"] = loma_lpf_limit
         kwargs["accelerator"] = self.accelerator
         kwargs["workload"] = unpartitioned_workload
@@ -468,23 +461,6 @@ class ConstraintOptimizationAllocationStage(Stage):
                 layer_ids.insert(layer_ids_idx, layer_id_not_in_ss)
                 core_ids.insert(layer_ids_idx, n.core_allocation)
                 logger.warning(f"{n} not in steady state allocation; allocated to: {n.core_allocation}.")
-
-    # def get_hint_loops(self, layer_ids: list[int], core_ids: list[list[int]]):
-    #     hint_loops = {}
-    #     for layer_id, cores in zip(layer_ids, core_ids):
-    #         updated_hint_loops = next(v for k, v in self.hint_loops.items() if layer_id in k).copy()
-    #         if len(cores) > 1:
-    #             nb_cores = len(cores)
-    #             layer_node = next(n for n in self.original_workload.nodes() if n.id == layer_id)
-    #             if layer_node.layer_dim_sizes.data.get(LayerDim("G"), 1) > 1:
-    #                 loop_dim = LayerDim("G")
-    #             elif layer_node.layer_dim_sizes.data.get(LayerDim("K"), 1) > 1:
-    #                 loop_dim = LayerDim("K")
-    #             else:
-    #                 raise ValueError("Unknown what loop dim to split across cores")
-    #             updated_hint_loops.append((loop_dim, nb_cores))
-    #         hint_loops[(layer_id,)] = updated_hint_loops
-    #     return hint_loops
 
     def generate_inter_core_tiling(self, node: ComputationNode, split_over_n_cores: int) -> TILING_T:
         # TODO don't hardcode G and K
