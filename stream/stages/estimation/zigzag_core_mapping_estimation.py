@@ -13,10 +13,10 @@ from zigzag.stages.main import MainStage
 from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
 from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
 from zigzag.stages.results.reduce_stages import MinimalLatencyStage
-from zigzag.stages.stage import Stage, StageCallable
 from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.stages.stage import Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT, get_unique_nodes
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,

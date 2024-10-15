@@ -1,11 +1,11 @@
 from typing import Any
 
 from zigzag.stages.parser.workload_parser import WorkloadParserStage as ZigZagWorkloadParserStage
-from zigzag.stages.stage import StageCallable
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.parser.mapping_parser import MappingParser
 from stream.parser.workload_factory import WorkloadFactoryStream
+from stream.stages.stage import StageCallable
 from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.mapping import InterCoreMappingAttributes
 

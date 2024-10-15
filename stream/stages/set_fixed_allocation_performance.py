@@ -4,9 +4,9 @@ from typing import Any
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
 from zigzag.mapping.data_movement import MemoryAccesses
-from zigzag.stages.stage import Stage, StageCallable
 
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.stages.stage import Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT, get_too_large_operands
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload

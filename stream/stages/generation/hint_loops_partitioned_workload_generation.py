@@ -5,7 +5,6 @@ from typing import Any
 
 from rtree import index
 from zigzag.datatypes import Constants, LayerDim, LayerOperand
-from zigzag.stages.stage import Stage, StageCallable
 from zigzag.utils import pickle_deepcopy
 
 from stream.cost_model.group_allocation import GroupIdManager
@@ -15,6 +14,7 @@ from stream.opt.partitioning.TemporalLoop import TemporalLoop
 from stream.opt.partitioning.utils import (
     convert_outer_cn_loops,
 )
+from stream.stages.stage import Stage, StageCallable
 from stream.workload.computation.computation_node import ComputationNode, LoopRanges
 from stream.workload.dependency_propagation.concat_node import ConcatNode
 from stream.workload.dependency_propagation.dummy_node import DummyNode

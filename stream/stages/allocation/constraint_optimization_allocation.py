@@ -9,7 +9,6 @@ import numpy as np
 from networkx import DiGraph
 from zigzag.datatypes import LayerDim
 from zigzag.stages.main import MainStage
-from zigzag.stages.stage import Stage
 from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
@@ -21,6 +20,7 @@ from stream.stages.generation.hint_loops_partitioned_workload_generation import 
     HintLoopsPartitionedWorkloadGenerationStage,
 )
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
+from stream.stages.stage import Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT
 from stream.visualization.constraint_optimization import visualize_waco
 from stream.workload.computation.computation_node import ComputationNode
@@ -41,7 +41,7 @@ class ConstraintOptimizationAllocationStage(Stage):
 
     def __init__(
         self,
-        list_of_callables,
+        list_of_callables: list[StageCallable],
         *,
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,

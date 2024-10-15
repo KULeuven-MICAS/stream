@@ -1,11 +1,10 @@
 import logging
 from typing import Any
 
-from zigzag.stages.stage import Stage, StageCallable
-
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.parser.mapping_parser import MappingParser
 from stream.parser.onnx.model import ONNXModelParser
+from stream.stages.stage import Stage, StageCallable
 
 logger = logging.getLogger(__name__)
 

@@ -1,12 +1,12 @@
 import logging
 from typing import Any
 
-from zigzag.stages.stage import Stage, StageCallable
 from zigzag.utils import open_yaml
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
+from stream.stages.stage import Stage, StageCallable
 
 logger = logging.getLogger(__name__)
 

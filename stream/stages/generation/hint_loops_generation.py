@@ -3,9 +3,9 @@ from typing import Any
 
 import numpy as np
 from onnx import ModelProto, helper, numpy_helper
-from zigzag.stages.stage import Stage
 
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.stages.stage import Stage, StageCallable
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.mapping import TILING_T
 from stream.workload.onnx_workload import ONNXWorkload
@@ -17,7 +17,7 @@ class HintLoopsGenerationStage(Stage):
 
     def __init__(
         self,
-        list_of_callables,
+        list_of_callables: list[StageCallable],
         *,
         accelerator: Accelerator,
         workload: ONNXWorkload,
