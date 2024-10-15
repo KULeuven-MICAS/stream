@@ -87,7 +87,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.ss_to_computes: dict[STACK_T, set[ComputationNode]] = {}
         self.hashes_per_sink_node: dict[STACK_T, dict[ComputationNode, int]] = {}
         self.steady_state_hashes: dict[STACK_T, int] = {}
-        self.compute_per_sink_node: dict[STACK_T, set[ComputationNode]] = {}
+        self.compute_per_sink_node: dict[STACK_T, dict[ComputationNode, set[ComputationNode]]] = {}
         self.ss_iterations_per_stack: dict[STACK_T, int] = {}
         self.optimal_allocation_per_stack: dict[STACK_T, ALLOCATION_T] = {}
         self.nb_macs_per_stack: dict[STACK_T, int] = {}
@@ -325,7 +325,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         """
         order: SCHEDULE_ORDER_T = []
         allocation = sorted(allocation, key=lambda x: (x[0], x[2], x[1]))
-        allocation_adjusted: ALLOCATION_T = []  # will hold allocation with removed k splits
+        allocation_adjusted: ALLOCATION_T = []  # allocation with removed inter core splits (which have same sub id)
         seen_ids: set[tuple[int, int]] = set()
         for t, c, id in allocation:
             if id not in seen_ids:
@@ -446,7 +446,7 @@ class ConstraintOptimizationAllocationStage(Stage):
                 )
                 factor = layer_size
 
-            valid_tiling.append((layer_dim, layer_size))
+            valid_tiling.append((layer_dim, factor))
         node.inter_core_tiling = valid_tiling
 
     def replace_wildcard_in_tiling(self, tiling: TILING_T, nb_cores_split: int):

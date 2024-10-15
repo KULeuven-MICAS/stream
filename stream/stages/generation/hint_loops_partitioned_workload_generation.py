@@ -234,7 +234,7 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
 
         finer_nodes: list[ComputationNode] = []
         tensors: list[Tensor] = []
-        group_id_manager = GroupIdManager()
+        group_id_manager = GroupIdManager(original_node)
         for n in range(nb_cns):
             outer_loop_values: list[int] = []
             for i, outer_loop in enumerate(outer_temporal_loops):
@@ -261,7 +261,7 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                 dim_min_max[loop_dim] = (dim_min, dim_max)
 
             # finer_node_mapping_copy = deepcopy(original_node.extract_mapping_attr())
-            group_id = group_id_manager.get_group_id(original_node, dim_min_max)
+            group_id = group_id_manager.get_group_id(dim_min_max)
 
             # Create the computation node object with the computed ranges of the loop dimensions
             node_name = original_node.name

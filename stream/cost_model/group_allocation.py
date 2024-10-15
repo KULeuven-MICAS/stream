@@ -9,16 +9,34 @@ GroupAllocation: TypeAlias = dict[tuple[tuple[int, int], ...], int]
 
 
 class GroupIdManager:
-    def __init__(self):
+    def __init__(self, node: ComputationNode):
         self.__id_count = 0
         self.groups: GroupAllocation = {}
+        self.node = node
+        self.inter_core_tiled_dims = [layer_dim for layer_dim, _ in node.inter_core_tiling]
+        # self.seen_inter_core_tiles_and_ids: dict[frozenset[tuple[LayerDim, int]], int] = {}
 
     def __get_and_raise_id(self):
         curr_id = self.__id_count
         self.__id_count += 1
         return curr_id
 
-    def get_group_id(self, node: ComputationNode, loop_ranges: LoopRanges) -> int:
+    def __extract_inter_core_ranges(self, tile_loop_ranges: LoopRanges):
+        """Given the loop ranges of a tile, return a hashable identifier that can be used to determine wether this
+        tile belongs on the same core as other tiles. Tiles with different ranges for the inter core tile dimensions
+        belong on different cores"""
+        return tuple([tile_loop_ranges[dim] for dim in self.inter_core_tiled_dims])
+        # inter_core_tile_loop_ranges = [
+        #     (dim, loop_range) for dim, loop_range in tile_loop_ranges.items() if dim in self.inter_core_tiled_dims
+        # ]
+        # return frozenset(inter_core_tile_loop_ranges)
+
+    def __extract_relevant_ranges(self, tile_loop_ranges: LoopRanges):
+        constant_operand = self.node.constant_operands[-1]
+        relevant_dims = self.node.loop_relevancy_info.get_r_layer_dims(constant_operand)
+        return tuple([tile_loop_ranges[dim] for dim in relevant_dims])
+
+    def get_group_id(self, tile_loop_ranges: LoopRanges) -> int:
         """Return the group id for the given loop ranges.
         The group id is determined based on the relevant constant operand dimension loop ranges.
         If there is no constant operand, we return 0.
@@ -33,24 +51,25 @@ class GroupIdManager:
         Returns:
             int: The group id for the given loop ranges
         """
-        # No constant operand
-        if not node.constant_operands:
+
+        if not self.node.constant_operands and len(self.node.core_allocation) == 1:
             # If the node can only be assigned to a single core, we give all nodes the same group id
             # This is to prevent the CostModelEvaluationLUT from identifying each node as unique
             # This is the case for e.g. 'Add' nodes if there is only a single 'Add' core
-            if len(node.core_allocation) == 1:
-                return 0
-            else:
-                return self.__get_and_raise_id()
+            return 0
 
-        # Constant operand and known ranges
-        constant_operand = node.constant_operands[-1]
-        relevant_dims = node.loop_relevancy_info.get_r_layer_dims(constant_operand)
-        relevant_ranges = tuple([loop_ranges[dim] for dim in relevant_dims])
-        if relevant_ranges in self.groups:
-            return self.groups[relevant_ranges]
+        if not self.node.constant_operands:
+            # No constant operands -> differentiate based on node's inter core tiling
+            range_identifier = self.__extract_inter_core_ranges(tile_loop_ranges)
+        else:
+            # Constant operands -> differentiate based on relevant layer dims
+            range_identifier = self.__extract_relevant_ranges(tile_loop_ranges)
 
-        # Constant operand and new ranges
+        # This tile belongs together with previously seen tiles
+        if range_identifier in self.groups:
+            return self.groups[range_identifier]
+
+        # New group
         new_group_id = self.__get_and_raise_id()
-        self.groups[relevant_ranges] = new_group_id
+        self.groups[range_identifier] = new_group_id
         return new_group_id
