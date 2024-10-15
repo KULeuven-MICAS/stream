@@ -10,7 +10,7 @@ from zigzag.mapping.spatial_mapping import (
     SpatialMapping,
 )
 
-from stream.workload.mapping import InterCoreMappingAttributes
+from stream.workload.mapping import TILING_T, InterCoreMappingAttributes
 
 
 class MappingFactory:
@@ -62,10 +62,10 @@ class MappingFactory:
 
         return MappingSingleOADim(mapping_dict)
 
-    def create_inter_core_tiling(self, mapping_data: dict[str, Any]):
+    def create_inter_core_tiling(self, mapping_data: dict[str, Any]) -> TILING_T:
         return [self.__convert_layer_dim_int_pair(pair) for pair in mapping_data["inter_core_tiling"]]
 
-    def create_intra_core_tiling(self, mapping_data: dict[str, Any]):
+    def create_intra_core_tiling(self, mapping_data: dict[str, Any]) -> TILING_T:
         return [self.__convert_layer_dim_int_pair(pair) for pair in mapping_data["intra_core_tiling"]]
 
     def __convert_layer_dim_int_pair(self, pair: str):

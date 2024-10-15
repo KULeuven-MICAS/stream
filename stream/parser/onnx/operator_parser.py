@@ -89,7 +89,8 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
         NOTE The core's dataflow always precedes the mapping's spatial mapping
         TODO Mapping based on node name instead of note operator is not yet supported
         """
-        mapping = self.all_mappings.get(self.node.op_type, self.all_mappings["default"])
+        default_mapping = self.all_mappings["default"]
+        mapping = self.all_mappings.get(self.node.op_type, default_mapping)
 
         # Override spatial mapping by the one defined in the core's dataflows
         try:
@@ -97,6 +98,12 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
             mapping.spatial_mapping = core_dataflow
         except ValueError:
             pass
+
+        # If no inter/intra mapping is given: use default one
+        if not mapping.intra_core_tiling:
+            mapping.intra_core_tiling = default_mapping.intra_core_tiling
+        if not mapping.inter_core_tiling:
+            mapping.inter_core_tiling = default_mapping.inter_core_tiling
 
         return mapping
 
