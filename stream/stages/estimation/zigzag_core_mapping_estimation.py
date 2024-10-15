@@ -9,14 +9,13 @@ from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
 from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
-from zigzag.stages.main import MainStage
 from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
 from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
 from zigzag.stages.results.reduce_stages import MinimalLatencyStage
 from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.stages.stage import Stage, StageCallable
+from stream.stages.stage import MainStage, Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT, get_unique_nodes
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,

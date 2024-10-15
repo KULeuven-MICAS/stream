@@ -8,7 +8,6 @@ import networkx as nx
 import numpy as np
 from networkx import DiGraph
 from zigzag.datatypes import LayerDim
-from zigzag.stages.main import MainStage
 from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
@@ -20,7 +19,7 @@ from stream.stages.generation.hint_loops_partitioned_workload_generation import 
     HintLoopsPartitionedWorkloadGenerationStage,
 )
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
-from stream.stages.stage import Stage, StageCallable
+from stream.stages.stage import MainStage, Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT
 from stream.visualization.constraint_optimization import visualize_waco
 from stream.workload.computation.computation_node import ComputationNode
@@ -31,6 +30,7 @@ from stream.workload.onnx_workload import ComputationNodeWorkload
 logger = logging.getLogger(__name__)
 
 STACK_T: TypeAlias = tuple[int, ...]
+SCHEDULE_ORDER_T: TypeAlias = list[tuple[int, int]]
 
 
 class ConstraintOptimizationAllocationStage(Stage):
@@ -46,7 +46,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
         node_hw_performances: CostModelEvaluationLUT,
-        layer_stacks: list[tuple[range, ...]],
+        layer_stacks: list[tuple[int, ...]],
         node_hw_performances_path_with_split: str,
         **kwargs: Any,
     ):
@@ -87,7 +87,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.ss_to_computes: dict[STACK_T, set[ComputationNode]] = {}
         self.hashes_per_sink_node: dict[STACK_T, dict[ComputationNode, int]] = {}
         self.steady_state_hashes: dict[STACK_T, int] = {}
-        self.compute_per_sink_node: dict[STACK_T, ComputationNode] = {}
+        self.compute_per_sink_node: dict[STACK_T, set[ComputationNode]] = {}
         self.ss_iterations_per_stack: dict[STACK_T, int] = {}
         self.optimal_allocation_per_stack: dict[STACK_T, ALLOCATION_T] = {}
         self.nb_macs_per_stack: dict[STACK_T, int] = {}
@@ -228,7 +228,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         visualize_waco(allocation, self.node_hw_performances, self.accelerator, fig_path, iterations)
         return allocation
 
-    def get_scheduling_order(self, unpartitioned_workload: DNNWorkloadStream) -> list[tuple[int, int]]:
+    def get_scheduling_order(self, unpartitioned_workload: DNNWorkloadStream) -> SCHEDULE_ORDER_T:
         """
         Get the scheduling order of all ids that will exist in the transformed workload.
         Returns a list with all ids where the earlier the higher priority
@@ -240,7 +240,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         # TODO don't hardcode K and G
         """
 
-        scheduling_order: list[tuple[int, int]] = []
+        scheduling_order: SCHEDULE_ORDER_T = []
         for stack, compute in self.compute_per_sink_node.items():
             hash_steady_state = self.steady_state_hashes[stack]
             allocation_steady_state = self.optimal_allocation_per_stack[stack]
@@ -258,7 +258,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         return scheduling_order
 
     def adjust_order_to_inter_core_tiling(
-        self, stack: STACK_T, order: list[tuple[int, int]], unpartitioned_workload: DNNWorkloadStream
+        self, stack: STACK_T, order: SCHEDULE_ORDER_T, unpartitioned_workload: DNNWorkloadStream
     ):
         """Given an allocation order for a given stack, extend the order to extra outer loops that result from the
         inter core tiling. This method anticipates the fact that later on, CNs will be split further to allow for inter-
@@ -314,26 +314,26 @@ class ConstraintOptimizationAllocationStage(Stage):
     def get_cn_order(
         self,
         allocation: ALLOCATION_T,
-        compute_per_sink_node: dict[ComputationNode, int],
+        compute_per_sink_node: dict[ComputationNode, set[ComputationNode]],
         hashes_per_sink_node: dict[ComputationNode, int],
         memoization_hash_ss: int,
-    ) -> list[tuple[int, int]]:
+    ) -> SCHEDULE_ORDER_T:
         """
         Get the scheduling orders of all cns of a stack based on the order in the steady state allocation.
         For nodes belonging to sink nodes that are not steady state, we sort by deepest id.
         For nodes belonging to steady state sink nodes, we sort according to the found allocation
         """
-        order = []
+        order: SCHEDULE_ORDER_T = []
         allocation = sorted(allocation, key=lambda x: (x[0], x[2], x[1]))
         allocation_adjusted: ALLOCATION_T = []  # will hold allocation with removed k splits
-        seen_ids: set[int] = set()
+        seen_ids: set[tuple[int, int]] = set()
         for t, c, id in allocation:
             if id not in seen_ids:
                 allocation_adjusted.append((t, c, id))
                 seen_ids.add(id)
 
         allocation_adjusted = sorted(allocation_adjusted, key=lambda x: (x[0], x[2], x[1]))
-        layer_order_steady_state = [layer_id for layer_id, node_id in [id for (_, _, id) in allocation_adjusted]]
+        layer_order_steady_state = [layer_id for layer_id, _ in [id for (_, _, id) in allocation_adjusted]]
         for sink_node, to_compute in compute_per_sink_node.items():
             if hashes_per_sink_node[sink_node] == memoization_hash_ss:
                 order_i = self.get_order_steady_state(to_compute, layer_order_steady_state)
@@ -342,20 +342,20 @@ class ConstraintOptimizationAllocationStage(Stage):
             order += order_i
         return order
 
-    def get_order_steady_state(self, to_compute, layer_order_steady_state):
+    def get_order_steady_state(self, to_compute: set[ComputationNode], layer_order_steady_state: list[int]):
         assert len(to_compute) == len(layer_order_steady_state)
         # Obtain for each layer the nodes that have to be scheduled
         nodes_per_layer = {
             layer_id: sorted(n for n in to_compute if n.id == layer_id)
             for layer_id in sorted(set(layer_order_steady_state))
         }
-        order = []
+        order: SCHEDULE_ORDER_T = []
         for layer_id in layer_order_steady_state:
             first_node = nodes_per_layer[layer_id].pop(0)
             order.append((first_node.id, first_node.sub_id))
         return order
 
-    def get_order_non_steady_state(self, to_compute: list[ComputationNode]):
+    def get_order_non_steady_state(self, to_compute: set[ComputationNode]):
         return [(n.id, n.sub_id) for n in sorted(to_compute, key=lambda x: (-x.id, -x.sub_id))]
 
     def schedule_allocation(self, allocation: ALLOCATION_T) -> StreamCostModelEvaluation:
@@ -366,12 +366,12 @@ class ConstraintOptimizationAllocationStage(Stage):
 
         # Create a modified workload with the correct number of k splits
         nodes = filter(lambda n: n.id <= max(layer_ids), self.original_workload.node_list)
-        unpartitioned_workload: DNNWorkloadStream = pickle_deepcopy(self.original_workload.subgraph(nodes))
+        unpartitioned_sub_workload: DNNWorkloadStream = pickle_deepcopy(self.original_workload.subgraph(nodes))
         # Set the correct allocations for the layers in the copied workload
-        self.set_fixed_allocations_for_workload(unpartitioned_workload, layer_ids, core_ids)
+        self.set_fixed_allocations_for_workload(unpartitioned_sub_workload, layer_ids, core_ids)
 
         # Generate/check inter core mapping for all nodes
-        for node in unpartitioned_workload.node_list:
+        for node in unpartitioned_sub_workload.node_list:
             # No allocation for this node (e.g. DummyNode)
             if node.id not in layer_ids:
                 continue
@@ -381,24 +381,19 @@ class ConstraintOptimizationAllocationStage(Stage):
             )
             nb_cores_split = len(core_allocation_this_node)
 
-            # TODO the case that inter_core_tiling == (D, *) -> split on D?
-            # ! unsure about this code
-            if not node.inter_core_tiling:
-                # Add default tiling if not defined by user
-                node.inter_core_tiling = self.generate_inter_core_tiling(node, nb_cores_split)
-            else:
-                node.inter_core_tiling = self.replace_wildcard_in_tiling(node.inter_core_tiling, nb_cores_split)
-
-            # Add inter-core tiling to intra-core mapping for the next run
+            # Set correct inter core tiling
+            inter_core_tiling = self.check_and_generate_inter_core_tiling(node, nb_cores_split)
+            node.inter_core_tiling = inter_core_tiling
+            # Add inter core tiling to intra-core mapping for the next run
             node.intra_core_tiling += node.inter_core_tiling
 
-        scheduling_order = self.get_scheduling_order(unpartitioned_workload)
+        scheduling_order = self.get_scheduling_order(unpartitioned_sub_workload)
 
         loma_lpf_limit = 7
         kwargs = self.kwargs.copy()
         kwargs["loma_lpf_limit"] = loma_lpf_limit
         kwargs["accelerator"] = self.accelerator
-        kwargs["workload"] = unpartitioned_workload
+        kwargs["workload"] = unpartitioned_sub_workload
         kwargs["scheduling_order"] = scheduling_order
         kwargs["node_hw_performances_path"] = self.node_hw_performances_path_with_split
         kwargs["visualize_node_hw_performances_path"] = self.visualize_node_hw_performances_path_with_split
@@ -417,6 +412,13 @@ class ConstraintOptimizationAllocationStage(Stage):
         scme, _ = main_stage.run()
         scme = scme[0]
         return scme
+
+    def check_and_generate_inter_core_tiling(self, node: ComputationNode, split_factor: int):
+        if not node.inter_core_tiling:
+            # Add default tiling if not defined by user
+            return self.generate_inter_core_tiling(node, split_factor)
+        else:
+            return self.replace_wildcard_in_tiling(node.inter_core_tiling, split_factor)
 
     def replace_wildcard_in_tiling(self, tiling: TILING_T, nb_cores_split: int):
         """The user can define a wildcard `*` in the inter core tiling, meaning that the value found by the CO

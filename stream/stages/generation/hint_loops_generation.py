@@ -72,8 +72,9 @@ class HintLoopsGenerationStage(Stage):
         for layer_dim, factor in given_tiling:
             if layer_dim not in node.layer_dim_sizes:
                 # Invalid layer dim: don't include in valid tiling
-                logger.warn(
-                    f"Given intra core tiling {layer_dim, factor} for node {node} invalid: node does not contain {layer_dim}. Removing {layer_dim}",
+                logger.warning(
+                    f"Given intra core tiling {layer_dim, factor} for node {node} invalid: node does not contain "
+                    f"{layer_dim}. Removing {layer_dim}",
                 )
             else:
                 layer_dim_size = node.layer_dim_sizes[layer_dim]
@@ -89,7 +90,7 @@ class HintLoopsGenerationStage(Stage):
                     new_layer_dim_size = node.layer_dim_sizes[layer_dim] + 1
                     while new_layer_dim_size % factor != 0:
                         new_layer_dim_size += 1
-                    logger.warn(f"Rounding {node}: {layer_dim} {layer_dim_size} -> {new_layer_dim_size}")
+                    logger.warning(f"Rounding {node}: {layer_dim} {layer_dim_size} -> {new_layer_dim_size}")
                     node.layer_dim_sizes[layer_dim] = new_layer_dim_size
 
                 valid_tiling.append((layer_dim, factor))

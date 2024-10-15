@@ -762,7 +762,7 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                 tensors_cns[op] = tensors_cns[op].extend_with_node(bounded_op_dim_ranges, finer_node)
 
             if nb_unique_data_seen != (prod(tensor_shapes[op]) * precision):
-                logger.warn(f"Downsampling node detected: {node}, operand= {op}.")
+                logger.warning(f"Downsampling node detected: {node}, operand= {op}.")
 
         # The dimensionality order of this input/output operand might include
         # both a G and C/K dimension because the ComputationNode gets the group as an extra

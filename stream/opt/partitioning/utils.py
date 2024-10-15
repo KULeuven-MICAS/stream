@@ -121,7 +121,7 @@ def convert_outer_cn_loops(outer_cn_loops: TILING_T, node: ComputationNode):
                     while new_layer_dim_size % loop_size != 0:
                         new_layer_dim_size += 1
                     # Set the new loop size of the layer
-                    logger.warn(
+                    logger.warning(
                         f"Rounding {node}: {layer_dim} {node.layer_dim_sizes[layer_dim]} -> {new_layer_dim_size}"
                     )
                     node.layer_dim_sizes[layer_dim] = new_layer_dim_size

@@ -3,7 +3,6 @@ import os
 from typing import Literal
 
 import gurobipy as gp
-from zigzag.stages.main import MainStage
 from zigzag.utils import pickle_load, pickle_save
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
@@ -19,6 +18,7 @@ from stream.stages.generation.scheduling_order_generation import SchedulingOrder
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
+from stream.stages.stage import MainStage
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"

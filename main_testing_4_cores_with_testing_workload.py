@@ -1,8 +1,6 @@
 import logging as _logging
 import re
 
-from zigzag.stages.main import MainStage
-
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
@@ -11,6 +9,7 @@ from stream.stages.generation.hint_loops_partitioned_workload_generation import 
 )
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage as AcceleratorParserStage_
 from stream.stages.parsing.onnx_model_parser import UserDefinedModelParserStage
+from stream.stages.stage import MainStage
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import visualize_timeline_plotly
 
