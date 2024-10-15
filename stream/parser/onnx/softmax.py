@@ -29,16 +29,16 @@ class SoftmaxParser(OnnxComputeOperatorParser):
         """Prase the base ONNX node multiple times into the different Computation Nodes.
         The CNs that result from this operation have some incorrect properties regarding the graph structure
         """
-        parser_classes = [Reduce1DParser, SoftmaxExpParser, Reduce1DParser, SoftmaxDivParser]
+        parser_classes: list[type] = [Reduce1DParser, SoftmaxExpParser, Reduce1DParser, SoftmaxDivParser]
 
         node_ids = [self.node_id + i for i in range(4)]
-        parsers = [
+        parsers: list[OnnxComputeOperatorParser] = [
             parser(
                 node_id=node_id,
                 node=self.node,
                 nodes_outputs=self.nodes_outputs,
                 onnx_model=self.onnx_model,
-                mapping_data=self.mapping_data,
+                all_mappings=self.all_mappings,
                 accelerator=self.accelerator,
             )
             for parser, node_id in zip(parser_classes, node_ids)
