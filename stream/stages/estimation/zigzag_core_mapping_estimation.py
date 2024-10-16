@@ -7,7 +7,6 @@ from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.accelerator import Accelerator as Core
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
-from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
 from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
 from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
@@ -104,13 +103,14 @@ class ZigZagCoreMappingEstimationStage(Stage):
                     self.node_hw_performances.remove_cores_with_same_id(node, core)
                     # We need to compute the optimal performance for this node-core combination
                     # It's possible this node might not fully fit within the core's top level memories.
-                    # If so, we update the core
+                    #  If so, we update the core
                     too_large_operands_for_cme = self.check_core_capacity_for_node(core, node_duplicate)
                     node_duplicate.set_chosen_core_allocation(core_id)
-                    # Set the node's spatial mapping to the possible spatial mappings of the current core
-                    node_duplicate.spatial_mapping = (
-                        core.dataflows if core.dataflows is not None else SpatialMapping.empty()
-                    )
+
+                    # Attempt to override the node's spatial mapping based on the core's dataflow
+                    if core.dataflows:
+                        node_duplicate.spatial_mapping = core.dataflows
+
                     # Initialize the flow that will be followed to extract the optimal HW performance of every
                     #  unique node-core allocation
                     main_stage = self.get_intra_core_mapping_flow(
