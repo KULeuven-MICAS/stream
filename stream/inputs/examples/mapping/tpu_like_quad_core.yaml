@@ -1,14 +1,14 @@
 - name: default
   core_allocation: [0, 1, 2, 3]
   intra_core_tiling:
-    - D, 7
+    - D, 64
   inter_core_tiling:
     - K, *
 
 - name: Conv
   core_allocation: [0, 1, 2, 3]
   intra_core_tiling:
-    - OY, 5
+    - OY, 8
   inter_core_tiling:
     - K, *
 
@@ -20,8 +20,6 @@
 
 - name: MaxPool
   core_allocation: [4]
-  intra_core_tiling:
-    - OY, 1
 
 - name: AveragePool
   core_allocation: [4]
@@ -31,5 +29,3 @@
 
 - name: Add
   core_allocation: [5]
-  intra_core_tiling:
-    - OY, 1

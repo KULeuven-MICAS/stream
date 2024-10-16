@@ -9,6 +9,10 @@ logger = logging.getLogger(__name__)
 class MappingValidator:
     """Class to validate user-given mappings from yaml file"""
 
+    TILING_REGEX = r"^[A-Z]+, ([0-9]+|\*)$"
+    SPATIAL_MAPPING_REGEX = r"^[A-Z]+, [0-9]+$"
+    SPATIAL_MAPPING_HINT_REGEX = r"^[A-Z]+$"
+
     # Schema for a single operation, UpgradeValidator extrapolates to list of operations
     SCHEMA_SINGLE: Any = {
         "name": {"type": "string", "required": True},
@@ -20,12 +24,12 @@ class MappingValidator:
         "core_allocation_is_fixed": {"type": "boolean", "default": False},
         "inter_core_tiling": {
             "type": "list",
-            "schema": {"type": "string", "regex": r"^[A-Z]+, [\d+|\*]$"},
+            "schema": {"type": "string", "regex": TILING_REGEX},
             "default": [],
         },
         "intra_core_tiling": {
             "type": "list",
-            "schema": {"type": "string", "regex": r"^[A-Z]+, [\d+|\*]$"},
+            "schema": {"type": "string", "regex": TILING_REGEX},
             "default": [],
         },
         "spatial_mapping": {
@@ -33,22 +37,22 @@ class MappingValidator:
             "schema": {
                 "D1": {
                     "type": "list",
-                    "schema": {"type": "string", "regex": r"^[A-Z]+, [0-9]+$"},
+                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_REGEX},
                     "required": False,
                 },
                 "D2": {
                     "type": "list",
-                    "schema": {"type": "string", "regex": r"^[A-Z]+, [0-9]+$"},
+                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_REGEX},
                     "required": False,
                 },
                 "D3": {
                     "type": "list",
-                    "schema": {"type": "string", "regex": r"^[A-Z]+, [0-9]+$"},
+                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_REGEX},
                     "required": False,
                 },
                 "D4": {
                     "type": "list",
-                    "schema": {"type": "string", "regex": r"^[A-Z]+, [0-9]+$"},
+                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_REGEX},
                     "required": False,
                 },
             },
@@ -69,22 +73,22 @@ class MappingValidator:
             "schema": {
                 "D1": {
                     "type": "list",
-                    "schema": {"type": "string", "regex": r"^[A-Z]+$"},
+                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_HINT_REGEX},
                     "required": False,
                 },
                 "D2": {
                     "type": "list",
-                    "schema": {"type": "string", "regex": r"^[A-Z]+$"},
+                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_HINT_REGEX},
                     "required": False,
                 },
                 "D3": {
                     "type": "list",
-                    "schema": {"type": "string", "regex": r"^[A-Z]+$"},
+                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_HINT_REGEX},
                     "required": False,
                 },
                 "D4": {
                     "type": "list",
-                    "schema": {"type": "string", "regex": r"^[A-Z]+$"},
+                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_HINT_REGEX},
                     "required": False,
                 },
             },
