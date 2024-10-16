@@ -353,17 +353,25 @@ class ConstraintOptimizationAllocationStage(Stage):
         return order
 
     def get_order_non_steady_state(self, to_compute: set[ComputationNode]):
+
         return [(n.id, n.sub_id) for n in sorted(to_compute, key=lambda x: (-x.id, -x.sub_id))]
 
     def schedule_allocation(self, allocation: ALLOCATION_T) -> StreamCostModelEvaluation:
+        # Create a modified sub-workload with the extra inter core splits
+        max_layer_id = max(id[0] for _, _, id in allocation)
+        sub_nodes = filter(lambda n: n.id <= max_layer_id, self.original_workload.node_list)
+        unpartitioned_sub_workload: DNNWorkloadStream = pickle_deepcopy(self.original_workload.subgraph(sub_nodes))
+
         # Get the involved layer ids we want to schedule and their core allocations
         layer_ids = sorted(set(id[0] for _, _, id in allocation))
         core_strs = [sorted(set((c for _, c, id in allocation if id[0] == layer_id))) for layer_id in layer_ids]
         core_ids = [[int(s.split(" ")[-1]) for s in core_str] for core_str in core_strs]
 
-        # Create a modified workload with the correct number of k splits
-        nodes = filter(lambda n: n.id <= max(layer_ids), self.original_workload.node_list)
-        unpartitioned_sub_workload: DNNWorkloadStream = pickle_deepcopy(self.original_workload.subgraph(nodes))
+        # Manually add the wanted core ids for layers not in the steady state
+        layer_ids, core_ids = self.add_core_ids_for_layers_not_in_steady_state(
+            layer_ids=layer_ids, core_ids=core_ids, sub_workload=unpartitioned_sub_workload
+        )
+
         # Set the correct allocations for the layers in the copied workload
         self.set_fixed_allocations_for_workload(unpartitioned_sub_workload, layer_ids, core_ids)
 
@@ -409,6 +417,30 @@ class ConstraintOptimizationAllocationStage(Stage):
         scme, _ = main_stage.run()
         scme = scme[0]
         return scme
+
+    def add_core_ids_for_layers_not_in_steady_state(
+        self, layer_ids: list[int], core_ids: list[list[int]], sub_workload: ComputationNodeWorkload
+    ) -> tuple[list[int], list[list[int]]]:
+        """Find any layers that might not have been in the steady state allocation and need to be allocated manually
+        The nodes of these layers will be allocated across all possible cores in their defined inter core tiling
+          dimension
+        """
+
+        layer_ids_not_in_ss = [
+            layer_id for stack in self.layer_stacks for layer_id in stack if layer_id not in layer_ids
+        ]
+
+        for layer_id_not_in_ss in layer_ids_not_in_ss:
+            layer_ids_idx = np.searchsorted(layer_ids, layer_id_not_in_ss)
+            for node in filter(lambda n: n.id == layer_id_not_in_ss, sub_workload.node_list):
+                node.chosen_core_allocation = node.core_allocation
+                node.possible_core_allocation = node.core_allocation
+                node.core_allocation_is_fixed = True
+                layer_ids.insert(layer_ids_idx, layer_id_not_in_ss)
+                core_ids.insert(layer_ids_idx, node.core_allocation)
+                logger.warning(f"{node} not in steady state allocation; allocated to: {node.core_allocation}.")
+
+        return layer_ids, core_ids
 
     def set_fixed_allocations_for_workload(
         self, workload: ComputationNodeWorkload, layer_ids: list[int], core_ids: list[list[int]]
