@@ -5,7 +5,7 @@ from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
 from stream.stages.generation.hint_loops_partitioned_workload_generation import (
-    HintLoopsPartitionedWorkloadGenerationStage,
+    TiledWorkloadGenerationStage,
 )
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage as AcceleratorParserStage_
 from stream.stages.parsing.onnx_model_parser import UserDefinedModelParserStage
@@ -40,7 +40,7 @@ mainstage = MainStage(
         AcceleratorParserStage_,  # Parses the accelerator
         # StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
         UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
-        HintLoopsPartitionedWorkloadGenerationStage,
+        TiledWorkloadGenerationStage,
         ZigZagCoreMappingEstimationStage,
         GeneticAlgorithmAllocationStage,
     ],

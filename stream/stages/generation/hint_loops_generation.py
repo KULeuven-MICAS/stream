@@ -14,7 +14,7 @@ from stream.workload.onnx_workload import ONNXWorkload
 logger = logging.getLogger(__name__)
 
 
-class HintLoopsGenerationStage(Stage):
+class TilingGenerationStage(Stage):
 
     def __init__(
         self,

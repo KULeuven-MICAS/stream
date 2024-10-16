@@ -36,7 +36,7 @@ class TensorDimensionMismatchException(Exception):
     """Facilitates error handling in case incorrect tensor dimensions are passed on"""
 
 
-class HintLoopsPartitionedWorkloadGenerationStage(Stage):
+class TiledWorkloadGenerationStage(Stage):
     """
     Class that transforms the layer-by-layer workload into finer CN workload graph.
     """

@@ -15,7 +15,7 @@ from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_
 from stream.stages.estimation.stream_cost_model_evaluation import StreamCostModelEvaluationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
 from stream.stages.generation.hint_loops_partitioned_workload_generation import (
-    HintLoopsPartitionedWorkloadGenerationStage,
+    TiledWorkloadGenerationStage,
 )
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 from stream.stages.stage import MainStage, Stage, StageCallable
@@ -407,7 +407,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         # Create stages that will run a single cost model evaluation (fixed core allocations)
         main_stage = MainStage(
             [
-                HintLoopsPartitionedWorkloadGenerationStage,  # Splits in intra-core mapping
+                TiledWorkloadGenerationStage,  # Splits in intra-core mapping
                 ZigZagCoreMappingEstimationStage,
                 SetFixedAllocationPerformanceStage,
                 StreamCostModelEvaluationStage,

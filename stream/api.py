@@ -9,9 +9,9 @@ from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
-from stream.stages.generation.hint_loops_generation import HintLoopsGenerationStage
+from stream.stages.generation.hint_loops_generation import TilingGenerationStage
 from stream.stages.generation.hint_loops_partitioned_workload_generation import (
-    HintLoopsPartitionedWorkloadGenerationStage,
+    TiledWorkloadGenerationStage,
 )
 from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
 from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
@@ -82,8 +82,8 @@ def optimize_allocation_ga(
                 AcceleratorParserStage,  # Parses the accelerator
                 StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
                 LayerStacksGenerationStage,
-                HintLoopsGenerationStage,
-                HintLoopsPartitionedWorkloadGenerationStage,
+                TilingGenerationStage,
+                TiledWorkloadGenerationStage,
                 ZigZagCoreMappingEstimationStage,
                 SetFixedAllocationPerformanceStage,
                 SchedulingOrderGenerationStage,
@@ -137,8 +137,8 @@ def optimize_allocation_co(
                 AcceleratorParserStage,  # Parses the accelerator
                 StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
                 LayerStacksGenerationStage,
-                HintLoopsGenerationStage,
-                HintLoopsPartitionedWorkloadGenerationStage,
+                TilingGenerationStage,
+                TiledWorkloadGenerationStage,
                 ZigZagCoreMappingEstimationStage,
                 SetFixedAllocationPerformanceStage,
                 SchedulingOrderGenerationStage,
