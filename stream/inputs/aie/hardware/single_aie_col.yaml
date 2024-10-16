@@ -1,6 +1,9 @@
-name: single_aie_col
+name: single_aie_tile
 cores:
   # index corresponds to core ID
+  - aie_tile.yaml
+  - aie_tile.yaml
+  - aie_tile.yaml
   - aie_tile.yaml
   - pooling.yaml
   - simd.yaml
@@ -8,11 +11,11 @@ cores:
 
 graph:
   type: 2d_mesh
-  nb_rows: 1
+  nb_rows: 4
   nb_cols: 1
   bandwidth: 512
   unit_energy_cost: 0
-  pooling_core_id: 1
-  simd_core_id: 2
-  offchip_core_id: 3
+  pooling_core_id: 4
+  simd_core_id: 5
+  offchip_core_id: 6
 
