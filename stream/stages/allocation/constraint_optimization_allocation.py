@@ -447,6 +447,10 @@ class ConstraintOptimizationAllocationStage(Stage):
         must be used instead.
         # TODO in case multiple splits are given (e.g. C and D), should the nb_cores_split be scaled?
         """
+        if len(tiling) > 1:
+            raise ValueError("Only 1 partition dimension should be defined in inter core tiling")
+        assert len(tiling) == 1, "No inter core tiling found"
+
         tiling_replaced: TILING_T = []
         for layer_dim, split_factor in tiling:
             if split_factor == "*":

@@ -14,7 +14,6 @@ class GroupIdManager:
         self.groups: GroupAllocation = {}
         self.node = node
         self.inter_core_tiled_dims = [layer_dim for layer_dim, _ in node.inter_core_tiling]
-        # self.seen_inter_core_tiles_and_ids: dict[frozenset[tuple[LayerDim, int]], int] = {}
 
     def __get_and_raise_id(self):
         curr_id = self.__id_count
@@ -26,15 +25,6 @@ class GroupIdManager:
         tile belongs on the same core as other tiles. Tiles with different ranges for the inter core tile dimensions
         belong on different cores"""
         return tuple([tile_loop_ranges[dim] for dim in self.inter_core_tiled_dims])
-        # inter_core_tile_loop_ranges = [
-        #     (dim, loop_range) for dim, loop_range in tile_loop_ranges.items() if dim in self.inter_core_tiled_dims
-        # ]
-        # return frozenset(inter_core_tile_loop_ranges)
-
-    def __extract_relevant_ranges(self, tile_loop_ranges: LoopRanges):
-        constant_operand = self.node.constant_operands[-1]
-        relevant_dims = self.node.loop_relevancy_info.get_r_layer_dims(constant_operand)
-        return tuple([tile_loop_ranges[dim] for dim in relevant_dims])
 
     def get_group_id(self, tile_loop_ranges: LoopRanges) -> int:
         """Return the group id for the given loop ranges.
@@ -58,12 +48,8 @@ class GroupIdManager:
             # This is the case for e.g. 'Add' nodes if there is only a single 'Add' core
             return 0
 
-        if not self.node.constant_operands:
-            # No constant operands -> differentiate based on node's inter core tiling
-            range_identifier = self.__extract_inter_core_ranges(tile_loop_ranges)
-        else:
-            # Constant operands -> differentiate based on relevant layer dims
-            range_identifier = self.__extract_relevant_ranges(tile_loop_ranges)
+        # Differentiate based on node's inter core tiling
+        range_identifier = self.__extract_inter_core_ranges(tile_loop_ranges)
 
         # This tile belongs together with previously seen tiles
         if range_identifier in self.groups:
