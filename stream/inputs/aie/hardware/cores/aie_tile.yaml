@@ -1,4 +1,4 @@
-name: tpu_like
+name: aie_tile
 
 memories:
   rf_iw:

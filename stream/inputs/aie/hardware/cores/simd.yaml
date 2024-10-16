@@ -1,4 +1,4 @@
-name: pooling
+name: simd
 
 memories:
   sram_128KB_2rw:
