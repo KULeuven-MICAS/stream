@@ -131,8 +131,13 @@ class AcceleratorValidator:
         )
 
     def validate_core_connectivity(self):
-        # Replace string of core ids with tuple of ints
         connectivity_data = self.data["core_connectivity"]
+
+        # Empty data is okay
+        if connectivity_data == []:
+            return
+
+        # Replace string of core ids with tuple of ints
         connectivity_groups = [tuple(int(i) for i in group.replace(" ", "").split(",")) for group in connectivity_data]
         self.data["core_connectivity"] = connectivity_groups
 

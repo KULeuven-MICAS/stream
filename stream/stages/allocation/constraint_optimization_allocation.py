@@ -236,7 +236,6 @@ class ConstraintOptimizationAllocationStage(Stage):
         Args:
            unpartitioned_workload: original workload (before partitioning into finder nodes), used to extract the inter-
                                    core tiling loops
-        # TODO don't hardcode K and G
         """
 
         scheduling_order: SCHEDULE_ORDER_T = []
@@ -269,7 +268,6 @@ class ConstraintOptimizationAllocationStage(Stage):
             unpartitioned_workload: original workload (before partitioning into finder nodes), used to extract the inter-
                                     core tiling loops
 
-        # TODO don't hardcode K and G
         """
 
         for node in self.get_computation_nodes(stack, unpartitioned_workload):

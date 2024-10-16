@@ -139,8 +139,6 @@ class HintLoopsGenerationStage(Stage):
         node.inter_core_tiling = valid_tiling
 
     def generate_inter_core_tiling(self, node: ComputationNode) -> TILING_T:
-        # TODO don't hardcode G and K
-        # TODO check that the layer dim in the node's layer
         if node.layer_dim_sizes.data.get(LayerDim("G"), 1) > 1:
             loop_dim = LayerDim("G")
         elif node.layer_dim_sizes.data.get(LayerDim("K"), 1) > 1:
