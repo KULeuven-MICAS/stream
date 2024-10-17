@@ -1,4 +1,10 @@
+from typing import TYPE_CHECKING
+
 from networkx import DiGraph
+
+if TYPE_CHECKING:
+    from stream.workload.computation.computation_node import ComputationNode
+    from stream.workload.onnx_workload import ComputationNodeWorkload
 
 
 def prune_workload(G: DiGraph, keep_types=[]):
@@ -17,3 +23,7 @@ def prune_workload(G: DiGraph, keep_types=[]):
                 break
         G = G0
     return G
+
+
+def get_real_successors(node: "ComputationNode", g: "ComputationNodeWorkload"):
+    return list(n for n in g.successors(node) if n.id != node.id)

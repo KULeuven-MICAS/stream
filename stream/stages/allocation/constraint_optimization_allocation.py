@@ -25,6 +25,7 @@ from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.mapping import TILING_T
 from stream.workload.onnx_workload import ComputationNodeWorkload
+from stream.workload.utils import get_real_successors
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +128,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             # TODO initialize the subgraph of type DiGraphWrapper[ComputationNode]
             sg: DiGraph = self.workload.subgraph(nodes)
             sink_nodes: list[ComputationNode] = sorted(
-                n for n in sg.nodes() if len(self.get_real_successors(n, sg)) == 0  # type: ignore
+                n for n in sg.nodes() if len(get_real_successors(n, sg)) == 0  # type: ignore
             )
             sink_layer_ids = sorted(set(n.id for n in sink_nodes))
             sink_layer_nodes = [tuple(sorted(n for n in sink_nodes if n.id == layer_id)) for layer_id in sink_layer_ids]
