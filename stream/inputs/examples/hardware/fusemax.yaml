@@ -1,0 +1,14 @@
+name: quad_core
+cores:
+  0: stream/inputs/examples/hardware/cores/fusemax_array.yaml
+  1: stream/inputs/examples/hardware/cores/fusemax_vec.yaml
+offchip_core: stream/inputs/examples/hardware/cores/fusemax_dram.yaml
+
+core_connectivity: []
+
+core_memory_sharing:
+  # Link all simd units to main cores
+  - 0, 1
+
+bandwidth: 512
+unit_energy_cost: 512
