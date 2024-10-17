@@ -1,15 +1,14 @@
 - name: default
-  core_allocation: [0]
+  core_allocation: [0, 1, 2, 3]
   intra_core_tiling:
     - OY, 8
   inter_core_tiling:
     - K, *
 
-- name: Gemm
-  core_allocation: [0]
+- name: MatMul
+  core_allocation: [0, 1, 2, 3]
   intra_core_tiling:
     - D, 8
   inter_core_tiling:
-    - K, *
+    - K, 4
 
-    
