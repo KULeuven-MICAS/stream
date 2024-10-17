@@ -1,10 +1,9 @@
 import logging
-from itertools import combinations
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.core import Core
+from zigzag.hardware.architecture.accelerator import Accelerator as Core
 from zigzag.hardware.architecture.memory_instance import MemoryInstance
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 
@@ -20,40 +19,34 @@ class MemoryManager:
     """Class that keeps track of the memory state of all top level memories of each core."""
 
     def __init__(self, accelerator: "Accelerator") -> None:
+        """For each core in the accelerator, create a list containing the top level memories, instances, which memory
+        operands they store and their capacity"""
+
         self.accelerator = accelerator
-        # For each core in the accelerator, create a list containing the top level memories, instances, which memory
-        # operands they store and their capacity
-        # top level memory of each core
         self.top_levels: dict[Core, list[MemoryLevel]] = {}
-        self.top_instances: dict[Core, list[MemoryInstance]] = {}
+        self.top_instances_per_core: dict[Core, list[MemoryInstance]] = {}
+
         # memory operand stored by every top level memory
-        self.memory_operands: dict[Core, list[list[MemoryOperand]]] = {}
-        for _, core in sorted([(core.id, core) for core in self.accelerator.core_list]):
+        self.memory_operands_per_core: dict[Core, list[list[MemoryOperand]]] = {}
+        for core in self.accelerator.core_list:
             top_levels: list[MemoryLevel] = list(
                 (level for level, out_degree in core.memory_hierarchy.out_degree() if out_degree == 0)
             )
             self.top_levels[core] = top_levels
-            self.top_instances[core] = [level.memory_instance for level in top_levels]
-            self.memory_operands[core] = [level.operands for level in top_levels]
+            self.top_instances_per_core[core] = [level.memory_instance for level in top_levels]
+            self.memory_operands_per_core[core] = [level.operands for level in top_levels]
 
         self.unique_top_instances: set[MemoryInstance] = set()
         self.cores_per_top_instance: dict[MemoryInstance, list[Core]] = {}
         self.memory_operands_per_top_instance: dict[MemoryInstance, list[tuple[MemoryOperand, ...]]] = {}
-        # Some top level memories instances might be shared, thus we keep for each unique top memory instance the:
-        # - capacity
+
+        # Some top level memories instances might be shared, thus we keep info for each unique top memory instance
         self.top_instance_capacities: dict[MemoryInstance, int] = {}
-        # - avilable memory space
         self.top_instance_available: dict[MemoryInstance, int] = {}
-        # - stored tensors
         self.top_instance_stored_tensors: dict[MemoryInstance, list[Tensor]] = {}
-        # - timestep since when they have been stored
         self.top_instance_stored_since_timestep: dict[MemoryInstance, dict[int, int]] = {}
-        # - timestep since when they have been available
         self.top_instance_available_since_timestep: dict[MemoryInstance, dict[int, int]] = {}
-        # - the changes in memory usage through time
-        # - the cumulative sum of stored tensors
         self.top_instance_stored_cumsum: dict[MemoryInstance, np.ndarray[Any, Any]] = {}
-        # - the current timestep, i.e. when the top level was lastly used
         self.top_instance_current_timestep: dict[MemoryInstance, int] = {}
         for core, top_levels in self.top_levels.items():
             for top_level in top_levels:
@@ -106,7 +99,7 @@ class MemoryManager:
         top_instance_idxs: list[int] = []
         available_since: list[int] = []
         # Find which cores have these instances as their top instance
-        for core, top_instances in self.top_instances.items():
+        for core, top_instances in self.top_instances_per_core.items():
             for top_instance_idx, top_instance in enumerate(top_instances):
                 if top_instance in instances_storing_tensor:
                     cores_storing_tensor.append(core.id)
@@ -141,7 +134,7 @@ class MemoryManager:
         if not memory_op:
             memory_op = tensor.memory_operand
         top_level_idx = self.get_top_level_idx(core, memory_op)
-        top_instance = self.top_instances[core][top_level_idx]
+        top_instance = self.top_instances_per_core[core][top_level_idx]
 
         # Check if the tensor is already present
         if self.contains(tensor, top_instance):
@@ -200,7 +193,7 @@ class MemoryManager:
         """
         core = self.accelerator.get_core(core_id)
         top_level_idx = self.get_top_level_idx(core, memory_op)
-        top_instance = self.top_instances[core][top_level_idx]
+        top_instance = self.top_instances_per_core[core][top_level_idx]
         top_instance_capacity = self.top_instance_capacities[top_instance]
         all_timesteps = self.top_instance_stored_cumsum[top_instance][:, 0]
         all_usages = self.top_instance_stored_cumsum[top_instance][:, 1]
@@ -221,18 +214,13 @@ class MemoryManager:
         new_timestep = relevant_timesteps[last_max_usage_idx + 1]
         return self.get_timestep_for_tensor_addition(tensor, core_id, new_timestep, memory_op)
 
-    def generate_all_combinations(self, lst: list[Any]):
-        for i in range(1, len(lst) + 1):
-            for comb in combinations(lst, i):
-                yield comb
-
     def find_best_tensor_combination_to_evict_fast(
         self,
         top_instance: MemoryInstance,
         tensor_to_add: Tensor,
         timestep: int,
-        exceptions,
-    ):
+        exceptions: list[Tensor],
+    ) -> list[Tensor]:
         # Get all tensors that were being stored at the given timestep
         stored_tensors = self.get_tensors_stored_at_timestep(top_instance, timestep)
 
@@ -251,7 +239,7 @@ class MemoryManager:
         if min_size_to_evict <= 0:  # no need to evict any tensor, the memory's space is enough
             return []
         evictable_tensors = [tensor for tensor in stored_tensors if tensor not in relevant_exceptions]
-        evictable_tensors_priority_size = []
+        evictable_tensors_priority_size: list[int] = []
         for tensor in evictable_tensors:
             instance_priority = tensor.get_instance_priority(top_instance, self)
             importance = instance_priority * tensor.size
@@ -330,7 +318,7 @@ class MemoryManager:
         return next(
             (
                 idx
-                for idx, operands_top_level in enumerate(self.memory_operands[core])
+                for idx, operands_top_level in enumerate(self.memory_operands_per_core[core])
                 if memory_operand in operands_top_level
             )
         )

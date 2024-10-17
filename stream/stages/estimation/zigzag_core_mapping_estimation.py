@@ -4,19 +4,17 @@ from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.core import Core
+from zigzag.hardware.architecture.accelerator import Accelerator as Core
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
-from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
-from zigzag.stages.main import MainStage
 from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
 from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
 from zigzag.stages.results.reduce_stages import MinimalLatencyStage
-from zigzag.stages.stage import Stage, StageCallable
 from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.stages.stage import MainStage, Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT, get_unique_nodes
 from stream.visualization.node_hw_performances import (
     visualize_node_hw_performances_pickle,
@@ -40,7 +38,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         accelerator: Accelerator,
         loma_lpf_limit: int,
         node_hw_performances_path: str,
-        **kwargs: Any,
+        **kwargs: dict[str, Any],
     ):
         """
         Initialize the stage by:
@@ -105,13 +103,14 @@ class ZigZagCoreMappingEstimationStage(Stage):
                     self.node_hw_performances.remove_cores_with_same_id(node, core)
                     # We need to compute the optimal performance for this node-core combination
                     # It's possible this node might not fully fit within the core's top level memories.
-                    # If so, we update the core
+                    #  If so, we update the core
                     too_large_operands_for_cme = self.check_core_capacity_for_node(core, node_duplicate)
                     node_duplicate.set_chosen_core_allocation(core_id)
-                    # Set the node's spatial mapping to the possible spatial mappings of the current core
-                    node_duplicate.spatial_mapping = (
-                        core.dataflows if core.dataflows is not None else SpatialMapping.empty()
-                    )
+
+                    # Attempt to override the node's spatial mapping based on the core's dataflow
+                    if core.dataflows:
+                        node_duplicate.spatial_mapping = core.dataflows
+
                     # Initialize the flow that will be followed to extract the optimal HW performance of every
                     #  unique node-core allocation
                     main_stage = self.get_intra_core_mapping_flow(
@@ -154,10 +153,10 @@ class ZigZagCoreMappingEstimationStage(Stage):
     def get_intra_core_mapping_flow(self, node: ComputationNode, too_large_operands: list[MemoryOperand], core_id: int):
         logger.info(f"Launching intra-core mapping optimization for {node} -> core {core_id} ...")
 
+        core = self.accelerator.get_core(core_id)
+
         if too_large_operands:
-            accelerator = self.add_offchip_to_core(core_id, too_large_operands, node.id)
-        else:
-            accelerator = self.accelerator
+            core = self.add_offchip_to_core(core, too_large_operands, node.id)
 
         main_stage = MainStage(
             [  # Initializes the MainStage as entry point
@@ -168,7 +167,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
                 CostModelStage,  # Evaluates generated SM and TM through cost model
             ],
             layer=node,
-            accelerator=accelerator,  # required by a number of stages
+            accelerator=core,  # Accelerator in zigzag corresponds to Core in stream
             loma_lpf_limit=self.loma_lpf_limit,  # required by LomaEngine
             loma_show_progress_bar=self.loma_show_progress_bar,
         )
@@ -329,7 +328,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
             unroll_dict[mem_operand] = capacity
         return round(sum(unroll_dict.values()))
 
-    def add_offchip_to_core(self, core_id: int, too_large_operands: list[MemoryOperand], layer_idx: int):
+    def add_offchip_to_core(self, core: Core, too_large_operands: list[MemoryOperand], layer_idx: int):
         """Add the offchip memory as the top level memory of the core with core_id in a copy of the accelerator
 
         Args:
@@ -337,12 +336,10 @@ class ZigZagCoreMappingEstimationStage(Stage):
             too_large_operands (list): The memory operands the off-chip memory should store.
             layer_idx (int): workload layer index.
         """
-        logger.warning(
-            f"Adding offchip memory for core_id={core_id}, layer={layer_idx}, memory_operands={too_large_operands}."
-        )
-        updated_accelerator: Accelerator = pickle_deepcopy(self.accelerator)
-        core: Core = updated_accelerator.get_core(core_id)
+        assert self.accelerator.offchip_core_id is not None
+        logger.warning(f"Adding offchip memory for {core}, layer={layer_idx}, memory_operands={too_large_operands}.")
         offchip_core: Core = pickle_deepcopy(self.accelerator.get_core(self.accelerator.offchip_core_id))
+
         # Sanity checks
         # Make sure that there is only one offchip memory
         offchip_memory_levels = offchip_core.memory_hierarchy.mem_level_list
@@ -362,13 +359,14 @@ class ZigZagCoreMappingEstimationStage(Stage):
         offchip_port_alloc = PortAllocation(offchip_port_alloc_raw)
         offchip_served_dimensions = offchip_memory_level.served_dimensions
 
-        # Easiest way to add the offchip memory level is to do an 'add_memory()' call to the MemoryHierarchy
-        core.memory_hierarchy.add_memory(
+        # Create new core with updated memory hierarchy
+        updated_core: Core = pickle_deepcopy(core)
+        updated_core.memory_hierarchy.add_memory(
             offchip_memory_instance,
             offchip_memory_operands,
             offchip_port_alloc,
             offchip_served_dimensions,
         )
-        core.recalculate_memory_hierarchy_information()  # Recalculates some internals of the Core object
+        updated_core.recalculate_memory_hierarchy_information()  # Recalculates some internals of the Core object
 
-        return updated_accelerator
+        return updated_core

@@ -1,5 +1,7 @@
 import logging
 import os
+from functools import reduce
+from itertools import combinations
 from typing import Any
 
 from cerberus import Validator
@@ -12,42 +14,24 @@ logger = logging.getLogger(__name__)
 class AcceleratorValidator:
     INPUT_DIR_LOCATION = "stream/inputs/"
     GRAPH_TYPES = ["2d_mesh", "bus"]
+    FILENAME_REGEX = r"^(?:[a-zA-Z0-9_\-]+|[a-zA-Z0-9_\-\///]+(\.yaml|\.yml))$"
+    CORE_IDS_REGEX = r"^\d+\s*,\s*\d+$"
 
-    SCHEMA = {
+    SCHEMA: dict[str, Any] = {
         "name": {"type": "string", "required": True},
         "cores": {
-            "type": "list",
-            "required": True,
-            "schema": {
-                "type": "string",
-                "regex": r"^.*\.(yaml|yml)$",
-            },
-        },
-        "graph": {
             "type": "dict",
             "required": True,
-            "schema": {
-                "type": {"type": "string", "required": True, "allowed": GRAPH_TYPES},
-                "nb_rows": {"type": "integer", "required": False},
-                "nb_cols": {"type": "integer", "required": False},
-                "bandwidth": {"type": "integer", "required": True},
-                "unit_energy_cost": {"type": "float", "default": 0},
-                "pooling_core_id": {
-                    "type": "integer",
-                    "nullable": True,
-                    "default": None,
-                },
-                "simd_core_id": {
-                    "type": "integer",
-                    "nullable": True,
-                    "default": None,
-                },
-                "offchip_core_id": {
-                    "type": "integer",
-                    "nullable": True,
-                    "default": None,
-                },
-            },
+            "valuesrules": {"type": "string", "regex": FILENAME_REGEX},
+        },
+        "offchip_core": {"type": "string", "regex": FILENAME_REGEX, "required": False},
+        "unit_energy_cost": {"type": "float", "default": 0},
+        "bandwidth": {"type": "float", "required": True},
+        "core_connectivity": {"type": "list", "required": True, "schema": {"type": "string", "regex": CORE_IDS_REGEX}},
+        "core_memory_sharing": {
+            "type": "list",
+            "default": [],
+            "schema": {"type": "string", "regex": CORE_IDS_REGEX},
         },
     }
 
@@ -74,55 +58,20 @@ class AcceleratorValidator:
             self.invalidate(f"The following restrictions apply: {errors}")
 
         # Validation outside of schema
-        self.check_special_core_ids()
+        self.validate_core_ids()
         self.validate_all_cores()
 
-        # 2d mesh specific checks
-        self.check_2d_mesh_schema()
-        self.check_2d_mesh_layout()
+        self.validate_core_connectivity()
+        self.validate_core_mem_sharing()
 
         return self.is_valid
 
-    def check_special_core_ids(self) -> None:
-        """Check wether the special cores (pooling, simd, offchip) have a valid id"""
-
-        pooling_core = self.data["graph"]["pooling_core_id"]
-        if pooling_core is not None and pooling_core >= len(self.data["cores"]):
-            self.invalidate(
-                f"Specified pooling core id {self.data['graph']['pooling_core_id']} exceeds length of list of cores."
-            )
-        simd_core = self.data["graph"]["simd_core_id"]
-        if simd_core is not None and simd_core >= len(self.data["cores"]):
-            self.invalidate(
-                f"Specified simd core id {self.data['graph']['simd_core_id']} exceeds length of list of cores."
-            )
-        offchip_core = self.data["graph"]["offchip_core_id"]
-        if offchip_core is not None and offchip_core >= len(self.data["cores"]):
-            self.invalidate(
-                f"Specified offchip core id {self.data['graph']['offchip_core_id']} exceeds length of list of cores."
-            )
-
-    def check_2d_mesh_schema(self):
-        if self.data["graph"]["type"] == "2d_mesh":
-            if "nb_rows" not in self.data["graph"] or "nb_cols" not in self.data["graph"]:
-                self.invalidate("graph of type 2d_mesh must contain 'nb_rows' and 'nb_cols'.")
-
-    def check_2d_mesh_layout(self):
-        """Check wether the 2d mesh layout works with the given number of cores"""
-        if self.data["graph"]["type"] != "2d_mesh":
-            return
-        nb_special_cores = (
-            (1 if self.data["graph"]["pooling_core_id"] is not None else 0)
-            + (1 if self.data["graph"]["simd_core_id"] is not None else 0)
-            + (1 if self.data["graph"]["offchip_core_id"] is not None else 0)
-        )
-        nb_regular_cores = len(self.data["cores"]) - nb_special_cores
-        mesh_size = self.data["graph"]["nb_rows"] * self.data["graph"]["nb_cols"]
-        if nb_regular_cores != mesh_size:
-            self.invalidate(
-                f"Number of cores (excl. pooling, simd, offchip) ({nb_regular_cores}) does not equal mesh size "
-                f"({mesh_size})"
-            )
+    def validate_core_ids(self):
+        core_ids = list(self.data["cores"].keys())
+        if not all(isinstance(core_id, int) and core_id >= 0 for core_id in core_ids):
+            self.invalidate("Invalid core id in `cores`: id is not a positive integer.")
+        if len(core_ids) != max(core_ids) + 1:
+            self.invalidate("Invalid core id in `cores`: not all core ids in range are in use.")
 
     def validate_all_cores(self) -> None:
         """For all given core file paths:
@@ -131,20 +80,35 @@ class AcceleratorValidator:
         - validate core data
         - replace core file path with core data
         """
-        for core_id, core_file_name in enumerate(self.data["cores"]):
-            core_data = self.open_core(core_file_name)
-            # Stop validation if invalid core name is found
-            if core_data is None:
+        core_id = 0
+        for core_id, core_file_name in self.data["cores"].items():
+            normalized_core_data = self.validate_single_core(core_file_name)
+            if not normalized_core_data:
                 return
-
-            core_validator = CoreValidator(core_data)
-            validate_success = core_validator.validate()
-            if not validate_success:
-                self.invalidate(f"User-given core  {core_file_name} cannot be validated.")
-
-            # Fill in default values
-            normalized_core_data = core_validator.normalized_data
             self.data["cores"][core_id] = normalized_core_data
+
+        # Offchip core (not part of cores list)
+        if "offchip_core" in self.data:
+            offchip_core_file_name = self.data["offchip_core"]
+            normalized_core_data = self.validate_single_core(offchip_core_file_name)
+            if not normalized_core_data:
+                return
+            self.data["offchip_core"] = normalized_core_data
+
+    def validate_single_core(self, core_file_name: str) -> None | dict[str, Any]:
+        core_data = self.open_core(core_file_name)
+        # Stop validation if invalid core name is found
+        if core_data is None:
+            return
+
+        core_validator = CoreValidator(core_data)
+        validate_success = core_validator.validate()
+        if not validate_success:
+            self.invalidate(f"User-given core  {core_file_name} cannot be validated.")
+
+        # Fill in default values
+        normalized_core_data = core_validator.normalized_data
+        return normalized_core_data
 
     def open_core(self, core_file_name: str) -> dict[str, Any] | None:
         """Find core with given yaml file name and read data."""
@@ -165,6 +129,60 @@ class AcceleratorValidator:
             f"Core with filename `{core_file_name}` not found. Make sure `{input_location}` contains a folder "
             f"called `hardware` that contains the core file."
         )
+
+    def validate_core_connectivity(self):
+        connectivity_data = self.data["core_connectivity"]
+
+        # Empty data is okay
+        if connectivity_data == []:
+            return
+
+        # Replace string of core ids with tuple of ints
+        connectivity_groups = [tuple(int(i) for i in group.replace(" ", "").split(",")) for group in connectivity_data]
+        self.data["core_connectivity"] = connectivity_groups
+
+        all_connected_core_ids = reduce(lambda x, y: x + y, connectivity_groups)
+        core_ids = list(self.data["cores"].keys())
+
+        # Connection length >= 2
+        if not all(len(group) > 1 for group in connectivity_groups):
+            self.invalidate("Core connection should contain at least 2 core ids.")
+
+        # No unknown core ids
+        if not all(connected_id in core_ids for connected_id in all_connected_core_ids):
+            self.invalidate("`core_connectivity` contains unknown core id.")
+
+    def validate_core_mem_sharing(self):
+        # Replace string of core ids with tuple of ints
+        mem_sharing_data = self.data["core_memory_sharing"]
+        if len(mem_sharing_data) == 0:
+            return
+        mem_sharing_groups = [tuple(int(i) for i in group.replace(" ", "").split(",")) for group in mem_sharing_data]
+        self.data["core_memory_sharing"] = mem_sharing_groups
+
+        all_mem_sharing_ids = reduce(lambda x, y: x + y, mem_sharing_groups)
+        core_ids = list(self.data["cores"].keys())
+
+        # Connection length >= 2
+        if not all(len(group) > 1 for group in mem_sharing_groups):
+            self.invalidate("Shared memory connection should contain at least 2 core ids.")
+
+        # No unknown core ids
+        if not all(mem_sharing_id in core_ids for mem_sharing_id in all_mem_sharing_ids):
+            self.invalidate("`core_memory_sharing` contains unknown core id.")
+
+        # Cores that share memory should not have an explicit connection
+        connectivity_groups = self.data["core_connectivity"]
+        for mem_sharing_group in mem_sharing_groups:
+            # Check each link within the mem_sharing_group
+            for id_a, id_b in combinations(mem_sharing_group, 2):
+                if any(
+                    id_a in connectivity_group and id_b in connectivity_group
+                    for connectivity_group in connectivity_groups
+                ):
+                    self.invalidate(
+                        "Cores that share memory should must not be explicitly connected in `core_connectivity`"
+                    )
 
     @property
     def normalized_data(self) -> dict[str, Any]:

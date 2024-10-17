@@ -1,4 +1,4 @@
-zigzag-dse==3.6.3
+zigzag-dse==3.7.2
 rtree
 deap
 matplotlib

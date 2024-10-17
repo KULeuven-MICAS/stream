@@ -1,37 +1,45 @@
 import logging
 import os
 from itertools import cycle
+from typing import TYPE_CHECKING
 
 import numpy as np
 import plotly.graph_objects as go
 from plotly.express.colors import sample_colorscale
 
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_T
 from stream.opt.allocation.constraint_optimization.utils import get_latencies
 from stream.utils import CostModelEvaluationLUT
+
+if TYPE_CHECKING:
+    from zigzag.hardware.architecture.accelerator import Accelerator as Core
 
 logger = logging.getLogger(__name__)
 
 
 def visualize_waco(
-    allocation, node_hw_performances: CostModelEvaluationLUT, accelerator: Accelerator, fig_path: str, iterations: int
+    allocation: ALLOCATION_T,
+    node_hw_performances: CostModelEvaluationLUT,
+    accelerator: Accelerator,
+    fig_path: str,
+    iterations: int,
 ):
     """
     Allocation is a list of tuples, with each tuple being of form (timestep, allocation, node_id). Allocation is a core.
     node_hw_performances is a nested dict storing for each node and each core the hardware performance.
     """
-    pass
     # Extract the number of allocations (k splits) of all nodes
-    k_splits = {}
-    for _, a, id in allocation:
-        k_splits[id] = k_splits.get(id, []) + [a]
+    k_splits: dict[int, list[Core]] = {}
+    for _, core, id in allocation:
+        k_splits[id] = k_splits.get(id, []) + [core]
     # Extract the latencies of all nodes
     node_latencies = {}
-    layer_ids = set()
-    ids = []
-    timesteps = []
-    resources = set()
-    core_names = sorted(set([a for t, a, id in allocation]))
+    layer_ids: set[int] = set()
+    ids: list[int] = []
+    timesteps: list[int] = []
+    resources: set[int] = set()
+    core_names = sorted(set([a for _, a, _ in allocation]))
     core_ids = [int(core_name.split(" ")[-1]) for core_name in core_names]
     for t, a, id in allocation:
         timesteps.append(t)

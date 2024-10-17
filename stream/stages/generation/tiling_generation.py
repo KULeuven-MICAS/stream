@@ -1,25 +1,29 @@
 import logging
+from typing import Any
 
 import numpy as np
 from onnx import ModelProto, helper, numpy_helper
-from zigzag.stages.stage import Stage
+from zigzag.datatypes import LayerDim
 
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.stages.stage import Stage, StageCallable
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.dnn_workload import DNNWorkloadStream
+from stream.workload.mapping import TILING_T
+from stream.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)
 
 
-class HintLoopsGenerationStage(Stage):
+class TilingGenerationStage(Stage):
+
     def __init__(
         self,
-        list_of_callables,
+        list_of_callables: list[StageCallable],
         *,
         accelerator: Accelerator,
-        workload: DNNWorkloadStream,
+        workload: ONNXWorkload,
         layer_stacks: list[tuple[int, ...]],
-        **kwargs,
+        **kwargs: Any,
     ):
         super().__init__(list_of_callables, **kwargs)
         self.accelerator = accelerator
@@ -28,23 +32,17 @@ class HintLoopsGenerationStage(Stage):
         assert layer_stacks is not None
         self.layer_stacks = layer_stacks
         self.mode = kwargs.get("mode")
-        self.hint_loops = kwargs.get("hint_loops", None)
 
     def run(self):
-        if self.mode == "fused":
-            if self.hint_loops is None:
-                self.hint_loops = self.get_hint_loops_fused()
-                self.kwargs["cn_define_mode"] = 3
-        elif self.mode == "lbl":
-            if self.hint_loops is None:
-                self.hint_loops = self.get_hint_loops_lbl()
-                self.kwargs["cn_define_mode"] = 3
-        else:
-            raise ValueError("Unsupported mode for hint loops determination.")
+        for node in self.workload.node_list:
+            if not isinstance(node, ComputationNode):
+                continue
+            nb_nodes_in_stack = len(next(stack for stack in self.layer_stacks if node.id in stack))
+            self.set_valid_intra_core_tiling(node, nb_nodes_in_stack)
+            self.set_valid_inter_core_tiling(node)
 
         self.kwargs["accelerator"] = self.accelerator
         self.kwargs["workload"] = self.workload
-        self.kwargs["hint_loops"] = self.hint_loops
         self.kwargs["layer_stacks"] = self.layer_stacks
 
         sub_stage = self.list_of_callables[0](
@@ -54,35 +52,105 @@ class HintLoopsGenerationStage(Stage):
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
 
-    def get_hint_loops_lbl(self):
-        hint_loops = {}
-        for stack in self.layer_stacks:
-            assert len(stack) == 1, "Stack contains more than one node in layer by layer case"
-            hint_loops[stack] = []
-        return hint_loops
+    def set_valid_intra_core_tiling(self, node: ComputationNode, stack_size: int):
+        self.remove_invalid_entries_from_intra_core_tiling(node)
 
-    def get_hint_loops_fused(self):
-        """
-        Simple way to infer hint loops: assume only up until first cut is fused,
-        rest is processed layer by layer.
-        """
-        hint_loops = {}
-        for stack in self.layer_stacks:
-            computation_nodes = self.get_computation_nodes(stack)
-            if len(computation_nodes) > 1:
-                for n in computation_nodes:
-                    # NOTE Take first entry of fusion_partition_dims for now
-                    hint_loops[(n.id,)] = [
-                        (n.fusion_partition_dims[0], "all"),
-                    ]
+        if not node.intra_core_tiling:
+            match self.mode:
+                case "lbl":
+                    node.intra_core_tiling = []
+                case "fused":
+                    node.intra_core_tiling = self.generate_intra_core_tiling(node)
+                case _:
+                    raise ValueError("Unsupported mode for hint loops determination.")
+
+        # Override the intra_core_tiling in case the node is alone in a stack
+        if stack_size == 1:
+            node.intra_core_tiling = []
+
+    def set_valid_inter_core_tiling(self, node: ComputationNode):
+        self.remove_invalid_entries_from_inter_core_tiling(node)
+
+        if not node.inter_core_tiling:
+            # Add default tiling if not defined by user
+            node.inter_core_tiling = self.generate_inter_core_tiling(node)
+
+    def remove_invalid_entries_from_intra_core_tiling(self, node: ComputationNode):
+        """If the user-defined intra core tiling is not valid w.r.t. the node's layer dimensions and sizes, change
+        the tiling to a valid one"""
+        given_tiling = node.intra_core_tiling
+        valid_tiling: TILING_T = []
+
+        for layer_dim, factor in given_tiling:
+            if layer_dim not in node.layer_dim_sizes:
+                # Invalid layer dim: don't include in valid tiling
+                logger.warning(
+                    f"Given intra core tiling {layer_dim, factor} for node {node} invalid: node does not contain "
+                    f"{layer_dim}. Removing {layer_dim}",
+                )
             else:
-                hint_loops[stack] = []
-        return hint_loops
+                layer_dim_size = node.layer_dim_sizes[layer_dim]
+                if factor == "all":
+                    factor = layer_dim_size
+                elif isinstance(factor, str):
+                    raise ValueError("intra core tiling should be an integer or `all`")
+                elif layer_dim_size < factor:
+                    # Given tiling factor too large -> use max allowed
+                    factor = layer_dim_size
+                elif layer_dim_size % factor != 0:
+                    # Layer size is not a multiple of the tiling factor -> increase loop size of the layer
+                    new_layer_dim_size = node.layer_dim_sizes[layer_dim] + 1
+                    while new_layer_dim_size % factor != 0:
+                        new_layer_dim_size += 1
+                    logger.warning(f"Rounding {node}: {layer_dim} {layer_dim_size} -> {new_layer_dim_size}")
+                    node.layer_dim_sizes[layer_dim] = new_layer_dim_size
 
-    def get_computation_nodes(self, stack: tuple[int, ...]) -> list[ComputationNode]:
-        nodes = [n for n in self.workload.node_list if n.id in stack]
-        computation_nodes = [n for n in nodes if isinstance(n, ComputationNode)]
-        return computation_nodes
+                valid_tiling.append((layer_dim, factor))
+
+        node.intra_core_tiling = valid_tiling
+
+    def generate_intra_core_tiling(self, node: ComputationNode) -> TILING_T:
+        partition_dim = node.fusion_partition_dims[0]
+        if partition_dim not in node.layer_dim_sizes:
+            raise ValueError(f"Suggested partition dimension {partition_dim} for {node} is not part of this node")
+        return [(node.fusion_partition_dims[0], node.layer_dim_sizes[partition_dim])]
+
+    def remove_invalid_entries_from_inter_core_tiling(self, node: ComputationNode):
+        """Check wether this node's inter core tiling has invalid entries: non-existent layer dimension for this node
+        or too large tiling size. Remove entry if this is the case
+        #TODO it would be more logical to put this code somewhere else
+        """
+        valid_tiling: TILING_T = []
+        for layer_dim, factor in node.inter_core_tiling:
+            # Tiling layer dim doesn't exist -> remove
+            if layer_dim not in node.layer_dim_sizes:
+                logger.warning(
+                    f"Inter core tiling ({layer_dim}, {factor}) of {node} invalid: {layer_dim} not in "
+                    f"this node's layer dim sizes. Removing {layer_dim}"
+                )
+                continue
+
+            # Tiling size too high -> reduce
+            layer_size = node.layer_dim_sizes[layer_dim]
+            if isinstance(factor, int) and factor > layer_size:
+                logger.warning(
+                    f"Inter core tiling ({layer_dim}, {factor}) of {node} invalid: {factor} exceeds the layer size of "
+                    f"{layer_size}. Reducing tiling size to {layer_size}"
+                )
+                factor = layer_size
+
+            valid_tiling.append((layer_dim, factor))
+        node.inter_core_tiling = valid_tiling
+
+    def generate_inter_core_tiling(self, node: ComputationNode) -> TILING_T:
+        if node.layer_dim_sizes.data.get(LayerDim("G"), 1) > 1:
+            loop_dim = LayerDim("G")
+        elif node.layer_dim_sizes.data.get(LayerDim("K"), 1) > 1:
+            loop_dim = LayerDim("K")
+        else:
+            raise ValueError("Unknown what loop dim to split across cores")
+
+        return [(loop_dim, "*")]
 
     @staticmethod
     def split_operator(model: ModelProto, node_name: str, num_splits: int):

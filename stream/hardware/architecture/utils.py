@@ -6,7 +6,13 @@ if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
 
 
-def intersections(a, b):
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from stream.hardware.architecture.accelerator import Accelerator
+
+
+def intersections(a: list[Any], b: list[Any]):
     """Get the intersections of two lists of ranges.
     https://stackoverflow.com/questions/40367461/intersection-of-two-lists-of-ranges-in-python
 
@@ -17,7 +23,7 @@ def intersections(a, b):
     Returns:
         list: The intersections between the two lists.
     """
-    ranges = []
+    ranges: list[Any] = []
     i = j = 0
     while i < len(a) and j < len(b):
         a_left, a_right = a[i]
@@ -51,9 +57,3 @@ def get_core_capacities(accelerator: "Accelerator", mem_op: MemoryOperand, core_
         top_instance = accelerator.get_top_instance_of_core(core, mem_op)
         core_capacities[core_name] = top_instance.size
     return core_capacities
-
-
-if __name__ == "__main__":
-    a = [(8, 10), (13, 15), (17, 20)]
-    b = [(0, 9), (14, 18)]
-    print(intersections(a, b))

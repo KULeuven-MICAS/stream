@@ -1,4 +1,5 @@
 import sys
+from typing import TypeAlias
 
 import gurobipy as gp
 from gurobipy import GRB
@@ -13,17 +14,19 @@ from stream.opt.allocation.constraint_optimization.utils import (
     invert_ids_list,
 )
 from stream.utils import CostModelEvaluationLUT
-from stream.workload.onnx_workload import ONNXWorkload
+from stream.workload.onnx_workload import ComputationNodeWorkload
+
+ALLOCATION_T: TypeAlias = list[tuple[int, str, tuple[int, int]]]
 
 
 def get_optimal_allocations(
-    workload: ONNXWorkload,
+    workload: ComputationNodeWorkload,
     accelerator: Accelerator,
     node_hw_performances: CostModelEvaluationLUT,
     iterations: int,
     gap: float = 0.5,
     time_limit: int = 600,
-) -> list[tuple[int, int, tuple[int, int]]]:
+) -> ALLOCATION_T:
     core_ids = sorted((core.id for core in accelerator.cores.node_list if core.id != accelerator.offchip_core_id))
     core_capacities = get_core_capacities(accelerator, MemoryOperand("I2"), core_ids)
 
