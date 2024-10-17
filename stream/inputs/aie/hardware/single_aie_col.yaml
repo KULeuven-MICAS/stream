@@ -1,21 +1,19 @@
 name: single_aie_tile
-cores:
-  # index corresponds to core ID
-  - aie_tile.yaml
-  - aie_tile.yaml
-  - aie_tile.yaml
-  - aie_tile.yaml
-  - pooling.yaml
-  - simd.yaml
-  - shim_dma.yaml
 
-graph:
-  type: 2d_mesh
-  nb_rows: 4
-  nb_cols: 1
-  bandwidth: 512
-  unit_energy_cost: 0
-  pooling_core_id: 4
-  simd_core_id: 5
-  offchip_core_id: 6
+cores:
+  0: aie_tile.yaml
+  1: aie_tile.yaml
+  2: aie_tile.yaml
+  3: aie_tile.yaml
+
+offchip_core: shim_dma.yaml
+
+core_connectivity:
+  - 0, 1, 2, 3
+  - 0, 1
+  - 1, 2
+  - 2, 3
+
+bandwidth: 512
+unit_energy_cost: 0
 
