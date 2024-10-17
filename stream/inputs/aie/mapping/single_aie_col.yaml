@@ -10,5 +10,5 @@
   intra_core_tiling:
     - D, 8
   inter_core_tiling:
-    - K, 4
+    - K, *
 
