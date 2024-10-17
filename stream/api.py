@@ -9,8 +9,8 @@ from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
-from stream.stages.generation.hint_loops_generation import TilingGenerationStage
-from stream.stages.generation.hint_loops_partitioned_workload_generation import (
+from stream.stages.generation.tiling_generation import TilingGenerationStage
+from stream.stages.generation.tiled_workload_generation import (
     TiledWorkloadGenerationStage,
 )
 from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage

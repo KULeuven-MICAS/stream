@@ -14,7 +14,7 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_T, get_optimal_allocations
 from stream.stages.estimation.stream_cost_model_evaluation import StreamCostModelEvaluationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
-from stream.stages.generation.hint_loops_partitioned_workload_generation import (
+from stream.stages.generation.tiled_workload_generation import (
     TiledWorkloadGenerationStage,
 )
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
