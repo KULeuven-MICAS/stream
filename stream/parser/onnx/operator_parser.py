@@ -90,7 +90,12 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
         TODO Mapping based on node name instead of note operator is not yet supported
         """
         default_mapping = self.all_mappings["default"]
-        mapping = self.all_mappings.get(self.node.op_type, default_mapping)
+        if self.node.name in self.all_mappings:
+            mapping = self.all_mappings[self.node.name]
+        elif self.node.op_type in self.all_mappings:
+            mapping = self.all_mappings[self.node.op_type]
+        else:
+            mapping = default_mapping
 
         # Override spatial mapping by the one defined in the core's dataflows
         try:
