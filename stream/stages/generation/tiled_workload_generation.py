@@ -1,22 +1,20 @@
 import logging
 from copy import deepcopy
 from math import ceil, prod
-from typing import Any, List
+from typing import Any
 
 from rtree import index
 from zigzag.datatypes import Constants, LayerDim, LayerOperand
-from zigzag.stages.stage import Stage, StageCallable
 from zigzag.utils import pickle_deepcopy
 
 from stream.cost_model.group_allocation import GroupIdManager
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.node_tensor import NodeTensor
 from stream.opt.partitioning.TemporalLoop import TemporalLoop
 from stream.opt.partitioning.utils import (
-    convert_inner_cn_loops,
     convert_outer_cn_loops,
-    convert_outer_cn_loops_with_k,
 )
-from stream.utils import NodeTensor
+from stream.stages.stage import Stage, StageCallable
 from stream.workload.computation.computation_node import ComputationNode, LoopRanges
 from stream.workload.dependency_propagation.concat_node import ConcatNode
 from stream.workload.dependency_propagation.dummy_node import DummyNode
@@ -33,12 +31,14 @@ from stream.workload.tensor import Tensor
 
 logger = logging.getLogger(__name__)
 
+EDGE_T = tuple[ComputationNode, ComputationNode, dict]
+
 
 class TensorDimensionMismatchException(Exception):
     """Facilitates error handling in case incorrect tensor dimensions are passed on"""
 
 
-class HintLoopsPartitionedWorkloadGenerationStage(Stage):
+class TiledWorkloadGenerationStage(Stage):
     """
     Class that transforms the layer-by-layer workload into finer CN workload graph.
     """
@@ -49,8 +49,6 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         *,
         workload: ONNXWorkload,
         accelerator: Accelerator,
-        cn_define_mode: int,
-        hint_loops: list[tuple[LayerDim, str | int]],
         **kwargs: Any,
     ):
         """
@@ -67,27 +65,11 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         # Memoize the numpy tensors for dependency generation
         self.numpy_tensors = {}
 
-        # for CN node size case study, will be used in the function of get_outer_tmap_loop_dimensions
-        if cn_define_mode not in [1, 2, 3, 4]:
-            raise ValueError(f"cn_define_mode can not be {self.cn_define_mode}.")
-        self.cn_define_mode = cn_define_mode
-        self.hint_loops = hint_loops  # can be outer-cn or inner-cn depending on cn_define_mode
-
-        # compute the weight capacities of the different cores and the number of splits required for each layer
-        if cn_define_mode == 4:
-            try:
-                self.split_W_percentage = self.kwargs["split_W_percentage"]
-            except KeyError:
-                self.split_W_percentage = 1
-            # compute the on-chip weight capacities of the different cores (assumes 'I2' is for weights)
-            self.weight_capacities = self.get_weight_capacities()
-            # compute the number of splits required for each layer in the original workload
-            self.layer_split_factors_k = self.get_layer_split_factors_k()
-
     def run(self):
         unique_finer_nodes: list[ComputationNode] = []
-        # For each node get all the finer nodes and set the intra edges
-        G = ComputationNodeWorkload()
+        # For each node get all the finer nodes and the edges between them
+        all_finer_nodes = []
+        all_finer_edges = []
         for node in self.workload.topological_sort():
             # If other node types shouldn't be included in finer node graph, add here
             if not isinstance(node, ComputationNode):
@@ -98,12 +80,10 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
             logger.info(f"{node}: Generated {len(finer_nodes)} finer nodes.")
             self.finer_nodes_dict[node] = finer_nodes
             unique_finer_nodes += unique_nodes
-            # Compute the edges between nodes originating from one bigger node (intra-edges)
             intra_edges = self.get_intra_edges(finer_nodes)
-            G.add_edges_from(intra_edges)
-            # If there is only one finer node for this layer, add the node to the graph
-            if not intra_edges:
-                G.add_nodes_from(finer_nodes)
+            # Add the finer nodes and intra edges to the lists
+            all_finer_nodes += finer_nodes
+            all_finer_edges += intra_edges
 
         # Get all pairs of nodes that we have to extract inter edges for
         all_pairs = self.get_all_node_pairs(self.workload)
@@ -114,20 +94,28 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                 inter_edges = self.get_inter_edges_numpy(producer, consumer)
             else:
                 inter_edges = self.get_inter_edges_rtree(producer, consumer, finer_producers, finer_consumers)
-            G.add_edges_from(inter_edges)
+            all_finer_edges += inter_edges
 
-        # Set the base_priority value of all nodes in G
-        self.set_base_priority_of_nodes(G, self.finer_nodes_dict)
+        # Set the base_priority value of all nodes
+        self.set_base_priority_of_nodes(all_finer_nodes, all_finer_edges)
 
-        logger.info(f"Finer graph: {G}.")
+        # Set the number of real predecessors of all nodes
+        self.set_nb_real_predecessors(all_finer_nodes, all_finer_edges)
+
+        # Construct the new finer workload graph
+        # The graph construction needs to happen after the base priority and nb_real_predecessors are set
+        partitioned_workload = ComputationNodeWorkload()
+        partitioned_workload.add_edges_from(all_finer_edges)
+
+        logger.info(f"Finer graph: {partitioned_workload}.")
 
         kwargs = self.kwargs.copy()
         kwargs["original_workload"] = pickle_deepcopy(self.workload)
-        kwargs["workload"] = G
+        kwargs["workload"] = partitioned_workload
         kwargs["accelerator"] = self.accelerator
-        kwargs["hint_loops"] = self.hint_loops
+
         if "scheduling_order" not in kwargs:
-            kwargs["scheduling_order"] = self.get_scheduling_order(G)
+            kwargs["scheduling_order"] = self.get_scheduling_order(partitioned_workload)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
@@ -168,47 +156,21 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                 pairs.append((node, successor, complex_pair))
         return tuple(pairs)
 
-    def get_outer_tmap_loop_dimensions(self, layer: ComputationNode) -> List[TemporalLoop]:
-        """Get the temporal loops that are outside a CN for this layer.
+    def get_outer_tmap_loop_dimensions(self, node: ComputationNode) -> list[TemporalLoop]:
+        """Get the temporal loops that are outside a CN for this node.
 
         Args:
-            layer (Node): layer node for which to return outer-cn loops
+            node: node for which to return outer-cn loops
 
         Returns:
-            List[TemporalLoop]: list of temporal loops outside of cn
+            temporal loops outside of cn
         """
-        outer_loops = []
-        if self.cn_define_mode == 1:
-            # outer_cn_loops identical for all layers
-            outer_cn_loops = self.hint_loops.copy()
-            outer_loops = convert_outer_cn_loops(outer_cn_loops, layer)
-        elif self.cn_define_mode == 2:
-            inner_cn_loops = self.hint_loops.copy()
-            outer_loops = convert_inner_cn_loops(inner_cn_loops, layer)
-        elif self.cn_define_mode == 3:
-            # Assume that self.hint_loops is a dict
-            # A key is a tuple containing the layer ids that should use the value as hint_loops
-            # So for self.hint_loops = {(0,1,2,3): [("OY", "all")], (4,): [("OY", "all"), ("K", "all")]}
-            # layer ids 0 to 3 will use [("OY", "all")] and layer id 4 will use [("OY", "all), ("K", "all")]
-            # Find which sublist this layer should use
-            try:
-                outer_cn_loops = next(v for k, v in self.hint_loops.items() if layer.id in k)
-            except StopIteration:
-                raise ValueError(f"Layer id {layer.id} not in hint_loops: {self.hint_loops}")
-            outer_loops = convert_outer_cn_loops(outer_cn_loops, layer)
-        elif self.cn_define_mode == 4:
-            # Assume we always split in the hint_loops dimensions
-            # Check if we need to split in K dimension for it to not block offchip during computation
-            outer_cn_loops = self.hint_loops.copy()
-            try:
-                split_factor = self.layer_split_factors_k[layer]
-            except KeyError:
-                split_factor = 1
-            outer_loops = convert_outer_cn_loops_with_k(outer_cn_loops, layer, split_factor)
-        else:
-            raise ValueError("This shouldn't be reached if initialization checks are correctly implemented.")
+        outer_loops = convert_outer_cn_loops(node.intra_core_tiling.copy(), node)
+
+        # In case no valid intra core tiling is found: add an arbitrary tiling of size 1
         if not outer_loops:
-            outer_loops.append(TemporalLoop(layer.layer_dims[0], 1))
+            outer_loops = [TemporalLoop(node.layer_dims[0], 1)]
+
         return outer_loops
 
     def get_non_type_predecessors(self, node: Node, types: list[type]) -> list[Node]:
@@ -241,6 +203,8 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
 
         # Take away the outer_temporal_loops to create finer CNs for this node
         finer_node_attrs = original_node.extract_node_attr()
+        finer_node_mapping = original_node.extract_inter_core_mapping_attr()
+
         for outer_tl in outer_temporal_loops:
             outer_dim = outer_tl.dimension
             outer_size = outer_tl.size
@@ -279,7 +243,7 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
 
         finer_nodes: list[ComputationNode] = []
         tensors: list[Tensor] = []
-        group_id_manager = GroupIdManager()
+        group_id_manager = GroupIdManager(original_node)
         for n in range(nb_cns):
             outer_loop_values: list[int] = []
             for i, outer_loop in enumerate(outer_temporal_loops):
@@ -305,9 +269,8 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                 dim_max = dim_min + (finer_span[loop_dim] if loop_dim in finer_span else 1)
                 dim_min_max[loop_dim] = (dim_min, dim_max)
 
-            # Add the loop ranges for this cn to a copy of the finer node attributes
-            finer_node_attrs_copy = deepcopy(finer_node_attrs)
-            group_id = group_id_manager.get_group_id(original_node, dim_min_max)
+            # finer_node_mapping_copy = deepcopy(original_node.extract_mapping_attr())
+            group_id = group_id_manager.get_group_id(dim_min_max)
 
             # Create the computation node object with the computed ranges of the loop dimensions
             node_name = original_node.name
@@ -324,7 +287,8 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                 node_id=original_node_id,
                 sub_id=n,
                 node_name=node_name,
-                node_attr=finer_node_attrs_copy,
+                node_attr=finer_node_attrs,
+                mapping_attr=finer_node_mapping,
                 op_type=original_node.type,
                 produces_final_output=produces_final_output,
                 group_id=group_id,
@@ -364,7 +328,7 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
             if original_node.core_allocation_is_fixed:
                 assert group_id < len(
                     original_node.possible_core_allocation
-                ), f"Group id {group_id} is not in the core allocation list {original_node.core_allocation}"
+                ), f"Group id {group_id} too large for core allocation list {original_node.core_allocation}"
                 chosen_core_allocation = original_node.possible_core_allocation[group_id]
                 finer_node.set_chosen_core_allocation(chosen_core_allocation)
 
@@ -435,16 +399,6 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         """Return the number of input dimensions this node has.
         # We take the first non-constant input operand."""
         dims = node.operand_dimensionality_order[operand]
-
-        # try:
-        #     input_operand = (
-        #         Constants.LAYER_OP_I if Constants.LAYER_OP_I not in node.constant_operands else Constants.LAYER_OP_W
-        #     )
-        #     dims = node.operand_dimensionality_order[Constants.LAYER_OP_I]
-        # except KeyError:
-        #     # This is dead code since input operands can only be I or W
-        #     input_operand = list(set(node.input_operands) - set(node.constant_operands))[0]
-        #     dims = node.operand_dimensionality_order[input_operand]
 
         if LayerDim("G") in dims and (LayerDim("C") in dims or LayerDim("K") in dims):
             # because later the generator will merge them into a single channel dim
@@ -526,10 +480,10 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         A communication node is inserted between each producer and consumer node.
 
         Args:
-            producer (Node): the producer node
-            consumer (Node): the consumer node
-            finer_producers (list): list of finer producer nodes
-            finer_consumers (list): list of finer consumer nodes
+            producer: the producer node
+            consumer: the consumer node
+            finer_producers: list of finer producer nodes
+            finer_consumers: list of finer consumer nodes
         """
         # Check all the different input operands of the consumer node that stem from the producer node
         # The direct predecessor of an input operand might be a DummyNode so we need to propagate back
@@ -819,7 +773,7 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
                 tensors_cns[op] = tensors_cns[op].extend_with_node(bounded_op_dim_ranges, finer_node)
 
             if nb_unique_data_seen != (prod(tensor_shapes[op]) * precision):
-                logger.warn(f"Downsampling node detected: {node}, operand= {op}.")
+                logger.warning(f"Downsampling node detected: {node}, operand= {op}.")
 
         # The dimensionality order of this input/output operand might include
         # both a G and C/K dimension because the ComputationNode gets the group as an extra
@@ -834,26 +788,28 @@ class HintLoopsPartitionedWorkloadGenerationStage(Stage):
         return tensors_cns
 
     @staticmethod
-    def set_base_priority_of_nodes(
-        G: ComputationNodeWorkload, finer_nodes_dict: dict[ComputationNode, list[ComputationNode]]
-    ):
+    def set_base_priority_of_nodes(nodes: list[ComputationNode], edges: list[EDGE_T]):
         """Set the base_priority of all stored tensors of variable operands in every node in finer_nodes
-         based on the amount of real (excluding same layer edges) edges.
+        based on the amount of real (excluding same layer edges) edges.
 
         Args:
-            finer_nodes (list): List of the nodes for which to set the tensors' base_priority
+            nodes (list): List of nodes.
+            edges (list): List of edges in the form of (producer, consumer, data).
         """
-        nb_nodes_per_layer_id = {layer.id: len(finer_nodes_dict[layer]) for layer in finer_nodes_dict.keys()}
-        nb_seen_nodes_per_layer_id = {layer_id: 0 for layer_id in nb_nodes_per_layer_id.keys()}
-        for node in G.topological_sort():
-            layer_id = node.id
-            for layer_operand in node.layer_operands:
-                tensor: Tensor = node.operand_tensors[layer_operand]
-                if layer_operand == node.output_operand:
-                    # Look at the amount of successors from different layers
-                    successors = [succ for succ in G.successors(node) if succ.id != layer_id]
-                    tensor.set_base_priorities(len(successors))
-            nb_seen_nodes_per_layer_id[layer_id] += 1
+        for node in nodes:
+            output_operand = node.output_operand
+            output_tensor = node.operand_tensors[output_operand]
+            successors = [cons for prod, cons, _ in edges if prod == node]
+            output_tensor.set_base_priorities(len(successors))
+
+    @staticmethod
+    def set_nb_real_predecessors(nodes: list[ComputationNode], edges: list[EDGE_T]):
+        """Set the number of real predecessors for each node in the graph.
+        A real predecessor is a node that is not in the same layer as the node itself.
+        """
+        for node in nodes:
+            nb_real_predecessors = [prod for prod, cons, _ in edges if cons == node and prod.id != cons.id]
+            node.nb_real_predecessors = len(nb_real_predecessors)
 
     def get_weight_capacities(self):
         # Get the weight capacity of all cores

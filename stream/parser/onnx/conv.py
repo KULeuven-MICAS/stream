@@ -118,9 +118,6 @@ class ConvParser(OnnxComputeOperatorParser):
         # Get the input and output activation shapes
         ia_dimension_shape, oa_dimension_shape = get_node_input_output_dimension_shapes(self.node, self.onnx_model)
 
-        # Get the input and output activation and weight data type (precision) # TODO not used?
-        # ia_data_type, oa_data_type, w_data_type = get_input_output_weight_data_type(self.node, self.onnx_model)
-
         node_data: dict[str, Any] = self.get_layer_node_user_format(
             kernel_shape,
             strides,
@@ -131,18 +128,15 @@ class ConvParser(OnnxComputeOperatorParser):
             oa_dimension_shape,
         )
 
-        node_factory = LayerNodeFactory(node_data, self.mapping_data)
+        node_factory = LayerNodeFactory(node_data, mapping_data=None)
         node_attrs = node_factory.create_node_attr()
-
-        # Override spatial mapping by the one defined in the core's dataflows
-        core_allocation = node_attrs.core_allocation
-        spatial_mapping = self.accelerator.get_spatial_mapping_from_core(core_allocation)
-        node_attrs.spatial_mapping = spatial_mapping
+        mapping = self.get_mapping_this_node()
 
         return ComputationNode(
             node_id=self.node_id,
             node_name=self.node.name,
             node_attr=node_attrs,
+            mapping_attr=mapping,
             op_type=ConvParser.OP_TYPE,
             operand_tensor_reshape=None,
         )

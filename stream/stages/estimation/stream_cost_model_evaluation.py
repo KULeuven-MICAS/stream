@@ -2,10 +2,10 @@ import logging
 from typing import Any, Generator
 
 from zigzag.datatypes import LayerOperand
-from zigzag.stages.stage import Stage, StageCallable
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.stages.stage import Stage, StageCallable
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)

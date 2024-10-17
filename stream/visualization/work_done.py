@@ -5,7 +5,6 @@ import pandas as pd
 import plotly.express as px
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
-from stream.utils import load_scme
 
 
 def plot_work_done(
@@ -88,41 +87,3 @@ def plot_work_done(
     fig = px.line(df_all, x="timestep", y="ops_done", color="accelerator", symbol="type")
     fig.write_html(fig_path)
     print(f"Work done visualization saved to: {fig_path}")
-
-
-if __name__ == "__main__":
-    scme122 = load_scme(
-        "/users/micas/asymons/stream_TC_2023/exploration_k_split_memory/inter_result/122-single_core_32x32_mesh_dpDRAM"
-        "-resnet18-hintloop_-lbl-scme.pickle"
-    )
-    scme7 = load_scme(
-        "/users/micas/asymons/stream_TC_2023/exploration_k_split_memory/inter_result/7-HW2_4homo_mesh_dpDRAM-resnet18"
-        "-hintloop_oy_all-fused-scme.pickle"
-    )
-    scme13 = load_scme(
-        "/users/micas/asymons/stream_TC_2023/exploration_k_split_memory/inter_result/13-HW3_4hetero_mesh_dpDRAM"
-        "-resnet18-hintloop_oy_all-fused-scme.pickle"
-    )
-    scmes = [scme122, scme7, scme13]
-    # scmes = [scme13, scme13_half]
-    scme81 = load_scme(
-        "/users/micas/asymons/stream_TC_2023/exploration_co_multiple_stacks_new_cost_model/inter_result/81-HW500"
-        "_16homo_mesh_dpDRAM-resnet18-hintloop_oy_all-fused-scme-with-communication.pickle"
-    )
-    scme124 = load_scme(
-        "/users/micas/asymons/stream_TC_2023/exploration_co_multiple_stacks_new_cost_model/inter_result/124"
-        "-single_core_64x64_mesh_dpDRAM-resnet18-hintloop_-lbl-scme-with-communication.pickle"
-    )
-    scme125 = load_scme(
-        "/users/micas/asymons/stream_TC_2023/exploration_co_multiple_stacks_new_cost_model/inter_result/125"
-        "-single_core_64x64_mesh_dpDRAM-resnet18-hintloop_oy_all-fused-scme-with-communication.pickle"
-    )
-    scmes = [
-        scme81,
-        scme125,
-    ]
-
-    max_latency = max([scme.latency for scme in scmes])
-    cores_for_ideal = [tuple(range(16)), (0,)]
-    fig_path = "outputs/exploration_co/work_done_ops_81_125.html"
-    plot_work_done(scmes, nb_x_ticks=100, max_latency=max_latency, cores_for_ideal=cores_for_ideal, fig_path=fig_path)
