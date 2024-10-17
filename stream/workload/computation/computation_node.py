@@ -105,7 +105,7 @@ class ComputationNode(LayerNode, Node):
         # Number of real predecessors is saved to deal with edge cases where some nodes of the same layer have differing predecessors
         # This is used to hash the node and to get accurate knowledge of the number of unique nodes.
         # This should be set after the node is created and the number of predecessors is known.
-        self.nb_real_predecessors = None
+        self.__nb_real_predecessors = None
         self._static_hash_value = self.__compute_static_hash()
 
         try:
@@ -284,9 +284,11 @@ class ComputationNode(LayerNode, Node):
         )
         return deepcopy(mapping_attr)
 
-    def get_nb_real_predecessors(self):
-        return self.nb_real_predecessors
+    @property
+    def nb_real_predecessors(self):
+        return self.__nb_real_predecessors
 
-    def set_nb_real_predecessors(self, nb_real_predecessors: int):
-        self.nb_real_predecessors = nb_real_predecessors
+    @nb_real_predecessors.setter
+    def snb_real_predecessors(self, nb_real_predecessors: int):
+        self.__nb_real_predecessors = nb_real_predecessors
         self._static_hash_value = self.__compute_static_hash()

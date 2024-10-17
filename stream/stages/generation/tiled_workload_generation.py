@@ -31,7 +31,7 @@ from stream.workload.tensor import Tensor
 
 logger = logging.getLogger(__name__)
 
-Edge = tuple[ComputationNode, ComputationNode, dict]
+EDGE_T = tuple[ComputationNode, ComputationNode, dict]
 
 
 class TensorDimensionMismatchException(Exception):
@@ -788,7 +788,7 @@ class TiledWorkloadGenerationStage(Stage):
         return tensors_cns
 
     @staticmethod
-    def set_base_priority_of_nodes(nodes: list[ComputationNode], edges: list[Edge]):
+    def set_base_priority_of_nodes(nodes: list[ComputationNode], edges: list[EDGE_T]):
         """Set the base_priority of all stored tensors of variable operands in every node in finer_nodes
         based on the amount of real (excluding same layer edges) edges.
 
@@ -803,13 +803,13 @@ class TiledWorkloadGenerationStage(Stage):
             output_tensor.set_base_priorities(len(successors))
 
     @staticmethod
-    def set_nb_real_predecessors(nodes: list[ComputationNode], edges: list[Edge]):
+    def set_nb_real_predecessors(nodes: list[ComputationNode], edges: list[EDGE_T]):
         """Set the number of real predecessors for each node in the graph.
         A real predecessor is a node that is not in the same layer as the node itself.
         """
         for node in nodes:
             nb_real_predecessors = [prod for prod, cons, _ in edges if cons == node and prod.id != cons.id]
-            node.set_nb_real_predecessors(len(nb_real_predecessors))
+            node.nb_real_predecessors = len(nb_real_predecessors)
 
     def get_weight_capacities(self):
         # Get the weight capacity of all cores
