@@ -37,8 +37,8 @@ class TilingGenerationStage(Stage):
         for node in self.workload.node_list:
             if not isinstance(node, ComputationNode):
                 continue
-
-            self.set_valid_intra_core_tiling(node)
+            nb_nodes_in_stack = len(next(stack for stack in self.layer_stacks if node.id in stack))
+            self.set_valid_intra_core_tiling(node, nb_nodes_in_stack)
             self.set_valid_inter_core_tiling(node)
 
         self.kwargs["accelerator"] = self.accelerator
@@ -52,7 +52,7 @@ class TilingGenerationStage(Stage):
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
 
-    def set_valid_intra_core_tiling(self, node: ComputationNode):
+    def set_valid_intra_core_tiling(self, node: ComputationNode, stack_size: int):
         self.remove_invalid_entries_from_intra_core_tiling(node)
 
         if not node.intra_core_tiling:
@@ -63,6 +63,10 @@ class TilingGenerationStage(Stage):
                     node.intra_core_tiling = self.generate_intra_core_tiling(node)
                 case _:
                     raise ValueError("Unsupported mode for hint loops determination.")
+
+        # Override the intra_core_tiling in case the node is alone in a stack
+        if stack_size == 1:
+            node.intra_core_tiling = []
 
     def set_valid_inter_core_tiling(self, node: ComputationNode):
         self.remove_invalid_entries_from_inter_core_tiling(node)
