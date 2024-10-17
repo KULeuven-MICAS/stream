@@ -3,6 +3,7 @@ from math import prod
 from typing import TypeAlias
 
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
+from zigzag.utils import hash_sha512
 from zigzag.visualization.results.plot_cme import shorten_onnx_layer_name
 from zigzag.workload.layer_attributes import (
     LayerPadding,
@@ -84,7 +85,6 @@ class ComputationNode(LayerNode, Node):
 
         self.sub_id = sub_id
         self.group = group_id
-        self._static_hash_value = self.__compute_static_hash()
         self.operand_tensor_reshape = (
             operand_tensor_reshape if operand_tensor_reshape is not None else self.get_operand_tensor_reshape_default()
         )
@@ -101,6 +101,12 @@ class ComputationNode(LayerNode, Node):
         # Rename function
         self.get_node_operand = self.memory_operand_links.mem_to_layer_op
         self.extract_node_info = self.extract_layer_info
+
+        # Number of real predecessors is saved to deal with edge cases where some nodes of the same layer have differing predecessors
+        # This is used to hash the node and to get accurate knowledge of the number of unique nodes.
+        # This should be set after the node is created and the number of predecessors is known.
+        self.nb_real_predecessors = None
+        self._static_hash_value = self.__compute_static_hash()
 
         try:
             self.fusion_partition_dims = ComputationNode.FUSION_DIM_MAPPING[op_type]
@@ -151,7 +157,7 @@ class ComputationNode(LayerNode, Node):
     def __compute_static_hash(self):
         """Return a value that can be used to identify unique nodes in sets, dicts and equality. It is pre-computed at
         initialization time to speed up dict lookup and instance equality"""
-        return hash(
+        return hash_sha512(
             (
                 self.layer_dim_sizes,
                 frozenset(self.dimension_relations),
@@ -159,6 +165,7 @@ class ComputationNode(LayerNode, Node):
                 self.memory_operand_links,
                 self.id,
                 self.sub_id,
+                self.nb_real_predecessors,
             )
         )
 
@@ -190,6 +197,7 @@ class ComputationNode(LayerNode, Node):
           be equal.
         - memory_operand_links: The link between memory operand (paths in mem hierarchy) and this node's operands
           accurate knowledge of the number of unique nodes.
+        - nb_real_predecessors: The number of predecessors of the node. This impacts the required memory size.
 
         Args:
             other (Node): The other node to compare this node with
@@ -204,6 +212,7 @@ class ComputationNode(LayerNode, Node):
             and self.operand_precision == other.operand_precision
             and self.memory_operand_links == other.memory_operand_links
             and self.id == other.id
+            and self.nb_real_predecessors == other.nb_real_predecessors
             # NOTE: don't include sub_id
         )
 
@@ -274,3 +283,10 @@ class ComputationNode(LayerNode, Node):
             inter_core_tiling=self.inter_core_tiling,
         )
         return deepcopy(mapping_attr)
+
+    def get_nb_real_predecessors(self):
+        return self.nb_real_predecessors
+
+    def set_nb_real_predecessors(self, nb_real_predecessors: int):
+        self.nb_real_predecessors = nb_real_predecessors
+        self._static_hash_value = self.__compute_static_hash()

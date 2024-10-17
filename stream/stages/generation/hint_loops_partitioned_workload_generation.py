@@ -31,6 +31,8 @@ from stream.workload.tensor import Tensor
 
 logger = logging.getLogger(__name__)
 
+Edge = tuple[ComputationNode, ComputationNode, dict]
+
 
 class TensorDimensionMismatchException(Exception):
     """Facilitates error handling in case incorrect tensor dimensions are passed on"""
@@ -65,8 +67,9 @@ class TiledWorkloadGenerationStage(Stage):
 
     def run(self):
         unique_finer_nodes: list[ComputationNode] = []
-        # For each node get all the finer nodes and set the intra edges
-        partitioned_workload = ComputationNodeWorkload()
+        # For each node get all the finer nodes and the edges between them
+        all_finer_nodes = []
+        all_finer_edges = []
         for node in self.workload.topological_sort():
             # If other node types shouldn't be included in finer node graph, add here
             if not isinstance(node, ComputationNode):
@@ -77,12 +80,10 @@ class TiledWorkloadGenerationStage(Stage):
             logger.info(f"{node}: Generated {len(finer_nodes)} finer nodes.")
             self.finer_nodes_dict[node] = finer_nodes
             unique_finer_nodes += unique_nodes
-            # Compute the edges between nodes originating from one bigger node (intra-edges)
             intra_edges = self.get_intra_edges(finer_nodes)
-            partitioned_workload.add_edges_from(intra_edges)
-            # If there is only one finer node for this layer, add the node to the graph
-            if not intra_edges:
-                partitioned_workload.add_nodes_from(finer_nodes)
+            # Add the finer nodes and intra edges to the lists
+            all_finer_nodes += finer_nodes
+            all_finer_edges += intra_edges
 
         # Get all pairs of nodes that we have to extract inter edges for
         all_pairs = self.get_all_node_pairs(self.workload)
@@ -93,10 +94,18 @@ class TiledWorkloadGenerationStage(Stage):
                 inter_edges = self.get_inter_edges_numpy(producer, consumer)
             else:
                 inter_edges = self.get_inter_edges_rtree(producer, consumer, finer_producers, finer_consumers)
-            partitioned_workload.add_edges_from(inter_edges)
+            all_finer_edges += inter_edges
 
-        # Set the base_priority value of all nodes in G
-        self.set_base_priority_of_nodes(partitioned_workload, self.finer_nodes_dict)
+        # Set the base_priority value of all nodes
+        self.set_base_priority_of_nodes(all_finer_nodes, all_finer_edges)
+
+        # Set the number of real predecessors of all nodes
+        self.set_nb_real_predecessors(all_finer_nodes, all_finer_edges)
+
+        # Construct the new finer workload graph
+        # The graph construction needs to happen after the base priority and nb_real_predecessors are set
+        partitioned_workload = ComputationNodeWorkload()
+        partitioned_workload.add_edges_from(all_finer_edges)
 
         logger.info(f"Finer graph: {partitioned_workload}.")
 
@@ -779,26 +788,28 @@ class TiledWorkloadGenerationStage(Stage):
         return tensors_cns
 
     @staticmethod
-    def set_base_priority_of_nodes(
-        G: ComputationNodeWorkload, finer_nodes_dict: dict[ComputationNode, list[ComputationNode]]
-    ):
+    def set_base_priority_of_nodes(nodes: list[ComputationNode], edges: list[Edge]):
         """Set the base_priority of all stored tensors of variable operands in every node in finer_nodes
-         based on the amount of real (excluding same layer edges) edges.
+        based on the amount of real (excluding same layer edges) edges.
 
         Args:
-            finer_nodes (list): List of the nodes for which to set the tensors' base_priority
+            nodes (list): List of nodes.
+            edges (list): List of edges in the form of (producer, consumer, data).
         """
-        nb_nodes_per_layer_id = {layer.id: len(finer_nodes_dict[layer]) for layer in finer_nodes_dict.keys()}
-        nb_seen_nodes_per_layer_id = {layer_id: 0 for layer_id in nb_nodes_per_layer_id.keys()}
-        for node in G.topological_sort():
-            layer_id = node.id
-            for layer_operand in node.layer_operands:
-                tensor: Tensor = node.operand_tensors[layer_operand]
-                if layer_operand == node.output_operand:
-                    # Look at the amount of successors from different layers
-                    successors = [succ for succ in G.successors(node) if succ.id != layer_id]
-                    tensor.set_base_priorities(len(successors))
-            nb_seen_nodes_per_layer_id[layer_id] += 1
+        for node in nodes:
+            output_operand = node.output_operand
+            output_tensor = node.operand_tensors[output_operand]
+            successors = [cons for prod, cons, _ in edges if prod == node]
+            output_tensor.set_base_priorities(len(successors))
+
+    @staticmethod
+    def set_nb_real_predecessors(nodes: list[ComputationNode], edges: list[Edge]):
+        """Set the number of real predecessors for each node in the graph.
+        A real predecessor is a node that is not in the same layer as the node itself.
+        """
+        for node in nodes:
+            nb_real_predecessors = [prod for prod, cons, _ in edges if cons == node and prod.id != cons.id]
+            node.set_nb_real_predecessors(len(nb_real_predecessors))
 
     def get_weight_capacities(self):
         # Get the weight capacity of all cores
