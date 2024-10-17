@@ -490,15 +490,5 @@ class ConstraintOptimizationAllocationStage(Stage):
             tiling_replaced.append((layer_dim, split_factor))
         return tiling_replaced
 
-    def get_real_predecessors(self, node: ComputationNode, g: ComputationNodeWorkload | None = None):
-        if not g:
-            g = self.workload
-        return list(n for n in g.predecessors(node) if n.id != node.id)
-
-    def get_real_successors(self, node: ComputationNode, g: ComputationNodeWorkload | None = None):
-        if not g:
-            g = self.workload
-        return list(n for n in g.successors(node) if n.id != node.id)
-
     def is_leaf(self) -> bool:
         return True
