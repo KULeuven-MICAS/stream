@@ -1,9 +1,9 @@
 import logging
-import math
 from typing import TypeAlias
 
-from stream.workload.computation.computation_node import ComputationNode, LoopRanges
 from zigzag.datatypes import LayerDim
+
+from stream.workload.computation.computation_node import ComputationNode, LoopRanges
 
 logger = logging.getLogger(__name__)
 
