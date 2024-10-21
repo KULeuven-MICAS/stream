@@ -8,7 +8,7 @@
 - name: Conv
   core_allocation: [0, 1, 2, 3]
   intra_core_tiling:
-    - OY, 8
+    - K, 8
   inter_core_tiling:
     - K, *
 
