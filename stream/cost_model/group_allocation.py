@@ -35,7 +35,7 @@ class GroupIdManager:
             (split for layer_dim, split in self.node.intra_core_tiling if layer_dim == inter_core_layer_dim), 1
         )
         range_size_per_intra_split = self.node.layer_dim_sizes[inter_core_layer_dim] // nb_intra_core_splits
-        range_adjusted_to_intra_split = tuple(i % range_size_per_intra_split for i in current_range)
+        range_adjusted_to_intra_split = tuple(i // range_size_per_intra_split for i in current_range)
         return range_adjusted_to_intra_split
 
     def __get_range_identifier(self, tile_loop_ranges: LoopRanges):

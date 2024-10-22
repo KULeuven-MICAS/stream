@@ -51,8 +51,7 @@ class LayerStacksGenerationStage(Stage):
                 else:
                     self.layer_stacks = self.get_layer_stacks_fused_single()
         elif self.mode == "lbl":
-            if self.layer_stacks is None:
-                self.layer_stacks = self.get_layer_stacks_lbl()
+            self.layer_stacks = self.get_layer_stacks_lbl()
         else:
             raise ValueError("Unsupported mode for layer stack determination.")
 
