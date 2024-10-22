@@ -56,7 +56,7 @@ def get_latencies(
     core_names = [f"Core {id}" for id in core_ids]
     latencies = {(ids[node], core_name): impossible_lat for node in nodes for core_name in core_names}
     possible_allocations: dict[int, list[str]] = {}
-    tiling_sizes = {}
+    inter_core_tiling_sizes = {}
 
     for node in nodes:
         node_id = ids[node]
@@ -71,8 +71,9 @@ def get_latencies(
                 temporal_loops = [
                     i for tm_level in cme.temporal_mapping.mapping_dic_stationary[output_operand] for i in tm_level
                 ]
-                tiling_size = get_loop_size(temporal_loops, [layer_dim for layer_dim, _ in node.intra_core_tiling])
-                tiling_sizes[(node_id, core_name)] = tiling_size
+                inter_core_tiling_dims = [layer_dim for layer_dim, _ in node.inter_core_tiling]
+                inter_core_tiling_size = get_loop_size(temporal_loops, inter_core_tiling_dims)
+                inter_core_tiling_sizes[(node_id, core_name)] = inter_core_tiling_size
                 lat = cme.latency_total1
                 possible_allocations[node_id].append(core_name)
             except ValueError:
@@ -81,26 +82,26 @@ def get_latencies(
 
     latencies_with_split = {}
     possible_allocation_splits = {}
-    k_max = len(core_names)
+    p_max = len(core_names)  # maximum parallalization factor
 
     for node_id in ids.values():
         possible_allocation_splits[node_id] = {}
         for core_name in core_names:
             possible_allocation_splits[node_id][core_name] = {}
             if core_name in possible_allocations[node_id]:
-                k_t = int(tiling_sizes[node_id, core_name])
-                for k in range(1, k_max + 1):
-                    if divmod(k_t, k)[1] == 0 and k <= len(possible_allocations[node_id]):
-                        lat = int(latencies[(node_id, core_name)] / min(k_t, k))
-                        possible_allocation_splits[node_id][core_name][k] = 1
+                p_t = int(inter_core_tiling_sizes[node_id, core_name])
+                for p in range(1, p_max + 1):
+                    if divmod(p_t, p)[1] == 0 and p <= len(possible_allocations[node_id]):
+                        lat = int(latencies[(node_id, core_name)] / min(p_t, p))
+                        possible_allocation_splits[node_id][core_name][p] = 1
                     else:
                         lat = impossible_lat
-                        possible_allocation_splits[node_id][core_name][k] = 0
-                    latencies_with_split[(node_id, core_name, k)] = lat
+                        possible_allocation_splits[node_id][core_name][p] = 0
+                    latencies_with_split[(node_id, core_name, p)] = lat
             else:
-                for k in range(1, k_max + 1):
-                    latencies_with_split[(node_id, core_name, k)] = impossible_lat
-                    possible_allocation_splits[node_id][core_name][k] = 0
+                for p in range(1, p_max + 1):
+                    latencies_with_split[(node_id, core_name, p)] = impossible_lat
+                    possible_allocation_splits[node_id][core_name][p] = 0
 
     return latencies_with_split, possible_allocation_splits
 
