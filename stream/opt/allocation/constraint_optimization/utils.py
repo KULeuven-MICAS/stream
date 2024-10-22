@@ -56,7 +56,7 @@ def get_latencies(
     core_names = [f"Core {id}" for id in core_ids]
     latencies = {(ids[node], core_name): impossible_lat for node in nodes for core_name in core_names}
     possible_allocations: dict[int, list[str]] = {}
-    k_g_sizes = {}
+    tiling_sizes = {}
 
     for node in nodes:
         node_id = ids[node]
@@ -71,8 +71,8 @@ def get_latencies(
                 temporal_loops = [
                     i for tm_level in cme.temporal_mapping.mapping_dic_stationary[output_operand] for i in tm_level
                 ]
-                k_g_size = get_loop_size(temporal_loops, [LayerDim("K"), LayerDim("G")])
-                k_g_sizes[(node_id, core_name)] = k_g_size
+                tiling_size = get_loop_size(temporal_loops, [layer_dim for layer_dim, _ in node.intra_core_tiling])
+                tiling_sizes[(node_id, core_name)] = tiling_size
                 lat = cme.latency_total1
                 possible_allocations[node_id].append(core_name)
             except ValueError:
@@ -88,7 +88,7 @@ def get_latencies(
         for core_name in core_names:
             possible_allocation_splits[node_id][core_name] = {}
             if core_name in possible_allocations[node_id]:
-                k_t = int(k_g_sizes[node_id, core_name])
+                k_t = int(tiling_sizes[node_id, core_name])
                 for k in range(1, k_max + 1):
                     if divmod(k_t, k)[1] == 0 and k <= len(possible_allocations[node_id]):
                         lat = int(latencies[(node_id, core_name)] / min(k_t, k))
