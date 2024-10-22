@@ -2,6 +2,7 @@ import logging as _logging
 import re
 
 from stream.api import optimize_allocation_co
+from stream.utils import CostModelEvaluationLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import (
     visualize_timeline_plotly,
@@ -51,6 +52,10 @@ scme = optimize_allocation_co(
     experiment_id=experiment_id,
     output_path="outputs",
 )
+
+# Load in the CostModelEvaluationLUT from the run
+cost_lut_path = f"outputs/{experiment_id}-saved_cn_hw_cost.pickle"
+cost_lut = CostModelEvaluationLUT(cost_lut_path)
 
 # Plotting schedule timeline of best SCME
 visualize_timeline_plotly(

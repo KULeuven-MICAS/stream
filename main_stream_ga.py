@@ -2,6 +2,7 @@ import logging as _logging
 import re
 
 from stream.api import optimize_allocation_ga
+from stream.utils import CostModelEvaluationLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import (
     visualize_timeline_plotly,
@@ -17,8 +18,8 @@ workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
 mode = "fused"
 layer_stacks = [tuple(range(0, 11)), tuple(range(11, 22))] + list((i,) for i in range(22, 49))
-nb_ga_generations = 16
-nb_ga_individuals = 16
+nb_ga_generations = 4
+nb_ga_individuals = 4
 ##############################################################################################
 
 ################################PARSING###############################
@@ -54,8 +55,12 @@ scme = optimize_allocation_ga(
     nb_ga_individuals=nb_ga_individuals,
     experiment_id=experiment_id,
     output_path="outputs",
-    skip_if_exists=False,
+    skip_if_exists=True,
 )
+
+# Load in the CostModelEvaluationLUT from the run
+cost_lut_path = f"outputs/{experiment_id}-saved_cn_hw_cost.pickle"
+cost_lut = CostModelEvaluationLUT(cost_lut_path)
 
 # Plotting schedule timeline of best SCME
 visualize_timeline_plotly(
@@ -63,6 +68,7 @@ visualize_timeline_plotly(
     draw_dependencies=draw_dependencies,
     draw_communication=plot_data_transfer,
     fig_path=timeline_fig_path_plotly,
+    cost_lut=cost_lut,
 )
 # Plotting memory usage of best SCME
 plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
