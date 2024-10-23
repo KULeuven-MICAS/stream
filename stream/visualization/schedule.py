@@ -437,6 +437,7 @@ def get_communication_dicts(scme):
                 Type=task_type,
                 Activity=activity,
                 Energy=energy,
+                LinkBandwidth=cl.bandwidth,
             )
             dicts.append(d)
     return dicts
@@ -588,10 +589,13 @@ def add_energy_breakdown_to_hovertext(
     return hovertext
 
 
-def add_activity_to_hovertext(hovertext: str, activity: int):
-    if not isnan(activity):
-        activity = int(activity)
-        hovertext += f"<b>Activity:</b> {activity} bits/cc<br>"
+def add_activity_to_hovertext(hovertext: str, required_bandwidth: int, link_bandwidth: int):
+    if not isnan(required_bandwidth) and not isnan(link_bandwidth):
+        required_bandwidth = int(required_bandwidth)
+        link_bandwidth = int(link_bandwidth)
+        used_bandwidth = min(required_bandwidth, link_bandwidth)
+        hovertext += f"<b>Required bandwidth:</b> {required_bandwidth} bits/cc<br>"
+        hovertext += f"<b>Used bandwidth:</b> {used_bandwidth} bits/cc<br>"
     return hovertext
 
 
@@ -624,6 +628,7 @@ def visualize_timeline_plotly(
         energy_total_per_op = row["EnergyTotalPerOp"]
         energy_breakdown_per_op = row["EnergyBreakdownPerOp"]
         activity = row["Activity"]
+        link_bandwidth = row["LinkBandwidth"]
         resource = row["Resource"]
         layer = row["Layer"]
         color = colors[layer]
@@ -643,7 +648,7 @@ def visualize_timeline_plotly(
             f"<b>Start:</b> {start:.4e}<br>"
             f"<b>End:</b> {start+runtime:.4e}<br>"
         )
-        hovertext = add_activity_to_hovertext(hovertext, activity)
+        hovertext = add_activity_to_hovertext(hovertext, activity, link_bandwidth)
         hovertext = add_spatial_util_to_hovertext(hovertext, su_perfect_temporal, su_imperfect_temporal)
         hovertext = add_energy_breakdown_to_hovertext(hovertext, energy, energy_total_per_op, energy_breakdown_per_op)
         bar = go.Bar(
