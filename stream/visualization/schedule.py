@@ -454,6 +454,9 @@ def get_spatial_utilizations(
 ):
     if cost_lut:
         equal_node = cost_lut.get_equal_node(node)
+        assert (
+            equal_node
+        ), f"No equal node for {node} found in CostModelEvaluationLUT. Check LUT path (use the post-CO LUT when using CO)."
         core = scme.accelerator.get_core(node.chosen_core_allocation)
         cme = cost_lut.get_cme(equal_node, core)
         return cme.mac_spatial_utilization, cme.mac_utilization1
@@ -465,6 +468,9 @@ def get_energy_breakdown(
 ):
     if cost_lut:
         equal_node = cost_lut.get_equal_node(node)
+        assert (
+            equal_node
+        ), f"No equal node for {node} found in CostModelEvaluationLUT. Check LUT path (use the post-CO LUT when using CO)."
         core = scme.accelerator.get_core(node.chosen_core_allocation)
         cme = cost_lut.get_cme(equal_node, core)
         total_ops = cme.layer.total_mac_count
@@ -564,8 +570,8 @@ def format_tensors(tensors: list[Tensor]):
 def add_spatial_util_to_hovertext(hovertext: str, su_perfect_temporal: float, su_imperfect_temporal: float):
     if not isnan(su_perfect_temporal):
         hovertext += "<br><b>Spatial Utilization: </b><br>"
-        hovertext += f"&nbsp;&nbsp;&nbsp;&nbsp;Perfect Temporal: {su_perfect_temporal:.4f}<br>"
-        hovertext += f"&nbsp;&nbsp;&nbsp;&nbsp;Imperfect Temporal: {su_imperfect_temporal:.4f}<br>"
+        hovertext += f"&nbsp;&nbsp;&nbsp;&nbsp;Without memory stalls: {su_perfect_temporal:.4f}<br>"
+        hovertext += f"&nbsp;&nbsp;&nbsp;&nbsp;With memory stalls: {su_imperfect_temporal:.4f}<br>"
     return hovertext
 
 
@@ -584,7 +590,8 @@ def add_energy_breakdown_to_hovertext(
 
 def add_activity_to_hovertext(hovertext: str, activity: int):
     if not isnan(activity):
-        hovertext += f"<b>Activity:</b> {activity} %<br>"
+        activity = int(activity)
+        hovertext += f"<b>Activity:</b> {activity} bits/cc<br>"
     return hovertext
 
 
@@ -616,7 +623,7 @@ def visualize_timeline_plotly(
         energy = row["Energy"]
         energy_total_per_op = row["EnergyTotalPerOp"]
         energy_breakdown_per_op = row["EnergyBreakdownPerOp"]
-        activity = int(row["Activity"])
+        activity = row["Activity"]
         resource = row["Resource"]
         layer = row["Layer"]
         color = colors[layer]

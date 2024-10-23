@@ -41,8 +41,8 @@ percent_shown = (100,)
 
 
 ################################PATHS################################
-timeline_fig_path_plotly = f"outputs/{experiment_id}-schedule.html"
-memory_fig_path = f"outputs/{experiment_id}-memory.png"
+timeline_fig_path_plotly = f"outputs/{experiment_id}/schedule.html"
+memory_fig_path = f"outputs/{experiment_id}/memory.png"
 #####################################################################
 
 scme = optimize_allocation_ga(
@@ -59,7 +59,7 @@ scme = optimize_allocation_ga(
 )
 
 # Load in the CostModelEvaluationLUT from the run
-cost_lut_path = f"outputs/{experiment_id}-saved_cn_hw_cost.pickle"
+cost_lut_path = f"outputs/{experiment_id}/cost_lut.pickle"
 cost_lut = CostModelEvaluationLUT(cost_lut_path)
 
 # Plotting schedule timeline of best SCME
