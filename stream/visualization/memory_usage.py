@@ -1,3 +1,4 @@
+import logging
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -8,6 +9,7 @@ from matplotlib.gridspec import GridSpec
 if TYPE_CHECKING:
     from stream.cost_model.cost_model import StreamCostModelEvaluation
 
+logger = logging.getLogger(__name__)
 
 SMALL_SIZE = 8
 MEDIUM_SIZE = 10
@@ -156,4 +158,4 @@ def plot_memory_usage(
     # ax.set_xlabel("Cycles")  # Set xlabel of last axis (bottom one)
     # plt.show(block=True)
     fig.savefig(fig_path)
-    print(f"Saved memory usage fig to {fig_path}")
+    logger.info(f"Saved memory usage fig to {fig_path}")
