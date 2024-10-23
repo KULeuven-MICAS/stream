@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 class GeneticAlgorithmAllocationStage(Stage):
     """
     Class that finds the best inter-core mapping using a genetic algorithm.
-    From the IntraCoreMappingStage we receive the `node_hw_performances`, containing for each node and its valid core
+    From the IntraCoreMappingStage we receive the `CostModelEvaluationLUT`, containing for each node and its valid core
       allocations the best CME.
     We then initialize the genetic algorithm.
     TODO A separate "GeneticAlgorithmStage" should be added where we parse all GA-related info and this stage then calls
@@ -34,7 +34,7 @@ class GeneticAlgorithmAllocationStage(Stage):
         *,
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
-        node_hw_performances: CostModelEvaluationLUT,
+        cost_lut: CostModelEvaluationLUT,
         nb_ga_generations: int,
         nb_ga_individuals: int,
         operands_to_prefetch: list[LayerOperand],
@@ -47,14 +47,14 @@ class GeneticAlgorithmAllocationStage(Stage):
             list_of_callables (list): List of the substages to be called. This should be empty as this is a leaf stage.
             workload (DiGraph): The NetworkX DiGraph representing the workload to be scheduled
             accelerator (Accelerator): The hardware accelerator onto which we schedule the workload
-            node_hw_performances (CostModelEvaluationLUT): A LUT of CMEs for each unique node and their valid cores
+            cost_lut (CostModelEvaluationLUT): A LUT of CMEs for each unique node and their valid cores
             nb_ga_generations (int): The number of generations considered by the genetic algorithm
             nb_ga_individuals (int): The number of individuals in each genetic algorithm generation
         """
         super().__init__(list_of_callables, **kwargs)
         self.workload = workload
         self.accelerator = accelerator
-        self.node_hw_performances = node_hw_performances
+        self.cost_lut = cost_lut
         self.nb_generations = nb_ga_generations
         self.nb_individuals = nb_ga_individuals
         self.operands_to_prefetch = operands_to_prefetch
@@ -75,7 +75,7 @@ class GeneticAlgorithmAllocationStage(Stage):
                 self.unique_nodes_flexible.append(n)
 
         self.coarse_node_ids_flexible: list[int] = [n.id for n in self.unique_nodes_flexible]
-        # For each unique node get the possible core allocations by getting the ids of the cores in node_hw_performances
+        # For each unique node get the possible core allocations by getting the ids of the cores in cost_lut
         self.valid_allocations: list[list[int]] = []
         # Save all the layer group combinations that are flexible
         self.layer_groups_flexible: list[tuple[int, int]] = []
@@ -84,7 +84,7 @@ class GeneticAlgorithmAllocationStage(Stage):
             # This assumes all the nodes of this layer are identical
             unique_node = next((n for n in self.unique_nodes if n.id == layer_id))
             if unique_node in self.unique_nodes_flexible:
-                cores = self.node_hw_performances.get_cores(unique_node)
+                cores = self.cost_lut.get_cores(unique_node)
                 valid_core_ids = [core.id for core in cores if core.id < len(self.unique_nodes_flexible)]
                 self.layer_groups_flexible.append((layer_id, group_id))
                 self.valid_allocations.append(valid_core_ids)
@@ -93,7 +93,7 @@ class GeneticAlgorithmAllocationStage(Stage):
         self.fitness_evaluator = StandardFitnessEvaluator(
             self.workload,
             self.accelerator,
-            self.node_hw_performances,
+            self.cost_lut,
             self.layer_groups_flexible,
             self.operands_to_prefetch,
             self.scheduling_order,

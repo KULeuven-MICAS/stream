@@ -264,7 +264,7 @@ class ComputationNode(LayerNode, Node):
             new_shape = self.operand_tensor_reshape[operand]
             return tensor.reshape(new_shape)
 
-    def set_too_large_operands(self, too_large_operands: list[LayerOperand]):
+    def set_too_large_operands(self, too_large_operands: list[MemoryOperand]):
         self.too_large_operands = too_large_operands
 
     def update_loop_ranges(self, new_ranges: LoopRanges):

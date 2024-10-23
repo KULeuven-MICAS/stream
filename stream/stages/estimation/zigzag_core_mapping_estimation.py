@@ -16,8 +16,8 @@ from zigzag.utils import pickle_deepcopy
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.stages.stage import MainStage, Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT, get_unique_nodes
-from stream.visualization.node_hw_performances import (
-    visualize_node_hw_performances_pickle,
+from stream.visualization.cost_model_evaluation_lut import (
+    visualize_cost_lut_pickle,
 )
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
@@ -37,7 +37,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
         loma_lpf_limit: int,
-        node_hw_performances_path: str,
+        cost_lut_path: str,
         **kwargs: dict[str, Any],
     ):
         """
@@ -49,11 +49,8 @@ class ZigZagCoreMappingEstimationStage(Stage):
         self.workload = workload
         self.accelerator = accelerator
         self.loma_lpf_limit = loma_lpf_limit
-        self.node_hw_performances_path = node_hw_performances_path
-        if "visualize_node_hw_performances_path" in kwargs:
-            self.visualize_node_hw_performances_path = kwargs["visualize_node_hw_performances_path"]
-        else:
-            self.visualize_node_hw_performances_path = os.path.splitext(self.node_hw_performances_path)[0] + ".png"
+        self.cost_lut_path = cost_lut_path
+        self.visualize_cost_lut_path = os.path.splitext(self.cost_lut_path)[0] + ".png"
         self.loma_show_progress_bar: bool = kwargs.get("loma_show_progress_bar", False)
 
         # Extract all unique nodes that will have to be evaluated
@@ -69,7 +66,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
             self.valid_allocations[node] = node.possible_core_allocation
 
         # Initialize CostModelEvaluationLUT
-        self.node_hw_performances = CostModelEvaluationLUT(self.node_hw_performances_path)
+        self.cost_lut = CostModelEvaluationLUT(self.cost_lut_path)
 
     def run(self):
         logger.info("Start ZigZagCoreMappingEstimationStage.")
@@ -85,22 +82,22 @@ class ZigZagCoreMappingEstimationStage(Stage):
                 if core.operational_array.total_unit_count == 0:
                     continue
                 # If the (node, core) combination has already been optimized, we skip it
-                if self.node_hw_performances.has_cme(node, core):
+                if self.cost_lut.has_cme(node, core):
                     continue
                 # If an equal performance has already been computed, we take it
-                equal_node = self.node_hw_performances.get_equal_node(node)
-                equal_core = self.node_hw_performances.get_equal_core(equal_node, core) if equal_node else None
+                equal_node = self.cost_lut.get_equal_node(node)
+                equal_core = self.cost_lut.get_equal_core(equal_node, core) if equal_node else None
                 if equal_node and equal_core:
-                    cme = pickle_deepcopy(self.node_hw_performances.get_cme(equal_node, equal_core))
+                    cme = pickle_deepcopy(self.cost_lut.get_cme(equal_node, equal_core))
                     # Update the CME attributes for this node-core combination
                     cme.layer.core_allocation = [core_id]
                     cme.core_id = core_id
-                    self.node_hw_performances.add_cme(node, core, cme, allow_overwrite=False)
+                    self.cost_lut.add_cme(node, core, cme, allow_overwrite=False)
                     continue
                 else:
                     node_duplicate = pickle_deepcopy(node)
                     # Remove duplicate cores with same id in case the core definition has changed
-                    self.node_hw_performances.remove_cores_with_same_id(node, core)
+                    self.cost_lut.remove_cores_with_same_id(node, core)
                     # We need to compute the optimal performance for this node-core combination
                     # It's possible this node might not fully fit within the core's top level memories.
                     #  If so, we update the core
@@ -122,33 +119,28 @@ class ZigZagCoreMappingEstimationStage(Stage):
                     assert len(answers) == 1, "ZigZagCoreMappingEstimationStage's subflow returned more than one CME"
                     cme: CostModelEvaluation = answers[0][0]  # type: ignore
                     node_duplicate.set_chosen_core_allocation(None)  # Reset the node's chosen core allocation
-                    self.node_hw_performances.add_cme(node, core, cme, allow_overwrite=False)
-            self.node_hw_performances.save()
+                    self.cost_lut.add_cme(node, core, cme, allow_overwrite=False)
+            self.cost_lut.save()
 
-        self.visualize_node_hw_performances()
+        self.visualize_cost_lut()
         kwargs = self.kwargs.copy()
         kwargs["workload"] = self.workload
         kwargs["accelerator"] = self.accelerator
-        kwargs["node_hw_performances"] = self.node_hw_performances
+        kwargs["cost_lut"] = self.cost_lut
 
         logger.info("Finished ZigZagCoreMappingEstimationStage.")
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
 
-    def visualize_node_hw_performances(self):
-        if "visualize_node_hw_performances_path" in self.kwargs:
-            # Get the scale factors
-            scale_factors = {
-                n: len([cn for cn in self.workload.node_list if cn.has_same_performance(n)])
-                for n in self.node_hw_performances.get_nodes()
-            }
-            # Run the visualization
-            visualize_node_hw_performances_pickle(
-                self.node_hw_performances,
-                scale_factors,
-                self.kwargs["visualize_node_hw_performances_path"],
-            )
+    def visualize_cost_lut(self):
+        # Get the scale factors
+        scale_factors = {
+            n: len([cn for cn in self.workload.node_list if cn.has_same_performance(n)])
+            for n in self.cost_lut.get_nodes()
+        }
+        # Run the visualization
+        visualize_cost_lut_pickle(self.cost_lut, scale_factors, self.visualize_cost_lut_path)
 
     def get_intra_core_mapping_flow(self, node: ComputationNode, too_large_operands: list[MemoryOperand], core_id: int):
         logger.info(f"Launching intra-core mapping optimization for {node} -> core {core_id} ...")

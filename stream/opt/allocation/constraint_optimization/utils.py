@@ -47,7 +47,7 @@ def get_latencies(
     nodes: list[ComputationNode],
     core_ids: list[int],
     accelerator: Accelerator,
-    node_hw_performances: CostModelEvaluationLUT,
+    cost_lut: CostModelEvaluationLUT,
     impossible_lat: float = 1e11,
     ids: dict[ComputationNode, int] = {},
 ) -> tuple[dict[tuple[int, str, int], int], dict]:
@@ -64,9 +64,9 @@ def get_latencies(
         for core_id, core_name in zip(core_ids, core_names):
             core = accelerator.get_core(core_id)
             try:
-                equal_node = node_hw_performances.get_equal_node(node)
+                equal_node = cost_lut.get_equal_node(node)
                 assert equal_node, f"No equal node for {node} found in CostModelEvaluationLUT"
-                cme = node_hw_performances.get_cme(equal_node, core)
+                cme = cost_lut.get_cme(equal_node, core)
                 output_operand = LayerOperand("O")
                 temporal_loops = [
                     i for tm_level in cme.temporal_mapping.mapping_dic_stationary[output_operand] for i in tm_level
@@ -110,7 +110,7 @@ def get_energies(
     nodes: list[ComputationNode],
     core_ids: list[int],
     accelerator: Accelerator,
-    node_hw_performances: CostModelEvaluationLUT,
+    cost_lut: CostModelEvaluationLUT,
     impossible_energy: float = 1e11,
     ids: dict[ComputationNode, int] = {},
 ) -> dict[tuple[int, str], float]:
@@ -123,7 +123,7 @@ def get_energies(
         for core_id, core_name in zip(core_ids, core_names):
             core = accelerator.get_core(core_id)
             try:
-                cme = node_hw_performances.get_cme(node, core)
+                cme = cost_lut.get_cme(node, core)
                 en = getattr(cme, "energy_total")
             except ValueError:
                 en = impossible_energy

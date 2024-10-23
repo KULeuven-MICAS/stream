@@ -72,6 +72,12 @@ class MappingFactory:
         """Convert strings such as `D, 4` into a LayerDim and int"""
         layer_dim_str = pair.split(",")[0]
         unrolling_str = pair.split(",")[-1]
-        unrolling = int(unrolling_str) if "*" not in unrolling_str else "*"
+        match unrolling_str.strip(" "):
+            case "all":
+                unrolling = "all"
+            case "*":
+                unrolling = "*"
+            case _:
+                unrolling = int(unrolling_str)
         layer_dim = LayerDim(layer_dim_str)
         return layer_dim, unrolling

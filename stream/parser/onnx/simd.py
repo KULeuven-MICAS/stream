@@ -35,10 +35,10 @@ class SimdParser(OnnxComputeOperatorParser):
                 data["loop_dims"] = ["D", "K"]
             case 3:
                 data["equation"] = f"O[b][d][k]+=I[b][d][k]*W{'[]' if has_single_input else '[b][d][k]'}"
-                data["loop_dims"] = ["B", "D", "k"]
+                data["loop_dims"] = ["B", "D", "K"]
             case 4:
                 data["equation"] = f"O[b][h][d][k]+=I[b][h][d][k]*W{'[]' if has_single_input else '[b][h][d][k]'}"
-                data["loop_dims"] = ["B", "H", "D", "k"]
+                data["loop_dims"] = ["B", "H", "D", "K"]
             case _:
                 raise NotImplementedError
 

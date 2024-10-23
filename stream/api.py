@@ -40,6 +40,7 @@ def _sanity_check_gurobi_license():
     try:
         # Try to create a simple optimization model
         model = gp.Model()
+        model.setParam("OutputFlag", 0)
         # Check if the model was successfully created (license check)
         model.optimize()
         # If model.optimize() runs without a license issue, return
@@ -67,12 +68,17 @@ def optimize_allocation_ga(
 ) -> StreamCostModelEvaluation:
     _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
 
-    logger = _logging.getLogger(__name__)
+    # Create experiment_id path
+    os.makedirs(f"{output_path}/{experiment_id}", exist_ok=True)
 
     # Output paths
-    node_hw_performances_path = f"{output_path}/{experiment_id}-saved_cn_hw_cost.pickle"
-    scme_path = f"{output_path}/{experiment_id}-scme.pickle"
+    cost_lut_path = f"{output_path}/{experiment_id}/cost_lut.pickle"
+    scme_path = f"{output_path}/{experiment_id}/scme.pickle"
 
+    # Get logger
+    logger = _logging.getLogger(__name__)
+
+    # Load SCME if it exists and skip_if_exists is True
     if os.path.exists(scme_path) and skip_if_exists:
         scme = pickle_load(scme_path)
         logger.info(f"Loaded SCME from {scme_path}")
@@ -93,11 +99,11 @@ def optimize_allocation_ga(
             workload_path=workload,  # required by ModelParserStage
             mapping_path=mapping,  # required by ModelParserStage
             loma_lpf_limit=6,  # required by LomaEngine
-            nb_ga_generations=nb_ga_generations,  # number of genetic algorithm generations
-            nb_ga_individuals=nb_ga_individuals,  # number of individuals in each genetic algorithm generation
+            nb_ga_generations=nb_ga_generations,  # number of genetic algorithm (ga) generations
+            nb_ga_individuals=nb_ga_individuals,  # number of individuals in each ga generation
             mode=mode,
             layer_stacks=layer_stacks,
-            node_hw_performances_path=node_hw_performances_path,
+            cost_lut_path=cost_lut_path,
             operands_to_prefetch=[],  # required by GeneticAlgorithmAllocationStage
         )
         # Launch the MainStage
@@ -120,14 +126,19 @@ def optimize_allocation_co(
     _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
     _sanity_check_gurobi_license()
 
-    # Output paths
-    node_hw_performances_path = f"{output_path}/{experiment_id}-saved_cn_hw_cost.pickle"
-    scme_path = f"{output_path}/{experiment_id}-scme.pickle"
-    # After constraint optimization paths
-    node_hw_performances_path_with_split = f"outputs/{experiment_id}-saved_cn_hw_cost-with_split.pickle"
+    # Create experiment_id path
+    os.makedirs(f"{output_path}/{experiment_id}", exist_ok=True)
 
+    # Output paths
+    cost_lut_path = f"{output_path}/{experiment_id}/cost_lut.pickle"
+    allocations_path = f"{output_path}/{experiment_id}/waco/"
+    cost_lut_post_co_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
+    scme_path = f"{output_path}/{experiment_id}/scme.pickle"
+
+    # Get logger
     logger = _logging.getLogger(__name__)
 
+    # Load SCME if it exists and skip_if_exists is True
     if os.path.exists(scme_path) and skip_if_exists:
         scme = pickle_load(scme_path)
         logger.info(f"Loaded SCME from {scme_path}")
@@ -150,8 +161,9 @@ def optimize_allocation_co(
             loma_lpf_limit=6,  # required by LomaEngine
             mode=mode,
             layer_stacks=layer_stacks,
-            node_hw_performances_path=node_hw_performances_path,
-            node_hw_performances_path_with_split=node_hw_performances_path_with_split,
+            cost_lut_path=cost_lut_path,
+            allocations_path=allocations_path,
+            cost_lut_post_co_path=cost_lut_post_co_path,
             operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
         )
         # Launch the MainStage
@@ -159,46 +171,3 @@ def optimize_allocation_co(
         scme = answers[0][0]
         pickle_save(scme, scme_path)
     return scme
-
-
-if __name__ == "__main__":
-    from stream.visualization.memory_usage import plot_memory_usage
-    from stream.visualization.schedule import visualize_timeline_plotly
-
-    accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
-    workload = "stream/inputs/examples/workload/resnet18.yaml"
-    mapping = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
-
-    hw_name = "tpu_like_quad_core"
-    wl_name = "resnet18"
-    mode = "fused"
-    experiment_id = f"{hw_name}-{wl_name}"
-    output_path = "outputs"
-    layer_stacks = [tuple(range(0, 11)), tuple(range(11, 22))] + list((i,) for i in range(22, 49))
-
-    scme, _ = optimize_allocation_ga(
-        accelerator,
-        workload,
-        mapping,
-        mode,
-        layer_stacks,
-        experiment_id,
-        output_path,
-    )
-
-    plot_full_schedule = True
-    draw_dependencies = True
-    plot_data_transfer = True
-    section_start_percent = (0,)
-    percent_shown = (100,)
-    schedule_fig_path = f"{output_path}/schedule_plot.png"
-    memory_fig_path = f"{output_path}/memory_plot.png"
-    energy_fig_path = f"{output_path}/energy_plot.png"
-    visualize_timeline_plotly(
-        scme=scme,
-        draw_dependencies=draw_dependencies,
-        draw_communication=True,
-        fig_path=schedule_fig_path,
-    )
-    plot_memory_usage(scme.accelerator.memory_manager, fig_path=memory_fig_path)
-    # bar_plot_stream_cost_model_evaluations_breakdown([scme], fig_path=energy_fig_path)

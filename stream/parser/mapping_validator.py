@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 class MappingValidator:
     """Class to validate user-given mappings from yaml file"""
 
-    TILING_REGEX = r"^[A-Z]+, ([0-9]+|\*)$"
+    TILING_REGEX = r"^[A-Z]+, ([0-9]+|all|\*)$"
     SPATIAL_MAPPING_REGEX = r"^[A-Z]+, [0-9]+$"
     SPATIAL_MAPPING_HINT_REGEX = r"^[A-Z]+$"
 

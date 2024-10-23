@@ -46,13 +46,11 @@ class CommunicationLinkEvent:
         - a list of tensors relevant for the event:
             * the tensor being transferred
             * the tensor(s) for which we are blocking
-        - an activity percentage:
-            * the percentage of the link bandwidth used
+        - an activity:
+            * the bits per clock cycle used of the link bandwidth
     """
 
-    def __init__(
-        self, type: str, start: int, end: int, tensors: list[Tensor], energy: float, activity: float = 100
-    ) -> None:
+    def __init__(self, type: str, start: int, end: int, tensors: list[Tensor], energy: float, activity: float) -> None:
         self.type = type
         self.start = start
         self.end = end
@@ -163,6 +161,7 @@ class CommunicationManager:
                 end=end_timestep,
                 tensors=[tensor],
                 energy=duration * link.unit_energy_cost,
+                activity=link.bandwidth,
             )
             for link in links
         ]

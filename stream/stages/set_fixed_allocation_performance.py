@@ -3,11 +3,10 @@ from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.mapping.data_movement import MemoryAccesses
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.stages.stage import Stage, StageCallable
-from stream.utils import CostModelEvaluationLUT, get_too_large_operands
+from stream.utils import CostModelEvaluationLUT, get_required_offchip_bandwidth, get_too_large_operands
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
@@ -21,13 +20,13 @@ class SetFixedAllocationPerformanceStage(Stage):
         *,
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
-        node_hw_performances: CostModelEvaluationLUT,
+        cost_lut: CostModelEvaluationLUT,
         **kwargs: Any,
     ):
         super().__init__(list_of_callables, **kwargs)
         self.accelerator = accelerator
         self.workload = workload
-        self.node_hw_performances = node_hw_performances
+        self.cost_lut = cost_lut
         self.latency_attr = kwargs.get("latency_attr", "latency_total2")
 
     def run(self):
@@ -39,7 +38,7 @@ class SetFixedAllocationPerformanceStage(Stage):
         kwargs = self.kwargs.copy()
         kwargs["workload"] = self.workload
         kwargs["accelerator"] = self.accelerator
-        kwargs["node_hw_performances"] = self.node_hw_performances
+        kwargs["cost_lut"] = self.cost_lut
         sub_stage = self.list_of_callables[0](
             self.list_of_callables[1:],
             **kwargs,
@@ -56,15 +55,15 @@ class SetFixedAllocationPerformanceStage(Stage):
                 core_id = node.chosen_core_allocation
                 if core_id is None:
                     raise ValueError(f"Node {node} has fixed allocation but the chosen_core_allocation was not set.")
-                equal_node = self.node_hw_performances.get_equal_node(node)
+                equal_node = self.cost_lut.get_equal_node(node)
                 assert equal_node is not None, f"{node} has fixed allocation but no equal node found."
                 core = self.accelerator.get_core(core_id)
-                cme = self.node_hw_performances.get_cme(equal_node, core)
+                cme = self.cost_lut.get_cme(equal_node, core)
                 latency = getattr(cme, self.latency_attr)
                 too_large_operands = get_too_large_operands(cme, self.accelerator, core_id=core_id)
                 onchip_energy, offchip_energy = self.get_energy_distribution(cme, too_large_operands)
                 # Get the required offchip bandwidth during the execution of the node for all directions
-                offchip_bandwidth = self.get_offchip_bandwidth(cme, too_large_operands)
+                offchip_bandwidth = get_required_offchip_bandwidth(cme, too_large_operands)
                 self.set_hw_performance_node(node, onchip_energy, offchip_energy, latency, core_id)
                 node.set_too_large_operands(too_large_operands.copy())
                 node.set_offchip_bandwidth(offchip_bandwidth)
@@ -81,18 +80,6 @@ class SetFixedAllocationPerformanceStage(Stage):
             offchip_energy += layer_operand_offchip_energy
             onchip_energy -= layer_operand_offchip_energy
         return onchip_energy, offchip_energy
-
-    def get_offchip_bandwidth(
-        self, cme: CostModelEvaluation, too_large_operands: list[MemoryOperand]
-    ) -> MemoryAccesses:
-        if not too_large_operands:
-            return MemoryAccesses(0, 0, 0, 0)
-        # If there was offchip memory added for some operands, get the offchip bandwidth required
-        assert self.accelerator.offchip_core_id is not None, "Off-chip core id is not set."
-        offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
-        offchip_instance = next(iter(offchip_core.mem_hierarchy_dict.values()))[-1].memory_instance
-        offchip_bandwidth = cme.get_total_inst_bandwidth(offchip_instance)
-        return offchip_bandwidth
 
     @staticmethod
     def set_hw_performance_node(
