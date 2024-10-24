@@ -387,11 +387,10 @@ class ConstraintOptimizationAllocationStage(Stage):
             )
             nb_cores_split = len(core_allocation_this_node)
 
-            # Set correct inter core tiling
+            # Set correct inter core tiling. Replacing the wildcard will signal to the TiledWorkloadGenerationStage
+            # to also spit in the inter core tiling
             inter_core_tiling = self.replace_wildcard_in_tiling(node.inter_core_tiling, nb_cores_split)
             node.inter_core_tiling = inter_core_tiling
-            # Add inter core tiling to intra-core mapping for the next run
-            node.intra_core_tiling += inter_core_tiling
 
         scheduling_order = self.get_scheduling_order(unpartitioned_sub_workload)
 

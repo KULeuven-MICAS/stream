@@ -3,6 +3,7 @@ from typing import TypeAlias
 
 from zigzag.datatypes import LayerDim
 
+from stream.utils import contains_wildcard
 from stream.workload.computation.computation_node import ComputationNode, LoopRanges
 
 logger = logging.getLogger(__name__)
@@ -67,6 +68,9 @@ class GroupIdManager:
         Returns:
             int: The group id for the given loop ranges
         """
+        if contains_wildcard(self.node.inter_core_tiling):
+            # In this case, the tiles should not be split between cores yet
+            return 0
 
         if not self.node.constant_operands and len(self.node.core_allocation) == 1:
             # If the node can only be assigned to a single core, we give all nodes the same group id
