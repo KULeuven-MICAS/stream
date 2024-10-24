@@ -10,6 +10,8 @@ from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.accelerator import Accelerator as Core
 from zigzag.parser.onnx.utils import get_onnx_tensor_type
 
+from stream.workload.mapping import TILING_T
+
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
     from stream.workload.computation.computation_node import ComputationNode
@@ -117,6 +119,12 @@ def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNo
         if not equal_nodes:
             unique_nodes.append(node)
     return unique_nodes
+
+
+def contains_wildcard(tiling: TILING_T):
+    """Returns wether the given tiling contains a wildcard number `*`. The wildcard must later be replaced by the
+    constraint optimization into the optimal number of tiles"""
+    return any(tiling == "*" for _, tiling in tiling)
 
 
 class CostModelEvaluationLUT:
