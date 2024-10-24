@@ -91,7 +91,13 @@ class SetFixedAllocationPerformanceStage(Stage):
         assert self.accelerator.offchip_core_id is not None, "Off-chip core id is not set."
         offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
         offchip_instance = next(iter(offchip_core.mem_hierarchy_dict.values()))[-1].memory_instance
-        offchip_bandwidth = cme.get_total_inst_bandwidth(offchip_instance)
+        try:
+            offchip_level = next(level for level in cme.mem_level_list if level.memory_instance == offchip_instance)
+        except StopIteration:
+            raise ValueError(
+                f"Offchip instance {offchip_instance} not found in this CME's memory hierarchy " f"{cme.mem_level_list}"
+            )
+        offchip_bandwidth = cme.get_total_inst_bandwidth(offchip_level)
         return offchip_bandwidth
 
     @staticmethod
