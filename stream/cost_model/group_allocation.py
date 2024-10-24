@@ -35,12 +35,18 @@ class GroupIdManager:
             (split for layer_dim, split in self.node.intra_core_tiling if layer_dim == inter_core_layer_dim), 1
         )
         range_size_per_intra_split = self.node.layer_dim_sizes[inter_core_layer_dim] // nb_intra_core_splits
-        range_adjusted_to_intra_split = tuple(i // range_size_per_intra_split for i in current_range)
+        range_adjusted_to_intra_split = tuple(i % range_size_per_intra_split for i in current_range)
         return range_adjusted_to_intra_split
 
     def __get_range_identifier(self, tile_loop_ranges: LoopRanges):
         """Given the loop ranges of a tile, return a hashable identifier that can be used to determine wether this
         tile belongs on the same core as other tiles."""
+        if not all(layer_dim in tile_loop_ranges for layer_dim, _ in self.node.inter_core_tiling):
+            raise ValueError(
+                f"Given inter core tiling {self.node.inter_core_tiling} contains layer dims that are not "
+                f"part of the tile's loop ranges {tile_loop_ranges}"
+            )
+
         return tuple(
             self.__get_range_identifier_single_dim(layer_dim, tile_loop_ranges[layer_dim])
             for layer_dim, _ in self.node.inter_core_tiling
