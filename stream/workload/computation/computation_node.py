@@ -45,6 +45,9 @@ class ComputationNode(LayerNode, Node):
         "div": [LayerDim("K")],
         "exp": [LayerDim("K")],
         "sum": [LayerDim("K")],
+        "relu": [LayerDim("K")],
+        "gelu": [LayerDim("K")],
+        "silu": [LayerDim("K")],
     }  # TODO default to "K" ?
 
     def __init__(
