@@ -31,9 +31,7 @@ class StreamCostModelEvaluationStage(Stage):
             list_of_callables (list): List of the substages to be called. This should be empty as this is a leaf stage.
             workload (DiGraph): The NetworkX DiGraph representing the workload to be scheduled
             accelerator (Accelerator): The hardware accelerator onto which we schedule the workload
-            node_hw_performances (CostModelEvaluationLUT): A LUT of CMEs for each unique node and their valid cores
-            nb_ga_generations (int): The number of generations considered by the genetic algorithm
-            nb_ga_individuals (int): The number of individuals in each genetic algorithm generation
+            operands_to_prefetch (list[LayerOperand]): A list of LayerOperands that whose tensors should be prefetched
         """
         super().__init__(list_of_callables, **kwargs)
         self.workload = workload
