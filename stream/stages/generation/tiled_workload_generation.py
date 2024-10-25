@@ -15,6 +15,7 @@ from stream.opt.partitioning.utils import (
     convert_outer_cn_loops,
 )
 from stream.stages.stage import Stage, StageCallable
+from stream.utils import contains_wildcard
 from stream.workload.computation.computation_node import ComputationNode, LoopRanges
 from stream.workload.dependency_propagation.concat_node import ConcatNode
 from stream.workload.dependency_propagation.dummy_node import DummyNode
@@ -165,7 +166,14 @@ class TiledWorkloadGenerationStage(Stage):
         Returns:
             temporal loops outside of cn
         """
-        outer_loops = convert_outer_cn_loops(node.intra_core_tiling.copy(), node)
+        if contains_wildcard(node.inter_core_tiling):
+            # inter core tiling is not set by CO yet
+            tiling_to_split = node.intra_core_tiling
+        else:
+            # inter core tiling is ok, also split into these tiles
+            tiling_to_split = node.intra_core_tiling + node.inter_core_tiling
+
+        outer_loops = convert_outer_cn_loops(tiling_to_split, node)
 
         # In case no valid intra core tiling is found: add an arbitrary tiling of size 1
         if not outer_loops:
