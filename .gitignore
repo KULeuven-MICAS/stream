@@ -136,8 +136,8 @@ dmypy.json
 .vscode/
 
 # result pickle files
-output*/*.pkl
-output*/*.pickle
+*.pkl
+*.pickle
 
 # result json files
 outputs*/*.json
