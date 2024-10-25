@@ -15,6 +15,8 @@ from matplotlib.patches import Rectangle
 from plotly.express.colors import sample_colorscale
 from zigzag.datatypes import LayerOperand
 
+from stream.utils import CostModelEvaluationLUT
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.tensor import Tensor
 
 if TYPE_CHECKING:
@@ -435,6 +437,7 @@ def get_communication_dicts(scme):
                 Type=task_type,
                 Activity=activity,
                 Energy=energy,
+                LinkBandwidth=cl.bandwidth,
             )
             dicts.append(d)
     return dicts
@@ -447,7 +450,54 @@ def get_real_input_tensors(n, G):
     return inputs
 
 
-def get_dataframe_from_scme(scme: "StreamCostModelEvaluation", layer_ids: list[int], add_communication: bool = False):
+def get_spatial_utilizations(
+    scme: "StreamCostModelEvaluation", node: "ComputationNode", cost_lut: "CostModelEvaluationLUT"
+):
+    if cost_lut:
+        equal_node = cost_lut.get_equal_node(node)
+        assert (
+            equal_node
+        ), f"No equal node for {node} found in CostModelEvaluationLUT. Check LUT path (use the post-CO LUT when using CO)."
+        core = scme.accelerator.get_core(node.chosen_core_allocation)
+        cme = cost_lut.get_cme(equal_node, core)
+        return cme.mac_spatial_utilization, cme.mac_utilization1
+    return np.nan, np.nan
+
+
+def get_energy_breakdown(
+    scme: "StreamCostModelEvaluation", node: "ComputationNode", cost_lut: "CostModelEvaluationLUT"
+):
+    if cost_lut:
+        equal_node = cost_lut.get_equal_node(node)
+        assert (
+            equal_node
+        ), f"No equal node for {node} found in CostModelEvaluationLUT. Check LUT path (use the post-CO LUT when using CO)."
+        core = scme.accelerator.get_core(node.chosen_core_allocation)
+        cme = cost_lut.get_cme(equal_node, core)
+        total_ops = cme.layer.total_mac_count
+        en_total_per_op = cme.energy_total / total_ops
+        en_breakdown = cme.mem_energy_breakdown
+        en_breakdown_per_op = {}
+        energy_sum_check = 0
+        for layer_op, energies_for_all_levels in en_breakdown.items():
+            d = {}
+            mem_op = cme.layer.memory_operand_links[layer_op]
+            for mem_level_idx, en in enumerate(energies_for_all_levels):
+                mem_name = cme.accelerator.get_memory_level(mem_op, mem_level_idx).name
+                d[mem_name] = en / total_ops
+                energy_sum_check += en
+            en_breakdown_per_op[layer_op] = d
+        assert np.isclose(energy_sum_check, cme.mem_energy)
+        return en_total_per_op, en_breakdown_per_op
+    return np.nan, np.nan
+
+
+def get_dataframe_from_scme(
+    scme: "StreamCostModelEvaluation",
+    layer_ids: list[int],
+    add_communication: bool = False,
+    cost_lut: "CostModelEvaluationLUT" = None,
+):
     nodes = scme.workload.topological_sort()
     dicts = []
     for node in nodes:
@@ -459,6 +509,8 @@ def get_dataframe_from_scme(scme: "StreamCostModelEvaluation", layer_ids: list[i
         start = node.start
         end = node.end
         runtime = node.runtime
+        su_perfect_temporal, su_nonperfect_temporal = get_spatial_utilizations(scme, node, cost_lut)
+        en_total_per_op, en_breakdown_per_op = get_energy_breakdown(scme, node, cost_lut)
         energy = node.onchip_energy
         tensors = get_real_input_tensors(node, scme.workload)
         task_type = "compute"
@@ -471,10 +523,14 @@ def get_dataframe_from_scme(scme: "StreamCostModelEvaluation", layer_ids: list[i
             Resource=f"Core {core_id}",
             Layer=layer,
             Runtime=runtime,
+            SpatialUtilization=su_perfect_temporal,
+            SpatialUtilizationWithTemporal=su_nonperfect_temporal,
             Tensors=tensors,
             Type=task_type,
             Activity=np.nan,
             Energy=energy,
+            EnergyTotalPerOp=en_total_per_op,
+            EnergyBreakdownPerOp=en_breakdown_per_op,
         )
         dicts.append(d)
     if add_communication:
@@ -509,7 +565,38 @@ def format_tensors(tensors: list[Tensor]):
         else:
             formatted_tensors.append(", ".join(map(str, tensor_list)))
 
-    return "<br>[".join(formatted_tensors) + "]<br>"
+    return "[<br>" + "<br>".join(formatted_tensors) + "<br>]"
+
+
+def add_spatial_util_to_hovertext(hovertext: str, su_perfect_temporal: float, su_imperfect_temporal: float):
+    if not isnan(su_perfect_temporal):
+        hovertext += "<br><b>Spatial Utilization: </b><br>"
+        hovertext += f"&nbsp;&nbsp;&nbsp;&nbsp;Without memory stalls: {su_perfect_temporal:.4f}<br>"
+        hovertext += f"&nbsp;&nbsp;&nbsp;&nbsp;With memory stalls: {su_imperfect_temporal:.4f}<br>"
+    return hovertext
+
+
+def add_energy_breakdown_to_hovertext(
+    hovertext: str, energy_total: float, energy_per_operation: float, energy_breakdown_per_op: dict
+):
+    if not isnan(energy_per_operation):
+        hovertext += f"<b>Energy total: </b> {energy_total:.4e}<br>"
+        hovertext += f"<b>Energy per operation:</b> {energy_per_operation:.4e}<br>"
+        for layer_op, energy_dict in energy_breakdown_per_op.items():
+            hovertext += f"<b>Energy breakdown for {layer_op}:</b><br>"
+            for mem_level, en in energy_dict.items():
+                hovertext += f"&nbsp;&nbsp;&nbsp;&nbsp;{mem_level}: {en:.4e}<br>"
+    return hovertext
+
+
+def add_activity_to_hovertext(hovertext: str, required_bandwidth: int, link_bandwidth: int):
+    if not isnan(required_bandwidth) and not isnan(link_bandwidth):
+        required_bandwidth = int(required_bandwidth)
+        link_bandwidth = int(link_bandwidth)
+        used_bandwidth = min(required_bandwidth, link_bandwidth)
+        hovertext += f"<b>Required bandwidth:</b> {required_bandwidth} bits/cc<br>"
+        hovertext += f"<b>Used bandwidth:</b> {used_bandwidth} bits/cc<br>"
+    return hovertext
 
 
 def visualize_timeline_plotly(
@@ -518,10 +605,11 @@ def visualize_timeline_plotly(
     draw_communication: bool = True,
     fig_path: str = "outputs/schedule.html",
     layer_ids: list[int] | None = None,
+    cost_lut: CostModelEvaluationLUT = None,
 ):
     if not layer_ids:
         layer_ids = sorted(set(n.id for n in scme.workload.node_list))
-    df = get_dataframe_from_scme(scme, layer_ids, draw_communication)
+    df = get_dataframe_from_scme(scme, layer_ids, draw_communication, cost_lut)
     # We get all the layer ids to get a color mapping for them
     layer_ids = sorted(list(set(df["Layer"].tolist())))
     color_cycle = cycle(sample_colorscale("rainbow", np.linspace(0, 1, len(layer_ids))))
@@ -534,11 +622,19 @@ def visualize_timeline_plotly(
         sub_id = row["Sub_id"]
         start = row["Start"]
         runtime = row["Runtime"]
+        su_perfect_temporal = row["SpatialUtilization"]
+        su_imperfect_temporal = row["SpatialUtilizationWithTemporal"]
         energy = row["Energy"]
+        energy_total_per_op = row["EnergyTotalPerOp"]
+        energy_breakdown_per_op = row["EnergyBreakdownPerOp"]
+        activity = row["Activity"]
+        link_bandwidth = row["LinkBandwidth"]
         resource = row["Resource"]
         layer = row["Layer"]
         color = colors[layer]
         name = row["Task"]
+        if isinstance((row["Id"]), str) and isinstance(row["Sub_id"], str):
+            name += f"    <b>Id:</b> {id}    <b>Sub_id:</b> {sub_id}"
         legendgroup = f"Layer {layer}"
         legendgrouptitle_text = legendgroup
         tensors = format_tensors(row["Tensors"])
@@ -551,13 +647,10 @@ def visualize_timeline_plotly(
             f"<b>Runtime:</b> {runtime:.2e}<br>"
             f"<b>Start:</b> {start:.4e}<br>"
             f"<b>End:</b> {start+runtime:.4e}<br>"
-            f"<b>Energy:</b> {energy:.4e}"
         )
-        if not isnan(row["Activity"]):
-            activity = int(row["Activity"])
-            hovertext += f"<br><b>Activity:</b> {activity} %"
-        if isinstance((row["Id"]), str) and isinstance(row["Sub_id"], str):
-            hovertext += f"<br><b>Id:</b> {id}    <b>Sub_id:</b> {sub_id}"
+        hovertext = add_activity_to_hovertext(hovertext, activity, link_bandwidth)
+        hovertext = add_spatial_util_to_hovertext(hovertext, su_perfect_temporal, su_imperfect_temporal)
+        hovertext = add_energy_breakdown_to_hovertext(hovertext, energy, energy_total_per_op, energy_breakdown_per_op)
         bar = go.Bar(
             base=[start],
             x=[runtime],
