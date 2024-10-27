@@ -216,6 +216,7 @@ class ComputationNode(LayerNode, Node):
             and self.memory_operand_links == other.memory_operand_links
             and self.id == other.id
             and self.nb_real_predecessors == other.nb_real_predecessors
+            and self.spatial_mapping == other.spatial_mapping
             # NOTE: don't include sub_id
         )
 
