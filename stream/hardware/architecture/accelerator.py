@@ -323,7 +323,7 @@ class Accelerator:
             links,
             evictions_complete_timestep,
             transfer_duration,
-            [tensor],
+            {link: [tensor] for link in links},
         )
         transfer_end = transfer_start + transfer_duration
         ################################# STEP 5 #################################
