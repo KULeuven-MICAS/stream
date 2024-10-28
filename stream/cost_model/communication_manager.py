@@ -204,37 +204,48 @@ class CommunicationManager:
             duration (int): The duration of the blocking in cycles.
             cn (ComputationNode): The computational node for which we are blocking the links.
         """
+        if not too_large_operands:
+            return start_timestep
         links_to_block: dict["CommunicationLink", int] = {}
         core = self.accelerator.get_core(core_id)
         assert self.accelerator.offchip_core_id is not None, "Off-chip core id is not set."
         offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
+        tensors_per_link: dict["CommunicationLink", list[Tensor]] = {}
         if Constants.OUTPUT_MEM_OP in too_large_operands:
             links_to_offchip = set(self.get_links_for_pair(core, offchip_core))
             req_bw_to_offchip = cn.offchip_bw.wr_in_by_low
             for link in links_to_offchip:
                 links_to_block[link] = links_to_block.get(link, 0) + req_bw_to_offchip
-        if [op for op in too_large_operands if op != Constants.OUTPUT_MEM_OP]:
+                # Add tensors for which this link will be blocked
+                if not tensors_per_link.get(link):
+                    tensors_per_link[link] = []
+                tensors_per_link[link].append(cn.operand_tensors[Constants.OUTPUT_LAYER_OP])
+        non_output_mem_ops = [op for op in too_large_operands if op != Constants.OUTPUT_MEM_OP]
+        if non_output_mem_ops:
             links_from_offchip = set(self.get_links_for_pair(offchip_core, core))
             req_bw_from_offchip = cn.offchip_bw.rd_out_to_low
             for link in links_from_offchip:
                 links_to_block[link] = links_to_block.get(link, 0) + req_bw_from_offchip
-        if not too_large_operands:
-            return start_timestep
-        # Get the tensors for which we are blocking based on the operands
-        tensors: list[Tensor] = []
-        for mem_op in too_large_operands:
-            layer_op = cn.memory_operand_links.mem_to_layer_op(mem_op)
-            tensors.append(cn.operand_tensors[layer_op])
+                # Add tensors for which this link will be blocked
+                if not tensors_per_link.get(link):
+                    tensors_per_link[link] = []
+                tensors_per_link[link] += [
+                    cn.operand_tensors[cn.memory_operand_links.mem_to_layer_op(op)] for op in non_output_mem_ops
+                ]
         # Get idle window of the involved links
-        block_start = self.get_links_idle_window(links_to_block, start_timestep, duration, tensors)
-        # Get the
+        block_start = self.get_links_idle_window(links_to_block, start_timestep, duration, tensors_per_link)
+        # Block them
         for link, req_bw in links_to_block.items():
             req_bw = ceil(req_bw)
-            link.block(block_start, duration, tensors, activity=req_bw)
+            link.block(block_start, duration, tensors_per_link[link], activity=req_bw)
         return block_start
 
     def get_links_idle_window(
-        self, links: dict["CommunicationLink", int], best_case_start: int, duration: int, tensors: list[Tensor]
+        self,
+        links: dict["CommunicationLink", int],
+        best_case_start: int,
+        duration: int,
+        tensors_per_link: dict["CommunicationLink", list[Tensor]],
     ) -> int:
         """Return the timestep at which tensor can be transfered across the links.
         Both links must have an idle window large enough for the transfer.
@@ -250,7 +261,7 @@ class CommunicationManager:
         idle_intersections: list[tuple[int, int]] = []
         for i, (link, req_bw) in enumerate(links.items()):
             req_bw = min(req_bw, link.bandwidth)  # ceil the bw
-            windows = link.get_idle_window(req_bw, duration, best_case_start, tensors)
+            windows = link.get_idle_window(req_bw, duration, best_case_start, tensors_per_link[link])
             if i == 0:
                 idle_intersections = windows
             else:
