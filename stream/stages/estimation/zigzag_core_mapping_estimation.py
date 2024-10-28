@@ -4,7 +4,6 @@ from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.accelerator import Accelerator as Core
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
 from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
@@ -14,6 +13,7 @@ from zigzag.stages.results.reduce_stages import MinimalLatencyStage
 from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.hardware.architecture.core import Core
 from stream.stages.stage import MainStage, Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT, get_unique_nodes
 from stream.visualization.cost_model_evaluation_lut import (

@@ -13,7 +13,7 @@ from stream.opt.allocation.constraint_optimization.utils import get_latencies
 from stream.utils import CostModelEvaluationLUT
 
 if TYPE_CHECKING:
-    from zigzag.hardware.architecture.accelerator import Accelerator as Core
+    from stream.hardware.architecture.core import Core
 
 logger = logging.getLogger(__name__)
 
