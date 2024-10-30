@@ -7,6 +7,7 @@ from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
 from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
+from zigzag.stages.main import MainStage
 from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
 from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
 from zigzag.stages.results.reduce_stages import MinimalLatencyStage
@@ -14,7 +15,7 @@ from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.stages.stage import MainStage, Stage, StageCallable
+from stream.stages.stage import Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT, get_unique_nodes
 from stream.visualization.cost_model_evaluation_lut import (
     visualize_cost_lut_pickle,
@@ -212,6 +213,10 @@ class ZigZagCoreMappingEstimationStage(Stage):
                 # Case 3: not constant, but no edges found
                 else:
                     nb_bits = node.operand_size_bit[layer_operand]
+
+                # Patchwork for edge cases where the node has input data that is not present in the edges (e.g.
+                # in case of KV-cache). The data on the edges should always be > operand_size_bit, except in this case
+                nb_bits = max(nb_bits, node.operand_size_bit[layer_operand])
 
                 bits_to_be_stored_in_top_level[memory_operand] = nb_bits
             total_required_capacity = sum(bits_to_be_stored_in_top_level.values())
