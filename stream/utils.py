@@ -7,10 +7,10 @@ from numpy.typing import NDArray
 from onnx import ModelProto, NodeProto
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.accelerator import Accelerator as Core
 from zigzag.mapping.data_movement import FourWayDataMoving
 from zigzag.parser.onnx.utils import get_onnx_tensor_type
 
+from stream.hardware.architecture.core import Core
 from stream.workload.mapping import TILING_T
 
 if TYPE_CHECKING:

@@ -1,11 +1,11 @@
 from typing import Any
 
 from zigzag.datatypes import Constants
-from zigzag.hardware.architecture.accelerator import Accelerator as Core
 from zigzag.hardware.architecture.memory_level import MemoryLevel
-from zigzag.parser.accelerator_factory import AcceleratorFactory as CoreFactory
+from zigzag.parser.accelerator_factory import AcceleratorFactory as ZigZagCoreFactory
 
 from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
+from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
 
 
@@ -21,8 +21,7 @@ class AcceleratorFactory:
         cores: list[Core] = []
         for core_id, core_data in self.data["cores"].items():
             shared_mem_group_id = self.get_shared_mem_group_id(core_id)
-            core_factory = CoreFactory(core_data)
-            core = core_factory.create(core_id, shared_mem_group_id=shared_mem_group_id)
+            core = self.create_core(core_data, core_id, shared_mem_group_id)
             cores.append(core)
 
         # Extra check on shared memory
@@ -39,13 +38,19 @@ class AcceleratorFactory:
             offchip_core = None
         else:
             offchip_core_id = max(self.data["cores"]) + 1
-            core_factory = CoreFactory(self.data["offchip_core"])
-            offchip_core = core_factory.create(offchip_core_id)
+            offchip_core = self.create_core(self.data["offchip_core"], offchip_core_id)
 
         cores_graph = self.create_core_graph(cores, offchip_core)
 
         # Take next available core id
         return Accelerator(name=self.data["name"], cores=cores_graph, offchip_core_id=offchip_core_id)
+
+    def create_core(self, core_data: dict[str, Any], core_id: int, shared_mem_group_id: int | None = None):
+        core_factory = ZigZagCoreFactory(core_data)
+        core = core_factory.create(core_id, shared_mem_group_id=shared_mem_group_id)
+        # Typecast
+        core = Core.from_zigzag_core(core)
+        return core
 
     def get_shared_mem_group_id(self, core_id: int):
         """Calculate the memory group id for the given core. If the core shares the top level memory with other cores,
