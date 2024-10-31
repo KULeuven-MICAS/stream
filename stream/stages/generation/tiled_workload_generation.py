@@ -106,6 +106,7 @@ class TiledWorkloadGenerationStage(Stage):
         # Construct the new finer workload graph
         # The graph construction needs to happen after the base priority and nb_real_predecessors are set
         partitioned_workload = ComputationNodeWorkload()
+        partitioned_workload.add_nodes_from(all_finer_nodes)
         partitioned_workload.add_edges_from(all_finer_edges)
 
         logger.info(f"Finer graph: {partitioned_workload}.")
