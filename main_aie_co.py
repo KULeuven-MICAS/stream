@@ -6,6 +6,7 @@ from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import (
     visualize_timeline_plotly,
 )
+from stream.utils import CostModelEvaluationLUT
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
@@ -42,8 +43,8 @@ percent_shown = (100,)
 
 
 ################################PATHS################################
-timeline_fig_path_plotly = f"outputs/{experiment_id}-schedule.html"
-memory_fig_path = f"outputs/{experiment_id}-memory.png"
+timeline_fig_path_plotly = f"outputs/{experiment_id}/schedule.html"
+memory_fig_path = f"outputs/{experiment_id}/memory.png"
 #####################################################################
 
 scme = optimize_allocation_co(
@@ -54,7 +55,13 @@ scme = optimize_allocation_co(
     layer_stacks=layer_stacks,
     experiment_id=experiment_id,
     output_path="outputs",
+    skip_if_exists=True,
 )
+
+#####################CostModelEvaluationLUT LOAD#############################
+cost_lut_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
+cost_lut = CostModelEvaluationLUT(cost_lut_path)
+#############################################################################
 
 # Plotting schedule timeline of best SCME
 visualize_timeline_plotly(
