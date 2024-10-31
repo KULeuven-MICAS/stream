@@ -1,7 +1,7 @@
 import logging as _logging
 import re
 
-from stream.api import optimize_allocation_ga
+from stream.api import optimize_allocation_co
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import (
     visualize_timeline_plotly,
@@ -12,13 +12,13 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 ############################################INPUTS############################################
-workload_path = "stream/inputs/aie/workload/test_gemm.onnx"
-# accelerator = "stream/inputs/aie/hardware/single_aie_tile.yaml"
-# mapping_path = "stream/inputs/aie/mapping/single_aie_tile.yaml"
-accelerator = "stream/inputs/aie/hardware/single_aie_col.yaml"
-mapping_path = "stream/inputs/aie/mapping/single_aie_col.yaml"
+workload_path = "stream/inputs/aie/workload/conv1x1_64_64_32_32.onnx"
+accelerator = "stream/inputs/aie/hardware/single_aie_tile.yaml"
+mapping_path = "stream/inputs/aie/mapping/single_aie_tile.yaml"
 mode = "lbl"
-layer_stacks = [(0,)]
+layer_stacks = [(0,),]
+# mode = "fused"
+# layer_stacks = [(0, 1)]
 nb_ga_generations = 16
 nb_ga_individuals = 16
 ##############################################################################################
@@ -28,7 +28,7 @@ hw_name = accelerator.split("/")[-1].split(".")[0]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
     wl_name = re.split(r"/|\.", workload_path)[-2]
-experiment_id = f"{hw_name}-{wl_name}-{mode}-genetic_algorithm"
+experiment_id = f"{hw_name}-{wl_name}-{mode}-constraint-optimization"
 ######################################################################
 
 ##############PLOTTING###############
@@ -46,17 +46,14 @@ timeline_fig_path_plotly = f"outputs/{experiment_id}-schedule.html"
 memory_fig_path = f"outputs/{experiment_id}-memory.png"
 #####################################################################
 
-scme = optimize_allocation_ga(
+scme = optimize_allocation_co(
     hardware=accelerator,
     workload=workload_path,
     mapping=mapping_path,
     mode=mode,
     layer_stacks=layer_stacks,
-    nb_ga_generations=nb_ga_generations,
-    nb_ga_individuals=nb_ga_individuals,
     experiment_id=experiment_id,
     output_path="outputs",
-    skip_if_exists=False,
 )
 
 # Plotting schedule timeline of best SCME

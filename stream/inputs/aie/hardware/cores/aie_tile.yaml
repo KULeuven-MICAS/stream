@@ -73,5 +73,5 @@ operational_array:
 
 dataflows:
   D1:
-    - K, 256
+    - C, 256
 
