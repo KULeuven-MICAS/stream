@@ -47,7 +47,7 @@ def get_latencies(
     nodes: list[ComputationNode],
     core_ids: list[int],
     accelerator: Accelerator,
-    node_hw_performances: CostModelEvaluationLUT,
+    cost_lut: CostModelEvaluationLUT,
     impossible_lat: float = 1e11,
     ids: dict[ComputationNode, int] = {},
 ) -> tuple[dict[tuple[int, str, int], int], dict]:
@@ -56,7 +56,7 @@ def get_latencies(
     core_names = [f"Core {id}" for id in core_ids]
     latencies = {(ids[node], core_name): impossible_lat for node in nodes for core_name in core_names}
     possible_allocations: dict[int, list[str]] = {}
-    k_g_sizes = {}
+    inter_core_tiling_sizes = {}
 
     for node in nodes:
         node_id = ids[node]
@@ -64,15 +64,16 @@ def get_latencies(
         for core_id, core_name in zip(core_ids, core_names):
             core = accelerator.get_core(core_id)
             try:
-                equal_node = node_hw_performances.get_equal_node(node)
+                equal_node = cost_lut.get_equal_node(node)
                 assert equal_node, f"No equal node for {node} found in CostModelEvaluationLUT"
-                cme = node_hw_performances.get_cme(equal_node, core)
+                cme = cost_lut.get_cme(equal_node, core)
                 output_operand = LayerOperand("O")
                 temporal_loops = [
                     i for tm_level in cme.temporal_mapping.mapping_dic_stationary[output_operand] for i in tm_level
                 ]
-                k_g_size = get_loop_size(temporal_loops, [LayerDim("K"), LayerDim("G")])
-                k_g_sizes[(node_id, core_name)] = k_g_size
+                inter_core_tiling_dims = [layer_dim for layer_dim, _ in node.inter_core_tiling]
+                inter_core_tiling_size = get_loop_size(temporal_loops, inter_core_tiling_dims)
+                inter_core_tiling_sizes[(node_id, core_name)] = inter_core_tiling_size
                 lat = cme.latency_total1
                 possible_allocations[node_id].append(core_name)
             except ValueError:
@@ -81,26 +82,26 @@ def get_latencies(
 
     latencies_with_split = {}
     possible_allocation_splits = {}
-    k_max = len(core_names)
+    p_max = len(core_names)  # maximum parallalization factor
 
     for node_id in ids.values():
         possible_allocation_splits[node_id] = {}
         for core_name in core_names:
             possible_allocation_splits[node_id][core_name] = {}
             if core_name in possible_allocations[node_id]:
-                k_t = int(k_g_sizes[node_id, core_name])
-                for k in range(1, k_max + 1):
-                    if divmod(k_t, k)[1] == 0 and k <= len(possible_allocations[node_id]):
-                        lat = int(latencies[(node_id, core_name)] / min(k_t, k))
-                        possible_allocation_splits[node_id][core_name][k] = 1
+                p_t = int(inter_core_tiling_sizes[node_id, core_name])
+                for p in range(1, p_max + 1):
+                    if divmod(p_t, p)[1] == 0 and p <= len(possible_allocations[node_id]):
+                        lat = int(latencies[(node_id, core_name)] / min(p_t, p))
+                        possible_allocation_splits[node_id][core_name][p] = 1
                     else:
                         lat = impossible_lat
-                        possible_allocation_splits[node_id][core_name][k] = 0
-                    latencies_with_split[(node_id, core_name, k)] = lat
+                        possible_allocation_splits[node_id][core_name][p] = 0
+                    latencies_with_split[(node_id, core_name, p)] = lat
             else:
-                for k in range(1, k_max + 1):
-                    latencies_with_split[(node_id, core_name, k)] = impossible_lat
-                    possible_allocation_splits[node_id][core_name][k] = 0
+                for p in range(1, p_max + 1):
+                    latencies_with_split[(node_id, core_name, p)] = impossible_lat
+                    possible_allocation_splits[node_id][core_name][p] = 0
 
     return latencies_with_split, possible_allocation_splits
 
@@ -109,7 +110,7 @@ def get_energies(
     nodes: list[ComputationNode],
     core_ids: list[int],
     accelerator: Accelerator,
-    node_hw_performances: CostModelEvaluationLUT,
+    cost_lut: CostModelEvaluationLUT,
     impossible_energy: float = 1e11,
     ids: dict[ComputationNode, int] = {},
 ) -> dict[tuple[int, str], float]:
@@ -122,7 +123,7 @@ def get_energies(
         for core_id, core_name in zip(core_ids, core_names):
             core = accelerator.get_core(core_id)
             try:
-                cme = node_hw_performances.get_cme(node, core)
+                cme = cost_lut.get_cme(node, core)
                 en = getattr(cme, "energy_total")
             except ValueError:
                 en = impossible_energy

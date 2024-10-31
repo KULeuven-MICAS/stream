@@ -2,13 +2,13 @@ from math import ceil
 from typing import Any
 
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.accelerator import Accelerator as Core
 from zigzag.hardware.architecture.memory_instance import MemoryInstance
 from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.utils import DiGraphWrapper
 
 from stream.cost_model.communication_manager import CommunicationManager
 from stream.cost_model.memory_manager import MemoryManager
+from stream.hardware.architecture.core import Core
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.tensor import Tensor
 
@@ -323,7 +323,7 @@ class Accelerator:
             links,
             evictions_complete_timestep,
             transfer_duration,
-            [tensor],
+            {link: [tensor] for link in links},
         )
         transfer_end = transfer_start + transfer_duration
         ################################# STEP 5 #################################

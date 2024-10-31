@@ -22,7 +22,7 @@ ALLOCATION_T: TypeAlias = list[tuple[int, str, tuple[int, int]]]
 def get_optimal_allocations(
     workload: ComputationNodeWorkload,
     accelerator: Accelerator,
-    node_hw_performances: CostModelEvaluationLUT,
+    cost_lut: CostModelEvaluationLUT,
     iterations: int,
     gap: float = 0.5,
     time_limit: int = 600,
@@ -34,9 +34,9 @@ def get_optimal_allocations(
     ids = convert_ids(nodes)
 
     latencies, possible_allocation_splits = get_latencies(
-        nodes, core_ids, accelerator, node_hw_performances, impossible_lat=0, ids=ids
+        nodes, core_ids, accelerator, cost_lut, impossible_lat=0, ids=ids
     )
-    energies = get_energies(nodes, core_ids, accelerator, node_hw_performances, impossible_energy=0, ids=ids)
+    energies = get_energies(nodes, core_ids, accelerator, cost_lut, impossible_energy=0, ids=ids)
     output_operand = LayerOperand("O")
     dependencies = {
         (ids[p], ids[c]): p.operand_size_bit[output_operand] for p, c in workload.edges() if p in nodes and c in nodes

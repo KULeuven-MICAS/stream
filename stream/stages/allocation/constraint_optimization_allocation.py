@@ -39,15 +39,18 @@ class ConstraintOptimizationAllocationStage(Stage):
     This stages requires a CostModelEvaluationLUT, containing for each node and its valid core allocations the best CME.
     """
 
+    CO_TIME_LIMIT = 600
+
     def __init__(
         self,
         list_of_callables: list[StageCallable],
         *,
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
-        node_hw_performances: CostModelEvaluationLUT,
+        cost_lut: CostModelEvaluationLUT,
         layer_stacks: list[tuple[int, ...]],
-        node_hw_performances_path_with_split: str,
+        allocations_path: str,
+        cost_lut_post_co_path: str,
         **kwargs: Any,
     ):
         """Initialize the ResourceAllocationStage.
@@ -56,29 +59,23 @@ class ConstraintOptimizationAllocationStage(Stage):
             list_of_callables (list): List of the substages to be called. This should be empty as this is a leaf stage.
             workload (DiGraph): The NetworkX DiGraph representing the workload to be scheduled
             accelerator (Accelerator): The hardware accelerator onto which we schedule the workload
-            node_hw_performances (dict): A nested dict containing for each node a dict with for each valid core its best HW performance
+            cost_lut (CostModelEvaluationLUT): A lookup table containing for each node the best CME for each core
             layer_stacks (list): List of tuples with each tuple containing the layer ids to fuse together
+            allocations_path (str): Path to the directory where the optimal allocations are stored
+            cost_lut_post_co_path (str): Path to the file where the cost LUT after CO is stored
         """
         super().__init__(list_of_callables, **kwargs)
         self.workload = workload
         self.accelerator = accelerator
-        self.node_hw_performances = node_hw_performances
+        self.cost_lut = cost_lut
         self.layer_stacks = layer_stacks
         self.original_workload: ComputationNodeWorkload = kwargs["original_workload"]
         self.mode = kwargs.get("mode", "fused")  # assume default is fused
 
-        self.steady_state_visualization_path = kwargs.get("steady_state_visualization_path", "outputs/")
-        self.node_hw_performances_path_with_split = node_hw_performances_path_with_split
-        if "visualize_node_hw_performances_path_with_split" in kwargs:
-            self.visualize_node_hw_performances_path_with_split = kwargs[
-                "visualize_node_hw_performances_path_with_split"
-            ]
-        else:
-            node_hw_performances_visualization_path = (
-                os.path.splitext(self.node_hw_performances_path_with_split)[0] + ".png"
-            )
-            self.visualize_node_hw_performances_path_with_split = node_hw_performances_visualization_path
-        self.co_time_limit: int = kwargs.get("co_time_limit", 600)
+        self.allocations_path = allocations_path
+        os.makedirs(self.allocations_path, exist_ok=True)
+        self.cost_lut_post_co_path = cost_lut_post_co_path
+        self.co_time_limit: int = kwargs.get("co_time_limit", self.CO_TIME_LIMIT)
 
         # Which CME attribute to use for the node latencies
         self.latency_attr = kwargs.get("latency_attr", "latency_total1")
@@ -209,23 +206,22 @@ class ConstraintOptimizationAllocationStage(Stage):
         """# TODO: Implement overhead of tensor transfers between cores"""
         # Check if the allocation is already cached, if not: find it
         stack_str = "_".join([str(id) for id in stack])
-        allocations_path = os.path.join(self.steady_state_visualization_path, f"steady_state-{stack_str}.pickle")
-        if os.path.exists(allocations_path):
-            allocation = pickle_load(allocations_path)
+        stack_allocations_path = os.path.join(self.allocations_path, f"steady_state-{stack_str}.pickle")
+        if os.path.exists(stack_allocations_path):
+            allocation = pickle_load(stack_allocations_path)
         else:
             sg = self.workload.subgraph(to_compute)
             logger.info(f"Optimizing allocation for {iterations} iterations of {len(to_compute)} ss nodes.")
             allocation = get_optimal_allocations(
                 sg,
                 self.accelerator,
-                self.node_hw_performances,
+                self.cost_lut,
                 iterations,
                 time_limit=time_limit,
             )
-            pickle_save(allocation, allocations_path)
-        fig_path = os.path.join(self.steady_state_visualization_path, f"steady_state-{stack_str}.html")
-        print(f"stack = {stack}")
-        visualize_waco(allocation, self.node_hw_performances, self.accelerator, fig_path, iterations)
+            pickle_save(allocation, stack_allocations_path)
+        fig_path = stack_allocations_path.replace(".pickle", ".html")
+        visualize_waco(allocation, self.cost_lut, self.accelerator, fig_path, iterations)
         return allocation
 
     def get_scheduling_order(self, unpartitioned_workload: DNNWorkloadStream) -> SCHEDULE_ORDER_T:
@@ -387,11 +383,10 @@ class ConstraintOptimizationAllocationStage(Stage):
             )
             nb_cores_split = len(core_allocation_this_node)
 
-            # Set correct inter core tiling
+            # Set correct inter core tiling. Replacing the wildcard will signal to the TiledWorkloadGenerationStage
+            # to also spit in the inter core tiling
             inter_core_tiling = self.replace_wildcard_in_tiling(node.inter_core_tiling, nb_cores_split)
             node.inter_core_tiling = inter_core_tiling
-            # Add inter core tiling to intra-core mapping for the next run
-            node.intra_core_tiling += inter_core_tiling
 
         scheduling_order = self.get_scheduling_order(unpartitioned_sub_workload)
 
@@ -401,8 +396,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         kwargs["accelerator"] = self.accelerator
         kwargs["workload"] = unpartitioned_sub_workload
         kwargs["scheduling_order"] = scheduling_order
-        kwargs["node_hw_performances_path"] = self.node_hw_performances_path_with_split
-        kwargs["visualize_node_hw_performances_path"] = self.visualize_node_hw_performances_path_with_split
+        kwargs["cost_lut_path"] = self.cost_lut_post_co_path
         kwargs["latency_attr"] = self.latency_attr
 
         # Create stages that will run a single cost model evaluation (fixed core allocations)

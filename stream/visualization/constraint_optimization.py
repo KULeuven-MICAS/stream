@@ -13,21 +13,21 @@ from stream.opt.allocation.constraint_optimization.utils import get_latencies
 from stream.utils import CostModelEvaluationLUT
 
 if TYPE_CHECKING:
-    from zigzag.hardware.architecture.accelerator import Accelerator as Core
+    from stream.hardware.architecture.core import Core
 
 logger = logging.getLogger(__name__)
 
 
 def visualize_waco(
     allocation: ALLOCATION_T,
-    node_hw_performances: CostModelEvaluationLUT,
+    cost_lut: CostModelEvaluationLUT,
     accelerator: Accelerator,
     fig_path: str,
     iterations: int,
 ):
     """
     Allocation is a list of tuples, with each tuple being of form (timestep, allocation, node_id). Allocation is a core.
-    node_hw_performances is a nested dict storing for each node and each core the hardware performance.
+    cost_lut is a CostModelEvaluationLUT storing for each node and each core the hardware performance.
     """
     # Extract the number of allocations (k splits) of all nodes
     k_splits: dict[int, list[Core]] = {}
@@ -46,8 +46,8 @@ def visualize_waco(
         layer_ids.add(id[0])
         ids.append(id)
         resources.add(a)
-        node = next(n for n in node_hw_performances.get_nodes() if n.id == id[0])
-        latencies, _ = get_latencies([node], core_ids, accelerator, node_hw_performances)
+        node = next(n for n in cost_lut.get_nodes() if n.id == id[0])
+        latencies, _ = get_latencies([node], core_ids, accelerator, cost_lut)
         nb_k_splits = len(k_splits[id])
         lat = latencies[(node.id, a, nb_k_splits)]
         node_latencies[id, a] = lat
@@ -66,7 +66,7 @@ def visualize_waco(
             starts[id, a] = start
     _, total_lat_str = calculate_total_latency(starts, timestep_latencies, node_timesteps, iterations)
     # Plot the nodes using Plotly rectangles
-    color_cycle = cycle(sample_colorscale("rainbow", np.linspace(0, 1, len(node_hw_performances.get_nodes()))))
+    color_cycle = cycle(sample_colorscale("rainbow", np.linspace(0, 1, len(cost_lut.get_nodes()))))
     colors = {layer_id: c for (layer_id, c) in zip(layer_ids, color_cycle)}
     fig = go.Figure()
     bars = []

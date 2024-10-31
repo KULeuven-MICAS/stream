@@ -7,8 +7,11 @@ from numpy.typing import NDArray
 from onnx import ModelProto, NodeProto
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.accelerator import Accelerator as Core
+from zigzag.mapping.data_movement import FourWayDataMoving
 from zigzag.parser.onnx.utils import get_onnx_tensor_type
+
+from stream.hardware.architecture.core import Core
+from stream.workload.mapping import TILING_T
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
@@ -117,6 +120,23 @@ def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNo
         if not equal_nodes:
             unique_nodes.append(node)
     return unique_nodes
+
+
+def get_required_offchip_bandwidth(
+    cme: CostModelEvaluation, too_large_operands: list[MemoryOperand]
+) -> FourWayDataMoving:
+    if not too_large_operands:
+        return FourWayDataMoving(0, 0, 0, 0)
+    # If there was offchip memory added for some operands, get the offchip bandwidth required
+    offchip_level = cme.accelerator.get_memory_level(too_large_operands[0], -1)
+    req_offchip_bw = cme.get_total_inst_bandwidth(offchip_level)
+    return req_offchip_bw
+
+
+def contains_wildcard(tiling: TILING_T):
+    """Returns wether the given tiling contains a wildcard number `*`. The wildcard must later be replaced by the
+    constraint optimization into the optimal number of tiles"""
+    return any(tiling == "*" for _, tiling in tiling)
 
 
 class CostModelEvaluationLUT:

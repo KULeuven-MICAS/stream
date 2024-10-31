@@ -51,7 +51,7 @@ def autolabel(rects, ax, indices=[], labels=[], offsets=None):
         index += 1
 
 
-def visualize_node_hw_performances_pickle(pickle_filepath, scale_factors=None, fig_path=None):
+def visualize_cost_lut_pickle(pickle_filepath, scale_factors=None, fig_path=None):
     plt.rc("font", size=SMALL_SIZE)  # controls default text sizes
     plt.rc("axes", titlesize=SMALL_SIZE)  # fontsize of the axes title
     plt.rc("axes", labelsize=BIGGER_SIZE)  # fontsize of the x and y labels
@@ -140,4 +140,4 @@ def visualize_node_hw_performances_pickle(pickle_filepath, scale_factors=None, f
     axs[1].set_ylabel("Energy [pJ]")
     fig.tight_layout()
     plt.savefig(fig_path, bbox_inches="tight")
-    logger.info(f"Saved node_hw_performances visualization to: {fig_path}")
+    logger.info(f"Saved CostModelEvaluationLUT visualization to: {fig_path}")
