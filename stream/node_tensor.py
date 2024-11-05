@@ -47,7 +47,7 @@ class NodeTensor(np.ndarray[Any, Any]):
     @property
     def shape(self) -> None:  # type: ignore
         """Protect the original shape attribute to prevent errors"""
-        raise ValueError("The numpy shape of NodeTensor is hidden in an abstraction layer")
+        raise ValueError("The numpy shape of NodeTensor is hidden in an abstraction layer. Call `tensor_shape` instead")
 
     @property
     def full_shape(self):

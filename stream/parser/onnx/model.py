@@ -5,6 +5,7 @@ from onnx import NodeProto
 from zigzag.parser.onnx.utils import parse_onnx_model_from_path
 
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.onnx_utils import get_onnx_input_shapes, has_asymmetric_input_data
 from stream.parser.onnx.asymmetric_simd import AsymmetricSimdParser
 from stream.parser.onnx.concat import ConcatParser
 from stream.parser.onnx.conv import ConvParser
@@ -20,7 +21,6 @@ from stream.parser.onnx.reshape import ReshapeParser
 from stream.parser.onnx.simd import SimdParser
 from stream.parser.onnx.softmax import SoftmaxParser
 from stream.parser.onnx.transpose import TransposeParser
-from stream.utils import get_onnx_input_shapes, has_asymmetric_input_data
 from stream.workload.mapping import InterCoreMappingAttributes
 from stream.workload.onnx_workload import ONNXWorkload
 

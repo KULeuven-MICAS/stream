@@ -22,7 +22,7 @@ class SimdParser(OnnxComputeOperatorParser):
         data["name"] = self.node.name
         data["operator_type"] = self.node.op_type
         data["operand_source"] = self.get_operand_source_input_format()
-        data["operand_precision"] = self.get_operand_precision_input_format()
+        data["operand_precision"] = self.get_operand_precision_user_format()
         data["dimension_relations"] = []
         data["loop_sizes"] = output_shape
 

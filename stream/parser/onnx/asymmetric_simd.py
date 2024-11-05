@@ -1,12 +1,9 @@
 from typing import Any
 
-from zigzag.parser.onnx.utils import (
-    get_node_input_output_dimension_shapes,
-)
 from zigzag.parser.workload_factory import LayerNodeFactory
 
+from stream.onnx_utils import get_onnx_input_shapes, get_onnx_output_shapes
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
-from stream.utils import get_onnx_input_shapes
 from stream.workload.computation.computation_node import ComputationNode
 
 
@@ -30,7 +27,7 @@ class AsymmetricSimdParser(OnnxComputeOperatorParser):
         data["name"] = self.node.name
         data["operator_type"] = self.node.op_type
         data["operand_source"] = self.get_operand_source_input_format()
-        data["operand_precision"] = self.get_operand_precision_input_format()
+        data["operand_precision"] = self.get_operand_precision_user_format()
         data["dimension_relations"] = []
         data["loop_sizes"] = output_shape
 
@@ -41,8 +38,15 @@ class AsymmetricSimdParser(OnnxComputeOperatorParser):
 
     def generate_node(self):
         # Get the input and output activation shapes
-        input_shape1, input_shape2 = get_onnx_input_shapes(self.node, self.onnx_model)
-        _, output_shape = get_node_input_output_dimension_shapes(self.node, self.onnx_model)
+        input_shapes = get_onnx_input_shapes(self.node, self.onnx_model)
+        if len(input_shapes) != 2:
+            raise NotImplementedError("Only SIMD nodes with input length 2 are supported")
+        input_shape1, input_shape2 = input_shapes
+
+        output_shapes = get_onnx_output_shapes(self.node, self.onnx_model)
+        if len(output_shapes) != 1:
+            raise NotImplementedError("Only SIMD nodes with input length 2 are supported")
+        output_shape = output_shapes.pop()
 
         if input_shape1 == output_shape:
             non_batched_input_shape = input_shape2

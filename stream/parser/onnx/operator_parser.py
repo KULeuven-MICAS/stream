@@ -58,10 +58,10 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
     @abstractmethod
     def get_layer_node_user_format(self, input_shape: list[int], output_shape: list[int]) -> dict[str, Any]: ...
 
-    def get_operand_precision_input_format(self) -> dict[str, int]:
-        act_precision = self.get_activation_precision()
-        weight_precision = self.get_weight_precision()
-        intermediate_output_precision = self.get_intermediate_output_precision()
+    def get_operand_precision_user_format(self) -> dict[str, int]:
+        act_precision: int = self.get_activation_precision()
+        weight_precision: int = self.get_weight_precision()
+        intermediate_output_precision: int = self.get_intermediate_output_precision()
         predecessors = self.get_node_predecessors()
         match len(predecessors):
             case 1:
