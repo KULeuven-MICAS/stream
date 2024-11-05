@@ -20,6 +20,7 @@ from stream.parser.onnx.pooling import PoolingParser
 from stream.parser.onnx.reshape import ReshapeParser
 from stream.parser.onnx.simd import SimdParser
 from stream.parser.onnx.softmax import SoftmaxParser
+from stream.parser.onnx.split import SplitParser
 from stream.parser.onnx.transpose import TransposeParser
 from stream.workload.mapping import InterCoreMappingAttributes
 from stream.workload.onnx_workload import ONNXWorkload
@@ -46,12 +47,14 @@ class ONNXModelParser:
         "Relu": SimdParser,
         "Gelu": SimdParser,
         "Silu": SimdParser,
+        # Dependency propagation
         "LpNormalization": LpNormalizationParser,
         "Gather": GatherParser,
         "Transpose": TransposeParser,
         "Reshape": ReshapeParser,
         "Flatten": FlattenParser,
         "Concat": ConcatParser,
+        "Split": SplitParser,
     }
 
     def __init__(

@@ -114,6 +114,7 @@ class ConvParser(OnnxComputeOperatorParser):
         node_factory = LayerNodeFactory(node_data, mapping_data=None)
         node_attrs = node_factory.create_node_attr()
         mapping = self.get_mapping_this_node()
+        input_names = list(self.node.input)
 
         return ComputationNode(
             node_id=self.node_id,
@@ -122,4 +123,5 @@ class ConvParser(OnnxComputeOperatorParser):
             mapping_attr=mapping,
             op_type=ConvParser.OP_TYPE,
             operand_tensor_reshape=None,
+            input_names=input_names,
         )

@@ -20,17 +20,19 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         possible_core_allocation: list[int],
         core_allocation_is_fixed: bool = False,
         chosen_core_allocation: int | None = None,
+        input_names: list[str] = [],
     ) -> None:
         """Initialize the Node metaclass
 
         Args:
-            type (str): The type of Node.
-            energy (float): The energy consumption of this Node.
-            runtime (int): The runtime of this Node.
-            possible_core_allocation (int): The core id on which this Node can be mapped.
-            inputs: (List[str]): The names of the input tensors of this node
-            outputs: (List[str]): The names of the output tensors of this node.
+            type: The type of Node.
+            energy: The energy consumption of this Node.
+            runtime: The runtime of this Node.
+            possible_core_allocation: The core id on which this Node can be mapped.
+            inputs: The names of the input tensors of this node
+            outputs: The names of the output tensors of this node.
             chosen_core_allocation: The final core allocation of this node
+            input_names: Names of the ONNX input node
         """
         super().__init__(node_id, node_name)
 
@@ -41,6 +43,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         self.possible_core_allocation = possible_core_allocation
         self.core_allocation_is_fixed = core_allocation_is_fixed
         self.chosen_core_allocation = chosen_core_allocation
+        self.input_names = input_names
         # will be set by the scheduler
         self.start = None
         # will be set by the scheduler

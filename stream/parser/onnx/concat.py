@@ -7,10 +7,21 @@ from stream.workload.dependency_propagation.concat_node import ConcatNode
 class ConcatParser(OnnxOperatorParser):
     """Parses an onnx gather operator into a ConcatNode."""
 
+    def get_axis_value(self):
+        AXIS_ATTR = "axis"
+
+        """Find the value of the axis associated with this concat node in ONNX"""
+        # `axis` is an attribute of the node
+        try:
+            axis_attr = next(filter(lambda x: x.name == AXIS_ATTR, self.node.attribute))
+            return axis_attr.i
+        except StopIteration:
+            raise ValueError("Axis attribute not found in ONNX node")
+
     def generate_node(self):
         predecessors = self.get_node_predecessors()
-
         axis = self.get_axis_value()
+        input_names = list(self.node.input)
 
         input_1, input_2 = self.node.input[0], self.node.input[1]
 
@@ -36,13 +47,5 @@ class ConcatParser(OnnxOperatorParser):
             axis=axis,
             constant_shape=constant_shape,
             variable_input_first=variable_input_first,
+            input_names=input_names,
         )
-
-    def get_axis_value(self):
-        """Find the value of the axis associated with this concat node in ONNX"""
-        # `axis` is an attribute of the node
-        try:
-            axis_attr = next(filter(lambda x: x.name == "axis", self.node.attribute))
-            return axis_attr.i
-        except StopIteration:
-            raise ValueError("Axis attribute not found in ONNX node")

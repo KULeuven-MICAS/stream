@@ -7,6 +7,7 @@ from zigzag.parser.onnx.utils import get_node_input_output_dimension_shapes
 from zigzag.parser.workload_factory import LayerNodeFactory
 
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.onnx_utils import get_axis_attribute
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.mapping import InterCoreMappingAttributes
 from stream.workload.node import Node
@@ -48,6 +49,9 @@ class OnnxOperatorParser(ONNXOperatorParserZigZag, metaclass=ABCMeta):
                 return {"W": predecessors[0], "I": predecessors[1]}
             case _:
                 raise ValueError("No more than 2 layer predecessors expected")
+
+    def get_axis_attribute(self):
+        return get_axis_attribute(self.node)
 
 
 class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
@@ -120,8 +124,8 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
         node_data = self.get_layer_node_user_format(input_shape, output_shape)
         node_factory = LayerNodeFactory(node_data, mapping_data=[])
         node_attrs = node_factory.create_node_attr()
-
         mapping = self.get_mapping_this_node()
+        input_names = list(self.node.input)
 
         return ComputationNode(
             node_id=self.node_id,
@@ -129,4 +133,5 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
             op_type=self.node.op_type,
             node_attr=node_attrs,
             mapping_attr=mapping,
+            input_names=input_names,
         )

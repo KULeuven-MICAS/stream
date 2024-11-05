@@ -61,6 +61,7 @@ class ComputationNode(LayerNode, Node):
         produces_final_output: bool = False,
         group_id: int = 0,
         sub_id: int = -1,  # To distinguish alternative versions of this node
+        input_names: list[str] = [],
     ):
         op_type = op_type.lower()
 
@@ -76,6 +77,7 @@ class ComputationNode(LayerNode, Node):
             offchip_energy=0,
             runtime=0,
             possible_core_allocation=mapping_attr.core_allocation,
+            input_names=input_names,
         )
 
         # Overwrite default spatial mapping with given one

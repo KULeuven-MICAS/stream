@@ -61,6 +61,7 @@ class AsymmetricSimdParser(OnnxComputeOperatorParser):
         node_factory = LayerNodeFactory(node_data, mapping_data=None)
         node_attrs = node_factory.create_node_attr()
         mapping = self.get_mapping_this_node()
+        input_names = list(self.node.input)
 
         return ComputationNode(
             node_id=self.node_id,
@@ -68,4 +69,5 @@ class AsymmetricSimdParser(OnnxComputeOperatorParser):
             node_attr=node_attrs,
             mapping_attr=mapping,
             op_type=self.node.op_type,
+            input_names=input_names,
         )

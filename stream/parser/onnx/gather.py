@@ -9,8 +9,9 @@ class GatherParser(OnnxOperatorParser):
 
     def generate_node(self):
         predecessors = self.get_node_predecessors()
-        axis = self.get_axis_value()
+        axis = self.get_axis_attribute()
         indices = self.get_indices_value()
+        input_names = list(self.node.input)
 
         return GatherNode(
             node_id=self.node_id,
@@ -18,6 +19,7 @@ class GatherParser(OnnxOperatorParser):
             predecessors=predecessors,
             gather_axis=axis,
             gather_indices=indices,
+            input_names=input_names,
         )
 
     def get_indices_value(self):
@@ -39,13 +41,3 @@ class GatherParser(OnnxOperatorParser):
             indices = DEFAULT
 
         return indices
-
-    def get_axis_value(self):
-        """Find the value of the axis associated with this gather node in ONNX"""
-        # `axis` is an attribute of the node
-        try:
-            axis_attr = next(filter(lambda x: x.name == "axis", self.node.attribute))
-            axis = axis_attr.i
-        except StopIteration:
-            axis = 0
-        return axis

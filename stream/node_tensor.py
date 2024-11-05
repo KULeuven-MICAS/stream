@@ -125,6 +125,10 @@ class NodeTensor(np.ndarray[Any, Any]):
         axis = axis - 1 if axis < 0 else axis
         return (np.take(self.as_ndarray(), gather_indices, axis=axis)).view(NodeTensor)
 
+    def split(self, split_indices: list[int], axis: int) -> "list[NodeTensor]":
+        axis = axis - 1 if axis < 0 else axis
+        return [t.view(NodeTensor) for t in np.split(self.as_ndarray(), split_indices, axis=axis)]
+
     def concat_with_empty(self, shape: tuple[int, ...], axis: int, variable_input_first: bool):
         empty_shape = self.convert_to_full_shape(shape)
         empty_tensor = np.zeros(empty_shape, dtype=object)
