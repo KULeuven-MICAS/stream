@@ -6,6 +6,7 @@ from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
 class SimdParser(OnnxComputeOperatorParser):
     """Parses an ONNX operator representing an elementwise operation (simd) into a ComputationNode.
     e.g. Add, etc.
+    # TODO this functionality is exactly the same as Mul but without support for broadcast (asymmetric) shapes
     """
 
     def get_layer_node_user_format(self, input_shape: list[int], output_shape: list[int]):

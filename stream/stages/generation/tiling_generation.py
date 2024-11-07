@@ -184,7 +184,8 @@ class TilingGenerationStage(Stage):
             if dim in node.layer_dim_sizes and node.layer_dim_sizes[dim] > 1:
                 return [(dim, "*")]
 
-        raise ValueError("Unknown what loop dim to split across cores")
+        # No valid dim found -> just take someting
+        return [(next(iter(node.layer_dim_sizes)), "*")]
 
     @staticmethod
     def split_operator(model: ModelProto, node_name: str, num_splits: int):

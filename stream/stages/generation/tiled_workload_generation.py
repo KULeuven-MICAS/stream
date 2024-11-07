@@ -395,6 +395,12 @@ class TiledWorkloadGenerationStage(Stage):
             inclusive_ranges = self.convert_to_inclusive_data_range(node.loop_ranges)
             dimensions = node.operand_dimensionality_order[operand]
             bounds = self.get_bounding_box_dimensions(producer, consumer, dimensions, inclusive_ranges)
+
+            # TODO this is a whacky fix
+            # RTree doesn't accept bound of one dimension
+            if len(bounds) == 2:
+                bounds = (0, 0) + bounds
+
             yield (i, bounds, None)
 
     def get_nb_input_dimensions(self, node: ComputationNode, operand: LayerOperand):
@@ -416,7 +422,7 @@ class TiledWorkloadGenerationStage(Stage):
         """
         props = index.Property()
         # We assume all nodes in 'nodes' have identical dimensions
-        props.dimension = self.get_nb_input_dimensions(nodes[0], operand)
+        props.dimension = max(self.get_nb_input_dimensions(nodes[0], operand), 2)
 
         rtree = index.Index(self.bounding_box_generator(producer, consumer, nodes, operand), properties=props)
         return rtree

@@ -5,8 +5,6 @@ from onnx import NodeProto
 from zigzag.parser.onnx.utils import parse_onnx_model_from_path
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.onnx_utils import get_onnx_input_shapes, has_asymmetric_input_data
-from stream.parser.onnx.asymmetric_simd import AsymmetricSimdParser
 from stream.parser.onnx.concat import ConcatParser
 from stream.parser.onnx.conv import ConvParser
 from stream.parser.onnx.default import DefaultNodeParser
@@ -16,6 +14,7 @@ from stream.parser.onnx.gather import GatherParser
 from stream.parser.onnx.gemm import GemmParser
 from stream.parser.onnx.lpnormalization import LpNormalizationParser
 from stream.parser.onnx.matmul import MatMulParser
+from stream.parser.onnx.mul import MulParser
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.parser.onnx.pooling import PoolingParser
 from stream.parser.onnx.reshape import ReshapeParser
@@ -44,8 +43,8 @@ class ONNXModelParser:
         "AveragePool": PoolingParser,
         "GlobalMaxPool": PoolingParser,
         "GlobalAveragePool": PoolingParser,
-        "Add": SimdParser,
-        "Mul": SimdParser,
+        "Add": MulParser,
+        "Mul": MulParser,
         "Softmax": SoftmaxParser,
         # Activations
         "Relu": SimdParser,
@@ -79,15 +78,14 @@ class ONNXModelParser:
         self.workload = self.parse_workload()
 
     def get_parser_class(self, node: NodeProto):
-        # A temporary fix an element-wise Add or Mul which has asymmetric input data -> treat it as a  DummyNode.
-        # TODO support node with asymmetric input data.
-        if node.op_type in ["Add", "Mul"] and has_asymmetric_input_data(node, self.onnx_model):
-            in_shape_1, in_shape_2 = get_onnx_input_shapes(node, self.onnx_model)
-            # In case only the batch dimension is missing. Other cases are not supported for now
-            if abs(len(in_shape_1) - len(in_shape_2)) == 1:
-                return AsymmetricSimdParser
-            else:
-                return DefaultNodeParser
+        # # A temporary fix an element-wise Add which has asymmetric input data -> treat it as a  DummyNode.
+        # if node.op_type in ["Add", "Mul"] and has_asymmetric_input_data(node, self.onnx_model):
+        #     in_shape_1, in_shape_2 = get_onnx_input_shapes(node, self.onnx_model)
+        #     # In case only the batch dimension is missing. Other cases are not supported for now
+        #     if abs(len(in_shape_1) - len(in_shape_2)) == 1:
+        #         return AsymmetricSimdParser
+        #     else:
+        #         return DefaultNodeParser
 
         parser_class = ONNXModelParser.OP_TYPE_TO_PARSER.get(node.op_type)
         if not parser_class:

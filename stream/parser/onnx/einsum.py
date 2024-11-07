@@ -27,18 +27,21 @@ class EinsumParser(OnnxComputeOperatorParser):
     def get_layer_equation(self, layer_dims_per_op: list[str]):
         def put_in_brackets(s: str):
             """e.g. `abc` -> `[a][b][c]"""
+            if s == "":
+                return "[]"
             return "".join([f"[{char}]" for char in s])
 
-        if len(layer_dims_per_op) != 3:
-            raise NotImplementedError
+        match len(layer_dims_per_op):
+            case 2:
+                dims_I, dims_O = layer_dims_per_op
+                dims_W = ""
+            case 3:
+                dims_I, dims_W, dims_O = layer_dims_per_op
+            case _:
+                raise NotImplementedError
 
-        dims_I, dims_W, dims_O = layer_dims_per_op
         equation = f"O{put_in_brackets(dims_O)}+=I{put_in_brackets(dims_I)}*W{put_in_brackets(dims_W)}"
         return equation
-
-    # def get_layer_dims(self, layer_dims_per_op: list[str]):
-    #     all_dims = {char.upper() for group in layer_dims_per_op for char in group}
-    #     return list(all_dims)
 
     def get_layer_dim_sizes_dict(self, layer_dims_per_op: list[str]):
         input_shapes = get_onnx_input_shapes(self.node, self.onnx_model)
@@ -71,7 +74,7 @@ class EinsumParser(OnnxComputeOperatorParser):
         input_shape: list[int],  # Argument required because of a caller function in superclass
         output_shape: list[int],  # TODO put shape logic in this method for all `OnnxComputeOperatorParser` subclasses
     ) -> dict[str, Any]:
-        """! Generate layer data in user input format for Einsum."""
+        """Generate layer data in user input format for Einsum."""
         predecessors = self.get_node_predecessors()
 
         data: dict[str, Any] = {}
