@@ -154,3 +154,6 @@ docs/make.bat
 
 # html files
 *.html
+
+# json files (for perfetto)
+*.json
