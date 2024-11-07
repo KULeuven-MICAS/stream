@@ -1,5 +1,7 @@
 from typing import Any
 
+from numpy import broadcast, broadcast_shapes
+
 from stream.onnx_utils import get_onnx_input_shapes, get_onnx_output_shapes
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
 
@@ -32,6 +34,35 @@ class MulParser(OnnxComputeOperatorParser):
 
         return input_shape, broadcast_shape
 
+    def get_operand_source_input_format(self, shape_of_w: list[int]):
+        """This method needs more care in this subclass, since the equation assumes that the input with 'broadcast'
+        shape is always at `W`"""
+        predecessors = self.get_node_predecessors()
+        match len(predecessors):
+            case 1:
+                # One source operand, one constant
+                return {"W": self.node_id, "I": predecessors[0]}
+            case 2:
+                # Two source operands, none are constant
+                # Name of the input that corresponds to the W shape
+                broadcast_intput = self.node.input[get_onnx_input_shapes(self.node, self.onnx_model).index(shape_of_w)]
+                try:
+                    node_id_W = next(
+                        node_id
+                        for node_id, outputs in self.nodes_outputs.items()
+                        if broadcast_intput in outputs and node_id in predecessors
+                    )
+                    node_id_I = (
+                        node_id_W
+                        if predecessors[0] == predecessors[1]
+                        else next(i for i in predecessors if i != node_id_W)
+                    )
+                    return {"W": node_id_W, "I": node_id_I}
+                except StopIteration:
+                    raise ValueError(f"Cannot find correct inputs of {self  .node.name}")
+            case _:
+                raise ValueError("No more than 2 layer predecessors expected")
+
     def get_layer_node_user_format(self, input_shape: list[int], output_shape: list[int]):
         """
         Generate the necessary dictionary items required for the LayerNode creation.
@@ -42,7 +73,7 @@ class MulParser(OnnxComputeOperatorParser):
         data["id"] = self.node_id
         data["name"] = self.node.name
         data["operator_type"] = self.node.op_type
-        data["operand_source"] = self.get_operand_source_input_format()
+        data["operand_source"] = self.get_operand_source_input_format(shape_of_w=broadcast_shape)
         data["operand_precision"] = self.get_operand_precision_user_format()
         data["dimension_relations"] = []
         data["loop_sizes"] = common_shape

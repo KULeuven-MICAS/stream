@@ -113,11 +113,14 @@ class ConvParser(OnnxComputeOperatorParser):
                 [padding[1], padding[3]],
             ]
 
-        # Remove dims with size 1
-        dims_size_1 = [dim for dim, size in zip(data["loop_dims"], data["loop_sizes"]) if size == 1]
-        data["loop_sizes"] = [s for s in data["loop_sizes"] if s > 1]
-        data["loop_dims"] = [d for d in data["loop_dims"] if d not in dims_size_1]
-        for dim in dims_size_1:
+        # Remove dims with size 1, except batch
+        dim_sizes_larger_than_1 = {
+            dim: size for dim, size in zip(data["loop_dims"], data["loop_sizes"]) if size > 1 or dim == "B"
+        }
+        dims_with_size_1 = [dim for dim in data["loop_dims"] if dim not in dim_sizes_larger_than_1]
+        data["loop_dims"] = list(dim_sizes_larger_than_1.keys())
+        data["loop_sizes"] = list(dim_sizes_larger_than_1.values())
+        for dim in dims_with_size_1:
             data["equation"] = data["equation"].replace(f"[{dim.lower()}]", "")
 
         # Filter out loops with size 1
