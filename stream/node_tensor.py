@@ -129,6 +129,21 @@ class NodeTensor(np.ndarray[Any, Any]):
         axis = axis - 1 if axis < 0 else axis
         return [t.view(NodeTensor) for t in np.split(self.as_ndarray(), split_indices, axis=axis)]
 
+    def slice(self, starts: int, ends: int, axis: int, steps: int) -> "NodeTensor":
+        assert starts != 1 and ends != -1
+        axis = len(self.tensor_shape) - 1 if axis < 0 else axis
+        match axis:
+            case 0:
+                return self.as_ndarray()[starts:ends:steps, ...].view(NodeTensor)
+            case 1:
+                return self.as_ndarray()[:, starts:ends:steps, ...].view(NodeTensor)
+            case 2:
+                return self.as_ndarray()[:, :, starts:ends:steps, ...].view(NodeTensor)
+            case 3:
+                return self.as_ndarray()[:, :, :, starts:ends:steps, ...].view(NodeTensor)
+            case _:
+                raise NotImplementedError
+
     def concat_with_empty(self, shape: tuple[int, ...], axis: int, variable_input_first: bool):
         empty_shape = self.convert_to_full_shape(shape)
         empty_tensor = np.zeros(empty_shape, dtype=object)

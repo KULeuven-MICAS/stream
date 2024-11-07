@@ -1,8 +1,6 @@
+import numpy as np
 from onnx import AttributeProto, ModelProto, NodeProto, numpy_helper
 from zigzag.parser.onnx.utils import get_onnx_tensor_type
-
-import numpy as np
-import onnx
 
 
 def get_attribute_as_ints(
@@ -60,6 +58,25 @@ def has_asymmetric_input_data(node: NodeProto, onnx_model: ModelProto):
     return input_shape1 != input_shape2
 
 
+def get_constant_tensor_int(onnx_model: ModelProto, constant_output_name: str):
+    """In some cases, the constants to a node (e.g. slice and split indices) are saved as tensors within a constant
+    node. The output name of the constant nodes corresponds to the input name of the node that uses this constant
+    tensor."""
+
+    for node in onnx_model.graph.node:
+        if node.op_type == "Constant" and node.output[0] == constant_output_name:
+            for attr in node.attribute:
+                if attr.name == "value":
+                    tensor = attr.t  # This is an ONNX TensorProto
+                    # Decode tensor to a numpy array
+                    array = np.frombuffer(tensor.raw_data, dtype=int)
+                    array = array.reshape([dim for dim in tensor.dims])
+
+                    return [int(i) for i in array]
+
+    raise ValueError(f"Cannot find {constant_output_name}")
+
+
 def get_axis_attribute(node: NodeProto):
     """Find the value of the axis associated with this ONNX node"""
     ATTR_NAME = "axis"
@@ -71,19 +88,20 @@ def get_axis_attribute(node: NodeProto):
 
 
 def get_split_attribute(node: NodeProto, onnx_model: ModelProto):
-    # ATTR_NAME = "split"
-
     output_name = next(n for n in node.input if "split" in n.lower())
+    return get_constant_tensor_int(onnx_model, output_name)
 
-    for node in onnx_model.graph.node:
-        if node.op_type == "Constant" and node.output[0] == output_name:
-            for attr in node.attribute:
-                if attr.name == "value":
-                    tensor = attr.t  # This is an ONNX TensorProto
-                    # Decode tensor to a numpy array
-                    array = np.frombuffer(tensor.raw_data, dtype=int)
-                    array = array.reshape([dim for dim in tensor.dims])
 
-                    return [int(i) for i in array]
+def get_slice_attributes(node: NodeProto, onnx_model: ModelProto):
+    """Get the `starts`, `ends`, `axes` and `steps` tensors for a slice node.
+    NOTE: this assumes that the attributes are given as inputs in this order"""
+    if len(node.input) != 5:
+        raise NotImplementedError("Unsure how to get slice attributes from Node")
 
-    raise ValueError
+    starts_output_name, ends_output_name, axes_output_name, steps_output_name = node.input[1:5]
+
+    starts_value = get_constant_tensor_int(onnx_model, starts_output_name)
+    ends_value = get_constant_tensor_int(onnx_model, ends_output_name)
+    axes_value = get_constant_tensor_int(onnx_model, axes_output_name)
+    steps_value = get_constant_tensor_int(onnx_model, steps_output_name)
+    return starts_value, ends_value, axes_value, steps_value

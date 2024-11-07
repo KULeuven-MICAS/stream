@@ -10,6 +10,7 @@ from stream.parser.onnx.asymmetric_simd import AsymmetricSimdParser
 from stream.parser.onnx.concat import ConcatParser
 from stream.parser.onnx.conv import ConvParser
 from stream.parser.onnx.default import DefaultNodeParser
+from stream.parser.onnx.einsum import EinsumParser
 from stream.parser.onnx.flatten import FlattenParser
 from stream.parser.onnx.gather import GatherParser
 from stream.parser.onnx.gemm import GemmParser
@@ -19,6 +20,7 @@ from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.parser.onnx.pooling import PoolingParser
 from stream.parser.onnx.reshape import ReshapeParser
 from stream.parser.onnx.simd import SimdParser
+from stream.parser.onnx.slice import SliceParser
 from stream.parser.onnx.softmax import SoftmaxParser
 from stream.parser.onnx.split import SplitParser
 from stream.parser.onnx.transpose import TransposeParser
@@ -37,6 +39,7 @@ class ONNXModelParser:
         "Conv": ConvParser,
         "MatMul": MatMulParser,
         "Gemm": GemmParser,
+        "Einsum": EinsumParser,
         "MaxPool": PoolingParser,
         "AveragePool": PoolingParser,
         "GlobalMaxPool": PoolingParser,
@@ -44,6 +47,7 @@ class ONNXModelParser:
         "Add": SimdParser,
         "Mul": SimdParser,
         "Softmax": SoftmaxParser,
+        # Activations
         "Relu": SimdParser,
         "Gelu": SimdParser,
         "Silu": SimdParser,
@@ -55,6 +59,7 @@ class ONNXModelParser:
         "Flatten": FlattenParser,
         "Concat": ConcatParser,
         "Split": SplitParser,
+        "Slice": SliceParser,
     }
 
     def __init__(

@@ -20,7 +20,6 @@ from stream.workload.computation.computation_node import ComputationNode, LoopRa
 from stream.workload.dependency_propagation.concat_node import ConcatNode
 from stream.workload.dependency_propagation.dummy_node import DummyNode
 from stream.workload.dependency_propagation.propagation_node import PropagationNode
-from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.node import Node
 from stream.workload.onnx_workload import ComputationNodeWorkload, ONNXWorkload
 from stream.workload.tensor import Tensor
@@ -123,7 +122,7 @@ class TiledWorkloadGenerationStage(Stage):
         return sorted(((n.id, n.sub_id) for n in workload.node_list), reverse=True)
 
     @staticmethod
-    def get_all_node_pairs(G: DNNWorkloadStream) -> tuple[tuple[ComputationNode, ComputationNode, bool], ...]:
+    def get_all_node_pairs(G: ONNXWorkload) -> tuple[tuple[ComputationNode, ComputationNode, bool], ...]:
         pairs: list[tuple[ComputationNode, ComputationNode, bool]] = []
         for node in G.topological_sort():
             if not isinstance(node, ComputationNode):

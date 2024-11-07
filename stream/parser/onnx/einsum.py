@@ -15,8 +15,9 @@ class EinsumParser(OnnxComputeOperatorParser):
 
         attrs_names = [attr.name for attr in self.node.attribute]
         name_idx = attrs_names.index(ATTR_NAME)
-        value = self.node.attribute[name_idx]
-        return str(value)
+        attr_proto = self.node.attribute[name_idx]
+        value = attr_proto.s.decode("utf-8")
+        return value
 
     def get_layer_dims_per_op(self):
         einsum_equation = self.get_einsum_equation()
@@ -32,7 +33,7 @@ class EinsumParser(OnnxComputeOperatorParser):
             raise NotImplementedError
 
         dims_I, dims_W, dims_O = layer_dims_per_op
-        equation = f"O{put_in_brackets(dims_O)}+=I{put_in_brackets(dims_I)}*{put_in_brackets(dims_W)}"
+        equation = f"O{put_in_brackets(dims_O)}+=I{put_in_brackets(dims_I)}*W{put_in_brackets(dims_W)}"
         return equation
 
     # def get_layer_dims(self, layer_dims_per_op: list[str]):
