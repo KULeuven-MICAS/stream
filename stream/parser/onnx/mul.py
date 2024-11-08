@@ -1,7 +1,5 @@
 from typing import Any
 
-from numpy import broadcast, broadcast_shapes
-
 from stream.onnx_utils import get_onnx_input_shapes, get_onnx_output_shapes
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
 
@@ -90,9 +88,7 @@ class MulParser(OnnxComputeOperatorParser):
             case _:
                 raise NotImplementedError
 
-        loop_dims_broadcast = reversed(
-            [dim for dim, size in zip(reversed(loop_dims), reversed(broadcast_shape)) if size > 1]
-        )
+        loop_dims_broadcast = reversed([dim for dim, _ in zip(reversed(loop_dims), reversed(broadcast_shape))])
 
         equation_dims_common = "".join([f"[{dim.lower()}]" for dim in loop_dims])
         equation_dims_broadcast = "".join([f"[{dim.lower()}]" for dim in loop_dims_broadcast])
