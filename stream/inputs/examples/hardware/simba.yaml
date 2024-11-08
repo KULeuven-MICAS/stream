@@ -1,0 +1,107 @@
+name: simba_package
+
+cores:
+  # 36 simba chiplets
+  0: simba_chiplet.yaml
+  1: simba_chiplet.yaml
+  2: simba_chiplet.yaml
+  3: simba_chiplet.yaml
+  4: simba_chiplet.yaml
+  5: simba_chiplet.yaml
+  6: simba_chiplet.yaml
+  7: simba_chiplet.yaml
+  8: simba_chiplet.yaml
+  9: simba_chiplet.yaml
+  10: simba_chiplet.yaml
+  11: simba_chiplet.yaml
+  12: simba_chiplet.yaml
+  13: simba_chiplet.yaml
+  14: simba_chiplet.yaml
+  15: simba_chiplet.yaml
+  16: simba_chiplet.yaml
+  17: simba_chiplet.yaml
+  18: simba_chiplet.yaml
+  19: simba_chiplet.yaml
+  20: simba_chiplet.yaml
+  21: simba_chiplet.yaml
+  22: simba_chiplet.yaml
+  23: simba_chiplet.yaml
+  24: simba_chiplet.yaml
+  25: simba_chiplet.yaml
+  26: simba_chiplet.yaml
+  27: simba_chiplet.yaml
+  28: simba_chiplet.yaml
+  29: simba_chiplet.yaml
+  30: simba_chiplet.yaml
+  31: simba_chiplet.yaml
+  32: simba_chiplet.yaml
+  33: simba_chiplet.yaml
+  34: simba_chiplet.yaml
+  35: simba_chiplet.yaml
+offchip_core: simba_offchip.yaml
+
+core_connectivity:
+  # 2D mesh
+  - 0, 1
+  - 0, 6
+  - 1, 2
+  - 1, 7
+  - 2, 3
+  - 2, 8
+  - 3, 4
+  - 3, 9
+  - 4, 5
+  - 4, 10
+  - 5, 11
+  - 6, 7
+  - 6, 12
+  - 7, 8
+  - 7, 13
+  - 8, 9
+  - 8, 14
+  - 9, 10
+  - 9, 15
+  - 10, 11
+  - 10, 16
+  - 11, 17
+  - 12, 13
+  - 12, 18
+  - 13, 14
+  - 13, 19
+  - 14, 15
+  - 14, 20
+  - 15, 16
+  - 15, 21
+  - 16, 17
+  - 16, 22
+  - 17, 23
+  - 18, 19
+  - 18, 24
+  - 19, 20
+  - 19, 25
+  - 20, 21
+  - 20, 26
+  - 21, 22
+  - 21, 27
+  - 22, 23
+  - 22, 28
+  - 23, 29
+  - 24, 25
+  - 24, 30
+  - 25, 26
+  - 25, 31
+  - 26, 27
+  - 26, 32
+  - 27, 28
+  - 27, 33
+  - 28, 29
+  - 28, 34
+  - 29, 35
+  - 30, 31
+  - 31, 32
+  - 32, 33
+  - 33, 34
+  - 34, 35
+
+bandwidth: 32
+unit_energy_cost: 0

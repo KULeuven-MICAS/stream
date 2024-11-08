@@ -1,0 +1,31 @@
+name: simba_offchip
+
+memories:
+  dram:
+    size: 10000000000
+    r_bw: 64
+    w_bw: 64
+    r_cost: 100
+    w_cost: 100
+    area: 0
+    r_port: 0
+    w_port: 0
+    rw_port: 1
+    latency: 1
+    operands: [I1, I2, O]
+    ports:
+      - fh: rw_port_1
+        tl: rw_port_1
+      - fh: rw_port_1
+        tl: rw_port_1
+      - fh: rw_port_1
+        tl: rw_port_1
+        fl: rw_port_1
+        th: rw_port_1
+    served_dimensions: [D1, D2]
+
+operational_array:
+  multiplier_energy: 0
+  multiplier_area: 0
+  dimensions: [D1, D2]
+  sizes: [0, 0]
