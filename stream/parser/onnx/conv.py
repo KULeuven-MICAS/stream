@@ -83,8 +83,7 @@ class ConvParser(OnnxComputeOperatorParser):
 
         if is_1d_conv:
             # No FY, OY, IY
-            data["loop_sizes"] = [B, K, G, OX, C, FX]
-            data["loop_dims"] = ["B", "K", "G", "OX", "C", "FX"]
+            loop_size_dict = {"B": B, "K": K, "G": G, "OX": OX, "C": C, "FX": FX}
             data["equation"] = f"O[b][g][k][ox]+=W[{weight_dim}][c][fx]*I[b][g][c][ix]"
             data["pr_loop_dims"] = ["IX"]
             data["pr_loop_sizes"] = [IX]
@@ -99,8 +98,7 @@ class ConvParser(OnnxComputeOperatorParser):
             FY = kernel_shape[1]  # TODO is kernel_shape in (FX, FY) format or (FY, FX)? (I assumed the former)
             IY = input_shape[3]
             OY = output_shape[3]
-            data["loop_sizes"] = [B, K, G, OX, C, FX, OY, FY]
-            data["loop_dims"] = ["B", "K", "G", "OX", "C", "FX", "OY", "FY"]
+            loop_size_dict = {"B": B, "K": K, "G": G, "OX": OX, "C": C, "FX": FX, "OY": OY, "FY": FY}
             data["equation"] = f"O[b][g][k][oy][ox]+=W[{weight_dim}][c][fy][fx]*I[b][g][c][iy][ix]"
             data["pr_loop_dims"] = ["IX", "IY"]
             data["pr_loop_sizes"] = [IX, IY]
@@ -113,22 +111,15 @@ class ConvParser(OnnxComputeOperatorParser):
                 [padding[1], padding[3]],
             ]
 
-        # Remove dims with size 1, except batch
-        dim_sizes_larger_than_1 = {
-            dim: size for dim, size in zip(data["loop_dims"], data["loop_sizes"]) if size > 1 or dim == "B"
-        }
-        dims_with_size_1 = [dim for dim in data["loop_dims"] if dim not in dim_sizes_larger_than_1]
-        data["loop_dims"] = list(dim_sizes_larger_than_1.keys())
-        data["loop_sizes"] = list(dim_sizes_larger_than_1.values())
-        for dim in dims_with_size_1:
-            data["equation"] = data["equation"].replace(f"[{dim.lower()}]", "")
+        # Remove C/K if they have size 1
+        for dim in ["C", "K"]:
+            if loop_size_dict[dim] == 1:
+                del loop_size_dict[dim]
+                # Remove from equation
+                data["equation"] = data["equation"].replace(f"[{dim.lower()}]", "")
 
-        # Filter out loops with size 1
-        # loop_sizes = {"B": B, "K": K, "G": G, "OX": OX, "OY": OY, "C": C, "FX": FX, "FY": FY}
-        # dims_with_size_1 = [k for k, v in loop_sizes.items() if v == 1]
-        # loop_sizes = {k: v for k, v in loop_sizes.items() if v > 1}
-        # data["loop_dims"] = list(loop_sizes.keys())
-        # data["loop_sizes"] = list(loop_sizes.values())
+        data["loop_dims"] = list(loop_size_dict.keys())
+        data["loop_sizes"] = list(loop_size_dict.values())
 
         return data
 

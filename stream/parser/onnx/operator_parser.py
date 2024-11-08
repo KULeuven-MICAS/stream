@@ -68,6 +68,14 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
         intermediate_output_precision: int = self.get_intermediate_output_precision()
         predecessors = self.get_node_predecessors()
         match len(predecessors):
+            case 0:
+                # e.g. the first node in the network -> assume only one variable input
+                return {
+                    "W": weight_precision,
+                    "I": act_precision,
+                    "O_final": act_precision,
+                    "O": intermediate_output_precision,
+                }
             case 1:
                 # One source operand, one constant
                 return {
