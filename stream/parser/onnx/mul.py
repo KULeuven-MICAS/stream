@@ -37,6 +37,9 @@ class MulParser(OnnxComputeOperatorParser):
         shape is always at `W`"""
         predecessors = self.get_node_predecessors()
         match len(predecessors):
+            case 0:
+                # e.g. first node of graph
+                return {"W": self.node_id, "I": self.node_id}
             case 1:
                 # One source operand, one constant
                 return {"W": self.node_id, "I": predecessors[0]}

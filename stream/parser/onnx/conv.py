@@ -49,18 +49,6 @@ class ConvParser(OnnxComputeOperatorParser):
         # 1D Conv case: append dimensions of size 1 so equation holds. Conv in FY dimension
         is_1d_conv = len(kernel_shape) == 1
 
-        # if len(kernel_shape) == 1:
-        #     kernel_shape.insert(0, 1)
-        #     input_shape.append(1)
-        #     output_shape.append(1)
-        #     strides.append(1)
-        #     dilations.append(1)
-        #     assert len(input_shape) == 4
-        #     assert len(output_shape) == 4
-
-        # if len(padding) == 2:
-        #     padding = 2 * padding
-
         # Get dimension sizes from input parameters
         assert input_shape[0] == output_shape[0], "Batch size is different for input and output activations."
         B = output_shape[0]

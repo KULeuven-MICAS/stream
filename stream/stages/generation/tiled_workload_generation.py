@@ -376,6 +376,7 @@ class TiledWorkloadGenerationStage(Stage):
         # where the onnx tensors are always flattened back to 4D (merging the G+C or G+K into one channel dimension)
         dimensions, loop_ranges = self.flatten_grouped_convolution_ranges(producer, consumer, dimensions, loop_ranges)
         bounding_box = [loop_ranges[dim] for dim in dimensions]
+        # TODO can bounding box have size 1? Will probably crash if so
 
         if not interleaved:
             bounding_box_flat = tuple([item for sublist in bounding_box for item in sublist])

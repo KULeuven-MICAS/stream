@@ -17,6 +17,7 @@ from stream.parser.onnx.matmul import MatMulParser
 from stream.parser.onnx.mul import MulParser
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.parser.onnx.pooling import PoolingParser
+from stream.parser.onnx.reduce_1d import Reduce1DParser
 from stream.parser.onnx.reshape import ReshapeParser
 from stream.parser.onnx.simd import SimdParser
 from stream.parser.onnx.slice import SliceParser
@@ -34,6 +35,7 @@ class ONNXModelParser:
 
     # Map the node's op_type to the corresponding Parser class
     OP_TYPE_TO_PARSER: dict[str, Type[OnnxOperatorParser]] = {
+        # General
         "QLinearConv": ConvParser,
         "Conv": ConvParser,
         "MatMul": MatMulParser,
@@ -46,10 +48,15 @@ class ONNXModelParser:
         "Add": MulParser,
         "Mul": MulParser,
         "Softmax": SoftmaxParser,
-        # Activations
+        # Single-input element-wise
+        "ReduceMean": Reduce1DParser,
         "Relu": SimdParser,
         "Gelu": SimdParser,
         "Silu": SimdParser,
+        "Sqrt": SimdParser,
+        "Div": SimdParser,
+        "Pow": SimdParser,
+        "Reciprocal": SimdParser,  # Div with 1 as numerator
         # Dependency propagation
         "LpNormalization": LpNormalizationParser,
         "Gather": GatherParser,
