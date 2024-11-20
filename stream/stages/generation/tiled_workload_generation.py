@@ -219,10 +219,15 @@ class TiledWorkloadGenerationStage(Stage):
             # Check if this node's "dim" size is divisible by the outer-cn loop size
             node_dim_size = finer_node_attrs.layer_dim_sizes[outer_dim]
             q, rem = divmod(node_dim_size, outer_size)  # returns x//y, x%y
-            assert rem == 0, (
-                f"Node {original_node} dim {outer_dim} of size {node_dim_size} is not divisible by outer-cn temporal "
-                f"loop {outer_tl}"
-            )
+            if rem != 0:
+                # Make sure that the outer_dim is divisible by the outer_size
+                # Pad the dimension to a multiple of outer_size
+                node_dim_size = q * outer_size
+                q, rem = divmod(node_dim_size, outer_size)
+                assert rem == 0, (
+                    f"Node {original_node} dim {outer_dim} of size {node_dim_size} is not divisible by outer-cn temporal "
+                    f"loop {outer_tl}"
+                )
             finer_node_attrs.layer_dim_sizes[outer_dim] = q
 
         # Loop dimension + size of the finer nodes (called span here)
