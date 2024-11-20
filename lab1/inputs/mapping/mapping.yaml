@@ -1,15 +1,38 @@
 - name: Layer0
   core_allocation: [0]
   core_allocation_is_fixed: True
+  intra_core_tiling:
+    - OY, all
+  inter_core_tiling:
+    - K, *
+
 - name: Layer1
   core_allocation: [1]
   core_allocation_is_fixed: True
+  intra_core_tiling:
+    - OY, all
+  inter_core_tiling:
+    - K, *
 - name: Layer2
   core_allocation: [2]
   core_allocation_is_fixed: True
+  intra_core_tiling:
+    - OY, all
+  inter_core_tiling:
+    - K, *
+
 - name: Layer3
   core_allocation: [0]
   core_allocation_is_fixed: True
+  intra_core_tiling:
+    - OY, all
+  inter_core_tiling:
+    - K, *
+
 - name: default
   core_allocation: [0]
   core_allocation_is_fixed: True
+  intra_core_tiling:
+    - OY, all
+  inter_core_tiling:
+    - K, *

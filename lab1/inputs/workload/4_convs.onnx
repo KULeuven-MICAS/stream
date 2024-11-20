@@ -1,0 +1,64 @@
+
+example_model:È
+‹
+Input0
+Weight0Output0Layer0"Conv*
+kernel_shape@@ *
+pads@@@@ *
+weight_size *
+act_size *
+output_size 
+Œ
+Output0
+Weight1Output1Layer1"Conv*
+kernel_shape@@ *
+pads@@@@ *
+weight_size *
+act_size *
+output_size 
+Œ
+Output1
+Weight2Output2Layer2"Conv*
+kernel_shape@@ *
+pads@@@@ *
+weight_size *
+act_size *
+output_size 
+Œ
+Output2
+Weight3Output3Layer3"Conv*
+kernel_shape@@ *
+pads@@@@ *
+weight_size *
+act_size *
+output_size 	ConvGraph*BWeight0*BWeight1*BWeight2*BWeight3Z 
+Input0
+
+
+
+8
+8b!
+Output3
+
+
+
+8
+8j!
+Output0
+
+
+
+8
+8j!
+Output1
+
+
+
+8
+8j!
+Output2
+
+
+
+8
+8B

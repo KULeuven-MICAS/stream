@@ -5,8 +5,8 @@ memories:
     size: 4294967296
     r_bw: 64
     w_bw: 64
-    r_cost: 700  # TODO
-    w_cost: 750  # TODO
+    r_cost: 100
+    w_cost: 150
     area: 0
     r_port: 0
     w_port: 0
@@ -25,8 +25,7 @@ memories:
     served_dimensions: [D1, D2]
 
 operational_array:
-  input_precision: [8, 8]
-  multiplier_energy: 0
-  multiplier_area: 0
+  unit_energy: 0
+  unit_area: 0
   dimensions: [D1, D2]
   sizes: [0, 0]

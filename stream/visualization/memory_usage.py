@@ -134,10 +134,6 @@ def plot_memory_usage(
             ha="right",
             fontsize=BIGGER_SIZE,
         )
-        core_memory_operand_zipped = zip(cores_for_this_ti, memory_operands_for_this_ti)
-        formatted_str = "\n".join(
-            [f"{core}: {memory_operands}" for core, memory_operands in core_memory_operand_zipped]
-        )
         core = cores_for_this_ti[0]
         y_label = f"{ti.name}\n{core}"
         # ax.set_xlim(left=0, right=max(timesteps))
