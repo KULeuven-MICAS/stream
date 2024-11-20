@@ -1,13 +1,16 @@
 name: tpu_like_quad_core
-cores:
-  # index corresponds to core ID
-  - ./cores/core_a.yaml
-  - ./cores/core_b.yaml
-  - ./cores/core_c.yaml
-  - ./cores/offchip.yaml
 
-graph:
-  type: bus
-  bandwidth: 32
-  unit_energy_cost: 0
-  offchip_core_id: 3
+# Define all cores in the HDA
+cores:
+  0: ./cores/accelerator1.yaml
+  1: ./cores/accelerator2.yaml
+  2: ./cores/accelerator3.yaml
+offchip_core: ./cores/offchip.yaml
+
+core_connectivity:
+  # Single link connecting all cores
+  - 0, 1, 2
+  # Links to offchip are automatically added
+
+bandwidth: 32  # Bandwidth of the bus
+unit_energy_cost: 0  # Link energy (memory accesses will be included)
