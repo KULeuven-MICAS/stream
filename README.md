@@ -7,15 +7,15 @@ More information with respect to the capabilities of Stream can be found in the 
 
 
 ## Install required packages:
-```
-> pip install -r requirements.txt
+```bash
+pip install -r requirements.txt
 ```
 
 ## The first run
-```
-> cd stream
-> python api.py
+```bash
+git checkout tutorial
+python lab1/main.py
 ```
 
 ## Documentation
-Documentation for Stream is underway!
+You can find extensive documentation of Stream [here](https://kuleuven-micas.github.io/stream/).
