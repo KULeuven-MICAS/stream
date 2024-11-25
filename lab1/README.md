@@ -48,8 +48,15 @@ As the mapping of the layers onto the cores is fixed, this run will first extrac
 The results of the experiment will be saved in the `outputs/` folder under the `experiment_id`.
 
 - `cost_lut.png` visualizes the ZigZag layer-core costs. Because the workload allocation is fixed here, the cost of each layer is only extracted for the core it's allocated to.
+<img src="./assets/cost_lut.png" width="800">
 - `schedule.html` is a Plotly-based visualization of the obtained schedule through time on the different computation and communication resources of the HDA. You can download this and view it in your favourite web browser (Firefox). 
+<img src="./assets/schedule.png" width="800">
+
 - `schedule.json` is a conversion of the schedule to json format for usage with the [Perfetto](https://ui.perfetto.dev/) visualization tool. This visualization scales better for very large workload graphs with a lot of nodes. Note that the colors here are not the same as in the Plotly visualization, as we don't have control over this.
+<img src="./assets/perfetto.png" width="800">
+
+- `memory.png` visualizes the memory usage on the different Core memories through time. This can help to identify memories that could benefit from increased capacity.
+<img src="./assets/memory.png" width="800">
 
 ## Questions & Answers
 
