@@ -1,85 +1,60 @@
-# Lab 2: Parallelize layers across cores
+# Lab 2: Partitioning a layer across cores
 
 ## Objective
-The goal of this lab is to get more familiar with additional fields that can be specify in the `mapping` input to partition layers.
+The goal of this lab is to get more familiar with additional fields that can be specified in the `mapping` input to partition layers across cores. Such partitioning can enable lower latency if the cores would otherwise remain unused.
+
+**Note**: Keep in mind that this is not layer fusion, as a single layer at a time is parallelized across the cores. Thus, we still refer to it as layer-by-layer processing.
 
 ## Setup
 1. Ensure you have installed the requirements in `requirements.txt`.
-2. Make sure you are in the base directory, as `lab2/main.py` automatically inserts this into PATH which is needed for the ZigZag imports.
+2. Make sure you are in the base directory, as `lab2/main.py` automatically inserts the working directory into PATH which is needed for the Stream imports.
 
 ## Inputs
 There are three main inputs defined in the `inputs/` folder:
 1. **Workload**: _[same as lab1]_ Four back-to-back convolutional layers. The layer names are `Layer0`, `Layer`, etc. You can use [Netron](https://netron.app) to visualize the model.
 2. **Hardware**: _[same as lab1]_ A sample accelerator is encoded in `hda_bus.yaml`. There are three computing cores, `accelerator1.yaml` through `accelerator3.yaml`. These cores are defined using the ZigZag architecture definition (more information on the ZigZag architecture representation can be found [here](https://kuleuven-micas.github.io/zigzag/hardware.html)). Additionally, there is an `offchip_core` field which specifies the description of the offchip core. This offchip core also uses the ZigZag description, of which only the memory information is used (as no computations can be allocated to the offchip core). The cores are interconnected using the `core_connectivity` field of the HDA description. This specifies on each line a communication channel between two or more cores. A link is automatically added from the offchip core to the different compute cores.
-3. **Mapping**: The `Layer0`-`Layer3` layers are all allocated identically, using a single `default` key in the mapping input. This `default` entry is always used as a fallback in case the layer name or the layer type is not present in the mapping input. They are all parallelized across all three cores. Additionally, TODO
+3. **Mapping**: The `Layer0`-`Layer3` layers are all allocated identically, using a single `default` key in the mapping input. This `default` entry is always used as a fallback in case the layer name or the layer type is not present in the mapping input. They are all parallelized across all three cores. Additionally, the mapping specifies how we want these layers to be tiled across the cores through the `inter_core_tiling` field. We tile them in the `K` (output channel) dimension with a factor of 3. The specified number is the number of splits that will be generated, with each split containing a smaller portion of output channels. This number should thus match with the length of `core_allocation`.
 
 ## Running the Experiment
 Run the main file:
-    ```
-    python lab1/main.py
-    ```
+``` bash
+python lab2/main.py
+```
 
-The main file specifies multiple variables for the API call. An important one is "mode", which should always be "lbl" for layer-by-layer execution, or "fused" for layer-fused execution.
+The mode of execution is still layer-by-layer, as one layer finished completely before we move on to the next layer.
 
-As the mapping of the layers onto the cores is fixed, this run will first extract the hardware cost of each layer on the core they are allocated to, and then do a single COALA (Stream's cost model) evaluation to get the multi-core overheads.
+The experiment still consists of a single COALA evaluation, as the allocation is fixed and there are no degrees of freedom for the genetic algorithm to explore.
 
-## Outputs
+## Outputs _[same as lab1]_
 The results of the experiment will be saved in the `outputs/` folder under the created experiment id.
 
-- `cost_lut.png` visualizes the ZigZag layer-core costs. Because the core allocations were fixed here, the cost of each layer was only extracted for the core it's allocated to.
+
+- `cost_lut.png` visualizes the ZigZag layer-core costs. Because the core allocations are fixed here, the cost of each layer is only extracted for the core it's allocated to.
 - `schedule.html` is a Plotly-based visualization of the obtained schedule through time on the different computation and communication resources of the HDA. You can download this and view it in your favourite web browser (Firefox). 
 - `schedule.json` is a conversion of the schedule to json format for usage with the [Perfetto](https://ui.perfetto.dev/) visualization tool. This visualization scales better for very large workload graphs with a lot of nodes. Note that the colors here are not the same as in the Plotly visualization, as we don't have control over this.
 
-## Homework
+## Questions & Answers
 
-- Take a look inside the Stream API call in `stream/api.py`. Do you understand the meaning of all the defined stages and all arguments passed to these stages?
+- Take a look inside the generated output `schedule.html`. Are the latencies of the layer parts on each core balanced?
     > <details>
     > <summary>Answer</summary>
     >     
-    > You can read more information on the different stages [here](https://kuleuven-micas.github.io/stream/stages.html). Each stage performs a different function, ranging from parsing inputs to generating the hardware cost of the different layers using ZigZag and calling the allocation optimization engines.
+    > The latencies are not matched, as the cores have different dataflows which perform differently for the same layer part. Stream currently only supports equal partitioning through the mapping file input. Stream's internals do support unequal partitioning, though. If you're interested in unequal partitioning, take a look at the `TiledWorkloadGenerationStage` in `stream/stages/generation/tiled_workload_generation.py`.
     >   
     > </details>
 
-- What is `nb_ga_generations` and `nb_ga_individuals`? Are they used here?
+- How do the inputs of the first layer get to the cores?
     > <details>
     > <summary>Answer</summary>
     >     
-    > These are the number of generations of and the number of individuals in each generation of the genetic algorithm (GA). The GA is one of the optimization engines that can help find better workload allocations of the layers onto the computation cores. As the mapping is fixed, the GA doesn't actually optimize anything here, and will be bypassed. However, the API call requires them as an argument.
+    > The inputs of the first layer are transferred using the offchip CommunicationLink named `Core(3) <-> Any` in the Plotly visualization. However, since the layer parts only differ in K, they require the same input activations. The COALA scheduler detects this behavior and 'broadcasts' this input tensor to all cores by reusing a previous task if it regards the same tensor.
     >   
     > </details>
 
-- Why is there both a `allocation_is_fixed` field and a `core_allocation` field? Can't you infer one from the other?
-    > <details>
-    > <summary>Answer</summary>
-    > 
-    > The reason both fields are required is that it is also possible to distribute a single layer across multiple cores in a fixed manner. In this scenario, `allocation_is_fixed` will be `True` and there will be more than one core specified in `core_allocation`.
-    > 
-    > </details>
-
-- Analyze the visualization of the schedule at `lab1/outputs/hda_bus-3_convs-lbl-genetic_algorithm/schedule.html`. What is the total latency? Which resources do you see vertically?
+- Why are there no more 'Block' tasks on the communication links?
     > <details>
     > <summary>Answer</summary>
     >     
-    > The total latency is displayed on the top: 8.510e4. There are three computation resources: `Core 0`, `Core 1` and `Core 2`. There are two communication resources: `Any -> Any` which represents the bus connecting the three cores and `Core(3) <-> Any` which represents the offchip link (Core 3 is the offchip core).
-    >   
-    > </details>
-
-- Which layer has the highest energy consumption?
-    > <details>
-    > <summary>Answer</summary>
-    >     
-    > There are two ways to get the answer to this question. One is to look at the `cost_lut.png`, which shows the output of the ZigZag performance estimation. This shows that `Layer 3`, allocated to `Core 0`, has the highest energy consumption.
-    > 
-    > The second approach uses the Plotly visualization. When hovering over the different layer rectangles, you can see the `Energy total` displayed, which is the highest for `Layer 3`.
-    > 
-    > </details>
-
-- What are the arched boxes in the `Core(3) <-> Any` communication link?
-    > <details>
-    > <summary>Answer</summary>
-    >     
-    > There are two types of tasks that can be assigned to communication links: 1. Transfers and 2. Blocks. Transfers are simple: they use a communication link to transfer a tensor from one core's memory to another core's memory (if there are multiple hops needed a task is scheduled on each link). 
-    > 
-    > Blocks are a bit more complex. Blocks are added to a communication link whenever a layer (or smaller part of a layer) is to be scheduled on a core whose memory is insufficient to store all of the tensors needed for the execution. In that case, there is further tiling needed of the tensors. To facilitate this, the offchip memory is added as the highest level of memory for the ZigZag cost call. However, ZigZag's cost model is analytical, and we thus don't know the exact timing of the transfers of these tiles, we only know the average required bandwidth. That's why, in Stream, we 'block' the communication link with this average required bandwidth for the entire duration of the execution on the core. It's important to note that it is thus possible that multiple 'block' tasks are scheduled in parallel. If they are overlapping you will only see one of them in the visualization.
+    > The required and generated data for each part of the layers is smaller, and thus can fit completely within the core's memories. As such, the data is transferred to/from cores directly without requiring more tiling to fit in the core's memories.
     >   
     > </details>

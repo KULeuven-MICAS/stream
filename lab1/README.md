@@ -5,32 +5,53 @@ The goal of this lab is to perform the first run of the Stream framework. You wi
 
 ## Setup
 1. Ensure you have installed the requirements in `requirements.txt`.
-2. Make sure you are in the base directory, as `lab1/main.py` automatically inserts this into PATH which is needed for the ZigZag imports.
+2. Make sure you are in the base directory, as `lab1/main.py` automatically inserts the working directory into PATH which is needed for the Stream imports.
 
 ## Inputs
 There are three main inputs defined in the `inputs/` folder:
 1. **Workload**: Four back-to-back convolutional layers. The layer names are `Layer0`, `Layer`, etc. You can use [Netron](https://netron.app) to visualize the model.
 2. **Hardware**: A sample accelerator is encoded in `hda_bus.yaml`. There are three computing cores, `accelerator1.yaml` through `accelerator3.yaml`. These cores are defined using the ZigZag architecture definition (more information on the ZigZag architecture representation can be found [here](https://kuleuven-micas.github.io/zigzag/hardware.html)). Additionally, there is an `offchip_core` field which specifies the description of the offchip core. This offchip core also uses the ZigZag description, of which only the memory information is used (as no computations can be allocated to the offchip core). The cores are interconnected using the `core_connectivity` field of the HDA description. This specifies on each line a communication channel between two or more cores. A link is automatically added from the offchip core to the different compute cores.
-3. **Mapping**: The mapping specifies for the `Layer0`-`Layer3` which core they can be allocated to, and whether the core allocation is fixed or not. In this first run, we fix the allocation of the layers to a single core to get a baseline of the execution.
+3. **Mapping**: The mapping specifies for the `Layer0`-`Layer3` which core they can be allocated to, and whether the workload allocation is fixed or not. In this first run, we fix the allocation of the layers to a single core to get a baseline of the execution.
 
 ## Running the Experiment
-Run the main file:
-    ```
-    python lab1/main.py
-    ```
+The main file defines the path to the three main inputs and parses out some more names and an `experiment_id` to save the outputs. It specifies multiple variables for the API call. An important one is `mode`, which should be `lbl` for layer-by-layer execution, or `fused` for layer-fused execution.
 
-The main file specifies multiple variables for the API call. An important one is "mode", which should always be "lbl" for layer-by-layer execution, or "fused" for layer-fused execution.
+Then, the Stream API is called:
 
-As the mapping of the layers onto the cores is fixed, this run will first extract the hardware cost of each layer on the core they are allocated to, and then do a single COALA (Stream's cost model) evaluation to get the multi-core overheads.
+```python
+if not os.path.exists(scme_path):
+    scme = optimize_allocation_ga(
+        hardware=accelerator,
+        workload=workload_path,
+        mapping=mapping_path,
+        mode=mode,
+        layer_stacks=None,
+        nb_ga_generations=nb_ga_generations,
+        nb_ga_individuals=nb_ga_individuals,
+        experiment_id=experiment_id,
+        output_path="lab1/outputs",
+        skip_if_exists=True,
+    )
+else:
+    scme = pickle_load(scme_path)
+```
+`optimize_allocation_ga` uses a genetic algorithm (GA) to optimize the workload allocation in case it's not fixed (Note that here it is fixed so this engine will not be used). A common practice is to cache the saved Stream cost model evaluation (SCME) in a pickle file, and reuse this to speed up different visualizations/attribute inspection.
+
+Now, run the main file:
+```bash
+python lab1/main.py
+```
+
+As the mapping of the layers onto the cores is fixed, this run will first extract the hardware cost of each layer on the core they are allocated to using ZigZag, and then do a single COALA (Stream's cost model) evaluation to get the multi-core overheads.
 
 ## Outputs
-The results of the experiment will be saved in the `outputs/` folder under the created experiment id.
+The results of the experiment will be saved in the `outputs/` folder under the `experiment_id`.
 
-- `cost_lut.png` visualizes the ZigZag layer-core costs. Because the core allocations were fixed here, the cost of each layer was only extracted for the core it's allocated to.
+- `cost_lut.png` visualizes the ZigZag layer-core costs. Because the workload allocation is fixed here, the cost of each layer is only extracted for the core it's allocated to.
 - `schedule.html` is a Plotly-based visualization of the obtained schedule through time on the different computation and communication resources of the HDA. You can download this and view it in your favourite web browser (Firefox). 
 - `schedule.json` is a conversion of the schedule to json format for usage with the [Perfetto](https://ui.perfetto.dev/) visualization tool. This visualization scales better for very large workload graphs with a lot of nodes. Note that the colors here are not the same as in the Plotly visualization, as we don't have control over this.
 
-## Homework
+## Questions & Answers
 
 - Take a look inside the Stream API call in `stream/api.py`. Do you understand the meaning of all the defined stages and all arguments passed to these stages?
     > <details>
@@ -44,7 +65,7 @@ The results of the experiment will be saved in the `outputs/` folder under the c
     > <details>
     > <summary>Answer</summary>
     >     
-    > These are the number of generations of and the number of individuals in each generation of the genetic algorithm (GA). The GA is one of the optimization engines that can help find better workload allocations of the layers onto the computation cores. As the mapping is fixed, the GA doesn't actually optimize anything here, and will be bypassed. However, the API call requires them as an argument.
+    > These are the number of generations of and the number of individuals in each generation of the genetic algorithm (GA). The GA is one of the optimization engines that can help find a better workload allocation of the layers onto the computation cores. As the mapping is fixed, the GA doesn't actually optimize anything here, and will be bypassed. However, the API call requires them as an argument.
     >   
     > </details>
 
