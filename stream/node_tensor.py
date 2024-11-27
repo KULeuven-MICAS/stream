@@ -47,7 +47,7 @@ class NodeTensor(np.ndarray[Any, Any]):
     @property
     def shape(self) -> None:  # type: ignore
         """Protect the original shape attribute to prevent errors"""
-        raise ValueError("The numpy shape of NodeTensor is hidden in an abstraction layer")
+        raise ValueError("The numpy shape of NodeTensor is hidden in an abstraction layer. Call `tensor_shape` instead")
 
     @property
     def full_shape(self):
@@ -124,6 +124,25 @@ class NodeTensor(np.ndarray[Any, Any]):
     def gather(self, gather_indices: int | list[int], axis: int) -> "NodeTensor":
         axis = axis - 1 if axis < 0 else axis
         return (np.take(self.as_ndarray(), gather_indices, axis=axis)).view(NodeTensor)
+
+    def split(self, split_indices: list[int], axis: int) -> "list[NodeTensor]":
+        axis = axis - 1 if axis < 0 else axis
+        return [t.view(NodeTensor) for t in np.split(self.as_ndarray(), split_indices, axis=axis)]
+
+    def slice(self, starts: int, ends: int, axis: int, steps: int) -> "NodeTensor":
+        assert starts != 1 and ends != -1
+        axis = len(self.tensor_shape) - 1 if axis < 0 else axis
+        match axis:
+            case 0:
+                return self.as_ndarray()[starts:ends:steps, ...].view(NodeTensor)
+            case 1:
+                return self.as_ndarray()[:, starts:ends:steps, ...].view(NodeTensor)
+            case 2:
+                return self.as_ndarray()[:, :, starts:ends:steps, ...].view(NodeTensor)
+            case 3:
+                return self.as_ndarray()[:, :, :, starts:ends:steps, ...].view(NodeTensor)
+            case _:
+                raise NotImplementedError
 
     def concat_with_empty(self, shape: tuple[int, ...], axis: int, variable_input_first: bool):
         empty_shape = self.convert_to_full_shape(shape)
