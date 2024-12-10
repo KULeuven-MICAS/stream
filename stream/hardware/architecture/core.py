@@ -1,7 +1,12 @@
+from typing import Any
 from zigzag.hardware.architecture.accelerator import Accelerator as ZigZagCore
 
 
 class Core(ZigZagCore):
+
+    def __init__(self, args: Any):
+        super().__init__(**args)
+        self.utilization = 100
 
     def __eq__(self, other: object) -> bool:
         return (

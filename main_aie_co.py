@@ -16,10 +16,10 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 workload_path = "stream/inputs/aie/workload/conv1x1_64_64_32_32.onnx"
 accelerator = "stream/inputs/aie/hardware/single_aie_tile.yaml"
 mapping_path = "stream/inputs/aie/mapping/single_aie_tile.yaml"
-mode = "lbl"
-layer_stacks = [(0,),]
-# mode = "fused"
-# layer_stacks = [(0, 1)]
+# mode = "lbl"
+# layer_stacks = [(0,),]
+mode = "fused"
+layer_stacks = [(0,)]
 nb_ga_generations = 16
 nb_ga_individuals = 16
 ##############################################################################################
@@ -69,6 +69,7 @@ visualize_timeline_plotly(
     draw_dependencies=draw_dependencies,
     draw_communication=plot_data_transfer,
     fig_path=timeline_fig_path_plotly,
+    cost_lut=cost_lut,
 )
 # Plotting memory usage of best SCME
 plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
