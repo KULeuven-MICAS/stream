@@ -66,12 +66,15 @@ memories:
     served_dimensions: [D1]
 
 operational_array:
-  multiplier_energy: 0.5 # pJ
-  multiplier_area: 1 # unit
+  unit_energy: 0.5 # pJ
+  unit_area: 1 # unit
   dimensions: [D1]
   sizes: [256]
 
 dataflows:
   D1:
-    - C, 256
+    - D, 2
+    - C, 8
+    - K, 8
 
+utilization: 30.9

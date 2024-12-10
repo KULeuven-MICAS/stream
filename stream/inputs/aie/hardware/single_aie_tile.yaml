@@ -1,4 +1,4 @@
-name: single_aie_col
+name: single_aie_tile
 cores:
   0: aie_tile.yaml
 offchip_core: shim_dma.yaml
