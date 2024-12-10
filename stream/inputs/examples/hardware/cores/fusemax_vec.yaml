@@ -87,7 +87,7 @@ memories:
 
 operational_array:
   input_precision: [8, 8]
-  multiplier_energy: 0.1 # pJ
-  multiplier_area: 0.01 # unit
+  unit_energy: 0.1 # pJ
+  unit_area: 0.01 # unit
   dimensions: [D1, D2]
   sizes: [256, 1]

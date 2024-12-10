@@ -86,8 +86,8 @@ memories:
     served_dimensions: [D1, D2]
 
 operational_array:
-  multiplier_energy: 1.5
-  multiplier_area: 1 # unit
+  unit_energy: 1.5
+  unit_area: 1 # unit
   dimensions: [D1, D2]
   sizes: [256, 256]
 

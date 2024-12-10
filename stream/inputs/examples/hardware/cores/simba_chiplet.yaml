@@ -97,8 +97,8 @@ memories:
 
 
 operational_array:
-  multiplier_energy: 0.04  # Refine with more accurate data if available
-  multiplier_area: 1  # unit
+  unit_energy: 0.04  # Refine with more accurate data if available
+  unit_area: 1  # unit
   # D1/2 = 4x4 PE array. Each PE has 8 vector MACS (D3) that process 8 elements (D4) in parallel
   dimensions: [D1, D2, D3, D4]
   sizes: [4, 4, 8, 8]
