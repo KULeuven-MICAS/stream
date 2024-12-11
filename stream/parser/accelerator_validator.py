@@ -5,8 +5,9 @@ from itertools import combinations
 from typing import Any
 
 from cerberus import Validator
-from zigzag.parser.accelerator_validator import AcceleratorValidator as CoreValidator
 from zigzag.utils import open_yaml
+
+from stream.parser.core_validator import CoreValidator
 
 logger = logging.getLogger(__name__)
 

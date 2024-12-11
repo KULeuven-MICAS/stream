@@ -28,7 +28,7 @@ memories:
 
 operational_array:
   input_precision: [0, 0]
-  multiplier_energy: 0
-  multiplier_area: 0
+  unit_energy: 0
+  unit_area: 0
   dimensions: [D1, D2]
   sizes: [0, 0]
