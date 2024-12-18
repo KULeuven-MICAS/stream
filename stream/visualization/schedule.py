@@ -15,6 +15,7 @@ from matplotlib.patches import Rectangle
 from plotly.express.colors import sample_colorscale
 from zigzag.datatypes import LayerOperand
 
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.tensor import Tensor
@@ -182,7 +183,7 @@ def plot_timeline_brokenaxes(
 
     if plot_data_transfer:
         # First get all used and unique communication links
-        used_cl_collect = []
+        used_cl_collect: list[CommunicationLink] = []
         for ky, pair_link in accelerator.communication_manager.pair_links.items():
             if pair_link:
                 for link in pair_link:
@@ -201,13 +202,13 @@ def plot_timeline_brokenaxes(
                 start = event.start
                 end = event.end
                 runtime = end - start
-                tensors = event.tensors
-                weight_transfer = task_type.lower() == "transfer" and tensors[0].layer_operand in [
+                tensor = event.tensor
+                weight_transfer = task_type.lower() == "transfer" and tensor.layer_operand in [
                     LayerOperand("W"),
                     LayerOperand("B"),
                 ]
-                layer_id = tensors[0].origin.id
-                node_id = tensors[0].origin.sub_id
+                layer_id = tensor.origin.id
+                node_id = tensor.origin.sub_id
                 if layer_id not in layer_ids_seen:
                     color = next(layer_colors)
                     colors_seen.append(color)
@@ -401,8 +402,8 @@ def add_dependencies(fig, scme, colors, layer_ids):
 
 def get_communication_dicts(scme):
     dicts = []
-    accelerator = scme.accelerator
-    active_links = set()
+    accelerator: Accelerator = scme.accelerator
+    active_links: set[CommunicationLink] = set()
     for ky, link_pair in accelerator.communication_manager.pair_links.items():
         if link_pair:
             for link in link_pair:
@@ -418,8 +419,8 @@ def get_communication_dicts(scme):
             end = event.end
             runtime = end - start
             energy = event.energy
-            tensors = event.tensors
-            node = event.tensors[0].origin
+            tensor = event.tensor
+            node = tensor.origin
             layer_id = node.id
             activity = event.activity
             if runtime == 0:
@@ -433,7 +434,7 @@ def get_communication_dicts(scme):
                 Resource=resource,
                 Layer=layer_id,
                 Runtime=runtime,
-                Tensors=tensors,
+                Tensors=[tensor],
                 Type=task_type,
                 Activity=activity,
                 Energy=energy,

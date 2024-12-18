@@ -3,6 +3,7 @@ from math import ceil, log10, prod
 from zigzag.datatypes import LayerDim, LayerOperand, UnrollFactor
 
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.hardware.architecture.core import Core
 from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 
@@ -50,6 +51,7 @@ def get_latencies(
     cost_lut: CostModelEvaluationLUT,
     impossible_lat: float = 1e11,
     ids: dict[ComputationNode, int] = {},
+    latency_attr: str = "latency_total1",
 ) -> tuple[dict[tuple[int, str, int], int], dict]:
     if not ids:
         ids = {node: node.id for node in nodes}
@@ -74,7 +76,7 @@ def get_latencies(
                 inter_core_tiling_dims = [layer_dim for layer_dim, _ in node.inter_core_tiling]
                 inter_core_tiling_size = get_loop_size(temporal_loops, inter_core_tiling_dims)
                 inter_core_tiling_sizes[(node_id, core_name)] = inter_core_tiling_size
-                lat = cme.latency_total1
+                lat = getattr(cme, latency_attr)
                 possible_allocations[node_id].append(core_name)
             except ValueError:
                 lat = impossible_lat
@@ -130,3 +132,102 @@ def get_energies(
             energies[(ids[node], core_name)] = en
 
     return energies
+
+
+def get_k_splits(allocation):
+    k_splits: dict[int, list[Core]] = {}
+    for _, core, id in allocation:
+        k_splits[id] = k_splits.get(id, []) + [core]
+    return k_splits
+
+
+def get_node_latencies(allocation, cost_lut, accelerator, k_splits, latency_attr):
+    node_latencies = {}
+    core_names = sorted(set([a for _, a, _ in allocation]))
+    core_ids = [int(core_name.split(" ")[-1]) for core_name in core_names]
+    for _, a, id in allocation:
+        node = next(n for n in cost_lut.get_nodes() if n.id == id[0])
+        latencies, _ = get_latencies([node], core_ids, accelerator, cost_lut, latency_attr=latency_attr)
+        nb_k_splits = len(k_splits[id])
+        lat = latencies[(node.id, a, nb_k_splits)]
+        node_latencies[id, a] = lat
+    return node_latencies
+
+
+def get_layer_ids(allocation):
+    layer_ids: set[int] = set()
+    for _, _, id in allocation:
+        layer_ids.add(id[0])
+    layer_ids = sorted(layer_ids)
+    return layer_ids
+
+
+def get_timesteps(allocation) -> list[int]:
+    return [item[0] for item in allocation]
+
+
+def get_resources(allocation) -> set[int]:
+    return set(item[1] for item in allocation)
+
+
+def get_node_timesteps(allocation):
+    node_timesteps = {}
+    for t, a, id in allocation:
+        node_timesteps[id, a] = t
+    return node_timesteps
+
+
+def get_timestep_latencies(allocation, node_latencies, timesteps):
+    timestep_latencies = {t: 0 for t in range(max(timesteps) + 1)}
+    for t, a, id in allocation:
+        timestep_latencies[t] = max(timestep_latencies.get(t, 0), node_latencies[id, a])
+    return timestep_latencies
+
+
+def get_node_start_timesteps(k_splits, node_timesteps, timestep_latencies):
+    starts = {}
+    for id, allocations in k_splits.items():
+        for a in allocations:
+            start = get_start_time_of_node(id, a, node_timesteps, timestep_latencies)
+            starts[id, a] = start
+    return starts
+
+
+def get_start_time_of_node(id, a, timesteps, timestep_latencies, t_start=0):
+    node_timestep = timesteps[id, a]
+    for t in range(node_timestep):
+        t_end = t_start + timestep_latencies[t]
+        t_start = t_end
+    return t_start
+
+
+def calculate_total_latency(allocation, cost_lut, accelerator, iterations, latency_attr) -> tuple[int, str]:
+    k_splits = get_k_splits(allocation)
+    timesteps = get_timesteps(allocation)
+    node_latencies = get_node_latencies(allocation, cost_lut, accelerator, k_splits, latency_attr)
+    timestep_latencies = get_timestep_latencies(allocation, node_latencies, timesteps)
+    node_timesteps = get_node_timesteps(allocation)
+    starts = get_node_start_timesteps(k_splits, node_timesteps, timestep_latencies)
+    total_timestep_latency = sum(timestep_latencies.values())
+    cores = sorted(set(k[1] for k in starts))
+    overlap = compute_iterations_overlap(timestep_latencies, node_timesteps, starts, total_timestep_latency, cores)
+    total_lat = iterations * total_timestep_latency - (iterations - 1) * overlap
+    total_lat_str = f"total_lat = N * T - (N - 1) * overlap --> {total_lat} = {iterations} * {total_timestep_latency} - {iterations-1} * {overlap}"
+    return total_lat, total_lat_str
+
+
+def compute_iterations_overlap(timestep_latencies, node_timesteps, starts, T, cores):
+    slacks = {}
+    for core in cores:
+        relevant_starts = [v for k, v in starts.items() if k[1] == core]
+        earliest_start = min(relevant_starts)
+        latest_start = max(relevant_starts)
+        latest_id_core = next((k for k, v in starts.items() if v == latest_start and k[1] == core))
+        latest_timestep = node_timesteps[latest_id_core]
+        timestep_latency = timestep_latencies[latest_timestep]
+        latest_end = latest_start + timestep_latency
+        slack = T - latest_end + earliest_start
+        assert slack >= 0
+        slacks[core] = slack
+    overlap = min(slacks.values())
+    return overlap

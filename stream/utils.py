@@ -4,11 +4,9 @@ import pprint
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from numpy.typing import NDArray
-from onnx import ModelProto, NodeProto
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.mapping.data_movement import FourWayDataMoving
-from zigzag.parser.onnx.utils import get_onnx_tensor_type
+from zigzag.mapping.data_movement import FourWayDataMoving, MemoryAccesses
 
 from stream.hardware.architecture.core import Core
 from stream.workload.mapping import TILING_T
@@ -19,25 +17,6 @@ if TYPE_CHECKING:
     from stream.workload.onnx_workload import ComputationNodeWorkload
 
 ARRAY_T: TypeAlias = NDArray[Any]
-
-
-def get_onnx_input_shapes(node: NodeProto, onnx_model: ModelProto) -> tuple[list[int], list[int]]:
-    if len(node.input) != 2:
-        raise ValueError(f"Node {node.name} does not have two inputs")
-    input_name1 = node.input[0]
-    input_name2 = node.input[1]
-    input_shape1 = get_onnx_tensor_type(input_name1, onnx_model).shape
-    input_shape2 = get_onnx_tensor_type(input_name2, onnx_model).shape
-    return input_shape1, input_shape2
-
-
-def has_asymmetric_input_data(node: NodeProto, onnx_model: ModelProto):
-    """Return true iff the node has two inputs and the input nodes have a different shape"""
-    if len(node.input) != 2:
-        return False
-
-    input_shape1, input_shape2 = get_onnx_input_shapes(node, onnx_model)
-    return input_shape1 != input_shape2
 
 
 def get_too_large_operands(cme: CostModelEvaluation, accelerator: "Accelerator", core_id: int) -> list[MemoryOperand]:
@@ -110,19 +89,25 @@ def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNo
     """! Get the unique nodes from a workload."""
     unique_nodes: list[ComputationNode] = []
     for node in workload.node_list:
-        equal_nodes = list(
-            (
-                unique_node
-                for unique_node in unique_nodes
-                if node.has_same_performance(unique_node) and node.group == unique_node.group
-            )
-        )
+        equal_nodes = list((unique_node for unique_node in unique_nodes if node.has_same_performance(unique_node)))
         if not equal_nodes:
             unique_nodes.append(node)
     return unique_nodes
 
 
-def get_required_offchip_bandwidth(
+def get_top_level_inst_bandwidth(cme: CostModelEvaluation, mem_op: MemoryOperand) -> MemoryAccesses:
+    """Given a cost model evaluation and a memory instance, compute the memory's total instantaneous bandwidth
+    required throughout the execution of the layer that corresponds to this CME. Returns empty bandwidth
+    requirements if the given memory instance is not included in this CME's memory hierarchy.
+    NOTE: this function is used in Stream
+    """
+    assert mem_op in cme.mem_hierarchy_dict
+    layer_op = cme.layer.memory_operand_links.mem_to_layer_op(mem_op)
+    inst_bw_4way = cme.mapping.unit_mem_data_movement[layer_op][-1].req_mem_bw_inst
+    return inst_bw_4way
+
+
+def get_total_required_offchip_bandwidth(
     cme: CostModelEvaluation, too_large_operands: list[MemoryOperand]
 ) -> FourWayDataMoving:
     if not too_large_operands:

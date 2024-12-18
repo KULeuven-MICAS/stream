@@ -103,6 +103,12 @@ class ZigZagCoreMappingEstimationStage(Stage):
                     # It's possible this node might not fully fit within the core's top level memories.
                     #  If so, we update the core
                     too_large_operands_for_cme = self.check_core_capacity_for_node(core, node_duplicate)
+                    # ! --- ensure all constant weights are accessed via blocking behavior i.s.o. transfer
+                    for layer_op in node.constant_operands:
+                        mem_op = node.memory_operand_links.layer_to_mem_op(layer_op)
+                        if mem_op not in too_large_operands_for_cme:
+                            too_large_operands_for_cme.append(mem_op)
+                    # ! ---
                     node_duplicate.set_chosen_core_allocation(core_id)
 
                     # Attempt to override the node's spatial mapping based on the core's dataflow
@@ -119,6 +125,8 @@ class ZigZagCoreMappingEstimationStage(Stage):
                     answers = main_stage.run()
                     assert len(answers) == 1, "ZigZagCoreMappingEstimationStage's subflow returned more than one CME"
                     cme: CostModelEvaluation = answers[0][0]  # type: ignore
+                    cme = self.increase_cc_per_op(cme, node.type)
+
                     node_duplicate.set_chosen_core_allocation(None)  # Reset the node's chosen core allocation
                     self.cost_lut.add_cme(node, core, cme, allow_overwrite=False)
             self.cost_lut.save()
@@ -133,6 +141,23 @@ class ZigZagCoreMappingEstimationStage(Stage):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
+
+    def increase_cc_per_op(self, cme: CostModelEvaluation, op_type: str):
+        match op_type:
+            case "silu":
+                factor = 4
+            case "sigmoid":
+                factor = 4
+            case "exp":
+                factor = 4
+            case _:
+                factor = 1
+
+        if factor > 1:
+            logger.warning(f"Setting cycles per mac of {op_type} node to {factor}")
+
+        cme.calc_overall_latency(cycles_per_mac=factor)
+        return cme
 
     def visualize_cost_lut(self):
         # Get the scale factors

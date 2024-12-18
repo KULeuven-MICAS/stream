@@ -19,13 +19,7 @@ from stream.utils import contains_wildcard
 from stream.workload.computation.computation_node import ComputationNode, LoopRanges
 from stream.workload.dependency_propagation.concat_node import ConcatNode
 from stream.workload.dependency_propagation.dummy_node import DummyNode
-from stream.workload.dependency_propagation.elementwise_node import ElementwiseNode
-from stream.workload.dependency_propagation.flatten_node import FlattenNode
-from stream.workload.dependency_propagation.gather_node import GatherNode
-from stream.workload.dependency_propagation.lpnormalization_node import LpNormalizationNode
-from stream.workload.dependency_propagation.reshape_node import ReshapeNode
-from stream.workload.dependency_propagation.transpose_node import TransposeNode
-from stream.workload.dnn_workload import DNNWorkloadStream
+from stream.workload.dependency_propagation.propagation_node import PropagationNode
 from stream.workload.node import Node
 from stream.workload.onnx_workload import ComputationNodeWorkload, ONNXWorkload
 from stream.workload.tensor import Tensor
@@ -128,7 +122,7 @@ class TiledWorkloadGenerationStage(Stage):
         return sorted(((n.id, n.sub_id) for n in workload.node_list), reverse=True)
 
     @staticmethod
-    def get_all_node_pairs(G: DNNWorkloadStream) -> tuple[tuple[ComputationNode, ComputationNode, bool], ...]:
+    def get_all_node_pairs(G: ONNXWorkload) -> tuple[tuple[ComputationNode, ComputationNode, bool], ...]:
         pairs: list[tuple[ComputationNode, ComputationNode, bool]] = []
         for node in G.topological_sort():
             if not isinstance(node, ComputationNode):
@@ -387,6 +381,7 @@ class TiledWorkloadGenerationStage(Stage):
         # where the onnx tensors are always flattened back to 4D (merging the G+C or G+K into one channel dimension)
         dimensions, loop_ranges = self.flatten_grouped_convolution_ranges(producer, consumer, dimensions, loop_ranges)
         bounding_box = [loop_ranges[dim] for dim in dimensions]
+        # TODO can bounding box have size 1? Will probably crash if so
 
         if not interleaved:
             bounding_box_flat = tuple([item for sublist in bounding_box for item in sublist])
@@ -406,6 +401,12 @@ class TiledWorkloadGenerationStage(Stage):
             inclusive_ranges = self.convert_to_inclusive_data_range(node.loop_ranges)
             dimensions = node.operand_dimensionality_order[operand]
             bounds = self.get_bounding_box_dimensions(producer, consumer, dimensions, inclusive_ranges)
+
+            # TODO this is a whacky fix
+            # RTree doesn't accept bound of one dimension
+            if len(bounds) == 2:
+                bounds = (0, 0) + bounds
+
             yield (i, bounds, None)
 
     def get_nb_input_dimensions(self, node: ComputationNode, operand: LayerOperand):
@@ -427,7 +428,7 @@ class TiledWorkloadGenerationStage(Stage):
         """
         props = index.Property()
         # We assume all nodes in 'nodes' have identical dimensions
-        props.dimension = self.get_nb_input_dimensions(nodes[0], operand)
+        props.dimension = max(self.get_nb_input_dimensions(nodes[0], operand), 2)
 
         rtree = index.Index(self.bounding_box_generator(producer, consumer, nodes, operand), properties=props)
         return rtree
@@ -567,6 +568,7 @@ class TiledWorkloadGenerationStage(Stage):
         producer: ComputationNode,
         consumer: ComputationNode,
     ):
+
         numpy_tensors: dict[ComputationNode, dict[LayerOperand, NodeTensor]] = {}
         all_inter_edges: list[tuple[ComputationNode, ComputationNode, dict[str, Any]]] = []
 
@@ -590,6 +592,7 @@ class TiledWorkloadGenerationStage(Stage):
         assert (
             len(paths_between) > 0
         ), "No paths between producer and consumer found without ComputationNode in intermediates."
+
         for path_between in paths_between:
             # First node in the path is a ComputationNode, of which we extract the output operand dependency tensor
             first_node = path_between[0]
@@ -597,10 +600,10 @@ class TiledWorkloadGenerationStage(Stage):
             tensor = get_tensor_cn_for_op(first_node, dependent_operand=Constants.OUTPUT_LAYER_OP)
 
             # Propagate through intermediate, non-computation nodes
-            for _, node in enumerate(path_between[1:-1], start=1):
-                if isinstance(node, ComputationNode):
-                    raise ValueError("Intermediate nodes should not be of type ComputationNode.")
-                tensor = self.propagate_cn_production_for_non_cn(node, tensor)
+            for i, node in enumerate(path_between[1:-1], start=1):
+                assert isinstance(node, PropagationNode), "Intermediate nodes should not be of type ComputationNode"
+                next_node = path_between[i + 1]
+                tensor = node.propagate(tensor, next_node)
 
             # Final node: Computation node
             final_node: ComputationNode = path_between[-1]  # type: ignore
@@ -612,7 +615,7 @@ class TiledWorkloadGenerationStage(Stage):
             )
 
             # Error handling of shape mismatches in tensor propagation
-            def get_final_tensor_alt_operand():
+            def _get_final_tensor_alt_operand():
                 """Error handling case 1: sources for `W` and `I` operand are swapped for this node
                 -> try the other one"""
                 try:
@@ -622,7 +625,7 @@ class TiledWorkloadGenerationStage(Stage):
                     raise TensorDimensionMismatchException
                 return get_tensor_cn_for_op(final_node, alt_operand)
 
-            def get_shape_inferred_propagated_tensor(tensor: NodeTensor, final_tensor: NodeTensor):
+            def _get_shape_inferred_propagated_tensor(tensor: NodeTensor, final_tensor: NodeTensor):
                 """Error handling case 2: dimensions of ComputationNode (`final_tensor`) were altered by stream
                 (e.g. to be properly divisible) but this is not reflected in `ConcatNode` with constant shape.
                  -> manually fix shape"""
@@ -649,17 +652,17 @@ class TiledWorkloadGenerationStage(Stage):
                 inter_edges = self.get_inter_edges_tensor_based(tensor, final_tensor)
             except TensorDimensionMismatchException:
                 try:  # Error case 1
-                    final_tensor = get_final_tensor_alt_operand()
+                    final_tensor = _get_final_tensor_alt_operand()
                     inter_edges = self.get_inter_edges_tensor_based(tensor, final_tensor)
                 except TensorDimensionMismatchException:
                     try:  # Error case 2
                         final_tensor = get_tensor_cn_for_op(final_node, dependent_operand)
-                        tensor = get_shape_inferred_propagated_tensor(tensor, final_tensor)
+                        tensor = _get_shape_inferred_propagated_tensor(tensor, final_tensor)
                         inter_edges = self.get_inter_edges_tensor_based(tensor, final_tensor)
                     except TensorDimensionMismatchException:
                         # Error case 1 and 2 combined
-                        final_tensor = get_final_tensor_alt_operand()
-                        tensor = get_shape_inferred_propagated_tensor(tensor, final_tensor)
+                        final_tensor = _get_final_tensor_alt_operand()
+                        tensor = _get_shape_inferred_propagated_tensor(tensor, final_tensor)
                         inter_edges = self.get_inter_edges_tensor_based(tensor, final_tensor)
 
             for producer, cons in inter_edges:
@@ -674,27 +677,6 @@ class TiledWorkloadGenerationStage(Stage):
                     )
                 )
         return all_inter_edges
-
-    def propagate_cn_production_for_non_cn(self, node: Node, input_tensor: NodeTensor) -> NodeTensor:
-        match node:
-            case ReshapeNode():
-                return node.reshape_operand_tensor(input_tensor)
-            case TransposeNode():
-                return node.transpose(input_tensor)
-            case LpNormalizationNode():
-                return node.lpnormalization_operand_tensor(input_tensor)
-            case FlattenNode():
-                return node.flatten(input_tensor)
-            case ElementwiseNode():
-                return input_tensor.copy()
-            case GatherNode():
-                return node.gather_operand_tensor(input_tensor)
-            case ConcatNode():
-                return node.concat(input_tensor)
-            case DummyNode():
-                return input_tensor
-            case _:
-                raise NotImplementedError(f"Tensor propagation not implemented for node {node.name}.")
 
     @staticmethod
     def get_inter_edges_tensor_based(producer_output_tensor: NodeTensor, consumer_input_tensor: NodeTensor):

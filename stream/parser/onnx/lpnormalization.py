@@ -11,6 +11,8 @@ class LpNormalizationParser(OnnxOperatorParser):
         super().__init__(node_id, node, nodes_outputs, mapping, onnx_model)
 
     def generate_node(self):
+        input_names = list(self.node.input)
+
         # Get the predecessors of this node
         # TODO use superclass' `get_node_predecessors`
         predecessors = []
@@ -23,5 +25,6 @@ class LpNormalizationParser(OnnxOperatorParser):
             node_id=self.node_id,
             node_name=self.node_name,
             predecessor=self.predecessor,
+            input_names=input_names,
         )
         return node_obj

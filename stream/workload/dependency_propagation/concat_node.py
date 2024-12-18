@@ -1,11 +1,11 @@
 from zigzag.datatypes import LayerOperand
-from zigzag.workload.layer_node_abc import LayerNodeABC
 
 from stream.node_tensor import NodeTensor
+from stream.workload.dependency_propagation.propagation_node import PropagationNode
 from stream.workload.node import Node
 
 
-class ConcatNode(Node, LayerNodeABC):
+class ConcatNode(PropagationNode):
     """Class that represents an onnx Concat node with one constant input."""
 
     def __init__(
@@ -16,6 +16,7 @@ class ConcatNode(Node, LayerNodeABC):
         axis: int,
         constant_shape: tuple[int, ...],
         variable_input_first: bool,
+        input_names: list[str] = [],
     ) -> None:
         """Initialize the ConcatNode
 
@@ -26,17 +27,8 @@ class ConcatNode(Node, LayerNodeABC):
             variable_input_first: Wether the result is `concat(input, constant_tensor)` or
                 `concat(constant_tensor, input)`
         """
-        Node.__init__(
-            self,
-            node_id=node_id,
-            node_name=node_name,
-            type="gather",
-            onchip_energy=0,
-            offchip_energy=0,
-            runtime=0,
-            possible_core_allocation=[-1],
-        )
-        LayerNodeABC.__init__(self, node_id=node_id, node_name=node_name)
+        op_type = "concat"
+        super().__init__(node_id, node_name, op_type, input_names)
 
         self.axis = axis
         self.constant_shape = constant_shape
@@ -53,7 +45,7 @@ class ConcatNode(Node, LayerNodeABC):
             case _:
                 raise ValueError("More than two inputs for ConcatNode")
 
-    def concat(self, tensor: NodeTensor) -> NodeTensor:
+    def propagate(self, tensor: NodeTensor, next_node: Node | None = None) -> NodeTensor:
         """Perform gather operation on the tensor."""
         return tensor.concat_with_empty(
             shape=self.constant_shape, axis=self.axis, variable_input_first=self.variable_input_first
