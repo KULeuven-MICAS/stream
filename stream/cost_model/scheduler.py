@@ -221,6 +221,31 @@ def check_for_removal(
                 )
 
 
+def sync_cores_idle_from(
+    cores_idle_from: dict[int, int],
+    G: ComputationNodeWorkload,
+    best_candidate: ComputationNode,
+    scheduling_order: list[tuple[int, int]],
+):
+    """
+    Sync the cores_idle_from dict values if the best candidate is the first node of a layer and we detect layer-by-layer execution.
+    The layer-by-layer execution is detected through the scheduling_order.
+    """
+    # Get the predecessor ids of the best_candidate from the workload graph G
+    predecessor_ids = [pred.id for pred in G.predecessors(best_candidate) if pred.id != best_candidate.id]
+    predecessor_idxs = [i for i in range(len(scheduling_order)) if scheduling_order[i][0] in predecessor_ids]
+
+    best_candidate_idx = scheduling_order.index((best_candidate.id, best_candidate.sub_id))
+    if scheduling_order[best_candidate_idx - 1][0] in predecessor_ids and all(
+        (i < best_candidate_idx for i in predecessor_idxs)
+    ):
+        # If the best_candidate is the first node of a layer and all nodes of predecessor layers have been scheduled
+        # Sync the cores_idle_from dict
+        max_idle_time = max(cores_idle_from.values())
+        for core_id in cores_idle_from:
+            cores_idle_from[core_id] = max_idle_time
+
+
 def schedule_graph(
     G: ComputationNodeWorkload,
     accelerator: "Accelerator",
@@ -301,7 +326,8 @@ def schedule_graph(
     while not done:
         # Get the best candidate given the selection priority
         best_candidate, preds_end = get_best_candidate(candidates, scheduling_order)
-
+        # Sync cores_idle_from variable for layer-by-layer scheduling
+        sync_cores_idle_from(cores_idle_from, G, best_candidate, scheduling_order)
         # Get the core this candidate will be scheduled on
         core_id = best_candidate.chosen_core_allocation
         assert core_id is not None
