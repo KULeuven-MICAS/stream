@@ -3,10 +3,15 @@ from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
+from zigzag.mapping.data_movement import MemoryAccesses
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.stages.stage import Stage, StageCallable
-from stream.utils import CostModelEvaluationLUT, get_required_offchip_bandwidth, get_too_large_operands
+from stream.utils import (
+    CostModelEvaluationLUT,
+    get_too_large_operands,
+    get_top_level_inst_bandwidth,
+)
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
@@ -62,11 +67,14 @@ class SetFixedAllocationPerformanceStage(Stage):
                 latency = getattr(cme, self.latency_attr)
                 too_large_operands = get_too_large_operands(cme, self.accelerator, core_id=core_id)
                 onchip_energy, offchip_energy = self.get_energy_distribution(cme, too_large_operands)
+
                 # Get the required offchip bandwidth during the execution of the node for all directions
-                offchip_bandwidth = get_required_offchip_bandwidth(cme, too_large_operands)
+                offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses] = {
+                    mem_op: get_top_level_inst_bandwidth(cme, mem_op) for mem_op in too_large_operands
+                }
                 self.set_hw_performance_node(node, onchip_energy, offchip_energy, latency, core_id)
                 node.set_too_large_operands(too_large_operands.copy())
-                node.set_offchip_bandwidth(offchip_bandwidth)
+                node.set_offchip_bandwidth(offchip_bandwidth_per_op)
 
     def get_energy_distribution(
         self, cme: CostModelEvaluation, too_large_operands: list[MemoryOperand]

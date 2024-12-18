@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 from numpy.typing import NDArray
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.mapping.data_movement import FourWayDataMoving
+from zigzag.mapping.data_movement import FourWayDataMoving, MemoryAccesses
 
 from stream.hardware.architecture.core import Core
 from stream.workload.mapping import TILING_T
@@ -95,7 +95,19 @@ def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNo
     return unique_nodes
 
 
-def get_required_offchip_bandwidth(
+def get_top_level_inst_bandwidth(cme: CostModelEvaluation, mem_op: MemoryOperand) -> MemoryAccesses:
+    """Given a cost model evaluation and a memory instance, compute the memory's total instantaneous bandwidth
+    required throughout the execution of the layer that corresponds to this CME. Returns empty bandwidth
+    requirements if the given memory instance is not included in this CME's memory hierarchy.
+    NOTE: this function is used in Stream
+    """
+    assert mem_op in cme.mem_hierarchy_dict
+    layer_op = cme.layer.memory_operand_links.mem_to_layer_op(mem_op)
+    inst_bw_4way = cme.mapping.unit_mem_data_movement[layer_op][-1].req_mem_bw_inst
+    return inst_bw_4way
+
+
+def get_total_required_offchip_bandwidth(
     cme: CostModelEvaluation, too_large_operands: list[MemoryOperand]
 ) -> FourWayDataMoving:
     if not too_large_operands:

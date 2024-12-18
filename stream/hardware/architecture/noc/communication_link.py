@@ -107,7 +107,7 @@ class CommunicationLink:
         start: int,
         duration: int,
         tensors: list["Tensor"],
-        activity: int = 100,
+        bandwidth_per_tensor: list[int],
     ):
         """Block this communication link from start timestep for a given duration.
 
@@ -117,17 +117,19 @@ class CommunicationLink:
             tensors: A list of tensors for which we are blocking the link.
             activity: The percentage of the link bandwidth used
         """
+        assert len(tensors) == len(bandwidth_per_tensor)
         end = start + duration
-        # Create a CLEvent
-        event = CommunicationLinkEvent(
-            type="block",
-            start=start,
-            end=end,
-            tensors=tensors,
-            energy=tensors[0].origin.get_offchip_energy(),
-            activity=activity,
-        )
-        self.update_activity(event)
+        # Create a CLEvent per tensor
+        for tensor, bandwidth in zip(tensors, bandwidth_per_tensor):
+            event = CommunicationLinkEvent(
+                type="block",
+                start=start,
+                end=end,
+                tensor=tensor,
+                energy=tensor.origin.get_offchip_energy(),
+                activity=bandwidth,
+            )
+            self.update_activity(event)
         return
 
     def update_activity(self, event: CommunicationLinkEvent):
@@ -136,11 +138,12 @@ class CommunicationLink:
         activity = event.activity
         if start == end:
             return
+
         # Check if this is a duplicate event for broadcast
-        for tensor in event.tensors:
-            previous_events = self.tensors.get(tensor, [])
-            if any((previous_event.start == event.start for previous_event in previous_events)):
-                return
+        previous_events = self.tensors.get(event.tensor, [])
+        if any((previous_event.start == event.start for previous_event in previous_events)):
+            return
+
         idx_start = np.searchsorted(self.active_ts, start)
         if self.active_ts[idx_start] == start:
             self.active_deltas[idx_start] += activity
@@ -153,9 +156,9 @@ class CommunicationLink:
         else:
             self.active_ts = np.insert(self.active_ts, idx_end, end)
             self.active_deltas = np.insert(self.active_deltas, idx_end, -activity)
-        # Track that this link has transferred the tensors of this event for future broadcasts
-        for tensor in event.tensors:
-            self.tensors[tensor] = self.tensors.get(tensor, []) + [event]
+            # Track that this link has transferred the tensors of this event for future broadcasts
+
+        self.tensors[event.tensor] = self.tensors.get(event.tensor, []) + [event]
         self.events.append(event)
 
     def get_idle_window(self, activity: float, duration: int, earliest_t: int, tensors: list["Tensor"]):

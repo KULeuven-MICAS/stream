@@ -1,6 +1,7 @@
 from abc import ABCMeta
 
-from zigzag.mapping.data_movement import FourWayDataMoving
+from zigzag.datatypes import MemoryOperand
+from zigzag.mapping.data_movement import MemoryAccesses
 from zigzag.workload.layer_node_abc import LayerNodeABC
 
 
@@ -8,6 +9,8 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
     """Abstract base class that represents a piece of an algorithmic workload.
     Example: ComputationNode, etc.
     """
+
+    offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses]
 
     def __init__(
         self,
@@ -52,9 +55,6 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         self.data_consumed_unique = 0
         # number of data (in bits) only this node produces (not produced by any other node)
         self.data_produced_unique = 0
-
-        # will be set together with the core allocation
-        self.offchip_bw = FourWayDataMoving(0, 0, 0, 0)
 
     def get_total_energy(self) -> float:
         """Get the total energy of running this node, including off-chip energy."""
@@ -134,8 +134,8 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         """
         return self.end is not None
 
-    def set_offchip_bandwidth(self, offchip_bw: FourWayDataMoving):
-        self.offchip_bw = offchip_bw
+    def set_offchip_bandwidth(self, offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses]):
+        self.offchip_bandwidth_per_op = offchip_bandwidth_per_op
 
     def __str__(self):
         return self.name
