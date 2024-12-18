@@ -35,6 +35,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
         layer_groups_flexible,
         operands_to_prefetch: list[LayerOperand],
         scheduling_order: list[tuple[int, int]],
+        latency_attr: str,
     ) -> None:
         super().__init__(workload, accelerator, cost_lut)
 
@@ -44,6 +45,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
         self.layer_groups_flexible = layer_groups_flexible
         self.operands_to_prefetch = operands_to_prefetch
         self.scheduling_order = scheduling_order
+        self.latency_attr = latency_attr
 
     def get_fitness(self, core_allocations: list[int], return_scme: bool = False):
         """Get the fitness of the given core_allocations
@@ -88,7 +90,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                 assert equal_unique_node is not None, "Node not found in CostModelEvaluationLUT"
                 cme = self.cost_lut.get_cme(equal_unique_node, core)
                 onchip_energy = cme.energy_total  # Initialize on-chip energy as total energy
-                latency = cme.latency_total1
+                latency = getattr(cme, self.latency_attr)
                 too_large_operands = get_too_large_operands(cme, self.accelerator, core_id=core_allocation)
                 # If there is a too_large_operand, we separate the off-chip energy.
                 offchip_energy = 0

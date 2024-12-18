@@ -26,6 +26,7 @@ def get_optimal_allocations(
     iterations: int,
     gap: float = 0.5,
     time_limit: int = 600,
+    latency_attr: str = "latency_total1",
 ) -> ALLOCATION_T:
     core_ids = sorted((core.id for core in accelerator.cores.node_list if core.id != accelerator.offchip_core_id))
     core_capacities = get_core_capacities(accelerator, MemoryOperand("I2"), core_ids)
@@ -34,7 +35,13 @@ def get_optimal_allocations(
     ids = convert_ids(nodes)
 
     latencies, possible_allocation_splits = get_latencies(
-        nodes, core_ids, accelerator, cost_lut, impossible_lat=0, ids=ids
+        nodes,
+        core_ids,
+        accelerator,
+        cost_lut,
+        impossible_lat=0,
+        ids=ids,
+        latency_attr=latency_attr,
     )
     energies = get_energies(nodes, core_ids, accelerator, cost_lut, impossible_energy=0, ids=ids)
     output_operand = LayerOperand("O")

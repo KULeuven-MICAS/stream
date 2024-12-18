@@ -32,7 +32,7 @@ class SetFixedAllocationPerformanceStage(Stage):
         self.accelerator = accelerator
         self.workload = workload
         self.cost_lut = cost_lut
-        self.latency_attr = kwargs.get("latency_attr", "latency_total2")
+        self.latency_attr = kwargs.get("latency_attr", "latency_total1")
 
     def run(self):
         logger.info("Start SetFixedAllocationPerformanceStage.")

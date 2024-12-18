@@ -39,6 +39,7 @@ class GeneticAlgorithmAllocationStage(Stage):
         nb_ga_individuals: int,
         operands_to_prefetch: list[LayerOperand],
         scheduling_order: list[tuple[int, int]],
+        latency_attr: str,
         **kwargs: Any,
     ):
         """Initialize the InterCoreMappingStage.
@@ -59,6 +60,7 @@ class GeneticAlgorithmAllocationStage(Stage):
         self.nb_individuals = nb_ga_individuals
         self.operands_to_prefetch = operands_to_prefetch
         self.scheduling_order = scheduling_order
+        self.latency_attr = latency_attr
 
         # Determine the set of all (layer, group) combinations to be allocated separately
         self.layer_groups: list[tuple[int, int]] = sorted(set((n.id, n.group) for n in self.workload.node_list))
@@ -97,6 +99,7 @@ class GeneticAlgorithmAllocationStage(Stage):
             self.layer_groups_flexible,
             self.operands_to_prefetch,
             self.scheduling_order,
+            self.latency_attr,
         )
 
         # Extract the length of an individual.
