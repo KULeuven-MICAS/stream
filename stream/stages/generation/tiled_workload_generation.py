@@ -563,6 +563,7 @@ class TiledWorkloadGenerationStage(Stage):
         producer: ComputationNode,
         consumer: ComputationNode,
     ):
+
         numpy_tensors: dict[ComputationNode, dict[LayerOperand, NodeTensor]] = {}
         all_inter_edges: list[tuple[ComputationNode, ComputationNode, dict[str, Any]]] = []
 

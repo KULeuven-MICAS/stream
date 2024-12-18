@@ -49,10 +49,12 @@ class ONNXModelParser:
         "Mul": MulParser,
         "Softmax": SoftmaxParser,
         # Single-input element-wise
+        "Exp": SimdParser,
         "ReduceMean": Reduce1DParser,
         "Relu": SimdParser,
         "Gelu": SimdParser,
         "Silu": SimdParser,
+        "Sigmoid": SimdParser,
         "Sqrt": SimdParser,
         "Div": SimdParser,
         "Pow": SimdParser,

@@ -89,13 +89,7 @@ def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNo
     """! Get the unique nodes from a workload."""
     unique_nodes: list[ComputationNode] = []
     for node in workload.node_list:
-        equal_nodes = list(
-            (
-                unique_node
-                for unique_node in unique_nodes
-                if node.has_same_performance(unique_node) and node.group == unique_node.group
-            )
-        )
+        equal_nodes = list((unique_node for unique_node in unique_nodes if node.has_same_performance(unique_node)))
         if not equal_nodes:
             unique_nodes.append(node)
     return unique_nodes

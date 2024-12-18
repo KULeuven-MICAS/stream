@@ -14,11 +14,22 @@ class Reduce1DParser(OnnxComputeOperatorParser):
         # The case that keepdim=True: the reduced dimension is kept with size 1
         if len(input_shape) == len(output_shape):
             different_size = [a != b for a, b in zip(input_shape, output_shape)]
-            if sum(different_size) != 1:
-                raise ValueError(f"Input and output shapes {input_shape}, {output_shape} should only differ in one dim")
-            reduction_dim = different_size.index(True)
-            if output_shape[reduction_dim] != 1:
-                raise ValueError(f"The reduced dimension at axis {reduction_dim} in {output_shape} is larger than 1")
+            match sum(different_size):
+                case 0:
+                    # Input and output size are the same: can happen with when a Reduce1D node is inferred but
+                    # not present in ONNX -> default to -1
+                    reduction_dim = len(input_shape) - 1
+                case 1:
+                    reduction_dim = different_size.index(True)
+                    if output_shape[reduction_dim] != 1:
+                        raise ValueError(
+                            f"The reduced dimension at axis {reduction_dim} in {output_shape} is larger than 1"
+                        )
+                case _:
+                    # More than 1 dimension has different size
+                    raise ValueError(
+                        f"Input and output shapes {input_shape}, {output_shape} should only differ in one dim"
+                    )
             return reduction_dim
 
         # Other: assume that the reduction is at axis=-1

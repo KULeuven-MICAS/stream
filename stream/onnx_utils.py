@@ -80,8 +80,12 @@ def get_constant_tensor_int(onnx_model: ModelProto, constant_output_name: str):
 def get_axis_attribute(node: NodeProto):
     """Find the value of the axis associated with this ONNX node"""
     ATTR_NAME = "axis"
+    DEFAULT = -1
 
-    value = get_attribute_as_ints(node, ATTR_NAME)
+    try:
+        value = get_attribute_as_ints(node, ATTR_NAME)
+    except ValueError:
+        return DEFAULT
     if not isinstance(value, int):
         raise ValueError(f"{ATTR_NAME} attribute as list of ints not supported")
     return value
