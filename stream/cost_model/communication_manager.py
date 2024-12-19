@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 class CommunicationEvent:
     """Represents a communication event involving one or more CommunicationLinks."""
 
-    def __init__(self, id: int, tasks: list["CommunicationLinkEvent"]) -> None:
+    def __init__(self, id: int, tasks: list["CommunicationLinkEvent"], sender: Core, receiver: Core) -> None:
         # Sanity checks
         assert len(tasks) > 0
         assert all([t.type == tasks[0].type] for t in tasks)
@@ -28,9 +28,11 @@ class CommunicationEvent:
         self.start = tasks[0].start
         self.end = tasks[0].end
         self.energy = sum([t.energy for t in tasks])
+        self.sender = sender
+        self.receiver = receiver
 
     def __str__(self) -> str:
-        return f"CommunicationEvent(id={self.id})"
+        return f"CommunicationEvent(id={self.id}, sender={self.sender}, receiver={self.receiver})"
 
     def __repr__(self) -> str:
         return str(self)
@@ -49,7 +51,17 @@ class CommunicationLinkEvent:
             * the bits per clock cycle used of the link bandwidth
     """
 
-    def __init__(self, type: str, start: int, end: int, tensor: Tensor, energy: float, activity: float) -> None:
+    def __init__(
+        self,
+        type: str,
+        start: int,
+        end: int,
+        tensor: Tensor,
+        energy: float,
+        activity: float,
+        sender: Core,
+        receiver: Core,
+    ) -> None:
         self.type = type
         self.start = start
         self.end = end
@@ -57,11 +69,13 @@ class CommunicationLinkEvent:
         self.tensor = tensor
         self.energy = energy
         self.activity = activity
+        self.sender = sender
+        self.receiver = receiver
 
     def __str__(self) -> str:
         return (
             f"CommunicationLinkEvent(type={self.type}, start={self.start}, end={self.end}, tensor={self.tensor}, "
-            f"energy={self.energy:.2e}, activity={self.activity:.2f})"
+            f"energy={self.energy:.2e}, activity={self.activity:.2f}, sender={self.sender}, receiver={self.receiver})"
         )
 
     def __repr__(self) -> str:
@@ -159,12 +173,16 @@ class CommunicationManager:
                 tensor=tensor,
                 energy=duration * link.unit_energy_cost,
                 activity=link.bandwidth,
+                sender=sender,
+                receiver=receiver,
             )
             for link in links
         ]
         event = CommunicationEvent(
             id=self.event_id,
             tasks=cles,
+            sender=sender,
+            receiver=receiver,
         )
         self.events.append(event)
         self.event_id += 1
@@ -244,7 +262,11 @@ class CommunicationManager:
         for link, tensors in tensors_per_link.items():
             operands = [tensor.memory_operand for tensor in tensors]
             bandwidths = [get_inst_bw(op) for op in operands]
-            link.block(block_start, duration, tensors, bandwidth_per_tensor=bandwidths)
+            senders = [core if operand == Constants.OUTPUT_MEM_OP else offchip_core for operand in operands]
+            receivers = [offchip_core if operand == Constants.OUTPUT_MEM_OP else core for operand in operands]
+            link.block(
+                block_start, duration, tensors, bandwidth_per_tensor=bandwidths, senders=senders, receivers=receivers
+            )
 
         return block_start
 

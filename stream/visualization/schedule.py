@@ -423,6 +423,8 @@ def get_communication_dicts(scme):
             node = tensor.origin
             layer_id = node.id
             activity = event.activity
+            sender = event.sender
+            receiver = event.receiver
             if runtime == 0:
                 continue
             d = dict(
@@ -439,6 +441,8 @@ def get_communication_dicts(scme):
                 Activity=activity,
                 Energy=energy,
                 LinkBandwidth=cl.bandwidth,
+                Sender=sender,
+                Receiver=receiver,
             )
             dicts.append(d)
     return dicts

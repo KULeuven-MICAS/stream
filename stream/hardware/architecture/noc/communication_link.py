@@ -108,6 +108,8 @@ class CommunicationLink:
         duration: int,
         tensors: list["Tensor"],
         bandwidth_per_tensor: list[int],
+        senders: list["Core"],
+        receivers: list["Core"],
     ):
         """Block this communication link from start timestep for a given duration.
 
@@ -116,11 +118,14 @@ class CommunicationLink:
             duration: The duration of the blocking.
             tensors: A list of tensors for which we are blocking the link.
             activity: The percentage of the link bandwidth used
+            bandwidth_per_tensor: The bandwidth used by each tensor in the list.
+            senders: The cores sending the tensors.
+            receivers: The cores receiving the tensors.
         """
         assert len(tensors) == len(bandwidth_per_tensor)
         end = start + duration
         # Create a CLEvent per tensor
-        for tensor, bandwidth in zip(tensors, bandwidth_per_tensor):
+        for tensor, bandwidth, sender, receiver in zip(tensors, bandwidth_per_tensor, senders, receivers):
             event = CommunicationLinkEvent(
                 type="block",
                 start=start,
@@ -128,6 +133,8 @@ class CommunicationLink:
                 tensor=tensor,
                 energy=tensor.origin.get_offchip_energy(),
                 activity=bandwidth,
+                sender=sender,
+                receiver=receiver,
             )
             self.update_activity(event)
         return

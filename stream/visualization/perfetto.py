@@ -37,6 +37,8 @@ def parse_non_base_attrs(row: pd.Series, base_attrs: list[str]) -> dict:
                 else:
                     new_v[str(k2)] = str(v2)
             v = new_v
+        else:
+            v = str(v)
         args[k] = v
     return args
 
