@@ -1,11 +1,12 @@
 import logging
+import os
 from copy import deepcopy
 from math import ceil, prod
 from typing import Any
 
 from rtree import index
 from zigzag.datatypes import Constants, LayerDim, LayerOperand
-from zigzag.utils import pickle_deepcopy
+from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
 
 from stream.cost_model.group_allocation import GroupIdManager
 from stream.hardware.architecture.accelerator import Accelerator
@@ -35,7 +36,7 @@ class TensorDimensionMismatchException(Exception):
 
 class TiledWorkloadGenerationStage(Stage):
     """
-    Class that transforms the layer-by-layer workload into finer CN workload graph.
+    Class that transforms the layer-by-layer workload into tiled workload graph.
     """
 
     def __init__(
@@ -44,6 +45,7 @@ class TiledWorkloadGenerationStage(Stage):
         *,
         workload: ONNXWorkload,
         accelerator: Accelerator,
+        tiled_workload_path: str,
         **kwargs: Any,
     ):
         """
@@ -54,68 +56,92 @@ class TiledWorkloadGenerationStage(Stage):
         self.workload = workload
         self.accelerator = accelerator
 
-        # Save for each of the workload's nodes the finer nodes that will be generated
-        self.finer_nodes_dict: dict[ComputationNode, list[ComputationNode]] = {}
+        # Save for each of the workload's nodes the tiles that will be generated
+        self.tiles_dict: dict[ComputationNode, list[ComputationNode]] = {}
 
         # Memoize the numpy tensors for dependency generation
         self.numpy_tensors = {}
 
+        self.tiled_workload_path = tiled_workload_path
+
     def run(self):
-        unique_finer_nodes: list[ComputationNode] = []
-        # For each node get all the finer nodes and the edges between them
-        all_finer_nodes = []
-        all_finer_edges = []
+        all_unique_tiles: list[ComputationNode] = []
+        # For each node get all the tiles and the edges between them
+        all_tiles = []
+        all_edges = []
         for node in self.workload.topological_sort():
-            # If other node types shouldn't be included in finer node graph, add here
+            # If other node types shouldn't be included in tiled workload graph, add here
             if not isinstance(node, ComputationNode):
                 continue
             outer_temporal_loops = self.get_outer_tmap_loop_dimensions(node)
-            finer_nodes, unique_nodes = self.get_finer_nodes(node, outer_temporal_loops)
+            tiles, unique_tiles = self.get_tiles(node, outer_temporal_loops)
             logger.info(f"{node}: Outer loops {outer_temporal_loops}.")
-            logger.info(f"{node}: Generated {len(finer_nodes)} finer nodes.")
-            self.finer_nodes_dict[node] = finer_nodes
-            unique_finer_nodes += unique_nodes
-            intra_edges = self.get_intra_edges(finer_nodes)
-            # Add the finer nodes and intra edges to the lists
-            all_finer_nodes += finer_nodes
-            all_finer_edges += intra_edges
+            logger.info(f"{node}: Generated {len(tiles)} tile(s).")
+            self.tiles_dict[node] = tiles
+            all_unique_tiles += unique_tiles
+            intra_edges = self.get_intra_edges(tiles)
+            # Add the tiles and intra edges to the lists
+            all_tiles += tiles
+            all_edges += intra_edges
 
-        # Get all pairs of nodes that we have to extract inter edges for
-        all_pairs = self.get_all_node_pairs(self.workload)
-        for producer, consumer, is_complex in all_pairs:
-            finer_producers = self.finer_nodes_dict[producer]
-            finer_consumers = self.finer_nodes_dict[consumer]
-            if is_complex:
-                inter_edges = self.get_inter_edges_numpy(producer, consumer)
-            else:
-                inter_edges = self.get_inter_edges_rtree(producer, consumer, finer_producers, finer_consumers)
-            all_finer_edges += inter_edges
+        # Load in cached tiles and reuse cached tiled_workload if they match
+        cached_workload = self.load_cached_tiled_workload()
+        if cached_workload and self.match(all_tiles, cached_workload):
+            tiled_workload = cached_workload
+            logger.info("Tiled workload loaded from cache.")
+        else:
+            # Get all pairs of nodes that we have to extract inter edges for
+            all_pairs = self.get_all_node_pairs(self.workload)
+            for producer, consumer, is_complex in all_pairs:
+                producer_tiles = self.tiles_dict[producer]
+                consumer_tiles = self.tiles_dict[consumer]
+                if is_complex:
+                    inter_edges = self.get_inter_edges_numpy(producer, consumer)
+                else:
+                    inter_edges = self.get_inter_edges_rtree(producer, consumer, producer_tiles, consumer_tiles)
+                all_edges += inter_edges
 
-        # Set the base_priority value of all nodes
-        self.set_base_priority_of_nodes(all_finer_nodes, all_finer_edges)
+            # Set the base_priority value of all nodes
+            self.set_base_priority_of_nodes(all_tiles, all_edges)
 
-        # Set the number of real predecessors of all nodes
-        self.set_nb_real_predecessors(all_finer_nodes, all_finer_edges)
+            # Set the number of real predecessors of all nodes
+            self.set_nb_real_predecessors(all_tiles, all_edges)
 
-        # Construct the new finer workload graph
-        # The graph construction needs to happen after the base priority and nb_real_predecessors are set
-        partitioned_workload = ComputationNodeWorkload()
-        partitioned_workload.add_edges_from(all_finer_edges)
+            # Construct the new tiled workload graph
+            # The graph construction needs to happen after the base priority and nb_real_predecessors are set
+            tiled_workload = ComputationNodeWorkload()
+            tiled_workload.add_edges_from(all_edges)
 
-        logger.info(f"Finer graph: {partitioned_workload}.")
+            # Save the tiled workload
+            pickle_save(tiled_workload, self.tiled_workload_path)
+            logger.info(f"Saved tiled workload to {self.tiled_workload_path}.")
+
+        logger.info(f"Finer graph: {tiled_workload}.")
 
         kwargs = self.kwargs.copy()
         kwargs["original_workload"] = pickle_deepcopy(self.workload)
-        kwargs["workload"] = partitioned_workload
+        kwargs["workload"] = tiled_workload
         kwargs["accelerator"] = self.accelerator
 
         if "scheduling_order" not in kwargs:
-            kwargs["scheduling_order"] = self.get_scheduling_order(partitioned_workload)
+            kwargs["scheduling_order"] = self.get_scheduling_order(tiled_workload)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
         for cme, extra_info in sub_stage.run():
             yield cme, extra_info
 
         yield None, None
+
+    def match(self, tiles: list[ComputationNode], tiled_workload: ComputationNodeWorkload) -> bool:
+        """Check if the tiles match the cached tiled workload.
+        Can't use 'has_same_performance' because nb_real_predecessors is not set yet for tiles."""
+        for tile in tiles:
+            if not [
+                t
+                for t in tiled_workload.node_list
+                if t.id == tile.id and t.sub_id == tile.sub_id and t.layer_dim_sizes == tile.layer_dim_sizes
+            ]:
+                return False
+        return True
 
     @staticmethod
     def get_scheduling_order(workload: ComputationNodeWorkload):
@@ -198,29 +224,29 @@ class TiledWorkloadGenerationStage(Stage):
         return preds
 
     @staticmethod
-    def get_finer_nodes(
+    def get_tiles(
         original_node: ComputationNode, outer_temporal_loops: list[TemporalLoop]
     ) -> tuple[list[ComputationNode], list[ComputationNode]]:
         original_node_id = original_node.id
 
-        # Take away the outer_temporal_loops to create finer CNs for this node
-        finer_node_attrs = original_node.extract_node_attr()
-        finer_node_mapping = original_node.extract_inter_core_mapping_attr()
+        # Take away the outer_temporal_loops to create tiled CNs for this node
+        tile_attrs = original_node.extract_node_attr()
+        tile_mapping = original_node.extract_inter_core_mapping_attr()
 
         for outer_tl in outer_temporal_loops:
             outer_dim = outer_tl.dimension
             outer_size = outer_tl.size
             # Check if this node's "dim" size is divisible by the outer-cn loop size
-            node_dim_size = finer_node_attrs.layer_dim_sizes[outer_dim]
+            node_dim_size = tile_attrs.layer_dim_sizes[outer_dim]
             q, rem = divmod(node_dim_size, outer_size)  # returns x//y, x%y
             assert rem == 0, (
                 f"Node {original_node} dim {outer_dim} of size {node_dim_size} is not divisible by outer-cn temporal "
                 f"loop {outer_tl}"
             )
-            finer_node_attrs.layer_dim_sizes[outer_dim] = q
+            tile_attrs.layer_dim_sizes[outer_dim] = q
 
-        # Loop dimension + size of the finer nodes (called span here)
-        finer_span = finer_node_attrs.layer_dim_sizes
+        # Loop dimension + size of the tiles (called span here)
+        tile_span = tile_attrs.layer_dim_sizes
         loop_dims = original_node.layer_dims
         stop_values = [temporal_loop.size for temporal_loop in outer_temporal_loops]
         nb_cns = int(prod(stop_values))
@@ -235,7 +261,7 @@ class TiledWorkloadGenerationStage(Stage):
         for i, outer_loop in enumerate(outer_temporal_loops):
             loop_dim = outer_loop.dimension
             stop_value = outer_loop.size
-            inner_span = finer_span[loop_dim] if loop_dim in finer_span else 1
+            inner_span = tile_span[loop_dim] if loop_dim in tile_span else 1
             lower_outer_cn_loops = outer_temporal_loops[:i]
             # Returns 1 if empty list
             outer_span = prod(
@@ -243,7 +269,7 @@ class TiledWorkloadGenerationStage(Stage):
             )
             mult_factors.append(int(inner_span * outer_span))
 
-        finer_nodes: list[ComputationNode] = []
+        tiles: list[ComputationNode] = []
         tensors: list[Tensor] = []
         group_id_manager = GroupIdManager(original_node)
         for n in range(nb_cns):
@@ -268,10 +294,9 @@ class TiledWorkloadGenerationStage(Stage):
                         mult_factor = mult_factors[i]
                         dim_min += loop_val * mult_factor
                 # max value is exclusive
-                dim_max = dim_min + (finer_span[loop_dim] if loop_dim in finer_span else 1)
+                dim_max = dim_min + (tile_span[loop_dim] if loop_dim in tile_span else 1)
                 dim_min_max[loop_dim] = (dim_min, dim_max)
 
-            # finer_node_mapping_copy = deepcopy(original_node.extract_mapping_attr())
             group_id = group_id_manager.get_group_id(dim_min_max)
 
             # Create the computation node object with the computed ranges of the loop dimensions
@@ -285,43 +310,43 @@ class TiledWorkloadGenerationStage(Stage):
                 [dim_min_max[dim][1] >= original_node.layer_dim_sizes[dim] for dim in original_node_output_ir_dims]
             )
 
-            finer_node = ComputationNode(
+            tile = ComputationNode(
                 node_id=original_node_id,
                 sub_id=n,
                 node_name=node_name,
-                node_attr=finer_node_attrs,
-                mapping_attr=finer_node_mapping,
+                node_attr=tile_attrs,
+                mapping_attr=tile_mapping,
                 op_type=original_node.type,
                 produces_final_output=produces_final_output,
                 group_id=group_id,
             )
             # Override loop_ranges property
-            finer_node.update_loop_ranges(dim_min_max)
+            tile.update_loop_ranges(dim_min_max)
             # Re-calculate pr loop ranges based on new loop_ranges
-            finer_node.calculate_pr_loop_ranges()
+            tile.calculate_pr_loop_ranges()
             # Re-set the operand tensors for the new loop_ranges
-            finer_node.set_operand_tensors()
+            tile.set_operand_tensors()
 
-            # Initialize the priorities (total inter-CN data reuse factor) for the constant operands of this finer_node
-            for constant_operand in finer_node.constant_operands:
-                tensor = finer_node.operand_tensors[constant_operand]
+            # Initialize the priorities (total inter-CN data reuse factor) for the constant operands of this tile
+            for constant_operand in tile.constant_operands:
+                tensor = tile.operand_tensors[constant_operand]
                 tensor.set_base_priorities(tensor_reuse_factors[constant_operand][n])
 
-            # Replace any of the tensors with identical tensors of previous finer nodes
-            for op, tensor in finer_node.operand_tensors.items():
+            # Replace any of the tensors with identical tensors of previous tiles
+            for op, tensor in tile.operand_tensors.items():
                 replaced = False
                 for previous_tensor in tensors:
                     if tensor.equality_hash() == previous_tensor.equality_hash():
-                        finer_node.operand_tensors[op] = previous_tensor
+                        tile.operand_tensors[op] = previous_tensor
                         replaced = True
                 if not replaced:
                     tensors.append(tensor)
 
-            # Compute the output data produced by each finer node, assuming that all the data produced by different CNs
+            # Compute the output data produced by each tile, assuming that all the data produced by different CNs
             # are unique
-            finer_node.data_produced_unique = int(
-                finer_node.operand_size_elem[Constants.OUTPUT_LAYER_OP]
-                * finer_node.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
+            tile.data_produced_unique = int(
+                tile.operand_size_elem[Constants.OUTPUT_LAYER_OP]
+                * tile.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
             )
 
             # If the core allocation is fixed, we need to set the chosen core allocation.
@@ -332,14 +357,14 @@ class TiledWorkloadGenerationStage(Stage):
                     original_node.possible_core_allocation
                 ), f"Group id {group_id} too large for core allocation list {original_node.core_allocation}"
                 chosen_core_allocation = original_node.possible_core_allocation[group_id]
-                finer_node.set_chosen_core_allocation(chosen_core_allocation)
+                tile.set_chosen_core_allocation(chosen_core_allocation)
 
-            finer_nodes.append(finer_node)
+            tiles.append(tile)
 
         # NOTE We take the first node as only unique one as they are all generated equally now.
-        unique_finer_nodes = [finer_nodes[0]]
+        unique_tiles = [tiles[0]]
 
-        return finer_nodes, unique_finer_nodes
+        return tiles, unique_tiles
 
     @staticmethod
     def get_intra_edges(nodes: list[ComputationNode]):
@@ -481,18 +506,16 @@ class TiledWorkloadGenerationStage(Stage):
         self,
         producer: ComputationNode,
         consumer: ComputationNode,
-        finer_producers: list[ComputationNode],
-        finer_consumers: list[ComputationNode],
+        producer_tiles: list[ComputationNode],
+        consumer_tiles: list[ComputationNode],
     ):
-        """Function that finds the edges between a producer and consumer node,
-        more specifically their finer counterparts producer_finer and consumer_finer.
-        A communication node is inserted between each producer and consumer node.
+        """Function that finds the edges between producer and consumer tiles.
 
         Args:
             producer: the producer node
             consumer: the consumer node
-            finer_producers: list of finer producer nodes
-            finer_consumers: list of finer consumer nodes
+            producer_tiles: list of the producer tiles
+            consumer_tiles: list of the consumer tiles
         """
         # Check all the different input operands of the consumer node that stem from the producer node
         # The direct predecessor of an input operand might be a DummyNode so we need to propagate back
@@ -511,8 +534,8 @@ class TiledWorkloadGenerationStage(Stage):
         edges: list[tuple[ComputationNode, ComputationNode, dict[str, Any]]] = []
 
         for input_operand in dependent_input_operands:
-            # Build the tree of all finer consumer nodes for this operand
-            consumer_tree = self.build_rtree(producer, consumer, finer_consumers, input_operand)
+            # Build the tree of all consumer tiles for this operand
+            consumer_tree = self.build_rtree(producer, consumer, consumer_tiles, input_operand)
 
             # As long as we haven't iterated through all of the output's operand's irrelevant dimensions,
             # we shouldn't add an edge to the consumer layer's nodes, as this would create unnecessary graph complexity
@@ -525,33 +548,33 @@ class TiledWorkloadGenerationStage(Stage):
 
             # Iterate through all the producer nodes and get the consumer nodes that require its outputs,
             # taking into account that we only want an edge if the producer's irrelevant loops are at a max
-            for finer_producer in finer_producers:
+            for producer_tile in producer_tiles:
                 # Get the output irrelevant loop ranges and check if they are at least at the max
                 ir_dims_not_at_max = [
-                    finer_producer.loop_ranges[ir_dim][1] < producer.loop_ranges[ir_dim][1]
+                    producer_tile.loop_ranges[ir_dim][1] < producer.loop_ranges[ir_dim][1]
                     for ir_dim in producer_ir_dims_output
                 ]
                 if any(ir_dims_not_at_max):
-                    continue  # to the next finer producer
+                    continue  # to the next producer tile
 
-                p_inclusive_ranges = self.convert_to_inclusive_data_range(finer_producer.loop_ranges)
+                p_inclusive_ranges = self.convert_to_inclusive_data_range(producer_tile.loop_ranges)
                 p_bounding_box = self.get_bounding_box_dimensions(
                     producer, consumer, producer_r_dims_output, p_inclusive_ranges
                 )
 
-                # Get the finer consumer node ids that intersect with this finer producer node
+                # Get the consumer tile ids that intersect with this producer tile
                 intersecting_consumer_node_ids = consumer_tree.intersection(p_bounding_box)
 
                 for intersecting_consumer_node_id in intersecting_consumer_node_ids:
-                    intersecting_consumer = finer_consumers[intersecting_consumer_node_id]
+                    intersecting_consumer = consumer_tiles[intersecting_consumer_node_id]
                     # Create a new communication node that will reside between the producer and consumer node
                     edges += [
                         (
-                            finer_producer,
+                            producer_tile,
                             intersecting_consumer,
                             {
                                 "operand": input_operand,
-                                "bits": finer_producer.data_produced_unique,
+                                "bits": producer_tile.data_produced_unique,
                             },
                         )
                     ]
@@ -572,8 +595,8 @@ class TiledWorkloadGenerationStage(Stage):
             if node in numpy_tensors:
                 tensor_cns = numpy_tensors[node]
             else:
-                finer_nodes = self.finer_nodes_dict[node]
-                tensor_cns = self.get_tensor_cns(node, finer_nodes)
+                tiles = self.tiles_dict[node]
+                tensor_cns = self.get_tensor_cns(node, tiles)
                 # Store result for later use
                 numpy_tensors[node] = tensor_cns
             tensor = tensor_cns[dependent_operand]
@@ -676,7 +699,7 @@ class TiledWorkloadGenerationStage(Stage):
     @staticmethod
     def get_inter_edges_tensor_based(producer_output_tensor: NodeTensor, consumer_input_tensor: NodeTensor):
         """This method obtains the edges between a producer and consumer.
-        This is done by iterating through all finer consumer nodes,
+        This is done by iterating through all consumer tiles,
         for each consumer node we create a window and get all the producer nodes that produced this data window.
 
         Args:
@@ -699,9 +722,7 @@ class TiledWorkloadGenerationStage(Stage):
                     inter_edges.add((producer, consumer))
         return inter_edges
 
-    def get_tensor_cns(
-        self, node: ComputationNode, finer_nodes: list[ComputationNode]
-    ) -> dict[LayerOperand, NodeTensor]:
+    def get_tensor_cns(self, node: ComputationNode, tiles: list[ComputationNode]) -> dict[LayerOperand, NodeTensor]:
         is_source_node = len(self.get_non_type_predecessors(node, [DummyNode])) == 0
         variable_operands = [op for op in node.input_operands if op not in node.constant_operands] + [
             node.output_operand
@@ -715,52 +736,52 @@ class TiledWorkloadGenerationStage(Stage):
             op: NodeTensor.initialize_empty(shape) for (op, shape) in tensor_shapes.items()
         }
 
-        # For each input operand iterate through the finer_nodes in reverse order
+        # For each input operand iterate through the tiles in reverse order
         # because we want the first cn with a dependency saved in the tensor
-        # For the output operand iterate through the finer_nodes in regular order
+        # For the output operand iterate through the tiles in regular order
         # because we want the last CN that handles an output tensor window to be saved
         for op, dims in tensor_dims.items():
             if op == node.output_operand:
                 ir_dims_output = node.loop_relevancy_info.get_ir_layer_dims(Constants.OUTPUT_LAYER_OP)
-                finer_nodes_list = finer_nodes  # list in regular order
+                tile_list = tiles  # list in regular order
                 should_add_to_tensor_list = [
-                    all(finer_node.loop_ranges[ir_dim][1] >= node.loop_ranges[ir_dim][1] for ir_dim in ir_dims_output)
-                    for finer_node in finer_nodes_list
+                    all(tile.loop_ranges[ir_dim][1] >= node.loop_ranges[ir_dim][1] for ir_dim in ir_dims_output)
+                    for tile in tile_list
                 ]
                 attr_to_add_to = "data_produced_unique"
                 precision = node.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
             else:
-                finer_nodes_list = list(reversed(finer_nodes))  # list in reversed order
-                should_add_to_tensor_list = [True for _ in finer_nodes_list]
+                tile_list = list(reversed(tiles))  # list in reversed order
+                should_add_to_tensor_list = [True for _ in tile_list]
                 attr_to_add_to = "data_consumed_unique"
                 # if this layer is the first layer, we assume the inputs are streamed and "free"
                 precision = node.operand_precision[op] * (not is_source_node)
 
             nb_unique_data_seen = 0
-            for finer_node, should_add_to_tensor in zip(finer_nodes_list, should_add_to_tensor_list):
+            for tile, should_add_to_tensor in zip(tile_list, should_add_to_tensor_list):
                 if not should_add_to_tensor:
                     continue  # Skip if we're not at the max ir loop value for output
-                op_dim_ranges = [finer_node.loop_ranges[loop_dim] for loop_dim in dims]
+                op_dim_ranges = [tile.loop_ranges[loop_dim] for loop_dim in dims]
                 op_dim_ranges_max_stop = tuple(tensor_shapes[op])
                 # start can be negative for padding which, makes np flip
                 window = tuple([slice(max(0, start), stop) for (start, stop) in op_dim_ranges])
                 # Count how many nans we have in this window, as this is the amount of unique data consumed/produced by
-                # this finer_node
+                # this tile
                 nb_unique_data_bits = tensors_cns[op].get_nb_empty_elements(window) * precision
                 nb_unique_data_seen += nb_unique_data_bits
                 # Add this amount of unique data to the "data_consumed_unique" or "data_produced_unique" depending on
                 # input/output operand
                 setattr(
-                    finer_node,
+                    tile,
                     attr_to_add_to,
-                    getattr(finer_node, attr_to_add_to) + nb_unique_data_bits,
+                    getattr(tile, attr_to_add_to) + nb_unique_data_bits,
                 )
-                # Set this window of the tensor to indicate it will be consumed/produced by this finer node
+                # Set this window of the tensor to indicate it will be consumed/produced by this tile
                 bounded_op_dim_ranges = tuple(
                     slice(max(0, start), min(max_stop, stop))
                     for ((start, stop), max_stop) in zip(op_dim_ranges, op_dim_ranges_max_stop)
                 )
-                tensors_cns[op] = tensors_cns[op].extend_with_node(bounded_op_dim_ranges, finer_node)
+                tensors_cns[op] = tensors_cns[op].extend_with_node(bounded_op_dim_ranges, tile)
 
             if nb_unique_data_seen != (prod(tensor_shapes[op]) * precision):
                 logger.warning(f"Downsampling node detected: {node}, operand= {op}.")
@@ -779,7 +800,7 @@ class TiledWorkloadGenerationStage(Stage):
 
     @staticmethod
     def set_base_priority_of_nodes(nodes: list[ComputationNode], edges: list[EDGE_T]):
-        """Set the base_priority of all stored tensors of variable operands in every node in finer_nodes
+        """Set the base_priority of all stored tensors of the variable operands of all nodes
         based on the amount of real (excluding same layer edges) edges.
 
         Args:
@@ -847,6 +868,11 @@ class TiledWorkloadGenerationStage(Stage):
                     raise ValueError("Something went wrong.")
             split_factors[node] = split_factor
         return split_factors
+
+    def load_cached_tiled_workload(self):
+        if os.path.exists(self.tiled_workload_path):
+            return pickle_load(self.tiled_workload_path)
+        return None
 
 
 def deduce_tensor_reuse_factors(

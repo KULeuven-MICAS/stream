@@ -51,6 +51,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         cost_lut: CostModelEvaluationLUT,
         layer_stacks: list[tuple[int, ...]],
         allocations_path: str,
+        tiled_workload_post_co_path: str,
         cost_lut_post_co_path: str,
         **kwargs: Any,
     ):
@@ -75,6 +76,7 @@ class ConstraintOptimizationAllocationStage(Stage):
 
         self.allocations_path = allocations_path
         os.makedirs(self.allocations_path, exist_ok=True)
+        self.tiled_workload_post_co_path = tiled_workload_post_co_path
         self.cost_lut_post_co_path = cost_lut_post_co_path
         self.co_time_limit: int = kwargs.get("co_time_limit", self.CO_TIME_LIMIT)
 
@@ -409,6 +411,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         kwargs["accelerator"] = self.accelerator
         kwargs["workload"] = unpartitioned_sub_workload
         kwargs["scheduling_order"] = scheduling_order
+        kwargs["tiled_workload_path"] = self.tiled_workload_post_co_path
         kwargs["cost_lut_path"] = self.cost_lut_post_co_path
         kwargs["latency_attr"] = self.latency_attr
 
