@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 from itertools import cycle
@@ -9,11 +10,22 @@ from plotly.express.colors import sample_colorscale
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_T
-from stream.opt.allocation.constraint_optimization.utils import get_latencies
+from stream.opt.allocation.constraint_optimization.utils import (
+    calculate_total_latency,
+    compute_iterations_overlap,
+    get_k_splits,
+    get_layer_ids,
+    get_node_latencies,
+    get_node_start_timesteps,
+    get_node_timesteps,
+    get_resources,
+    get_timestep_latencies,
+    get_timesteps,
+)
 from stream.utils import CostModelEvaluationLUT
 
 if TYPE_CHECKING:
-    from stream.hardware.architecture.core import Core
+    pass
 
 logger = logging.getLogger(__name__)
 
@@ -22,49 +34,23 @@ def visualize_waco(
     allocation: ALLOCATION_T,
     cost_lut: CostModelEvaluationLUT,
     accelerator: Accelerator,
-    fig_path: str,
     iterations: int,
+    latency_attr: str,
+    fig_path: str,
 ):
     """
     Allocation is a list of tuples, with each tuple being of form (timestep, allocation, node_id). Allocation is a core.
     cost_lut is a CostModelEvaluationLUT storing for each node and each core the hardware performance.
     """
-    # Extract the number of allocations (k splits) of all nodes
-    k_splits: dict[int, list[Core]] = {}
-    for _, core, id in allocation:
-        k_splits[id] = k_splits.get(id, []) + [core]
-    # Extract the latencies of all nodes
-    node_latencies = {}
-    layer_ids: set[int] = set()
-    ids: list[int] = []
-    timesteps: list[int] = []
-    resources: set[int] = set()
-    core_names = sorted(set([a for _, a, _ in allocation]))
-    core_ids = [int(core_name.split(" ")[-1]) for core_name in core_names]
-    for t, a, id in allocation:
-        timesteps.append(t)
-        layer_ids.add(id[0])
-        ids.append(id)
-        resources.add(a)
-        node = next(n for n in cost_lut.get_nodes() if n.id == id[0])
-        latencies, _ = get_latencies([node], core_ids, accelerator, cost_lut)
-        nb_k_splits = len(k_splits[id])
-        lat = latencies[(node.id, a, nb_k_splits)]
-        node_latencies[id, a] = lat
-    layer_ids = sorted(layer_ids)
-    # Extract the timesteps of all nodes and the latency per timestep
-    node_timesteps = {}
-    timestep_latencies = {t: 0 for t in range(max(timesteps) + 1)}
-    for t, a, id in allocation:
-        node_timesteps[id, a] = t
-        timestep_latencies[t] = max(timestep_latencies.get(t, 0), node_latencies[id, a])
-    # Extract start of each node
-    starts = {}
-    for id, allocations in k_splits.items():
-        for a in allocations:
-            start = get_start_time_of_node(id, a, node_timesteps, timestep_latencies)
-            starts[id, a] = start
-    _, total_lat_str = calculate_total_latency(starts, timestep_latencies, node_timesteps, iterations)
+    k_splits = get_k_splits(allocation)
+    layer_ids = get_layer_ids(allocation)
+    timesteps = get_timesteps(allocation)
+    resources = get_resources(allocation)
+    node_timesteps = get_node_timesteps(allocation)
+    node_latencies = get_node_latencies(allocation, cost_lut, accelerator, k_splits, latency_attr)
+    timestep_latencies = get_timestep_latencies(allocation, node_latencies, timesteps)
+    starts = get_node_start_timesteps(k_splits, node_timesteps, timestep_latencies)
+    _, total_lat_str = calculate_total_latency(allocation, cost_lut, accelerator, iterations, latency_attr)
     # Plot the nodes using Plotly rectangles
     color_cycle = cycle(sample_colorscale("rainbow", np.linspace(0, 1, len(cost_lut.get_nodes()))))
     colors = {layer_id: c for (layer_id, c) in zip(layer_ids, color_cycle)}
@@ -122,30 +108,67 @@ def visualize_waco(
     logger.info(f"Plotted WACO result to {fig_path}")
 
 
-def get_start_time_of_node(id, a, timesteps, timestep_latencies, t_start=0):
-    node_timestep = timesteps[id, a]
-    for t in range(node_timestep):
-        t_end = t_start + timestep_latencies[t]
-        t_start = t_end
-    return t_start
-
-
-def calculate_total_latency(starts, timestep_latencies, node_timesteps, N) -> tuple[int, str]:
-    T = sum(timestep_latencies.values())
+def to_perfetto_json(
+    allocation: ALLOCATION_T,
+    cost_lut: CostModelEvaluationLUT,
+    accelerator: Accelerator,
+    iterations: int,
+    latency_attr: str,
+    json_path: str,
+):
+    """
+    Allocation is a list of tuples, with each tuple being of form (timestep, allocation, node_id). Allocation is a core.
+    cost_lut is a CostModelEvaluationLUT storing for each node and each core the hardware performance.
+    """
+    k_splits = get_k_splits(allocation)
+    timesteps = get_timesteps(allocation)
+    resources = get_resources(allocation)
+    node_latencies = get_node_latencies(allocation, cost_lut, accelerator, k_splits, latency_attr)
+    node_timesteps = get_node_timesteps(allocation)
+    timestep_latencies = get_timestep_latencies(allocation, node_latencies, timesteps)
+    starts = get_node_start_timesteps(k_splits, node_timesteps, timestep_latencies)
+    total_timestep_latency = sum(timestep_latencies.values())
     cores = sorted(set(k[1] for k in starts))
-    slacks = {}
-    for core in cores:
-        relevant_starts = [v for k, v in starts.items() if k[1] == core]
-        earliest_start = min(relevant_starts)
-        latest_start = max(relevant_starts)
-        latest_id_core = next((k for k, v in starts.items() if v == latest_start and k[1] == core))
-        latest_timestep = node_timesteps[latest_id_core]
-        timestep_latency = timestep_latencies[latest_timestep]
-        latest_end = latest_start + timestep_latency
-        slack = T - latest_end + earliest_start
-        assert slack >= 0
-        slacks[core] = slack
-    min_slack = min(slacks.values())
-    total_lat = N * T - (N - 1) * min_slack
-    total_lat_str = f"total_lat = N * T - (N - 1) * slack --> {total_lat} = {N} * {T} - {N-1} * {min_slack}"
-    return total_lat, total_lat_str
+    overlap = compute_iterations_overlap(timestep_latencies, node_timesteps, starts, total_timestep_latency, cores)
+    offset = total_timestep_latency - overlap
+
+    # Prepare JSON data for Perfetto
+    perfetto_data = []
+
+    # Add thread names (cores)
+    for core in resources:
+        thread_name_event = {
+            "name": "thread_name",
+            "ph": "M",
+            "pid": "waco",
+            "tid": core,
+            "args": {"name": f"Core {core}"},
+            "cname": "blue",
+        }
+        perfetto_data.append(thread_name_event)
+
+    # Add events for each iteration
+    for iteration in range(iterations):
+        iteration_offset = iteration * offset
+        for id, allocations in k_splits.items():
+            for a in allocations:
+                start = starts[id, a] + iteration_offset
+                runtime = node_latencies[id, a]
+                event = {
+                    "name": f"Node {id}",
+                    "cat": "compute",
+                    "ph": "X",
+                    "ts": start,
+                    "dur": runtime,
+                    "pid": "waco",
+                    "tid": a,
+                    "cname": "blue",
+                    "args": {"Runtime": runtime, "NodeID": id, "Iteration": iteration},
+                }
+                perfetto_data.append(event)
+
+    # Write JSON data to file
+    with open(json_path, "w") as f:
+        json.dump(perfetto_data, f, indent=2)
+
+    logger.info(f"Plotted WACO result to {json_path}")
