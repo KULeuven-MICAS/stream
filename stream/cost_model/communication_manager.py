@@ -1,4 +1,5 @@
 import itertools
+from math import ceil
 from typing import TYPE_CHECKING, Any
 
 from zigzag.datatypes import Constants, MemoryOperand
@@ -105,7 +106,7 @@ class CommunicationManager:
             ]
         return communication_links
 
-    def get_links_for_pair(self, sender: Core, receiver: Core):
+    def get_links_for_pair(self, sender: Core, receiver: Core) -> list["CommunicationLink"]:
         """Return the list of traversed CommunicationLinks for sending data from sender core to receiver core.
 
         Args:
@@ -126,6 +127,7 @@ class CommunicationManager:
         receiver_memory_operand: MemoryOperand,
         start_timestep: int,
         duration: int,
+        link_bw_fraction: float = 1.0,
     ) -> tuple[float, float]:
         """Update the links for transfer of a tensor between sender and receiver core at a given timestep.
         A CommunicationEvent is created containing one or more CommunicationLinkEvents,
@@ -157,8 +159,8 @@ class CommunicationManager:
                 start=start_timestep,
                 end=end_timestep,
                 tensor=tensor,
-                energy=duration * link.unit_energy_cost,
-                activity=link.bandwidth,
+                energy=duration * link.unit_energy_cost * link_bw_fraction,
+                activity=ceil(link_bw_fraction * link.bandwidth),
             )
             for link in links
         ]

@@ -9,6 +9,7 @@ from zigzag.utils import DiGraphWrapper
 from stream.cost_model.communication_manager import CommunicationManager
 from stream.cost_model.memory_manager import MemoryManager
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.tensor import Tensor
 
@@ -311,21 +312,52 @@ class Accelerator:
         )
         ################################# STEP 4 #################################
         # The links between sender and receiver have a long enough idle window.
-        sender_cores = self.memory_manager.cores_per_top_instance[storing_instance]
+
+        def find_transfer_start_and_end_time(links_bw: dict[CommunicationLink, int]):
+            """
+            Given the links to transfer across and corresponding available bandwidths, return the earliest transfer
+            start and end time.
+
+            Args:
+                links_bw: link and corresponding transfer bandwidth
+            """
+            slowest_bw = min(links_bw.values())
+            transfer_duration = ceil(tensor.size / slowest_bw)
+            transfer_start = self.communication_manager.get_links_idle_window(
+                links=links_bw,
+                best_case_start=evictions_complete_timestep,
+                duration=transfer_duration,
+                tensors_per_link={link: [tensor] for link in links_bw},
+            )
+            transfer_end = transfer_start + transfer_duration
+            return transfer_start, transfer_end
+
+        def find_earliest_time_for_transfer(links: list[CommunicationLink], nb_iterations: int = 10):
+            """Find the earliest time at which a tensor transfer between 2 cores can happen. Iterate over the used
+            bandwidth to find the transfer bandwidth at which the finish time is earliest"""
+            windows: list[tuple[int, int]] = []
+            bandwidth_fractions = [i / nb_iterations for i in range(1, nb_iterations + 1)]
+
+            for frac in bandwidth_fractions:
+                links_with_bw = {link: ceil(frac * link.bandwidth) for link in links}
+                start, end = find_transfer_start_and_end_time(links_with_bw)
+                windows.append((start, end))
+
+            ends = [end for _, end in windows]
+            best_idx = ends.index(min(ends))
+            best_window = windows[best_idx]
+            best_fraction = bandwidth_fractions[best_idx]
+            return best_window, best_fraction
+
         # TODO If the storing_instance is a shared instance across more than one core,
         # TODO there will be multiple possible cores to transfer between.
         # TODO For now, we take the first one
+        sender_cores = self.memory_manager.cores_per_top_instance[storing_instance]
         sender_core = sender_cores[0]
         links = self.communication_manager.get_links_for_pair(sender_core, receiving_core)
-        links = {link: link.bandwidth for link in links}
-        transfer_duration = max([ceil(tensor.size / link.bandwidth) for link in links])
-        transfer_start = self.communication_manager.get_links_idle_window(
-            links,
-            evictions_complete_timestep,
-            transfer_duration,
-            {link: [tensor] for link in links},
-        )
-        transfer_end = transfer_start + transfer_duration
+        (transfer_start, transfer_end), link_bw_fraction = find_earliest_time_for_transfer(links)
+        transfer_duration = transfer_end - transfer_start
+
         ################################# STEP 5 #################################
         # Spawn the tensor on the receiving core
         self.spawn(tensor, receiving_core, tensor_operand, transfer_start, transfer_end)
@@ -341,9 +373,10 @@ class Accelerator:
             tensor_operand,
             transfer_start,
             transfer_duration,
+            link_bw_fraction=link_bw_fraction,
         )
         ################################# STEP 7 #################################
-        # Remove the transfered tensor from the sender core (excluding DRAM)
+        # Remove the transferred tensor from the sender core (excluding DRAM)
         # if it is no longer needed.
         if sender_core.id == self.offchip_core_id:
             pass
