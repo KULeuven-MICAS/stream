@@ -1,11 +1,11 @@
 from zigzag.datatypes import LayerOperand
-from zigzag.workload.layer_node_abc import LayerNodeABC
 
 from stream.node_tensor import NodeTensor
+from stream.workload.dependency_propagation.propagation_node import PropagationNode
 from stream.workload.node import Node
 
 
-class GatherNode(Node, LayerNodeABC):
+class GatherNode(PropagationNode):
     """Class that represents an onnx Reshape node."""
 
     def __init__(
@@ -15,6 +15,7 @@ class GatherNode(Node, LayerNodeABC):
         predecessors: list[int],
         gather_axis: int,
         gather_indices: int | list[int],
+        input_names: list[str] = [],
     ) -> None:
         """Initialize the GatherNode
 
@@ -23,17 +24,8 @@ class GatherNode(Node, LayerNodeABC):
             gather_axis: Which axis to gather on.
             gather_indices: Indices of elements to be gathered.
         """
-        Node.__init__(
-            self,
-            node_id=node_id,
-            node_name=node_name,
-            type="gather",
-            onchip_energy=0,
-            offchip_energy=0,
-            runtime=0,
-            possible_core_allocation=[-1],
-        )
-        LayerNodeABC.__init__(self, node_id=node_id, node_name=node_name)
+        op_type = "gather"
+        super().__init__(node_id, node_name, op_type, input_names)
 
         self.gather_axis = gather_axis
         self.gather_indices = gather_indices
@@ -48,6 +40,15 @@ class GatherNode(Node, LayerNodeABC):
             case _:
                 raise ValueError("More than two inputs for GatherNode")
 
-    def gather_operand_tensor(self, tensor: NodeTensor) -> NodeTensor:
+    def propagate(
+        self,
+        tensor: NodeTensor,
+        previous_node: Node | None = None,
+        next_node: Node | None = None,
+        relevant_axes: list[bool] = [],
+    ) -> tuple[NodeTensor, list[bool]]:
         """Perform gather operation on the tensor."""
-        return tensor.gather(self.gather_indices, axis=self.gather_axis)
+
+        relevant_axes[self.gather_axis] = True
+
+        return tensor.gather(self.gather_indices, axis=self.gather_axis), relevant_axes

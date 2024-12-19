@@ -19,10 +19,13 @@ class AcceleratorFactory:
     def create(self) -> Accelerator:
         """! Create an Accelerator instance from the user-provided data."""
         cores: list[Core] = []
+        unique_shared_mem_group_ids: set[int] = set()
+
         for core_id, core_data in self.data["cores"].items():
             shared_mem_group_id = self.get_shared_mem_group_id(core_id)
             core = self.create_core(core_data, core_id, shared_mem_group_id)
             cores.append(core)
+            unique_shared_mem_group_ids.add(shared_mem_group_id)
 
         # Extra check on shared memory
         if self.have_non_identical_shared_memory(cores):
@@ -41,9 +44,15 @@ class AcceleratorFactory:
             offchip_core = self.create_core(self.data["offchip_core"], offchip_core_id)
 
         cores_graph = self.create_core_graph(cores, offchip_core)
+        nb_shared_mem_groups = len(unique_shared_mem_group_ids)
 
         # Take next available core id
-        return Accelerator(name=self.data["name"], cores=cores_graph, offchip_core_id=offchip_core_id)
+        return Accelerator(
+            name=self.data["name"],
+            cores=cores_graph,
+            offchip_core_id=offchip_core_id,
+            nb_shared_mem_groups=nb_shared_mem_groups,
+        )
 
     def create_core(self, core_data: dict[str, Any], core_id: int, shared_mem_group_id: int | None = None):
         core_factory = ZigZagCoreFactory(core_data)
@@ -101,6 +110,7 @@ class AcceleratorFactory:
         unit_energy_cost = self.data["unit_energy_cost"]
         connections: list[tuple[int, ...]] = self.data["core_connectivity"]
         edges: list[tuple[Core, Core, dict[str, CommunicationLink]]] = []
+        current_bus_id = 0
 
         # All links between cores
         for connection in connections:
@@ -117,6 +127,9 @@ class AcceleratorFactory:
                 )
             else:
                 # Connect cores to bus, edge by edge
+                # Make sure all links refer to the same `CommunicationLink` instance
+                bus_instance = CommunicationLink("Any", "Any", bandwidth, unit_energy_cost, bus_id=current_bus_id)
+                current_bus_id += 1
                 pairs_this_connection = [
                     (a, b) for idx, a in enumerate(connected_cores) for b in connected_cores[idx + 1 :]
                 ]
@@ -127,6 +140,7 @@ class AcceleratorFactory:
                         bandwidth=bandwidth,
                         unit_energy_cost=unit_energy_cost,
                         link_type="bus",
+                        bus_instance=bus_instance,
                     )
 
         # All links between cores and offchip core

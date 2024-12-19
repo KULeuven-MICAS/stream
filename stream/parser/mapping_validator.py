@@ -21,10 +21,14 @@ class MappingValidator:
             "schema": {"type": "integer"},
             "default": [0],
         },
-        "core_allocation_is_fixed": {"type": "boolean", "default": False},
         "inter_core_tiling": {
             "type": "list",
             "schema": {"type": "string", "regex": TILING_REGEX},
+            "default": [],
+        },
+        "layer_dimension_names": {
+            "type": "list",
+            "schema": {"type": "string", "nullable": True},
             "default": [],
         },
         "intra_core_tiling": {

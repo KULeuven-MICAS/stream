@@ -1,25 +1,21 @@
 from zigzag.datatypes import LayerOperand
 
+from stream.node_tensor import NodeTensor
+from stream.workload.dependency_propagation.propagation_node import PropagationNode
 from stream.workload.node import Node
 
 
-class ElementwiseNode(Node):
+class ElementwiseNode(PropagationNode):
 
     def __init__(
         self,
         node_id: int,
         node_name: str,
         predecessor: int,
+        input_names: list[str],
     ) -> None:
-        super().__init__(
-            node_id=node_id,
-            node_name=node_name,
-            type="elementwise",
-            onchip_energy=0,
-            offchip_energy=0,
-            runtime=0,
-            possible_core_allocation=[-1],
-        )
+        op_type = "elementwise"
+        super().__init__(node_id, node_name, op_type, input_names)
         self.input_operand_source = {LayerOperand("I"): predecessor}
 
     def join(self, tensor1, tensor2):
@@ -30,3 +26,12 @@ class ElementwiseNode(Node):
             tensor2 (np.ndarray): The second input tensor
         """
         return tensor1 | tensor2
+
+    def propagate(
+        self,
+        tensor: NodeTensor,
+        previous_node: Node | None = None,
+        next_node: Node | None = None,
+        relevant_axes: list[bool] = [],
+    ) -> tuple[NodeTensor, list[bool]]:
+        return tensor, relevant_axes

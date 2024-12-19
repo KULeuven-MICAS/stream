@@ -1,6 +1,7 @@
 from abc import ABCMeta
 
-from zigzag.mapping.data_movement import FourWayDataMoving
+from zigzag.datatypes import MemoryOperand
+from zigzag.mapping.data_movement import MemoryAccesses
 from zigzag.workload.layer_node_abc import LayerNodeABC
 
 
@@ -8,6 +9,8 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
     """Abstract base class that represents a piece of an algorithmic workload.
     Example: ComputationNode, etc.
     """
+
+    offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses]
 
     def __init__(
         self,
@@ -18,19 +21,20 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         offchip_energy: float,
         runtime: int,
         possible_core_allocation: list[int],
-        core_allocation_is_fixed: bool = False,
         chosen_core_allocation: int | None = None,
+        input_names: list[str] = [],
     ) -> None:
         """Initialize the Node metaclass
 
         Args:
-            type (str): The type of Node.
-            energy (float): The energy consumption of this Node.
-            runtime (int): The runtime of this Node.
-            possible_core_allocation (int): The core id on which this Node can be mapped.
-            inputs: (List[str]): The names of the input tensors of this node
-            outputs: (List[str]): The names of the output tensors of this node.
+            type: The type of Node.
+            energy: The energy consumption of this Node.
+            runtime: The runtime of this Node.
+            possible_core_allocation: The core id on which this Node can be mapped.
+            inputs: The names of the input tensors of this node
+            outputs: The names of the output tensors of this node.
             chosen_core_allocation: The final core allocation of this node
+            input_names: Names of the ONNX input node
         """
         super().__init__(node_id, node_name)
 
@@ -39,19 +43,12 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         self.offchip_energy = offchip_energy
         self.runtime = runtime
         self.possible_core_allocation = possible_core_allocation
-        self.core_allocation_is_fixed = core_allocation_is_fixed
         self.chosen_core_allocation = chosen_core_allocation
-        # will be set by the scheduler
-        self.start = None
-        # will be set by the scheduler
-        self.end = None
-        # number of data (in bits) only this node consumes (not consumed by any other node)
-        self.data_consumed_unique = 0
+        self.input_names = input_names
+        self.start = -1
+        self.end = -1
         # number of data (in bits) only this node produces (not produced by any other node)
         self.data_produced_unique = 0
-
-        # will be set together with the core allocation
-        self.offchip_bw = FourWayDataMoving(0, 0, 0, 0)
 
     def get_total_energy(self) -> float:
         """Get the total energy of running this node, including off-chip energy."""
@@ -97,7 +94,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         """Set the runtime of running this node.
 
         Args:
-            runtime (int): runtime in cycles
+            runtime: runtime in cycles
         """
         self.runtime = runtime
 
@@ -105,7 +102,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         """Set the start time in cycles of this node.
 
         Args:
-            start (int): start time in cycles
+            start: start time in cycles
         """
         self.start = start
 
@@ -113,7 +110,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         """Set the end time in cycles of this node.
 
         Args:
-            end (int): end time in cycles
+            end: end time in cycles
         """
         self.end = end
 
@@ -131,8 +128,8 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         """
         return self.end is not None
 
-    def set_offchip_bandwidth(self, offchip_bw: FourWayDataMoving):
-        self.offchip_bw = offchip_bw
+    def set_offchip_bandwidth(self, offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses]):
+        self.offchip_bandwidth_per_op = offchip_bandwidth_per_op
 
     def __str__(self):
         return self.name

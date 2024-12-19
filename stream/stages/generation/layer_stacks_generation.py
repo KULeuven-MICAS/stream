@@ -1,5 +1,5 @@
 import logging
-from typing import Any
+from typing import Any, TypeAlias
 
 from zigzag.datatypes import MemoryOperand
 
@@ -10,9 +10,11 @@ from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 
+STACK_T: TypeAlias = tuple[int, ...]
+
 
 class LayerStacksGenerationStage(Stage):
-    layer_stacks: list[tuple[int, ...]] | None
+    layer_stacks: list[STACK_T] | None
 
     def __init__(
         self,
@@ -103,8 +105,8 @@ class LayerStacksGenerationStage(Stage):
 
     def get_layer_stacks_fused(self):
         cumsum = 0
-        stacks = []
-        current_stack = []
+        stacks: list[tuple[int, ...]] = []
+        current_stack: list[int] = []
         for n in sorted(list(self.workload.node_list), key=lambda n: n.id):
             if isinstance(n, ComputationNode):
                 id = n.id
@@ -131,8 +133,8 @@ class LayerStacksGenerationStage(Stage):
         """
         Only the first set of layers will be fused, rest layer by layer"""
         cumsum = 0
-        stacks = []
-        current_stack = []
+        stacks: list[tuple[int, ...]] = []
+        current_stack: list[int] = []
         first_complete = False
         for n in sorted(list(self.workload.node_list), key=lambda n: n.id):
             if isinstance(n, ComputationNode):

@@ -1,0 +1,114 @@
+name: simba_chiplet
+
+memories:
+
+  weight_registers:
+    size: 512  # 8 word-bits * 64 cluster_size
+    r_bw: 8
+    w_bw: 8
+    r_cost: 0.08  # TODO
+    w_cost: 0.08  # TODO
+    area: 0
+    r_port: 1
+    w_port: 1
+    rw_port: 0
+    latency: 1
+    operands: [I2]  # Weights
+    ports:
+      - fh: w_port_1
+        tl: r_port_1
+    served_dimensions: []
+
+  weight_buffer:
+    size: 32768  # 4096 depth * 8 width
+    r_bw: 64  # 8 bits/bank * 8 banks
+    w_bw: 64
+    r_cost: 0.5  # TODO
+    w_cost: 0.5
+    area: 0
+    r_port: 1
+    w_port: 1
+    rw_port: 0
+    latency: 1
+    operands: [I2]  # Weights
+    ports:
+      - fh: w_port_1
+        tl: r_port_1
+    served_dimensions: [D3, D4]
+
+  accumulation_buffer:
+    size: 3072   # 128 depth * 24 width
+    r_bw: 192  # partial sums are 24 bits * 8 units reading in parallel
+    w_bw: 192
+    r_cost: 0.1  # TODO
+    w_cost: 0.1
+    area: 0
+    r_port: 1
+    w_port: 1
+    rw_port: 0
+    latency: 1
+    operands: [O]  # Partial sums
+    ports:
+      - fh: w_port_1
+        tl: r_port_1
+        fl: w_port_1
+        th: r_port_1
+    served_dimensions: [D3, D4]
+
+  input_buffer:
+    size: 524288   # 8192 depth * 64 width
+    r_bw: 64
+    w_bw: 64
+    r_cost: 7  # TODO
+    w_cost: 7  # TODO
+    area: 0
+    r_port: 1
+    w_port: 1
+    rw_port: 0
+    latency: 1
+    operands: [I1]  # Input activations
+    ports:
+      - fh: w_port_1
+        tl: r_port_1
+    served_dimensions: [D3, D4]
+
+  global_buffer:
+    size: 2097152  # 2048 depth * 256 width * 4 banks
+    r_bw: 1024  # 256 bits width * 4 banks
+    w_bw: 1024
+    r_cost: 10  # Example cost, refine with more details
+    w_cost: 10
+    area: 0
+    r_port: 1
+    w_port: 1
+    rw_port: 0
+    latency: 1
+    operands: [I1, I2, O]  # Input activations, weights, partial sums
+    ports:
+      - fh: w_port_1
+        tl: r_port_1
+      - fh: w_port_1
+        tl: r_port_1
+      - fh: w_port_1
+        tl: r_port_1
+        fl: w_port_1
+        th: r_port_1
+    served_dimensions: [D1, D2, D3, D4]
+
+
+operational_array:
+  unit_energy: 0.04  # Refine with more accurate data if available
+  unit_area: 1  # unit
+  # D1/2 = 4x4 PE array. Each PE has 8 vector MACS (D3) that process 8 elements (D4) in parallel
+  dimensions: [D1, D2, D3, D4]
+  sizes: [4, 4, 8, 8]
+
+dataflows:
+  D1:
+    - K, 4
+  D2:
+    - C, 4
+  D3:
+    - K, 8
+  D4:
+    - C, 8

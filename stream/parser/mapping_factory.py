@@ -24,7 +24,7 @@ class MappingFactory:
         for mapping_data in self.all_mapping_data:
             op_type = mapping_data["name"]
             core_allocation = mapping_data["core_allocation"]
-            core_allocation_is_fixed = mapping_data["core_allocation_is_fixed"]
+            layer_dimension_names = mapping_data["layer_dimension_names"]
             spatial_mapping = self.create_spatial_mapping(mapping_data)
             inter_core_tiling = self.create_inter_core_tiling(mapping_data)
             intra_core_tiling = self.create_intra_core_tiling(mapping_data)
@@ -32,9 +32,9 @@ class MappingFactory:
                 op_type=op_type,
                 spatial_mapping=spatial_mapping,
                 core_allocation=core_allocation,
-                core_allocation_is_fixed=core_allocation_is_fixed,
                 inter_core_tiling=inter_core_tiling,
                 intra_core_tiling=intra_core_tiling,
+                layer_dimension_names=layer_dimension_names,
             )
             all_mappings[op_type] = mapping
         return all_mappings

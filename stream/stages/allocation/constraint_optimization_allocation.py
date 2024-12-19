@@ -6,21 +6,22 @@ from typing import Any, TypeAlias
 
 import networkx as nx
 import numpy as np
-from networkx import DiGraph
 from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_T, get_optimal_allocations
+from stream.opt.allocation.constraint_optimization.utils import calculate_total_latency
 from stream.stages.estimation.stream_cost_model_evaluation import StreamCostModelEvaluationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
+from stream.stages.generation.layer_stacks_generation import STACK_T
 from stream.stages.generation.tiled_workload_generation import (
     TiledWorkloadGenerationStage,
 )
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 from stream.stages.stage import MainStage, Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT
-from stream.visualization.constraint_optimization import visualize_waco
+from stream.visualization.constraint_optimization import to_perfetto_json
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.mapping import TILING_T
@@ -29,7 +30,6 @@ from stream.workload.utils import get_real_successors
 
 logger = logging.getLogger(__name__)
 
-STACK_T: TypeAlias = tuple[int, ...]
 SCHEDULE_ORDER_T: TypeAlias = list[tuple[int, int]]
 
 
@@ -50,6 +50,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         cost_lut: CostModelEvaluationLUT,
         layer_stacks: list[tuple[int, ...]],
         allocations_path: str,
+        tiled_workload_post_co_path: str,
         cost_lut_post_co_path: str,
         **kwargs: Any,
     ):
@@ -74,6 +75,7 @@ class ConstraintOptimizationAllocationStage(Stage):
 
         self.allocations_path = allocations_path
         os.makedirs(self.allocations_path, exist_ok=True)
+        self.tiled_workload_post_co_path = tiled_workload_post_co_path
         self.cost_lut_post_co_path = cost_lut_post_co_path
         self.co_time_limit: int = kwargs.get("co_time_limit", self.CO_TIME_LIMIT)
 
@@ -122,12 +124,11 @@ class ConstraintOptimizationAllocationStage(Stage):
                 logger.warning(f"Stack {i} is empty.")
                 continue
 
-            # TODO initialize the subgraph of type DiGraphWrapper[ComputationNode]
-            sg: DiGraph = self.workload.subgraph(nodes)
+            sg = self.workload.get_subgraph(nodes)
             sink_nodes: list[ComputationNode] = sorted(
                 n for n in sg.nodes() if len(get_real_successors(n, sg)) == 0  # type: ignore
             )
-            sink_layer_ids = sorted(set(n.id for n in sink_nodes))
+            sink_layer_ids = set(n.id for n in sink_nodes)
             sink_layer_nodes = [tuple(sorted(n for n in sink_nodes if n.id == layer_id)) for layer_id in sink_layer_ids]
             interlaced = [tuple(filter(lambda x: x is not None, t)) for t in itertools.zip_longest(*sink_layer_nodes)]
             computed: set[ComputationNode] = set()
@@ -136,7 +137,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             to_compute_counts: dict[int, int] = dict()
             state_ids: dict[int, list[int]] = dict()
             to_compute_unique: dict[tuple[ComputationNode, ...], set[ComputationNode]] = dict()
-            hashes_per_sink_pair = dict()
+            hashes_per_sink_pair: dict[tuple[ComputationNode, ComputationNode], int] = dict()
             for pair in interlaced:
                 needed_compute: set[ComputationNode] = set()
                 for sink_node in pair:
@@ -192,13 +193,21 @@ class ConstraintOptimizationAllocationStage(Stage):
         logger.info(f"Percentage of steady state macs: {nb_steady_state_macs}/{nb_macs} = {percentage_macs:.2f}%")
 
     def find_best_allocation_per_stack(self):
+        total_ss_latency = 0
         for stack, to_compute in self.ss_to_computes.items():
             iterations = self.ss_iterations_per_stack[stack]
             t_start = time()
             optimal_allocation = self.find_best_allocation(to_compute, iterations, stack, self.co_time_limit)
+            ss_latency, _ = calculate_total_latency(
+                to_compute, optimal_allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr
+            )
             t_end = time()
-            logger.info(f"Stack {stack}: {t_end - t_start:.3f} seconds")
+            logger.info(
+                f"Stack {stack}: Optimization took {t_end - t_start:.3f} seconds; Predicted steady-state latency: {ss_latency} cycles"
+            )
             self.optimal_allocation_per_stack[stack] = optimal_allocation
+            total_ss_latency += ss_latency
+        logger.info(f"Total steady-state latency across stacks: {total_ss_latency} cycles")
 
     def find_best_allocation(
         self, to_compute: set[ComputationNode], iterations: int, stack: STACK_T = (0,), time_limit: int = 600
@@ -207,10 +216,10 @@ class ConstraintOptimizationAllocationStage(Stage):
         # Check if the allocation is already cached, if not: find it
         stack_str = "_".join([str(id) for id in stack])
         stack_allocations_path = os.path.join(self.allocations_path, f"steady_state-{stack_str}.pickle")
+        sg = self.workload.subgraph(to_compute)
         if os.path.exists(stack_allocations_path):
             allocation = pickle_load(stack_allocations_path)
         else:
-            sg = self.workload.subgraph(to_compute)
             logger.info(f"Optimizing allocation for {iterations} iterations of {len(to_compute)} ss nodes.")
             allocation = get_optimal_allocations(
                 sg,
@@ -218,10 +227,14 @@ class ConstraintOptimizationAllocationStage(Stage):
                 self.cost_lut,
                 iterations,
                 time_limit=time_limit,
+                latency_attr=self.latency_attr,
             )
             pickle_save(allocation, stack_allocations_path)
-        fig_path = stack_allocations_path.replace(".pickle", ".html")
-        visualize_waco(allocation, self.cost_lut, self.accelerator, fig_path, iterations)
+        json_path = stack_allocations_path.replace(".pickle", ".json")
+        to_perfetto_json(
+            self.workload, allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr, json_path
+        )
+
         return allocation
 
     def get_scheduling_order(self, unpartitioned_workload: DNNWorkloadStream) -> SCHEDULE_ORDER_T:
@@ -236,13 +249,14 @@ class ConstraintOptimizationAllocationStage(Stage):
         """
 
         scheduling_order: SCHEDULE_ORDER_T = []
-        for stack, compute in self.compute_per_sink_node.items():
+        for stack in sorted(self.compute_per_sink_node):
+            compute_this_stack = self.compute_per_sink_node[stack]
             hash_steady_state = self.steady_state_hashes[stack]
             allocation_steady_state = self.optimal_allocation_per_stack[stack]
             hashes_per_sink_node = self.hashes_per_sink_node[stack]
             order = self.get_cn_order(
                 allocation=allocation_steady_state,
-                compute_per_sink_node=compute,
+                compute_per_sink_node=compute_this_stack,
                 hashes_per_sink_node=hashes_per_sink_node,
                 memoization_hash_ss=hash_steady_state,
             )
@@ -257,7 +271,13 @@ class ConstraintOptimizationAllocationStage(Stage):
     ):
         """Given an allocation order for a given stack, extend the order to extra outer loops that result from the
         inter core tiling. This method anticipates the fact that later on, CNs will be split further to allow for inter-
-        core tiling, and adjusts the scheduling beforehand
+        core tiling, and adjusts the scheduling beforehand.
+
+        Example: [(0, 12), (0, 13)] and inter_core_tiling = 4
+            -> [(0, 4*12+0), (0, 49), (0, 50), (0, 51), (0, 4*13+0), ...]
+                <------intra-core partition 12------->  <---- partition 13 ---->
+
+        NOTE The ordering given by this method must match the order in which tiles are generated in `get_tiles`
 
         Args:
             stack: CN stack for which the order applies
@@ -266,36 +286,33 @@ class ConstraintOptimizationAllocationStage(Stage):
                                     core tiling loops
 
         """
+        adjusted_order = order.copy()
 
-        for node in self.get_computation_nodes(stack, unpartitioned_workload):
+        for curr_node in self.get_computation_nodes(stack, unpartitioned_workload):
             # NOTE this uses `inter_core_tiling`, because the inter core tiling is added to the intra core tiling
             # in `schedule_allocation` in order to alter the workload
-            outer_loops = node.inter_core_tiling
+            outer_loops = curr_node.inter_core_tiling
 
-            # try:
-            #     outer_loops = hint_loops[(layer_id,)]
-            # except KeyError:
-            #     # If the layer_id is not present it means it was not in the allocation.
-            #     # This happens if all nodes of the layer were not in the steady state
-            #     outer_loops = []
-
-            for _, factor in outer_loops:
-                assert isinstance(factor, int), "tiling options `*` and `all` should be replaced by now"
-                if factor == 1:
+            for _, inter_core_split_factor in outer_loops:
+                assert isinstance(
+                    inter_core_split_factor, int
+                ), "tiling options `*` and `all` should be replaced by now"
+                if inter_core_split_factor == 1:
                     # In case CO decides to not split up the node across cores
                     continue
 
-                inserted = 0
-                for i, ids_in_stack in enumerate(order.copy()):
-                    layer_id, node_id = ids_in_stack
-                    if layer_id == node.id:
-                        nb_nodes_this_layer = self.get_nb_nodes_for_layer(layer_id)
-                        for scale in range(1, factor):
-                            new_node_id = scale * nb_nodes_this_layer + node_id
-                            order.insert(i + inserted + 1, (layer_id, new_node_id))
-                            inserted += 1
+                i = 0
+                while i < len(adjusted_order):
+                    layer_id, sub_id = adjusted_order[i]
+                    if layer_id == curr_node.id:
+                        adjusted_order[i : i + 1] = [
+                            (layer_id, sub_id * inter_core_split_factor + j) for j in range(inter_core_split_factor)
+                        ]
+                        i += inter_core_split_factor
+                    else:
+                        i += 1
 
-        return order
+        return adjusted_order
 
     def get_nb_nodes_for_layer(self, layer_id: int):
         return len(list(n for n in self.workload.node_list if n.id == layer_id))
@@ -396,6 +413,8 @@ class ConstraintOptimizationAllocationStage(Stage):
         kwargs["accelerator"] = self.accelerator
         kwargs["workload"] = unpartitioned_sub_workload
         kwargs["scheduling_order"] = scheduling_order
+        kwargs["layer_stacks"] = self.layer_stacks
+        kwargs["tiled_workload_path"] = self.tiled_workload_post_co_path
         kwargs["cost_lut_path"] = self.cost_lut_post_co_path
         kwargs["latency_attr"] = self.latency_attr
 
@@ -430,7 +449,6 @@ class ConstraintOptimizationAllocationStage(Stage):
             for node in filter(lambda n: n.id == layer_id_not_in_ss, sub_workload.node_list):
                 node.chosen_core_allocation = node.core_allocation
                 node.possible_core_allocation = node.core_allocation
-                node.core_allocation_is_fixed = True
                 layer_ids.insert(layer_ids_idx, layer_id_not_in_ss)
                 core_ids.insert(layer_ids_idx, node.core_allocation)
                 logger.warning(f"{node} not in steady state allocation; allocated to: {node.core_allocation}.")
@@ -444,33 +462,11 @@ class ConstraintOptimizationAllocationStage(Stage):
         assert len(layer_ids) == len(core_ids)
         for layer_id, cores in zip(layer_ids, core_ids):
             n = next(n for n in workload.node_list if n.id == layer_id)
-            n.chosen_core_allocation = list(cores)
             n.possible_core_allocation = list(cores)
-            n.core_allocation_is_fixed = True
-
-        # Find any layers that might not have been in the steady state allocation and need to be allocated manually
-        # The nodes of these layers will be allocated across all possible cores in the K dimension if possible
-        layer_ids_not_in_ss = [
-            layer_id for stack in self.layer_stacks for layer_id in stack if layer_id not in layer_ids
-        ]
-
-        # TODO this piece of code is outdated
-        for layer_id_not_in_ss in layer_ids_not_in_ss:
-            layer_ids_idx = np.searchsorted(layer_ids, layer_id_not_in_ss)
-            for n in filter(lambda n: n.id == layer_id_not_in_ss, workload.node_list):
-                assert isinstance(n.core_allocation, list)
-                n.chosen_core_allocation = n.core_allocation
-                n.possible_core_allocation = n.core_allocation
-                n.core_allocation_is_fixed = True
-                assert "K" in n.loop_dim_size
-                layer_ids.insert(layer_ids_idx, layer_id_not_in_ss)
-                core_ids.insert(layer_ids_idx, n.core_allocation)
-                logger.warning(f"{n} not in steady state allocation; allocated to: {n.core_allocation}.")
 
     def replace_wildcard_in_tiling(self, tiling: TILING_T, nb_cores_split: int):
         """The user can define a wildcard `*` in the inter core tiling, meaning that the value found by the CO
         must be used instead.
-        # TODO in case multiple splits are given (e.g. C and D), should the nb_cores_split be scaled?
         """
         if len(tiling) > 1:
             raise ValueError("Only 1 partition dimension should be defined in inter core tiling")

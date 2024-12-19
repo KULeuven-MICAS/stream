@@ -15,6 +15,7 @@ from matplotlib.patches import Rectangle
 from plotly.express.colors import sample_colorscale
 from zigzag.datatypes import LayerOperand
 
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.tensor import Tensor
@@ -182,7 +183,7 @@ def plot_timeline_brokenaxes(
 
     if plot_data_transfer:
         # First get all used and unique communication links
-        used_cl_collect = []
+        used_cl_collect: list[CommunicationLink] = []
         for ky, pair_link in accelerator.communication_manager.pair_links.items():
             if pair_link:
                 for link in pair_link:
@@ -201,13 +202,13 @@ def plot_timeline_brokenaxes(
                 start = event.start
                 end = event.end
                 runtime = end - start
-                tensors = event.tensors
-                weight_transfer = task_type.lower() == "transfer" and tensors[0].layer_operand in [
+                tensor = event.tensor
+                weight_transfer = task_type.lower() == "transfer" and tensor.layer_operand in [
                     LayerOperand("W"),
                     LayerOperand("B"),
                 ]
-                layer_id = tensors[0].origin.id
-                node_id = tensors[0].origin.sub_id
+                layer_id = tensor.origin.id
+                node_id = tensor.origin.sub_id
                 if layer_id not in layer_ids_seen:
                     color = next(layer_colors)
                     colors_seen.append(color)
@@ -399,29 +400,27 @@ def add_dependencies(fig, scme, colors, layer_ids):
     # )
 
 
-def get_communication_dicts(scme):
+def get_communication_dicts(scme: "StreamCostModelEvaluation"):
     dicts = []
-    accelerator = scme.accelerator
-    active_links = set()
-    for ky, link_pair in accelerator.communication_manager.pair_links.items():
-        if link_pair:
-            for link in link_pair:
-                if link.events:
-                    active_links.add(link)
-    link_labels = []
-    for pair_link_id, cl in enumerate(active_links):
-        resource = cl.get_name_for_schedule_plot()
-        link_labels.append(resource)
-        for event in cl.events:
-            task_type = event.type
-            start = event.start
-            end = event.end
+    accelerator: Accelerator = scme.accelerator
+
+    active_links: set["CommunicationLink"] = set(
+        link for link_pair in accelerator.communication_manager.pair_links.values() for link in link_pair if link.events
+    )
+
+    for cl in active_links:
+        for cl_event in cl.events:
+            task_type = cl_event.type
+            start = cl_event.start
+            end = cl_event.end
             runtime = end - start
-            energy = event.energy
-            tensors = event.tensors
-            node = event.tensors[0].origin
+            energy = cl_event.energy
+            tensor = cl_event.tensor
+            node = tensor.origin
             layer_id = node.id
-            activity = event.activity
+            activity = cl_event.activity
+            sender = cl_event.sender
+            receiver = cl_event.receiver
             if runtime == 0:
                 continue
             d = dict(
@@ -430,14 +429,16 @@ def get_communication_dicts(scme):
                 Sub_id=np.nan,
                 Start=start,
                 End=end,
-                Resource=resource,
+                Resource=cl.get_name_for_schedule_plot(),
                 Layer=layer_id,
                 Runtime=runtime,
-                Tensors=tensors,
+                Tensors={tensor: tensor.size},
                 Type=task_type,
                 Activity=activity,
                 Energy=energy,
                 LinkBandwidth=cl.bandwidth,
+                Sender=sender,
+                Receiver=receiver,
             )
             dicts.append(d)
     return dicts
@@ -525,7 +526,7 @@ def get_dataframe_from_scme(
             Runtime=runtime,
             SpatialUtilization=su_perfect_temporal,
             SpatialUtilizationWithTemporal=su_nonperfect_temporal,
-            Tensors=tensors,
+            Tensors={tensor: tensor.size for tensor in tensors},
             Type=task_type,
             Activity=np.nan,
             Energy=energy,
