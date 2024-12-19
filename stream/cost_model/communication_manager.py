@@ -59,7 +59,7 @@ class CommunicationLinkEvent:
         end: int,
         tensor: Tensor,
         energy: float,
-        activity: float,
+        activity: int,
         sender: Core,
         receiver: Core,
     ) -> None:
@@ -240,14 +240,16 @@ class CommunicationManager:
             links_to_offchip = set(self.get_links_for_pair(core, offchip_core))
 
             for link in links_to_offchip:
-                tensors_per_link[link] = [(node.operand_tensors[Constants.OUTPUT_LAYER_OP])]
+                tensors_per_link[link] = tensors_per_link.get(link, []) + [
+                    (node.operand_tensors[Constants.OUTPUT_LAYER_OP])
+                ]
 
         # Input operands
         non_output_mem_ops = [op for op in too_large_operands if op != Constants.OUTPUT_MEM_OP]
         if non_output_mem_ops:
             links_from_offchip = set(self.get_links_for_pair(offchip_core, core))
             for link in links_from_offchip:
-                tensors_per_link[link] = [
+                tensors_per_link[link] = tensors_per_link.get(link, []) + [
                     node.operand_tensors[node.memory_operand_links.mem_to_layer_op(op)] for op in non_output_mem_ops
                 ]
 

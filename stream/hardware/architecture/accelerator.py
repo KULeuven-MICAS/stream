@@ -338,6 +338,9 @@ class Accelerator:
             windows: list[tuple[int, int]] = []
             bandwidth_fractions = [i / nb_iterations for i in range(1, nb_iterations + 1)]
 
+            # !
+            bandwidth_fractions = [1 / len(self.core_list)]
+
             for frac in bandwidth_fractions:
                 links_with_bw = {link: ceil(frac * link.bandwidth) for link in links}
                 start, end = find_transfer_start_and_end_time(links_with_bw)
