@@ -1,0 +1,19 @@
+name: simba_package_small
+
+cores:
+  # 4 simba chiplets
+  0: simba_chiplet.yaml
+  1: simba_chiplet.yaml
+  2: simba_chiplet.yaml
+  3: simba_chiplet.yaml
+offchip_core: simba_offchip.yaml
+
+core_connectivity:
+  # 2D mesh
+  - 0, 1
+  - 0, 2
+  - 1, 3
+  - 2, 3
+
+bandwidth: 32
+unit_energy_cost: 0

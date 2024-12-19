@@ -400,11 +400,11 @@ def add_dependencies(fig, scme, colors, layer_ids):
     # )
 
 
-def get_communication_dicts(scme):
+def get_communication_dicts(scme: "StreamCostModelEvaluation"):
     dicts = []
     accelerator: Accelerator = scme.accelerator
     active_links: set[CommunicationLink] = set()
-    for ky, link_pair in accelerator.communication_manager.pair_links.items():
+    for _, link_pair in accelerator.communication_manager.pair_links.items():
         if link_pair:
             for link in link_pair:
                 if link.events:

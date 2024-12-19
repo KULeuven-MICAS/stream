@@ -1,6 +1,6 @@
 import itertools
 from math import ceil
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from zigzag.datatypes import Constants, MemoryOperand
 
@@ -112,7 +112,7 @@ class CommunicationManager:
         return shortest_paths
 
     def get_links_for_all_core_pairs(self):
-        communication_links: dict[tuple[Core, Core], Any] = {}
+        communication_links: dict[tuple[Core, Core], "CommunicationLink"] = {}
         for pair, path in self.shortest_paths.items():
             traversed_edges = [(i, j) for i, j in zip(path, path[1:])]
             communication_links[pair] = [
