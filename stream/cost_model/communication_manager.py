@@ -1,5 +1,5 @@
 import itertools
-from math import ceil
+from math import ceil, floor
 from typing import TYPE_CHECKING
 
 from zigzag.datatypes import Constants, MemoryOperand
@@ -253,33 +253,32 @@ class CommunicationManager:
                     node.operand_tensors[node.memory_operand_links.mem_to_layer_op(op)] for op in non_output_mem_ops
                 ]
 
-        # Sum the required bandwidth for all tensors on each link
-        total_required_bw_per_link = {
-            link: sum([get_inst_bw(tensor.memory_operand) for tensor in tensors])
-            for link, tensors in tensors_per_link.items()
+        tensor_bw_per_link = {
+            link: [(tensor, get_inst_bw(tensor.memory_operand)) for tensor in tensors_this_link]
+            for link, tensors_this_link in tensors_per_link.items()
         }
 
+        # TODO Should the bandwidth be capped at the link BW?
+
         # Get idle window of the involved links
-        block_start = self.get_links_idle_window(total_required_bw_per_link, start_timestep, duration, tensors_per_link)
+        block_start = self.get_links_idle_window(tensor_bw_per_link, start_timestep, duration)
 
         # # Block them
-        for link, tensors in tensors_per_link.items():
+        for link, tensor_bws in tensor_bw_per_link.items():
+            tensors = [tensor for tensor, _ in tensor_bws]
+            bandwidths = [bw for _, bw in tensor_bws]
             operands = [tensor.memory_operand for tensor in tensors]
-            bandwidths = [get_inst_bw(op) for op in operands]
             senders = [core if operand == Constants.OUTPUT_MEM_OP else offchip_core for operand in operands]
             receivers = [offchip_core if operand == Constants.OUTPUT_MEM_OP else core for operand in operands]
-            link.block(
-                block_start, duration, tensors, bandwidth_per_tensor=bandwidths, senders=senders, receivers=receivers
-            )
+            link.block(block_start, duration, tensors, bandwidths=bandwidths, senders=senders, receivers=receivers)
 
         return block_start
 
     def get_links_idle_window(
         self,
-        links: dict["CommunicationLink", int],
+        tensor_bw_per_link: dict["CommunicationLink", list[tuple[Tensor, int]]],
         best_case_start: int,
         duration: int,
-        tensors_per_link: dict["CommunicationLink", list[Tensor]],
     ) -> int:
         """Return the timestep at which tensor can be transfered across the links.
         Both links must have an idle window large enough for the transfer.
@@ -291,14 +290,25 @@ class CommunicationManager:
             duration: The required duration of the idle window.
             tensors: The tensors to be transferred. Used to broadcast from previous transfer.
         """
-        assert len(links) > 0
+        assert len(tensor_bw_per_link) > 0
         idle_intersections: list[tuple[int, int]] = []
-        for i, (link, req_bw) in enumerate(links.items()):
-            req_bw = min(req_bw, link.bandwidth)  # ceil the bw
-            windows = link.get_idle_window(req_bw, duration, best_case_start, tensors_per_link[link])
+        for i, (link, bandwidth_per_tensor) in enumerate(tensor_bw_per_link.items()):
+
+            # Make sure total bandwidth <= link bandwidth
+            total_req_bw = sum([bw for _, bw in bandwidth_per_tensor])
+            if total_req_bw > link.bandwidth:
+                normalization_factor = link.bandwidth / total_req_bw
+                bandwidth_per_tensor = [
+                    (tensor, floor(normalization_factor * bw)) for tensor, bw in bandwidth_per_tensor
+                ]
+
+            windows = link.get_idle_window(bandwidth_per_tensor, duration, best_case_start)
             if i == 0:
                 idle_intersections = windows
             else:
                 idle_intersections = intersections(idle_intersections, windows)
                 idle_intersections = [period for period in idle_intersections if period[1] - period[0] >= duration]
-        return idle_intersections[0][0]
+
+        earliest_window = idle_intersections[0]  # TODO is this the earliest
+        start_time, _ = earliest_window
+        return start_time

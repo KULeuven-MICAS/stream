@@ -323,23 +323,29 @@ class Accelerator:
             """
             slowest_bw = min(links_bw.values())
             transfer_duration = ceil(tensor.size / slowest_bw)
+
+            tensor_bw_per_link = {link: [(tensor, link_bw)] for link, link_bw in links_bw.items()}
+
             transfer_start = self.communication_manager.get_links_idle_window(
-                links=links_bw,
+                tensor_bw_per_link=tensor_bw_per_link,
                 best_case_start=evictions_complete_timestep,
                 duration=transfer_duration,
-                tensors_per_link={link: [tensor] for link in links_bw},
             )
             transfer_end = transfer_start + transfer_duration
             return transfer_start, transfer_end
 
-        def find_earliest_time_for_transfer(links: list[CommunicationLink], nb_iterations: int = 10):
+        def find_earliest_time_for_transfer(
+            links: list[CommunicationLink], nb_iterations: int = 1, default_fraction: float = 1
+        ):
             """Find the earliest time at which a tensor transfer between 2 cores can happen. Iterate over the used
             bandwidth to find the transfer bandwidth at which the finish time is earliest"""
             windows: list[tuple[int, int]] = []
-            bandwidth_fractions = [i / nb_iterations for i in range(1, nb_iterations + 1)]
 
-            # !
-            bandwidth_fractions = [1 / len(self.core_list)]
+            if nb_iterations == 1:
+                bandwidth_fractions = [default_fraction]
+            else:
+                # Iterate over linearly spaced fractions of the bandwidth
+                bandwidth_fractions = [i / nb_iterations for i in range(1, nb_iterations + 1)]
 
             for frac in bandwidth_fractions:
                 links_with_bw = {link: ceil(frac * link.bandwidth) for link in links}
@@ -358,7 +364,13 @@ class Accelerator:
         sender_cores = self.memory_manager.cores_per_top_instance[storing_instance]
         sender_core = sender_cores[0]
         links = self.communication_manager.get_links_for_pair(sender_core, receiving_core)
-        (transfer_start, transfer_end), link_bw_fraction = find_earliest_time_for_transfer(links)
+        # ! By default, transfers only take a fraction of the total bandwidth
+        default_bandwidth_fraction = 1 / len(self.core_list)
+        (transfer_start, transfer_end), link_bw_fraction = find_earliest_time_for_transfer(
+            links,
+            nb_iterations=1,
+            default_fraction=default_bandwidth_fraction,
+        )
         transfer_duration = transfer_end - transfer_start
 
         ################################# STEP 5 #################################
