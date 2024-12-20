@@ -101,6 +101,7 @@ class AcceleratorFactory:
         unit_energy_cost = self.data["unit_energy_cost"]
         connections: list[tuple[int, ...]] = self.data["core_connectivity"]
         edges: list[tuple[Core, Core, dict[str, CommunicationLink]]] = []
+        current_bus_id = 0
 
         # All links between cores
         for connection in connections:
@@ -117,6 +118,9 @@ class AcceleratorFactory:
                 )
             else:
                 # Connect cores to bus, edge by edge
+                # Make sure all links refer to the same `CommunicationLink` instance
+                bus_instance = CommunicationLink("Any", "Any", bandwidth, unit_energy_cost, bus_id=current_bus_id)
+                current_bus_id += 1
                 pairs_this_connection = [
                     (a, b) for idx, a in enumerate(connected_cores) for b in connected_cores[idx + 1 :]
                 ]
@@ -127,6 +131,7 @@ class AcceleratorFactory:
                         bandwidth=bandwidth,
                         unit_energy_cost=unit_energy_cost,
                         link_type="bus",
+                        bus_instance=bus_instance,
                     )
 
         # All links between cores and offchip core

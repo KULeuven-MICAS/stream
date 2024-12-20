@@ -16,30 +16,46 @@ def get_bidirectional_edges(
     bandwidth: float,
     unit_energy_cost: float,
     link_type: Literal["bus"] | Literal["link"],
+    bus_instance: "CommunicationLink | None" = None,
 ) -> list[tuple["Core", "Core", dict[str, "CommunicationLink"]]]:
     """Create a list with two edges: from A to B and B to A."""
-    bus = CommunicationLink("Any", "Any", bandwidth, unit_energy_cost)
-    link_a_to_b = CommunicationLink(core_a, core_b, bandwidth, unit_energy_cost)
-    link_b_to_a = CommunicationLink(core_b, core_a, bandwidth, unit_energy_cost)
 
-    # if have_shared_memory(core_a, core_b):
-    #     # No edge if the cores have a shared memory
-    #     return []
+    match link_type:
+        case "link":
+            link_a_to_b = CommunicationLink(core_a, core_b, bandwidth, unit_energy_cost)
+            link_b_to_a = CommunicationLink(core_b, core_a, bandwidth, unit_energy_cost)
+            return [
+                #  A -> B
+                (
+                    core_a,
+                    core_b,
+                    {"cl": link_a_to_b},
+                ),
+                # B -> A
+                (
+                    core_b,
+                    core_a,
+                    {"cl": link_b_to_a},
+                ),
+            ]
 
-    return [
-        #  A -> B
-        (
-            core_a,
-            core_b,
-            {"cl": bus if link_type == "bus" else link_a_to_b},
-        ),
-        # B -> A
-        (
-            core_b,
-            core_a,
-            {"cl": bus if link_type == "bus" else link_b_to_a},
-        ),
-    ]
+        case "bus":
+            assert bus_instance is not None
+
+            return [
+                #  A -> B
+                (
+                    core_a,
+                    core_b,
+                    {"cl": bus_instance},
+                ),
+                # B -> A
+                (
+                    core_b,
+                    core_a,
+                    {"cl": bus_instance},
+                ),
+            ]
 
 
 class CommunicationLink:
@@ -52,12 +68,14 @@ class CommunicationLink:
         bandwidth: int | float,
         unit_energy_cost: float,
         bidirectional: bool = False,
+        bus_id: int = -1,
     ) -> None:
         self.sender = sender
         self.receiver = receiver
         self.bandwidth = bandwidth
         self.unit_energy_cost = unit_energy_cost
-        self.bidirectional = bidirectional  # TODO this property is not in use?
+        self.bidirectional = bidirectional
+        self.bus_id = bus_id  # Distinguishes links representing disconnected busses
 
         self.events: list[CommunicationLinkEvent] = []
         self.active_periods = [(0, float("inf"), 0)]
@@ -72,13 +90,16 @@ class CommunicationLink:
         return str(self)
 
     def __hash__(self) -> int:
-        return hash((self.sender, self.receiver, self.bandwidth, self.unit_energy_cost, self.bidirectional))
+        return hash(
+            (self.sender, self.receiver, self.bandwidth, self.unit_energy_cost, self.bidirectional, self.bus_id)
+        )
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, CommunicationLink) and (self.sender, self.receiver, self.bandwidth) == (
+        return isinstance(other, CommunicationLink) and (self.sender, self.receiver, self.bandwidth, self.bus_id) == (
             other.sender,
             other.receiver,
             other.bandwidth,
+            other.bus_id,
         )
 
     def get_name_for_schedule_plot(self) -> str:

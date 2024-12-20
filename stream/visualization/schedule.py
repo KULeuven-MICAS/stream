@@ -403,10 +403,13 @@ def add_dependencies(fig, scme, colors, layer_ids):
 def get_communication_dicts(scme: "StreamCostModelEvaluation"):
     dicts = []
     accelerator: Accelerator = scme.accelerator
-    for c_event in accelerator.communication_manager.events:
-        for cl_event in c_event.tasks:
-            # This assumes there is only one CommunicationLink between a pair of cores
-            cl = accelerator.communication_manager.get_links_for_pair(cl_event.sender, cl_event.receiver)[0]
+
+    active_links: set["CommunicationLink"] = set(
+        link for link_pair in accelerator.communication_manager.pair_links.values() for link in link_pair if link.events
+    )
+
+    for cl in active_links:
+        for cl_event in cl.events:
             task_type = cl_event.type
             start = cl_event.start
             end = cl_event.end
