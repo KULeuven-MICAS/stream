@@ -69,8 +69,10 @@ class SetFixedAllocationPerformanceStage(Stage):
                 onchip_energy, offchip_energy = self.get_energy_distribution(cme, too_large_operands)
 
                 # Get the required offchip bandwidth during the execution of the node for all directions
+                bandwidth_scaling = cme.ideal_temporal_cycle / latency
                 offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses] = {
-                    mem_op: get_top_level_inst_bandwidth(cme, mem_op) for mem_op in too_large_operands
+                    mem_op: get_top_level_inst_bandwidth(cme, mem_op, bandwidth_scaling)
+                    for mem_op in too_large_operands
                 }
                 self.set_hw_performance_node(node, onchip_energy, offchip_energy, latency, core_id)
                 node.set_too_large_operands(too_large_operands.copy())

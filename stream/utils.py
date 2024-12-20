@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 from numpy.typing import NDArray
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.mapping.data_movement import FourWayDataMoving, MemoryAccesses
+from zigzag.mapping.data_movement import MemoryAccesses
 
 from stream.hardware.architecture.core import Core
 from stream.workload.mapping import TILING_T
@@ -95,27 +95,14 @@ def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNo
     return unique_nodes
 
 
-def get_top_level_inst_bandwidth(cme: CostModelEvaluation, mem_op: MemoryOperand) -> MemoryAccesses:
+def get_top_level_inst_bandwidth(cme: CostModelEvaluation, mem_op: MemoryOperand, scaling: float) -> MemoryAccesses:
     """Given a cost model evaluation and a memory instance, compute the memory's total instantaneous bandwidth
     required throughout the execution of the layer that corresponds to this CME. Returns empty bandwidth
     requirements if the given memory instance is not included in this CME's memory hierarchy.
-    NOTE: this function is used in Stream
+    The scaling factor can be used to scale the returned bandwidth.
     """
-    assert mem_op in cme.mem_hierarchy_dict
-    layer_op = cme.layer.memory_operand_links.mem_to_layer_op(mem_op)
-    inst_bw_4way = cme.mapping.unit_mem_data_movement[layer_op][-1].req_mem_bw_inst
-    return inst_bw_4way
-
-
-def get_total_required_offchip_bandwidth(
-    cme: CostModelEvaluation, too_large_operands: list[MemoryOperand]
-) -> FourWayDataMoving:
-    if not too_large_operands:
-        return FourWayDataMoving(0, 0, 0, 0)
-    # If there was offchip memory added for some operands, get the offchip bandwidth required
-    offchip_level = cme.accelerator.get_memory_level(too_large_operands[0], -1)
-    req_offchip_bw = cme.get_total_inst_bandwidth(offchip_level)
-    return req_offchip_bw
+    memory_level = cme.accelerator.get_memory_level(mem_op, -1)
+    return cme.get_inst_bandwidth(memory_level=memory_level, memory_operand=mem_op, scaling=scaling)
 
 
 def contains_wildcard(tiling: TILING_T):

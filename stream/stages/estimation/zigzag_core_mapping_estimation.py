@@ -109,6 +109,12 @@ class ZigZagCoreMappingEstimationStage(Stage):
                         if mem_op not in too_large_operands_for_cme and node.operand_precision[layer_op] > 0:
                             too_large_operands_for_cme.append(mem_op)
                     # ! ---
+                    # # ! --- FOR TESTING ONLY enforce blocking for all operands always
+                    # for layer_op in node.input_operands + [node.output_operand]:
+                    #     mem_op = node.memory_operand_links.layer_to_mem_op(layer_op)
+                    #     if mem_op not in too_large_operands_for_cme:
+                    #         too_large_operands_for_cme.append(mem_op)
+                    # # ! ---
                     node_duplicate.set_chosen_core_allocation(core_id)
 
                     # Attempt to override the node's spatial mapping based on the core's dataflow
