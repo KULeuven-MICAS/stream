@@ -236,7 +236,7 @@ def sync_cores_idle_from(
     predecessor_idxs = [i for i in range(len(scheduling_order)) if scheduling_order[i][0] in predecessor_ids]
 
     best_candidate_idx = scheduling_order.index((best_candidate.id, best_candidate.sub_id))
-    if scheduling_order[best_candidate_idx - 1][0] in predecessor_ids and all(
+    if scheduling_order[best_candidate_idx - 1][0] != best_candidate.id and all(
         (i < best_candidate_idx for i in predecessor_idxs)
     ):
         # If the best_candidate is the first node of a layer and all nodes of predecessor layers have been scheduled
