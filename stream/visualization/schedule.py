@@ -403,28 +403,21 @@ def add_dependencies(fig, scme, colors, layer_ids):
 def get_communication_dicts(scme: "StreamCostModelEvaluation"):
     dicts = []
     accelerator: Accelerator = scme.accelerator
-    active_links: set[CommunicationLink] = set()
-    for _, link_pair in accelerator.communication_manager.pair_links.items():
-        if link_pair:
-            for link in link_pair:
-                if link.events:
-                    active_links.add(link)
-    link_labels = []
-    for pair_link_id, cl in enumerate(active_links):
-        resource = cl.get_name_for_schedule_plot()
-        link_labels.append(resource)
-        for event in cl.events:
-            task_type = event.type
-            start = event.start
-            end = event.end
+    for c_event in accelerator.communication_manager.events:
+        for cl_event in c_event.tasks:
+            # This assumes there is only one CommunicationLink between a pair of cores
+            cl = accelerator.communication_manager.get_links_for_pair(cl_event.sender, cl_event.receiver)[0]
+            task_type = cl_event.type
+            start = cl_event.start
+            end = cl_event.end
             runtime = end - start
-            energy = event.energy
-            tensor = event.tensor
+            energy = cl_event.energy
+            tensor = cl_event.tensor
             node = tensor.origin
             layer_id = node.id
-            activity = event.activity
-            sender = event.sender
-            receiver = event.receiver
+            activity = cl_event.activity
+            sender = cl_event.sender
+            receiver = cl_event.receiver
             if runtime == 0:
                 continue
             d = dict(
@@ -433,7 +426,7 @@ def get_communication_dicts(scme: "StreamCostModelEvaluation"):
                 Sub_id=np.nan,
                 Start=start,
                 End=end,
-                Resource=resource,
+                Resource=cl.get_name_for_schedule_plot(),
                 Layer=layer_id,
                 Runtime=runtime,
                 Tensors={tensor: tensor.size},
