@@ -84,7 +84,7 @@ def get_latencies(
 
     latencies_with_split = {}
     possible_allocation_splits = {}
-    p_max = len(core_names)  # maximum parallalization factor
+    p_max = len(core_names)  # maximum parallelization factor
 
     for node_id in ids.values():
         possible_allocation_splits[node_id] = {}
@@ -93,7 +93,7 @@ def get_latencies(
             if core_name in possible_allocations[node_id]:
                 p_t = int(inter_core_tiling_sizes[node_id, core_name])
                 for p in range(1, p_max + 1):
-                    if divmod(p_t, p)[1] == 0 and p <= len(possible_allocations[node_id]):
+                    if p <= len(possible_allocations[node_id]):
                         lat = int(latencies[(node_id, core_name)] / min(p_t, p))
                         possible_allocation_splits[node_id][core_name][p] = 1
                     else:
