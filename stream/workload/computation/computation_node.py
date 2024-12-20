@@ -32,24 +32,6 @@ class ComputationNode(LayerNode, Node):
 
     too_large_operands: list[MemoryOperand]
 
-    # Map the node's op_type to the corresponding layer dimension to split on for fusion
-    FUSION_DIM_MAPPING: dict[str, list[LayerDim]] = {
-        "conv": [LayerDim("OY")],
-        "matmul": [LayerDim("D")],
-        "gemm": [LayerDim("D")],
-        "pooling": [LayerDim("OY")],
-        "add": [LayerDim("D")],
-        "mul": [LayerDim("D")],
-        "softmax": [LayerDim("K")],
-        "max": [LayerDim("K")],
-        "div": [LayerDim("K")],
-        "exp": [LayerDim("K")],
-        "sum": [LayerDim("K")],
-        "relu": [LayerDim("K")],
-        "gelu": [LayerDim("K")],
-        "silu": [LayerDim("K")],
-    }  # TODO default to "K" ?
-
     def __init__(
         self,
         node_id: int,
@@ -61,6 +43,7 @@ class ComputationNode(LayerNode, Node):
         produces_final_output: bool = False,
         group_id: int = 0,
         sub_id: int = -1,  # To distinguish alternative versions of this node
+        input_names: list[str] = [],
     ):
         op_type = op_type.lower()
 
@@ -76,6 +59,7 @@ class ComputationNode(LayerNode, Node):
             offchip_energy=0,
             runtime=0,
             possible_core_allocation=mapping_attr.core_allocation,
+            input_names=input_names,
         )
 
         # Overwrite default spatial mapping with given one
@@ -110,11 +94,6 @@ class ComputationNode(LayerNode, Node):
         # This should be set after the node is created and the number of predecessors is known.
         self.nb_real_predecessors = None
         self._static_hash_value = self.__compute_static_hash()
-
-        try:
-            self.fusion_partition_dims = ComputationNode.FUSION_DIM_MAPPING[op_type]
-        except KeyError:
-            raise NotImplementedError(f"Fusion partitioning dimensions not defined for {op_type}")
 
         # Each ComputationNode will save a tensor for all its defined operands.
         # For example, a conv layer will have an I tensor, W tensor and O tensor.

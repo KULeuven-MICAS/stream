@@ -117,10 +117,12 @@ class PoolingParser(OnnxComputeOperatorParser):
         node_factory = LayerNodeFactory(node_data, None)
         node_attrs = node_factory.create_node_attr()
         mapping = self.get_mapping_this_node()
+        input_names = list(self.node.input)
 
         return PoolingNode(
             node_id=self.node_id,
             node_name=self.node.name,
             node_attr=node_attrs,
             mapping_attr=mapping,
+            input_names=input_names,
         )

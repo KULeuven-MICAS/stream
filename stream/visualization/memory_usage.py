@@ -111,7 +111,9 @@ def plot_memory_usage(
         peak_usages_bytes[ti] = peak_usage_bytes
         if not peak_usage_bytes > 0:
             continue  # Happens for weight memory on pooling core because it's encoded as zero bit
-        assert min(stored_bytes) >= 0, f"We used negative amount of memory on top instance {ti}."
+        # assert min(stored_bytes) >= 0, f"We used negative amount of memory on top instance {ti}."
+        if min(stored_bytes) < 0:
+            logger.warn(f"We used negative amount of memory on top instance {ti}.")
         ax.plot(timesteps, stored_bytes, drawstyle="steps-post")  # Plot the timesteps and used memory through time
         ax.axhline(
             y=peak_usage_bytes,

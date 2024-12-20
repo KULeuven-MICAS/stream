@@ -12,6 +12,7 @@ from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_T, get_optimal_allocations
+from stream.opt.allocation.constraint_optimization.utils import calculate_total_latency
 from stream.stages.estimation.stream_cost_model_evaluation import StreamCostModelEvaluationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
 from stream.stages.generation.tiled_workload_generation import (
@@ -20,7 +21,7 @@ from stream.stages.generation.tiled_workload_generation import (
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 from stream.stages.stage import MainStage, Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT
-from stream.visualization.constraint_optimization import visualize_waco
+from stream.visualization.constraint_optimization import to_perfetto_json, visualize_waco
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.mapping import TILING_T
@@ -50,6 +51,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         cost_lut: CostModelEvaluationLUT,
         layer_stacks: list[tuple[int, ...]],
         allocations_path: str,
+        tiled_workload_post_co_path: str,
         cost_lut_post_co_path: str,
         **kwargs: Any,
     ):
@@ -74,6 +76,7 @@ class ConstraintOptimizationAllocationStage(Stage):
 
         self.allocations_path = allocations_path
         os.makedirs(self.allocations_path, exist_ok=True)
+        self.tiled_workload_post_co_path = tiled_workload_post_co_path
         self.cost_lut_post_co_path = cost_lut_post_co_path
         self.co_time_limit: int = kwargs.get("co_time_limit", self.CO_TIME_LIMIT)
 
@@ -192,13 +195,21 @@ class ConstraintOptimizationAllocationStage(Stage):
         logger.info(f"Percentage of steady state macs: {nb_steady_state_macs}/{nb_macs} = {percentage_macs:.2f}%")
 
     def find_best_allocation_per_stack(self):
+        total_ss_latency = 0
         for stack, to_compute in self.ss_to_computes.items():
             iterations = self.ss_iterations_per_stack[stack]
             t_start = time()
             optimal_allocation = self.find_best_allocation(to_compute, iterations, stack, self.co_time_limit)
+            ss_latency, _ = calculate_total_latency(
+                optimal_allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr
+            )
             t_end = time()
-            logger.info(f"Stack {stack}: {t_end - t_start:.3f} seconds")
+            logger.info(
+                f"Stack {stack}: Optimization took {t_end - t_start:.3f} seconds; Predicted steady-state latency: {ss_latency} cycles"
+            )
             self.optimal_allocation_per_stack[stack] = optimal_allocation
+            total_ss_latency += ss_latency
+        logger.info(f"Total steady-state latency across stacks: {total_ss_latency} cycles")
 
     def find_best_allocation(
         self, to_compute: set[ComputationNode], iterations: int, stack: STACK_T = (0,), time_limit: int = 600
@@ -218,10 +229,14 @@ class ConstraintOptimizationAllocationStage(Stage):
                 self.cost_lut,
                 iterations,
                 time_limit=time_limit,
+                latency_attr=self.latency_attr,
             )
             pickle_save(allocation, stack_allocations_path)
         fig_path = stack_allocations_path.replace(".pickle", ".html")
-        visualize_waco(allocation, self.cost_lut, self.accelerator, fig_path, iterations)
+        visualize_waco(allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr, fig_path)
+        json_path = stack_allocations_path.replace(".pickle", ".json")
+        to_perfetto_json(allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr, json_path)
+
         return allocation
 
     def get_scheduling_order(self, unpartitioned_workload: DNNWorkloadStream) -> SCHEDULE_ORDER_T:
@@ -396,6 +411,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         kwargs["accelerator"] = self.accelerator
         kwargs["workload"] = unpartitioned_sub_workload
         kwargs["scheduling_order"] = scheduling_order
+        kwargs["tiled_workload_path"] = self.tiled_workload_post_co_path
         kwargs["cost_lut_path"] = self.cost_lut_post_co_path
         kwargs["latency_attr"] = self.latency_attr
 
