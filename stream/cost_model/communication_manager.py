@@ -33,7 +33,7 @@ class CommunicationEvent:
         self.receiver = receiver
 
     def __str__(self) -> str:
-        return f"CommunicationEvent(id={self.id}, sender={self.sender}, receiver={self.receiver})"
+        return f"CommunicationEvent(id={self.id}, sender={self.sender}, receiver={self.receiver}, tensor={self.tasks[0].tensor}, energy={self.energy:.2e})"
 
     def __repr__(self) -> str:
         return str(self)
@@ -180,19 +180,24 @@ class CommunicationManager:
             )
             for link in links
         ]
-        event = CommunicationEvent(
-            id=self.event_id,
-            tasks=cles,
-            sender=sender,
-            receiver=receiver,
-        )
-        self.events.append(event)
-        self.event_id += 1
 
         link_energy_cost = 0
+        is_new_event_across_all_links = True
         for link, cle in zip(links, cles):
-            transfer_energy_cost = link.transfer(cle)
-            link_energy_cost += transfer_energy_cost
+            transfer_energy_cost, is_new_event = link.transfer(cle)
+            if is_new_event:
+                link_energy_cost += transfer_energy_cost
+            else:
+                is_new_event_across_all_links = False
+        if is_new_event_across_all_links:
+            event = CommunicationEvent(
+                id=self.event_id,
+                tasks=cles,
+                sender=sender,
+                receiver=receiver,
+            )
+            self.events.append(event)
+            self.event_id += 1
         # Energy cost of memory reads/writes on sender/receiver
         # For this we need to know the memory operand in order to know where in the sender/receiver the tensor is stored
         # We assume the tensor to be sent is defined from the sender perspective, so we take its operand as the sender
@@ -265,13 +270,23 @@ class CommunicationManager:
 
         # # Block them
         for link, tensor_bws in tensor_bw_per_link.items():
-            tensors = [tensor for tensor, _ in tensor_bws]
-            bandwidths = [bw for _, bw in tensor_bws]
-            operands = [tensor.memory_operand for tensor in tensors]
-            senders = [core if operand == Constants.OUTPUT_MEM_OP else offchip_core for operand in operands]
-            receivers = [offchip_core if operand == Constants.OUTPUT_MEM_OP else core for operand in operands]
-            link.block(block_start, duration, tensors, bandwidths=bandwidths, senders=senders, receivers=receivers)
-
+            for tensor, bandwidth in tensor_bws:
+                operand = tensor.memory_operand
+                sender = core if operand == Constants.OUTPUT_MEM_OP else offchip_core
+                receiver = offchip_core if operand == Constants.OUTPUT_MEM_OP else core
+                cle, is_new_event = link.block(
+                    block_start, duration, tensor, bandwidth=bandwidth, sender=sender, receiver=receiver
+                )
+                # TODO: Group multiple CommunicationLinkEvents into a single CommunicationEvent as opposed to one event per link and tensor
+                if is_new_event:
+                    event = CommunicationEvent(
+                        id=self.event_id,
+                        tasks=[cle],
+                        sender=sender,
+                        receiver=receiver,
+                    )
+                    self.events.append(event)
+                    self.event_id += 1
         return block_start
 
     def get_links_idle_window(

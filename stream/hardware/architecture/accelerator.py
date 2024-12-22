@@ -397,10 +397,9 @@ class Accelerator:
             pass
         # Don't remove it from the producing core
         else:
-            not_on_producing_core = sender_core.id != tensor.origin.core_allocation
-            if (storing_instance not in tensor.instance_priorities) or (
-                not_on_producing_core and tensor.instance_priorities[storing_instance] == 0
-            ):
+            not_on_producing_core = sender_core.id != tensor.origin.chosen_core_allocation
+            tensor_priority = tensor.get_instance_priority(storing_instance, self.memory_manager)
+            if not_on_producing_core and tensor_priority == 0:
                 self.remove(
                     tensor,
                     sender_core,

@@ -121,57 +121,58 @@ class CommunicationLink:
             int: The end time when communication on this link is finished
         """
         energy_cost = link_event.energy
-        self.update_activity(link_event)
-        return energy_cost
+        is_new_event = self.update_activity(link_event)
+        return energy_cost, is_new_event
 
     def block(
         self,
         start: int,
         duration: int,
-        tensors: list["Tensor"],
-        bandwidths: list[int],
-        senders: list["Core"],
-        receivers: list["Core"],
+        tensor: "Tensor",
+        bandwidth: int,
+        sender: list["Core"],
+        receiver: list["Core"],
     ):
         """Block this communication link from start timestep for a given duration.
 
         Args:
             start: The timestep at which the blocking starts.
             duration: The duration of the blocking.
-            tensors: A list of tensors for which we are blocking the link.
-            activity: The percentage of the link bandwidth used
-            bandwidths: The bandwidth used by each tensor in the list.
-            senders: The cores sending the tensors.
-            receivers: The cores receiving the tensors.
+            tensor: The tensor for which we are blocking the link.
+            activity: The percentage of the link bandwidth used.
+            bandwidth: The bandwidth used.
+            sender: The sending core.
+            receiver: The receiving core.
         """
-        assert len(tensors) == len(bandwidths)
         end = start + duration
         # Create a CLEvent per tensor
-        for tensor, bandwidth, sender, receiver in zip(tensors, bandwidths, senders, receivers):
-            event = CommunicationLinkEvent(
-                type="block",
-                start=start,
-                end=end,
-                tensor=tensor,
-                energy=tensor.origin.get_offchip_energy(),
-                activity=bandwidth,
-                sender=sender,
-                receiver=receiver,
-            )
-            self.update_activity(event)
-        return
+        event = CommunicationLinkEvent(
+            type="block",
+            start=start,
+            end=end,
+            tensor=tensor,
+            energy=tensor.origin.get_offchip_energy(),
+            activity=bandwidth,
+            sender=sender,
+            receiver=receiver,
+        )
+        is_new_event = self.update_activity(event)
+        return event, is_new_event
 
-    def update_activity(self, event: CommunicationLinkEvent):
+    def update_activity(self, event: CommunicationLinkEvent) -> bool:
         start = event.start
         end = event.end
         activity = event.activity
+        is_new_event = True
         if start == end:
-            return
+            is_new_event = False
+            return is_new_event
 
         # Check if this is a duplicate event for broadcast
         previous_events = self.previously_seen_tensors.get(event.tensor, [])
         if any((previous_event.start == event.start for previous_event in previous_events)):
-            return
+            is_new_event = False
+            return is_new_event
 
         idx_start = np.searchsorted(self.active_ts, start)
         if self.active_ts[idx_start] == start:
@@ -189,6 +190,7 @@ class CommunicationLink:
 
         self.previously_seen_tensors[event.tensor] = self.previously_seen_tensors.get(event.tensor, []) + [event]
         self.events.append(event)
+        return is_new_event
 
     def get_idle_window(
         self,
