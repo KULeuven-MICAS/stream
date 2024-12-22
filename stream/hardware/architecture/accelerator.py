@@ -90,10 +90,10 @@ class Accelerator:
         """Remove tensor from core. If required, transfer to offchip before removal.
 
         Args:
-            tensor (Tensor): The tensor to remove.
+            tensor: The tensor to remove.
             core (Core): The Core to remove the tensor from.
-            memory_op (str): The memory operand of the tensor.
-            timestep (int): The timestep to remove the tensor at.
+            memory_op: The memory operand of the tensor.
+            timestep: The timestep to remove the tensor at.
             write_back_to_offchip (bool, optional): Write the tensor to offchip before removal. Defaults to False.
         """
         assert self.offchip_core_id is not None
@@ -152,9 +152,9 @@ class Accelerator:
 
         Args:
             core (Core): The Core to remove the tensor from
-            memory_operand (str): The memory operand for which all tensors should be evicted.
-            timestep (int): The timestep to remove the tensor at.
-            exceptions (list): A list of tensors that should not be evicted.
+            memory_operand: The memory operand for which all tensors should be evicted.
+            timestep: The timestep to remove the tensor at.
+            exceptions: A list of tensors that should not be evicted.
             write_back_to_offchip (bool, optional): Write the tensor to offchip before removal. Defaults to False.
         """
         total_link_energy_cost = 0
@@ -182,10 +182,10 @@ class Accelerator:
         """Make space for the given tensor on the given core by evicting already stored tensors if necessary.
 
         Args:
-            tensor (Tensor): The tensor to make space for.
+            tensor: The tensor to make space for.
             core (Core): The core where the tensor will be stored.
-            memory_operand (str): The memory operand on the core.
-            timestep (int): The timestep at which to make space for.
+            memory_operand: The memory operand on the core.
+            timestep: The timestep at which to make space for.
         """
         total_eviction_link_energy_cost = 0
         total_eviction_memory_energy_cost = 0
@@ -238,6 +238,7 @@ class Accelerator:
         tensor_operand: MemoryOperand,
         non_evictable_tensors: list[Tensor],
         sending_core_id: int | None = None,
+        earliest_t: int = 0,
     ) -> tuple[int, float, float, float, float, bool]:
         """
         Transfer a tensor to a given core id.
@@ -255,12 +256,58 @@ class Accelerator:
         If one of the links already transferred the tensor, we broadcast if possible.
 
         Args:
-            tensor (Tensor): The tensor to transfer.
-            receiving_core_id (int): The id of the core that needs to receive the tensor.
-            tensor_operand (str): The memory operand where the tensor needs to be stored.
-            non_evictable_tensors (list): the stored tensor that cannot be evicted
-            sending_core_id (int, optional): The id of the core that should transfer the tensor.
+            tensor: The tensor to transfer.
+            receiving_core_id: The id of the core that needs to receive the tensor.
+            tensor_operand: The memory operand where the tensor needs to be stored.
+            non_evictable_tensors: the stored tensor that cannot be evicted
+            sending_core_id: The id of the core that should transfer the tensor.
+            earliest_t: Earliest timestep at which transfer can happen
         """
+
+        def find_transfer_start_and_end_time(links_bw: dict[CommunicationLink, int]):
+            """
+            Given the links to transfer across and corresponding available bandwidths, return the earliest transfer
+            start and end time.
+
+            Args:
+                links_bw: link and corresponding transfer bandwidth
+            """
+            slowest_bw = min(links_bw.values())
+            transfer_duration = ceil(tensor.size / slowest_bw)
+            tensor_bw_per_link = {link: [(tensor, link_bw)] for link, link_bw in links_bw.items()}
+            transfer_start = self.communication_manager.get_links_idle_window(
+                tensor_bw_per_link=tensor_bw_per_link,
+                best_case_start=evictions_complete_timestep,
+                duration=transfer_duration,
+            )
+            transfer_end = transfer_start + transfer_duration
+            return transfer_start, transfer_end
+
+        def find_earliest_time_for_transfer(
+            links: list[CommunicationLink], nb_iterations: int = 1, default_fraction: float = 1
+        ):
+            """Find the earliest time at which a tensor transfer between 2 cores can happen. Iterate over the used
+            bandwidth to find the transfer bandwidth at which the finish time is earliest"""
+            windows: list[tuple[int, int]] = []
+
+            # Either use the default fraction, or linearly space the fractions to try out
+            if nb_iterations == 1:
+                bandwidth_fractions = [default_fraction]
+            else:
+                # Iterate over linearly spaced fractions of the bandwidth
+                bandwidth_fractions = [i / nb_iterations for i in range(1, nb_iterations + 1)]
+
+            for frac in bandwidth_fractions:
+                links_with_bw = {link: ceil(frac * link.bandwidth) for link in links}
+                start, end = find_transfer_start_and_end_time(links_with_bw)
+                windows.append((start, end))
+
+            ends = [end for _, end in windows]
+            best_idx = ends.index(min(ends))
+            best_window = windows[best_idx]
+            best_fraction = bandwidth_fractions[best_idx]
+            return best_window, best_fraction
+
         ################################# STEP 0 #################################
         # Check if the tensor is already on the receiving core
         # Get the top instance where the tensor will be transferred to
@@ -268,6 +315,7 @@ class Accelerator:
         receiving_top_instance = self.get_top_instance_of_core(receiving_core_id, tensor_operand)
         if self.memory_manager.contains(tensor, receiving_top_instance):
             return -1, 0, 0, 0, 0, False
+
         ################################# STEP 1 #################################
         # Get the top instance storing the tensor
         # If a sending core id is provided, we get the instance of that core.
@@ -289,14 +337,17 @@ class Accelerator:
                     if timestep == available_since_timestep
                 )
             )
+
         ################################# STEP 2 #################################
         # The receiver core has enough space to store the tensor.
+        earliest_tensor_addition_t = max(earliest_t, available_since_timestep)
         enough_space_timestep = self.memory_manager.get_timestep_for_tensor_addition(
             tensor,
             receiving_core_id,
-            available_since_timestep,
+            earliest_tensor_addition_t,
             memory_op=tensor_operand,
         )
+
         ################################# STEP 3 #################################
         # Make space on the receiving core by evicting tensors if there was never enough space.
         (
@@ -310,54 +361,9 @@ class Accelerator:
             enough_space_timestep,
             non_evictable_tensors,
         )
+
         ################################# STEP 4 #################################
         # The links between sender and receiver have a long enough idle window.
-
-        def find_transfer_start_and_end_time(links_bw: dict[CommunicationLink, int]):
-            """
-            Given the links to transfer across and corresponding available bandwidths, return the earliest transfer
-            start and end time.
-
-            Args:
-                links_bw: link and corresponding transfer bandwidth
-            """
-            slowest_bw = min(links_bw.values())
-            transfer_duration = ceil(tensor.size / slowest_bw)
-
-            tensor_bw_per_link = {link: [(tensor, link_bw)] for link, link_bw in links_bw.items()}
-
-            transfer_start = self.communication_manager.get_links_idle_window(
-                tensor_bw_per_link=tensor_bw_per_link,
-                best_case_start=evictions_complete_timestep,
-                duration=transfer_duration,
-            )
-            transfer_end = transfer_start + transfer_duration
-            return transfer_start, transfer_end
-
-        def find_earliest_time_for_transfer(
-            links: list[CommunicationLink], nb_iterations: int = 1, default_fraction: float = 1
-        ):
-            """Find the earliest time at which a tensor transfer between 2 cores can happen. Iterate over the used
-            bandwidth to find the transfer bandwidth at which the finish time is earliest"""
-            windows: list[tuple[int, int]] = []
-
-            if nb_iterations == 1:
-                bandwidth_fractions = [default_fraction]
-            else:
-                # Iterate over linearly spaced fractions of the bandwidth
-                bandwidth_fractions = [i / nb_iterations for i in range(1, nb_iterations + 1)]
-
-            for frac in bandwidth_fractions:
-                links_with_bw = {link: ceil(frac * link.bandwidth) for link in links}
-                start, end = find_transfer_start_and_end_time(links_with_bw)
-                windows.append((start, end))
-
-            ends = [end for _, end in windows]
-            best_idx = ends.index(min(ends))
-            best_window = windows[best_idx]
-            best_fraction = bandwidth_fractions[best_idx]
-            return best_window, best_fraction
-
         # TODO If the storing_instance is a shared instance across more than one core,
         # TODO there will be multiple possible cores to transfer between.
         # TODO For now, we take the first one
@@ -376,6 +382,7 @@ class Accelerator:
         ################################# STEP 5 #################################
         # Spawn the tensor on the receiving core
         self.spawn(tensor, receiving_core, tensor_operand, transfer_start, transfer_end)
+
         ################################# STEP 6 #################################
         # Update the links involved in the communication and get the transfer energy cost
         (
@@ -390,6 +397,7 @@ class Accelerator:
             transfer_duration,
             link_bw_fraction=link_bw_fraction,
         )
+
         ################################# STEP 7 #################################
         # Remove the transferred tensor from the sender core (excluding DRAM)
         # if it is no longer needed.
@@ -407,10 +415,10 @@ class Accelerator:
                     transfer_end,
                     write_back_to_offchip=False,
                 )
+
         ################################# STEP 8 #################################
         # Give back flag that signals if the tensor came from offchip
         came_from_offchip = sender_core.id == self.offchip_core_id
-
         return (
             transfer_end,
             transfer_link_energy_cost,

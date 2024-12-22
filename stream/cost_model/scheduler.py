@@ -333,7 +333,8 @@ def schedule_graph(
         assert core_id is not None
         core = accelerator.get_core(core_id)
         # Earliest start time is when core is available or predecessors finished
-        start = max(cores_idle_from[core_id], preds_end)
+        core_idle_from = cores_idle_from[core_id]
+        start = max(core_idle_from, preds_end)
         # Step 0
         tensors_this_candidate_needs, tensors_operands = get_tensors_needed_for_node(best_candidate, G)
         # Step 1
@@ -372,6 +373,7 @@ def schedule_graph(
                 core_id,
                 tensor_operand,
                 tensors_this_candidate_needs,
+                earliest_t=core_idle_from,
             )
             # Update the possible start time of this node
             timestep = max(timestep, transfer_complete_timestep)

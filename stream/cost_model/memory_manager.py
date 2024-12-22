@@ -124,10 +124,10 @@ class MemoryManager:
         An error is raised if there is not enough space to add it.
 
         Args:
-            tensor (Tensor): The tensor to be added.
+            tensor: The tensor to be added.
             core (Core): The core to add it to.
-            timestep (int): The timestep at which space should be reserved for the tensor.
-            timestep_end (int): The timestep at which the tensor is available.
+            timestep: The timestep at which space should be reserved for the tensor.
+            timestep_ The timestep at which the tensor is available.
             memory_op: The memory operand where the tensor will be stored. Defaults to None.
         """
 
@@ -183,13 +183,13 @@ class MemoryManager:
         If there is never enough space, the latest timestep is returned.
 
         Args:
-        tensor (Tensor): The tensor to be added to the core.
-        core_id (int): The core id that is going to receive the tensor.
-        timestep (int): The timestep from which to start considering make this tensor data transfer.
-        memory_op (str): The memory operand storing the tensor on the receiving end of the transfer.
+            tensor: The tensor to be added to the core.
+            core_id: The core id that is going to receive the tensor.
+            timestep: The timestep from which to start considering make this tensor data transfer.
+            memory_op: The memory operand storing the tensor on the receiving end of the transfer.
 
         Returns:
-        can_add_from_timestep (int): The earliest timestep at which the transfer can actually start.
+            The earliest timestep at which the transfer can actually start.
         """
         core = self.accelerator.get_core(core_id)
         top_level_idx = self.get_top_level_idx(core, memory_op)
@@ -205,7 +205,6 @@ class MemoryManager:
         relevant_usages_reversed = relevant_usages[::-1]
         max_usage = np.max(relevant_usages_reversed)
         last_max_usage_idx = len(relevant_usages_reversed) - np.argmax(relevant_usages_reversed) - 1
-        # abs_last_max_usage_idx = relevant_start_idx + last_max_usage_idx
         if max_usage + tensor.size <= top_instance_capacity:
             can_add_from_timestep = timestep
             return can_add_from_timestep
