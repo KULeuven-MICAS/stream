@@ -31,10 +31,7 @@ class Accelerator:
         cores: CoreGraph,
         offchip_core_id: int | None = None,
     ):
-        """
-        Args:
-            core_ids_with_shared_mem: indicate which cores (identified by core id) have a shared top level memory
-        """
+        """ """
         self.name = name
         self.cores = cores
         self.offchip_core_id = offchip_core_id
@@ -371,7 +368,19 @@ class Accelerator:
         sender_core = sender_cores[0]
         links = self.communication_manager.get_links_for_pair(sender_core, receiving_core)
         # ! By default, transfers only take a fraction of the total bandwidth
-        default_bandwidth_fraction = 1 / len(self.core_list)
+        nb_shared_mems = (
+            len(
+                set(
+                    (
+                        instance.shared_memory_group_id
+                        for instances in self.memory_manager.top_instances_per_core.values()
+                        for instance in instances
+                    )
+                )
+            )
+            - 1
+        )
+        default_bandwidth_fraction = 1 / nb_shared_mems
         (transfer_start, transfer_end), link_bw_fraction = find_earliest_time_for_transfer(
             links,
             nb_iterations=1,

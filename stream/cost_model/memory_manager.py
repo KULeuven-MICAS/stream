@@ -197,11 +197,11 @@ class MemoryManager:
         top_instance_capacity = self.top_instance_capacities[top_instance]
         all_timesteps = self.top_instance_stored_cumsum[top_instance][:, 0]
         all_usages = self.top_instance_stored_cumsum[top_instance][:, 1]
-        relevant_start_idx = np.searchsorted(all_timesteps, timestep, "right") - 1
+        relevant_start_idx = np.searchsorted(all_timesteps, timestep, "right") 
         if relevant_start_idx == len(all_timesteps):
             return timestep
-        relevant_timesteps = all_timesteps[relevant_start_idx:]
-        relevant_usages = all_usages[relevant_start_idx:]
+        relevant_timesteps = all_timesteps[relevant_start_idx - 1:]
+        relevant_usages = all_usages[relevant_start_idx - 1:]
         relevant_usages_reversed = relevant_usages[::-1]
         max_usage = np.max(relevant_usages_reversed)
         last_max_usage_idx = len(relevant_usages_reversed) - np.argmax(relevant_usages_reversed) - 1
