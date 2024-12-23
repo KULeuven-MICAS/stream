@@ -103,12 +103,12 @@ class ZigZagCoreMappingEstimationStage(Stage):
                     # It's possible this node might not fully fit within the core's top level memories.
                     #  If so, we update the core
                     too_large_operands_for_cme = self.check_core_capacity_for_node(core, node_duplicate)
-                    # ! --- ensure all constant weights are accessed via blocking behavior i.s.o. transfer
-                    for layer_op in node.constant_operands:
-                        mem_op = node.memory_operand_links.layer_to_mem_op(layer_op)
-                        if mem_op not in too_large_operands_for_cme and node.operand_precision[layer_op] > 0:
-                            too_large_operands_for_cme.append(mem_op)
-                    # ! ---
+                    # # ! --- ensure all constant weights are accessed via blocking behavior i.s.o. transfer
+                    # for layer_op in node.constant_operands:
+                    #     mem_op = node.memory_operand_links.layer_to_mem_op(layer_op)
+                    #     if mem_op not in too_large_operands_for_cme and node.operand_precision[layer_op] > 0:
+                    #         too_large_operands_for_cme.append(mem_op)
+                    # # ! ---
                     # # ! --- FOR TESTING ONLY enforce blocking for all operands always
                     # for layer_op in node.input_operands + [node.output_operand]:
                     #     mem_op = node.memory_operand_links.layer_to_mem_op(layer_op)
