@@ -122,8 +122,8 @@ def get_tensors_needed_for_node(node: ComputationNode, G: ComputationNodeWorkloa
     for pred, node, edge_data in sorted(G.in_edges(node, data=True), key=itemgetter(0)):
         if pred.id == node.id:
             continue  # Skip if predecessor was from the same layer (intra-edge)
-        consumer_layer_op = edge_data["operand"]
-        consumer_memory_op = node.memory_operand_links[consumer_layer_op]
+        consumer_layer_op: LayerOperand = edge_data["operand"]
+        consumer_memory_op = node.memory_operand_links.layer_to_mem_op(consumer_layer_op)
         if consumer_memory_op in node.too_large_operands:
             continue  # Skip if tensor will be fetched fromm offchip throughout computation
         pred_output_tensor = pred.operand_tensors[pred.output_operand]
@@ -178,7 +178,6 @@ def decrease_priority(
 def check_for_removal(
     tensors: list[Tensor],
     accelerator: "Accelerator",
-    node: ComputationNode,
     G: ComputationNodeWorkload,
     timestep: int,
 ):
@@ -249,9 +248,9 @@ def sync_cores_idle_from(
 def schedule_graph(
     G: ComputationNodeWorkload,
     accelerator: "Accelerator",
+    scheduling_order: list[tuple[int, int]],
     cores_idle_from: dict[int, int] | None = None,
     operands_to_prefetch: list[LayerOperand] = [],
-    scheduling_order: list[tuple[int, int]] | None = None,
 ) -> tuple[int, float, float, float, float, float, float, float, float, float]:
     """Schedule the nodes of graph G across the cores in the system.
     Each node should have a core_allocation and runtime set.
@@ -332,29 +331,34 @@ def schedule_graph(
         core_id = best_candidate.chosen_core_allocation
         assert core_id is not None
         core = accelerator.get_core(core_id)
+
         # Earliest start time is when core is available or predecessors finished
         core_idle_from = cores_idle_from[core_id]
         start = max(core_idle_from, preds_end)
+        timestep = start
+
         # Step 0
         tensors_this_candidate_needs, tensors_operands = get_tensors_needed_for_node(best_candidate, G)
+
         # Step 1
         # There could be operands that are too large to store in the highest memory on the core
         # The tensors stored in these memories should be evicted and potentially written back to off-chip
         # Clear these memories (this might delay the potential start time if things have to written to off-chip)
-        timestep = start
         (
             clear_link_energy,
             clear_memory_energy,
-            timestep,
+            memory_cleared_timestep,
         ) = clear_memories(
-            accelerator,
-            core,
-            best_candidate.too_large_operands,
-            timestep,
+            accelerator=accelerator,
+            core=core,
+            memory_operands=best_candidate.too_large_operands,
+            timestep=timestep,
             exceptions=tensors_this_candidate_needs,
         )
         total_eviction_to_offchip_link_energy += clear_link_energy
         total_eviction_to_offchip_memory_energy += clear_memory_energy
+        timestep = memory_cleared_timestep
+
         # Step 2
         # The computation might need tensors that are currently not present in the core's memories
         # We need to fetch these tensors from either off-chip or from the core where they are present
@@ -388,28 +392,13 @@ def schedule_graph(
             total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
 
         # Step 3
-        # Check if we had any operands that were too large to store in the core's memory, block the relevant off-chip
-        # link for the duration
-        # This might again delay the execution if the offchip link was already blocked by another core
-        timestep = accelerator.block_offchip_links(
-            best_candidate.too_large_operands,
-            core_id,
-            timestep,
-            best_candidate.get_runtime(),
-            best_candidate,
-        )
-
-        # Step 4
         # Make space for the output tensor of this computation node and spawn it when evictions are complete
         # If the output operand is in the too large operands, add it to off-chip, otherwise add it to this core's
         # output memory
         output_layer_operand = best_candidate.output_operand
-        output_memory_operand = best_candidate.memory_operand_links[output_layer_operand]
+        output_memory_operand = best_candidate.memory_operand_links.layer_to_mem_op(output_layer_operand)
         output_tensor = best_candidate.operand_tensors[output_layer_operand]
-        if output_memory_operand in best_candidate.too_large_operands:
-            core_to_add_output_to = offchip_core
-        else:
-            core_to_add_output_to = core
+        core_to_add_output_to = offchip_core if output_memory_operand in best_candidate.too_large_operands else core
         (
             evictions_complete_timestep,
             eviction_link_energy_cost,
@@ -423,7 +412,24 @@ def schedule_graph(
         )
         total_eviction_to_offchip_link_energy += eviction_link_energy_cost
         total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
-        start = evictions_complete_timestep
+        timestep = evictions_complete_timestep
+
+        # Step 4
+        # Check if we had any operands that were too large to store in the core's memory, block the relevant off-chip
+        # link for the duration
+        # This might again delay the execution if the offchip link was already blocked by another core
+        blocking_can_start_timestep = accelerator.block_offchip_links(
+            too_large_operands=best_candidate.too_large_operands,
+            core_id=core_id,
+            start_timestep=timestep,
+            duration=best_candidate.get_runtime(),
+            cn=best_candidate,
+        )
+        timestep = blocking_can_start_timestep
+
+        # Step 5
+        # Spawn the output tensor and update the start and end time of the node
+        start = timestep
         end = start + best_candidate.get_runtime()
         accelerator.spawn(
             output_tensor,
@@ -432,9 +438,6 @@ def schedule_graph(
             initial_timestep=start,
             available_timestep=end,
         )
-
-        # Step 5
-        # Update the start and end time of the node
         best_candidate.set_start(start)
         best_candidate.set_end(end)
         cores_idle_from[core_id] = end
@@ -454,7 +457,6 @@ def schedule_graph(
         check_for_removal(
             tensors_this_candidate_needs,
             accelerator,
-            best_candidate,
             G,
             end,
         )
@@ -465,7 +467,7 @@ def schedule_graph(
         # outputs to offchip
         if best_candidate in sink_layer_nodes:
             # Only push back sink node outputs if they're generated and stored on the core
-            if best_candidate.output_operand not in best_candidate.too_large_operands:
+            if Constants.OUTPUT_MEM_OP not in best_candidate.too_large_operands:
                 (
                     _,
                     link_energy_cost,

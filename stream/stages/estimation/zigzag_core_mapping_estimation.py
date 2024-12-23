@@ -151,19 +151,28 @@ class ZigZagCoreMappingEstimationStage(Stage):
     def increase_cc_per_op(self, cme: CostModelEvaluation, op_type: str):
         match op_type:
             case "silu":
-                factor = 4
+                cc_per_op = 4
             case "sigmoid":
-                factor = 4
+                cc_per_op = 4
             case "exp":
-                factor = 4
+                cc_per_op = 4
             case _:
-                factor = 1
+                cc_per_op = 1
 
-        if factor > 1:
-            logger.warning(f"Setting cycles per mac of {op_type} node to {factor}")
+        if cc_per_op > 1:
+            logger.warning(f"Setting cycles per mac of {op_type} node to {cc_per_op}")
 
-        cme.calc_overall_latency(cycles_per_mac=factor)
-        return cme
+        new_cme = CostModelEvaluation(
+            accelerator=cme.accelerator,
+            layer=cme.layer,
+            spatial_mapping=cme.spatial_mapping,
+            spatial_mapping_int=cme.spatial_mapping_int,
+            temporal_mapping=cme.temporal_mapping,
+            access_same_data_considered_as_no_access=cme.access_same_data_considered_as_no_access,
+            cycles_per_op=cc_per_op,
+        )
+
+        return new_cme
 
     def visualize_cost_lut(self):
         # Get the scale factors
