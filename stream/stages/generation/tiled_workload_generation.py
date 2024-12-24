@@ -360,7 +360,7 @@ class TiledWorkloadGenerationStage(Stage):
             if original_node.core_allocation_is_fixed:
                 assert group_id < len(
                     original_node.possible_core_allocation
-                ), f"Group id {group_id} too large for core allocation list {original_node.core_allocation}"
+                ), f"Group id {group_id} too large for core allocation list {original_node.possible_core_allocation}"
                 chosen_core_allocation = original_node.possible_core_allocation[group_id]
                 tile.set_chosen_core_allocation(chosen_core_allocation)
 
