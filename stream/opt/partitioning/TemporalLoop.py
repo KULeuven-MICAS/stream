@@ -12,3 +12,7 @@ class TemporalLoop:
 
     def __repr__(self):
         return str(self)
+
+    def unpack(self):
+        """Unpack `dimension` and `size`"""
+        return (self.dimension, self.size)

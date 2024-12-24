@@ -228,27 +228,26 @@ class TiledWorkloadGenerationStage(Stage):
         original_node: ComputationNode, outer_temporal_loops: list[TemporalLoop]
     ) -> tuple[list[ComputationNode], list[ComputationNode]]:
         original_node_id = original_node.id
+        # If the node's loop size is not divisible by the outer temporal loops, extend it
+        extended_node_dim_sizes: dict[LayerDim, int] = {}
 
         # Take away the outer_temporal_loops to create tiled CNs for this node
         tile_attrs = original_node.extract_node_attr()
         tile_mapping = original_node.extract_inter_core_mapping_attr()
 
-        for outer_tl in outer_temporal_loops:
-            outer_dim = outer_tl.dimension
-            outer_size = outer_tl.size
+        for loop in outer_temporal_loops:
+            outer_dim, outer_size = loop.unpack()
             # Check if this node's "dim" size is divisible by the outer-cn loop size
-            node_dim_size = tile_attrs.layer_dim_sizes[outer_dim]
+            node_dim_size: int = tile_attrs.layer_dim_sizes[outer_dim]
             q, rem = divmod(node_dim_size, outer_size)  # returns x//y, x%y
             if rem != 0:
                 # Make sure that the outer_dim is divisible by the outer_size
                 # Pad the dimension to a multiple of outer_size
-                node_dim_size = q * outer_size
-                q, rem = divmod(node_dim_size, outer_size)
-                assert rem == 0, (
-                    f"Node {original_node} dim {outer_dim} of size {node_dim_size} is not divisible by outer-cn temporal "
-                    f"loop {outer_tl}"
-                )
+                node_dim_size = (q + 1) * outer_size
+                q += 1
+
             tile_attrs.layer_dim_sizes[outer_dim] = q
+            extended_node_dim_sizes[outer_dim] = node_dim_size
 
         # Loop dimension + size of the tiles (called span here)
         tile_span = tile_attrs.layer_dim_sizes
@@ -263,9 +262,8 @@ class TiledWorkloadGenerationStage(Stage):
         # This is to convert from the relative loop value which goes from 0, 1, ..., stop_value - 1
         # to the absolute value of that dimension (if there is another lower loop of the same type or spatial loop)
         mult_factors: list[int] = []
-        for i, outer_loop in enumerate(outer_temporal_loops):
-            loop_dim = outer_loop.dimension
-            stop_value = outer_loop.size
+        for i, loop in enumerate(outer_temporal_loops):
+            loop_dim, stop_value = loop.unpack()
             inner_span = tile_span[loop_dim] if loop_dim in tile_span else 1
             lower_outer_cn_loops = outer_temporal_loops[:i]
             # Returns 1 if empty list
@@ -276,7 +274,11 @@ class TiledWorkloadGenerationStage(Stage):
 
         tiles: list[ComputationNode] = []
         tensors: list[Tensor] = []
-        group_id_manager = GroupIdManager(original_node)
+        group_id_manager = GroupIdManager(
+            layer_dim_sizes=extended_node_dim_sizes,
+            intra_core_tiling=original_node.intra_core_tiling,
+            inter_core_tiling=original_node.inter_core_tiling,
+        )
         for n in range(nb_cns):
             outer_loop_values: list[int] = []
             for i, outer_loop in enumerate(outer_temporal_loops):
@@ -925,7 +927,7 @@ def deduce_tensor_reuse_factors(
     nb_nodes = prod([tl.size for tl in outer_temporal_loops])
 
     # tensor reuse factor will be set to the total reuse factor for each node
-    # whenveer a cn will be scheduled, the tensor reuse factor will decrease
+    # whenever a cn will be scheduled, the tensor reuse factor will decrease
     tensor_reuse_factors: dict[LayerOperand, list[int]] = {}
     for op, total_reuse_factor in total_reuse_factors.items():
         tensor_reuse_factors[op] = [total_reuse_factor] * nb_nodes

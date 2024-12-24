@@ -4,7 +4,8 @@ from typing import TypeAlias
 from zigzag.datatypes import LayerDim
 
 from stream.utils import contains_wildcard
-from stream.workload.computation.computation_node import ComputationNode, LoopRanges
+from stream.workload.computation.computation_node import LoopRanges
+from stream.workload.mapping import TILING_T
 
 logger = logging.getLogger(__name__)
 
@@ -12,11 +13,18 @@ GroupAllocation: TypeAlias = dict[tuple[tuple[int, int], ...], int]
 
 
 class GroupIdManager:
-    def __init__(self, node: ComputationNode):
+    def __init__(
+        self,
+        layer_dim_sizes: dict[LayerDim, int],
+        intra_core_tiling: TILING_T,
+        inter_core_tiling: TILING_T,
+    ):
         self.__id_count = 0
         self.groups: GroupAllocation = {}
-        self.node = node
-        self.inter_core_tiled_dims = [layer_dim for layer_dim, _ in node.inter_core_tiling]
+        self.layer_dim_sizes = layer_dim_sizes
+        self.intra_core_tiling: list[tuple[LayerDim, int]] = intra_core_tiling
+        self.inter_core_tiling = inter_core_tiling
+        self.inter_core_tiled_dims = [layer_dim for layer_dim, _ in inter_core_tiling]
 
     def __get_and_raise_id(self):
         curr_id = self.__id_count
@@ -33,24 +41,24 @@ class GroupIdManager:
         given range modulo the size of the N equal parts.
         """
         nb_intra_core_splits = next(
-            (split for layer_dim, split in self.node.intra_core_tiling if layer_dim == inter_core_layer_dim), 1
+            (split for layer_dim, split in self.intra_core_tiling if layer_dim == inter_core_layer_dim), 1
         )
-        range_size_per_intra_split = self.node.layer_dim_sizes[inter_core_layer_dim] // nb_intra_core_splits
+        range_size_per_intra_split = self.layer_dim_sizes[inter_core_layer_dim] // nb_intra_core_splits
         range_adjusted_to_intra_split = tuple(i % range_size_per_intra_split for i in current_range)
         return range_adjusted_to_intra_split
 
     def __get_range_identifier(self, tile_loop_ranges: LoopRanges):
         """Given the loop ranges of a tile, return a hashable identifier that can be used to determine wether this
         tile belongs on the same core as other tiles."""
-        if not all(layer_dim in tile_loop_ranges for layer_dim, _ in self.node.inter_core_tiling):
+        if not all(layer_dim in tile_loop_ranges for layer_dim, _ in self.inter_core_tiling):
             raise ValueError(
-                f"Given inter core tiling {self.node.inter_core_tiling} contains layer dims that are not "
+                f"Given inter core tiling {self.inter_core_tiling} contains layer dims that are not "
                 f"part of the tile's loop ranges {tile_loop_ranges}"
             )
 
         return tuple(
             self.__get_range_identifier_single_dim(layer_dim, tile_loop_ranges[layer_dim])
-            for layer_dim, _ in self.node.inter_core_tiling
+            for layer_dim, _ in self.inter_core_tiling
         )
 
     def get_group_id(self, tile_loop_ranges: LoopRanges) -> int:
@@ -68,15 +76,15 @@ class GroupIdManager:
         Returns:
             int: The group id for the given loop ranges
         """
-        if contains_wildcard(self.node.inter_core_tiling):
+        if contains_wildcard(self.inter_core_tiling):
             # In this case, the tiles should not be split between cores yet
             return 0
 
-        if not self.node.constant_operands and len(self.node.core_allocation) == 1:
-            # If the node can only be assigned to a single core, we give all nodes the same group id
-            # This is to prevent the CostModelEvaluationLUT from identifying each node as unique
-            # This is the case for e.g. 'Add' nodes if there is only a single 'Add' core
-            return 0
+        # if not self.node.constant_operands and len(self.node.core_allocation) == 1:
+        #     # If the node can only be assigned to a single core, we give all nodes the same group id
+        #     # This is to prevent the CostModelEvaluationLUT from identifying each node as unique
+        #     # This is the case for e.g. 'Add' nodes if there is only a single 'Add' core
+        #     return 0
 
         # Differentiate based on node's inter core tiling
         range_identifier = self.__get_range_identifier(tile_loop_ranges)
