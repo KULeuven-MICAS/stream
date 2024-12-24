@@ -34,6 +34,9 @@ class NodeTensor(np.ndarray[Any, Any]):
         ComputationNodes are accumulated in the last dimension and space is pre-allocated in memory for performance"""
         return NodeTensor(np.zeros(shape + (pre_allocation_size,), dtype=object), pre_allocation_size)
 
+    def _get_pointer(self):
+        return self.__node_count
+
     def _get_and_increment_pointer(self):
         """Get the index pointer in the last dimension. which points to the next free spot to allocate nodes.
         Automatically increments the pointer after each use. If the index exceeds the allocated space, an error is
@@ -85,11 +88,21 @@ class NodeTensor(np.ndarray[Any, Any]):
     def extend_with_node(self, slices: tuple[slice, ...], node: object) -> "NodeTensor":
         assert self.is_valid_shape_dimension(slices), "Last dimension of tensor is reserved for CNs"
 
+        # Case 1: Try to assign at the current pointer for given slices
+        idx = self._get_pointer()
+        extended_slices = slices + (slice(idx, idx + 1),)
+        # Slice is all 0
+        if not np.any(self[extended_slices]):
+            self[extended_slices] = node
+            return self
+
+        # Case 2: increment pointer and assign at empty slice
         try:
             idx = self._get_and_increment_pointer()
             extended_slices = slices + (slice(idx, idx + 1),)
             self[extended_slices] = node
             return self
+        # Case 3: pointer exceeds the tensor's accumulation dimension -> increase tensor size
         except IndexError:
             # Happens when all allocated space has been used up. Create new one and double allocated space
             new_pre_alloc_size = 2 * self.__pre_allocation_size
