@@ -251,13 +251,14 @@ class ConstraintOptimizationAllocationStage(Stage):
         """
 
         scheduling_order: SCHEDULE_ORDER_T = []
-        for stack, compute in self.compute_per_sink_node.items():
+        for stack in sorted(self.compute_per_sink_node):
+            compute_this_stack = self.compute_per_sink_node[stack]
             hash_steady_state = self.steady_state_hashes[stack]
             allocation_steady_state = self.optimal_allocation_per_stack[stack]
             hashes_per_sink_node = self.hashes_per_sink_node[stack]
             order = self.get_cn_order(
                 allocation=allocation_steady_state,
-                compute_per_sink_node=compute,
+                compute_per_sink_node=compute_this_stack,
                 hashes_per_sink_node=hashes_per_sink_node,
                 memoization_hash_ss=hash_steady_state,
             )
@@ -272,7 +273,13 @@ class ConstraintOptimizationAllocationStage(Stage):
     ):
         """Given an allocation order for a given stack, extend the order to extra outer loops that result from the
         inter core tiling. This method anticipates the fact that later on, CNs will be split further to allow for inter-
-        core tiling, and adjusts the scheduling beforehand
+        core tiling, and adjusts the scheduling beforehand.
+
+        Example: [(0, 12), (0, 13)] and inter_core_tiling = 4
+            -> [(0, 4*12+0), (0, 49), (0, 50), (0, 51), (0, 4*13+0), ...]
+                <------intra-core partition 12------->  <---- partition 13 ---->
+
+        NOTE The ordering given by this method must match the order in which tiles are generated in `get_tiles`
 
         Args:
             stack: CN stack for which the order applies
@@ -281,36 +288,33 @@ class ConstraintOptimizationAllocationStage(Stage):
                                     core tiling loops
 
         """
+        adjusted_order = order.copy()
 
-        for node in self.get_computation_nodes(stack, unpartitioned_workload):
+        for curr_node in self.get_computation_nodes(stack, unpartitioned_workload):
             # NOTE this uses `inter_core_tiling`, because the inter core tiling is added to the intra core tiling
             # in `schedule_allocation` in order to alter the workload
-            outer_loops = node.inter_core_tiling
+            outer_loops = curr_node.inter_core_tiling
 
-            # try:
-            #     outer_loops = hint_loops[(layer_id,)]
-            # except KeyError:
-            #     # If the layer_id is not present it means it was not in the allocation.
-            #     # This happens if all nodes of the layer were not in the steady state
-            #     outer_loops = []
-
-            for _, factor in outer_loops:
-                assert isinstance(factor, int), "tiling options `*` and `all` should be replaced by now"
-                if factor == 1:
+            for _, inter_core_split_factor in outer_loops:
+                assert isinstance(
+                    inter_core_split_factor, int
+                ), "tiling options `*` and `all` should be replaced by now"
+                if inter_core_split_factor == 1:
                     # In case CO decides to not split up the node across cores
                     continue
 
-                inserted = 0
-                for i, ids_in_stack in enumerate(order.copy()):
-                    layer_id, node_id = ids_in_stack
-                    if layer_id == node.id:
-                        nb_nodes_this_layer = self.get_nb_nodes_for_layer(layer_id)
-                        for scale in range(1, factor):
-                            new_node_id = scale * nb_nodes_this_layer + node_id
-                            order.insert(i + inserted + 1, (layer_id, new_node_id))
-                            inserted += 1
+                i = 0
+                while i < len(adjusted_order):
+                    layer_id, sub_id = adjusted_order[i]
+                    if layer_id == curr_node.id:
+                        adjusted_order[i : i + 1] = [
+                            (layer_id, sub_id * inter_core_split_factor + j) for j in range(inter_core_split_factor)
+                        ]
+                        i += inter_core_split_factor
+                    else:
+                        i += 1
 
-        return order
+        return adjusted_order
 
     def get_nb_nodes_for_layer(self, layer_id: int):
         return len(list(n for n in self.workload.node_list if n.id == layer_id))

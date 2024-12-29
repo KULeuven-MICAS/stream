@@ -145,7 +145,7 @@ class TiledWorkloadGenerationStage(Stage):
 
     @staticmethod
     def get_scheduling_order(workload: ComputationNodeWorkload):
-        return sorted(((n.id, n.sub_id) for n in workload.node_list), reverse=True)
+        return sorted(((n.id, n.sub_id) for n in workload.node_list))
 
     @staticmethod
     def get_all_node_pairs(G: ONNXWorkload) -> tuple[tuple[ComputationNode, ComputationNode, bool], ...]:

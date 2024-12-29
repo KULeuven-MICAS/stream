@@ -257,10 +257,10 @@ def schedule_graph(
 
     Args:
         G : Graph containing the nodes to be scheduled.
-        accelerator (Accelerator): The accelerator to schedule the nodes on.
-        cores_start_offset (dict, optional): A dict containing for each core_id its start offset. Defaults to None.
-        operands_to_prefetch (list, optional): The layer operands that should be prefetched at the start of the
-            schedule.
+        accelerator: The accelerator to schedule the nodes on.
+        scheduling_order:
+        cores_idle_from: A dict containing for each core_id its start offset. Defaults to None.
+        operands_to_prefetch: The layer operands that should be prefetched at the start of the schedule.
     """
     # Initialize total link energy cost and memory energy costs
     total_cn_onchip_energy = 0
@@ -490,7 +490,6 @@ def schedule_graph(
                     (predecessor.end for predecessor in G.predecessors(successor)),
                     default=0,
                 )
-                # core_candidates[successor.core_allocation].append((preds_end, successor))
                 candidates.append((preds_end, successor))
 
         # Increment the number of scheduled nodes

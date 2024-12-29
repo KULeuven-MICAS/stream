@@ -21,20 +21,19 @@ class SchedulingOrderGenerationStage(Stage):
         super().__init__(list_of_callables, **kwargs)
         self.accelerator = accelerator
         self.workload = workload
-        self.layer_stacks = kwargs.get("layer_stacks", None)  # optional
-        self.scheduling_order = None
+        self.layer_stacks: list[tuple[int, ...]] | None = kwargs.get("layer_stacks", None)  # type: ignore # optional
 
     def run(self):
         if self.layer_stacks:
             # All nodes of earlier stacks should be scheduled before later stacks
-            self.scheduling_order = []
-            for layer_stack in self.layer_stacks:
-                nodes = [n for n in self.workload.nodes() if n.id in layer_stack]
-                self.scheduling_order.extend(sorted(((n.id, n.sub_id) for n in nodes), reverse=True))
+            self.scheduling_order: list[tuple[int, int]] = []
+            for layer_stack in sorted(self.layer_stacks):
+                nodes_this_stack = [n for n in self.workload.node_list if n.id in layer_stack]
+                self.scheduling_order.extend(sorted(((n.id, n.sub_id) for n in nodes_this_stack), reverse=True))
         else:
             # Generate a list of node ids from highest priority to lowest
             # We give higher priority to nodes deeper in the graph
-            self.scheduling_order = sorted(((n.id, n.sub_id) for n in self.workload.nodes()), reverse=True)
+            self.scheduling_order = sorted(((n.id, n.sub_id) for n in self.workload.node_list), reverse=True)
 
         self.kwargs["accelerator"] = self.accelerator
         self.kwargs["workload"] = self.workload
