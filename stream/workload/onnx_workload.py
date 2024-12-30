@@ -31,3 +31,16 @@ class ONNXWorkload(DiGraphWrapper[Node]):
 
 class ComputationNodeWorkload(DiGraphWrapper[ComputationNode]):
     """Workload graph with only ComputationNodes"""
+
+    def get_sink_layer_ids(self):
+        """Return the ids of layers where ALL sub-nodes have out-degree 0"""
+        out_degrees = self.out_degree()
+        layer_ids = set(n.id for n, _ in out_degrees)
+        # x: (node, out_degree)
+        sink_layer_ids = [
+            all(filter(lambda x: (x[0].id == curr_id and x[1] == 0), out_degrees)) for curr_id in layer_ids
+        ]
+        return sink_layer_ids
+
+    def get_subgraph(self, nodes: list[ComputationNode]) -> "ComputationNodeWorkload":
+        return self.subgraph(nodes)  # type: ignore

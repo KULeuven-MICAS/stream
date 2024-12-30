@@ -274,3 +274,6 @@ class ComputationNode(LayerNode, Node):
     def nb_real_predecessors(self, nb_real_predecessors: int | None):
         self.__nb_real_predecessors = nb_real_predecessors
         self._static_hash_value = self.__compute_static_hash()
+
+    def __repr__(self):
+        return f"{self.name} ({self.id},{self.sub_id})"

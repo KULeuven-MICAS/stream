@@ -242,7 +242,7 @@ class TiledWorkloadGenerationStage(Stage):
 
             tile_attrs.layer_dim_sizes[outer_dim] = q
 
-        # Reconstruct the total, padded layer_dim_sizes as padded (reduced) tile size * outer_sizes
+        # Reconstruct the total, padded layer_dim_sizes as padded tile size * outer_sizes
         extended_layer_dim_sizes = deepcopy(tile_attrs.layer_dim_sizes)
         for loop in outer_temporal_loops:
             outer_dim, outer_size = loop.unpack()

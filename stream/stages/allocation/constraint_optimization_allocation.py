@@ -6,7 +6,6 @@ from typing import Any, TypeAlias
 
 import networkx as nx
 import numpy as np
-from networkx import DiGraph
 from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
@@ -125,12 +124,11 @@ class ConstraintOptimizationAllocationStage(Stage):
                 logger.warning(f"Stack {i} is empty.")
                 continue
 
-            # TODO initialize the subgraph of type DiGraphWrapper[ComputationNode]
-            sg: DiGraph = self.workload.subgraph(nodes)
+            sg = self.workload.get_subgraph(nodes)
             sink_nodes: list[ComputationNode] = sorted(
                 n for n in sg.nodes() if len(get_real_successors(n, sg)) == 0  # type: ignore
             )
-            sink_layer_ids = sorted(set(n.id for n in sink_nodes))
+            sink_layer_ids = sg.get_sink_layer_ids()
             sink_layer_nodes = [tuple(sorted(n for n in sink_nodes if n.id == layer_id)) for layer_id in sink_layer_ids]
             interlaced = [tuple(filter(lambda x: x is not None, t)) for t in itertools.zip_longest(*sink_layer_nodes)]
             computed: set[ComputationNode] = set()

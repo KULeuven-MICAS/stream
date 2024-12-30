@@ -296,8 +296,8 @@ def schedule_graph(
         candidates.append((cores_idle_from[core_allocation], source_node))  # type: ignore
 
     # Get all the nodes with no successors that produce final outputs, used for off-loading final outputs
-    sink_layers = sorted(set(n.id for n, d in G.out_degree() if d == 0))
-    sink_layer_nodes = set((n for n in G.node_list if (n.id in sink_layers) and n.produces_final_output))
+    sink_layer_ids = G.get_sink_layer_ids()
+    sink_layer_nodes = set((n for n in G.node_list if (n.id in sink_layer_ids) and n.produces_final_output))
 
     # Get the offchip core id and core
     offchip_core_id = accelerator.offchip_core_id
