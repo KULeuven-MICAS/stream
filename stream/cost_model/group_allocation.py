@@ -2,6 +2,7 @@ import logging
 from typing import TypeAlias
 
 from zigzag.datatypes import LayerDim
+from zigzag.workload.layer_attributes import LayerDimSizes
 
 from stream.utils import contains_wildcard
 from stream.workload.computation.computation_node import LoopRanges
@@ -15,7 +16,7 @@ GroupAllocation: TypeAlias = dict[tuple[tuple[int, int], ...], int]
 class GroupIdManager:
     def __init__(
         self,
-        layer_dim_sizes: dict[LayerDim, int],
+        layer_dim_sizes: LayerDimSizes,
         intra_core_tiling: TILING_T,
         inter_core_tiling: TILING_T,
     ):

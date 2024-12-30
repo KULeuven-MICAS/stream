@@ -227,27 +227,26 @@ class TiledWorkloadGenerationStage(Stage):
     def get_tiles(
         original_node: ComputationNode, outer_temporal_loops: list[TemporalLoop]
     ) -> tuple[list[ComputationNode], list[ComputationNode]]:
-        original_node_id = original_node.id
-        # If the node's loop size is not divisible by the outer temporal loops, extend it
-        extended_node_dim_sizes: dict[LayerDim, int] = {}
 
         # Take away the outer_temporal_loops to create tiled CNs for this node
         tile_attrs = original_node.extract_node_attr()
-        tile_mapping = original_node.extract_inter_core_mapping_attr()
-
         for loop in outer_temporal_loops:
             outer_dim, outer_size = loop.unpack()
-            # Check if this node's "dim" size is divisible by the outer-cn loop size
             node_dim_size: int = tile_attrs.layer_dim_sizes[outer_dim]
             q, rem = divmod(node_dim_size, outer_size)  # returns x//y, x%y
+            # Make sure that the outer_dim is divisible by the outer_size
             if rem != 0:
-                # Make sure that the outer_dim is divisible by the outer_size
                 # Pad the dimension to a multiple of outer_size
                 node_dim_size = (q + 1) * outer_size
                 q += 1
 
             tile_attrs.layer_dim_sizes[outer_dim] = q
-            extended_node_dim_sizes[outer_dim] = node_dim_size
+
+        # Reconstruct the total, padded layer_dim_sizes as padded (reduced) tile size * outer_sizes
+        extended_layer_dim_sizes = deepcopy(tile_attrs.layer_dim_sizes)
+        for loop in outer_temporal_loops:
+            outer_dim, outer_size = loop.unpack()
+            extended_layer_dim_sizes[outer_dim] *= outer_size
 
         # Loop dimension + size of the tiles (called span here)
         tile_span = tile_attrs.layer_dim_sizes
@@ -275,7 +274,7 @@ class TiledWorkloadGenerationStage(Stage):
         tiles: list[ComputationNode] = []
         tensors: list[Tensor] = []
         group_id_manager = GroupIdManager(
-            layer_dim_sizes=extended_node_dim_sizes,
+            layer_dim_sizes=extended_layer_dim_sizes,
             intra_core_tiling=original_node.intra_core_tiling,
             inter_core_tiling=original_node.inter_core_tiling,
         )
@@ -306,8 +305,6 @@ class TiledWorkloadGenerationStage(Stage):
 
             group_id = group_id_manager.get_group_id(dim_min_max)
 
-            # Create the computation node object with the computed ranges of the loop dimensions
-            node_name = original_node.name
             # If all the output irrelevant loops are at a max, this is producing a final output, so set a flag
             original_node_output_ir_dims = original_node.loop_relevancy_info.get_ir_layer_dims(
                 Constants.OUTPUT_LAYER_OP
@@ -318,11 +315,11 @@ class TiledWorkloadGenerationStage(Stage):
             )
 
             tile = ComputationNode(
-                node_id=original_node_id,
+                node_id=original_node.id,
                 sub_id=n,
-                node_name=node_name,
+                node_name=original_node.name,
                 node_attr=tile_attrs,
-                mapping_attr=tile_mapping,
+                mapping_attr=original_node.extract_inter_core_mapping_attr(),
                 op_type=original_node.type,
                 produces_final_output=produces_final_output,
                 group_id=group_id,
