@@ -33,12 +33,18 @@ class ComputationNodeWorkload(DiGraphWrapper[ComputationNode]):
     """Workload graph with only ComputationNodes"""
 
     def get_sink_layer_ids(self):
-        """Return the ids of layers where ALL sub-nodes have out-degree 0"""
+        """Return the ids of layers where ALL sub-nodes have out-degree 0
+        # TODO this might nog work yet! When there is intra-core tiling, edges between nodes in the same layer
+        # TODO (with bits==0) are added, meaning some nodes have an out-degree > 0
+        # TODO -> use get_real_nb_predecessors instead? or remove the empty intra-core edges?
+        """
         out_degrees = self.out_degree()
         layer_ids = set(n.id for n, _ in out_degrees)
-        # x: (node, out_degree)
         sink_layer_ids = [
-            all(filter(lambda x: (x[0].id == curr_id and x[1] == 0), out_degrees)) for curr_id in layer_ids
+            curr_id
+            for curr_id in layer_ids
+            # x: (node, out_degree). Filter by id -> map to out_degree == 0 -> check if all are 0
+            if all(map(lambda x: x[1] == 0, filter(lambda x: x[0].id == curr_id, out_degrees)))
         ]
         return sink_layer_ids
 

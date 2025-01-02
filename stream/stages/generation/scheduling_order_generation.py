@@ -38,6 +38,7 @@ class SchedulingOrderGenerationStage(Stage):
         self.kwargs["accelerator"] = self.accelerator
         self.kwargs["workload"] = self.workload
         self.kwargs["scheduling_order"] = self.scheduling_order
+        # self.kwargs["layer_stacks"] = self.layer_stacks # TODO is already in kwargs
         sub_stage = self.list_of_callables[0](
             self.list_of_callables[1:],
             **self.kwargs,

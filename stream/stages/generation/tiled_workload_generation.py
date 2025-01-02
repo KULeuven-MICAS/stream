@@ -1,3 +1,4 @@
+from collections import defaultdict
 import logging
 import os
 from copy import deepcopy
@@ -7,6 +8,7 @@ from typing import Any
 from rtree import index
 from zigzag.datatypes import Constants, LayerDim, LayerOperand
 from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
+from zigzag.workload.layer_attributes import LayerDimSizes
 
 from stream.cost_model.group_allocation import GroupIdManager
 from stream.hardware.architecture.accelerator import Accelerator
@@ -55,26 +57,26 @@ class TiledWorkloadGenerationStage(Stage):
         super().__init__(list_of_callables, **kwargs)
         self.workload = workload
         self.accelerator = accelerator
+        self.layer_stacks = kwargs.get("layer_stacks", [])
 
         # Save for each of the workload's nodes the tiles that will be generated
         self.tiles_dict: dict[ComputationNode, list[ComputationNode]] = {}
-
         # Memoize the numpy tensors for dependency generation
         self.numpy_tensors = {}
-
         self.tiled_workload_path = tiled_workload_path
 
     def run(self):
         all_unique_tiles: list[ComputationNode] = []
         # For each node get all the tiles and the edges between them
-        all_tiles = []
-        all_edges = []
+        all_tiles: list[ComputationNode] = []
+        all_edges: list[tuple[ComputationNode, ComputationNode, dict[str, int]]] = []
         for node in self.workload.topological_sort():
             # If other node types shouldn't be included in tiled workload graph, add here
             if not isinstance(node, ComputationNode):
                 continue
             outer_temporal_loops = self.get_outer_tmap_loop_dimensions(node)
-            tiles, unique_tiles = self.get_tiles(node, outer_temporal_loops)
+            mandatory_divisors = self.get_mandatory_divisors(node)
+            tiles, unique_tiles = self.get_tiles(node, outer_temporal_loops, mandatory_divisors)
             logger.info(f"{node}: Outer loops {outer_temporal_loops}.")
             logger.info(f"{node}: Generated {len(tiles)} tile(s).")
             self.tiles_dict[node] = tiles
@@ -180,6 +182,11 @@ class TiledWorkloadGenerationStage(Stage):
     def get_outer_tmap_loop_dimensions(self, node: ComputationNode) -> list[TemporalLoop]:
         """Get the temporal loops that are outside a CN for this node.
 
+        NOTE the order of this list matters! The order in which sub-tiles are generated should match the scheduling
+             order. First generate all tiles within the same intra-core split (by splitting inter-core).
+             i.e. tiles with sub-id 0, 1, ..., (nb_inter_tiles - 1) should have the same intra-core split and allocated
+             to different cores
+
         Args:
             node: node for which to return outer-cn loops
 
@@ -190,9 +197,8 @@ class TiledWorkloadGenerationStage(Stage):
             # inter core tiling is not set by CO yet
             tiling_to_split = node.intra_core_tiling
         else:
-            # inter core tiling is ok, also split into these tiles
-            tiling_to_split = node.intra_core_tiling + node.inter_core_tiling
-
+            # inter core tiling is ok, also split into these tiles. NOTE: this list is ordered
+            tiling_to_split = node.inter_core_tiling + node.intra_core_tiling
         outer_loops = convert_outer_cn_loops(tiling_to_split, node)
 
         # In case no valid intra core tiling is found: add an arbitrary tiling of size 1
@@ -223,34 +229,109 @@ class TiledWorkloadGenerationStage(Stage):
             preds += skip_node_preds
         return preds
 
-    @staticmethod
+    def get_mandatory_divisors(self, node: ComputationNode) -> dict[LayerDim, set[int]]:
+        """Get the factors by which the smaller tiles' dimensions must be divisible.
+        Tile dimensions must be divisible by all the inter-core tiling factors of the nodes within the same layer stack.
+        This ensures dependencies between tiles within the stack do not cross the layer stack boundaries.
+        # TODO can nodes within the same stack have different intra-core tiling? This is not accounted for
+        """
+        # # These divisors accumulate: e.g. if a dim must be divisible by 2 and 4, it must be divisible by 8
+        # divisors_multiplicative: dict[LayerDim, int] = defaultdict(lambda: 1)
+
+        divisors: dict[LayerDim, set[int]] = defaultdict(lambda: set())
+
+        # # Must be divisible by inter- and intra-core tiling factors (multiplicative)
+        # for dim, factor in node.intra_core_tiling + node.inter_core_tiling:
+        #     if isinstance(factor, int):
+        #         divisors_multiplicative[dim] *= factor
+
+        # # Multiplied divisors become one lcm divisor
+        # for dim, factor in divisors_multiplicative.items():
+        #     divisors_lcm[dim].add(factor)
+
+        # Must be divisible by inter-core tiling factors of all nodes in the same layer stack (least common multiple)
+        # Find nodes in stack
+        try:
+            curr_stack = next(stack for stack in self.layer_stacks if node.id in stack)
+        except StopIteration:
+            # No stack found
+            return divisors
+        if len(curr_stack) == 1:
+            return divisors
+        other_nodes_in_stack = [
+            n
+            for n in self.workload.node_list
+            if n.id in curr_stack and n.id != node.id and isinstance(n, ComputationNode)
+        ]
+
+        for curr_node in other_nodes_in_stack:
+            assert len(curr_node.inter_core_tiling) == len(
+                set(dim for dim, _ in curr_node.inter_core_tiling)
+            ), "Inter-core tiling contains duplicate dimensions. The divisors for this node must be multiplied"
+
+            for layer_dim, factor in curr_node.inter_core_tiling:
+                if isinstance(factor, int):
+                    divisors[layer_dim].add(factor)
+        return divisors
+
     def get_tiles(
-        original_node: ComputationNode, outer_temporal_loops: list[TemporalLoop]
+        self,
+        original_node: ComputationNode,
+        outer_temporal_loops: list[TemporalLoop],
+        mandatory_divisors: dict[LayerDim, set[int]] = {},
     ) -> tuple[list[ComputationNode], list[ComputationNode]]:
 
-        # Take away the outer_temporal_loops to create tiled CNs for this node
+        def get_total_outer_size(dim: LayerDim):
+            return prod([loop.size for loop in outer_temporal_loops if loop.dimension == dim])
+
+        def get_lcm(n: int, divisors: set[int]) -> int:
+            """Make n divisible by all the divisors in the set."""
+            for divisor in divisors:
+                if n % divisor != 0:
+                    n = ceil(n / divisor) * divisor
+            return n
+
+        def pad_until_divisible(layer_dim: LayerDim, n: int) -> int:
+            """Return x >= n such that x is divisible by `total_outer_size`, and `x // total_outer_size` divisible by
+            all mandatory divisors (coming from the inter-core tiling of other nodes within the same stack)"""
+            total_outer_size = get_total_outer_size(layer_dim)
+            inner_size = ceil(n / total_outer_size)
+            inner_size_padded = get_lcm(inner_size, mandatory_divisors[layer_dim])
+            x = inner_size_padded * total_outer_size
+            return x
+
+        # Pad the layer_dim_sizes to be divisible by the mandatory divisors (coming from the outer_temporal_loops)
         tile_attrs = original_node.extract_node_attr()
+        for dim, size in tile_attrs.layer_dim_sizes.items():
+            new_size = pad_until_divisible(dim, size)
+            if size != new_size:
+                tile_attrs.layer_dim_sizes[dim] = new_size
+                logger.warning(f"Padded layer dimension {dim}: {size} -> {new_size} to be divisible by tiling factors")
+
+        # Save these extended sizes for later
+        extended_layer_dim_sizes = deepcopy(tile_attrs.layer_dim_sizes)
+
+        # Take away the outer_temporal_loops to create tiled CNs for this node
         for loop in outer_temporal_loops:
             outer_dim, outer_size = loop.unpack()
             node_dim_size: int = tile_attrs.layer_dim_sizes[outer_dim]
             q, rem = divmod(node_dim_size, outer_size)  # returns x//y, x%y
-            # Make sure that the outer_dim is divisible by the outer_size
-            if rem != 0:
-                # Pad the dimension to a multiple of outer_size
-                node_dim_size = (q + 1) * outer_size
-                q += 1
-
+            assert rem == 0, "Should be guaranteed through mandatory divisors"
+            # # Make sure that the outer_dim is divisible by the outer_size
+            # if rem != 0:
+            #     # Pad the dimension to a multiple of outer_size
+            #     node_dim_size = (q + 1) * outer_size
+            #     q += 1
             tile_attrs.layer_dim_sizes[outer_dim] = q
 
-        # Reconstruct the total, padded layer_dim_sizes as padded tile size * outer_sizes
-        extended_layer_dim_sizes = deepcopy(tile_attrs.layer_dim_sizes)
-        for loop in outer_temporal_loops:
-            outer_dim, outer_size = loop.unpack()
-            extended_layer_dim_sizes[outer_dim] *= outer_size
+        # # Reconstruct the total, padded layer_dim_sizes as padded tile size * outer_sizes
+        # extended_layer_dim_sizes = deepcopy(tile_attrs.layer_dim_sizes)
+        # for loop in outer_temporal_loops:
+        #     outer_dim, outer_size = loop.unpack()
+        #     extended_layer_dim_sizes[outer_dim] *= outer_size
 
         # Loop dimension + size of the tiles (called span here)
         tile_span = tile_attrs.layer_dim_sizes
-        loop_dims = original_node.layer_dims
         stop_values = [temporal_loop.size for temporal_loop in outer_temporal_loops]
         nb_cns = int(prod(stop_values))
 
@@ -281,18 +362,16 @@ class TiledWorkloadGenerationStage(Stage):
         for n in range(nb_cns):
             outer_loop_values: list[int] = []
             for i, outer_loop in enumerate(outer_temporal_loops):
-                loop_dim = outer_loop.dimension
                 stop_value = outer_loop.size
                 m = prod(stop_values[:i])
-                outer_loop_values.append(int((n // m) % stop_value))
+                outer_loop_values.append((n // m) % stop_value)
+
             dim_min_max: LoopRanges = {}
-            for loop_dim in loop_dims:
-                # find all outer-cn loops that iterate over this loop_dim
-                # and multiply their loop values by their mult_factor
+            for loop_dim in original_node.layer_dims:
+                # multiply all outer-cn loop values that iterate over this loop_dim by their mult_factor
                 dim_min = 0
                 for i, outer_loop in enumerate(outer_temporal_loops):
-                    dim = outer_loop.dimension
-                    stop_value = outer_loop.size
+                    dim, stop_value = outer_loop.unpack()
                     if dim == loop_dim:
                         # current loop value of this outer-cn loop
                         loop_val = outer_loop_values[i]
@@ -372,6 +451,9 @@ class TiledWorkloadGenerationStage(Stage):
 
     @staticmethod
     def get_intra_edges(nodes: list[ComputationNode]):
+        """
+        # TODO Why do we need this?
+        """
         # Get all the group ids
         group_ids = sorted(set([n.group for n in nodes]))
         intra_edges: list[tuple[ComputationNode, ComputationNode, dict[str, int]]] = []
@@ -873,7 +955,7 @@ class TiledWorkloadGenerationStage(Stage):
             split_factors[node] = split_factor
         return split_factors
 
-    def load_cached_tiled_workload(self):
+    def load_cached_tiled_workload(self) -> ComputationNodeWorkload | None:
         if os.path.exists(self.tiled_workload_path):
             return pickle_load(self.tiled_workload_path)
         return None
