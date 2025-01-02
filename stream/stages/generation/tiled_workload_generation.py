@@ -1,6 +1,6 @@
-from collections import defaultdict
 import logging
 import os
+from collections import defaultdict
 from copy import deepcopy
 from math import ceil, prod
 from typing import Any
@@ -8,7 +8,6 @@ from typing import Any
 from rtree import index
 from zigzag.datatypes import Constants, LayerDim, LayerOperand
 from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
-from zigzag.workload.layer_attributes import LayerDimSizes
 
 from stream.cost_model.group_allocation import GroupIdManager
 from stream.hardware.architecture.accelerator import Accelerator
@@ -103,13 +102,10 @@ class TiledWorkloadGenerationStage(Stage):
                     inter_edges = self.get_inter_edges_rtree(producer, consumer, producer_tiles, consumer_tiles)
                 all_edges += inter_edges
 
-            # Set the base_priority value of all nodes
+            # Set the base_priority and number of real predecessors of all nodes
             self.set_base_priority_of_nodes(all_tiles, all_edges)
-
-            # Set the number of real predecessors of all nodes
             self.set_nb_real_predecessors(all_tiles, all_edges)
 
-            # Construct the new tiled workload graph
             # The graph construction needs to happen after the base priority and nb_real_predecessors are set
             tiled_workload = ComputationNodeWorkload()
             tiled_workload.add_edges_from(all_edges)
@@ -317,18 +313,7 @@ class TiledWorkloadGenerationStage(Stage):
             node_dim_size: int = tile_attrs.layer_dim_sizes[outer_dim]
             q, rem = divmod(node_dim_size, outer_size)  # returns x//y, x%y
             assert rem == 0, "Should be guaranteed through mandatory divisors"
-            # # Make sure that the outer_dim is divisible by the outer_size
-            # if rem != 0:
-            #     # Pad the dimension to a multiple of outer_size
-            #     node_dim_size = (q + 1) * outer_size
-            #     q += 1
             tile_attrs.layer_dim_sizes[outer_dim] = q
-
-        # # Reconstruct the total, padded layer_dim_sizes as padded tile size * outer_sizes
-        # extended_layer_dim_sizes = deepcopy(tile_attrs.layer_dim_sizes)
-        # for loop in outer_temporal_loops:
-        #     outer_dim, outer_size = loop.unpack()
-        #     extended_layer_dim_sizes[outer_dim] *= outer_size
 
         # Loop dimension + size of the tiles (called span here)
         tile_span = tile_attrs.layer_dim_sizes
