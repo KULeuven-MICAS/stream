@@ -143,6 +143,7 @@ def clear_memories(
     memory_operands: list[MemoryOperand],
     timestep: int,
     exceptions: list[Tensor] = [],
+    transfer_bandwidth_fraction: float = 1,
 ):
     total_eviction_to_offchip_link_energy = 0
     total_eviction_to_offchip_memory_energy = 0
@@ -151,7 +152,14 @@ def clear_memories(
             timestep,
             eviction_link_energy_cost,
             eviction_memory_energy_cost,
-        ) = accelerator.remove_all(core, too_large_operand, timestep, exceptions, write_back_to_offchip=True)
+        ) = accelerator.remove_all(
+            core=core,
+            memory_operand=too_large_operand,
+            timestep=timestep,
+            exceptions=exceptions,
+            transfer_bandwidth_fraction=transfer_bandwidth_fraction,
+            write_back_to_offchip=True,
+        )
         total_eviction_to_offchip_link_energy += eviction_link_energy_cost
         total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
     return (
@@ -180,6 +188,7 @@ def check_for_removal(
     accelerator: "Accelerator",
     G: ComputationNodeWorkload,
     timestep: int,
+    transfer_bandwidth_fraction: float = 1,
 ):
     offchip_core_id = accelerator.offchip_core_id
     for tensor_used_by_node in tensors:
@@ -217,6 +226,7 @@ def check_for_removal(
                     core,
                     tensor_used_by_node.memory_operand,
                     timestep_for_removal,
+                    transfer_bandwidth_fraction=transfer_bandwidth_fraction,
                 )
 
 
@@ -332,6 +342,9 @@ def schedule_graph(
         assert core_id is not None
         core = accelerator.get_core(core_id)
 
+        # Fraction of the off-chip bandwidth to be used for the tensor transfers related to this node
+        transfer_bandwidth_fraction = 1 / best_candidate.get_total_inter_core_splits()
+
         # Earliest start time is when core is available or predecessors finished
         core_idle_from = cores_idle_from[core_id]
         start = max(core_idle_from, preds_end)
@@ -354,6 +367,7 @@ def schedule_graph(
             memory_operands=best_candidate.too_large_operands,
             timestep=timestep,
             exceptions=tensors_this_candidate_needs,
+            transfer_bandwidth_fraction=transfer_bandwidth_fraction,
         )
         total_eviction_to_offchip_link_energy += clear_link_energy
         total_eviction_to_offchip_memory_energy += clear_memory_energy
@@ -378,6 +392,7 @@ def schedule_graph(
                 tensor_operand,
                 tensors_this_candidate_needs,
                 earliest_t=core_idle_from,
+                transfer_bandwidth_fraction=transfer_bandwidth_fraction,
             )
             # Update the possible start time of this node
             timestep = max(timestep, transfer_complete_timestep)
@@ -409,6 +424,7 @@ def schedule_graph(
             output_memory_operand,
             timestep,
             tensors_this_candidate_needs,
+            transfer_bandwidth_fraction=transfer_bandwidth_fraction,
         )
         total_eviction_to_offchip_link_energy += eviction_link_energy_cost
         total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
@@ -455,10 +471,11 @@ def schedule_graph(
         decrease_priority(tensors_this_candidate_needs, tensors_operands, accelerator, best_candidate)
         # Remove the tensor if the priority is zero
         check_for_removal(
-            tensors_this_candidate_needs,
-            accelerator,
-            G,
-            end,
+            tensors=tensors_this_candidate_needs,
+            accelerator=accelerator,
+            G=G,
+            timestep=end,
+            transfer_bandwidth_fraction=transfer_bandwidth_fraction,
         )
 
         # Step 7
@@ -473,10 +490,11 @@ def schedule_graph(
                     link_energy_cost,
                     memory_energy_cost,
                 ) = accelerator.remove(
-                    output_tensor,
-                    core,
-                    output_tensor.memory_operand,
-                    end,
+                    tensor=output_tensor,
+                    core=core,
+                    memory_op=output_tensor.memory_operand,
+                    timestep=end,
+                    transfer_bandwidth_fraction=transfer_bandwidth_fraction,
                     write_back_to_offchip=True,
                 )
                 total_sink_layer_output_offchip_link_energy += link_energy_cost

@@ -158,6 +158,7 @@ class CommunicationManager:
         Returns:
             tuple: A tuple containing the link and memory energy costs associated with this transfer.
         """
+        assert 0 <= link_bw_fraction <= 1
         end_timestep = start_timestep + duration
         if isinstance(sender, int):
             sender = self.accelerator.get_core(sender)

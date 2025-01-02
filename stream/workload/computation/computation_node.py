@@ -11,6 +11,7 @@ from zigzag.workload.layer_attributes import (
 from zigzag.workload.layer_node import LayerNode, LayerNodeAttributes
 
 from stream.node_tensor import NodeTensor
+from stream.utils import contains_wildcard
 from stream.workload.mapping import INTRA_CORE_MAPPING_DEFAULT, InterCoreMappingAttributes
 from stream.workload.node import Node
 from stream.workload.tensor import Tensor
@@ -131,6 +132,13 @@ class ComputationNode(LayerNode, Node):
             }
         except KeyError:
             return None
+
+    def get_total_inter_core_splits(self) -> int:
+        """Return the total number of inter-core splits for this node, i.e. over how many cores this node is split"""
+        if contains_wildcard(self.inter_core_tiling):
+            return 1
+        assert all(isinstance(factor, int) for _, factor in self.inter_core_tiling)
+        return prod([factor for _, factor in self.inter_core_tiling])
 
     @property
     def short_name(self) -> str:

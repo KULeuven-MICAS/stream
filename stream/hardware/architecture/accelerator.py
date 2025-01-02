@@ -84,7 +84,13 @@ class Accelerator:
         self.memory_manager.add_tensor_to_core(tensor, core, initial_timestep, available_timestep, memory_op)
 
     def remove(
-        self, tensor: Tensor, core: Core, memory_op: MemoryOperand, timestep: int, write_back_to_offchip: bool = False
+        self,
+        tensor: Tensor,
+        core: Core,
+        memory_op: MemoryOperand,
+        timestep: int,
+        transfer_bandwidth_fraction: float = 1,
+        write_back_to_offchip: bool = False,
     ):
         """Remove tensor from core. If required, transfer to offchip before removal.
 
@@ -93,6 +99,7 @@ class Accelerator:
             core (Core): The Core to remove the tensor from.
             memory_op: The memory operand of the tensor.
             timestep: The timestep to remove the tensor at.
+            transfer_bandwidth_fraction: Fraction of the bandwidth to use for the transfer.
             write_back_to_offchip (bool, optional): Write the tensor to offchip before removal. Defaults to False.
         """
         assert self.offchip_core_id is not None
@@ -118,6 +125,7 @@ class Accelerator:
                 memory_op,
                 non_evictable_tensors=[],
                 sending_core_id=core.id,
+                transfer_bandwidth_fraction=transfer_bandwidth_fraction,
             )
             # There should be no evictions as we are writing to offchip
             assert eviction_link_energy_cost == 0
@@ -144,6 +152,7 @@ class Accelerator:
         memory_operand: MemoryOperand,
         timestep: int,
         exceptions: list[Tensor] = [],
+        transfer_bandwidth_fraction: float = 1,
         write_back_to_offchip: bool = False,
     ):
         """Remove all tensors from a core's memory with the given memory operand.
@@ -154,6 +163,7 @@ class Accelerator:
             memory_operand: The memory operand for which all tensors should be evicted.
             timestep: The timestep to remove the tensor at.
             exceptions: A list of tensors that should not be evicted.
+            transfer_bandwidth_fraction: Fraction of the bandwidth to use for the transfers.
             write_back_to_offchip (bool, optional): Write the tensor to offchip before removal. Defaults to False.
         """
         total_link_energy_cost = 0
@@ -164,7 +174,12 @@ class Accelerator:
         for tensor in self.memory_manager.get_tensors_stored_at_timestep(top_instance, timestep):
             if tensor not in exceptions:
                 t, link_energy_cost, memory_energy_cost = self.remove(
-                    tensor, core, memory_operand, t, write_back_to_offchip
+                    tensor=tensor,
+                    core=core,
+                    memory_op=memory_operand,
+                    timestep=t,
+                    transfer_bandwidth_fraction=transfer_bandwidth_fraction,
+                    write_back_to_offchip=write_back_to_offchip,
                 )
                 total_link_energy_cost += link_energy_cost
                 total_memory_energy_cost += memory_energy_cost
@@ -177,6 +192,7 @@ class Accelerator:
         memory_op: MemoryOperand,
         timestep: int,
         tensors_to_avoid_evicting: list[Tensor] = [],
+        transfer_bandwidth_fraction: float = 1,
     ):
         """Make space for the given tensor on the given core by evicting already stored tensors if necessary.
 
@@ -185,6 +201,7 @@ class Accelerator:
             core (Core): The core where the tensor will be stored.
             memory_operand: The memory operand on the core.
             timestep: The timestep at which to make space for.
+            transfer_bandwidth_fraction: Fraction of the bandwidth to use for the transfer.
         """
         total_eviction_link_energy_cost = 0
         total_eviction_memory_energy_cost = 0
@@ -219,6 +236,7 @@ class Accelerator:
                 memory_op,
                 timestep,
                 write_back_to_offchip=True,
+                transfer_bandwidth_fraction=transfer_bandwidth_fraction,
             )
             t_evictions_complete = max(t_evictions_complete, t_eviction_complete)
             total_eviction_link_energy_cost += eviction_link_energy_cost
@@ -238,6 +256,7 @@ class Accelerator:
         non_evictable_tensors: list[Tensor],
         sending_core_id: int | None = None,
         earliest_t: int = 0,
+        transfer_bandwidth_fraction: float = 1,
     ) -> tuple[int, float, float, float, float, bool]:
         """
         Transfer a tensor to a given core id.
@@ -261,6 +280,7 @@ class Accelerator:
             non_evictable_tensors: the stored tensor that cannot be evicted
             sending_core_id: The id of the core that should transfer the tensor.
             earliest_t: Earliest timestep at which transfer can happen
+            transfer_bandwidth_fraction: Fraction of the bandwidth to use for the transfer
         """
 
         def find_transfer_start_and_end_time(links_bw: dict[CommunicationLink, int]):
@@ -282,30 +302,19 @@ class Accelerator:
             transfer_end = transfer_start + transfer_duration
             return transfer_start, transfer_end
 
-        def find_earliest_time_for_transfer(
-            links: list[CommunicationLink], nb_iterations: int = 1, default_fraction: float = 1
-        ):
-            """Find the earliest time at which a tensor transfer between 2 cores can happen. Iterate over the used
-            bandwidth to find the transfer bandwidth at which the finish time is earliest"""
+        def find_earliest_time_for_transfer(links: list[CommunicationLink], bandwidth_fraction: float = 1):
+            """Find the earliest time at which a tensor transfer between 2 cores can happen."""
+            assert 0 < bandwidth_fraction <= 1
             windows: list[tuple[int, int]] = []
 
-            # Either use the default fraction, or linearly space the fractions to try out
-            if nb_iterations == 1:
-                bandwidth_fractions = [default_fraction]
-            else:
-                # Iterate over linearly spaced fractions of the bandwidth
-                bandwidth_fractions = [i / nb_iterations for i in range(1, nb_iterations + 1)]
-
-            for frac in bandwidth_fractions:
-                links_with_bw = {link: ceil(frac * link.bandwidth) for link in links}
-                start, end = find_transfer_start_and_end_time(links_with_bw)
-                windows.append((start, end))
+            links_with_bw = {link: ceil(bandwidth_fraction * link.bandwidth) for link in links}
+            start, end = find_transfer_start_and_end_time(links_with_bw)
+            windows.append((start, end))
 
             ends = [end for _, end in windows]
             best_idx = ends.index(min(ends))
             best_window = windows[best_idx]
-            best_fraction = bandwidth_fractions[best_idx]
-            return best_window, best_fraction
+            return best_window
 
         ################################# STEP 0 #################################
         # Check if the tensor is already on the receiving core
@@ -359,22 +368,18 @@ class Accelerator:
             tensor_operand,
             enough_space_timestep,
             non_evictable_tensors,
+            transfer_bandwidth_fraction=transfer_bandwidth_fraction,
         )
 
         ################################# STEP 4 #################################
         # The links between sender and receiver have a long enough idle window.
-        # TODO If the storing_instance is a shared instance across more than one core,
-        # TODO there will be multiple possible cores to transfer between.
-        # TODO For now, we take the first one
+        # TODO If the storing_instance is a shared instance across more than one core, there will be multiple possible
+        # TODO cores to transfer between. For now, we take the first one
         sender_cores = self.memory_manager.cores_per_top_instance[storing_instance]
         sender_core = sender_cores[0]
         links = self.communication_manager.get_links_for_pair(sender_core, receiving_core)
-        # ! By default, transfers only take a fraction of the total bandwidth
-        default_bandwidth_fraction = 1 / self.nb_shared_mem_groups
-        (transfer_start, transfer_end), link_bw_fraction = find_earliest_time_for_transfer(
-            links,
-            nb_iterations=1,
-            default_fraction=default_bandwidth_fraction,
+        transfer_start, transfer_end = find_earliest_time_for_transfer(
+            links, bandwidth_fraction=transfer_bandwidth_fraction
         )
         transfer_duration = transfer_end - transfer_start
 
@@ -394,7 +399,7 @@ class Accelerator:
             tensor_operand,
             transfer_start,
             transfer_duration,
-            link_bw_fraction=link_bw_fraction,
+            link_bw_fraction=transfer_bandwidth_fraction,
         )
 
         ################################# STEP 7 #################################
@@ -412,6 +417,7 @@ class Accelerator:
                     sender_core,
                     tensor.memory_operand,
                     transfer_end,
+                    transfer_bandwidth_fraction=transfer_bandwidth_fraction,
                     write_back_to_offchip=False,
                 )
 
