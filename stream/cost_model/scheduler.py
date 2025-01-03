@@ -237,8 +237,8 @@ def sync_cores_idle_from(
     scheduling_order: list[tuple[int, int]],
 ):
     """
-    Sync the cores_idle_from dict values if the best candidate is the first node of a layer and we detect layer-by-layer execution.
-    The layer-by-layer execution is detected through the scheduling_order.
+    Sync the cores_idle_from dict values if the best candidate is the first node of a layer and we detect layer-by-layer
+    execution. The layer-by-layer execution is detected through the scheduling_order.
     """
     # Get the predecessor ids of the best_candidate from the workload graph G
     predecessor_ids = [pred.id for pred in G.predecessors(best_candidate) if pred.id != best_candidate.id]

@@ -531,7 +531,7 @@ class TiledWorkloadGenerationStage(Stage):
 
         Args:
             dimensions (list): list of the different tensor dimensions
-            loop_ranges (dict): dict of the loop ranges for the current node.
+            loop_ranges: dict of the loop ranges for the current node.
         """
         # TODO these should be constants
         dim_G = LayerDim("G")

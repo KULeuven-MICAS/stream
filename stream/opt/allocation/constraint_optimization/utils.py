@@ -1,4 +1,4 @@
-from math import ceil, log10, prod
+from math import prod
 
 from zigzag.datatypes import LayerDim, LayerOperand, UnrollFactor
 
@@ -7,11 +7,7 @@ from stream.hardware.architecture.core import Core
 from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 
-MODULATION_NUMBER = 10**3  # Must be higher than any node's sub id
-
-
-def nearest_power_of_10(x: int):
-    return 10 ** ceil(log10(x))
+MODULATION_NUMBER = 1 << 20  # Must be higher than any node's sub id
 
 
 def convert_id(i: int, j: int) -> int:

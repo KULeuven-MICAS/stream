@@ -10,7 +10,7 @@ from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
 from zigzag.stages.main import MainStage
 from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
 from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
-from zigzag.stages.results.reduce_stages import MinimalLatencyStage
+from zigzag.stages.results.reduce_stages import MinimalEDPStage
 from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
@@ -57,25 +57,34 @@ class ZigZagCoreMappingEstimationStage(Stage):
         # Extract all unique nodes that will have to be evaluated
         self.unique_nodes = get_unique_nodes(self.workload)
 
-        # Initialize the valid node-core allocations.
-        self.valid_allocations: dict[ComputationNode, list[int]] = {}
-        for node in self.unique_nodes:
-            assert isinstance(
-                node, ComputationNode
-            ), f"ZigZagCoreMappingEstimationStage received node {node} of type {type(node)}."
-            assert isinstance(node.possible_core_allocation, list), f"Core allocation is not a list for node {node}."
-            self.valid_allocations[node] = node.possible_core_allocation
+        assert all(
+            isinstance(node, ComputationNode) for node in self.unique_nodes
+        ), "ZigZagCoreMappingEstimationStage received a non-ComputationNode."
+        assert all(
+            isinstance(node.possible_core_allocation, list) for node in self.unique_nodes
+        ), "ZigZagCoreMappingEstimationStage received a node with a non-list core allocation."
 
-        # Initialize CostModelEvaluationLUT
+        self.valid_allocations: dict[ComputationNode, list[int]] = {
+            node: node.possible_core_allocation for node in self.unique_nodes
+        }
         self.cost_lut = CostModelEvaluationLUT(self.cost_lut_path)
 
     def run(self):
         logger.info("Start ZigZagCoreMappingEstimationStage.")
-        for node in self.unique_nodes:
-            # TODO This should never evaluate to true: enforce core_allocation as list everywhere
-            if isinstance(self.valid_allocations[node], tuple):
-                raise ValueError
+        self.update_cost_lut()
+        self.visualize_cost_lut()
+        logger.info("Finished ZigZagCoreMappingEstimationStage.")
 
+        kwargs = self.kwargs.copy()
+        kwargs["workload"] = self.workload
+        kwargs["accelerator"] = self.accelerator
+        kwargs["cost_lut"] = self.cost_lut
+        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
+        for cme, extra_info in sub_stage.run():
+            yield cme, extra_info
+
+    def update_cost_lut(self):
+        for node in self.unique_nodes:
             core_ids = self.valid_allocations[node]
             for core_id in core_ids:
                 core = self.accelerator.get_core(core_id)
@@ -121,44 +130,29 @@ class ZigZagCoreMappingEstimationStage(Stage):
                     if core.dataflows:
                         node_duplicate.spatial_mapping = core.dataflows
 
-                    # Initialize the flow that will be followed to extract the optimal HW performance of every
-                    #  unique node-core allocation
-                    main_stage = self.get_intra_core_mapping_flow(
-                        node=node_duplicate,
-                        too_large_operands=too_large_operands_for_cme,
-                        core_id=core_id,
-                    )
-                    answers = main_stage.run()
-                    assert len(answers) == 1, "ZigZagCoreMappingEstimationStage's subflow returned more than one CME"
-                    cme: CostModelEvaluation = answers[0][0]  # type: ignore
+                    cme = self.run_zigzag(node_duplicate, too_large_operands_for_cme, core_id)
                     cme = self.increase_cc_per_op(cme, node.type)
 
                     node_duplicate.set_chosen_core_allocation(None)  # Reset the node's chosen core allocation
                     self.cost_lut.add_cme(node, core, cme, allow_overwrite=False)
             self.cost_lut.save()
 
-        self.visualize_cost_lut()
-        kwargs = self.kwargs.copy()
-        kwargs["workload"] = self.workload
-        kwargs["accelerator"] = self.accelerator
-        kwargs["cost_lut"] = self.cost_lut
-
-        logger.info("Finished ZigZagCoreMappingEstimationStage.")
-        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
-        for cme, extra_info in sub_stage.run():
-            yield cme, extra_info
-
-    def increase_cc_per_op(self, cme: CostModelEvaluation, op_type: str):
+    def get_cc_per_op(self, op_type: str):
+        """Return the number of cycles that the operational units need to finish the given operation."""
         match op_type:
             case "silu":
-                cc_per_op = 4
+                return 4
             case "sigmoid":
-                cc_per_op = 4
+                return 4
             case "exp":
-                cc_per_op = 4
+                return 4
             case _:
-                cc_per_op = 1
+                return 1
 
+    def increase_cc_per_op(self, cme: CostModelEvaluation, op_type: str):
+        """Given a ZigZag that assumes each operation takes one cycle, generate a new one that takes into account that
+        the operation might take more than one cycle."""
+        cc_per_op = self.get_cc_per_op(op_type)
         if cc_per_op > 1:
             logger.warning(f"Setting cycles per mac of {op_type} node to {cc_per_op}")
 
@@ -175,17 +169,26 @@ class ZigZagCoreMappingEstimationStage(Stage):
         return new_cme
 
     def visualize_cost_lut(self):
-        # Get the scale factors
         scale_factors = {
             n: len([cn for cn in self.workload.node_list if cn.has_same_performance(n)])
             for n in self.cost_lut.get_nodes()
         }
-        # Run the visualization
         visualize_cost_lut_pickle(self.cost_lut, scale_factors, self.visualize_cost_lut_path)
 
-    def get_intra_core_mapping_flow(self, node: ComputationNode, too_large_operands: list[MemoryOperand], core_id: int):
-        logger.info(f"Launching intra-core mapping optimization for {node} -> core {core_id} ...")
+    def run_zigzag(
+        self, node: ComputationNode, too_large_operands: list[MemoryOperand], core_id: int
+    ) -> CostModelEvaluation:
+        """Run the ZigZag flow to estimate performance of a given node on a core."""
 
+        main_stage = self.instantiate_zigzag_flow(node, too_large_operands, core_id)
+        logger.info(f"Launching intra-core mapping optimization for {node} -> core {core_id} ...")
+        answers = main_stage.run()
+        assert len(answers) == 1, "ZigZagCoreMappingEstimationStage's subflow returned more than one CME"
+        cme: CostModelEvaluation = answers[0][0]  # type: ignore
+        return cme
+
+    def instantiate_zigzag_flow(self, node: ComputationNode, too_large_operands: list[MemoryOperand], core_id: int):
+        """Instantiate a runnable ZigZag mainstage"""
         core = self.accelerator.get_core(core_id)
 
         if too_large_operands:
@@ -193,9 +196,9 @@ class ZigZagCoreMappingEstimationStage(Stage):
 
         main_stage = MainStage(
             [  # Initializes the MainStage as entry point
-                MinimalLatencyStage,
+                MinimalEDPStage,
                 SpatialMappingGeneratorStage,  # Generates multiple spatial mappings (SM)
-                MinimalLatencyStage,  # Reduces all CMEs, returning minimal latency one
+                MinimalEDPStage,  # Reduces all CMEs, returning minimal EDP one
                 TemporalMappingGeneratorStage,  # Generates multiple temporal mappings (TM)
                 CostModelStage,  # Evaluates generated SM and TM through cost model
             ],
@@ -212,11 +215,11 @@ class ZigZagCoreMappingEstimationStage(Stage):
         and the stored operands inside each memory.
 
         Args:
-            core (Core): The core onto which we want to map the node
-            node (ComputationNode): The node we want to map onto the core
+            core: The core onto which we want to map the node
+            node: The node we want to map onto the core
 
         Returns:
-            list: A list of memory operands for which the capacity on the core is insufficient.
+            A list of memory operands for which the capacity on the core is insufficient.
         """
         too_large_operands_for_cme: list[MemoryOperand] = []
 
@@ -326,12 +329,12 @@ class ZigZagCoreMappingEstimationStage(Stage):
         """Calculate the remaining capacity in the top level core memory after storing the operands_stored_in_top_level
 
         Args:
-            operands_stored_in_top_level (list): list of operands that can fit in the top memory level of the core
-            bits_to_be_stored_in_top_level (dict): the data size in bit for each variable operands
-            top_level_capacity_bits (int): the total capacity of the top level core memory
+            operands_stored_in_top_level: list of operands that can fit in the top memory level of the core
+            bits_to_be_stored_in_top_level: the data size in bit for each variable operands
+            top_level_capacity_bits: the total capacity of the top level core memory
 
         Returns:
-            int: the memory capacity left after storing the operands_stored_in_top_level
+            The memory capacity left after storing the operands_stored_in_top_level
         """
         rest_capacity = top_level_capacity_bits
         for mem_operand in operands_stored_in_top_level:
@@ -347,12 +350,12 @@ class ZigZagCoreMappingEstimationStage(Stage):
         unrolling
 
         Args:
-            operands_stored_in_offchip (list): list of operands that cannot fit in the top memory level of the core
+            operands_stored_in_offchip: list of operands that cannot fit in the top memory level of the core
             dataflows (list of dict): the dataflows (spatial mappings) that current core supports
             node (ComputationNode): The computational node we want to map onto the core
 
         Returns:
-            int: the required memory capacity in the top memory of the core for operands_stored_in_offchip
+            The required memory capacity in the top memory of the core for operands_stored_in_offchip
         """
 
         def get_lowest_level_unrolled_memory_capacity(memory_operand: MemoryOperand):
@@ -369,9 +372,9 @@ class ZigZagCoreMappingEstimationStage(Stage):
         """Add the offchip memory as the top level memory of the core with core_id in a copy of the accelerator
 
         Args:
-            core_id (int): The id of the core to which we want to add the off-chip memory for cost evaluation.
-            too_large_operands (list): The memory operands the off-chip memory should store.
-            layer_idx (int): workload layer index.
+            core_id: The id of the core to which we want to add the off-chip memory for cost evaluation.
+            too_large_operands: The memory operands the off-chip memory should store.
+            layer_idx: workload layer index.
         """
         assert self.accelerator.offchip_core_id is not None
         logger.warning(f"Adding offchip memory for {core}, layer={layer_idx}, memory_operands={too_large_operands}.")
