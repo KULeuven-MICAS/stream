@@ -100,7 +100,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         """Set the runtime of running this node.
 
         Args:
-            runtime (int): runtime in cycles
+            runtime: runtime in cycles
         """
         self.runtime = runtime
 
@@ -108,7 +108,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         """Set the start time in cycles of this node.
 
         Args:
-            start (int): start time in cycles
+            start: start time in cycles
         """
         self.start = start
 
@@ -116,7 +116,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         """Set the end time in cycles of this node.
 
         Args:
-            end (int): end time in cycles
+            end: end time in cycles
         """
         self.end = end
 

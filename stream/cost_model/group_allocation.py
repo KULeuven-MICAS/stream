@@ -72,7 +72,7 @@ class GroupIdManager:
 
         Args:
             node (ComputationNode): The original (layer) CN.
-            loop_ranges (dict): A dictionary containing the loop range for each dimension
+            loop_ranges: A dictionary containing the loop range for each dimension
 
         Returns:
             int: The group id for the given loop ranges

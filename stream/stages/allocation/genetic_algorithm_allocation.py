@@ -49,8 +49,8 @@ class GeneticAlgorithmAllocationStage(Stage):
             workload (DiGraph): The NetworkX DiGraph representing the workload to be scheduled
             accelerator (Accelerator): The hardware accelerator onto which we schedule the workload
             cost_lut (CostModelEvaluationLUT): A LUT of CMEs for each unique node and their valid cores
-            nb_ga_generations (int): The number of generations considered by the genetic algorithm
-            nb_ga_individuals (int): The number of individuals in each genetic algorithm generation
+            nb_ga_generations: The number of generations considered by the genetic algorithm
+            nb_ga_individuals: The number of individuals in each genetic algorithm generation
         """
         super().__init__(list_of_callables, **kwargs)
         self.workload = workload

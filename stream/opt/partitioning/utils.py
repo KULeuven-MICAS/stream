@@ -136,7 +136,7 @@ def convert_outer_cn_loops_with_k(outer_cn_loops: TILING_T, layer: ComputationNo
     Args:
         outer_cn_loops (list): The list of string-defined outer-cn loops.
         layer (ComputationNode): The original layer.
-        split_factor (int): The number of output channel splits that will be added.
+        split_factor: The number of output channel splits that will be added.
     """
     raise DeprecationWarning("Still uses string representation for LayerOperand")
     if not isinstance(split_factor, int):

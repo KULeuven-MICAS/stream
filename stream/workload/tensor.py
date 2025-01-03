@@ -27,7 +27,7 @@ class Tensor:
         """Initialize the Tensor instance.
 
         Args:
-            size (int): the size of the tensor in bits
+            size: the size of the tensor in bits
             origin (ComputationNode): The computation node that consumes/produces this tensor
             layer_operand (str, optional): The layer operand to which this tensor belongs
             loop_dimensions (tuple, optional): The loop dimensions for this tensor

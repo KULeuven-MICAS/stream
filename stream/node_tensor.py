@@ -37,14 +37,14 @@ class NodeTensor(np.ndarray[Any, Any]):
     def _get_pointer(self):
         return self.__node_count
 
-    def _get_and_increment_pointer(self):
+    def _increment_and_get_pointer(self):
         """Get the index pointer in the last dimension. which points to the next free spot to allocate nodes.
         Automatically increments the pointer after each use. If the index exceeds the allocated space, an error is
         raised."""
+        self.__node_count += 1
         pointer = self.__node_count
         if pointer >= self.__pre_allocation_size:
             raise IndexError
-        self.__node_count += 1
         return pointer
 
     @property
@@ -80,7 +80,7 @@ class NodeTensor(np.ndarray[Any, Any]):
     def get_nb_empty_elements(self, slices: tuple[slice, ...]):
         """Returns the number of points for which there are no ComputationNodes."""
         assert self.is_valid_shape_dimension(slices), "Last dimension of tensor is reserved for CNs"
-        extended_slices = slices + (slice(0, self.__node_count),)
+        extended_slices = slices + (slice(0, self._get_pointer() + 1),)
         tensor_slice = self.as_ndarray()[extended_slices]
         all_empty_mask = np.logical_and.reduce(tensor_slice == 0, axis=-1)
         return int(np.sum(all_empty_mask))
@@ -91,6 +91,8 @@ class NodeTensor(np.ndarray[Any, Any]):
         # Case 1: Try to assign at the current pointer for given slices
         idx = self._get_pointer()
         extended_slices = slices + (slice(idx, idx + 1),)
+        assert all(s.stop <= self.full_shape[i] for i, s in enumerate(extended_slices)), "Index out of bounds"
+
         # Slice is all 0
         if not np.any(self[extended_slices]):
             self[extended_slices] = node
@@ -98,7 +100,7 @@ class NodeTensor(np.ndarray[Any, Any]):
 
         # Case 2: increment pointer and assign at empty slice
         try:
-            idx = self._get_and_increment_pointer()
+            idx = self._increment_and_get_pointer()
             extended_slices = slices + (slice(idx, idx + 1),)
             self[extended_slices] = node
             return self
@@ -167,7 +169,7 @@ class NodeTensor(np.ndarray[Any, Any]):
             return np.concat((self.as_ndarray(), empty_tensor), axis=axis).view(NodeTensor)
 
     def __repr__(self):
-        return f"TensorNode{self.tensor_shape}[depth={self.__node_count}]"
+        return f"NodeTensor{self.tensor_shape}[depth={self.__node_count}]"
 
     def __reduce__(self):
         return self.as_ndarray().__reduce__()

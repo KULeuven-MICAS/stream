@@ -25,7 +25,7 @@ def get_too_large_operands(cme: CostModelEvaluation, accelerator: "Accelerator",
     Args:
         cme (CostModelEvaluation): The CostModelEvaluation containing information wrt the memory utilization.
         accelerator (Accelerator): The accelerator object containing the different cores.
-        core_id (int): The id of the core of which we wish to get the too large operands.
+        core_id: The id of the core of which we wish to get the too large operands.
     """
     too_large_operands: list[MemoryOperand] = []
     core = accelerator.get_core(core_id)
@@ -51,7 +51,7 @@ def save_core_allocation(
         type (str, optional): The type of core allocation: fixed or flexible.
 
     Returns:
-        allocations (dict): The dictionary containing core allocations for each node name
+        allocations: The dictionary containing core allocations for each node name
     """
     node_allocations = {}
     node_allocations_grouped = {}

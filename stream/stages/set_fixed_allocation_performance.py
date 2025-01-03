@@ -105,8 +105,8 @@ class SetFixedAllocationPerformanceStage(Stage):
             node (Node): The node of which to set the
             onchip_energy (float): on-chip energy of executing this node
             offchip_energy (float): off-chip energy of executing this node
-            runtime (int): runtime of executing this node
-            core_allocation (int): the core_id on which this node will be ran
+            runtime: runtime of executing this node
+            core_allocation: the core_id on which this node will be ran
         """
         node.set_onchip_energy(onchip_energy)
         node.set_offchip_energy(offchip_energy)

@@ -231,21 +231,8 @@ class TiledWorkloadGenerationStage(Stage):
         This ensures dependencies between tiles within the stack do not cross the layer stack boundaries.
         # TODO can nodes within the same stack have different intra-core tiling? This is not accounted for
         """
-        # # These divisors accumulate: e.g. if a dim must be divisible by 2 and 4, it must be divisible by 8
-        # divisors_multiplicative: dict[LayerDim, int] = defaultdict(lambda: 1)
-
         divisors: dict[LayerDim, set[int]] = defaultdict(lambda: set())
 
-        # # Must be divisible by inter- and intra-core tiling factors (multiplicative)
-        # for dim, factor in node.intra_core_tiling + node.inter_core_tiling:
-        #     if isinstance(factor, int):
-        #         divisors_multiplicative[dim] *= factor
-
-        # # Multiplied divisors become one lcm divisor
-        # for dim, factor in divisors_multiplicative.items():
-        #     divisors_lcm[dim].add(factor)
-
-        # Must be divisible by inter-core tiling factors of all nodes in the same layer stack (least common multiple)
         # Find nodes in stack
         try:
             curr_stack = next(stack for stack in self.layer_stacks if node.id in stack)
@@ -531,7 +518,7 @@ class TiledWorkloadGenerationStage(Stage):
 
         Args:
             dimensions (list): list of the different tensor dimensions
-            loop_ranges (dict): dict of the loop ranges for the current node.
+            loop_ranges: dict of the loop ranges for the current node.
         """
         # TODO these should be constants
         dim_G = LayerDim("G")
@@ -836,8 +823,8 @@ class TiledWorkloadGenerationStage(Stage):
             )
             node_tensor = node_tensor.extend_with_node(bounded_op_dim_ranges, tile)
 
-        if nb_unique_data_seen != (prod(tensor_shapes) * precision):
-            logger.warning(f"Downsampling node detected: {node}, operand= {op}.")
+            if nb_unique_data_seen < (prod(tensor_shapes[op]) * precision):
+                logger.warning(f"Downsampling node detected: {node}, operand= {op}.")
 
         # The dimensionality order of this input/output operand might include
         # both a G and C/K dimension because the ComputationNode gets the group as an extra

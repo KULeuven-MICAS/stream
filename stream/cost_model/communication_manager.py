@@ -301,7 +301,7 @@ class CommunicationManager:
         The timestep must be greater than or equal to best_case_start.
 
         Args:
-            links (dict): CommunicationLinks involved in the transfer and their required bandwidth.
+            links: CommunicationLinks involved in the transfer and their required bandwidth.
             best_case_start: The best case start timestep of the transfer.
             duration: The required duration of the idle window.
             tensors: The tensors to be transferred. Used to broadcast from previous transfer.
