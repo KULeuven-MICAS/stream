@@ -172,6 +172,18 @@ class Accelerator:
     def find_tensor_in_top_instances(self, tensor: Tensor):
         return self.memory_manager.find_tensor_in_top_instances(tensor)
 
+    def find_best_tensor_combination_to_evict_fast(
+        self, tensor: Tensor, core: Core, timestep: int, exceptions: list[Tensor] = []
+    ):
+        top_instance = self.get_top_instance_of_core(core, tensor.memory_operand)
+        tensors_to_evict = self.memory_manager.find_best_tensor_combination_to_evict_fast(
+            top_instance=top_instance,
+            tensor_to_add=tensor,
+            timestep=timestep,
+            exceptions=exceptions,
+        )
+        return tensors_to_evict
+
     def remove_tensor(
         self,
         tensor: Tensor,

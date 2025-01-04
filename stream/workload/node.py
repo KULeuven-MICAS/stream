@@ -47,13 +47,10 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         self.core_allocation_is_fixed = core_allocation_is_fixed
         self.chosen_core_allocation = chosen_core_allocation
         self.input_names = input_names
-        # will be set by the scheduler
-        self.start = None
-        # will be set by the scheduler
-        self.end = None
-        # number of data (in bits) only this node consumes (not consumed by any other node)
+        self.start = -1
+        self.end = -1
+        # number of data (in bits) only this node produces/consumes (not produced/consumed by any other node)
         self.data_consumed_unique = 0
-        # number of data (in bits) only this node produces (not produced by any other node)
         self.data_produced_unique = 0
 
     def get_total_energy(self) -> float:
