@@ -59,6 +59,11 @@ class Accelerator:
         """
         return self.cores.get_node_with_id(core_id)
 
+    def get_offchip_core(self) -> Core:
+        """Return the offchip core."""
+        assert self.offchip_core_id, "This accelerator has no offchip core id."
+        return self.get_core(self.offchip_core_id)
+
     @property
     def core_list(self) -> list[Core]:
         return list(self.cores.node_list)
@@ -509,8 +514,9 @@ class Accelerator:
         )
         return top_memory_instance_a is top_memory_instance_b
 
-    def get_top_instances_of_core(self, core_id: int):
-        core = self.get_core(core_id)
+    def get_top_instances_of_core(self, core: int | Core) -> list[MemoryInstance]:
+        if isinstance(core, int):
+            core = self.get_core(core)
         top_instances = self.memory_manager.top_instances_per_core[core]
         return top_instances
 
