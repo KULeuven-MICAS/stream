@@ -37,7 +37,7 @@ class SplitNode(PropagationNode):
         self.input_operand_source = {Constants.LAYER_OP_I: predecessor}
         self.output_names = output_names
 
-    def propagate(self, tensor: NodeTensor, next_node: Node):
+    def propagate(self, tensor: NodeTensor, next_node: Node, relevant_axes: list[bool]):
         """Split the tensor back to the representation needed for producer/consumer."""
 
         # Numpy requires the indices where to split instead of the sizes of the resulting splits
@@ -52,5 +52,8 @@ class SplitNode(PropagationNode):
                 f"Cannot find this nodes' ({self.name}) outputs {self.output_names} in next nodes' inputs {next_node.input_names}"
             )
 
+        # Update the relevant_dims with the axis involved in the split
+        relevant_axes[self.axis] = True
+
         output_tensor = output_tensors[index]
-        return output_tensor
+        return output_tensor, relevant_axes

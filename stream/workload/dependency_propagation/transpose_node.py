@@ -22,6 +22,13 @@ class TransposeNode(PropagationNode):
         self.permute_axes = permute_axes
         self.input_operand_source = {LayerOperand("I"): predecessor}
 
-    def propagate(self, tensor: NodeTensor, next_node: Node | None = None) -> NodeTensor:
+    def propagate(
+        self, tensor: NodeTensor, next_node: Node | None = None, relevant_axes: list[bool] = []
+    ) -> NodeTensor:
         """Transpose an input tensor."""
-        return tensor.transpose(axes=self.permute_axes)
+        transposed_tensor = tensor.transpose(axes=self.permute_axes)
+
+        for axis in self.permute_axes:
+            relevant_axes[axis] = True
+
+        return transposed_tensor, relevant_axes
