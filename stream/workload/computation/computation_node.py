@@ -136,6 +136,9 @@ class ComputationNode(LayerNode, Node):
         except KeyError:
             return None
 
+    def get_output_tensor(self) -> Tensor:
+        return self.operand_tensors[self.output_operand]
+
     def get_total_inter_core_splits(self) -> int:
         """Return the total number of inter-core splits for this node, i.e. over how many cores this node is split"""
         if contains_wildcard(self.inter_core_tiling):

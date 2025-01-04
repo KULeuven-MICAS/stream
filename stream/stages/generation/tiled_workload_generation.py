@@ -826,7 +826,7 @@ class TiledWorkloadGenerationStage(Stage):
             )
             node_tensor = node_tensor.extend_with_node(bounded_op_dim_ranges, tile)
 
-            if nb_unique_data_seen < (prod(tensor_shapes[op]) * precision):
+            if nb_unique_data_seen < (prod(tensor_shapes) * precision):
                 logger.warning(f"Downsampling node detected: {node}, operand= {op}.")
 
         # The dimensionality order of this input/output operand might include

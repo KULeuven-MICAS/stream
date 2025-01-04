@@ -1,4 +1,6 @@
 import logging
+from collections import defaultdict
+from enum import Enum, auto
 from operator import itemgetter
 from typing import TYPE_CHECKING
 
@@ -13,6 +15,16 @@ if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
 
 logger = logging.getLogger(__name__)
+
+
+class TransferCause(Enum):
+    """Log transfer energies in different categories"""
+
+    SINK_LAYER = auto()
+    EVICTION = auto()
+    OFF_CHIP = auto()
+    CORE_TO_CORE = auto()
+    NO_LOG = auto()
 
 
 class Schedule:
@@ -39,20 +51,23 @@ class Schedule:
 
         core_ids = set(n.chosen_core_allocation for n in G.node_list)
         assert None not in core_ids, "Not all nodes have core allocation. Insert SetFixedAllocationPerformanceStage."
-        self.all_core_ids: list[int] = sorted(list(core_ids))  # type: ignore
-        self.cores_idle_from = cores_idle_from if cores_idle_from else {core_id: 0 for core_id in self.all_core_ids}
+        all_core_ids: list[int] = sorted(list(core_ids))  # type: ignore
+        self.cores_idle_from = cores_idle_from if cores_idle_from else {core_id: 0 for core_id in all_core_ids}
 
         # Initialize the schedule results
         self.latency = 0
         self.total_cn_onchip_energy = 0
-        self.total_cn_offchip_link_energy = 0
-        self.total_cn_offchip_memory_energy = 0
-        self.total_eviction_to_offchip_link_energy = 0
-        self.total_eviction_to_offchip_memory_energy = 0
-        self.total_sink_layer_output_offchip_link_energy = 0
-        self.total_sink_layer_output_offchip_memory_energy = 0
-        self.total_core_to_core_link_energy = 0
-        self.total_core_to_core_memory_energy = 0
+        self.link_energy: dict[TransferCause, float] = defaultdict(lambda: 0)
+        self.memory_energy: dict[TransferCause, float] = defaultdict(lambda: 0)
+
+        # self.total_cn_offchip_link_energy = 0
+        # self.total_cn_offchip_memory_energy = 0
+        # self.total_eviction_to_offchip_link_energy = 0
+        # self.total_eviction_to_offchip_memory_energy = 0
+        # self.total_sink_layer_output_offchip_link_energy = 0
+        # self.total_sink_layer_output_offchip_memory_energy = 0
+        # self.total_core_to_core_link_energy = 0
+        # self.total_core_to_core_memory_energy = 0
 
         # Remains constant throughout the scheduling
         self.sink_layer_nodes = self.get_sink_layer_nodes()
@@ -127,18 +142,19 @@ class Schedule:
 
             # Step 1: for operands that are too large to store in the core's memory, clear the memory so ZigZag can
             # optimize the loop ordering using the full memory size
-            transfer_complete_timestep = self.clear_memories(
-                core=core,
-                memory_operands=best_candidate.too_large_operands,
-                timestep=timestep,
-                exceptions=tensors_this_candidate_needs,
-                transfer_bandwidth_fraction=transfer_bw_fraction,
-            )
-            timestep = transfer_complete_timestep
+            if best_candidate.too_large_operands:
+                transfer_complete_timestep = self.clear_memories(
+                    core=core,
+                    memory_operands=best_candidate.too_large_operands,
+                    timestep=timestep,
+                    exceptions=tensors_this_candidate_needs,
+                    transfer_bandwidth_fraction=transfer_bw_fraction,
+                )
+                timestep = transfer_complete_timestep
 
             # Step 2: Transfer the tensors needed for this node to the core (from off-chip or from another core)
             for tensor, tensor_operand in zip(tensors_this_candidate_needs, tensors_operands):
-                transfer_complete_timestep = self.transfer_tensor_to_core(
+                transfer_complete_timestep = self.schedule_tensor_transfer(
                     tensor=tensor,
                     tensor_operand=tensor_operand,
                     receiving_core=core,
@@ -149,9 +165,8 @@ class Schedule:
                 timestep = max(timestep, transfer_complete_timestep)
 
             # Step 3: make space for the output tensor of this node
-            output_layer_operand = best_candidate.output_operand
-            output_memory_operand = best_candidate.memory_operand_links.layer_to_mem_op(output_layer_operand)
-            output_tensor = best_candidate.operand_tensors[output_layer_operand]
+            output_tensor = best_candidate.get_output_tensor()
+            output_memory_operand = output_tensor.memory_operand
             core_to_add_output_to = (
                 self.offchip_core if output_memory_operand in best_candidate.too_large_operands else core
             )
@@ -211,27 +226,19 @@ class Schedule:
         return 1 / node.get_total_inter_core_splits()
 
     def prefetch_constant_operands(self):
-        """Load the `operands_to_prefetch` to the cores they belong to and log the energy costs."""
+        """Load the `operands_to_prefetch` to the cores they belong to."""
         for n in self.G.node_list:
             for op, tensor in n.operand_tensors.items():
                 if op in n.constant_operands and op in self.operands_to_prefetch:
-                    core_allocation = n.chosen_core_allocation
-                    assert core_allocation is not None, "Core should be allocated"
+                    core = self.get_core_for_node(n)
                     memory_op = n.memory_operand_links.layer_to_mem_op(op)
-                    if not self.accelerator.contains_tensor(tensor, core_allocation):
-                        (
-                            _,
-                            transfer_link_energy_cost,
-                            transfer_memory_energy_cost,
-                            eviction_link_energy_cost,
-                            eviction_memory_energy_cost,
-                            came_from_offchip,
-                        ) = self.accelerator.transfer_tensor_to_core(tensor, core_allocation, memory_op, [])
-                        assert came_from_offchip
-                        self.total_cn_offchip_link_energy += transfer_link_energy_cost
-                        self.total_cn_offchip_memory_energy += transfer_memory_energy_cost
-                        self.total_eviction_to_offchip_link_energy += eviction_link_energy_cost
-                        self.total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
+                    if not self.accelerator.core_contains_tensor(tensor, core):
+                        self.schedule_tensor_transfer(
+                            tensor=tensor,
+                            tensor_operand=memory_op,
+                            receiving_core=core,
+                            non_evictable_tensors=[],
+                        )
 
     def pop_best_candidate(self) -> tuple[ComputationNode, int]:
         """Get the best candidate node to schedule next, given the selection priority. Remove that candidate from the
@@ -325,11 +332,7 @@ class Schedule:
         transfer_bandwidth_fraction: float = 1,
     ):
         for too_large_operand in memory_operands:
-            (
-                timestep,
-                eviction_link_energy_cost,
-                eviction_memory_energy_cost,
-            ) = self.accelerator.remove_all(
+            timestep = self.remove_all(
                 core=core,
                 memory_operand=too_large_operand,
                 timestep=timestep,
@@ -337,71 +340,239 @@ class Schedule:
                 transfer_bandwidth_fraction=transfer_bandwidth_fraction,
                 write_back_to_offchip=True,
             )
-            self.total_eviction_to_offchip_link_energy += eviction_link_energy_cost
-            self.total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
         return timestep
 
-    def transfer_tensor_to_core(
+    def remove_all(
+        self,
+        core: Core,
+        memory_operand: MemoryOperand,
+        timestep: int,
+        exceptions: list[Tensor] = [],
+        transfer_bandwidth_fraction: float = 1,
+        write_back_to_offchip: bool = False,
+    ):
+        """Remove all tensors from a core's memory with the given memory operand.
+        If required, the tensors are written back to offchip before removal.
+
+        Args:
+            core (Core): The Core to remove the tensor from
+            memory_operand: The memory operand for which all tensors should be evicted.
+            timestep: The timestep to remove the tensor at.
+            exceptions: A list of tensors that should not be evicted.
+            transfer_bandwidth_fraction: Fraction of the bandwidth to use for the transfers.
+            write_back_to_offchip (bool, optional): Write the tensor to offchip before removal. Defaults to False.
+        """
+        stored_tensors = self.accelerator.get_tensors_stored_in_core(core, memory_operand, timestep)
+
+        for tensor in stored_tensors:
+            if tensor not in exceptions:
+                timestep = self.schedule_tensor_removal(
+                    tensor_to_remove=tensor,
+                    core_to_remove_from=core,
+                    memory_op=memory_operand,
+                    timestep=timestep,
+                    transfer_bandwidth_fraction=transfer_bandwidth_fraction,
+                    write_back_to_offchip=write_back_to_offchip,
+                    transfer_cause=TransferCause.EVICTION,
+                )
+
+        return timestep
+
+    def schedule_tensor_removal(
+        self,
+        tensor_to_remove: Tensor,
+        core_to_remove_from: Core,
+        memory_op: MemoryOperand,
+        timestep: int,
+        transfer_bandwidth_fraction: float = 1,
+        write_back_to_offchip: bool = False,
+        transfer_cause: TransferCause = TransferCause.EVICTION,
+    ):
+        """Remove tensor from core. If required, transfer to offchip before removal.
+
+        Args:
+            tensor: The tensor to remove.
+            core: The Core to remove the tensor from.
+            memory_op: The memory operand of the tensor.
+            timestep: The timestep to remove the tensor at.
+            transfer_bandwidth_fraction: Fraction of the bandwidth to use for the transfer.
+            write_back_to_offchip: Write the tensor to offchip before removal. Defaults to False.
+        """
+        should_be_written_to_offchip = write_back_to_offchip and not self.accelerator.core_contains_tensor(
+            tensor_to_remove, self.offchip_core
+        )
+        if should_be_written_to_offchip:
+            transfer_end = self.schedule_tensor_transfer(
+                tensor=tensor_to_remove,
+                receiving_core=self.offchip_core,
+                tensor_operand=memory_op,
+                sending_core=core_to_remove_from,
+                transfer_bandwidth_fraction=transfer_bandwidth_fraction,
+                transfer_cause=transfer_cause,
+            )
+
+            timestep = max(timestep, transfer_end)
+
+        self.accelerator.remove_tensor(
+            tensor=tensor_to_remove, core=core_to_remove_from, memory_op=memory_op, timestep=timestep
+        )
+
+        return timestep
+
+    def schedule_tensor_transfer(
         self,
         tensor: Tensor,
-        tensor_operand: MemoryOperand,
         receiving_core: Core,
-        non_evictable_tensors: list[Tensor],
-        sending_core_id: int | None = None,
+        tensor_operand: MemoryOperand,
         earliest_t: int = 0,
+        non_evictable_tensors: list[Tensor] = [],
+        sending_core: Core | None = None,
         transfer_bandwidth_fraction: float = 1,
+        transfer_cause: TransferCause | None = None,
     ):
-        (
-            transfer_complete_timestep,
-            transfer_link_energy_cost,
-            transfer_memory_energy_cost,
-            eviction_link_energy_cost,
-            eviction_memory_energy_cost,
-            came_from_offchip,
-        ) = self.accelerator.transfer_tensor_to_core(
-            tensor,
-            receiving_core.id,
-            tensor_operand,
-            non_evictable_tensors,
-            earliest_t=earliest_t,
+        """Find the earliest time to transfer the tensor to the receiving core, and register the transfer.
+        Evictions of older tensors might be necessary
+
+        Args:
+            tensor
+            receiving_core
+            tensor_operand
+            transfer_cause
+            non_evictable_tensors
+            sending_core
+            earliest_t
+            transfer_bandwidth_fraction
+        """
+
+        if self.accelerator.core_contains_tensor(tensor, receiving_core):
+            return earliest_t
+
+        tensor_available_since_timestep = self.accelerator.get_available_timestep(tensor, sending_core)
+        earliest_tensor_addition_t = max(earliest_t, tensor_available_since_timestep)
+
+        # Evict older tensors if given tensor doesn't fit yet
+        evictions_complete_timestep = self.make_space_for_tensor(
+            tensor=tensor,
+            core=receiving_core,
+            memory_op=tensor_operand,
+            timestep=earliest_tensor_addition_t,
+            tensors_to_avoid_evicting=non_evictable_tensors,
             transfer_bandwidth_fraction=transfer_bandwidth_fraction,
         )
 
-        # Add the energy costs to their respective trackers
-        if came_from_offchip:
-            self.total_cn_offchip_link_energy += transfer_link_energy_cost
-            self.total_cn_offchip_memory_energy += transfer_memory_energy_cost
-        else:
-            self.total_core_to_core_link_energy += transfer_link_energy_cost
-            self.total_core_to_core_memory_energy += transfer_memory_energy_cost
-        self.total_eviction_to_offchip_link_energy += eviction_link_energy_cost
-        self.total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
-        return transfer_complete_timestep
+        # Find idle window between sender and receiver cores
+        # TODO If the storing_instance is a shared instance across more than one core, there will be multiple possible
+        # TODO cores to transfer between. For now, we take the first one
+        sending_cores = self.accelerator.get_storing_cores(tensor, sending_core)
+        sending_core = sending_cores[0]
+
+        transfer_start, transfer_end = self.accelerator.find_earliest_time_for_transfer(
+            tensor=tensor,
+            sending_core=sending_core,
+            receiving_core=receiving_core,
+            earliest_t=evictions_complete_timestep,
+            bandwidth_fraction=transfer_bandwidth_fraction,
+        )
+
+        # Spawn the tensor on the receiving core, remove from sending core and update communication links
+        transfer_link_energy_cost, transfer_memory_energy_cost = self.accelerator.register_tensor_transfer(
+            tensor=tensor,
+            tensor_operand=tensor_operand,
+            sending_core=sending_core,
+            receiving_core=receiving_core,
+            transfer_start=transfer_start,
+            transfer_end=transfer_end,
+            transfer_bandwidth_fraction=transfer_bandwidth_fraction,
+        )
+
+        # Register energy
+        if not transfer_cause:
+            came_form_offchip = sending_core == self.offchip_core
+            transfer_cause = TransferCause.OFF_CHIP if came_form_offchip else TransferCause.CORE_TO_CORE
+
+        self.link_energy[transfer_cause] += transfer_link_energy_cost
+        self.memory_energy[transfer_cause] += transfer_memory_energy_cost
+
+        return transfer_end
 
     def make_space_for_tensor(
         self,
         tensor: Tensor,
         core: Core,
-        memory_operand: MemoryOperand,
+        memory_op: MemoryOperand,
         timestep: int,
         tensors_to_avoid_evicting: list[Tensor] = [],
         transfer_bandwidth_fraction: float = 1,
     ):
-        (
-            evictions_complete_timestep,
-            eviction_link_energy_cost,
-            eviction_memory_energy_cost,
-        ) = self.accelerator.make_space_for(
+        """Make space for the given tensor on the given core by evicting already stored tensors if necessary.
+
+        Args:
+            tensor: The tensor to make space for.
+            core (Core): The core where the tensor will be stored.
+            memory_operand: The memory operand on the core.
+            timestep: The timestep at which to make space for.
+            transfer_bandwidth_fraction: Fraction of the bandwidth to use for the transfer.
+        """
+
+        top_instance = self.accelerator.get_top_instance_of_core(core, memory_op)
+
+        # Earliest timestep when the core has enough space, or the latest timestep if this is never the case
+        enough_space_timestep = self.accelerator.memory_manager.get_timestep_for_tensor_addition(
             tensor=tensor,
             core=core,
-            memory_op=memory_operand,
             timestep=timestep,
-            tensors_to_avoid_evicting=tensors_to_avoid_evicting,
-            transfer_bandwidth_fraction=transfer_bandwidth_fraction,
+            memory_op=tensor.memory_operand,
         )
-        self.total_eviction_to_offchip_link_energy += eviction_link_energy_cost
-        self.total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost
-        return evictions_complete_timestep
+
+        tensors_to_evict = self.accelerator.memory_manager.find_best_tensor_combination_to_evict_fast(
+            top_instance,
+            tensor,
+            enough_space_timestep,
+            exceptions=tensors_to_avoid_evicting,
+        )
+
+        if core == self.offchip_core and tensors_to_evict:
+            raise ValueError("Evictions required in offchip memory. Consider making offchip larger.")
+
+        for tensor_to_evict in tensors_to_evict:
+            t_eviction_complete = self.schedule_tensor_removal(
+                tensor_to_remove=tensor_to_evict,
+                core_to_remove_from=core,
+                memory_op=memory_op,
+                timestep=timestep,
+                transfer_bandwidth_fraction=transfer_bandwidth_fraction,
+                write_back_to_offchip=True,
+                transfer_cause=TransferCause.EVICTION,
+            )
+            timestep = max(timestep, t_eviction_complete)
+
+        t_evictions_complete = max(enough_space_timestep, timestep)
+        return t_evictions_complete
+
+    def remove_sink_node_tensor(
+        self,
+        node: ComputationNode,
+        tensor_to_remove: Tensor,
+        core_to_remove_from: Core,
+        timestep: int,
+        transfer_bandwidth_fraction: float,
+    ):
+        """If this node is a sink node (node that has no successors and that produces a final output), transfer final
+        outputs to offchip
+        """
+        if node in self.sink_layer_nodes:
+            # Only push back sink node outputs if they're generated and stored on the core
+            if Constants.OUTPUT_MEM_OP not in node.too_large_operands:
+                self.schedule_tensor_removal(
+                    tensor_to_remove=tensor_to_remove,
+                    core_to_remove_from=core_to_remove_from,
+                    memory_op=tensor_to_remove.memory_operand,
+                    timestep=timestep,
+                    transfer_bandwidth_fraction=transfer_bandwidth_fraction,
+                    write_back_to_offchip=True,
+                    transfer_cause=TransferCause.SINK_LAYER,
+                )
+        # TODO hier wordt denk ik gene timestep doorgegeven!
 
     def register_scheduled_node(
         self,
@@ -428,37 +599,8 @@ class Schedule:
         self.scheduled_nodes.add(node)
 
         self.total_cn_onchip_energy += node.get_onchip_energy()
-        self.total_cn_offchip_memory_energy += node.get_offchip_energy()
+        self.memory_energy[TransferCause.OFF_CHIP] += node.get_offchip_energy()
         return end_time
-
-    def remove_sink_node_tensor(
-        self,
-        node: ComputationNode,
-        tensor_to_remove: Tensor,
-        core_to_remove_from: Core,
-        timestep: int,
-        transfer_bandwidth_fraction: float,
-    ):
-        """If this node is a sink node (node that has no successors and that produces a final output), transfer final
-        outputs to offchip
-        """
-        if node in self.sink_layer_nodes:
-            # Only push back sink node outputs if they're generated and stored on the core
-            if Constants.OUTPUT_MEM_OP not in node.too_large_operands:
-                (
-                    _,
-                    link_energy_cost,
-                    memory_energy_cost,
-                ) = self.accelerator.remove(
-                    tensor=tensor_to_remove,
-                    core=core_to_remove_from,
-                    memory_op=tensor_to_remove.memory_operand,
-                    timestep=timestep,
-                    transfer_bandwidth_fraction=transfer_bandwidth_fraction,
-                    write_back_to_offchip=True,
-                )
-                self.total_sink_layer_output_offchip_link_energy += link_energy_cost
-                self.total_sink_layer_output_offchip_memory_energy += memory_energy_cost
 
     def decrease_priority(
         self,
@@ -513,12 +655,13 @@ class Schedule:
 
                     # Get a core tied to the top_instance we want to remove it on.
                     core = self.accelerator.memory_manager.cores_per_top_instance[instance_storing_tensor][0]
-                    self.accelerator.remove(
-                        tensor_used_by_node,
-                        core,
-                        tensor_used_by_node.memory_operand,
-                        timestep_for_removal,
+                    self.schedule_tensor_removal(
+                        tensor_to_remove=tensor_used_by_node,
+                        core_to_remove_from=core,
+                        memory_op=tensor_used_by_node.memory_operand,
+                        timestep=timestep_for_removal,
                         transfer_bandwidth_fraction=transfer_bandwidth_fraction,
+                        transfer_cause=TransferCause.NO_LOG,
                     )
 
     def extend_candidates(self, node: ComputationNode):
@@ -536,3 +679,35 @@ class Schedule:
         cns_end_time = max((n.end for n in self.G.node_list))
         links_end_time = max([event.end for event in self.accelerator.communication_manager.events], default=0)
         return max(cns_end_time, links_end_time)
+
+    @property
+    def total_cn_offchip_link_energy(self):
+        return self.link_energy[TransferCause.OFF_CHIP]
+
+    @property
+    def total_cn_offchip_memory_energy(self):
+        return self.memory_energy[TransferCause.OFF_CHIP]
+
+    @property
+    def total_eviction_to_offchip_link_energy(self):
+        return self.link_energy[TransferCause.EVICTION]
+
+    @property
+    def total_eviction_to_offchip_memory_energy(self):
+        return self.memory_energy[TransferCause.EVICTION]
+
+    @property
+    def total_sink_layer_output_offchip_link_energy(self):
+        return self.link_energy[TransferCause.SINK_LAYER]
+
+    @property
+    def total_sink_layer_output_offchip_memory_energy(self):
+        return self.memory_energy[TransferCause.SINK_LAYER]
+
+    @property
+    def total_core_to_core_link_energy(self):
+        return self.link_energy[TransferCause.CORE_TO_CORE]
+
+    @property
+    def total_core_to_core_memory_energy(self):
+        return self.memory_energy[TransferCause.CORE_TO_CORE]

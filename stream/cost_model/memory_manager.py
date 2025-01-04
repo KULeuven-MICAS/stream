@@ -174,7 +174,7 @@ class MemoryManager:
     def get_timestep_for_tensor_addition(
         self,
         tensor: Tensor,
-        core_id: int,
+        core: Core,
         timestep: int,
         memory_op: MemoryOperand,
     ) -> int:
@@ -191,7 +191,6 @@ class MemoryManager:
         Returns:
             The earliest timestep at which the transfer can actually start.
         """
-        core = self.accelerator.get_core(core_id)
         top_level_idx = self.get_top_level_idx(core, memory_op)
         top_instance = self.top_instances_per_core[core][top_level_idx]
         top_instance_capacity = self.top_instance_capacities[top_instance]
@@ -211,7 +210,7 @@ class MemoryManager:
         if last_max_usage_idx == len(relevant_usages_reversed) - 1:
             return relevant_timesteps[last_max_usage_idx]
         new_timestep = relevant_timesteps[last_max_usage_idx + 1]
-        return self.get_timestep_for_tensor_addition(tensor, core_id, new_timestep, memory_op)
+        return self.get_timestep_for_tensor_addition(tensor, core, new_timestep, memory_op)
 
     def find_best_tensor_combination_to_evict_fast(
         self,
