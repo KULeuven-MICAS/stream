@@ -6,6 +6,7 @@ from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 from zigzag.utils import hash_sha512
 from zigzag.visualization.results.plot_cme import shorten_onnx_layer_name
 from zigzag.workload.layer_attributes import (
+    LayerDimSizes,
     LayerPadding,
 )
 from zigzag.workload.layer_node import LayerNode, LayerNodeAttributes
@@ -83,6 +84,8 @@ class ComputationNode(LayerNode, Node):
         self.operand_dimensionality_order: dict[LayerOperand, list[LayerDim]] = {
             layer_op: self.equation.get_r_layer_dims(layer_op) for layer_op in self.equation.get_contained_operands()
         }
+        # Sizes can be extended to fit division factors
+        self.extended_layer_dim_sizes: LayerDimSizes = deepcopy(self.layer_dim_sizes)
 
         # adds pr dimensions loop ranges to self.loop_ranges
         self.calculate_pr_loop_ranges()
