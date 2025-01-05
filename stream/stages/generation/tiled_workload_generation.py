@@ -264,13 +264,6 @@ class TiledWorkloadGenerationStage(Stage):
         mandatory_divisors: dict[LayerDim, set[int]] = {},
     ) -> tuple[list[ComputationNode], list[ComputationNode]]:
 
-        # def get_lcm(n: int, divisors: set[int]) -> int:
-        #     """Make n divisible by all the divisors in the set."""
-        #     for divisor in divisors:
-        #         if n % divisor != 0:
-        #             n = ceil(n / divisor) * divisor
-        #     return n
-
         def pad_until_divisible(layer_dim: LayerDim, n: int) -> int:
             """Return x >= n such that x is divisible by `total_outer_size`, as well as by all `mandatory_divisors`
             (coming from the inter-core tiling of other nodes within the same stack)"""

@@ -63,6 +63,7 @@ class Schedule:
         # Remains constant throughout the scheduling
         self.sink_layer_nodes = self.get_sink_layer_nodes()
         self.offchip_core = accelerator.get_offchip_core()
+        self.offchip_top_instances = self.accelerator.get_top_instances_of_core(self.offchip_core)
         self.nb_graph_nodes = G.number_of_nodes()
 
         # Initialize bookkeeping
@@ -95,7 +96,6 @@ class Schedule:
 
     def initialize_offchip_tensors(self):
         """Add the constant operand tensors of all nodes to the off-chip initially."""
-        offchip_top_instances = self.accelerator.get_top_instances_of_core(self.offchip_core)
         for n in self.G.node_list:
             for op, tensor in n.operand_tensors.items():
                 # For constant operands or inputs of first node
@@ -103,7 +103,7 @@ class Schedule:
                     if not any(
                         (
                             self.accelerator.contains_tensor(tensor, offchip_top_instance)
-                            for offchip_top_instance in offchip_top_instances
+                            for offchip_top_instance in self.offchip_top_instances
                         )
                     ):
                         memory_op = n.memory_operand_links.layer_to_mem_op(op)
@@ -649,7 +649,7 @@ class Schedule:
         instances_storing_related_tensor = [
             instance
             for instance, tensors in self.accelerator.memory_manager.top_instance_stored_tensors.items()
-            if contains_related_tensor(tensors)
+            if contains_related_tensor(tensors) and instance not in self.offchip_top_instances
         ]
         return 1 / len(instances_storing_related_tensor)
 
