@@ -203,6 +203,10 @@ class TiledWorkloadGenerationStage(Stage):
 
         return outer_loops
 
+    def get_total_outer_size(self, outer_temporal_loops: list[TemporalLoop], dim: LayerDim):
+        """Return the total outer temporal size for the given dim."""
+        return prod([loop.size for loop in outer_temporal_loops if loop.dimension == dim])
+
     def get_non_type_predecessors(self, node: Node, types: list[type]) -> list[Node]:
         """Find all self.workload nodes that are not of any type in types.
         If a node of any type in types is a predecessor, we cascade back through the graph until only non-types type
@@ -226,10 +230,9 @@ class TiledWorkloadGenerationStage(Stage):
         return preds
 
     def get_mandatory_divisors(self, node: ComputationNode) -> dict[LayerDim, set[int]]:
-        """Get the factors by which the smaller tiles' dimensions must be divisible.
-        Tile dimensions must be divisible by all the inter-core tiling factors of the nodes within the same layer stack.
-        This ensures dependencies between tiles within the stack do not cross the layer stack boundaries.
-        # TODO can nodes within the same stack have different intra-core tiling? This is not accounted for
+        """Get the factors by which the (padded) dimensions of this node must be divisible. The dimensions must be
+        divisible by the outer loops of all nodes in the same layer stack.  This ensures dependencies between tiles
+        within the stack do not cross the layer stack boundaries.
         """
         divisors: dict[LayerDim, set[int]] = defaultdict(lambda: set())
 
@@ -247,14 +250,11 @@ class TiledWorkloadGenerationStage(Stage):
             if n.id in curr_stack and n.id != node.id and isinstance(n, ComputationNode)
         ]
 
-        for curr_node in other_nodes_in_stack:
-            assert len(curr_node.inter_core_tiling) == len(
-                set(dim for dim, _ in curr_node.inter_core_tiling)
-            ), "Inter-core tiling contains duplicate dimensions. The divisors for this node must be multiplied"
-
-            for layer_dim, factor in curr_node.inter_core_tiling:
-                if isinstance(factor, int):
-                    divisors[layer_dim].add(factor)
+        for other_node in other_nodes_in_stack:
+            outer_sizes = self.get_outer_tmap_loop_dimensions(other_node)
+            for layer_dim in other_node.layer_dims:
+                total_outer_size = self.get_total_outer_size(outer_sizes, layer_dim)
+                divisors[layer_dim].add(total_outer_size)
         return divisors
 
     def get_tiles(
@@ -264,24 +264,23 @@ class TiledWorkloadGenerationStage(Stage):
         mandatory_divisors: dict[LayerDim, set[int]] = {},
     ) -> tuple[list[ComputationNode], list[ComputationNode]]:
 
-        def get_total_outer_size(dim: LayerDim):
-            return prod([loop.size for loop in outer_temporal_loops if loop.dimension == dim])
+        # def get_lcm(n: int, divisors: set[int]) -> int:
+        #     """Make n divisible by all the divisors in the set."""
+        #     for divisor in divisors:
+        #         if n % divisor != 0:
+        #             n = ceil(n / divisor) * divisor
+        #     return n
 
-        def get_lcm(n: int, divisors: set[int]) -> int:
-            """Make n divisible by all the divisors in the set."""
-            for divisor in divisors:
+        def pad_until_divisible(layer_dim: LayerDim, n: int) -> int:
+            """Return x >= n such that x is divisible by `total_outer_size`, as well as by all `mandatory_divisors`
+            (coming from the inter-core tiling of other nodes within the same stack)"""
+            total_outer_size = self.get_total_outer_size(outer_temporal_loops, layer_dim)
+            all_divisors = list(mandatory_divisors[layer_dim]) + [total_outer_size]
+
+            for divisor in all_divisors:
                 if n % divisor != 0:
                     n = ceil(n / divisor) * divisor
             return n
-
-        def pad_until_divisible(layer_dim: LayerDim, n: int) -> int:
-            """Return x >= n such that x is divisible by `total_outer_size`, and `x // total_outer_size` divisible by
-            all mandatory divisors (coming from the inter-core tiling of other nodes within the same stack)"""
-            total_outer_size = get_total_outer_size(layer_dim)
-            inner_size = ceil(n / total_outer_size)
-            inner_size_padded = get_lcm(inner_size, mandatory_divisors[layer_dim])
-            x = inner_size_padded * total_outer_size
-            return x
 
         # Pad the layer_dim_sizes to be divisible by the mandatory divisors (coming from the outer_temporal_loops)
         tile_attrs = original_node.extract_node_attr()
