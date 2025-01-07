@@ -95,7 +95,7 @@ def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNo
     return unique_nodes
 
 
-def get_top_level_inst_bandwidth(cme: CostModelEvaluation, mem_op: MemoryOperand, scaling: float) -> MemoryAccesses:
+def get_top_level_inst_bandwidth(cme: CostModelEvaluation, mem_op: MemoryOperand, scaling: float = 1) -> MemoryAccesses:
     """Given a cost model evaluation and a memory instance, compute the memory's total instantaneous bandwidth
     required throughout the execution of the layer that corresponds to this CME. Returns empty bandwidth
     requirements if the given memory instance is not included in this CME's memory hierarchy.
