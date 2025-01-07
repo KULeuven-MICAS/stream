@@ -120,7 +120,7 @@ class Accelerator:
             storing_instance = self.get_top_instance_of_core(suggested_core, tensor.memory_operand)
             assert self.contains_tensor(tensor, storing_instance)
             available_since_timestep = self.memory_manager.top_instance_available_since_timestep[storing_instance][
-                tensor.equality_hash()
+                tensor.equality_hash
             ]
         else:
             (_, available_since_timesteps) = self.find_tensor_in_top_instances(tensor)

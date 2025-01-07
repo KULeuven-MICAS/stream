@@ -7,7 +7,7 @@ from zigzag.hardware.architecture.memory_instance import MemoryInstance
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 
 from stream.hardware.architecture.core import Core
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import Tensor, TensorHash
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
@@ -44,8 +44,9 @@ class MemoryManager:
         self.top_instance_capacities: dict[MemoryInstance, int] = {}
         self.top_instance_available: dict[MemoryInstance, int] = {}
         self.top_instance_stored_tensors: dict[MemoryInstance, list[Tensor]] = {}
-        self.top_instance_stored_since_timestep: dict[MemoryInstance, dict[int, int]] = {}
-        self.top_instance_available_since_timestep: dict[MemoryInstance, dict[int, int]] = {}
+        self.top_instance_stored_tensors_hash: dict[MemoryInstance, set[TensorHash]] = {}
+        self.top_instance_stored_since_timestep: dict[MemoryInstance, dict[TensorHash, int]] = {}
+        self.top_instance_available_since_timestep: dict[MemoryInstance, dict[TensorHash, int]] = {}
         self.top_instance_stored_cumsum: dict[MemoryInstance, np.ndarray[Any, Any]] = {}
         self.top_instance_current_timestep: dict[MemoryInstance, int] = {}
         for core, top_levels in self.top_levels.items():
@@ -58,6 +59,7 @@ class MemoryManager:
                     self.top_instance_capacities[top_instance] = top_instance.size
                     self.top_instance_available[top_instance] = top_instance.size
                     self.top_instance_stored_tensors[top_instance] = []
+                    self.top_instance_stored_tensors_hash[top_instance] = set()
                     self.top_instance_stored_since_timestep[top_instance] = {}
                     self.top_instance_available_since_timestep[top_instance] = {}
                     self.top_instance_stored_cumsum[top_instance] = np.array([[0, 0]])
@@ -69,24 +71,18 @@ class MemoryManager:
         self.offchip_core_id = self.accelerator.offchip_core_id
 
     def contains(self, tensor: Tensor, top_instance: MemoryInstance):
-        return any(
-            [
-                tensor.equality_hash() == stored_tensor.equality_hash()
-                for stored_tensor in self.top_instance_stored_tensors[top_instance]
-            ]
-        )
+        return tensor.equality_hash in self.top_instance_stored_tensors_hash[top_instance]
 
     def find_tensor_in_top_instances(self, tensor: Tensor):
         """Find the top memory instances that are storing this tensor."""
-        equality_hash = tensor.equality_hash()
         # Find all instances storing this tensor
         instances_storing_tensor: set[MemoryInstance] = set()
         available_since_timesteps: dict[MemoryInstance, int] = {}
-        for top_instance, stored_tensors in self.top_instance_stored_tensors.items():
-            if any((equality_hash == stored_tensor.equality_hash() for stored_tensor in stored_tensors)):
+        for top_instance, stored_tensor_hashes in self.top_instance_stored_tensors_hash.items():
+            if tensor.equality_hash in stored_tensor_hashes:
                 instances_storing_tensor.add(top_instance)
                 available_since_timesteps[top_instance] = self.top_instance_available_since_timestep[top_instance][
-                    equality_hash
+                    tensor.equality_hash
                 ]
 
         if not instances_storing_tensor:
@@ -140,11 +136,7 @@ class MemoryManager:
         if self.contains(tensor, top_instance):
             return
 
-        # Add the tensor
-        self.top_instance_stored_tensors[top_instance].append(tensor)
-        self.top_instance_stored_since_timestep[top_instance][tensor.equality_hash()] = timestep
-        self.top_instance_available_since_timestep[top_instance][tensor.equality_hash()] = timestep_end
-        self.top_instance_available[top_instance] -= tensor.size
+        self._add_tensor(tensor, top_instance, timestep_stored=timestep, timestep_available=timestep_end)
 
         # Use numpy searchsorted to find the where the timestep should be inserted
         all_timesteps = self.top_instance_stored_cumsum[top_instance][:, 0]
@@ -267,14 +259,13 @@ class MemoryManager:
         tensor: Tensor,
         timestep: int,
     ):
-        tensor_size = tensor.size
         # Get the instance on the storing core
         try:
             equivalent_tensor = next(
                 (
                     stored_tensor
                     for stored_tensor in self.top_instance_stored_tensors[top_instance]
-                    if stored_tensor.equality_hash() == tensor.equality_hash()
+                    if stored_tensor.equality_hash == tensor.equality_hash
                 )
             )
         except StopIteration:
@@ -282,10 +273,12 @@ class MemoryManager:
             # `Accelerator.transfer_tensor_to_core(...)` it removes a tensor on a sender core if detects it's no longer
             # needed there.
             return
-        self.top_instance_stored_tensors[top_instance].remove(equivalent_tensor)
-        del self.top_instance_available_since_timestep[top_instance][tensor.equality_hash()]
 
-        self.top_instance_available[top_instance] += tensor_size
+        self.remove_tensor(equivalent_tensor, top_instance)
+        # self.top_instance_stored_tensors[top_instance].remove(equivalent_tensor)
+        # self.top_instance_stored_tensors_hash[top_instance].remove(tensor.equality_hash)
+        # del self.top_instance_available_since_timestep[top_instance][tensor.equality_hash]
+        # self.top_instance_available[top_instance] += tensor.size
 
         # Use numpy searchsorted to find the where the current_timestep should be inserted
         all_timesteps = self.top_instance_stored_cumsum[top_instance][:, 0]
@@ -322,12 +315,14 @@ class MemoryManager:
         )
 
     def get_tensors_stored_at_timestep(self, top_instance: MemoryInstance, timestep: int):
-        stored_tensors = [
+        all_stored_tensors = self.top_instance_stored_tensors[top_instance]
+        all_stored_tensors_timestep = self.top_instance_stored_since_timestep[top_instance]
+        stored_at_timestep = [
             stored_tensor
-            for stored_tensor in self.top_instance_stored_tensors[top_instance]
-            if self.top_instance_stored_since_timestep[top_instance][stored_tensor.equality_hash()] <= timestep
+            for stored_tensor in all_stored_tensors
+            if all_stored_tensors_timestep[stored_tensor.equality_hash] <= timestep
         ]
-        return stored_tensors
+        return stored_at_timestep
 
     def get_stored_cumsum_at_timestep(self, top_instance: MemoryInstance, timestep: int):
         """
@@ -338,3 +333,27 @@ class MemoryManager:
         usages = stored_cumsum[:, 1]
         idx = max(0, np.searchsorted(timesteps, timestep, "right") - 1)
         return usages[idx]
+
+    def _add_tensor(
+        self,
+        tensor: Tensor,
+        top_instance: MemoryInstance,
+        timestep_stored: int,
+        timestep_available: int,
+    ):
+        self.top_instance_stored_tensors[top_instance].append(tensor)
+        self.top_instance_stored_tensors_hash[top_instance].add(tensor.equality_hash)
+        self.top_instance_stored_since_timestep[top_instance][tensor.equality_hash] = timestep_stored
+        self.top_instance_available_since_timestep[top_instance][tensor.equality_hash] = timestep_available
+        self.top_instance_available[top_instance] -= tensor.size
+
+    def remove_tensor(
+        self,
+        tensor: Tensor,
+        top_instance: MemoryInstance,
+    ):
+        self.top_instance_stored_tensors[top_instance].remove(tensor)
+        self.top_instance_stored_tensors_hash[top_instance].remove(tensor.equality_hash)
+        del self.top_instance_available_since_timestep[top_instance][tensor.equality_hash]
+
+        self.top_instance_available[top_instance] += tensor.size

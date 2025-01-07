@@ -65,6 +65,7 @@ class Schedule:
         self.offchip_core = accelerator.get_offchip_core()
         self.offchip_top_instances = self.accelerator.get_top_instances_of_core(self.offchip_core)
         self.nb_graph_nodes = G.number_of_nodes()
+        self.scheduling_order_map = {item: idx for idx, item in enumerate(self.scheduling_order)}  # For index lookup
 
         # Initialize bookkeeping
         self.nb_scheduled_nodes = 0
@@ -234,8 +235,7 @@ class Schedule:
         if not self.candidates:
             raise ValueError("There are no candidates to schedule.")
         preds_ends, cn_candidates = zip(*self.candidates)
-        cn_candidates: list[ComputationNode]
-        idxs = [self.scheduling_order.index((n.id, n.sub_id)) for n in cn_candidates]
+        idxs = [self.scheduling_order_map[(n.id, n.sub_id)] for n in cn_candidates]
         best_candidate_idx = idxs.index(min(idxs))
         best_candidate = cn_candidates[best_candidate_idx]
         preds_end = preds_ends[best_candidate_idx]
@@ -257,7 +257,7 @@ class Schedule:
             i for i in range(len(self.scheduling_order)) if self.scheduling_order[i][0] in predecessor_ids
         ]
 
-        best_candidate_idx = self.scheduling_order.index((best_candidate.id, best_candidate.sub_id))
+        best_candidate_idx = self.scheduling_order_map[(best_candidate.id, best_candidate.sub_id)]
         if self.scheduling_order[best_candidate_idx - 1][0] != best_candidate.id and all(
             (i < best_candidate_idx for i in predecessor_idxs)
         ):

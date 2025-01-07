@@ -1,6 +1,6 @@
 import logging
-from math import ceil, prod
 import os
+from math import ceil, prod
 from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
@@ -11,7 +11,6 @@ from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
 from zigzag.stages.main import MainStage
 from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
 from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
-from zigzag.stages.results.reduce_stages import MinimalEDPStage
 from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator

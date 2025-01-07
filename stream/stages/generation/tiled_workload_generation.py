@@ -383,7 +383,7 @@ class TiledWorkloadGenerationStage(Stage):
             for op, tensor in tile.operand_tensors.items():
                 replaced = False
                 for previous_tensor in tensors:
-                    if tensor.equality_hash() == previous_tensor.equality_hash():
+                    if tensor.equality_hash == previous_tensor.equality_hash:
                         tile.operand_tensors[op] = previous_tensor
                         replaced = True
                 if not replaced:
