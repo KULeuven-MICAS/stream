@@ -5,6 +5,7 @@ from zigzag.parser.workload_factory import LayerNodeFactory
 from stream.onnx_utils import get_onnx_input_shapes, get_onnx_output_shapes
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
 from stream.workload.computation.computation_node import ComputationNode
+from stream.workload.mapping import InterCoreMappingAttributes
 
 
 class AsymmetricSimdParser(OnnxComputeOperatorParser):
@@ -12,9 +13,16 @@ class AsymmetricSimdParser(OnnxComputeOperatorParser):
     e.g. Add, Mul, etc.
     """
 
-    def get_layer_node_user_format(self, input_shape: list[int], output_shape: list[int]):
+    def get_layer_node_user_format(
+        self,
+        input_shape: list[int],
+        output_shape: list[int],
+        mapping: InterCoreMappingAttributes | None = None,
+    ):
         """
         Generate the necessary dictionary items required for the LayerNode creation.
+        # TODO use layer dimension names from mapping
+
         Args:
             input_shape: the non-batched input shape
             output_shape: the batched output shape, equal to the batched input shape

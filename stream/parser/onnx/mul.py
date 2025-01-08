@@ -2,6 +2,7 @@ from typing import Any
 
 from stream.onnx_utils import get_onnx_input_shapes, get_onnx_output_shapes
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
+from stream.workload.mapping import InterCoreMappingAttributes
 
 
 class MulParser(OnnxComputeOperatorParser):
@@ -64,9 +65,15 @@ class MulParser(OnnxComputeOperatorParser):
             case _:
                 raise ValueError("No more than 2 layer predecessors expected")
 
-    def get_layer_node_user_format(self, input_shape: list[int], output_shape: list[int]):
+    def get_layer_node_user_format(
+        self,
+        input_shape: list[int],
+        output_shape: list[int],
+        mapping: InterCoreMappingAttributes | None = None,
+    ):
         """
         Generate the necessary dictionary items required for the LayerNode creation.
+        # TODO use layer dimension names from mapping
         """
         common_shape, broadcast_shape = self.get_common_and_broadcast_shape()
 

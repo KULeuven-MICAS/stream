@@ -71,6 +71,7 @@ class ComputationNode(LayerNode, Node):
         self.core_allocation_is_fixed = mapping_attr.core_allocation_is_fixed
         self.intra_core_tiling = mapping_attr.intra_core_tiling
         self.inter_core_tiling = mapping_attr.inter_core_tiling
+        self.user_given_layer_dimension_names = mapping_attr.layer_dimension_names
 
         self.sub_id = sub_id
         self.group = group_id
@@ -277,6 +278,7 @@ class ComputationNode(LayerNode, Node):
             core_allocation_is_fixed=self.core_allocation_is_fixed,
             intra_core_tiling=self.intra_core_tiling,
             inter_core_tiling=self.inter_core_tiling,
+            layer_dimension_names=self.user_given_layer_dimension_names,
         )
         return deepcopy(mapping_attr)
 

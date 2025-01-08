@@ -63,7 +63,9 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
         yield self.generate_node()
 
     @abstractmethod
-    def get_layer_node_user_format(self, input_shape: list[int], output_shape: list[int]) -> dict[str, Any]: ...
+    def get_layer_node_user_format(
+        self, input_shape: list[int], output_shape: list[int], mapping: InterCoreMappingAttributes | None
+    ) -> dict[str, Any]: ...
 
     def get_operand_precision_user_format(self) -> dict[str, int]:
         act_precision: int = self.get_activation_precision()
@@ -132,10 +134,10 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
         input_shape, output_shape = get_node_input_output_dimension_shapes(self.node, self.onnx_model)
 
         # From the ONNX node
-        node_data = self.get_layer_node_user_format(input_shape, output_shape)
+        mapping = self.get_mapping_this_node()
+        node_data = self.get_layer_node_user_format(input_shape, output_shape, mapping)
         node_factory = LayerNodeFactory(node_data, mapping_data=[])
         node_attrs = node_factory.create_node_attr()
-        mapping = self.get_mapping_this_node()
         input_names = list(self.node.input)
 
         return ComputationNode(

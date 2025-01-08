@@ -27,6 +27,11 @@ class MappingValidator:
             "schema": {"type": "string", "regex": TILING_REGEX},
             "default": [],
         },
+        "layer_dimension_names": {
+            "type": "list",
+            "schema": {"type": "string", "nullable": True},
+            "default": [],
+        },
         "intra_core_tiling": {
             "type": "list",
             "schema": {"type": "string", "regex": TILING_REGEX},

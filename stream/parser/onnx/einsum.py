@@ -4,6 +4,7 @@ from typing import Any
 
 from stream.onnx_utils import get_onnx_input_shapes, get_onnx_output_shapes
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
+from stream.workload.mapping import InterCoreMappingAttributes
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +74,7 @@ class EinsumParser(OnnxComputeOperatorParser):
         self,
         input_shape: list[int],  # Argument required because of a caller function in superclass
         output_shape: list[int],  # TODO put shape logic in this method for all `OnnxComputeOperatorParser` subclasses
+        mapping: InterCoreMappingAttributes | None = None,
     ) -> dict[str, Any]:
         """Generate layer data in user input format for Einsum."""
         predecessors = self.get_node_predecessors()

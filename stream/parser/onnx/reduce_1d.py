@@ -1,6 +1,7 @@
 from typing import Any
 
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
+from stream.workload.mapping import InterCoreMappingAttributes
 
 
 class Reduce1DParser(OnnxComputeOperatorParser):
@@ -37,9 +38,15 @@ class Reduce1DParser(OnnxComputeOperatorParser):
             raise NotImplementedError("Reduce node with reduction axis other than -1 not implemented yet.")
         reduction_dim = len(input_shape) - 1  # Last dimension
 
-    def get_layer_node_user_format(self, input_shape: list[int], output_shape: list[int]):
+    def get_layer_node_user_format(
+        self,
+        input_shape: list[int],
+        output_shape: list[int],
+        mapping: InterCoreMappingAttributes | None = None,
+    ):
         """
         Generate the necessary dictionary items required for the LayerNode creation.
+        # TODO use layer dimension names from mapping
         """
         if len(self.get_node_predecessors()) != 1:
             raise NotImplementedError
