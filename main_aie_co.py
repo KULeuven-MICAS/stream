@@ -2,11 +2,11 @@ import logging as _logging
 import re
 
 from stream.api import optimize_allocation_co
+from stream.utils import CostModelEvaluationLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import (
     visualize_timeline_plotly,
 )
-from stream.utils import CostModelEvaluationLUT
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"

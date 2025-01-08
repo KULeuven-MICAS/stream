@@ -189,7 +189,7 @@ def optimize_allocation_co(  # noqa: PLR0913
             cost_lut_post_co_path=cost_lut_post_co_path,
             temporal_mapping_type=temporal_mapping_type,  # required by ZigZagCoreMappingEstimationStage
             operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
-            latency_attr="ideal_temporal_cycles"
+            latency_attr="ideal_temporal_cycles",
         )
         # Launch the MainStage
         answers = mainstage.run()
