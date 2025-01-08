@@ -1,4 +1,5 @@
 name: shim_dma
+type: memory
 
 memories:
   dram:
