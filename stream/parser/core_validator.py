@@ -10,6 +10,7 @@ class CoreValidator(ZigZagAcceleratorValidator):
 
     # Add custom schema rules for Stream accelerator cores here
     SCHEMA.update({"type": {"type": "string", "required": True, "allowed": ["memory", "compute"]}})
+    SCHEMA.update({"utilization": {"type": "float", "required": False}})
 
     def __init__(self, data: Any):
         """Initialize Validator object, assign schema and store normalize user-given data"""

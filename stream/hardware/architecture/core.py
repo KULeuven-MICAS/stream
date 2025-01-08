@@ -9,6 +9,7 @@ class Core(ZigZagCore):
         super().__init__(**args)
         self.type = "compute"  # default type for a core
         self.utilization = 100
+        self.type = "compute"
 
     def __eq__(self, other: object) -> bool:
         return (
