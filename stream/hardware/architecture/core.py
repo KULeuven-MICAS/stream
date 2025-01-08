@@ -1,4 +1,5 @@
 from typing import Any
+
 from zigzag.hardware.architecture.accelerator import Accelerator as ZigZagCore
 
 
