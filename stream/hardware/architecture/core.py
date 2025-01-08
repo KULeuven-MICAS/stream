@@ -7,6 +7,7 @@ class Core(ZigZagCore):
     def __init__(self, args: Any):
         super().__init__(**args)
         self.utilization = 100
+        self.type = "compute"
 
     def __eq__(self, other: object) -> bool:
         return (
