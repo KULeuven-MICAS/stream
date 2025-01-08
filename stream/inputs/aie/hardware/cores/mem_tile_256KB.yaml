@@ -1,4 +1,5 @@
 name: mem_tile
+type: memory
 
 memories:
   dram:
