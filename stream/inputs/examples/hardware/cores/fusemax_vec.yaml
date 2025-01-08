@@ -1,0 +1,93 @@
+name: vec
+
+memories:
+  rf_I:
+    size: 16
+    r_bw: 16
+    w_bw: 16
+    r_cost: 0.4
+    w_cost: 0.4
+    area: 0
+    r_port: 1
+    w_port: 1
+    rw_port: 0
+    latency: 1
+    min_r_granularity: 8
+    min_w_granularity: 8
+    operands: [I1]
+    ports:
+      - fh: w_port_1
+        tl: r_port_1
+    served_dimensions: []
+
+  rf_W:
+    size: 16
+    r_bw: 16
+    w_bw: 16
+    r_cost: 0.4
+    w_cost: 0.4
+    area: 0
+    r_port: 1
+    w_port: 1
+    rw_port: 0
+    latency: 1
+    min_r_granularity: 4
+    min_w_granularity: 4
+    operands: [I2]
+    ports:
+      - fh: w_port_1
+        tl: r_port_1
+    served_dimensions: []
+
+  rf_O:
+    size: 16
+    r_bw: 16
+    w_bw: 16
+    r_cost: 0.4
+    w_cost: 0.4
+    area: 0
+    r_port: 2
+    w_port: 2
+    rw_port: 0
+    latency: 1
+    min_r_granularity: 16
+    min_w_granularity: 16
+    operands: [O]
+    ports:
+      - fh: w_port_1
+        tl: r_port_1
+        fl: w_port_2
+        th: r_port_2
+    served_dimensions: []
+
+  sram:
+    size: 16_777_216
+    r_bw: 8192
+    w_bw: 8192
+    r_cost: 8192
+    w_cost: 8192
+    area: 0
+    r_port: 1
+    w_port: 1
+    rw_port: 0
+    latency: 1
+    min_r_granularity: 256
+    min_w_granularity: 256
+    operands: [I1, I2, O]
+    ports:
+      - fh: w_port_1
+        tl: r_port_1
+      - fh: w_port_1
+        tl: r_port_1
+      - fh: w_port_1
+        tl: r_port_1
+        fl: w_port_1
+        th: r_port_1
+    served_dimensions: [D1, D2]
+
+operational_array:
+  input_precision: [8, 8]
+  unit_energy: 0.1 # pJ
+  unit_area: 0.01 # unit
+  dimensions: [D1, D2]
+  sizes: [256, 1]

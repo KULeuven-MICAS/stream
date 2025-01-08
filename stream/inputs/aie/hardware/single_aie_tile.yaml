@@ -1,0 +1,8 @@
+name: single_aie_tile
+cores:
+  0: aie_tile.yaml
+offchip_core: shim_dma.yaml
+core_connectivity: []
+bandwidth: 512
+unit_energy_cost: 0
+

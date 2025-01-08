@@ -1,1 +1,0 @@
-This folder contains algorithms to optimize the layer-core allocation in a multi-core system.

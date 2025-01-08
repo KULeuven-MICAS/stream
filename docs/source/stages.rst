@@ -24,10 +24,10 @@ Stages within Stream are used to modularly and easily adapt the functionality of
         accelerator=accelerator,  # required by AcceleratorParserStage
         workload_path=workload_path,  # required by ModelParserStage
         mapping_path=mapping_path,  # required by ModelParserStage
-        loma_lpf_limit=6,  # required by LomaStage
+        loma_lpf_limit=6,  # required by LomaEngine
         nb_ga_individuals=32,  # number of individuals in each genetic algorithm generation
         nb_ga_generations=100,  # number of genetic algorithm generations
-        node_hw_performances_path=node_hw_performances_path,  # saved node_hw_performances to skip re-computation
+        cost_lut_path=cost_lut_path,  # saved CostModelEvaluationLUT to skip re-computation
         plot_hof=True,  # Save schedule and memory usage plot of each individual in the Genetic Algorithm hall of fame
         plot_file_name=plot_file_name,
         plot_full_schedule=plot_full_schedule,
@@ -74,7 +74,7 @@ Multiple modes are applicable through the `cn_define_mode` parameter in conjunct
 `InterCoreMappingStage <https://github.com/KULeuven-MICAS/stream/blob/master/stream/classes/stages/InterCoreMappingStage.py#L17>`_
 ----------------------------------------------------------------------------------------------------------------------------------
 
-Stage that finds the best inter-core mapping using a genetic algorithm. From the IntraCoreMappingStage we receive the `node_hw_performances`, containing for each node and its valid core allocations the best CME. We then initialize the genetic algorithm.
+Stage that finds the best inter-core mapping using a genetic algorithm. From the IntraCoreMappingStage we receive the `CostModelEvaluationLUT`, containing for each node and its valid core allocations the best CME. We then initialize the genetic algorithm.
 
 `IntraCoreMappingStage <https://github.com/KULeuven-MICAS/stream/blob/master/stream/classes/stages/IntraCoreMappingStage.py#L22/>`_
 -----------------------------------------------------------------------------------------------------------------------------------

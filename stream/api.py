@@ -1,103 +1,174 @@
-from zigzag.stages import *
-from stream.classes.stages import *
-import re
+import logging as _logging
+import os
+from typing import Literal
+
+import gurobipy as gp
+from zigzag.utils import pickle_load, pickle_save
+
+from stream.cost_model.cost_model import StreamCostModelEvaluation
+from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
+from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
+from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
+from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
+from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
+from stream.stages.generation.tiled_workload_generation import (
+    TiledWorkloadGenerationStage,
+)
+from stream.stages.generation.tiling_generation import TilingGenerationStage
+from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
+from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
+from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
+from stream.stages.stage import MainStage
+
+_logging_level = _logging.INFO
+_logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
+_logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
-def get_hardware_performance_stream(
-    hardware, workload, mapping, CN_define_mode, hint_loops, node_hw_cost_pkl_name
+def _sanity_check_inputs(
+    hardware: str, workload: str, mapping: str, mode: Literal["lbl"] | Literal["fused"], output_path: str
 ):
-    # Initialize the logger
-    import logging as _logging
-
-    _logging_level = _logging.INFO
-    # _logging_format = '%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s'
-    _logging_format = (
-        "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-    )
-    _logging.basicConfig(level=_logging_level, format=_logging_format)
-
-    mainstage = MainStage(
-        [  # Initializes the MainStage as entry point
-            AcceleratorParserStage,  # Parses the accelerator
-            # StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-            UserDefinedModelParserStage,  # Parses the user-defined Model into the workload
-            GenerateCNWorkloadHybridStage,
-            IntraCoreMappingStage,
-            InterCoreMappingStage,
-        ],
-        accelerator=hardware,  # required by AcceleratorParserStage
-        workload_path=workload,  # required by ModelParserStage
-        mapping_path=mapping,  # required by ModelParserStage
-        loma_lpf_limit=6,  # required by LomaStage
-        nb_ga_individuals=128,  # number of individuals in each genetic algorithm generation
-        nb_ga_generations=100,  # number of genetic algorithm generations
-        node_hw_performances_path=f"outputs/{node_hw_cost_pkl_name}.pickle",  # saved node_hw_performances to skip re-computation
-        plot_hof=True,  # Save schedule and memory usage plot of each individual in the Genetic Algorithm hall of fame
-        plot_file_name=True,
-        plot_full_schedule=True,
-        plot_data_transfer=True,
-        cn_define_mode=CN_define_mode,
-        hint_loops=hint_loops,
-        scheduler_candidate_selection="memory",
-    )
-
-    # Launch the MainStage
-    answers = mainstage.run()
-    return answers
+    assert os.path.exists(hardware), f"Hardware file {hardware} does not exist"
+    assert os.path.exists(workload), f"Workload file {workload} does not exist"
+    assert os.path.exists(mapping), f"Mapping file {mapping} does not exist"
+    assert mode in ["lbl", "fused"], "Mode must be either 'lbl' or 'fused'"
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
 
 
-if __name__ == "__main__":
-    # accelerator = 'inputs.examples.hardware.TPU_like_quad_core'
-    # workload = 'inputs.examples.workload.resnet18_few_layers'
-    # mapping = 'inputs.examples.mapping.tpu_like_quad_core'
+def _sanity_check_gurobi_license():
+    try:
+        # Try to create a simple optimization model
+        model = gp.Model()
+        model.setParam("OutputFlag", 0)
+        # Check if the model was successfully created (license check)
+        model.optimize()
+        # If model.optimize() runs without a license issue, return
+        return
+    except gp.GurobiError as e:
+        # Catch any Gurobi errors, especially licensing errors
+        if e.errno == gp.GRB.Error.NO_LICENSE:
+            error_message = "No valid Gurobi license found. Get an academic WLS license at https://www.gurobi.com/academia/academic-program-and-licenses/"
+        else:
+            error_message = f"An unexpected Gurobi error occurred: {e.message}"
+        raise ValueError(error_message)
 
-    CN_define_mode = 1
-    hint_loops = [("OY", "all")]
 
-    accelerator = "inputs.testing.hardware.dual_testing_core_offchip"
-    workload = "inputs.testing.workload.testing_workload_for_2_cores"
-    mapping = "inputs.testing.mapping.testing_mapping"
+def optimize_allocation_ga(
+    hardware: str,
+    workload: str,
+    mapping: str,
+    mode: Literal["lbl"] | Literal["fused"],
+    layer_stacks: list[tuple[int, ...]],
+    nb_ga_generations: int,
+    nb_ga_individuals: int,
+    experiment_id: str,
+    output_path: str,
+    skip_if_exists: bool = False,
+) -> StreamCostModelEvaluation:
+    _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
 
-    # hint_loops = []
+    # Create experiment_id path
+    os.makedirs(f"{output_path}/{experiment_id}", exist_ok=True)
 
-    hw_name = accelerator.split(".")[-1]
-    wl_name = re.split(r"/|\.", workload)[-1]
-    experiment_id = (
-        f"{hw_name}-{wl_name}-CNmode_{CN_define_mode}-hintloop_{str(hint_loops)}"
-    )
-    node_hw_cost_pkl_name = f"saved_CN_HW_cost-{experiment_id}"
+    # Output paths
+    cost_lut_path = f"{output_path}/{experiment_id}/cost_lut.pickle"
+    scme_path = f"{output_path}/{experiment_id}/scme.pickle"
 
-    scme, _ = get_hardware_performance_stream(
-        accelerator,
-        workload,
-        mapping,
-        CN_define_mode,
-        hint_loops,
-        node_hw_cost_pkl_name,
-    )
+    # Get logger
+    logger = _logging.getLogger(__name__)
 
-    from stream.visualization.schedule import plot_timeline_brokenaxes
-    from stream.visualization.memory_usage import plot_memory_usage
-    from stream.visualization.plot_scme import (
-        bar_plot_stream_cost_model_evaluations_breakdown,
-    )
+    # Load SCME if it exists and skip_if_exists is True
+    if os.path.exists(scme_path) and skip_if_exists:
+        scme = pickle_load(scme_path)
+        logger.info(f"Loaded SCME from {scme_path}")
+    else:
+        mainstage = MainStage(
+            [  # Initializes the MainStage as entry point
+                AcceleratorParserStage,  # Parses the accelerator
+                StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+                LayerStacksGenerationStage,
+                TilingGenerationStage,
+                TiledWorkloadGenerationStage,
+                ZigZagCoreMappingEstimationStage,
+                SetFixedAllocationPerformanceStage,
+                SchedulingOrderGenerationStage,
+                GeneticAlgorithmAllocationStage,
+            ],
+            accelerator=hardware,  # required by AcceleratorParserStage
+            workload_path=workload,  # required by ModelParserStage
+            mapping_path=mapping,  # required by ModelParserStage
+            loma_lpf_limit=6,  # required by LomaEngine
+            nb_ga_generations=nb_ga_generations,  # number of genetic algorithm (ga) generations
+            nb_ga_individuals=nb_ga_individuals,  # number of individuals in each ga generation
+            mode=mode,
+            layer_stacks=layer_stacks,
+            cost_lut_path=cost_lut_path,
+            operands_to_prefetch=[],  # required by GeneticAlgorithmAllocationStage
+        )
+        # Launch the MainStage
+        answers = mainstage.run()
+        scme = answers[0][0]
+        pickle_save(scme, scme_path)
+    return scme
 
-    plot_full_schedule = True
-    draw_dependencies = True
-    plot_data_transfer = True
-    section_start_percent = (0,)
-    percent_shown = (100,)
-    timeline_fig_path = "outputs/schedule_plot.png"
-    memory_fig_path = "outputs/memory_plot.png"
-    energy_fig_path = "outputs/energy_plot.png"
-    plot_timeline_brokenaxes(
-        scme[0].workload,
-        scme[0].accelerator,
-        draw_dependencies,
-        section_start_percent,
-        percent_shown,
-        plot_data_transfer,
-        fig_path=timeline_fig_path,
-    )
-    plot_memory_usage(scme[0].accelerator.memory_manager, fig_path=memory_fig_path)
-    # bar_plot_stream_cost_model_evaluations_breakdown([scme], fig_path=energy_fig_path)
+
+def optimize_allocation_co(
+    hardware: str,
+    workload: str,
+    mapping: str,
+    mode: Literal["lbl"] | Literal["fused"],
+    layer_stacks: list[tuple[int, ...]],
+    experiment_id: str,
+    output_path: str,
+    skip_if_exists: bool = False,
+) -> StreamCostModelEvaluation:
+    _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
+    _sanity_check_gurobi_license()
+
+    # Create experiment_id path
+    os.makedirs(f"{output_path}/{experiment_id}", exist_ok=True)
+
+    # Output paths
+    cost_lut_path = f"{output_path}/{experiment_id}/cost_lut.pickle"
+    allocations_path = f"{output_path}/{experiment_id}/waco/"
+    cost_lut_post_co_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
+    scme_path = f"{output_path}/{experiment_id}/scme.pickle"
+
+    # Get logger
+    logger = _logging.getLogger(__name__)
+
+    # Load SCME if it exists and skip_if_exists is True
+    if os.path.exists(scme_path) and skip_if_exists:
+        scme = pickle_load(scme_path)
+        logger.info(f"Loaded SCME from {scme_path}")
+    else:
+        mainstage = MainStage(
+            [  # Initializes the MainStage as entry point
+                AcceleratorParserStage,  # Parses the accelerator
+                StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+                LayerStacksGenerationStage,
+                TilingGenerationStage,
+                TiledWorkloadGenerationStage,
+                ZigZagCoreMappingEstimationStage,
+                SetFixedAllocationPerformanceStage,
+                SchedulingOrderGenerationStage,
+                ConstraintOptimizationAllocationStage,
+            ],
+            accelerator=hardware,  # required by AcceleratorParserStage
+            workload_path=workload,  # required by ModelParserStage
+            mapping_path=mapping,  # required by ModelParserStage
+            loma_lpf_limit=6,  # required by LomaEngine
+            mode=mode,
+            layer_stacks=layer_stacks,
+            cost_lut_path=cost_lut_path,
+            allocations_path=allocations_path,
+            cost_lut_post_co_path=cost_lut_post_co_path,
+            operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
+            latency_attr="ideal_temporal_cycles",
+        )
+        # Launch the MainStage
+        answers = mainstage.run()
+        scme = answers[0][0]
+        pickle_save(scme, scme_path)
+    return scme

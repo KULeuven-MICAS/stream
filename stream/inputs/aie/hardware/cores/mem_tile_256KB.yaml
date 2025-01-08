@@ -1,0 +1,34 @@
+name: mem_tile
+type: memory
+
+memories:
+  dram:
+    size: 2097152  # 256 KB
+    r_bw: 768
+    w_bw: 768
+    r_cost: 4
+    w_cost: 4
+    area: 0
+    r_port: 6
+    w_port: 6
+    rw_port: 0
+    latency: 1
+    min_r_granularity: 128
+    min_w_granularity: 128
+    operands: [I1, I2, O]
+    ports:
+      - fh: rw_port_1
+        tl: rw_port_1
+      - fh: rw_port_1
+        tl: rw_port_1
+      - fh: rw_port_1
+        tl: rw_port_1
+        fl: rw_port_1
+        th: rw_port_1
+    served_dimensions: [D1, D2]
+
+operational_array:
+  unit_energy: 0
+  unit_area: 0
+  dimensions: [D1, D2]
+  sizes: [0, 0]

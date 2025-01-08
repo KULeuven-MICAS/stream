@@ -1,0 +1,15 @@
+- name: default
+  core_allocation: [0]
+  intra_core_tiling:
+    - OY, 32
+  inter_core_tiling:
+    - K, *
+
+- name: Gemm
+  core_allocation: [0]
+  intra_core_tiling:
+    - D, 8
+  inter_core_tiling:
+    - K, *
+
+    
