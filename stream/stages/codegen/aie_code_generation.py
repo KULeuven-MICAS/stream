@@ -4,8 +4,8 @@ from xdsl.context import MLContext
 from xdsl.dialects.builtin import IntegerType, MemRefType, ModuleOp
 from xdsl.xdsl_opt_main import xDSLOptMain
 
-from stream.compiler.dialects.zigzag import ComputationNodeOp, EmptySSAValue, TransferOp, ZigZag
-from stream.compiler.transforms.convert_zigzag_to_aie import ConvertZigZagToAIEPass
+from stream.compiler.dialects.stream import ComputationNodeOp, EmptySSAValue, TransferOp, Stream
+from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
 from stream.cost_model.communication_manager import CommunicationLinkEvent
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.stage import Stage, StageCallable
@@ -24,7 +24,7 @@ class AIECodeGenerationStage(Stage):
         self.context: MLContext = xDSLOptMain().ctx.clone()
 
         # add custom dialects and passes
-        self.context.load_dialect(ZigZag)
+        self.context.load_dialect(Stream)
 
     def run(self):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **self.kwargs)
@@ -102,7 +102,7 @@ class AIECodeGenerationStage(Stage):
         all_ops = transfer_ops + node_ops
         module = ModuleOp(list(all_ops))
 
-        ConvertZigZagToAIEPass().apply(self.context, module)
+        ConvertStreamToAIEPass().apply(self.context, module)
 
 
     def is_leaf(self) -> bool:
