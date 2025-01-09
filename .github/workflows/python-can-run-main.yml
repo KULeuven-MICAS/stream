@@ -26,3 +26,6 @@ jobs:
       - name: Run without errors
         run: |
           python main_aie_ga.py
+      - name: Run codegeneration main without errors
+        run: |
+          python main_aie_codegen.py

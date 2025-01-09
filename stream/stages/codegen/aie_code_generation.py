@@ -2,9 +2,10 @@ from typing import Any, cast
 
 from xdsl.context import MLContext
 from xdsl.dialects.builtin import IntegerType, MemRefType, ModuleOp
+from xdsl.printer import Printer
 from xdsl.xdsl_opt_main import xDSLOptMain
 
-from stream.compiler.dialects.stream import ComputationNodeOp, EmptySSAValue, TransferOp, Stream
+from stream.compiler.dialects.stream import ComputationNodeOp, EmptySSAValue, Stream, TransferOp
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
 from stream.cost_model.communication_manager import CommunicationLinkEvent
 from stream.cost_model.cost_model import StreamCostModelEvaluation
@@ -26,11 +27,14 @@ class AIECodeGenerationStage(Stage):
         # add custom dialects and passes
         self.context.load_dialect(Stream)
 
+        self.output_path: str = kwargs["codegen_path"]
+
     def run(self):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **self.kwargs)
 
         for cme, extra_info in sub_stage.run():
-            self.codegen_main(cme)
+            if cme:
+                self.codegen_main(cme)
             yield cme, extra_info
 
     def codegen_main(self, cme: StreamCostModelEvaluation):
@@ -63,6 +67,9 @@ class AIECodeGenerationStage(Stage):
 
             nodes[node] = op
 
+            # for now: consider only the first node:
+            break
+
         # gather all transfers
         transfer_list = []
 
@@ -77,9 +84,14 @@ class AIECodeGenerationStage(Stage):
 
         for transfer, link in transfer_list:
 
-            source = str(link.sender)
-            dest = str(link.receiver)
+            # TODO: why is this backwards?
+            dest = str(link.sender)
+            source = str(link.receiver)
             tensor = transfer.tensors[0]
+
+            # only consider the one with included node
+            if tensor.origin not in nodes:
+                continue
 
             size = cast(int, tensor.origin.operand_size_elem[tensor.layer_operand])
             precision = tensor.origin.operand_precision[tensor.layer_operand]
@@ -102,7 +114,13 @@ class AIECodeGenerationStage(Stage):
         all_ops = transfer_ops + node_ops
         module = ModuleOp(list(all_ops))
 
+        # Convert to AIE
         ConvertStreamToAIEPass().apply(self.context, module)
+
+        # print output to codegen path
+        file = open(self.output_path, "w")
+        printer = Printer(file)
+        printer.print(module)
 
     def is_leaf(self) -> bool:
         return False

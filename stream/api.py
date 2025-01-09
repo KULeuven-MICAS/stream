@@ -8,6 +8,7 @@ from zigzag.utils import pickle_load, pickle_save
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
+from stream.stages.codegen.aie_code_generation import AIECodeGenerationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
 from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
 from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
@@ -18,7 +19,7 @@ from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
-from stream.stages.stage import MainStage
+from stream.stages.stage import MainStage, StageCallable
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
@@ -122,6 +123,7 @@ def optimize_allocation_co(
     experiment_id: str,
     output_path: str,
     skip_if_exists: bool = False,
+    enable_codegen: bool = False,
 ) -> StreamCostModelEvaluation:
     _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
     _sanity_check_gurobi_license()
@@ -134,6 +136,7 @@ def optimize_allocation_co(
     allocations_path = f"{output_path}/{experiment_id}/waco/"
     cost_lut_post_co_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
     scme_path = f"{output_path}/{experiment_id}/scme.pickle"
+    codegen_path = f"{output_path}/{experiment_id}/output.mlir"
 
     # Get logger
     logger = _logging.getLogger(__name__)
@@ -143,18 +146,24 @@ def optimize_allocation_co(
         scme = pickle_load(scme_path)
         logger.info(f"Loaded SCME from {scme_path}")
     else:
+        stages: list[StageCallable] = [  # Initializes the MainStage as entry point
+            AcceleratorParserStage,  # Parses the accelerator
+            StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+            LayerStacksGenerationStage,
+            TilingGenerationStage,
+            TiledWorkloadGenerationStage,
+            ZigZagCoreMappingEstimationStage,
+            SetFixedAllocationPerformanceStage,
+            SchedulingOrderGenerationStage,
+            ConstraintOptimizationAllocationStage,
+        ]
+
+        # optionally add code generation stage
+        if enable_codegen:
+            stages = [AIECodeGenerationStage] + stages
+
         mainstage = MainStage(
-            [  # Initializes the MainStage as entry point
-                AcceleratorParserStage,  # Parses the accelerator
-                StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-                LayerStacksGenerationStage,
-                TilingGenerationStage,
-                TiledWorkloadGenerationStage,
-                ZigZagCoreMappingEstimationStage,
-                SetFixedAllocationPerformanceStage,
-                SchedulingOrderGenerationStage,
-                ConstraintOptimizationAllocationStage,
-            ],
+            stages,
             accelerator=hardware,  # required by AcceleratorParserStage
             workload_path=workload,  # required by ModelParserStage
             mapping_path=mapping,  # required by ModelParserStage
@@ -166,6 +175,7 @@ def optimize_allocation_co(
             cost_lut_post_co_path=cost_lut_post_co_path,
             operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
             latency_attr="ideal_temporal_cycles",
+            codegen_path=codegen_path,
         )
         # Launch the MainStage
         answers = mainstage.run()
