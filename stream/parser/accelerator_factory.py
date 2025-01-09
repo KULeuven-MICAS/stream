@@ -71,7 +71,7 @@ class AcceleratorFactory:
         # Mem sharing group id is the first core id of the sharing list
         return pair_this_core[0]
 
-    def have_non_identical_shared_memory(self, cores: list[Core]):
+    def have_non_identical_shared_memory(self, cores: dict[int, Core]):
         """Given the list of cores (where the index of the list equals the core id) and the user-specified shared
         memory connections, check wether all cores that are supposed to share memory have identical top level memories
         """

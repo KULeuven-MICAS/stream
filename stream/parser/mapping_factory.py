@@ -10,6 +10,7 @@ from zigzag.mapping.spatial_mapping import (
     SpatialMapping,
 )
 
+from stream.workload.kernel import AIEKernel
 from stream.workload.mapping import TILING_T, TILING_WILDCARD_T, InterCoreMappingAttributes
 
 
@@ -27,6 +28,7 @@ class MappingFactory:
             spatial_mapping = self.create_spatial_mapping(mapping_data)
             inter_core_tiling = self.create_inter_core_tiling(mapping_data)
             intra_core_tiling = self.create_intra_core_tiling(mapping_data)
+            kernel = self.create_kernel(mapping_data)
             mapping = InterCoreMappingAttributes(
                 op_type=op_type,
                 spatial_mapping=spatial_mapping,
@@ -34,9 +36,16 @@ class MappingFactory:
                 inter_core_tiling=inter_core_tiling,
                 intra_core_tiling=intra_core_tiling,
                 layer_dimension_names=layer_dimension_names,
+                kernel=kernel,
             )
             all_mappings[op_type] = mapping
         return all_mappings
+
+    def create_kernel(self, mapping_data: dict[str, Any]) -> AIEKernel:
+        return AIEKernel(
+            name=mapping_data["kernel"]["name"],
+            utilization=mapping_data["kernel"]["utilization"],
+        )
 
     def create_spatial_mapping(self, mapping_data: dict[str, Any]) -> SpatialMapping:
         if mapping_data["spatial_mapping"] is None:

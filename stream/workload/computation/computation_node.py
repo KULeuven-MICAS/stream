@@ -93,6 +93,7 @@ class ComputationNode(LayerNode, Node):
         self.intra_core_tiling = mapping_attr.intra_core_tiling
         self.inter_core_tiling = mapping_attr.inter_core_tiling
         self.user_given_layer_dimension_names = mapping_attr.layer_dimension_names
+        self.kernel = mapping_attr.kernel
 
         self.sub_id = sub_id
         self.group = group_id

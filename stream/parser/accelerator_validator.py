@@ -25,6 +25,7 @@ class AcceleratorValidator:
             "valuesrules": {"type": "string", "regex": FILENAME_REGEX},
         },
         "offchip_core": {"type": "string", "regex": FILENAME_REGEX, "required": False},
+        "offchip_core_id": {"type": "integer", "required": False},
         "unit_energy_cost": {"type": "float", "default": 0},
         "bandwidth": {"type": "float", "required": True},
         "core_connectivity": {"type": "list", "required": True, "schema": {"type": "string", "regex": CORE_IDS_REGEX}},
@@ -70,8 +71,6 @@ class AcceleratorValidator:
         core_ids = list(self.data["cores"].keys())
         if not all(isinstance(core_id, int) and core_id >= 0 for core_id in core_ids):
             self.invalidate("Invalid core id in `cores`: id is not a positive integer.")
-        if len(core_ids) != max(core_ids) + 1:
-            self.invalidate("Invalid core id in `cores`: not all core ids in range are in use.")
 
     def validate_all_cores(self) -> None:
         """For all given core file paths:
@@ -104,7 +103,7 @@ class AcceleratorValidator:
         core_validator = CoreValidator(core_data)
         validate_success = core_validator.validate()
         if not validate_success:
-            self.invalidate(f"User-given core  {core_file_name} cannot be validated.")
+            self.invalidate(f"User-given core {core_file_name} cannot be validated.")
 
         # Fill in default values
         normalized_core_data = core_validator.normalized_data
