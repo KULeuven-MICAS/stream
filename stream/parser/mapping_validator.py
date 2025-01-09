@@ -32,6 +32,14 @@ class MappingValidator:
             "schema": {"type": "string", "regex": TILING_REGEX},
             "default": [],
         },
+        "kernel": {
+            "type": "dict",
+            "schema": {
+                "name": {"type": "string", "required": True},
+                "utilization": {"type": "float", "required": True},
+            },
+            "required": True,
+        },
         "spatial_mapping": {
             "type": "dict",
             "schema": {

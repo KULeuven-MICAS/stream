@@ -85,6 +85,7 @@ class ComputationNode(LayerNode, Node):
         self.core_allocation_is_fixed = mapping_attr.core_allocation_is_fixed
         self.intra_core_tiling = mapping_attr.intra_core_tiling
         self.inter_core_tiling = mapping_attr.inter_core_tiling
+        self.kernel = mapping_attr.kernel
 
         self.sub_id = sub_id
         self.group = group_id
@@ -174,6 +175,9 @@ class ComputationNode(LayerNode, Node):
 
     def __str__(self):
         return f"ComputationNode{self.id}_{self.sub_id}"
+
+    def __repr__(self):
+        return str(self)
 
     def __hash__(self) -> int:
         """The hash operator of a node.
@@ -284,6 +288,7 @@ class ComputationNode(LayerNode, Node):
             core_allocation_is_fixed=self.core_allocation_is_fixed,
             intra_core_tiling=self.intra_core_tiling,
             inter_core_tiling=self.inter_core_tiling,
+            kernel=self.kernel,
         )
         return deepcopy(mapping_attr)
 
