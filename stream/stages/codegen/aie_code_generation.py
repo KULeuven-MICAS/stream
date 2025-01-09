@@ -63,8 +63,6 @@ class AIECodeGenerationStage(Stage):
 
             nodes[node] = op
 
-        breakpoint()
-
         # gather all transfers
         transfer_list = []
 
@@ -103,8 +101,6 @@ class AIECodeGenerationStage(Stage):
         node_ops = tuple(nodes.values())
         all_ops = transfer_ops + node_ops
         module = ModuleOp(list(all_ops))
-
-        breakpoint()
 
         ConvertZigZagToAIEPass().apply(self.context, module)
 
