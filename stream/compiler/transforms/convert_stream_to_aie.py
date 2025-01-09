@@ -1,7 +1,7 @@
 from xdsl.context import MLContext
-from xdsl.dialects.builtin import FunctionType, IntegerAttr, MemRefType, ModuleOp, StringAttr, i32
+from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, i32
 from xdsl.dialects.func import CallOp, FuncOp
-from xdsl.ir import Attribute, OpResult, Region
+from xdsl.ir import Region
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
     GreedyRewritePatternApplier,
@@ -16,10 +16,10 @@ from xdsl_aie.dialects.aie import (
     Block,
     CoreOp,
     DeviceOp,
-    ObjectFIFOReleaseOp,
     ObjectFifoAcquireOp,
     ObjectFifoOp,
     ObjectFifoPortEnum,
+    ObjectFIFOReleaseOp,
     SymbolTable,
     TileOp,
 )
