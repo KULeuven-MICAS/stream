@@ -104,6 +104,5 @@ class AIECodeGenerationStage(Stage):
 
         ConvertStreamToAIEPass().apply(self.context, module)
 
-
     def is_leaf(self) -> bool:
         return False

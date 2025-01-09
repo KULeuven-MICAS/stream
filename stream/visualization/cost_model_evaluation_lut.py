@@ -62,12 +62,12 @@ def visualize_cost_lut_pickle(pickle_filepath, scale_factors=None, fig_path=None
 
     if isinstance(pickle_filepath, str):
         with open(pickle_filepath, "rb") as handle:
-            node_hw_performances = pickle.load(handle)
+            cost_lut = pickle.load(handle)
     else:
-        node_hw_performances = pickle_filepath
+        cost_lut = pickle_filepath
 
     if not scale_factors:
-        scale_factors = {node: 1 for node in node_hw_performances}
+        scale_factors = {node: 1 for node in cost_lut.get_nodes()}
 
     if not fig_path:
         basename = os.path.basename(pickle_filepath).split(".")[0]
@@ -77,12 +77,12 @@ def visualize_cost_lut_pickle(pickle_filepath, scale_factors=None, fig_path=None
     cores = []
     min_latency_per_node = {}
     min_energy_per_node = {}
-    for node in node_hw_performances.get_nodes():
+    for node in cost_lut.get_nodes():
         node_labels.append(f"L{node.id}\nN{node.sub_id}\nx{scale_factors[node]}")
         min_latency_per_node[node] = float("inf")
         min_energy_per_node[node] = float("inf")
-        for core in node_hw_performances.get_cores(node):
-            cme = node_hw_performances.get_cme(node, core)
+        for core in cost_lut.get_cores(node):
+            cme = cost_lut.get_cme(node, core)
             if core not in cores:
                 cores.append(core)
             if cme.latency_total2 < min_latency_per_node[node]:
@@ -110,10 +110,10 @@ def visualize_cost_lut_pickle(pickle_filepath, scale_factors=None, fig_path=None
     for core, offset in zip(cores, offsets):
         core_latencies = []
         core_energies = []
-        for node in node_hw_performances.get_nodes():
-            node_cores = node_hw_performances.get_cores(node)
+        for node in cost_lut.get_nodes():
+            node_cores = cost_lut.get_cores(node)
             if core in node_cores:
-                cme = node_hw_performances.get_cme(node, core)
+                cme = cost_lut.get_cme(node, core)
                 core_latencies.append(scale_factors[node] * cme.latency_total2)
                 core_energies.append(scale_factors[node] * cme.energy_total)
             else:

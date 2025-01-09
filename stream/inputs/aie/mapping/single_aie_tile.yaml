@@ -1,15 +1,31 @@
 - name: default
-  core_allocation: [0]
+  core_allocation: [2]
   intra_core_tiling:
     - OY, 32
   inter_core_tiling:
     - K, *
+  kernel:
+    name: default_kernel
+    utilization: 44.33 
 
 - name: Gemm
-  core_allocation: [0]
+  core_allocation: [2]
   intra_core_tiling:
     - D, 8
   inter_core_tiling:
     - K, *
+  kernel:
+    name: gemm_kernel
+    utilization: 61.8 
+
+- name: Conv
+  core_allocation: [2]
+  intra_core_tiling:
+    - OY, 32
+  inter_core_tiling:
+    - K, 1
+  kernel:
+    name: conv_kernel
+    utilization: 44.33 
 
     

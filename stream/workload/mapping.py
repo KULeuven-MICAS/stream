@@ -12,6 +12,8 @@ from zigzag.workload.layer_attributes import (
 )
 from zigzag.workload.layer_node import MappingAttributes as IntraCoreMappingAttributes
 
+from stream.workload.kernel import AIEKernel
+
 TILING_T: TypeAlias = list[tuple[LayerDim, int | Literal["*", "all"]]]
 
 INTRA_CORE_MAPPING_DEFAULT = IntraCoreMappingAttributes(
@@ -36,3 +38,4 @@ class InterCoreMappingAttributes:
     core_allocation_is_fixed: bool
     intra_core_tiling: TILING_T
     inter_core_tiling: TILING_T
+    kernel: AIEKernel

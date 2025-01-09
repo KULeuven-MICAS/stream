@@ -12,11 +12,9 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 ############################################INPUTS############################################
-workload_path = "stream/inputs/aie/workload/test_gemm.onnx"
-# accelerator = "stream/inputs/aie/hardware/single_aie_tile.yaml"
-# mapping_path = "stream/inputs/aie/mapping/single_aie_tile.yaml"
-accelerator = "stream/inputs/aie/hardware/single_aie_col.yaml"
-mapping_path = "stream/inputs/aie/mapping/single_aie_col.yaml"
+workload_path = "stream/inputs/aie/workload/conv1x1_64_64_32_32.onnx"
+accelerator = "stream/inputs/aie/hardware/single_aie_tile.yaml"
+mapping_path = "stream/inputs/aie/mapping/single_aie_tile.yaml"
 mode = "lbl"
 layer_stacks = [(0,)]
 nb_ga_generations = 16

@@ -25,4 +25,4 @@ jobs:
           pip install -r requirements.txt
       - name: Run without errors
         run: |
-          python main_stream_ga.py
+          python main_aie_ga.py
