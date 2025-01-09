@@ -66,9 +66,9 @@ class SetFixedAllocationPerformanceStage(Stage):
                 assert equal_node is not None, f"{node} has fixed allocation but no equal node found."
                 core = self.accelerator.get_core(core_id)
                 cme = self.cost_lut.get_cme(equal_node, core)
-                latency = int(cme.ideal_temporal_cycle)
+                latency = int(cme.ideal_cycle)
                 # Scale latency based on utilization of core
-                latency = latency * 100 / core.utilization
+                latency = int(latency * 100 / node.kernel.utilization)
                 too_large_operands = get_too_large_operands(cme, self.accelerator, core_id=core_id)
                 onchip_energy, offchip_energy = self.get_energy_distribution(cme, too_large_operands)
 
