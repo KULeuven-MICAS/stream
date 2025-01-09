@@ -8,3 +8,4 @@ pandas
 cerberus
 pre-commit
 gurobipy
+xdsl-aie @ git+https://github.com/xdslproject/xdsl-aie.git@10d3ad4f62a82883e43f79a53938193d23bdc561
