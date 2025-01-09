@@ -111,8 +111,8 @@ class TestPatttern(RewritePattern):
 
         rewriter.replace_matched_op(func_call)
 
-class ConvertZigZagToAIEPass(ModulePass):
-    name = "convert-zigzag-to-aie"
+class ConvertStreamToAIEPass(ModulePass):
+    name = "convert-stream-to-aie"
 
     def apply(self, ctx: MLContext, op: ModuleOp) -> None:
 
@@ -125,8 +125,6 @@ class ConvertZigZagToAIEPass(ModulePass):
         )
         op.body.add_block(Block([device_op]))
 
-        breakpoint()
-
         # wrap everything in a core op 
         core_tile = TileOp(0, 2)
 
@@ -136,14 +134,10 @@ class ConvertZigZagToAIEPass(ModulePass):
             rewriter.move_region_contents_to_new_regions(device_op.region))
         device_op.region.add_block(Block([core_tile, core_op]))
 
-        breakpoint()
-
         PatternRewriteWalker(
             GreedyRewritePatternApplier([TransferToObjectFIFOPattern()]),
             apply_recursively=False,
         ).rewrite_module(op)
-
-        breakpoint()
 
 
         PatternRewriteWalker(
@@ -151,4 +145,3 @@ class ConvertZigZagToAIEPass(ModulePass):
             apply_recursively=False,
         ).rewrite_module(op)
 
-        breakpoint()
