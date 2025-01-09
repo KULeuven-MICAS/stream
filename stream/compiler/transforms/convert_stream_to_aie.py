@@ -11,7 +11,6 @@ from xdsl.pattern_rewriter import (
     op_type_rewrite_pattern,
 )
 from xdsl.rewriter import InsertPoint, Rewriter
-from xdsl.utils.hints import isa
 from xdsl_aie.dialects.aie import (
     AIEDeviceEnum,
     Block,
@@ -37,12 +36,10 @@ def get_tile_op(value: str) -> TileOp:
 
 
 class TransferToObjectFIFOPattern(RewritePattern):
-
     counter = 0
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter):
-
         source_tile = get_tile_op(op.source.data)
         dest_tile = get_tile_op(op.dest.data)
 
@@ -67,7 +64,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
         rewriter.insert_op([source_tile, dest_tile], InsertPoint.before(object_fifo))
 
         # decide whether to consume or produce
-        if op.source.data == 'Any':
+        if op.source.data == "Any":
             port = ObjectFifoPortEnum.Produce
         else:
             port = ObjectFifoPortEnum.Consume
@@ -82,7 +79,11 @@ class TransferToObjectFIFOPattern(RewritePattern):
             element_type=memref_type.get_element_type(),
         )
 
-        release_op = ObjectFIFOReleaseOp(IntegerAttr.from_int_and_width(port.get_int(), 32), IntegerAttr.from_int_and_width(1, 32), object_fifo=of_name)
+        release_op = ObjectFIFOReleaseOp(
+            IntegerAttr.from_int_and_width(port.get_int(), 32),
+            IntegerAttr.from_int_and_width(1, 32),
+            object_fifo=of_name,
+        )
 
         # find use
         last_use = list(op.results[0].uses)[-1].operation
@@ -97,7 +98,6 @@ class TransferToObjectFIFOPattern(RewritePattern):
 class TestPatttern(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
-
         func_op = FuncOp(op.kernel.data, ([], []), Region(), "private")
 
         device_op = op
@@ -111,11 +111,11 @@ class TestPatttern(RewritePattern):
 
         rewriter.replace_matched_op(func_call)
 
+
 class ConvertStreamToAIEPass(ModulePass):
     name = "convert-stream-to-aie"
 
     def apply(self, ctx: MLContext, op: ModuleOp) -> None:
-
         # wrap everything in a device op
 
         rewriter = Rewriter()
@@ -125,13 +125,10 @@ class ConvertStreamToAIEPass(ModulePass):
         )
         op.body.add_block(Block([device_op]))
 
-        # wrap everything in a core op 
+        # wrap everything in a core op
         core_tile = TileOp(0, 2)
 
-        core_op = CoreOp(
-            None, 
-            core_tile, 
-            rewriter.move_region_contents_to_new_regions(device_op.region))
+        core_op = CoreOp(None, core_tile, rewriter.move_region_contents_to_new_regions(device_op.region))
         device_op.region.add_block(Block([core_tile, core_op]))
 
         PatternRewriteWalker(
@@ -139,9 +136,7 @@ class ConvertStreamToAIEPass(ModulePass):
             apply_recursively=False,
         ).rewrite_module(op)
 
-
         PatternRewriteWalker(
             GreedyRewritePatternApplier([TestPatttern()]),
             apply_recursively=False,
         ).rewrite_module(op)
-
