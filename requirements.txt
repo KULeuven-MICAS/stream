@@ -9,3 +9,4 @@ cerberus
 pre-commit
 gurobipy
 pydot
+xdsl-aie @ git+https://github.com/xdslproject/xdsl-aie.git@10d3ad4f62a82883e43f79a53938193d23bdc561
