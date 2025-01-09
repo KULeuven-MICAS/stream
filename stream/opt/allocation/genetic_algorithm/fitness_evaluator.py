@@ -88,9 +88,9 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                 assert equal_unique_node is not None, "Node not found in CostModelEvaluationLUT"
                 cme = self.cost_lut.get_cme(equal_unique_node, core)
                 onchip_energy = cme.energy_total  # Initialize on-chip energy as total energy
-                latency = cme.ideal_temporal_cycle
+                latency = cme.ideal_cycle
                 # Scale latency based on core utilization
-                latency = latency * 100 / core.utilization
+                latency = int(latency * 100 / node.kernel.utilization)
                 too_large_operands = get_too_large_operands(cme, self.accelerator, core_id=core_allocation)
                 # If there is a too_large_operand, we separate the off-chip energy.
                 offchip_energy = 0
@@ -105,7 +105,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                 required_offchip_bandwidth = get_required_offchip_bandwidth(cme, too_large_operands)
                 node.set_onchip_energy(onchip_energy)
                 node.set_offchip_energy(offchip_energy)
-                node.set_runtime(int(latency))
+                node.set_runtime(latency)
                 node.set_chosen_core_allocation(core_allocation)
                 node.set_too_large_operands(too_large_operands)
                 node.set_offchip_bandwidth(required_offchip_bandwidth)
