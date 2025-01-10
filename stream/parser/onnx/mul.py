@@ -8,6 +8,8 @@ from stream.workload.mapping import InterCoreMappingAttributes
 class MulParser(OnnxComputeOperatorParser):
     """Parses an ONNX operator representing an elementwise operation (Mul) into a ComputationNode."""
 
+    DEFAULT_LAYER_DIMENSIONS = ["B", "H", "D", "K"]
+
     def get_common_and_broadcast_shape(self):
         """This node assumes that the ONNX node has 2 inputs and 1 output. One input shape is identical to the output
         shape, and the other shape can broadcast in dimensions.
@@ -33,7 +35,10 @@ class MulParser(OnnxComputeOperatorParser):
 
         return input_shape, broadcast_shape
 
-    def get_operand_source_input_format(self, shape_of_w: list[int]):
+    def get_operand_source_input_format(
+        self,
+        shape_of_w: list[int],
+    ):
         """This method needs more care in this subclass, since the equation assumes that the input with 'broadcast'
         shape is always at `W`"""
         predecessors = self.get_node_predecessors()
@@ -69,7 +74,7 @@ class MulParser(OnnxComputeOperatorParser):
         self,
         input_shape: list[int],
         output_shape: list[int],
-        mapping: InterCoreMappingAttributes | None = None,
+        mapping: InterCoreMappingAttributes,
     ):
         """
         Generate the necessary dictionary items required for the LayerNode creation.
@@ -86,18 +91,16 @@ class MulParser(OnnxComputeOperatorParser):
         data["dimension_relations"] = []
         data["loop_sizes"] = common_shape
 
-        match len(common_shape):
-            case 1:
-                loop_dims = ["K"]
-            case 2:
-                loop_dims = ["D", "K"]
-            case 3:
-                loop_dims = ["B", "D", "K"]
-            case 4:
-                loop_dims = ["B", "H", "D", "K"]
-            case _:
-                raise NotImplementedError
+        if len(common_shape) > len(MulParser.DEFAULT_LAYER_DIMENSIONS):
+            raise NotImplementedError
 
+        possible_loop_dims = (
+            mapping.layer_dimension_names
+            if len(mapping.layer_dimension_names) == len(common_shape)
+            else MulParser.DEFAULT_LAYER_DIMENSIONS
+        )
+
+        loop_dims = possible_loop_dims[0 : len(common_shape)]
         loop_dims_broadcast = reversed([dim for dim, _ in zip(reversed(loop_dims), reversed(broadcast_shape))])
 
         equation_dims_common = "".join([f"[{dim.lower()}]" for dim in loop_dims])

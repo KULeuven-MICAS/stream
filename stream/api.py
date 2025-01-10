@@ -156,7 +156,6 @@ def optimize_allocation_co(
                 TiledWorkloadGenerationStage,
                 ZigZagCoreMappingEstimationStage,
                 SetFixedAllocationPerformanceStage,
-                SchedulingOrderGenerationStage,
                 ConstraintOptimizationAllocationStage,
             ],
             accelerator=hardware,  # required by AcceleratorParserStage

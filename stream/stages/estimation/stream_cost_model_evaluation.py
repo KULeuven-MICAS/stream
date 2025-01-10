@@ -39,7 +39,7 @@ class StreamCostModelEvaluationStage(Stage):
         self.operands_to_prefetch = operands_to_prefetch
         self.scheduling_order = kwargs.get("scheduling_order", None)
 
-        self.check_chosen_core_allocation()
+        self.check_chosen_core_allocation(workload)
 
     def run(self) -> Generator[tuple[StreamCostModelEvaluation, Any], None, None]:
         """! Run the StreamCostModelEvaluation."""
@@ -57,8 +57,9 @@ class StreamCostModelEvaluationStage(Stage):
     def is_leaf(self) -> bool:
         return True
 
-    def check_chosen_core_allocation(self):
+    @staticmethod
+    def check_chosen_core_allocation(workload: ComputationNodeWorkload):
         """! Check that all nodes in the workload have a chosen_core_allocation."""
-        for node in self.workload.nodes():
-            if not isinstance(node.chosen_core_allocation, int):
+        for node in workload.node_list:
+            if node.chosen_core_allocation is None or not node.core_allocation_is_fixed:
                 raise ValueError(f"{node} does not have a chosen_core_allocation.")

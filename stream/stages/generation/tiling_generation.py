@@ -1,6 +1,6 @@
 import logging
 from collections import defaultdict
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from onnx import ModelProto, helper, numpy_helper
@@ -179,13 +179,19 @@ class TilingGenerationStage(Stage):
             valid_tiling.append((layer_dim, factor))
         node.inter_core_tiling = valid_tiling
 
-    def generate_inter_core_tiling(self, node: ComputationNode) -> TILING_T:
+    def generate_inter_core_tiling(
+        self, node: ComputationNode, default_tiling_size: int | Literal["*"] = 1
+    ) -> TILING_T:
+        """Give some valid inter-core tiling for the given node: either coming from the default inter-core partitions,
+        or any arbitrary layer dimension.
+        #TODO will the default size 1 (instead of `*`) work with ConstraintOptimization?
+        #"""
         for dim in TilingGenerationStage.INTER_CORE_PARTITION_DIM_DEFAULT:
             if dim in node.layer_dim_sizes and node.layer_dim_sizes[dim] > 1:
-                return [(dim, "*")]
+                return [(dim, default_tiling_size)]
 
-        # No valid dim found -> just take someting
-        return [(next(iter(node.layer_dim_sizes)), "*")]
+        # No valid dim found -> just take something
+        return [(next(iter(node.layer_dim_sizes)), default_tiling_size)]
 
     @staticmethod
     def split_operator(model: ModelProto, node_name: str, num_splits: int):

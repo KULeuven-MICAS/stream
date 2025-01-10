@@ -85,14 +85,13 @@ class ComputationNode(LayerNode, Node):
         self.operand_dimensionality_order: dict[LayerOperand, list[LayerDim]] = {
             layer_op: self.equation.get_r_layer_dims(layer_op) for layer_op in self.equation.get_contained_operands()
         }
+        self.too_large_operands = []
+
         # Sizes can be extended to fit division factors
         self.extended_layer_dim_sizes: LayerDimSizes = deepcopy(self.layer_dim_sizes)
 
         # adds pr dimensions loop ranges to self.loop_ranges
         self.calculate_pr_loop_ranges()
-        # Rename function
-        self.get_node_operand = self.memory_operand_links.mem_to_layer_op
-        self.extract_node_info = self.extract_layer_info
 
         # Number of real predecessors is saved to deal with edge cases where some nodes of the same layer have differing predecessors
         # This is used to hash the node and to get accurate knowledge of the number of unique nodes.
@@ -104,6 +103,10 @@ class ComputationNode(LayerNode, Node):
         # For example, a conv layer will have an I tensor, W tensor and O tensor.
         self.operand_tensors: dict[LayerOperand, Tensor] = {}
         self.set_operand_tensors()
+
+        # Rename function
+        self.get_node_operand = self.memory_operand_links.mem_to_layer_op
+        self.extract_node_info = self.extract_layer_info
 
     def set_operand_tensors(self):
         for op in self.layer_operands:
@@ -166,24 +169,6 @@ class ComputationNode(LayerNode, Node):
             )
         )
 
-    def __str__(self):
-        return f"ComputationNode{self.id}_{self.sub_id}"
-
-    def __hash__(self) -> int:
-        """The hash operator of a node.
-
-        Returns:
-            the pre-computed hash
-        """
-        return self._static_hash_value
-
-    def __eq__(self, other: object):
-        """Fast equality comparison between two nodes"""
-        # Optimization: this method is used many times to compare with `0`, to count empty tensor elements
-        if not other:
-            return False
-        return isinstance(other, ComputationNode) and self._static_hash_value == other._static_hash_value
-
     def has_same_performance(self, other: object) -> bool:
         """Compare the equality between two nodes.
         Two nodes are considered equal if they have equal hardware performance, which happens following attributes are
@@ -212,17 +197,6 @@ class ComputationNode(LayerNode, Node):
             and self.nb_real_predecessors == other.nb_real_predecessors
             # NOTE: don't include sub_id
         )
-
-    def __lt__(self, other: "ComputationNode"):
-        """Compare two ComputationNodes for the 'less than (<)' operator.
-
-        Args:
-            other (ComputationNode): The other ComputationNode.
-
-        Returns:
-            bool: self < other
-        """
-        return (self.id, self.sub_id) < (other.id, other.sub_id)
 
     def get_operand_for_dim(self, dim: LayerDim) -> LayerOperand:
         """Return the first operand in the operand_list that has this dim as one of is dimensions
@@ -293,3 +267,25 @@ class ComputationNode(LayerNode, Node):
 
     def __repr__(self):
         return f"{self.name} ({self.id},{self.sub_id})"
+
+    def __str__(self):
+        return f"ComputationNode{self.id}_{self.sub_id}"
+
+    def __hash__(self) -> int:
+        """Returns the pre-computed hash"""
+        return self._static_hash_value
+
+    def __eq__(self, other: object):
+        """Fast equality comparison between two nodes"""
+        # Optimization: this method is used many times to compare with `0`, to count empty tensor elements
+        if not other:
+            return False
+        return isinstance(other, ComputationNode) and self._static_hash_value == other._static_hash_value
+
+    def __lt__(self, other: "ComputationNode"):
+        """Compare two ComputationNodes for the 'less than (<)' operator.
+
+        Returns:
+            bool: self < other
+        """
+        return (self.id, self.sub_id) < (other.id, other.sub_id)

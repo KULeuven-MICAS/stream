@@ -137,7 +137,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             to_compute_counts: dict[int, int] = dict()
             state_ids: dict[int, list[int]] = dict()
             to_compute_unique: dict[tuple[ComputationNode, ...], set[ComputationNode]] = dict()
-            hashes_per_sink_pair = dict()
+            hashes_per_sink_pair: dict[tuple[ComputationNode, ComputationNode], int] = dict()
             for pair in interlaced:
                 needed_compute: set[ComputationNode] = set()
                 for sink_node in pair:
