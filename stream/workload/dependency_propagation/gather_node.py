@@ -40,6 +40,15 @@ class GatherNode(PropagationNode):
             case _:
                 raise ValueError("More than two inputs for GatherNode")
 
-    def propagate(self, tensor: NodeTensor, next_node: Node | None = None) -> NodeTensor:
+    def propagate(
+        self,
+        tensor: NodeTensor,
+        previous_node: Node | None = None,
+        next_node: Node | None = None,
+        relevant_axes: list[bool] = [],
+    ) -> tuple[NodeTensor, list[bool]]:
         """Perform gather operation on the tensor."""
-        return tensor.gather(self.gather_indices, axis=self.gather_axis)
+
+        relevant_axes[self.gather_axis] = True
+
+        return tensor.gather(self.gather_indices, axis=self.gather_axis), relevant_axes

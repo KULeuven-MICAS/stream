@@ -41,7 +41,7 @@ def get_onnx_input_shapes(node: NodeProto, onnx_model: ModelProto) -> list[list[
     return input_shapes
 
 
-def get_onnx_output_shapes(node: NodeProto, onnx_model: ModelProto) -> list[list[int]]:
+def get_onnx_output_shapes(node: NodeProto, onnx_model: ModelProto) -> list[tuple[int, ...]]:
     """Return the shape of each output operand"""
 
     output_names = node.output

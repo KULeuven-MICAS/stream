@@ -82,8 +82,8 @@ class NodeTensor(np.ndarray[Any, Any]):
         assert self.is_valid_shape_dimension(slices), "Last dimension of tensor is reserved for CNs"
         extended_slices = slices + (slice(0, self._get_pointer() + 1),)
         tensor_slice = self.as_ndarray()[extended_slices]
-        all_empty_mask = np.logical_and.reduce(tensor_slice == 0, axis=-1)
-        return int(np.sum(all_empty_mask))
+        all_empty_mask = np.all(tensor_slice == 0, axis=-1)
+        return int(np.count_nonzero(all_empty_mask))
 
     def extend_with_node(self, slices: tuple[slice, ...], node: object) -> "NodeTensor":
         assert self.is_valid_shape_dimension(slices), "Last dimension of tensor is reserved for CNs"
@@ -144,20 +144,14 @@ class NodeTensor(np.ndarray[Any, Any]):
         axis = axis - 1 if axis < 0 else axis
         return [t.view(NodeTensor) for t in np.split(self.as_ndarray(), split_indices, axis=axis)]
 
-    def slice(self, starts: int, ends: int, axis: int, steps: int) -> "NodeTensor":
-        assert starts != 1 and ends != -1
+    def slice(self, starts: int, ends: int, axis: int, steps: int = 1) -> "NodeTensor":
+        assert ends >= 0, "Negative indices not supported"
         axis = len(self.tensor_shape) - 1 if axis < 0 else axis
-        match axis:
-            case 0:
-                return self.as_ndarray()[starts:ends:steps, ...].view(NodeTensor)
-            case 1:
-                return self.as_ndarray()[:, starts:ends:steps, ...].view(NodeTensor)
-            case 2:
-                return self.as_ndarray()[:, :, starts:ends:steps, ...].view(NodeTensor)
-            case 3:
-                return self.as_ndarray()[:, :, :, starts:ends:steps, ...].view(NodeTensor)
-            case _:
-                raise NotImplementedError
+
+        slices = [slice(None)] * len(self.full_shape)
+        slices[axis] = slice(starts, ends, steps)
+
+        return self.as_ndarray()[tuple(slices)].view(NodeTensor)
 
     def concat_with_empty(self, shape: tuple[int, ...], axis: int, variable_input_first: bool):
         empty_shape = self.convert_to_full_shape(shape)
@@ -167,6 +161,36 @@ class NodeTensor(np.ndarray[Any, Any]):
             return np.concat((empty_tensor, self.as_ndarray()), axis=axis).view(NodeTensor)
         else:
             return np.concat((self.as_ndarray(), empty_tensor), axis=axis).view(NodeTensor)
+
+    def concat_with_empty_both_sides(
+        self, output_shape: tuple[int, ...], axis: int, slice_idx: int, axis_exists_in_input: bool = False
+    ):
+        """Return a new tensor with shape `output_shape` that is all zero, except for the slice at `slice_idx` in
+        the given axis. This slice is equal to this instance.
+        In other words, a new dimension is created and the current instance is sandwiched between tensors of zeros in
+        this dimension"""
+        full_shape = self.convert_to_full_shape(output_shape)
+        full_tensor = np.zeros(full_shape, dtype=object)
+
+        if axis_exists_in_input:
+            assert len(output_shape) == len(self.tensor_shape)
+            assert self.tensor_shape[axis] == 1
+            # Remove the size-1 dimension
+            slice_to_assign = np.squeeze(self, axis)
+        else:
+            assert len(output_shape) == len(self.tensor_shape) + 1
+            slice_to_assign = self
+
+        slices = [slice(None)] * len(full_shape)
+        slices[axis] = slice_idx
+
+        full_tensor[tuple(slices)] = slice_to_assign
+        return full_tensor.view(NodeTensor)
+
+    def expand_dims(self, axis: int):
+        """Insert a size-1 dimension at axis"""
+        axis = axis - 1 if axis < 0 else axis
+        return np.expand_dims(self.as_ndarray(), axis).view(NodeTensor)
 
     def __repr__(self):
         return f"NodeTensor{self.tensor_shape}[depth={self.__node_count}]"

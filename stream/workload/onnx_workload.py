@@ -13,6 +13,8 @@ class ONNXWorkload(DiGraphWrapper[Node]):
         """Collect all the algorithmic workload information here."""
         super().__init__(**attr)  # type: ignore
         self.node_id_to_obj: dict[int, Node] = {}
+        # In case an ONNX node is converted into multiple Stream nodes, link the id of the first node to the last generated node
+        self.first_to_last_expanded_id: dict[int, int] = {}
 
     def add(self, node_id: int, node_obj: Node):
         """
@@ -24,9 +26,37 @@ class ONNXWorkload(DiGraphWrapper[Node]):
         self.add_node(node_obj)
         edges: list[tuple[Node, Node]] = []
         for parent_id in node_obj.input_operand_source.values():
+
+            if parent_id in self.first_to_last_expanded_id:
+                # If the parent node was replaced with multiple stream nodes, take the last generated one as parent
+                parent_id = self.first_to_last_expanded_id[parent_id]
+
             parent_node_obj = self.node_id_to_obj[parent_id]
             edges.append((parent_node_obj, node_obj))
             self.add_edges_from(edges)
+
+    def find_paths_with_intermediate_type(
+        self, start: Node, end: Node, only_intermediate_type: type
+    ) -> list[list[Node]]:
+        """Returns all paths between `start` and `end` where the nodes in between must be of type
+        `only_intermediate_type`
+
+        # TODO move to `DiGraphWrapper` in ZigZag and make generic in `T`
+        """
+        valid_paths = [[start]]
+        final_paths: list[list[Node]] = []
+        while valid_paths:
+            valid_path = valid_paths.pop(0)
+            next_nodes = list(self.successors(valid_path[-1]))
+
+            for next_node in next_nodes:
+                if isinstance(next_node, only_intermediate_type):
+                    valid_paths.append(valid_path + [next_node])
+                elif next_node == end:
+                    final_paths.append(valid_path + [next_node])
+                else:
+                    continue
+        return final_paths
 
 
 class ComputationNodeWorkload(DiGraphWrapper[ComputationNode]):

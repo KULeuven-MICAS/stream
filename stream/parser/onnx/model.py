@@ -23,6 +23,7 @@ from stream.parser.onnx.simd import SimdParser
 from stream.parser.onnx.slice import SliceParser
 from stream.parser.onnx.softmax import SoftmaxParser
 from stream.parser.onnx.split import SplitParser
+from stream.parser.onnx.ssm import SSMParser
 from stream.parser.onnx.transpose import TransposeParser
 from stream.workload.mapping import InterCoreMappingAttributes
 from stream.workload.onnx_workload import ONNXWorkload
@@ -47,6 +48,8 @@ class ONNXModelParser:
         "GlobalAveragePool": PoolingParser,
         "Add": MulParser,
         "Mul": MulParser,
+        # Special operators
+        "SSM": SSMParser,
         "Softmax": SoftmaxParser,
         # Single-input element-wise
         "Exp": SimdParser,
@@ -87,15 +90,6 @@ class ONNXModelParser:
         self.workload = self.parse_workload()
 
     def get_parser_class(self, node: NodeProto):
-        # # A temporary fix an element-wise Add which has asymmetric input data -> treat it as a  DummyNode.
-        # if node.op_type in ["Add", "Mul"] and has_asymmetric_input_data(node, self.onnx_model):
-        #     in_shape_1, in_shape_2 = get_onnx_input_shapes(node, self.onnx_model)
-        #     # In case only the batch dimension is missing. Other cases are not supported for now
-        #     if abs(len(in_shape_1) - len(in_shape_2)) == 1:
-        #         return AsymmetricSimdParser
-        #     else:
-        #         return DefaultNodeParser
-
         parser_class = ONNXModelParser.OP_TYPE_TO_PARSER.get(node.op_type)
         if not parser_class:
             return DefaultNodeParser
@@ -147,10 +141,15 @@ class ONNXModelParser:
             )
 
             logger.info("Parsed %s node %s.", node.op_type, node.name)
+            id_of_first_node = node_id
             for node_obj in parser.run():
                 # Parsers that yield multiple nodes increment the node id internally, so we must keep count here.
                 workload.add(node_id, node_obj)
+                assert node_obj.id == node_id
                 node_id += 1
+
+            # TODO also use this concept to fix SoftmaxParser
+            workload.first_to_last_expanded_id[id_of_first_node] = node_id - 1
 
             nodes_outputs[node_id - 1] = node.output
 

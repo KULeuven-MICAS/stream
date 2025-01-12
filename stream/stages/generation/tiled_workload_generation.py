@@ -9,6 +9,7 @@ from typing import Any
 from rtree import index
 from zigzag.datatypes import Constants, LayerDim, LayerOperand
 from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
+from zigzag.workload.layer_node import LayerNodeAttributes
 
 from stream.cost_model.group_allocation import GroupIdManager
 from stream.hardware.architecture.accelerator import Accelerator
@@ -19,7 +20,7 @@ from stream.opt.partitioning.utils import (
 )
 from stream.stages.stage import Stage, StageCallable
 from stream.utils import contains_wildcard
-from stream.workload.computation.computation_node import ComputationNode, LoopRanges
+from stream.workload.computation.computation_node import ComputationNode, GeneratedComputationNode, LoopRanges
 from stream.workload.dependency_propagation.dummy_node import DummyNode
 from stream.workload.dependency_propagation.propagation_node import PropagationNode
 from stream.workload.node import Node
@@ -29,6 +30,59 @@ from stream.workload.tensor import Tensor
 logger = logging.getLogger(__name__)
 
 EDGE_T = tuple[ComputationNode, ComputationNode, dict[str, Any]]
+
+
+def deduce_tensor_reuse_factors(
+    original_node: ComputationNode, outer_temporal_loops: list[TemporalLoop]
+) -> dict[LayerOperand, list[int]]:
+    """This function is used to generate a list of inter-CN data reuse factor for each CN's constant operand, like W,
+      based on the outer-CN loops and the r, ir relations.
+
+    Args:
+        original_node (ComputationNode): the original layer node before tilling
+        outer_temporal_loops (list[TemporalLoop]): the outer CN temporal loops
+
+    Returns:
+        data_reuse_factor (dict[list[int]]): a list of data reuse factor (base priority) for constant operands of each
+        CN
+    """
+
+    # If there is no loop in the r_ir_loop, meaning that there is no outer-CN loop -> layer-by-layer
+    if not outer_temporal_loops:
+        return {}
+
+    if not original_node.constant_operands:
+        return {}
+
+    # Transfer the outer_temporal_loops to r_ir_loop.
+    #  An example can be r_ir_loop = {'W': [('ir', 3), ('r', 2), ('ir', 3)]}.
+    r_ir_LUT = original_node.loop_relevancy_info
+    constant_operands = original_node.constant_operands
+    r_ir_loop: dict[LayerOperand, list[tuple[str, int]]] = {}
+    for constant_operand in constant_operands:
+        r_ir_loop[constant_operand] = []
+        for loop in outer_temporal_loops:
+            if loop.dimension in r_ir_LUT.get_ir_layer_dims(constant_operand):
+                r_ir_loop[constant_operand].append(("ir", loop.size))
+            else:
+                r_ir_loop[constant_operand].append(("r", loop.size))
+
+    # total_reuse_factor is the upper bound of the reuse factor that current layer CNs can reach
+    total_reuse_factors = {
+        op: prod([reuse_factor for (loop_type, reuse_factor) in r_ir_loop[op] if loop_type == "ir"])
+        for op in r_ir_loop.keys()
+    }
+
+    # total number of nodes that will be generated
+    nb_nodes = prod([tl.size for tl in outer_temporal_loops])
+
+    # tensor reuse factor will be set to the total reuse factor for each node
+    # whenever a cn will be scheduled, the tensor reuse factor will decrease
+    tensor_reuse_factors: dict[LayerOperand, list[int]] = {}
+    for op, total_reuse_factor in total_reuse_factors.items():
+        tensor_reuse_factors[op] = [total_reuse_factor] * nb_nodes
+
+    return tensor_reuse_factors
 
 
 class TensorDimensionMismatchException(Exception):
@@ -61,7 +115,7 @@ class TiledWorkloadGenerationStage(Stage):
         # Save for each of the workload's nodes the tiles that will be generated
         self.tiles_dict: dict[ComputationNode, list[ComputationNode]] = {}
         # Memoize the numpy tensors for dependency generation
-        self.numpy_tensors = {}
+        self.numpy_tensors: dict[tuple[ComputationNode, LayerOperand], NodeTensor] = {}
         self.tiled_workload_path = tiled_workload_path
 
     def run(self):
@@ -236,6 +290,10 @@ class TiledWorkloadGenerationStage(Stage):
         """
         divisors: dict[LayerDim, set[int]] = defaultdict(lambda: set())
 
+        if isinstance(node, GeneratedComputationNode):
+            # Too hard to manage this for generated nodes for now # TODO is there a cleaner way?
+            return divisors
+
         # Find nodes in stack
         try:
             curr_stack = next(stack for stack in self.layer_stacks if node.id in stack)
@@ -352,21 +410,18 @@ class TiledWorkloadGenerationStage(Stage):
             original_node_output_ir_dims = original_node.loop_relevancy_info.get_ir_layer_dims(
                 Constants.OUTPUT_LAYER_OP
             )
-
             produces_final_output = all(
                 [dim_min_max[dim][1] >= original_node.layer_dim_sizes[dim] for dim in original_node_output_ir_dims]
             )
 
-            tile = ComputationNode(
-                node_id=original_node.id,
+            tile = self.create_tile(
+                original_node,
                 sub_id=n,
-                node_name=original_node.name,
-                node_attr=tile_attrs,
-                mapping_attr=original_node.extract_inter_core_mapping_attr(),
-                op_type=original_node.type,
+                tile_attrs=tile_attrs,
                 produces_final_output=produces_final_output,
                 group_id=group_id,
             )
+
             # Override loop_ranges property
             tile.update_loop_ranges(dim_min_max)
             # Re-calculate pr loop ranges based on new loop_ranges
@@ -412,6 +467,39 @@ class TiledWorkloadGenerationStage(Stage):
         unique_tiles = [tiles[0]]
 
         return tiles, unique_tiles
+
+    def create_tile(
+        self,
+        original_node: ComputationNode,
+        sub_id: int,
+        tile_attrs: LayerNodeAttributes,
+        produces_final_output: bool,
+        group_id: int,
+    ):
+        if isinstance(original_node, GeneratedComputationNode):
+            return GeneratedComputationNode(
+                node_id=original_node.id,
+                sub_id=sub_id,
+                base_id=original_node.base_id,
+                gen_id=original_node.gen_id,
+                node_name=original_node.name,
+                node_attr=tile_attrs,
+                mapping_attr=original_node.extract_inter_core_mapping_attr(),
+                op_type=original_node.type,
+                produces_final_output=produces_final_output,
+                group_id=group_id,
+            )
+        else:
+            return ComputationNode(
+                node_id=original_node.id,
+                sub_id=sub_id,
+                node_name=original_node.name,
+                node_attr=tile_attrs,
+                mapping_attr=original_node.extract_inter_core_mapping_attr(),
+                op_type=original_node.type,
+                produces_final_output=produces_final_output,
+                group_id=group_id,
+            )
 
     @staticmethod
     def get_intra_edges(nodes: list[ComputationNode]):
@@ -637,43 +725,29 @@ class TiledWorkloadGenerationStage(Stage):
         consumer: ComputationNode,
     ):
 
-        numpy_tensors: dict[tuple[ComputationNode, LayerOperand], NodeTensor] = {}
         all_inter_edges: list[tuple[ComputationNode, ComputationNode, dict[str, Any]]] = []
-
-        def get_tensor_cn_for_op(node: ComputationNode, dependent_operand: LayerOperand):
-            """And update the known tensors of computation nodes"""
-            if (node, dependent_operand) in numpy_tensors:
-                tensor = numpy_tensors[(node, dependent_operand)]
-            else:
-                tiles = self.tiles_dict[node]
-                tensor = self.get_node_tensor(node, tiles, dependent_operand)
-                # Store result for later use
-                numpy_tensors[(node, dependent_operand)] = tensor
-            return tensor
-
-        paths_between = list(self.workload.all_simple_paths(producer, consumer))
-        # Remove paths between that contain a ComputationNode as intermediate
-        paths_between = [
-            path for path in paths_between if not any(isinstance(node, ComputationNode) for node in path[1:-1])
-        ]
+        paths_between = self.workload.find_paths_with_intermediate_type(producer, consumer, PropagationNode)
         assert (
             len(paths_between) > 0
         ), "No paths between producer and consumer found without ComputationNode in intermediates."
 
         for path_between in paths_between:
-            ts = [time.time()]
+            timesteps = [time.time()]
             # First node in the path is a ComputationNode, of which we extract the output operand dependency tensor
             first_node = path_between[0]
             assert isinstance(first_node, ComputationNode), "First node in path should be ComputationNode"
-            tensor = get_tensor_cn_for_op(first_node, dependent_operand=Constants.OUTPUT_LAYER_OP)
-            ts.append(time.time())
+            tensor = self.get_tensor_cn_for_op(first_node, dependent_operand=Constants.OUTPUT_LAYER_OP)
+            timesteps.append(time.time())
 
             # Propagate through intermediate, non-computation nodes
             relevant_axes = [False] * len(tensor.tensor_shape)
             for i, node in enumerate(path_between[1:-1], start=1):
                 assert isinstance(node, PropagationNode), "Intermediate nodes should not be of type ComputationNode"
+                previous_node = path_between[i - 1]
                 next_node = path_between[i + 1]
-                tensor, relevant_axes = node.propagate(tensor, next_node, relevant_axes)
+                tensor, relevant_axes = node.propagate(
+                    tensor, previous_node=previous_node, next_node=next_node, relevant_axes=relevant_axes
+                )
 
             # Final node: Computation node
             final_node: ComputationNode = path_between[-1]  # type: ignore
@@ -684,8 +758,8 @@ class TiledWorkloadGenerationStage(Stage):
             )
             inter_edges = self.get_inter_edges_hybrid(tensor, final_node, dependent_operand, relevant_axes)
 
-            ts.append(time.time())
-            ts_deltas = [ts[i] - ts[i - 1] for i in range(1, len(ts))]
+            timesteps.append(time.time())
+            ts_deltas = [timesteps[i] - timesteps[i - 1] for i in range(1, len(timesteps))]
             ts_deltas_str = ", ".join([f"{delta:.3f}" for delta in ts_deltas])
             logger.info(f"Path {path_between} time deltas: {ts_deltas_str}")
 
@@ -701,6 +775,17 @@ class TiledWorkloadGenerationStage(Stage):
                     )
                 )
         return all_inter_edges
+
+    def get_tensor_cn_for_op(self, node: ComputationNode, dependent_operand: LayerOperand):
+        """Convert the given node into a NodeTensor and update the known tensors of computation nodes"""
+        if (node, dependent_operand) in self.numpy_tensors:
+            tensor = self.numpy_tensors[(node, dependent_operand)]
+        else:
+            tiles = self.tiles_dict[node]
+            tensor = self.get_node_tensor(node, tiles, dependent_operand)
+            # Store result for later use
+            self.numpy_tensors[(node, dependent_operand)] = tensor
+        return tensor
 
     def get_inter_edges_hybrid(
         self, tensor: NodeTensor, final_node: ComputationNode, op: LayerOperand, relevant_axes: list[bool]
@@ -916,56 +1001,3 @@ class TiledWorkloadGenerationStage(Stage):
         if os.path.exists(self.tiled_workload_path):
             return pickle_load(self.tiled_workload_path)
         return None
-
-
-def deduce_tensor_reuse_factors(
-    original_node: ComputationNode, outer_temporal_loops: list[TemporalLoop]
-) -> dict[LayerOperand, list[int]]:
-    """This function is used to generate a list of inter-CN data reuse factor for each CN's constant operand, like W,
-      based on the outer-CN loops and the r, ir relations.
-
-    Args:
-        original_node (ComputationNode): the original layer node before tilling
-        outer_temporal_loops (list[TemporalLoop]): the outer CN temporal loops
-
-    Returns:
-        data_reuse_factor (dict[list[int]]): a list of data reuse factor (base priority) for constant operands of each
-        CN
-    """
-
-    # If there is no loop in the r_ir_loop, meaning that there is no outer-CN loop -> layer-by-layer
-    if not outer_temporal_loops:
-        return {}
-
-    if not original_node.constant_operands:
-        return {}
-
-    # Transfer the outer_temporal_loops to r_ir_loop.
-    #  An example can be r_ir_loop = {'W': [('ir', 3), ('r', 2), ('ir', 3)]}.
-    r_ir_LUT = original_node.loop_relevancy_info
-    constant_operands = original_node.constant_operands
-    r_ir_loop: dict[LayerOperand, list[tuple[str, int]]] = {}
-    for constant_operand in constant_operands:
-        r_ir_loop[constant_operand] = []
-        for loop in outer_temporal_loops:
-            if loop.dimension in r_ir_LUT.get_ir_layer_dims(constant_operand):
-                r_ir_loop[constant_operand].append(("ir", loop.size))
-            else:
-                r_ir_loop[constant_operand].append(("r", loop.size))
-
-    # total_reuse_factor is the upper bound of the reuse factor that current layer CNs can reach
-    total_reuse_factors = {
-        op: prod([reuse_factor for (loop_type, reuse_factor) in r_ir_loop[op] if loop_type == "ir"])
-        for op in r_ir_loop.keys()
-    }
-
-    # total number of nodes that will be generated
-    nb_nodes = prod([tl.size for tl in outer_temporal_loops])
-
-    # tensor reuse factor will be set to the total reuse factor for each node
-    # whenever a cn will be scheduled, the tensor reuse factor will decrease
-    tensor_reuse_factors: dict[LayerOperand, list[int]] = {}
-    for op, total_reuse_factor in total_reuse_factors.items():
-        tensor_reuse_factors[op] = [total_reuse_factor] * nb_nodes
-
-    return tensor_reuse_factors

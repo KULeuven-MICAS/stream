@@ -31,7 +31,13 @@ class ReshapeNode(PropagationNode):
         self.shape = shape
         self.input_operand_source = {Constants.LAYER_OP_I: predecessor}
 
-    def propagate(self, tensor: NodeTensor, next_node: Node) -> NodeTensor:
+    def propagate(
+        self,
+        tensor: NodeTensor,
+        previous_node: Node | None = None,
+        next_node: Node | None = None,
+        relevant_axes: list[bool] = [],
+    ) -> tuple[NodeTensor, list[bool]]:
         """Reshape the tensor back to the representation needed for producer/consumer."""
         new_shape = self.shape
         if not new_shape:
@@ -39,4 +45,7 @@ class ReshapeNode(PropagationNode):
 
         if not self.allow_zero:
             new_shape = tuple(x for x in new_shape if x != 0)
-        return tensor.reshape(new_shape)
+
+        # TODO register relevant axes
+
+        return tensor.reshape(new_shape), relevant_axes

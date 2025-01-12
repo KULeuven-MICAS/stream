@@ -29,9 +29,18 @@ class FlattenNode(PropagationNode):
         if predecessor is not None:
             self.input_operand_source = {LayerOperand("I"): predecessor}
 
-    def propagate(self, tensor: NodeTensor, next_node: Node | None = None) -> NodeTensor:
+    def propagate(
+        self,
+        tensor: NodeTensor,
+        previous_node: Node | None = None,
+        next_node: Node | None = None,
+        relevant_axes: list[bool] = [],
+    ) -> tuple[NodeTensor, list[bool]]:
         """Reshape an input tensor"""
         shape = tensor.tensor_shape
+
+        # TODO register relevant axes
+
         # taken from https://github.com/onnx/onnx/blob/main/docs/Operators.md#examples-51
         new_shape = (1, -1) if self.axis == 0 else (np.prod(shape[0 : self.axis]).astype(int), -1)
         return tensor.reshape(new_shape)

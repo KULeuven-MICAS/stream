@@ -1,11 +1,13 @@
 from zigzag.parser.onnx.utils import OnnxTensorCategory, get_onnx_tensor_type
 
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
-from stream.workload.dependency_propagation.concat_node import ConcatNode
+from stream.workload.dependency_propagation.concat_node import ConcatConstantNode
 
 
 class ConcatParser(OnnxOperatorParser):
-    """Parses an onnx gather operator into a ConcatNode."""
+    """Parses an ONNX Concat operator with one constant input into a ConcatConstantNode.
+    # TODO also parse concat nodes with non-constant inputs
+    """
 
     def get_axis_value(self):
         AXIS_ATTR = "axis"
@@ -40,7 +42,7 @@ class ConcatParser(OnnxOperatorParser):
             constant_shape = tuple(constant_tensor.shape)
             variable_input_first = True
 
-        return ConcatNode(
+        return ConcatConstantNode(
             node_id=self.node_id,
             node_name=self.node.name,
             predecessors=predecessors,

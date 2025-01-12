@@ -27,5 +27,11 @@ class ElementwiseNode(PropagationNode):
         """
         return tensor1 | tensor2
 
-    def propagate(self, tensor: NodeTensor, next_node: Node | None = None) -> NodeTensor:
-        return tensor
+    def propagate(
+        self,
+        tensor: NodeTensor,
+        previous_node: Node | None = None,
+        next_node: Node | None = None,
+        relevant_axes: list[bool] = [],
+    ) -> tuple[NodeTensor, list[bool]]:
+        return tensor, relevant_axes

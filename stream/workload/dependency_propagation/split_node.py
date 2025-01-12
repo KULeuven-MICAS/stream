@@ -1,7 +1,7 @@
-import numpy as np
 from zigzag.datatypes import Constants
 
 from stream.node_tensor import NodeTensor
+from stream.workload.computation.computation_node import GeneratedComputationNode
 from stream.workload.dependency_propagation.propagation_node import PropagationNode
 from stream.workload.node import Node
 
@@ -26,9 +26,8 @@ class SplitNode(PropagationNode):
             predecessors: The id of this node's parent.
             axis: axis in which to split
             splits: sizes of the output splits in the given axis
-            output_names: the node names that correspond to the splits
+            output_names: the node names that correspond to the splits, used to determine propagation flow
         """
-        assert len(splits) == len(output_names)
         op_type = "split"
         super().__init__(node_id, node_name, op_type, input_names)
 
@@ -37,23 +36,43 @@ class SplitNode(PropagationNode):
         self.input_operand_source = {Constants.LAYER_OP_I: predecessor}
         self.output_names = output_names
 
-    def propagate(self, tensor: NodeTensor, next_node: Node, relevant_axes: list[bool]):
+    def propagate(
+        self,
+        tensor: NodeTensor,
+        previous_node: Node | None = None,
+        next_node: Node | None = None,
+        relevant_axes: list[bool] = [],
+    ) -> tuple[NodeTensor, list[bool]]:
         """Split the tensor back to the representation needed for producer/consumer."""
+        assert next_node is not None
 
-        # Numpy requires the indices where to split instead of the sizes of the resulting splits
-        split_indices = list(np.cumsum(self.splits)[:-1])
-        output_tensors = tensor.split(split_indices, axis=self.axis)
+        index = self.find_split_index(next_node)
 
-        # Find which split part corresponds to the input of the next node
-        try:
-            index = next(i for i, output_name in enumerate(self.output_names) if output_name in next_node.input_names)
-        except StopIteration:
-            raise ValueError(
-                f"Cannot find this nodes' ({self.name}) outputs {self.output_names} in next nodes' inputs {next_node.input_names}"
-            )
+        if index >= len(self.splits):
+            raise ValueError(f"Found slice index {index} for next node {next_node} exceeds slice dimensions")
+
+        start_idx = sum(self.splits[:index])
+        end_idx = start_idx + self.splits[index]
+        output_tensor = tensor.slice(start_idx, end_idx, axis=self.axis)
 
         # Update the relevant_dims with the axis involved in the split
         relevant_axes[self.axis] = True
 
-        output_tensor = output_tensors[index]
+        assert len(tensor.tensor_shape) == len(output_tensor.tensor_shape)
         return output_tensor, relevant_axes
+
+    def find_split_index(self, next_node: Node):
+        """Given the next node that comes after this split node, return the index of this node's splitted outputs that
+        corresponds to the next node's input"""
+        if isinstance(next_node, GeneratedComputationNode):
+            # Assume that the slice index corresponds to the order in which the next node was generated
+            return next_node.gen_id
+
+        # Find which split part corresponds to the input of the next node
+        try:
+            index = next(i for i, output_name in enumerate(self.output_names) if output_name in next_node.input_names)
+            return index
+        except StopIteration:
+            raise ValueError(
+                f"Cannot find this nodes' ({self.name}) outputs {self.output_names} in next nodes' inputs {next_node.input_names}"
+            )

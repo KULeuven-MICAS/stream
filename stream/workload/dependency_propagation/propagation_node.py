@@ -25,4 +25,10 @@ class PropagationNode(Node, LayerNodeABC):
         LayerNodeABC.__init__(self, node_id=node_id, node_name=node_name)
 
     @abstractmethod
-    def propagate(self, tensor: NodeTensor, next_node: Node | None = None) -> NodeTensor: ...
+    def propagate(
+        self,
+        tensor: NodeTensor,
+        previous_node: Node | None = None,
+        next_node: Node | None = None,
+        relevant_axes: list[bool] = [],
+    ) -> tuple[NodeTensor, list[bool]]: ...

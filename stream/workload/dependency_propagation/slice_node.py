@@ -39,7 +39,13 @@ class SliceNode(PropagationNode):
         self.input_operand_source = {Constants.LAYER_OP_I: predecessor}
         self.output_names = output_names
 
-    def propagate(self, tensor: NodeTensor, next_node: Node | None = None, relevant_axes: list[bool] = []):
+    def propagate(
+        self,
+        tensor: NodeTensor,
+        previous_node: Node | None = None,
+        next_node: Node | None = None,
+        relevant_axes: list[bool] = [],
+    ) -> tuple[NodeTensor, list[bool]]:
         """Slice the tensor.
         Currently assumes only one slice is created."""
         sliced_tensor = tensor.slice(starts=self.starts[0], ends=self.ends[0], axis=self.axes[0], steps=self.steps[0])

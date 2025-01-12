@@ -47,6 +47,7 @@ class ComputationNode(LayerNode, Node):
         sub_id: int = -1,  # To distinguish alternative versions of this node
         input_names: list[str] = [],
     ):
+        # TODO `op_type` is also encapsulated in `node_attr`
         op_type = op_type.lower()
 
         LayerNode.__init__(
@@ -193,8 +194,8 @@ class ComputationNode(LayerNode, Node):
             and self.dimension_relations == other.dimension_relations
             and self.operand_precision == other.operand_precision
             and self.memory_operand_links == other.memory_operand_links
-            and self.id == other.id
             and self.nb_real_predecessors == other.nb_real_predecessors
+            and self.id == other.id
             # NOTE: don't include sub_id
         )
 
@@ -266,10 +267,10 @@ class ComputationNode(LayerNode, Node):
         self._static_hash_value = self.__compute_static_hash()
 
     def __repr__(self):
-        return f"{self.name} ({self.id},{self.sub_id})"
+        return str(self)
 
     def __str__(self):
-        return f"ComputationNode{self.id}_{self.sub_id}"
+        return f"{self.name} ({self.id},{self.sub_id})"
 
     def __hash__(self) -> int:
         """Returns the pre-computed hash"""
@@ -289,3 +290,64 @@ class ComputationNode(LayerNode, Node):
             bool: self < other
         """
         return (self.id, self.sub_id) < (other.id, other.sub_id)
+
+
+class GeneratedComputationNode(ComputationNode):
+    """A ComputationNode that has been iteratively generated"""
+
+    too_large_operands: list[MemoryOperand]
+
+    def __init__(
+        self,
+        node_id: int,
+        gen_id: int,
+        base_id: int,
+        node_name: str,
+        node_attr: LayerNodeAttributes,
+        mapping_attr: InterCoreMappingAttributes,
+        op_type: str = "computation",
+        operand_tensor_reshape: OperandTensorReshape | None = None,
+        produces_final_output: bool = False,
+        group_id: int = 0,
+        sub_id: int = -1,  # To distinguish alternative versions of this node
+        input_names: list[str] = [],
+    ):
+        """
+
+        Args:
+            node_id: Unique ID for reach generated node
+            base_id: ID that is identical for all similar generated nodes
+            gen_id: Unique ID for each generated node, ranging from 0 to the number of generated nodes
+
+        """
+
+        node_name = f"{node_name}_{gen_id}"
+        super().__init__(
+            node_id=node_id,
+            node_name=node_name,
+            node_attr=node_attr,
+            mapping_attr=mapping_attr,
+            op_type=op_type,
+            operand_tensor_reshape=operand_tensor_reshape,
+            produces_final_output=produces_final_output,
+            group_id=group_id,
+            sub_id=sub_id,
+            input_names=input_names,
+        )
+
+        self.gen_id = gen_id
+        self.base_id = base_id
+
+    def has_same_performance(self, other: object) -> bool:
+        """Compare the equality between two nodes. Overrides `ComputationNodes` method with the following difference:
+        - node ids can be different if the base id is the same
+        """
+        return (
+            isinstance(other, GeneratedComputationNode)
+            and self.layer_dim_sizes == other.layer_dim_sizes
+            and self.dimension_relations == other.dimension_relations
+            and self.operand_precision == other.operand_precision
+            and self.memory_operand_links == other.memory_operand_links
+            and self.nb_real_predecessors == other.nb_real_predecessors
+            and self.base_id == other.base_id
+        )
