@@ -46,7 +46,10 @@ def parse_non_base_attrs(row: pd.Series, base_attrs: list[str]) -> dict:
 def add_preamble_to_events(df: pd.DataFrame, events: list, process_name: str):
 
     # Extract and sort unique compute resources
-    compute_resources = sorted(set(row["Resource"] for _, row in df.iterrows() if row["Type"] == "compute"))
+    compute_resources = sorted(
+        set(row["Resource"] for _, row in df.iterrows() if row["Type"] == "compute"),
+        key=lambda x: int(x.split()[1]) if x.startswith("Core") else x,
+    )
 
     # Extract and sort unique communication channel resources
     comm_resources = sorted(set(row["Resource"] for _, row in df.iterrows() if row["Type"] in ["transfer", "block"]))
