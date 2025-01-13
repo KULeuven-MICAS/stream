@@ -434,40 +434,48 @@ class TiledWorkloadGenerationStage(Stage):
                 tensor = tile.operand_tensors[constant_operand]
                 tensor.set_base_priorities(tensor_reuse_factors[constant_operand][n])
 
-            # Replace any of the tensors with identical tensors of previous tiles
-            for op, tensor in tile.operand_tensors.items():
-                replaced = False
-                for previous_tensor in tensors:
-                    if tensor.equality_hash == previous_tensor.equality_hash:
-                        tile.operand_tensors[op] = previous_tensor
-                        replaced = True
-                if not replaced:
-                    tensors.append(tensor)
-
-            # Compute the output data produced by each tile, assuming that all the data produced by different CNs
-            # are unique
-            tile.data_produced_unique = int(
-                tile.operand_size_elem[Constants.OUTPUT_LAYER_OP]
-                * tile.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
-            )
-
-            # If the core allocation is fixed, we need to set the chosen core allocation.
-            # It's possible the core allocation contains multiple entries.
-            # In that case, we select the core allocation based on the group id.
-            inter_core_tiling_size = get_inter_core_tiling_size(original_node)
-            if len(original_node.possible_core_allocation) == inter_core_tiling_size:
-                assert group_id < len(
-                    original_node.possible_core_allocation
-                ), f"Group id {group_id} too large for core allocation list {original_node.possible_core_allocation}"
-                chosen_core_allocation = original_node.possible_core_allocation[group_id]
-                tile.set_chosen_core_allocation(chosen_core_allocation)
-
+            tensors = self._replace_identical_tensors(tile, tensors)
+            tile.data_produced_unique = self._get_data_produced_unique(tile)
+            self._set_core_allocation_for_tile(tile, group_id, original_node)
             tiles.append(tile)
 
         # NOTE We take the first node as only unique one as they are all generated equally now.
         unique_tiles = [tiles[0]]
 
         return tiles, unique_tiles
+
+    def _replace_identical_tensors(self, tile: ComputationNode, previous_tensors: list[Tensor]):
+        """Replace any of the tensors with identical tensors of previous tiles.
+        If no identical tensor is found, add the tensor to the list of previous tensors."""
+        for op, tensor in tile.operand_tensors.items():
+            replaced = False
+            for previous_tensor in previous_tensors:
+                if tensor.equality_hash == previous_tensor.equality_hash:
+                    tile.operand_tensors[op] = previous_tensor
+                    replaced = True
+            if not replaced:
+                previous_tensors.append(tensor)
+        return previous_tensors
+
+    def _get_data_produced_unique(self, tile: ComputationNode):
+        """Compute the output data produced by each tile, assuming that all the data produced by different CNs unique"""
+        return int(
+            tile.operand_size_elem[Constants.OUTPUT_LAYER_OP] * tile.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
+        )
+
+    def _set_core_allocation_for_tile(self, tile: ComputationNode, group_id: int, original_node: ComputationNode):
+        """If the core allocation is fixed, we need to set the chosen core allocation. It's possible the core allocation
+        contains multiple entries. In that case, we select the core allocation based on the group id.
+        Only set the core allocation if the number of core allocations is equal to the inter-core tiling size, i.e.
+        the user meant to parallelize the original nodes over the given cores. Otherwise, the CO or GA will set the
+        allocation later."""
+        inter_core_tiling_size = get_inter_core_tiling_size(original_node)
+        if len(original_node.possible_core_allocation) == inter_core_tiling_size:
+            assert group_id < len(
+                original_node.possible_core_allocation
+            ), f"Group id {group_id} too large for core allocation list {original_node.possible_core_allocation}"
+            chosen_core_allocation = original_node.possible_core_allocation[group_id]
+            tile.set_chosen_core_allocation(chosen_core_allocation)
 
     def create_tile(
         self,
