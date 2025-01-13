@@ -170,16 +170,20 @@ class SchedulingOrderGenerationStage(Stage):
         order: SCHEDULE_ORDER_T = []
 
         for i in range(nb_intra_core_slots):
-            for layer_id, inter_core_tiling in zip(filtered_stack, inter_core_tiling_factors):
-                if layer_id in generated_base_ids:
+            order_this_slot: SCHEDULE_ORDER_T = []
+            for j in range(max(nb_gen_ids_per_slot, 1)):
+                # For each j, go through all layers again to make sure generated nodes are nicely interleaved
+                for layer_id, inter_core_tiling in zip(filtered_stack, inter_core_tiling_factors):
 
-                    for j in range(nb_gen_ids_per_slot):
+                    if layer_id in generated_base_ids:
                         gen_id_nb = i * nb_gen_ids_per_slot + j
                         gen_layer_id = self.get_gen_layer_id(base_id=layer_id, gen_id=gen_id_nb)
-                        order += [(gen_layer_id, k) for k in range(inter_core_tiling)]
-                else:
+                        order_this_slot += [(gen_layer_id, k) for k in range(inter_core_tiling)]
+                    elif j == 0:
+                        # Non-generated nodes should only be scheduled once per intra-core slot (not `nb_gen_ids_per_slot` times)
+                        order_this_slot += [(layer_id, i * inter_core_tiling + k) for k in range(inter_core_tiling)]
 
-                    order += [(layer_id, i * inter_core_tiling + k) for k in range(inter_core_tiling)]
+            order += order_this_slot
 
         return order
 
