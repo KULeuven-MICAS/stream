@@ -21,7 +21,6 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         offchip_energy: float,
         runtime: int,
         possible_core_allocation: list[int],
-        core_allocation_is_fixed: bool = False,
         chosen_core_allocation: int | None = None,
         input_names: list[str] = [],
     ) -> None:
@@ -44,7 +43,6 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         self.offchip_energy = offchip_energy
         self.runtime = runtime
         self.possible_core_allocation = possible_core_allocation
-        self.core_allocation_is_fixed = core_allocation_is_fixed
         self.chosen_core_allocation = chosen_core_allocation
         self.input_names = input_names
         self.start = -1

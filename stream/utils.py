@@ -111,6 +111,17 @@ def contains_wildcard(tiling: TILING_T):
     return any(tiling == "*" for _, tiling in tiling)
 
 
+def get_inter_core_tiling_size(node: "ComputationNode") -> int:
+    inter_core_tiling = node.inter_core_tiling
+    if inter_core_tiling and not contains_wildcard(inter_core_tiling):
+        assert len(inter_core_tiling) == 1, "Only one inter_core_tiling entry is supported."
+        inter_core_tiling_size = inter_core_tiling[0][1]
+        if inter_core_tiling_size == "all":
+            inter_core_tiling_size = node.layer_dim_sizes[inter_core_tiling[0][0]]
+        return inter_core_tiling_size  # type: ignore
+    return 1
+
+
 class CostModelEvaluationLUT:
     """A class to store the cost model evaluations in a look-up table.
     The look-up table is a dictionary with the following structure:

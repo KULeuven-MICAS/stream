@@ -3,7 +3,6 @@ from math import prod
 from typing import Any, TypeAlias
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.stages.estimation.stream_cost_model_evaluation import StreamCostModelEvaluationStage
 from stream.stages.stage import Stage, StageCallable
 from stream.utils import contains_wildcard
 from stream.workload.computation.computation_node import ComputationNode, GeneratedComputationNode
@@ -40,12 +39,6 @@ class SchedulingOrderGenerationStage(Stage):
             self.scheduling_order = self.get_scheduling_order_fused()
         else:
             self.scheduling_order = self.get_scheduling_order_lbl()
-
-        try:
-            StreamCostModelEvaluationStage.check_chosen_core_allocation(self.workload)
-        except ValueError:
-            # Nodes don't have core allocation yet -> Set based on inter-core tiling
-            self.set_core_allocation()
 
         self.kwargs["accelerator"] = self.accelerator
         self.kwargs["workload"] = self.workload
@@ -181,21 +174,31 @@ class SchedulingOrderGenerationStage(Stage):
                         order_this_slot += [(gen_layer_id, k) for k in range(inter_core_tiling)]
                     elif j == 0:
                         # Non-generated nodes should only be scheduled once per intra-core slot (not `nb_gen_ids_per_slot` times)
-                        order_this_slot += [(layer_id, i * inter_core_tiling + k) for k in range(inter_core_tiling)]
+                        nb_non_generated_nodes_per_slot = self._get_number_of_nodes_per_intra_core_slot(
+                            layer_id, nb_intra_core_slots
+                        )
+                        sub_id_offset = i * (inter_core_tiling * nb_non_generated_nodes_per_slot)
+                        order_this_slot += [
+                            (layer_id, sub_id_offset + k)
+                            for k in range(inter_core_tiling * nb_non_generated_nodes_per_slot)
+                        ]
 
             order += order_this_slot
 
         return order
 
+    def _get_number_of_nodes_per_intra_core_slot(self, layer_id, nb_intra_core_slots):
+        return self.get_total_tiling_size(self.get_some_node_for_id(layer_id).intra_core_tiling) // nb_intra_core_slots
+
     def _get_and_assert_intra_core_tiling(self, nodes: list[ComputationNode]) -> int:
         """For each node, get the intra-core tiling. Make sure the tiling is the same for all nodes, and return the
         tiling factor"""
         all_intra_core_tiling_factors: list[int] = [self.get_total_tiling_size(n.intra_core_tiling) for n in nodes]
-        tiling_factor = all_intra_core_tiling_factors.pop()
+        min_tiling_factor = min(all_intra_core_tiling_factors, default=1)
         assert all(
-            x == tiling_factor for x in all_intra_core_tiling_factors
-        ), "Layers in stack have different intra-core tiling"
-        return tiling_factor
+            tiling_factor % min_tiling_factor == 0 for tiling_factor in all_intra_core_tiling_factors
+        ), "Intra-core tiling factors are not multiples of minimum"
+        return min_tiling_factor
 
     def _get_and_assert_nb_generated_nodes(self, generated_base_nodes: list[GeneratedComputationNode]) -> int:
         if not generated_base_nodes:
@@ -209,23 +212,6 @@ class SchedulingOrderGenerationStage(Stage):
     def get_total_tiling_size(tiling: TILING_T) -> int:
         assert not contains_wildcard(tiling)
         return prod(size for _, size in tiling)
-
-    def set_core_allocation(self):
-        """For all nodes of the (tiled) workload, set the chosen core allocation based on the sub_id and number of
-        inter-core splits for this node.
-        # TODO this is only necessary if CO is not being used. Move to something like `COSkipStage`
-        # TODO is no inter-core tiling is present, all nodes will be scheduled on the same core
-        """
-        for node in self.workload.node_list:
-            inter_core_tiling_factor = self.get_total_tiling_size(node.inter_core_tiling)
-
-            # Schedule generated nodes without inter core tiling over different cores
-            # if isinstance(node, GeneratedComputationNode) and self.get_total_tiling_size(node.inter_core_tiling) == 1:
-            #     core_id = node.gen_id % len(node.possible_core_allocation)
-
-            core_id = node.sub_id % inter_core_tiling_factor
-            node.set_chosen_core_allocation(core_id)
-            node.core_allocation_is_fixed = True
 
     def filter_generated_nodes_from_stack(self, stack: tuple[int, ...]):
         """A stack contains all layer ids that are grouped together. It is possible that the stack contains many

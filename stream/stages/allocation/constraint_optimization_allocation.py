@@ -449,7 +449,6 @@ class ConstraintOptimizationAllocationStage(Stage):
             for node in filter(lambda n: n.id == layer_id_not_in_ss, sub_workload.node_list):
                 node.chosen_core_allocation = node.core_allocation
                 node.possible_core_allocation = node.core_allocation
-                node.core_allocation_is_fixed = True
                 layer_ids.insert(layer_ids_idx, layer_id_not_in_ss)
                 core_ids.insert(layer_ids_idx, node.core_allocation)
                 logger.warning(f"{node} not in steady state allocation; allocated to: {node.core_allocation}.")
@@ -463,9 +462,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         assert len(layer_ids) == len(core_ids)
         for layer_id, cores in zip(layer_ids, core_ids):
             n = next(n for n in workload.node_list if n.id == layer_id)
-            n.chosen_core_allocation = list(cores)
             n.possible_core_allocation = list(cores)
-            n.core_allocation_is_fixed = True
 
         # Find any layers that might not have been in the steady state allocation and need to be allocated manually
         # The nodes of these layers will be allocated across all possible cores in the K dimension if possible
@@ -478,9 +475,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             layer_ids_idx = np.searchsorted(layer_ids, layer_id_not_in_ss)
             for n in filter(lambda n: n.id == layer_id_not_in_ss, workload.node_list):
                 assert isinstance(n.core_allocation, list)
-                n.chosen_core_allocation = n.core_allocation
                 n.possible_core_allocation = n.core_allocation
-                n.core_allocation_is_fixed = True
                 assert "K" in n.loop_dim_size
                 layer_ids.insert(layer_ids_idx, layer_id_not_in_ss)
                 core_ids.insert(layer_ids_idx, n.core_allocation)

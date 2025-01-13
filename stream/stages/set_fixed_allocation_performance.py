@@ -32,7 +32,7 @@ class SetFixedAllocationPerformanceStage(Stage):
         self.accelerator = accelerator
         self.workload = workload
         self.cost_lut = cost_lut
-        self.latency_attr = kwargs.get("latency_attr", "latency_total1")
+        self.latency_attr = kwargs.get("latency_attr", "latency_total2")
 
     def run(self):
         logger.info("Start SetFixedAllocationPerformanceStage.")
@@ -53,10 +53,7 @@ class SetFixedAllocationPerformanceStage(Stage):
 
     def set_fixed_allocation_performance(self):
         for node in self.workload.node_list:
-            if isinstance(node.core_allocation, list) and len(node.core_allocation) == 1:
-                node.core_allocation_is_fixed = True
-                node.set_chosen_core_allocation(node.core_allocation[0])
-            if node.core_allocation_is_fixed:
+            if isinstance(node.chosen_core_allocation, int):
                 core_id = node.chosen_core_allocation
                 if core_id is None:
                     raise ValueError(f"Node {node} has fixed allocation but the chosen_core_allocation was not set.")

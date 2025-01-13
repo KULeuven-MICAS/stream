@@ -33,7 +33,6 @@ class InterCoreMappingAttributes:
     op_type: str
     spatial_mapping: SpatialMapping
     core_allocation: list[int]
-    core_allocation_is_fixed: bool
     intra_core_tiling: TILING_T
     inter_core_tiling: TILING_T
     layer_dimension_names: list[str]

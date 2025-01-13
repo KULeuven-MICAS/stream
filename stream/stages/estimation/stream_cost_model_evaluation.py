@@ -61,5 +61,5 @@ class StreamCostModelEvaluationStage(Stage):
     def check_chosen_core_allocation(workload: ComputationNodeWorkload):
         """! Check that all nodes in the workload have a chosen_core_allocation."""
         for node in workload.node_list:
-            if node.chosen_core_allocation is None or not node.core_allocation_is_fixed:
+            if not isinstance(node.chosen_core_allocation, int):
                 raise ValueError(f"{node} does not have a chosen_core_allocation.")

@@ -19,7 +19,7 @@ from stream.opt.partitioning.utils import (
     convert_outer_cn_loops,
 )
 from stream.stages.stage import Stage, StageCallable
-from stream.utils import contains_wildcard
+from stream.utils import contains_wildcard, get_inter_core_tiling_size
 from stream.workload.computation.computation_node import ComputationNode, GeneratedComputationNode, LoopRanges
 from stream.workload.dependency_propagation.dummy_node import DummyNode
 from stream.workload.dependency_propagation.propagation_node import PropagationNode
@@ -453,7 +453,8 @@ class TiledWorkloadGenerationStage(Stage):
             # If the core allocation is fixed, we need to set the chosen core allocation.
             # It's possible the core allocation contains multiple entries.
             # In that case, we select the core allocation based on the group id.
-            if original_node.core_allocation_is_fixed:
+            inter_core_tiling_size = get_inter_core_tiling_size(original_node)
+            if len(original_node.possible_core_allocation) == inter_core_tiling_size:
                 assert group_id < len(
                     original_node.possible_core_allocation
                 ), f"Group id {group_id} too large for core allocation list {original_node.possible_core_allocation}"

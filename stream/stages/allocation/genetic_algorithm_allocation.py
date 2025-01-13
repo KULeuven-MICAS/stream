@@ -39,7 +39,6 @@ class GeneticAlgorithmAllocationStage(Stage):
         nb_ga_individuals: int,
         operands_to_prefetch: list[LayerOperand],
         scheduling_order: list[tuple[int, int]],
-        latency_attr: str,
         **kwargs: Any,
     ):
         """Initialize the InterCoreMappingStage.
@@ -60,7 +59,7 @@ class GeneticAlgorithmAllocationStage(Stage):
         self.nb_individuals = nb_ga_individuals
         self.operands_to_prefetch = operands_to_prefetch
         self.scheduling_order = scheduling_order
-        self.latency_attr = latency_attr
+        self.latency_attr = kwargs.get("latency_attr", "latency_total2")
 
         # Determine the set of all (layer, group) combinations to be allocated separately
         self.layer_groups: list[tuple[int, int]] = sorted(set((n.id, n.group) for n in self.workload.node_list))
@@ -68,15 +67,13 @@ class GeneticAlgorithmAllocationStage(Stage):
         # self.coarse_node_ids contains all the original node (aka layers) ids of the original graph
         self.unique_nodes = get_unique_nodes(self.workload)
         self.coarse_node_ids: list[int] = [id for id, _ in self.layer_groups]
-        # self.coarse_node_ids_flexible contains only those original node ids that have flexibility: they can be
         # allocated to more than one core
         # TODO is this sorting key correct?
         self.unique_nodes_flexible: list[ComputationNode] = []
         for n in self.unique_nodes:
-            if not n.core_allocation_is_fixed and len(n.possible_core_allocation) > 1:
+            if not isinstance(n.chosen_core_allocation, int):
                 self.unique_nodes_flexible.append(n)
 
-        self.coarse_node_ids_flexible: list[int] = [n.id for n in self.unique_nodes_flexible]
         # For each unique node get the possible core allocations by getting the ids of the cores in cost_lut
         self.valid_allocations: list[list[int]] = []
         # Save all the layer group combinations that are flexible
