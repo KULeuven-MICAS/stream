@@ -38,9 +38,8 @@ class FlattenNode(PropagationNode):
     ) -> tuple[NodeTensor, list[bool]]:
         """Reshape an input tensor"""
         shape = tensor.tensor_shape
-
-        # TODO register relevant axes
-
         # taken from https://github.com/onnx/onnx/blob/main/docs/Operators.md#examples-51
         new_shape = (1, -1) if self.axis == 0 else (np.prod(shape[0 : self.axis]).astype(int), -1)
-        return tensor.reshape(new_shape)
+        # All axes will be relevant in case of a flatten operation
+        relevant_axes = [True] * len(new_shape)
+        return tensor.reshape(new_shape), relevant_axes
