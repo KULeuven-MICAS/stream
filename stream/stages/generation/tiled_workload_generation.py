@@ -774,7 +774,7 @@ class TiledWorkloadGenerationStage(Stage):
     def _print_time_delta_to_logger(self, timesteps: tuple[float, float, float], path: str):
         ts_deltas = [timesteps[i] - timesteps[i - 1] for i in range(1, len(timesteps))]
         ts_deltas_str = ", ".join([f"{delta:.3f}" for delta in ts_deltas])
-        logger.info(f"Path {path} time deltas: {ts_deltas_str}")
+        logger.debug(f"Path {path} time deltas: {ts_deltas_str}")
 
     def _get_dependent_operand(self, producer: Node, consumer: ComputationNode):
         """Find the operand for which the consumer node connects to its predecessor"""
