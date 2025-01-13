@@ -148,12 +148,11 @@ class TiledWorkloadGenerationStage(Stage):
             # Get all pairs of nodes that we have to extract inter edges for
             all_pairs = self.get_all_node_pairs(self.workload)
             for producer, consumer, is_complex in all_pairs:
-                producer_tiles = self.tiles_dict[producer]
-                consumer_tiles = self.tiles_dict[consumer]
+
                 if is_complex:
                     inter_edges = self.get_inter_edges_numpy(producer, consumer)
                 else:
-                    inter_edges = self.get_inter_edges_rtree(producer, consumer, producer_tiles, consumer_tiles)
+                    inter_edges = self.get_inter_edges_rtree(producer, consumer)
                 all_edges += inter_edges
 
             # Set the base_priority and number of real predecessors of all nodes
@@ -644,17 +643,16 @@ class TiledWorkloadGenerationStage(Stage):
         self,
         producer: ComputationNode,
         consumer: ComputationNode,
-        producer_tiles: list[ComputationNode],
-        consumer_tiles: list[ComputationNode],
     ):
         """Function that finds the edges between producer and consumer tiles.
 
         Args:
             producer: the producer node
             consumer: the consumer node
-            producer_tiles: list of the producer tiles
-            consumer_tiles: list of the consumer tiles
         """
+        producer_tiles = self.tiles_dict[producer]
+        consumer_tiles = self.tiles_dict[consumer]
+
         # Check all the different input operands of the consumer node that stem from the producer node
         # The direct predecessor of an input operand might be a DummyNode so we need to propagate back
         dependent_input_operands: list[LayerOperand] = []
@@ -732,15 +730,15 @@ class TiledWorkloadGenerationStage(Stage):
         ), "No paths between producer and consumer found without ComputationNode in intermediates."
 
         for path_between in paths_between:
-            timesteps = [time.time()]
+            timesteps = (time.time(),)
             # First node in the path is a ComputationNode, of which we extract the output operand dependency tensor
             first_node = path_between[0]
             assert isinstance(first_node, ComputationNode), "First node in path should be ComputationNode"
             tensor = self.get_tensor_cn_for_op(first_node, dependent_operand=Constants.OUTPUT_LAYER_OP)
-            timesteps.append(time.time())
+            timesteps += (time.time(),)
 
             # Propagate through intermediate, non-computation nodes
-            relevant_axes = [False] * len(tensor.tensor_shape)
+            relevant_axes = self._initialize_relevant_axes(first_node, tensor)
             for i, node in enumerate(path_between[1:-1], start=1):
                 assert isinstance(node, PropagationNode), "Intermediate nodes should not be of type ComputationNode"
                 previous_node = path_between[i - 1]
@@ -752,22 +750,17 @@ class TiledWorkloadGenerationStage(Stage):
             # Final node: Computation node
             final_node: ComputationNode = path_between[-1]  # type: ignore
             assert isinstance(final_node, ComputationNode), "Last node in path should be ComputationNode"
-            # Find the operand for which this last node connects to its predecessor
-            dependent_operand = next(
-                op for op, dependent_node_id in final_node.input_operand_source.items() if dependent_node_id == node.id
-            )
+            dependent_operand = self._get_dependent_operand(node, final_node)
             inter_edges = self.get_inter_edges_hybrid(tensor, final_node, dependent_operand, relevant_axes)
 
-            timesteps.append(time.time())
-            ts_deltas = [timesteps[i] - timesteps[i - 1] for i in range(1, len(timesteps))]
-            ts_deltas_str = ", ".join([f"{delta:.3f}" for delta in ts_deltas])
-            logger.info(f"Path {path_between} time deltas: {ts_deltas_str}")
+            timesteps += (time.time(),)
+            self._print_time_delta_to_logger(timesteps, str(path_between))
 
-            for producer, cons in inter_edges:
+            for producer, consumer in inter_edges:
                 all_inter_edges.append(
                     (
                         producer,
-                        cons,
+                        consumer,
                         {
                             "operand": dependent_operand,
                             "bits": producer.data_produced_unique,
@@ -775,6 +768,37 @@ class TiledWorkloadGenerationStage(Stage):
                     )
                 )
         return all_inter_edges
+
+    def _print_time_delta_to_logger(self, timesteps: tuple[float, float, float], path: str):
+        ts_deltas = [timesteps[i] - timesteps[i - 1] for i in range(1, len(timesteps))]
+        ts_deltas_str = ", ".join([f"{delta:.3f}" for delta in ts_deltas])
+        logger.info(f"Path {path} time deltas: {ts_deltas_str}")
+
+    def _get_dependent_operand(self, producer: Node, consumer: ComputationNode):
+        """Find the operand for which the consumer node connects to its predecessor"""
+        return next(
+            op for op, dependent_node_id in consumer.input_operand_source.items() if dependent_node_id == producer.id
+        )
+
+    def _initialize_relevant_axes(self, node: ComputationNode, tensor: NodeTensor):
+        """The relevant axes represent which tensor ranks are relevant for the dependency propagation, i.e. which axes
+        of the NodeTensor are actually used.
+        Axes of dimensions appearing in the inter- or intra-core tiling are relevant by default.
+        """
+        dimensions = node.operand_dimensionality_order[Constants.OUTPUT_LAYER_OP]
+        relevant_axes = [False] * len(dimensions)
+
+        tilings = (
+            node.intra_core_tiling + node.inter_core_tiling
+            if not contains_wildcard(node.inter_core_tiling)
+            else node.intra_core_tiling
+        )
+
+        for dim, size in tilings:
+            if dim in dimensions and size > 1:
+                relevant_axes[dimensions.index(dim)] = True
+
+        return relevant_axes
 
     def get_tensor_cn_for_op(self, node: ComputationNode, dependent_operand: LayerOperand):
         """Convert the given node into a NodeTensor and update the known tensors of computation nodes"""
