@@ -137,12 +137,12 @@ def get_k_splits(allocation):
     return k_splits
 
 
-def get_node_latencies(allocation, cost_lut, accelerator, k_splits, latency_attr):
+def get_node_latencies(workload, allocation, cost_lut, accelerator, k_splits, latency_attr):
     node_latencies = {}
     core_names = sorted(set([a for _, a, _ in allocation]))
     core_ids = [int(core_name.split(" ")[-1]) for core_name in core_names]
     for _, a, id in allocation:
-        node = next(n for n in cost_lut.get_nodes() if n.id == id[0])
+        node = next(node for node in workload.node_list if node.id == id)
         latencies, _ = get_latencies([node], core_ids, accelerator, cost_lut, latency_attr=latency_attr)
         nb_k_splits = len(k_splits[id])
         lat = latencies[(node.id, a, nb_k_splits)]

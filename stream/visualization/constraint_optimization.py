@@ -23,6 +23,7 @@ from stream.opt.allocation.constraint_optimization.utils import (
     get_timesteps,
 )
 from stream.utils import CostModelEvaluationLUT
+from stream.workload.onnx_workload import ComputationNodeWorkload
 
 if TYPE_CHECKING:
     pass
@@ -31,6 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 def visualize_waco(
+    workload: ComputationNodeWorkload,
     allocation: ALLOCATION_T,
     cost_lut: CostModelEvaluationLUT,
     accelerator: Accelerator,
@@ -47,7 +49,7 @@ def visualize_waco(
     timesteps = get_timesteps(allocation)
     resources = get_resources(allocation)
     node_timesteps = get_node_timesteps(allocation)
-    node_latencies = get_node_latencies(allocation, cost_lut, accelerator, k_splits, latency_attr)
+    node_latencies = get_node_latencies(workload, allocation, cost_lut, accelerator, k_splits, latency_attr)
     timestep_latencies = get_timestep_latencies(allocation, node_latencies, timesteps)
     starts = get_node_start_timesteps(k_splits, node_timesteps, timestep_latencies)
     _, total_lat_str = calculate_total_latency(allocation, cost_lut, accelerator, iterations, latency_attr)

@@ -216,10 +216,10 @@ class ConstraintOptimizationAllocationStage(Stage):
         # Check if the allocation is already cached, if not: find it
         stack_str = "_".join([str(id) for id in stack])
         stack_allocations_path = os.path.join(self.allocations_path, f"steady_state-{stack_str}.pickle")
+        sg = self.workload.subgraph(to_compute)
         if os.path.exists(stack_allocations_path):
             allocation = pickle_load(stack_allocations_path)
         else:
-            sg = self.workload.subgraph(to_compute)
             logger.info(f"Optimizing allocation for {iterations} iterations of {len(to_compute)} ss nodes.")
             allocation = get_optimal_allocations(
                 sg,
@@ -231,7 +231,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             )
             pickle_save(allocation, stack_allocations_path)
         fig_path = stack_allocations_path.replace(".pickle", ".html")
-        visualize_waco(allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr, fig_path)
+        visualize_waco(sg, allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr, fig_path)
         json_path = stack_allocations_path.replace(".pickle", ".json")
         to_perfetto_json(allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr, json_path)
 

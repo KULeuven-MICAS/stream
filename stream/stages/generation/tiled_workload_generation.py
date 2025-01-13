@@ -155,13 +155,14 @@ class TiledWorkloadGenerationStage(Stage):
                     inter_edges = self.get_inter_edges_rtree(producer, consumer)
                 all_edges += inter_edges
 
-            # Set the base_priority and number of real predecessors of all nodes
-            self.set_base_priority_of_nodes(all_tiles, all_edges)
-            self.set_nb_real_predecessors(all_tiles, all_edges)
-
             # The graph construction needs to happen after the base priority and nb_real_predecessors are set
             tiled_workload = ComputationNodeWorkload()
             tiled_workload.add_edges_from(all_edges)
+
+            # Set the base_priority and number of real predecessors of all nodes
+            self.set_base_priority_of_nodes(tiled_workload)
+            self.set_nb_real_predecessors(tiled_workload)
+            tiled_workload = self.remake_workload(all_tiles, all_edges)
 
             # Save the tiled workload
             pickle_save(tiled_workload, self.tiled_workload_path)
@@ -952,28 +953,34 @@ class TiledWorkloadGenerationStage(Stage):
         return tensors_cns
 
     @staticmethod
-    def set_base_priority_of_nodes(nodes: list[ComputationNode], edges: list[EDGE_T]):
+    def set_base_priority_of_nodes(workload: ComputationNodeWorkload):
         """Set the base_priority of all stored tensors of the variable operands of all nodes
         based on the amount of real (excluding same layer edges) edges.
 
         Args:
-            nodes (list): List of nodes.
-            edges (list): List of edges in the form of (producer, consumer, data).
+            workload (ComputationNodeWorkload): The workload DiGraph
         """
-        for node in nodes:
+        for node in workload.node_list:
             output_operand = node.output_operand
             output_tensor = node.operand_tensors[output_operand]
-            successors = [cons for prod, cons, _ in edges if prod == node]
+            successors = list(workload.successors(node))
             output_tensor.set_base_priorities(len(successors))
 
     @staticmethod
-    def set_nb_real_predecessors(nodes: list[ComputationNode], edges: list[EDGE_T]):
+    def set_nb_real_predecessors(workload: ComputationNodeWorkload):
         """Set the number of real predecessors for each node in the graph.
         A real predecessor is a node that is not in the same layer as the node itself.
         """
-        for node in nodes:
-            nb_real_predecessors = [prod for prod, cons, _ in edges if cons == node and prod.id != cons.id]
-            node.nb_real_predecessors = len(nb_real_predecessors)
+        for node in workload.node_list:
+            real_predecessors = [pred for pred in workload.predecessors(node) if pred.id != node.id]
+            node.nb_real_predecessors = len(real_predecessors)
+
+    def remake_workload(self, tiles: list[ComputationNode], edges: list[EDGE_T]) -> ComputationNodeWorkload:
+        """Remake the workload to fix graph inconsistencies."""
+        new_workload = ComputationNodeWorkload()
+        new_workload.add_nodes_from(tiles)
+        new_workload.add_edges_from(edges)
+        return new_workload
 
     def get_weight_capacities(self):
         # Get the weight capacity of all cores
