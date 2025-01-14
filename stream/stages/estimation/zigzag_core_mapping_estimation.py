@@ -485,7 +485,7 @@ class MinimalBandwidthLatencyStage(Stage):
                 total_used_dram_bw = bw_for_blocking + bw_for_broadcasting
             case 3:
                 # We don't know broadcast op, just pick one that is not the output
-                broadcast_op = next(op for op in self.mem_ops_with_sadram if op != Constants.OUTPUT_MEM_OP)
+                broadcast_op = next(op for op in self.mem_ops_with_dram if op != Constants.OUTPUT_MEM_OP)
                 other_ops = [op for op in self.mem_ops_with_dram if op != broadcast_op]
 
                 bw_for_broadcasting = 1 * self.get_used_dram_bandwidth_for_op(cme, broadcast_op)

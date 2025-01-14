@@ -250,19 +250,18 @@ class Schedule:
         """
         Sync the cores_idle_from dict values if the best candidate is the first node of a layer and we detect
         layer-by-layer execution. The layer-by-layer execution is detected through the scheduling_order.
+        # TODO this assumes the scheduling order is the order in which nodes are actually scheduled
         """
         # Get the predecessor ids of the best_candidate from the workload graph G
         predecessor_ids = [pred.id for pred in self.G.predecessors(best_candidate) if pred.id != best_candidate.id]
-        predecessor_idxs = [
-            i for i in range(len(self.scheduling_order)) if self.scheduling_order[i][0] in predecessor_ids
-        ]
+        predecessor_idxs = [idx for idx, item in enumerate(self.scheduling_order) if item[0] in predecessor_ids]
 
         best_candidate_idx = self.scheduling_order_map[(best_candidate.id, best_candidate.sub_id)]
 
         is_first_node_of_layer = not any(
-            layer_id == best_candidate.id for layer_id, _ in self.scheduling_order[best_candidate_idx:-1]
+            layer_id == best_candidate.id for layer_id, _ in self.scheduling_order[0:best_candidate_idx]
         )
-        all_predecessors_are_scheduled = all(i < best_candidate_idx for i in predecessor_idxs)
+        all_predecessors_are_scheduled = all(idx < best_candidate_idx for idx in predecessor_idxs)
         if is_first_node_of_layer and all_predecessors_are_scheduled:
             # Sync the cores_idle_from dict
             max_idle_time = max(self.cores_idle_from.values())
