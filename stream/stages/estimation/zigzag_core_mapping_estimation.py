@@ -4,7 +4,7 @@ from math import ceil, prod
 from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
-from zigzag.datatypes import MemoryOperand
+from zigzag.datatypes import Constants, MemoryOperand
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
 from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
@@ -460,6 +460,9 @@ class MinimalBandwidthLatencyStage(Stage):
         return total_bw
 
     def objective_function(self, cme: CostModelEvaluation):
+        """
+        # TODO this does not cover all cases
+        """
         latency: int = cme.latency_total2
 
         if not self.has_dram_level:
@@ -467,8 +470,33 @@ class MinimalBandwidthLatencyStage(Stage):
 
         assert self.total_dram_bandwidth is not None
 
-        used_dram_bw = sum(self.get_used_dram_bandwidth_for_op(cme, mem_op) for mem_op in self.mem_ops_with_dram)
-        return ceil(self.nb_parallel_nodes * used_dram_bw / self.total_dram_bandwidth) * latency
+        match len(self.mem_ops_with_dram):
+            case 1:
+                total_used_dram_bw = self.nb_parallel_nodes * self.get_used_dram_bandwidth_for_op(
+                    cme, self.mem_ops_with_dram[0]
+                )
+            case 2:
+                # Assume that 1 operand is broadcasted to all cores and only needs 1 simultaneous transfer for all cores
+                # We don't know which operand is broadcasted, so just pick one that is not the output
+                broadcast_op = next(op for op in self.mem_ops_with_dram if op != Constants.OUTPUT_MEM_OP)
+                other_op = next(op for op in self.mem_ops_with_dram if op != broadcast_op)
+                bw_for_broadcasting = 1 * self.get_used_dram_bandwidth_for_op(cme, broadcast_op)
+                bw_for_blocking = self.nb_parallel_nodes * self.get_used_dram_bandwidth_for_op(cme, other_op)
+                total_used_dram_bw = bw_for_blocking + bw_for_broadcasting
+            case 3:
+                # We don't know broadcast op, just pick one that is not the output
+                broadcast_op = next(op for op in self.mem_ops_with_sadram if op != Constants.OUTPUT_MEM_OP)
+                other_ops = [op for op in self.mem_ops_with_dram if op != broadcast_op]
+
+                bw_for_broadcasting = 1 * self.get_used_dram_bandwidth_for_op(cme, broadcast_op)
+                bw_for_blocking = self.nb_parallel_nodes * sum(
+                    self.get_used_dram_bandwidth_for_op(cme, mem_op) for mem_op in other_ops
+                )
+                total_used_dram_bw = bw_for_blocking + bw_for_broadcasting
+            case _:
+                raise NotImplementedError
+
+        return ceil(total_used_dram_bw / self.total_dram_bandwidth) * latency
 
     def run(self):
         """! Run the compare stage by comparing a new cost model output with the current best found result."""
