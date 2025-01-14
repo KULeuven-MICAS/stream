@@ -47,8 +47,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         self.input_names = input_names
         self.start = -1
         self.end = -1
-        # number of data (in bits) only this node produces/consumes (not produced/consumed by any other node)
-        self.data_consumed_unique = 0
+        # number of data (in bits) only this node produces (not produced by any other node)
         self.data_produced_unique = 0
 
     def get_total_energy(self) -> float:

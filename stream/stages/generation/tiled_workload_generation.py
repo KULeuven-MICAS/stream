@@ -915,18 +915,6 @@ class TiledWorkloadGenerationStage(Stage):
 
             op_dim_ranges = [tile.loop_ranges[loop_dim] for loop_dim in tensor_dims]
             op_dim_ranges_max_stop = tuple(tensor_shapes)
-            # start can be negative for padding which, makes np flip
-            window = tuple([slice(max(0, start), stop) for (start, stop) in op_dim_ranges])
-
-            # Count how many nans we have in this window, as this is the amount of unique data consumed/produced by
-            # this tile # TODO this call takes a loooong time, can we optimize this?
-            nb_unique_data_bits = node_tensor.get_nb_empty_elements(window) * precision
-            nb_unique_data_seen += nb_unique_data_bits
-            # Add this amount of unique data to the data produced/consumed unique by this tile
-            if op == node.output_operand:
-                tile.data_produced_unique += nb_unique_data_bits
-            else:
-                tile.data_consumed_unique += nb_unique_data_bits
 
             # Set this window of the tensor to indicate it will be consumed/produced by this tile
             # NOTE assert is not guaranteed: tiles of nodes whose ranges have been extended can exceed the NodeTensor shape
