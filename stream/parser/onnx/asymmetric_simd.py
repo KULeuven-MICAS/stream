@@ -46,12 +46,6 @@ class AsymmetricSimdParser(OnnxComputeOperatorParser):
         if len(output_shape) > len(AsymmetricSimdParser.DEFAULT_LAYER_DIMENSIONS):
             raise NotImplementedError
 
-        # possible_loop_dims = (
-        #     mapping.layer_dimension_names
-        #     if len(mapping.layer_dimension_names) == len(output_shape)
-        #     else AsymmetricSimdParser.DEFAULT_LAYER_DIMENSIONS
-        # )
-
         data["equation"] = "O[b][d][k]+=I[b][d][k]*W[d][k]"
         data["loop_dims"] = ["B", "D", "k"]
 

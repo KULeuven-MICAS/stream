@@ -258,10 +258,12 @@ class Schedule:
         ]
 
         best_candidate_idx = self.scheduling_order_map[(best_candidate.id, best_candidate.sub_id)]
-        if self.scheduling_order[best_candidate_idx - 1][0] != best_candidate.id and all(
-            (i < best_candidate_idx for i in predecessor_idxs)
-        ):
-            # If the best_candidate is the first node of a layer and all nodes of predecessor layers have been scheduled
+
+        is_first_node_of_layer = not any(
+            layer_id == best_candidate.id for layer_id, _ in self.scheduling_order[best_candidate_idx:-1]
+        )
+        all_predecessors_are_scheduled = all(i < best_candidate_idx for i in predecessor_idxs)
+        if is_first_node_of_layer and all_predecessors_are_scheduled:
             # Sync the cores_idle_from dict
             max_idle_time = max(self.cores_idle_from.values())
             for core_id in self.cores_idle_from:
