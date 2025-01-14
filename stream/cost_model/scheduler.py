@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 from zigzag.datatypes import Constants, LayerOperand, MemoryOperand
 
 from stream.hardware.architecture.core import Core
-from stream.workload.computation.computation_node import ComputationNode
+from stream.workload.computation.computation_node import ComputationNode, GeneratedComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 from stream.workload.tensor import Tensor
 
@@ -65,7 +65,7 @@ class Schedule:
         self.offchip_core = accelerator.get_offchip_core()
         self.offchip_top_instances = self.accelerator.get_top_instances_of_core(self.offchip_core)
         self.nb_graph_nodes = G.number_of_nodes()
-        self.scheduling_order_map = {item: idx for idx, item in enumerate(self.scheduling_order)}  # For index lookup
+        self._initialize_scheduling_order_lookup()
 
         # Initialize bookkeeping
         self.nb_scheduled_nodes = 0
@@ -74,6 +74,19 @@ class Schedule:
         self.candidates = self.get_initial_candidates()
         self.initialize_tensor_priorities()
         self.initialize_offchip_tensors()
+
+    def _initialize_scheduling_order_lookup(self):
+        """Initialize look-up dictionaries to speed up going from (id, sub_id) to index in the scheduling order"""
+        # {item: idx for idx, item in enumerate(self.scheduling_order)}
+        self.scheduling_order_lookup: dict[tuple[int, int], int] = {}
+        self.scheduling_order_lookup_tiered: dict[int, dict[int, int]] = {}
+        for idx, item in enumerate(self.scheduling_order):
+            self.scheduling_order_lookup[item] = idx
+            layer_id, sub_id = item
+            if layer_id not in self.scheduling_order_lookup_tiered:
+                self.scheduling_order_lookup_tiered[layer_id] = {sub_id: idx}
+            else:
+                self.scheduling_order_lookup_tiered[layer_id][sub_id] = idx
 
     def get_initial_candidates(self):
         """Put the very first nodes of a layer that doesn't have any incoming edges as the first candidates"""
@@ -129,7 +142,7 @@ class Schedule:
             transfer_bw_fraction = self.get_transfer_bandwidth_fraction(best_candidate)
 
             # Step 0: get the start time: when core is available or predecessors finished
-            self.sync_cores_idle_from(best_candidate)
+            self.check_and_sync_cores(best_candidate)
             core_idle_from = self.cores_idle_from[core.id]
             timestep = max(core_idle_from, preds_end)
 
@@ -235,7 +248,7 @@ class Schedule:
         if not self.candidates:
             raise ValueError("There are no candidates to schedule.")
         preds_ends, cn_candidates = zip(*self.candidates)
-        idxs = [self.scheduling_order_map[(n.id, n.sub_id)] for n in cn_candidates]
+        idxs = [self.scheduling_order_lookup[(n.id, n.sub_id)] for n in cn_candidates]
         best_candidate_idx = idxs.index(min(idxs))
         best_candidate = cn_candidates[best_candidate_idx]
         preds_end = preds_ends[best_candidate_idx]
@@ -243,7 +256,7 @@ class Schedule:
         del self.candidates[best_candidate_idx]
         return best_candidate, preds_end
 
-    def sync_cores_idle_from(
+    def check_and_sync_cores(
         self,
         best_candidate: ComputationNode,
     ):
@@ -253,20 +266,34 @@ class Schedule:
         # TODO this assumes the scheduling order is the order in which nodes are actually scheduled
         """
         # Get the predecessor ids of the best_candidate from the workload graph G
-        predecessor_ids = [pred.id for pred in self.G.predecessors(best_candidate) if pred.id != best_candidate.id]
-        predecessor_idxs = [idx for idx, item in enumerate(self.scheduling_order) if item[0] in predecessor_ids]
+        predecessor_ids = (pred.id for pred in self.G.predecessors(best_candidate) if pred.id != best_candidate.id)
+        predecessor_idxs: list[int] = []
 
-        best_candidate_idx = self.scheduling_order_map[(best_candidate.id, best_candidate.sub_id)]
+        for pred_id in predecessor_ids:
+            predecessor_idxs += list(self.scheduling_order_lookup_tiered[pred_id].values())
 
-        is_first_node_of_layer = not any(
-            layer_id == best_candidate.id for layer_id, _ in self.scheduling_order[0:best_candidate_idx]
+        best_candidate_idx = self.scheduling_order_lookup[(best_candidate.id, best_candidate.sub_id)]
+
+        # Correct way to compute
+        # is_first_node_of_layer = not any(
+        #     layer_id == best_candidate.id for layer_id, _ in self.scheduling_order[0:best_candidate_idx]
+        # )
+        # Fast way to compute
+        is_first_node_of_layer = best_candidate.sub_id == 0 and (
+            not isinstance(best_candidate, GeneratedComputationNode) or (best_candidate.gen_id == 0)
         )
+
         all_predecessors_are_scheduled = all(idx < best_candidate_idx for idx in predecessor_idxs)
+
         if is_first_node_of_layer and all_predecessors_are_scheduled:
-            # Sync the cores_idle_from dict
-            max_idle_time = max(self.cores_idle_from.values())
-            for core_id in self.cores_idle_from:
-                self.cores_idle_from[core_id] = max_idle_time
+            self._sync_cores()
+
+    def _sync_cores(self):
+        """Sync the `cores_idle_from` by setting all timesteps to the latest timestep of all cores. The next layer
+        can then start at the same timestep on all cores."""
+        max_idle_time = max(self.cores_idle_from.values())
+        for core_id in self.cores_idle_from:
+            self.cores_idle_from[core_id] = max_idle_time
 
     def get_tensors_needed_for_node(self, node: ComputationNode):
         """Determine all the tensors needed to compute a node.
