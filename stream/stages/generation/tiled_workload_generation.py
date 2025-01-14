@@ -130,8 +130,10 @@ class TiledWorkloadGenerationStage(Stage):
             outer_temporal_loops = self.get_outer_tmap_loop_dimensions(node)
             mandatory_divisors = self.get_mandatory_divisors(node)
             tiles, unique_tiles = self.get_tiles(node, outer_temporal_loops, mandatory_divisors)
-            logger.info(f"{node}: Outer loops {outer_temporal_loops}.")
-            logger.info(f"{node}: Generated {len(tiles)} tile(s).")
+            # Only log once for generated nodes
+            if not isinstance(node, GeneratedComputationNode) or node.gen_id == 0:
+                logger.info(f"{node}: Outer loops {outer_temporal_loops}.")
+                logger.info(f"{node}: Generated {len(tiles)} tile(s).")
             self.tiles_dict[node] = tiles
             all_unique_tiles += unique_tiles
             intra_edges = self.get_intra_edges(tiles)

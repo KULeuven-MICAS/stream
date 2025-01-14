@@ -9,6 +9,8 @@ class Reduce1DParser(OnnxComputeOperatorParser):
     e.g. sum over one row or max of a single row
     """
 
+    DEFAULT_LAYER_DIMENSIONS = ["B", "D", "K"]
+
     def get_reduction_dim(self, input_shape: list[int], output_shape: list[int]):
         """Returns the axis in which the dimension is reduced"""
 
@@ -46,7 +48,6 @@ class Reduce1DParser(OnnxComputeOperatorParser):
     ):
         """
         Generate the necessary dictionary items required for the LayerNode creation.
-        # TODO use layer dimension names from mapping
         """
         if len(self.get_node_predecessors()) != 1:
             raise NotImplementedError
@@ -66,25 +67,36 @@ class Reduce1DParser(OnnxComputeOperatorParser):
         data["dimension_relations"] = []
         data["loop_sizes"] = input_shape
 
-        # C is always the reduction dim
-        # If keep_dim: add an arbitrary dim of size 1
-        reduced_dim_output = "CR"  # C reduced to 1
-        eq_part_CR = f"[{reduced_dim_output}]" if keep_dim else ""
-        match len(input_shape):
-            case 2:
-                data["equation"] = f"O[k]{eq_part_CR}+=I[k][c]*W[]"
-                data["loop_dims"] = ["K", "C"]
-            case 3:
-                data["equation"] = f"O[b][k]{eq_part_CR}+=I[b][k][c]*W[]"
-                data["loop_dims"] = ["B", "K", "C"]
-            case 4:
-                data["equation"] = f"O[b][h][k]{eq_part_CR}+=I[b][h][k][c]*W[]"
-                data["loop_dims"] = ["B", "H", "K", "C"]
-            case _:
-                raise NotImplementedError
+        if len(input_shape) > len(Reduce1DParser.DEFAULT_LAYER_DIMENSIONS):
+            raise NotImplementedError
 
+        possible_loop_dims = (
+            mapping.layer_dimension_names
+            if len(mapping.layer_dimension_names) == len(output_shape)
+            else Reduce1DParser.DEFAULT_LAYER_DIMENSIONS
+        )
+        loop_dims = possible_loop_dims[0 : len(output_shape)]
+
+        # If keep_dim: add an arbitrary dim of size 1
+        reduced_dim_output = "R"  # C reduced to 1
+        assert (
+            not keep_dim or reduced_dim_output not in possible_loop_dims
+        ), "Layer dimension `R` is reserved for the reduction axis"
+
+        # Output: drop the last dimension: this dimension is reduced
+        loop_dims_O = loop_dims[0:-1]
+        loop_dims_I = loop_dims.copy()
         if keep_dim:
-            data["loop_dims"] += [reduced_dim_output]
-            data["loop_sizes"] += [1]
+            # Replace reduction dim with size-1 dimension
+            loop_dims_O.append(reduced_dim_output)
+            loop_dims.append(reduced_dim_output)
+            data["loop_sizes"].append(1)
+
+        equation_dims_I = "".join([f"[{dim.lower()}]" for dim in loop_dims_I])
+        equation_dims_O = "".join([f"[{dim.lower()}]" for dim in loop_dims_O])
+        equation = f"O{equation_dims_O}+=I{equation_dims_I}*W[]"
+
+        data["equation"] = equation
+        data["loop_dims"] = loop_dims
 
         return data

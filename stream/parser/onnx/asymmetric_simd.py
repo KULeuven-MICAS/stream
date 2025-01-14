@@ -13,6 +13,8 @@ class AsymmetricSimdParser(OnnxComputeOperatorParser):
     e.g. Add, Mul, etc.
     """
 
+    DEFAULT_LAYER_DIMENSIONS = ["B", "D", "K"]
+
     def get_layer_node_user_format(
         self,
         input_shape: list[int],
@@ -21,12 +23,14 @@ class AsymmetricSimdParser(OnnxComputeOperatorParser):
     ):
         """
         Generate the necessary dictionary items required for the LayerNode creation.
-        # TODO use layer dimension names from mapping
 
         Args:
             input_shape: the non-batched input shape
             output_shape: the batched output shape, equal to the batched input shape
         """
+
+        raise DeprecationWarning("use MulParser instead")
+
         if not (len(output_shape) == 3 and len(input_shape) == 2):
             raise NotImplementedError
 
@@ -38,6 +42,15 @@ class AsymmetricSimdParser(OnnxComputeOperatorParser):
         data["operand_precision"] = self.get_operand_precision_user_format()
         data["dimension_relations"] = []
         data["loop_sizes"] = output_shape
+
+        if len(output_shape) > len(AsymmetricSimdParser.DEFAULT_LAYER_DIMENSIONS):
+            raise NotImplementedError
+
+        # possible_loop_dims = (
+        #     mapping.layer_dimension_names
+        #     if len(mapping.layer_dimension_names) == len(output_shape)
+        #     else AsymmetricSimdParser.DEFAULT_LAYER_DIMENSIONS
+        # )
 
         data["equation"] = "O[b][d][k]+=I[b][d][k]*W[d][k]"
         data["loop_dims"] = ["B", "D", "k"]
