@@ -52,7 +52,7 @@ def visualize_waco(
     node_latencies = get_node_latencies(workload, allocation, cost_lut, accelerator, k_splits, latency_attr)
     timestep_latencies = get_timestep_latencies(allocation, node_latencies, timesteps)
     starts = get_node_start_timesteps(k_splits, node_timesteps, timestep_latencies)
-    _, total_lat_str = calculate_total_latency(allocation, cost_lut, accelerator, iterations, latency_attr)
+    _, total_lat_str = calculate_total_latency(workload, allocation, cost_lut, accelerator, iterations, latency_attr)
     # Plot the nodes using Plotly rectangles
     color_cycle = cycle(sample_colorscale("rainbow", np.linspace(0, 1, len(cost_lut.get_nodes()))))
     colors = {layer_id: c for (layer_id, c) in zip(layer_ids, color_cycle)}

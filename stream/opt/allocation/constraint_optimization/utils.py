@@ -141,12 +141,13 @@ def get_node_latencies(workload, allocation, cost_lut, accelerator, k_splits, la
     node_latencies = {}
     core_names = sorted(set([a for _, a, _ in allocation]))
     core_ids = [int(core_name.split(" ")[-1]) for core_name in core_names]
-    for _, a, id in allocation:
-        node = next(node for node in workload.node_list if node.id == id)
+    for _, a, combined_id in allocation:
+        layer_id, _ = combined_id
+        node = next(node for node in workload.node_list if node.id == layer_id)
         latencies, _ = get_latencies([node], core_ids, accelerator, cost_lut, latency_attr=latency_attr)
-        nb_k_splits = len(k_splits[id])
+        nb_k_splits = len(k_splits[combined_id])
         lat = latencies[(node.id, a, nb_k_splits)]
-        node_latencies[id, a] = lat
+        node_latencies[combined_id, a] = lat
     return node_latencies
 
 
@@ -197,10 +198,10 @@ def get_start_time_of_node(id, a, timesteps, timestep_latencies, t_start=0):
     return t_start
 
 
-def calculate_total_latency(allocation, cost_lut, accelerator, iterations, latency_attr) -> tuple[int, str]:
+def calculate_total_latency(workload, allocation, cost_lut, accelerator, iterations, latency_attr) -> tuple[int, str]:
     k_splits = get_k_splits(allocation)
     timesteps = get_timesteps(allocation)
-    node_latencies = get_node_latencies(allocation, cost_lut, accelerator, k_splits, latency_attr)
+    node_latencies = get_node_latencies(workload, allocation, cost_lut, accelerator, k_splits, latency_attr)
     timestep_latencies = get_timestep_latencies(allocation, node_latencies, timesteps)
     node_timesteps = get_node_timesteps(allocation)
     starts = get_node_start_timesteps(k_splits, node_timesteps, timestep_latencies)

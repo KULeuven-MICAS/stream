@@ -199,7 +199,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             t_start = time()
             optimal_allocation = self.find_best_allocation(to_compute, iterations, stack, self.co_time_limit)
             ss_latency, _ = calculate_total_latency(
-                optimal_allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr
+                to_compute, optimal_allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr
             )
             t_end = time()
             logger.info(
