@@ -148,7 +148,7 @@ class ComputationNode(LayerNode, Node):
         if contains_wildcard(self.inter_core_tiling):
             return 1
         assert all(isinstance(factor, int) for _, factor in self.inter_core_tiling)
-        return prod([factor for _, factor in self.inter_core_tiling])
+        return prod(factor for _, factor in self.inter_core_tiling)
 
     @property
     def short_name(self) -> str:

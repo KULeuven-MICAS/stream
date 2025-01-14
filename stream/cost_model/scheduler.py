@@ -481,7 +481,7 @@ class Schedule:
             raise ValueError("Evictions required in offchip memory. Consider making offchip larger.")
 
         for tensor_to_evict in tensors_to_evict:
-            transfer_bandwidth_fraction = self.get_transfer_bandwidth_fraction_for_eviction(tensor_to_evict, timestep)
+            transfer_bandwidth_fraction = self.get_transfer_bandwidth_fraction_for_eviction(tensor_to_evict)
             t_eviction_complete = self.schedule_tensor_removal(
                 tensor_to_remove=tensor_to_evict,
                 core_to_remove_from=core,
@@ -637,22 +637,13 @@ class Schedule:
         """Get the fraction of the off-chip bandwidth to be used for the tensor transfers related to this node"""
         return 1 / node.get_total_inter_core_splits()
 
-    def get_transfer_bandwidth_fraction_for_eviction(self, tensor: Tensor, timestep: int):
+    def get_transfer_bandwidth_fraction_for_eviction(self, tensor: Tensor):
         """Get the fraction of the off-chip bandwidth to be used to evict this tensor at the given timestep.
-        Instead of using the total inter-core splits of the current node, we use the number of cores that store a tensor
-        of the same layer and memory operand at the given timestep.
-        # TODO check for given timestep
+        Instead of using the total inter-core splits of the current node, we use the inter-core tiling (i.e. the number
+        of cores dealing with the tensor) of the source node of this tensor.
         """
-
-        def contains_related_tensor(tensors: list[Tensor]):
-            return any(t.origin.id == tensor.origin.id and t.memory_operand == tensor.memory_operand for t in tensors)
-
-        instances_storing_related_tensor = [
-            instance
-            for instance, tensors in self.accelerator.memory_manager.top_instance_stored_tensors.items()
-            if contains_related_tensor(tensors) and instance not in self.offchip_top_instances
-        ]
-        return 1 / len(instances_storing_related_tensor)
+        nb_cores_storing_similar_tensor = tensor.origin.get_total_inter_core_splits()
+        return 1 / nb_cores_storing_similar_tensor
 
     @property
     def total_cn_offchip_link_energy(self):
