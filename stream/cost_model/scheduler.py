@@ -289,14 +289,16 @@ class Schedule:
             loop_dim_to_split = node.gen_split_layer_dim
             needed_range = node.loop_ranges[loop_dim_to_split]
             assert needed_range == (0, 1), "Only generated nodes that spit a dimension in size-1 slices are supported"
-            needed_range = (node.gen_id, node.gen_id + 1)
 
         if loop_dim_to_split not in tensor.loop_dimensions:
             return tensor
+
         full_range = tensor.loop_ranges_per_dim[loop_dim_to_split]
+        full_range_size = full_range[1] - full_range[0]
+        needed_range_size = needed_range[1] - needed_range[0]
 
         # No gain in splitting if the tensor is already the right size
-        if full_range == needed_range:
+        if full_range_size <= needed_range_size:
             return tensor
 
         sub_tensor = self.create_sub_tensor(tensor, loop_dim_to_split, needed_range)
