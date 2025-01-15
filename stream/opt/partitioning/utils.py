@@ -99,34 +99,7 @@ def convert_outer_cn_loops(outer_cn_loops: TILING_T, node: ComputationNode):
     NOTE `HintLoopGenerationStage` already clears out the invalid unrollings
     """
     assert all(isinstance(factor, int) for _, factor in outer_cn_loops)
-    return [TemporalLoop(layer_dim, loop_size) for layer_dim, loop_size in outer_cn_loops]
-
-    outer_loops: list[TemporalLoop] = []
-    for layer_dim, loop_size in outer_cn_loops:
-        layer_dim = modify_layer_dim_for_op(layer_dim, node)
-        if layer_dim in node.layer_dim_sizes.layer_dims:
-            if isinstance(loop_size, str):
-                if loop_size == "all":
-                    outer_loops.append(TemporalLoop(layer_dim, node.layer_dim_sizes[layer_dim]))
-                else:
-                    raise ValueError("Loop hint is string but not 'all'")
-            else:
-                if node.layer_dim_sizes[layer_dim] < loop_size:
-                    outer_loops.append(TemporalLoop(layer_dim, node.layer_dim_sizes[layer_dim]))
-                elif node.layer_dim_sizes[layer_dim] % loop_size == 0:
-                    outer_loops.append(TemporalLoop(layer_dim, loop_size))
-                else:
-                    # Increase the loop size of the layer until it is divisible by the outer loop
-                    new_layer_dim_size = node.layer_dim_sizes[layer_dim] + 1
-                    while new_layer_dim_size % loop_size != 0:
-                        new_layer_dim_size += 1
-                    # Set the new loop size of the layer
-                    logger.warning(
-                        f"Rounding {node}: {layer_dim} {node.layer_dim_sizes[layer_dim]} -> {new_layer_dim_size}"
-                    )
-                    node.layer_dim_sizes[layer_dim] = new_layer_dim_size
-                    outer_loops.append(TemporalLoop(layer_dim, loop_size))
-    return outer_loops
+    return [TemporalLoop(layer_dim, loop_size) for layer_dim, loop_size in outer_cn_loops if loop_size > 1]
 
 
 def convert_outer_cn_loops_with_k(outer_cn_loops: TILING_T, layer: ComputationNode, split_factor: int):

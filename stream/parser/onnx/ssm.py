@@ -111,9 +111,10 @@ class SSMParser(OnnxComputeOperatorParser):
         node_factory = LayerNodeFactory(node_data, mapping_data=[])
         node_attrs = node_factory.create_node_attr()
 
-        return GeneratedComputationNode(
+        node = GeneratedComputationNode(
             node_id=node_id,
             gen_id=idx,
+            gen_split_layer_dim=LayerDim("L"),
             base_id=base_id,
             node_name=node_name,
             op_type=op_type,
@@ -121,6 +122,8 @@ class SSMParser(OnnxComputeOperatorParser):
             mapping_attr=self.mapping,
             input_names=[],
         )
+
+        return node
 
     def create_split_node(self, ssm_input_type: SSMInput):
         node_id = self.get_and_increment_id()

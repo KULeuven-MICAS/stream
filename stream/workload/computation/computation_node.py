@@ -18,7 +18,7 @@ from stream.workload.node import Node
 from stream.workload.tensor import Tensor
 
 OperandTensorReshape: TypeAlias = dict[LayerOperand, tuple[int, ...]]
-LoopRanges: TypeAlias = dict[LayerDim, tuple[int, int]]
+LOOP_RANGES_T: TypeAlias = dict[LayerDim, tuple[int, int]]
 
 
 class ComputationNode(LayerNode, Node):
@@ -79,7 +79,7 @@ class ComputationNode(LayerNode, Node):
             operand_tensor_reshape if operand_tensor_reshape is not None else self.get_operand_tensor_reshape_default()
         )
         self.produces_final_output = produces_final_output
-        self.loop_ranges: LoopRanges = {  # type: ignore
+        self.loop_ranges: LOOP_RANGES_T = {  # type: ignore
             layer_dim: (0, size) for layer_dim, size in self.layer_dim_sizes.items()
         }
         self.operand_dimensionality_order: dict[LayerOperand, list[LayerDim]] = {
@@ -99,9 +99,6 @@ class ComputationNode(LayerNode, Node):
         self.nb_real_predecessors = None
         self._static_hash_value = self.__compute_static_hash()
 
-        # Each ComputationNode will save a tensor for all its defined operands.
-        # For example, a conv layer will have an I tensor, W tensor and O tensor.
-        self.operand_tensors: dict[LayerOperand, Tensor] = {}
         self.set_operand_tensors()
 
         # Rename function
@@ -109,6 +106,11 @@ class ComputationNode(LayerNode, Node):
         self.extract_node_info = self.extract_layer_info
 
     def set_operand_tensors(self):
+        """Each ComputationNode will save a tensor for all its defined operands.
+        For example, a conv layer will have an I tensor, W tensor and O tensor.
+        """
+        self.operand_tensors: dict[LayerOperand, Tensor] = {}
+
         for op in self.layer_operands:
             if op == Constants.OUTPUT_LAYER_OP:
                 precision = self.operand_precision.final_output_precision
@@ -238,11 +240,16 @@ class ComputationNode(LayerNode, Node):
     def set_too_large_operands(self, too_large_operands: list[MemoryOperand]):
         self.too_large_operands = too_large_operands
 
-    def update_loop_ranges(self, new_ranges: LoopRanges):
+    def update_loop_ranges(self, new_ranges: LOOP_RANGES_T):
         """Override the loop ranges with a new value for each of the given LayerDims. Keep the old range for the
         LayerDims not defined in `new_ranges`"""
         for layer_dim in new_ranges:
             self.loop_ranges[layer_dim] = new_ranges[layer_dim]
+
+        # Re-calculate pr loop ranges based on new loop_ranges
+        self.calculate_pr_loop_ranges()
+        # Re-set the operand tensors for the new loop_ranges
+        self.set_operand_tensors()
 
     def extract_inter_core_mapping_attr(self):
         mapping_attr = InterCoreMappingAttributes(
@@ -299,6 +306,7 @@ class GeneratedComputationNode(ComputationNode):
         self,
         node_id: int,
         gen_id: int,
+        gen_split_layer_dim: LayerDim,
         base_id: int,
         node_name: str,
         node_attr: LayerNodeAttributes,
@@ -335,6 +343,7 @@ class GeneratedComputationNode(ComputationNode):
 
         self.gen_id = gen_id
         self.base_id = base_id
+        self.gen_split_layer_dim = gen_split_layer_dim
 
     def has_same_performance(self, other: object) -> bool:
         """Compare the equality between two nodes. Overrides `ComputationNodes` method with the following difference:

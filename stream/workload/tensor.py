@@ -7,7 +7,7 @@ if TYPE_CHECKING:
 
     from stream.cost_model.memory_manager import MemoryManager
     from stream.hardware.architecture.accelerator import Accelerator
-    from stream.workload.computation.computation_node import ComputationNode
+    from stream.workload.computation.computation_node import LOOP_RANGES_T, ComputationNode
     from stream.workload.onnx_workload import ComputationNodeWorkload
 
 TensorHash: TypeAlias = int
@@ -79,8 +79,7 @@ class Tensor:
 
         else:
             core = accelerator.get_core(node.chosen_core_allocation)
-            memory_operand = self.memory_operand
-            top_instance = core.get_top_memory_instance(memory_operand)
+            top_instance = core.get_top_memory_instance(self.memory_operand)
             self.instance_priorities[top_instance] = self.base_priority
 
     def get_total_priority(self):
@@ -119,3 +118,8 @@ class Tensor:
     def layer_operand(self):
         """Protect property so static hash can't be altered"""
         return self.__layer_operand
+
+    @property
+    def loop_ranges_per_dim(self) -> "LOOP_RANGES_T":
+        """Same format as ComputationNode.loop_ranges"""
+        return {dim: loop_range for dim, loop_range in zip(self.loop_dimensions, self.loop_ranges)}

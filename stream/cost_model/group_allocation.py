@@ -5,7 +5,7 @@ from zigzag.datatypes import LayerDim
 from zigzag.workload.layer_attributes import LayerDimSizes
 
 from stream.utils import contains_wildcard
-from stream.workload.computation.computation_node import LoopRanges
+from stream.workload.computation.computation_node import LOOP_RANGES_T
 from stream.workload.mapping import TILING_T
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ class GroupIdManager:
         range_adjusted_to_intra_split = tuple(i % range_size_per_intra_split for i in current_range)
         return range_adjusted_to_intra_split
 
-    def __get_range_identifier(self, tile_loop_ranges: LoopRanges):
+    def __get_range_identifier(self, tile_loop_ranges: LOOP_RANGES_T):
         """Given the loop ranges of a tile, return a hashable identifier that can be used to determine wether this
         tile belongs on the same core as other tiles."""
         if not all(layer_dim in tile_loop_ranges for layer_dim, _ in self.inter_core_tiling):
@@ -62,7 +62,7 @@ class GroupIdManager:
             for layer_dim, _ in self.inter_core_tiling
         )
 
-    def get_group_id(self, tile_loop_ranges: LoopRanges) -> int:
+    def get_group_id(self, tile_loop_ranges: LOOP_RANGES_T) -> int:
         """Return the group id for the given loop ranges.
         The group id is determined based on the relevant constant operand dimension loop ranges.
         If there is no constant operand, we return 0.

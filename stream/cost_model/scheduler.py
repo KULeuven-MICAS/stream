@@ -4,7 +4,7 @@ from enum import Enum, auto
 from operator import itemgetter
 from typing import TYPE_CHECKING
 
-from zigzag.datatypes import Constants, LayerOperand, MemoryOperand
+from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 
 from stream.hardware.architecture.core import Core
 from stream.workload.computation.computation_node import ComputationNode, GeneratedComputationNode
@@ -137,8 +137,12 @@ class Schedule:
 
         while not done:
             best_candidate, preds_end = self.pop_best_candidate()
-            tensors_this_candidate_needs, tensors_operands = self.get_tensors_needed_for_node(best_candidate)
             core = self.get_allocated_core(best_candidate)
+            full_tensors_this_candidate_needs, tensors_operands = self.get_tensors_needed_for_node(best_candidate)
+            sub_tensors_this_candidate_needs = [
+                self.split_tensor_if_needed(t, best_candidate, core, timestep=preds_end)
+                for t in full_tensors_this_candidate_needs
+            ]
             transfer_bw_fraction = self.get_transfer_bandwidth_fraction(best_candidate)
 
             # Step 0: get the start time: when core is available or predecessors finished
@@ -153,18 +157,18 @@ class Schedule:
                     core=core,
                     memory_operands=best_candidate.too_large_operands,
                     timestep=timestep,
-                    exceptions=tensors_this_candidate_needs,
+                    exceptions=sub_tensors_this_candidate_needs,
                     transfer_bandwidth_fraction=transfer_bw_fraction,
                 )
                 timestep = transfer_complete_timestep
 
             # Step 2: Transfer the tensors needed for this node to the core (from off-chip or from another core)
-            for tensor, tensor_operand in zip(tensors_this_candidate_needs, tensors_operands):
+            for tensor, tensor_operand in zip(sub_tensors_this_candidate_needs, tensors_operands):
                 transfer_complete_timestep = self.schedule_tensor_transfer(
                     tensor=tensor,
                     tensor_operand=tensor_operand,
                     receiving_core=core,
-                    non_evictable_tensors=tensors_this_candidate_needs,
+                    non_evictable_tensors=sub_tensors_this_candidate_needs,
                     earliest_t=core_idle_from,
                     transfer_bandwidth_fraction=transfer_bw_fraction,
                 )
@@ -181,7 +185,7 @@ class Schedule:
                 core_to_add_output_to,
                 output_memory_operand,
                 timestep,
-                tensors_this_candidate_needs,
+                sub_tensors_this_candidate_needs,
             )
             timestep = transfer_complete_timestep
 
@@ -208,8 +212,15 @@ class Schedule:
             timestep = node_end_timestep
 
             # Step 6: manage memory usage when the node ends
-            self.decrease_priority(tensors_this_candidate_needs, tensors_operands, best_candidate)
-            self.check_for_removal(tensors_this_candidate_needs, timestep, transfer_bw_fraction)
+            self.decrease_priority(full_tensors_this_candidate_needs, tensors_operands, best_candidate)
+            self.check_for_removal(full_tensors_this_candidate_needs, timestep, transfer_bw_fraction)
+            self.remove_sub_tensors(
+                core,
+                sub_tensors_this_candidate_needs,
+                tensors_operands,
+                timestep=timestep,
+                exceptions=full_tensors_this_candidate_needs,
+            )
             self.remove_sink_node_tensor(
                 node=best_candidate,
                 tensor_to_remove=output_tensor,
@@ -255,6 +266,122 @@ class Schedule:
         # Remove the candidate from the list of candidates
         del self.candidates[best_candidate_idx]
         return best_candidate, preds_end
+
+    def split_tensor_if_needed(self, tensor: Tensor, node: ComputationNode, core: Core, timestep: int):
+        """Check if the tensor needed for the node should be split and split them if necessary.
+        This is the case if the predecessor of the node has a different loop dimension than the tensor, e.g. when one
+        predecessor tile feeds multiple tiles of the current node's layer.
+        """
+        #  Only do it if the tensor is still in offchip
+        if self.accelerator.core_contains_tensor(tensor, core):
+            return tensor
+
+        # Regular node: split based in intra-core tiling
+        if not isinstance(node, GeneratedComputationNode):
+            if not node.intra_core_tiling:
+                return tensor
+            if len(node.intra_core_tiling) > 1:
+                raise NotImplementedError
+            loop_dim_to_split = next(dim for dim, _ in node.intra_core_tiling)  # Take first one for now
+            needed_range = node.loop_ranges[loop_dim_to_split]
+
+        else:
+            loop_dim_to_split = node.gen_split_layer_dim
+            needed_range = node.loop_ranges[loop_dim_to_split]
+            assert needed_range == (0, 1), "Only generated nodes that spit a dimension in size-1 slices are supported"
+            needed_range = (node.gen_id, node.gen_id + 1)
+
+        if loop_dim_to_split not in tensor.loop_dimensions:
+            return tensor
+        full_range = tensor.loop_ranges_per_dim[loop_dim_to_split]
+
+        # No gain in splitting if the tensor is already the right size
+        if full_range == needed_range:
+            return tensor
+
+        sub_tensor = self.create_sub_tensor(tensor, loop_dim_to_split, needed_range)
+        self.accelerator.spawn(
+            sub_tensor,
+            core=self.offchip_core,
+            memory_op=tensor.memory_operand,
+            initial_timestep=timestep,
+            available_timestep=timestep,
+        )
+        return sub_tensor
+
+    def create_sub_tensor(self, tensor: Tensor, loop_dim_to_split: LayerDim, sub_loop_range: tuple[int, int]):
+        """Create a sub-tensor of the given tensor with the given loop range."""
+        assert loop_dim_to_split in tensor.loop_dimensions, "The loop dimension to split is not in the tensor."
+        idx = tensor.loop_dimensions.index(loop_dim_to_split)
+        full_loop_range = tensor.loop_ranges[idx]
+        assert full_loop_range[0] <= sub_loop_range[0] and full_loop_range[1] >= sub_loop_range[1]
+
+        compression_factor = (full_loop_range[1] - full_loop_range[0]) / (sub_loop_range[1] - sub_loop_range[0])
+
+        new_loop_ranges = list(tensor.loop_ranges)
+        new_loop_ranges[idx] = sub_loop_range
+        new_loop_ranges = tuple(new_loop_ranges)
+
+        sub_tensor = Tensor(
+            size=int(tensor.size / compression_factor),
+            origin=tensor.origin,
+            layer_operand=tensor.layer_operand,
+            loop_dimensions=tensor.loop_dimensions,
+            loop_ranges=new_loop_ranges,
+        )
+
+        # sub_tensor.base_priority = tensor.base_priority
+        # sub_tensor.instance_priorities = tensor.instance_priorities
+
+        return sub_tensor
+
+    # def split_tensor(self, tensor: Tensor, loop_dim_to_split: int, size_of_split: int = 1):
+    #     """Return multiple tensors that are splits of the input tensor along the given loop dimension."""
+    #     assert loop_dim_to_split in tensor.loop_dimensions, "The loop dimension to split is not in the tensor."
+    #     loop_start, loop_end = next(
+    #         loop_range
+    #         for dim, loop_range in zip(tensor.loop_dimensions, tensor.loop_ranges)
+    #         if dim == loop_dim_to_split
+    #     )
+    #     total_loop_size = loop_end - loop_start
+    #     assert total_loop_size % size_of_split == 0, "The split size should be a factor of the loop dimension."
+    #     nb_splits = total_loop_size // size_of_split
+
+    #     split_loop_ranges = [
+    #         (loop_start + i * size_of_split, loop_start + (i + 1) * size_of_split) for i in range(nb_splits)
+    #     ]
+
+    #     split_tensors: list[Tensor] = []
+    #     for split_loop_range in split_loop_ranges:
+    #         idx = tensor.loop_dimensions.index(loop_dim_to_split)
+    #         all_loop_ranges = list(tensor.loop_ranges)
+    #         all_loop_ranges[idx] = split_loop_range
+    #         all_loop_ranges = tuple(all_loop_ranges)
+
+    #         split_tensor = Tensor(
+    #             size=tensor.size // nb_splits,
+    #             origin=tensor.origin,
+    #             layer_operand=tensor.layer_operand,
+    #             loop_dimensions=tensor.loop_dimensions,
+    #             loop_ranges=all_loop_ranges,
+    #         )
+    #         split_tensors.append(split_tensor)
+    #     return split_tensors
+
+    # def split_tensor_in_offchip_memory(
+    #     self, tensor: Tensor, timestep: int, loop_dim_to_split: int, size_of_split: int = 1
+    # ):
+    #     """Split the tensor into multiple, smaller tensors and spawn them on the offchip memory."""
+    #     new_tensors = self.split_tensor(tensor, loop_dim_to_split, size_of_split)
+
+    #     for new_tensor in new_tensors:
+    #         self.accelerator.spawn(
+    #             new_tensor,
+    #             core=self.offchip_core,
+    #             memory_operand=tensor.memory_operand,
+    #             initial_timestep=timestep,
+    #             available_timestep=timestep,
+    #         )
 
     def check_and_sync_cores(
         self,
@@ -546,7 +673,6 @@ class Schedule:
                     write_back_to_offchip=True,
                     transfer_cause=TransferCause.SINK_LAYER,
                 )
-        # TODO hier wordt denk ik gene timestep doorgegeven!
 
     def register_scheduled_node(
         self,
@@ -637,6 +763,20 @@ class Schedule:
                         transfer_bandwidth_fraction=transfer_bandwidth_fraction,
                         transfer_cause=TransferCause.NO_LOG,
                     )
+
+    def remove_sub_tensors(
+        self,
+        core: Core,
+        sub_tensors: list[Tensor],
+        tensors_operands: list[MemoryOperand],
+        exceptions: list[Tensor],
+        timestep: int,
+    ):
+        """Remove all the sub-tensors from the given core, except for the tensors in the exceptions list."""
+        for sub_tensor, tensor_operand in zip(sub_tensors, tensors_operands):
+            if sub_tensor not in exceptions:
+                self.accelerator.remove_tensor(sub_tensor, core, tensor_operand, timestep)
+                self.accelerator.remove_tensor(sub_tensor, self.offchip_core, tensor_operand, timestep)
 
     def extend_candidates(self, node: ComputationNode):
         """For each successor of this node, check if all of its predecessors have been scheduled"""
