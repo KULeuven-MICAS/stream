@@ -1,11 +1,13 @@
 import logging
 from collections import defaultdict
 from enum import Enum, auto
-from operator import itemgetter
+from operator import itemgetter, pos
+import re
 from typing import TYPE_CHECKING
 
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 
+from stream.cost_model.communication_manager import CommunicationManager
 from stream.hardware.architecture.core import Core
 from stream.workload.computation.computation_node import ComputationNode, GeneratedComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
@@ -332,58 +334,7 @@ class Schedule:
             loop_ranges=new_loop_ranges,
         )
 
-        # sub_tensor.base_priority = tensor.base_priority
-        # sub_tensor.instance_priorities = tensor.instance_priorities
-
         return sub_tensor
-
-    # def split_tensor(self, tensor: Tensor, loop_dim_to_split: int, size_of_split: int = 1):
-    #     """Return multiple tensors that are splits of the input tensor along the given loop dimension."""
-    #     assert loop_dim_to_split in tensor.loop_dimensions, "The loop dimension to split is not in the tensor."
-    #     loop_start, loop_end = next(
-    #         loop_range
-    #         for dim, loop_range in zip(tensor.loop_dimensions, tensor.loop_ranges)
-    #         if dim == loop_dim_to_split
-    #     )
-    #     total_loop_size = loop_end - loop_start
-    #     assert total_loop_size % size_of_split == 0, "The split size should be a factor of the loop dimension."
-    #     nb_splits = total_loop_size // size_of_split
-
-    #     split_loop_ranges = [
-    #         (loop_start + i * size_of_split, loop_start + (i + 1) * size_of_split) for i in range(nb_splits)
-    #     ]
-
-    #     split_tensors: list[Tensor] = []
-    #     for split_loop_range in split_loop_ranges:
-    #         idx = tensor.loop_dimensions.index(loop_dim_to_split)
-    #         all_loop_ranges = list(tensor.loop_ranges)
-    #         all_loop_ranges[idx] = split_loop_range
-    #         all_loop_ranges = tuple(all_loop_ranges)
-
-    #         split_tensor = Tensor(
-    #             size=tensor.size // nb_splits,
-    #             origin=tensor.origin,
-    #             layer_operand=tensor.layer_operand,
-    #             loop_dimensions=tensor.loop_dimensions,
-    #             loop_ranges=all_loop_ranges,
-    #         )
-    #         split_tensors.append(split_tensor)
-    #     return split_tensors
-
-    # def split_tensor_in_offchip_memory(
-    #     self, tensor: Tensor, timestep: int, loop_dim_to_split: int, size_of_split: int = 1
-    # ):
-    #     """Split the tensor into multiple, smaller tensors and spawn them on the offchip memory."""
-    #     new_tensors = self.split_tensor(tensor, loop_dim_to_split, size_of_split)
-
-    #     for new_tensor in new_tensors:
-    #         self.accelerator.spawn(
-    #             new_tensor,
-    #             core=self.offchip_core,
-    #             memory_operand=tensor.memory_operand,
-    #             initial_timestep=timestep,
-    #             available_timestep=timestep,
-    #         )
 
     def check_and_sync_cores(
         self,
@@ -803,8 +754,22 @@ class Schedule:
         return self.accelerator.get_core(core_id)
 
     def get_transfer_bandwidth_fraction(self, node: ComputationNode):
-        """Get the fraction of the off-chip bandwidth to be used for the tensor transfers related to this node"""
-        return 1 / node.get_total_inter_core_splits()
+        """Get the fraction of the off-chip bandwidth to be used for the tensor transfers related to this node.
+        The fraction should be inversely proportional to how many nodes are expected to run in parallel.
+        - If this node uses blocking, assume the number of parallel nodes  as the number of nodes that can block with the current
+            required blocking bandwidth.
+        - Otherwise, assume the number of parallel nodes as the number of cores
+        """
+        if node.too_large_operands:
+            required_bw = sum(
+                CommunicationManager.get_instantaneous_offchip_bandwidth(node, op) for op in node.too_large_operands
+            )
+            # Assume all mem ops use the same instance and r_bw == w_bw == rw_bw
+            available_offchip_bw = max(mem.r_bw for mem in self.offchip_top_instances)
+            possible_parallel_nb_nodes = max(1, available_offchip_bw // required_bw)
+        else:
+            possible_parallel_nb_nodes = node.get_total_inter_core_splits()
+        return 1 / possible_parallel_nb_nodes
 
     def get_transfer_bandwidth_fraction_for_eviction(self, tensor: Tensor):
         """Get the fraction of the off-chip bandwidth to be used to evict this tensor at the given timestep.

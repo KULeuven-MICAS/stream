@@ -228,12 +228,6 @@ class CommunicationManager:
             node: The computational node for which we are blocking the links.
         """
 
-        def get_inst_bw(op: MemoryOperand) -> int:
-            assert op in node.offchip_bandwidth_per_op
-            if op == Constants.OUTPUT_MEM_OP:
-                return node.offchip_bandwidth_per_op[op].wr_in_by_low
-            return node.offchip_bandwidth_per_op[op].rd_out_to_low
-
         if not too_large_operands:
             return start_timestep
         core = self.accelerator.get_core(core_id)
@@ -260,7 +254,10 @@ class CommunicationManager:
                 ]
 
         tensor_bw_per_link = {
-            link: [(tensor, get_inst_bw(tensor.memory_operand)) for tensor in tensors_this_link]
+            link: [
+                (tensor, self.get_instantaneous_offchip_bandwidth(node, tensor.memory_operand))
+                for tensor in tensors_this_link
+            ]
             for link, tensors_this_link in tensors_per_link.items()
         }
 
@@ -289,6 +286,13 @@ class CommunicationManager:
                     self.events.append(event)
                     self.event_id += 1
         return block_start
+
+    @staticmethod
+    def get_instantaneous_offchip_bandwidth(node: ComputationNode, op: MemoryOperand) -> int:
+        assert op in node.offchip_bandwidth_per_op
+        if op == Constants.OUTPUT_MEM_OP:
+            return node.offchip_bandwidth_per_op[op].wr_in_by_low
+        return node.offchip_bandwidth_per_op[op].rd_out_to_low
 
     def get_links_idle_window(
         self,
