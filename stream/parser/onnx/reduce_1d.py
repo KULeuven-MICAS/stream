@@ -9,7 +9,7 @@ class Reduce1DParser(OnnxComputeOperatorParser):
     e.g. sum over one row or max of a single row
     """
 
-    DEFAULT_LAYER_DIMENSIONS = ["B", "D", "K"]
+    DEFAULT_LAYER_DIMENSIONS = ["B", "H", "D", "K"]
 
     def get_reduction_dim(self, input_shape: list[int], output_shape: list[int]):
         """Returns the axis in which the dimension is reduced"""

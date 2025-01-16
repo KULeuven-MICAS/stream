@@ -46,6 +46,13 @@ class ReshapeNode(PropagationNode):
         if not self.allow_zero:
             new_shape = tuple(x for x in new_shape if x != 0)
 
-        # TODO register relevant axes
+        shape_change_axes = [
+            i for i in range(len(new_shape)) if i >= len(tensor.tensor_shape) or new_shape[i] != tensor.tensor_shape[i]
+        ]
+        for axis in shape_change_axes:
+            if axis >= len(relevant_axes):
+                relevant_axes.append(True)
+            else:
+                relevant_axes[axis] = True
 
         return tensor.reshape(new_shape), relevant_axes
