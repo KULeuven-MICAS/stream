@@ -104,7 +104,6 @@ class SoftmaxExpParser(SimdParser):
         data["operand_source"] = self.get_operand_source_input_format()
         data["operand_precision"] = self.get_operand_precision_user_format()
         data["dimension_relations"] = []
-        data["loop_sizes"] = input_shape
 
         if len(input_shape) > len(SimdParser.DEFAULT_LAYER_DIMENSIONS) or len(input_shape) < 2:
             raise NotImplementedError
@@ -116,15 +115,22 @@ class SoftmaxExpParser(SimdParser):
         )
 
         loop_dims = possible_loop_dims[0 : len(output_shape)]
+
+        # The output of MaxParser will have a arbitrary dim of size 1
+        reduced_dim_output = "R"  # C reduced to 1
+        assert reduced_dim_output not in possible_loop_dims, "Layer dimension `R` is reserved for the reduction axis"
+
         # W should have one dimension less because the same value is used for a ful row of I
-        loop_dims_W = loop_dims[:-1]
+        loop_dims_W = loop_dims[:-1] + [reduced_dim_output]
+
         equation_dims = "".join([f"[{dim.lower()}]" for dim in loop_dims])
         equation_dims_W = "".join([f"[{dim.lower()}]" for dim in loop_dims_W])
 
         equation = f"O{equation_dims}+=I{equation_dims}*W{equation_dims_W}"
 
         data["equation"] = equation
-        data["loop_dims"] = loop_dims
+        data["loop_dims"] = loop_dims + [reduced_dim_output]
+        data["loop_sizes"] = input_shape + [1]
 
         return data
 

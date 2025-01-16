@@ -1,8 +1,7 @@
 import logging
 from collections import defaultdict
 from enum import Enum, auto
-from operator import itemgetter, pos
-import re
+from operator import itemgetter
 from typing import TYPE_CHECKING
 
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
