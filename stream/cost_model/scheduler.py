@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 
-from stream.cost_model.communication_manager import CommunicationManager
 from stream.hardware.architecture.core import Core
 from stream.workload.computation.computation_node import ComputationNode, GeneratedComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
@@ -144,6 +143,9 @@ class Schedule:
                 self.split_tensor_if_needed(t, best_candidate, core, timestep=preds_end)
                 for t in full_tensors_this_candidate_needs
             ]
+            self.reset_too_large_operands_for_subtensors(
+                best_candidate, sub_tensors_this_candidate_needs, tensors_operands, core
+            )
             transfer_bw_fraction = self.get_transfer_bandwidth_fraction(best_candidate)
 
             # Step 0: get the start time: when core is available or predecessors finished
@@ -334,6 +336,44 @@ class Schedule:
         )
 
         return sub_tensor
+
+    def reset_too_large_operands_for_subtensors(
+        self,
+        node: ComputationNode,
+        sub_tensors_this_candidate_needs: list[Tensor],
+        memory_operands: list[MemoryOperand],
+        core: Core,
+    ):
+        """`node.too_large_operands` was initially calculated for the incoming edges, i.e. based on the full
+        tensor. The full tensors have been split into sub-tensors to include only the data this node actually needs.
+        In the case that all sub-tensors now do fit in memory, the too_large_operands are cleared.
+        NOTE too_large_operands is computed differently than originally, so we are cautious and either clear everything
+        or clear nothing."""
+
+        if not node.too_large_operands:
+            return
+
+        # Constant operands that are in `too_large_operands` don't get a tensor, so there can be no smaller sub-tensor
+        for layer_op in node.constant_operands:
+            memory_op = node.memory_operand_links.layer_to_mem_op(layer_op)
+            if memory_op in node.too_large_operands:
+                return
+
+        # Get total required size for each mem op
+        size_per_operand: dict[MemoryOperand, int] = defaultdict(lambda: 0)
+        for tensor, memory_operand in zip(sub_tensors_this_candidate_needs, memory_operands):
+            size_per_operand[memory_operand] += tensor.size
+        output_tensor = node.get_output_tensor()
+        size_per_operand[output_tensor.memory_operand] += output_tensor.size
+
+        top_memories = set([memory[-1] for (_, memory) in core.mem_hierarchy_dict.items()])
+        for mem in top_memories:
+            available_capacity = mem.memory_instance.size
+            required_capacity = sum(size_per_operand[mem_op] for mem_op in mem.mem_level_of_operands.keys())
+            if required_capacity > available_capacity:
+                return
+
+        node.set_too_large_operands([])
 
     def check_and_sync_cores(
         self,
@@ -755,19 +795,21 @@ class Schedule:
     def get_transfer_bandwidth_fraction(self, node: ComputationNode):
         """Get the fraction of the off-chip bandwidth to be used for the tensor transfers related to this node.
         The fraction should be inversely proportional to how many nodes are expected to run in parallel.
-        - If this node uses blocking, assume the number of parallel nodes  as the number of nodes that can block with the current
-            required blocking bandwidth.
-        - Otherwise, assume the number of parallel nodes as the number of cores
+        We assume this is the number of inter-core splits.
+
+        NOTE this assumes all inter-core split nodes can run parallel, but this is not the case if the node has too
+        large operands. In this case, we could assume the number of parallel nodes  as the number of nodes that can
+        block with the current required blocking bandwidth. However, this does not incorporate broadcasting mechanism
+        and is too pessimistic. We do not use this for now as it deteriorates the schedule.
+        > if node.too_large_operands:
+        >     required_bw = sum(
+        >         CommunicationManager.get_instantaneous_offchip_bandwidth(node, op) for op in node.too_large_operands
+        >     )
+        >     # Assume all mem ops use the same instance and r_bw == w_bw == rw_bw
+        >     available_offchip_bw = max(mem.r_bw for mem in self.offchip_top_instances)
+        >     possible_parallel_nb_nodes = max(1, available_offchip_bw // required_bw)
         """
-        if node.too_large_operands:
-            required_bw = sum(
-                CommunicationManager.get_instantaneous_offchip_bandwidth(node, op) for op in node.too_large_operands
-            )
-            # Assume all mem ops use the same instance and r_bw == w_bw == rw_bw
-            available_offchip_bw = max(mem.r_bw for mem in self.offchip_top_instances)
-            possible_parallel_nb_nodes = max(1, available_offchip_bw // required_bw)
-        else:
-            possible_parallel_nb_nodes = node.get_total_inter_core_splits()
+        possible_parallel_nb_nodes = node.get_total_inter_core_splits()
         return 1 / possible_parallel_nb_nodes
 
     def get_transfer_bandwidth_fraction_for_eviction(self, tensor: Tensor):
