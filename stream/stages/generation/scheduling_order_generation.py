@@ -61,7 +61,7 @@ class SchedulingOrderGenerationStage(Stage):
 
         order: SCHEDULE_ORDER_T = []
 
-        for stack in sorted(self.layer_stacks):
+        for stack in self.layer_stacks:
             order += self.get_scheduling_order_for_stack_with_generated_nodes(stack)
 
         assert len(order) == self.workload.number_of_nodes()
