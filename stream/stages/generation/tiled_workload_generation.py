@@ -190,6 +190,13 @@ class TiledWorkloadGenerationStage(Stage):
     def cached_workload_matches(self, tiles: list[ComputationNode], cached_tiles: ComputationNodeWorkload) -> bool:
         """Check if the tiles match the cached tiled workload.
         Can't use 'has_same_performance' because nb_real_predecessors is not set yet for tiles."""
+
+        # ! find a better way to check if the cached workload is valid -RG
+        logger.warn(
+            "Cached workload is not checked for correctness. Manually remove the cache if it no longer matches the workload"
+        )
+        return True
+
         logger.info("Checking if the cached workload is valid for this run.")
         return all(
             any(
