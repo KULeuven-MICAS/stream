@@ -44,7 +44,8 @@ class Tensor:
         self.base_priority: None | int = None  # Will be set when we know how many successors this node has (static)
         self.instance_priorities: dict[MemoryInstance, int] = {}
         self.id = (self.origin.id, self.origin.sub_id, layer_operand)
-        self.__equality_hash = hash((self.origin.id, self.layer_operand, self.loop_ranges))
+        self.equality_hash = hash((self.origin.id, self.layer_operand, self.loop_ranges))
+        self.__static_hash = hash((origin, layer_operand))
 
     def set_base_priorities(self, base_priority: int):
         self.base_priority = base_priority
@@ -95,14 +96,10 @@ class Tensor:
         return self.size
 
     def __hash__(self) -> int:
-        return hash((self.origin, self.layer_operand))
+        return self.__static_hash
 
     def __lt__(self, __o: object) -> bool:
         return isinstance(__o, Tensor) and self.size < __o.size
-
-    @property
-    def equality_hash(self) -> TensorHash:
-        return self.__equality_hash
 
     @property
     def origin(self):

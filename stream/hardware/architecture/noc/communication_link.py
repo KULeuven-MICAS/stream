@@ -160,24 +160,31 @@ class CommunicationLink:
         return event, is_new_event
 
     def update_activity(self, event: CommunicationLinkEvent) -> bool:
+        """
+        Args:
+            event:
+            returns: Whether this event is new (not previously seen)
+        """
         start = event.start
         end = event.end
         activity = event.activity
-        is_new_event = True
         if start == end:
-            is_new_event = False
-            return is_new_event
+            return False
 
         # Check if this is a duplicate event for broadcast
-        previous_events = self.previously_seen_tensors.get(event.tensor, [])
+        previous_events = (
+            self.previously_seen_tensors[event.tensor] if event.tensor in self.previously_seen_tensors else []
+        )
         if any((previous_event.start == event.start for previous_event in previous_events)):
-            is_new_event = False
-            return is_new_event
+            return False
+
+        # idx_start = np.searchsorted(self.active_ts[-1000:], start) + len(self.active_ts) - 1000
 
         idx_start = np.searchsorted(self.active_ts, start)
         if self.active_ts[idx_start] == start:
             self.active_deltas[idx_start] += activity
         else:
+            # ! np.insert is the slow part of the code: active_ts becomes too large -RG
             self.active_ts = np.insert(self.active_ts, idx_start, start)
             self.active_deltas = np.insert(self.active_deltas, idx_start, activity)
         idx_end = np.searchsorted(self.active_ts, end)
@@ -188,9 +195,9 @@ class CommunicationLink:
             self.active_deltas = np.insert(self.active_deltas, idx_end, -activity)
             # Track that this link has transferred the tensors of this event for future broadcasts
 
-        self.previously_seen_tensors[event.tensor] = self.previously_seen_tensors.get(event.tensor, []) + [event]
+        self.previously_seen_tensors[event.tensor] = previous_events + [event]
         self.events.append(event)
-        return is_new_event
+        return True
 
     def get_idle_window(
         self,

@@ -97,7 +97,7 @@ class ComputationNode(LayerNode, Node):
         # This is used to hash the node and to get accurate knowledge of the number of unique nodes.
         # This should be set after the node is created and the number of predecessors is known.
         self.nb_real_predecessors = None
-        self._static_hash_value = self.__compute_static_hash()
+        self.static_hash = self.__compute_static_hash()
 
         self.set_operand_tensors()
 
@@ -269,7 +269,7 @@ class ComputationNode(LayerNode, Node):
     @nb_real_predecessors.setter
     def nb_real_predecessors(self, nb_real_predecessors: int | None):
         self.__nb_real_predecessors = nb_real_predecessors
-        self._static_hash_value = self.__compute_static_hash()
+        self.static_hash = self.__compute_static_hash()
 
     def __repr__(self):
         return str(self)
@@ -279,14 +279,14 @@ class ComputationNode(LayerNode, Node):
 
     def __hash__(self) -> int:
         """Returns the pre-computed hash"""
-        return self._static_hash_value
+        return self.static_hash
 
     def __eq__(self, other: object):
         """Fast equality comparison between two nodes"""
         # Optimization: this method is used many times to compare with `0`, to count empty tensor elements
         if not other:
             return False
-        return isinstance(other, ComputationNode) and self._static_hash_value == other._static_hash_value
+        return isinstance(other, ComputationNode) and self.static_hash == other.static_hash
 
     def __lt__(self, other: "ComputationNode"):
         """Compare two ComputationNodes for the 'less than (<)' operator.

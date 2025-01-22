@@ -134,8 +134,14 @@ class Schedule:
         done = False
 
         self.prefetch_constant_operands()
+        nb_nodes_scheduled = 0
+        total_nodes_to_schedule = self.G.number_of_nodes()
 
         while not done:
+            if nb_nodes_scheduled % 10_000 == 0:
+                logger.info(f"Scheduled {nb_nodes_scheduled}/{total_nodes_to_schedule} nodes")
+            nb_nodes_scheduled += 1
+
             best_candidate, preds_end = self.pop_best_candidate()
             core = self.get_allocated_core(best_candidate)
             full_tensors_this_candidate_needs, tensors_operands = self.get_tensors_needed_for_node(best_candidate)
@@ -279,32 +285,27 @@ class Schedule:
         if self.accelerator.core_contains_tensor(tensor, core):
             return tensor
 
-        # Regular node: split based in intra-core tiling
-        if not isinstance(node, GeneratedComputationNode):
-            if not node.intra_core_tiling:
-                return tensor
-            if len(node.intra_core_tiling) > 1:
-                raise NotImplementedError
-            loop_dim_to_split = next(dim for dim, _ in node.intra_core_tiling)  # Take first one for now
-            needed_range = node.loop_ranges[loop_dim_to_split]
+        loop_dims_to_split = [dim for dim, _ in node.intra_core_tiling if dim in tensor.loop_dimensions]
+        # Generated computation nodes always have a split in their gen split layer dim
+        if isinstance(node, GeneratedComputationNode):
+            gen_split_dim = node.gen_split_layer_dim
+            if gen_split_dim in tensor.loop_dimensions and gen_split_dim not in loop_dims_to_split:
+                loop_dims_to_split.append(gen_split_dim)
 
-        else:
-            loop_dim_to_split = node.gen_split_layer_dim
-            needed_range = node.loop_ranges[loop_dim_to_split]
-            assert needed_range == (0, 1), "Only generated nodes that spit a dimension in size-1 slices are supported"
-
-        if loop_dim_to_split not in tensor.loop_dimensions:
+        if not loop_dims_to_split:
             return tensor
 
-        full_range = tensor.loop_ranges_per_dim[loop_dim_to_split]
-        full_range_size = full_range[1] - full_range[0]
-        needed_range_size = needed_range[1] - needed_range[0]
+        needed_ranges = [node.loop_ranges[dim] for dim in loop_dims_to_split]
+        full_ranges = [tensor.loop_ranges_per_dim[dim] for dim in loop_dims_to_split]
+
+        needed_range_sizes = [r[1] - r[0] for r in needed_ranges]
+        full_range_sizes = [r[1] - r[0] for r in full_ranges]
 
         # No gain in splitting if the tensor is already the right size
-        if full_range_size <= needed_range_size:
+        if all(size1 == size2 for size1, size2 in zip(needed_range_sizes, full_range_sizes)):
             return tensor
 
-        sub_tensor = self.create_sub_tensor(tensor, loop_dim_to_split, needed_range)
+        sub_tensor = self.create_sub_tensor(tensor, loop_dims_to_split, needed_ranges)
         self.accelerator.spawn(
             sub_tensor,
             core=self.offchip_core,
@@ -314,17 +315,23 @@ class Schedule:
         )
         return sub_tensor
 
-    def create_sub_tensor(self, tensor: Tensor, loop_dim_to_split: LayerDim, sub_loop_range: tuple[int, int]):
+    def create_sub_tensor(
+        self, tensor: Tensor, loop_dims_to_split: list[LayerDim], sub_loop_ranges: list[tuple[int, int]]
+    ):
         """Create a sub-tensor of the given tensor with the given loop range."""
-        assert loop_dim_to_split in tensor.loop_dimensions, "The loop dimension to split is not in the tensor."
-        idx = tensor.loop_dimensions.index(loop_dim_to_split)
-        full_loop_range = tensor.loop_ranges[idx]
-        assert full_loop_range[0] <= sub_loop_range[0] and full_loop_range[1] >= sub_loop_range[1]
-
-        compression_factor = (full_loop_range[1] - full_loop_range[0]) / (sub_loop_range[1] - sub_loop_range[0])
+        assert all(
+            dim in tensor.loop_dimensions for dim in loop_dims_to_split
+        ), f"The loop dimensions to split {loop_dims_to_split} are not in the tensor: {tensor.loop_dimensions}."
+        assert loop_dims_to_split, "No loop dimensions to split given."
 
         new_loop_ranges = list(tensor.loop_ranges)
-        new_loop_ranges[idx] = sub_loop_range
+        compression_factor = 1
+        for dim, sub_loop_range in zip(loop_dims_to_split, sub_loop_ranges):
+            idx = tensor.loop_dimensions.index(dim)
+            new_loop_ranges[idx] = sub_loop_range
+            full_loop_range = tensor.loop_ranges[idx]
+            compression_factor *= (full_loop_range[1] - full_loop_range[0]) / (sub_loop_range[1] - sub_loop_range[0])
+
         new_loop_ranges = tuple(new_loop_ranges)
 
         sub_tensor = Tensor(
@@ -384,6 +391,7 @@ class Schedule:
         layer-by-layer execution. The layer-by-layer execution is detected through the scheduling_order.
         # TODO this assumes the scheduling order is the order in which nodes are actually scheduled
         """
+
         # Get the predecessor ids of the best_candidate from the workload graph G
         predecessor_ids = (pred.id for pred in self.G.predecessors(best_candidate) if pred.id != best_candidate.id)
         predecessor_idxs: list[int] = []

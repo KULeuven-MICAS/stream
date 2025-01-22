@@ -861,11 +861,9 @@ class TiledWorkloadGenerationStage(Stage):
         dimensions = node.operand_dimensionality_order[Constants.OUTPUT_LAYER_OP]
         relevant_axes = [False] * len(dimensions)
 
-        tilings = (
-            node.intra_core_tiling + node.inter_core_tiling
-            if not contains_wildcard(node.inter_core_tiling)
-            else node.intra_core_tiling
-        )
+        tilings = node.intra_core_tiling
+        if not contains_wildcard(node.inter_core_tiling):
+            tilings += node.inter_core_tiling
 
         for dim, size in tilings:
             if dim in dimensions and size > 1:
@@ -909,10 +907,8 @@ class TiledWorkloadGenerationStage(Stage):
             # Ellipsis adds the entire last axis for the extra dimension in NodeTensor
             slices = tuple(slice(start, stop) for start, stop in relevant_loop_ranges) + (Ellipsis,)
             sliced_tensor = tensor[slices]
-            producer_tiles = set(
-                prod
-                for prod in (elem for elem in sliced_tensor.flat.flat if elem and isinstance(elem, ComputationNode))
-            )
+            producer_tiles = set(sliced_tensor[sliced_tensor != 0].flat.flat)
+
             for producer_tile in producer_tiles:
                 inter_edges.append((producer_tile, consumer_tile))
         return inter_edges

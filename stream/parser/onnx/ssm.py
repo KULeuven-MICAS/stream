@@ -9,7 +9,6 @@ from zigzag.parser.workload_factory import LayerNodeFactory
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.onnx_utils import get_onnx_output_shapes
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
-from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
 from stream.workload.computation.computation_node import GeneratedComputationNode
 from stream.workload.dependency_propagation.concat_node import ConcatNode
 from stream.workload.dependency_propagation.split_node import SplitNode
@@ -235,12 +234,6 @@ class SSMParser(OnnxComputeOperatorParser):
 
     def _set_mapping(self):
         self.mapping = self.get_mapping_this_node()
-        if SchedulingOrderGenerationStage.get_total_tiling_size(self.mapping.intra_core_tiling) != 1:
-            logger.warning(
-                f"Generated nodes in SSM cannot have intra-core tiling. Setting tiling "
-                f"{self.mapping.intra_core_tiling} to (L, 1)"
-            )
-            self.mapping.intra_core_tiling = [(LayerDim("L"), 1)]
 
     def get_layer_node_user_format(
         self, input_shape: list[int], output_shape: list[int], mapping: InterCoreMappingAttributes | None
