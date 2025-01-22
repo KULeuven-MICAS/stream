@@ -180,7 +180,7 @@ class SchedulingOrderGenerationStage(Stage):
             order_this_slot: SCHEDULE_ORDER_T = []
             for layer_id, inter_core_tiling in zip(filtered_stack, inter_core_tiling_factors):
                 nb_intra_nodes_per_slot = self._get_total_nb_intra_core_nodes(layer_id) // nb_intra_core_slots
-                assert nb_intra_nodes_per_slot > 1
+                assert nb_intra_nodes_per_slot > 0
                 nb_sub_ids_per_slot = inter_core_tiling * nb_intra_nodes_per_slot
                 order_this_slot += [(layer_id, i * nb_sub_ids_per_slot + j) for j in range(nb_sub_ids_per_slot)]
 

@@ -1,6 +1,7 @@
 import logging
 from collections import defaultdict
 from enum import Enum, auto
+from math import ceil
 from operator import itemgetter
 from typing import TYPE_CHECKING
 
@@ -172,13 +173,18 @@ class Schedule:
                 timestep = transfer_complete_timestep
 
             # Step 2: Transfer the tensors needed for this node to the core (from off-chip or from another core)
+            transfer_headstart = sum(
+                ceil(tensor.size / (self.offchip_core.mem_r_bw_dict[tensor_operand][0] * transfer_bw_fraction))
+                for tensor, tensor_operand in zip(sub_tensors_this_candidate_needs, tensors_operands)
+            )
+            earliest_t = core_idle_from - transfer_headstart
             for tensor, tensor_operand in zip(sub_tensors_this_candidate_needs, tensors_operands):
                 transfer_complete_timestep = self.schedule_tensor_transfer(
                     tensor=tensor,
                     tensor_operand=tensor_operand,
                     receiving_core=core,
                     non_evictable_tensors=sub_tensors_this_candidate_needs,
-                    earliest_t=core_idle_from,
+                    earliest_t=earliest_t,
                     transfer_bandwidth_fraction=transfer_bw_fraction,
                 )
                 timestep = max(timestep, transfer_complete_timestep)
@@ -305,13 +311,15 @@ class Schedule:
         if all(size1 == size2 for size1, size2 in zip(needed_range_sizes, full_range_sizes)):
             return tensor
 
+        creation_timestep = self.accelerator.get_available_timestep(tensor, self.offchip_core)
+
         sub_tensor = self.create_sub_tensor(tensor, loop_dims_to_split, needed_ranges)
         self.accelerator.spawn(
             sub_tensor,
             core=self.offchip_core,
             memory_op=tensor.memory_operand,
-            initial_timestep=timestep,
-            available_timestep=timestep,
+            initial_timestep=creation_timestep,
+            available_timestep=creation_timestep,
         )
         return sub_tensor
 

@@ -15,6 +15,7 @@ from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
+from stream.stages.generation.layer_stacks_generation import STACK_T
 from stream.stages.stage import Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT, contains_wildcard, get_top_level_inst_bandwidth, get_unique_nodes
 from stream.visualization.cost_model_evaluation_lut import (
@@ -53,6 +54,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         self.cost_lut_path = cost_lut_path
         self.visualize_cost_lut_path = os.path.splitext(self.cost_lut_path)[0] + ".png"
         self.loma_show_progress_bar: bool = kwargs.get("loma_show_progress_bar", False)
+        self.layer_stacks: list[STACK_T] = kwargs["layer_stacks"]
 
         # Extract all unique nodes that will have to be evaluated
         self.unique_nodes = get_unique_nodes(self.workload)
@@ -227,6 +229,12 @@ class ZigZagCoreMappingEstimationStage(Stage):
             A list of memory operands for which the capacity on the core is insufficient.
         """
         too_large_operands_for_cme: list[MemoryOperand] = []
+
+        # ! Always use blocking for single-stack nodes -RG
+        stack_this_node = next(stack for stack in self.layer_stacks if node.id in stack)
+        node_is_alone_in_stack = len(stack_this_node) == 1
+        if node_is_alone_in_stack:
+            return node.memory_operand_links.mem_operands
 
         # Step 1: get all the unique top level memories of the core
         memory_hierarchy_dict = core.mem_hierarchy_dict

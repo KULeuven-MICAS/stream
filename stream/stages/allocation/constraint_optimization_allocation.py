@@ -14,6 +14,7 @@ from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_
 from stream.opt.allocation.constraint_optimization.utils import calculate_total_latency
 from stream.stages.estimation.stream_cost_model_evaluation import StreamCostModelEvaluationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
+from stream.stages.generation.layer_stacks_generation import STACK_T
 from stream.stages.generation.tiled_workload_generation import (
     TiledWorkloadGenerationStage,
 )
@@ -29,7 +30,6 @@ from stream.workload.utils import get_real_successors
 
 logger = logging.getLogger(__name__)
 
-STACK_T: TypeAlias = tuple[int, ...]
 SCHEDULE_ORDER_T: TypeAlias = list[tuple[int, int]]
 
 
