@@ -255,18 +255,19 @@ class ZigZagCoreMappingEstimationStage(Stage):
                 # Case 1: constant operand (e.g. 'W' and the first layer's 'I') or output operand
                 if layer_operand in constant_operands + [output_operand]:
                     nb_bits = node.operand_size_bit[layer_operand]
-                # Case 2: variable operand -> sum up the the total data amount on the in edges
-                # (can be larger than the ideal required data size)
-                elif len(self.workload.in_edges(node)) > 0:
-                    in_edges_data = [data for (_, _, data) in self.workload.in_edges(node, data=True)]
-                    nb_bits = sum(
-                        [
-                            data["bits"]
-                            for data in in_edges_data
-                            if "operand" in data and data["operand"] == layer_operand
-                        ]
-                    )
-                # Case 3: not constant, but no edges found
+
+                # # Case 2: variable operand -> sum up the the total data amount on the in edges
+                # # (can be larger than the ideal required data size)
+                # elif len(self.workload.in_edges(node)) > 0:
+                #     in_edges_data = [data for (_, _, data) in self.workload.in_edges(node, data=True)]
+                #     nb_bits = sum(
+                #         [
+                #             data["bits"]
+                #             for data in in_edges_data
+                #             if "operand" in data and data["operand"] == layer_operand
+                #         ]
+                #     )
+                # # Case 3: not constant, but no edges found
                 else:
                     nb_bits = node.operand_size_bit[layer_operand]
 
