@@ -368,6 +368,9 @@ class Schedule:
         if not node.too_large_operands:
             return
 
+        if not sub_tensors_this_candidate_needs:
+            return
+
         # Constant operands that are in `too_large_operands` don't get a tensor, so there can be no smaller sub-tensor
         for layer_op in node.constant_operands:
             memory_op = node.memory_operand_links.layer_to_mem_op(layer_op)
