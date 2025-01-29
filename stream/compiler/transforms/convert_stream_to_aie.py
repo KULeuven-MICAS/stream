@@ -162,16 +162,18 @@ class TestPatttern(RewritePattern):
 
         SymbolTable.insert_or_update(device_op, func_op)
 
-        zero = ConstantOp.from_int_and_width(0, i32)
+        c32 = ConstantOp.from_int_and_width(32, i32)
+        c64 = ConstantOp.from_int_and_width(64, i32)
+        c10 = ConstantOp.from_int_and_width(10, i32)
 
         inputs: list[SSAValue | Operation] = list(op.inputs)
         if op.outputs:
             inputs.append(op.outputs)
-        inputs.extend([zero] * 4)
+        inputs.extend([c32, c32, c64, c10])
 
         func_call = CallOp(op.kernel.data, inputs, [])
 
-        rewriter.replace_matched_op((zero, func_call))
+        rewriter.replace_matched_op((c32, c64, c10, func_call))
 
 
 @dataclass
