@@ -11,11 +11,13 @@
 - name: Gemm
   core_allocation: [2]
   intra_core_tiling:
-    - D, 8
+    - D, 4
+    - C, 4
+    - K, 4
   inter_core_tiling:
-    - K, *
+    - K, 1
   kernel:
-    name: gemm_kernel
+    name: mm_64x64x64
     utilization: 61.8 
 
 - name: Conv
@@ -23,7 +25,7 @@
   intra_core_tiling:
     - OY, 32
   inter_core_tiling:
-    - K, 1
+    - K, 2
   kernel:
     name: conv_kernel
     utilization: 44.33 
