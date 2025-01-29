@@ -12,6 +12,8 @@ from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.computation.computation_node import ComputationNode
 
+from zigzag.datatypes import Constants
+
 
 class AIECodeGenerationStage(Stage):
     def __init__(
@@ -50,6 +52,8 @@ class AIECodeGenerationStage(Stage):
 
             for operand in (*node.constant_operands, node.output_operand):
                 size = cast(int, node.operand_size_elem[operand])
+                if operand == node.output_operand:
+                    operand = Constants.FINAL_OUTPUT_LAYER_OP
                 precision = cast(int, node.operand_precision[operand])
                 typ = MemRefType(IntegerType(precision), [size])
                 operand_types.append(typ)
@@ -94,7 +98,10 @@ class AIECodeGenerationStage(Stage):
                 continue
 
             size = cast(int, tensor.origin.operand_size_elem[tensor.layer_operand])
-            precision = tensor.origin.operand_precision[tensor.layer_operand]
+            if tensor.layer_operand == Constants.OUTPUT_LAYER_OP:
+                precision = tensor.origin.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
+            else:
+                precision = tensor.origin.operand_precision[tensor.layer_operand]
 
             result_type = MemRefType(IntegerType(precision), [size])
 
