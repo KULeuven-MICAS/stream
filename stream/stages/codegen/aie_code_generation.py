@@ -1,4 +1,5 @@
 from typing import Any, cast
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 
 from xdsl.context import MLContext
 from xdsl.dialects.builtin import IntegerType, MemRefType, ModuleOp
@@ -11,6 +12,7 @@ from stream.cost_model.communication_manager import CommunicationLinkEvent
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.computation.computation_node import ComputationNode
+from stream.workload.tensor import Tensor
 
 from zigzag.datatypes import Constants
 
@@ -71,11 +73,13 @@ class AIECodeGenerationStage(Stage):
 
             nodes[node] = op
 
-            # for now: consider only the first node:
-            break
+            # only consider 4
+            if len(nodes) >= 2:
+                break
+
 
         # gather all transfers
-        transfer_list = []
+        transfer_list: list[tuple[CommunicationLinkEvent, CommunicationLink]] = []
 
         for _, link_pair in cme.accelerator.communication_manager.pair_links.items():
             if link_pair:
@@ -84,7 +88,7 @@ class AIECodeGenerationStage(Stage):
                         transfer_list.append((event, link))
 
         # create transfer ops for every transfer
-        transfers: dict[CommunicationLinkEvent, TransferOp] = {}
+        transfers: dict[Tensor, TransferOp] = {}
 
         for transfer, link in transfer_list:
 
@@ -93,6 +97,7 @@ class AIECodeGenerationStage(Stage):
             source = str(link.receiver)
             tensor = transfer.tensors[0]
 
+            # TODO: should not be necessary anymore:
             # only consider the one with included node
             if tensor.origin not in nodes:
                 continue
@@ -105,15 +110,21 @@ class AIECodeGenerationStage(Stage):
 
             result_type = MemRefType(IntegerType(precision), [size])
 
-            transfer.tensors[0].origin.operand_size_elem[transfer.tensors[0].layer_operand]
+            # transfer.tensors[0].origin.operand_size_elem[transfer.tensors[0].layer_operand]
 
             op = TransferOp(None, [result_type], source, dest, str(tensor))
 
-            transfers[transfer] = op
+            transfers[transfer.tensors[0]] = op
 
             # make sure the operation uses the result of this transfer
-            order = ["I", "W", "O"]
-            nodes[tensor.origin].operands[order.index(tensor.layer_operand.name)] = op.results[0]
+            # order = ["I", "W", "O"]
+            # nodes[tensor.origin].operands[order.index(tensor.layer_operand.name)] = op.results[0]
+
+        for node, node_op in nodes.items():
+            operands = node.layer_operands
+            for i, operand in enumerate(reversed(operands)):
+                tensor = node.operand_tensors[operand]
+                node_op.operands[i] = transfers[tensor].results[0]
 
         # add all nodes and transfers to the module
         transfer_ops = tuple(transfers.values())

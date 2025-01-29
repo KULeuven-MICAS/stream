@@ -1,10 +1,12 @@
 from dataclasses import dataclass, field
+from typing import cast
 
+from xdsl import dialects
 from xdsl.context import MLContext
 from xdsl.dialects.arith import ConstantOp
 from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, StringAttr, i32
 from xdsl.dialects.func import CallOp, FuncOp
-from xdsl.ir import Operation, Region, SSAValue
+from xdsl.ir import Attribute, Operation, Region, SSAValue
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
     PatternRewriter,
@@ -44,6 +46,14 @@ def get_tile(value: str) -> tuple[int, int]:
     raise ValueError("unknown tile")
 
 
+def get_of_name(source: TileOp, dest: TileOp, operand: str) -> str:
+    of_name: str = "of_"
+    of_name += f"{source.col.value.data}{source.row.value.data}to"
+    of_name += f"{dest.col.value.data}{dest.row.value.data}_"
+    of_name += operand
+    return of_name
+
+
 @dataclass
 class TileOpManager:
 
@@ -77,7 +87,6 @@ class TileOpManager:
 class TransferToObjectFIFOPattern(RewritePattern):
 
     tile_op_manager: TileOpManager
-    counter = 0
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter):
@@ -85,7 +94,11 @@ class TransferToObjectFIFOPattern(RewritePattern):
         source_tile = self.tile_op_manager.insert_or_update(*get_tile(op.source.data))
         dest_tile = self.tile_op_manager.insert_or_update(*get_tile(op.dest.data))
 
-        of_name = f"of{self.counter}"
+        assert isinstance(memref_type := op.results[0].type, MemRefType)
+        memref_type = cast(MemRefType[Attribute], memref_type)
+
+        # this will reuse objectfifos of the same source dest, and type.
+        of_name = get_of_name(source_tile, dest_tile, op.tensor.data[-2])
 
         object_fifo = ObjectFifoOp(
             elemNumber=IntegerAttr(1, i32),
@@ -101,6 +114,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
         while not isinstance(device_op, DeviceOp):
             assert device_op.parent
             device_op = device_op.parent
+        assert isinstance(device_op, DeviceOp)
 
         SymbolTable.insert_or_update(device_op, object_fifo)
 
@@ -128,14 +142,25 @@ class TransferToObjectFIFOPattern(RewritePattern):
             object_fifo=of_name,
         )
 
-        # find use
-        last_use = list(op.results[0].uses)[-1].operation
-        rewriter.insert_op(release_op, InsertPoint.after(last_use))
+        # find first and last use in this region
+        assert op.parent
+        first_use_op = None
+        operation_uses = set(x.operation for x in op.results[0].uses)
+        for first_use_op in op.parent.ops:
+            if first_use_op in operation_uses:
+                break
+        assert first_use_op
+        last_use_op = None
+        for last_use_op in reversed(op.parent.ops):
+            if last_use_op in operation_uses:
+                break
+        assert last_use_op
 
-        rewriter.replace_matched_op([acquire_op, access_op], new_results=access_op.results)
+        rewriter.insert_op(release_op, InsertPoint.after(last_use_op))
+        rewriter.insert_op([acquire_op, access_op], InsertPoint.before(first_use_op))
 
-        # increment of counter
-        self.counter += 1
+        op.results[0].replace_by(access_op.results[0])
+        rewriter.erase_matched_op()
 
 
 @dataclass
@@ -186,7 +211,12 @@ class InsertRuntimeDMAs(RewritePattern):
 
         # Add Block Argument to SequenceOp
         memref_type = op.elemType.buffer
+
         assert isinstance(memref_type, MemRefType)
+
+        shape = list(memref_type.get_shape())
+        shape[0] = 4096
+        memref_type = MemRefType(memref_type.get_element_type(), shape)
 
         sequence_block = self.sequence_op.body.block
 
@@ -246,10 +276,15 @@ class ConvertStreamToAIEPass(ModulePass):
             TransferToObjectFIFOPattern(tile_op_manager),
             apply_recursively=False,
         ).rewrite_module(op)
+
+
         PatternRewriteWalker(
             TestPatttern(tile_op_manager),
             apply_recursively=False,
         ).rewrite_module(op)
+
+
+        # add loop roller
 
         # add a runtime sequence operation
         runtime_sequence = RuntimeSequenceOp(Region(Block()))
