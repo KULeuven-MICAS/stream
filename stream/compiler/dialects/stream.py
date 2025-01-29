@@ -1,5 +1,6 @@
 from typing import Sequence
 
+from xdsl.dialects.builtin import IndexType, IntegerAttr, StringAttr
 from xdsl.ir import Attribute, Block, Dialect, Operation, SSAValue
 from xdsl.irdl import (
     AttrSizedOperandSegments,
@@ -10,7 +11,6 @@ from xdsl.irdl import (
     var_operand_def,
     var_result_def,
 )
-from xdsl.parser import StringAttr
 
 
 class EmptySSAValue(SSAValue):
@@ -28,6 +28,7 @@ class ComputationNodeOp(IRDLOperation):
 
     kernel = prop_def(StringAttr)
     core_allocation = prop_def(StringAttr)
+    repeat = prop_def(IntegerAttr[IndexType])
 
     irdl_options = [AttrSizedOperandSegments()]
 
@@ -37,10 +38,15 @@ class ComputationNodeOp(IRDLOperation):
         output: Operation | SSAValue | None,
         kernel: str,
         core_allocation: str,
+        repeat: int,
     ) -> None:
         super().__init__(
             operands=[inputs, output],
-            properties={"kernel": StringAttr(kernel), "core_allocation": StringAttr(core_allocation)},
+            properties={
+                "kernel": StringAttr(kernel),
+                "core_allocation": StringAttr(core_allocation),
+                "repeat": IntegerAttr(repeat, IndexType()),
+            },
         )
 
 
@@ -55,14 +61,26 @@ class TransferOp(IRDLOperation):
 
     source = prop_def(StringAttr)
     dest = prop_def(StringAttr)
+    repeat = prop_def(IntegerAttr[IndexType])
 
     def __init__(
-        self, input: SSAValue | Operation | None, result_types: Sequence[Attribute], source: str, dest: str, tensor: str
+        self,
+        input: SSAValue | Operation | None,
+        result_types: Sequence[Attribute],
+        source: str,
+        dest: str,
+        tensor: str,
+        repeat: int,
     ) -> None:
         super().__init__(
             operands=[input],
             result_types=[result_types],
-            properties={"source": StringAttr(source), "dest": StringAttr(dest), "tensor": StringAttr(tensor)},
+            properties={
+                "source": StringAttr(source),
+                "dest": StringAttr(dest),
+                "tensor": StringAttr(tensor),
+                "repeat": IntegerAttr(repeat, IndexType()),
+            },
         )
 
 

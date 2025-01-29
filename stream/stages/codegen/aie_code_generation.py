@@ -1,20 +1,20 @@
+from collections import defaultdict
 from typing import Any, cast
-from stream.hardware.architecture.noc.communication_link import CommunicationLink
 
 from xdsl.context import MLContext
-from xdsl.dialects.builtin import IntegerType, MemRefType, ModuleOp
+from xdsl.dialects.builtin import IndexType, IntegerAttr, IntegerType, MemRefType, ModuleOp
 from xdsl.printer import Printer
 from xdsl.xdsl_opt_main import xDSLOptMain
+from zigzag.datatypes import Constants, LayerOperand
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EmptySSAValue, Stream, TransferOp
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
+from stream.compiler.transforms.stream_loop_roller import StreamLoopRollerPass
 from stream.cost_model.communication_manager import CommunicationLinkEvent
 from stream.cost_model.cost_model import StreamCostModelEvaluation
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.tensor import Tensor
-
-from zigzag.datatypes import Constants
 
 
 class AIECodeGenerationStage(Stage):
@@ -43,14 +43,29 @@ class AIECodeGenerationStage(Stage):
 
     def codegen_main(self, cme: StreamCostModelEvaluation):
 
-        # gather all nodes
+        # steady state nodes: need some representation here
+        # this is currently a mapping id -> list[node]
+        # assuming that a layer is entirely steady state and can
+        # be differentiated based on its id.
+        # The values of this dict are sequential lists of the computation
+        # nodes that are `equal` (<-> can be represented with a for loop)
+        nodes_steady_state: dict[int, list[ComputationNode]] = defaultdict(list)
+
+        # assuming node_list is ordered in order of execution
+        # (tends to be correct, but I guess this is not necessarily correct to assume)
+        for node in cme.workload.node_list:
+            nodes_steady_state[node.id].append(node)
+
+        # create computation nodes for all computation nodes
         nodes: dict[ComputationNode, ComputationNodeOp] = {}
 
-        for node in cme.workload.nodes:
+        for node_list in nodes_steady_state.values():
 
-            operand_types = []
+            # take first node as the reference
+            node = node_list[0]
 
             # build operand types:
+            operand_types = []
 
             for operand in (*node.constant_operands, node.output_operand):
                 size = cast(int, node.operand_size_elem[operand])
@@ -63,20 +78,17 @@ class AIECodeGenerationStage(Stage):
             input_operands, output_operand = operand_types[:-1], operand_types[-1]
 
             # create computation node op with the needed information
-
             op = ComputationNodeOp(
                 [EmptySSAValue(typ) for typ in input_operands],
                 EmptySSAValue(output_operand),
-                node.kernel.name,
-                node.core_allocation[0],
+                kernel=node.kernel.name,
+                core_allocation=str(node.core_allocation[0]),
+                repeat=len(node_list),
             )
 
-            nodes[node] = op
-
-            # only consider 4
-            if len(nodes) >= 2:
-                break
-
+            # complete mapping from node -> ComputationNodeOp
+            for node in node_list:
+                nodes[node] = op
 
         # gather all transfers
         transfer_list: list[tuple[CommunicationLinkEvent, CommunicationLink]] = []
@@ -88,49 +100,58 @@ class AIECodeGenerationStage(Stage):
                         transfer_list.append((event, link))
 
         # create transfer ops for every transfer
-        transfers: dict[Tensor, TransferOp] = {}
+        # transfers: dict[Tensor, TransferOp] = {}
+
+        # transfers are unique per Layer Operand and Steady state stuff
+        transfers: dict[tuple[int, LayerOperand], TransferOp] = {}
 
         for transfer, link in transfer_list:
 
-            # TODO: why is this backwards?
-            dest = str(link.sender)
-            source = str(link.receiver)
             tensor = transfer.tensors[0]
 
-            # TODO: should not be necessary anymore:
-            # only consider the one with included node
-            if tensor.origin not in nodes:
-                continue
+            if (tensor.id[0], tensor.id[2]) in transfers:
+                # increse repeat field of existing transfer op
+                transfer_op = transfers[(tensor.id[0], tensor.id[2])]
+                transfer_op.repeat = IntegerAttr(transfer_op.repeat.value.data + 1, IndexType())
 
-            size = cast(int, tensor.origin.operand_size_elem[tensor.layer_operand])
-            if tensor.layer_operand == Constants.OUTPUT_LAYER_OP:
-                precision = tensor.origin.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
             else:
-                precision = tensor.origin.operand_precision[tensor.layer_operand]
+                # create transfer op
 
-            result_type = MemRefType(IntegerType(precision), [size])
+                # TODO: why is this backwards?
+                dest = str(link.sender)
+                source = str(link.receiver)
 
-            # transfer.tensors[0].origin.operand_size_elem[transfer.tensors[0].layer_operand]
+                size = cast(int, tensor.origin.operand_size_elem[tensor.layer_operand])
+                if tensor.layer_operand == Constants.OUTPUT_LAYER_OP:
+                    precision = tensor.origin.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
+                else:
+                    precision = tensor.origin.operand_precision[tensor.layer_operand]
 
-            op = TransferOp(None, [result_type], source, dest, str(tensor))
+                result_type = MemRefType(IntegerType(precision), [size])
 
-            transfers[transfer.tensors[0]] = op
+                op = TransferOp(None, [result_type], source, dest, str(tensor), repeat=1)
+
+                transfers[(tensor.id[0], tensor.id[2])] = op
 
             # make sure the operation uses the result of this transfer
             # order = ["I", "W", "O"]
             # nodes[tensor.origin].operands[order.index(tensor.layer_operand.name)] = op.results[0]
 
-        for node, node_op in nodes.items():
+        for node_id, nodes_list in nodes_steady_state.items():
+            node = nodes_list[0]  # first node as reference
             operands = node.layer_operands
             for i, operand in enumerate(reversed(operands)):
                 tensor = node.operand_tensors[operand]
-                node_op.operands[i] = transfers[tensor].results[0]
+                nodes[node].operands[i] = transfers[(tensor.id[0], tensor.id[2])].results[0]
 
         # add all nodes and transfers to the module
         transfer_ops = tuple(transfers.values())
-        node_ops = tuple(nodes.values())
+        node_ops = tuple(nodes[node_list[0]] for node_list in nodes_steady_state.values())
         all_ops = transfer_ops + node_ops
         module = ModuleOp(list(all_ops))
+
+        # Process stream thingies
+        StreamLoopRollerPass().apply(self.context, module)
 
         # Convert to AIE
         ConvertStreamToAIEPass().apply(self.context, module)
