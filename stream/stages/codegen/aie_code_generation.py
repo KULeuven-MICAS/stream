@@ -67,7 +67,7 @@ class AIECodeGenerationStage(Stage):
             op = ComputationNodeOp(
                 [EmptySSAValue(typ) for typ in input_operands],
                 EmptySSAValue(output_operand),
-                "conv2dk1_i8",
+                node.kernel.name,
                 node.core_allocation[0],
             )
 
