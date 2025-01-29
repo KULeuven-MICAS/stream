@@ -194,7 +194,7 @@ class TestPatttern(RewritePattern):
         inputs: list[SSAValue | Operation] = list(op.inputs)
         if op.outputs:
             inputs.append(op.outputs)
-        inputs.extend([c32, c32, c64, c10])
+        inputs.extend([c32, c64, c64, c10])
 
         func_call = CallOp(op.kernel.data, inputs, [])
 
