@@ -1,10 +1,9 @@
 from dataclasses import dataclass, field
 from typing import cast
 
-from xdsl import dialects
 from xdsl.context import MLContext
 from xdsl.dialects.arith import ConstantOp
-from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, StringAttr, i32
+from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, NoneType, StringAttr, i32
 from xdsl.dialects.func import CallOp, FuncOp
 from xdsl.ir import Attribute, Operation, Region, SSAValue
 from xdsl.passes import ModulePass
@@ -84,39 +83,90 @@ class TileOpManager:
 
 
 @dataclass
-class TransferToObjectFIFOPattern(RewritePattern):
+class ObjectFifoManager:
 
     tile_op_manager: TileOpManager
+    sequence_op: RuntimeSequenceOp
+    device_op: DeviceOp
 
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter):
+    def insert_or_update(self, transfer: TransferOp) -> ObjectFifoOp:
 
-        source_tile = self.tile_op_manager.insert_or_update(*get_tile(op.source.data))
-        dest_tile = self.tile_op_manager.insert_or_update(*get_tile(op.dest.data))
+        source_tile = self.tile_op_manager.insert_or_update(*get_tile(transfer.source.data))
+        dest_tile = self.tile_op_manager.insert_or_update(*get_tile(transfer.dest.data))
 
-        assert isinstance(memref_type := op.results[0].type, MemRefType)
+        assert isinstance(memref_type := transfer.results[0].type, MemRefType)
         memref_type = cast(MemRefType[Attribute], memref_type)
 
         # this will reuse objectfifos of the same source dest, and type.
-        of_name = get_of_name(source_tile, dest_tile, op.tensor.data[-2])
+        of_name = get_of_name(source_tile, dest_tile, transfer.tensor.data[-2])
 
         object_fifo = ObjectFifoOp(
             elemNumber=IntegerAttr(1, i32),
             producerTile=source_tile,
             consumerTiles=[dest_tile],
-            referenced_type=op.results[0].type.element_type,
-            shape=op.results[0].type.get_shape(),
+            referenced_type=memref_type.get_element_type(),
+            shape=memref_type.get_shape(),
             name=of_name,
         )
 
         # object fifo should be defined at start of device
-        device_op = op
-        while not isinstance(device_op, DeviceOp):
-            assert device_op.parent
-            device_op = device_op.parent
-        assert isinstance(device_op, DeviceOp)
+        replaced = SymbolTable.insert_or_update(self.device_op, object_fifo)
 
-        SymbolTable.insert_or_update(device_op, object_fifo)
+        rewriter = Rewriter()
+
+        # find out the multiplicity of this transfer
+        multiplicity: int = transfer.repeat.value.data
+
+        # update the runtime sequence operation
+        if replaced is None:
+            # new, create new ops in runtime sequence
+
+            # Add Block Argument to SequenceOp
+            shape = list(memref_type.get_shape())
+            shape[0] = shape[0] * multiplicity
+            runtime_memref_type = MemRefType(memref_type.get_element_type(), shape)
+
+            # find the index such that the order (I, W, O) is achieved
+            desired_order = ["I", "W", "O"]
+            arg = self.sequence_op.body.block.args[desired_order.index(transfer.tensor.data[-2])]
+
+            # change type of the block argument
+            arg.type = runtime_memref_type
+
+            # Insert DMA
+            memcpy = DmaMemcpyNdOp(
+                0,
+                0,
+                arg,
+                static_offsets=[0, 0, 0, 0],
+                static_sizes=[1, 1, 1, runtime_memref_type.get_shape()[0]],
+                static_strides=[0, 0, 0, 1],
+                metadata=object_fifo.sym_name,
+                id=0,
+                issue_token=True,
+            )
+            rewriter.insert_op(memcpy, InsertPoint.at_start(self.sequence_op.body.block))
+
+            # wait for it ...
+            wait = DmaWaitOp(object_fifo.sym_name)
+            rewriter.insert_op(wait, InsertPoint.at_end(self.sequence_op.body.block))
+
+        else:
+            raise NotImplementedError("need to increase the multiplicity of the existing dma operation")
+
+        return object_fifo
+
+
+@dataclass
+class TransferToObjectFIFOPattern(RewritePattern):
+
+    object_fifo_manager: ObjectFifoManager
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter):
+
+        of = self.object_fifo_manager.insert_or_update(op)
+        of_name = of.sym_name.data
 
         # decide whether to consume or produce
         if op.source.data == "Any":
@@ -144,17 +194,16 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
         # find first and last use in this region
         assert op.parent
-        first_use_op = None
         operation_uses = set(x.operation for x in op.results[0].uses)
-        for first_use_op in op.parent.ops:
-            if first_use_op in operation_uses:
-                break
-        assert first_use_op
-        last_use_op = None
-        for last_use_op in reversed(op.parent.ops):
-            if last_use_op in operation_uses:
-                break
-        assert last_use_op
+        first_use_op: Operation = next(o for o in op.parent.walk() if o in operation_uses)
+        while op.parent_op() is not first_use_op.parent_op():
+            assert (parent := first_use_op.parent_op()) is not None
+            first_use_op = parent
+
+        last_use_op: Operation = next(o for o in op.parent.walk(reverse=True) if o in operation_uses)
+        while op.parent_op() is not last_use_op.parent_op():
+            assert (parent := last_use_op.parent_op()) is not None
+            last_use_op = parent
 
         rewriter.insert_op(release_op, InsertPoint.after(last_use_op))
         rewriter.insert_op([acquire_op, access_op], InsertPoint.before(first_use_op))
@@ -215,7 +264,6 @@ class InsertRuntimeDMAs(RewritePattern):
         assert isinstance(memref_type, MemRefType)
 
         shape = list(memref_type.get_shape())
-        shape[0] = 4096
         memref_type = MemRefType(memref_type.get_element_type(), shape)
 
         sequence_block = self.sequence_op.body.block
@@ -270,24 +318,19 @@ class ConvertStreamToAIEPass(ModulePass):
         rewriter.insert_op(EndOp(), InsertPoint.at_end(core_op.region.block))
         device_op.region.add_block(Block([core_tile, core_op]))
 
+        # add a runtime sequence operation
+        runtime_sequence = RuntimeSequenceOp(Region(Block(arg_types=[NoneType(), NoneType(), NoneType()])))
+        rewriter.insert_op(runtime_sequence, InsertPoint.at_end(device_op.region.block))
+
         tile_op_manager = TileOpManager(device_op)
+        object_fifo_manager = ObjectFifoManager(tile_op_manager, runtime_sequence, device_op)
 
         PatternRewriteWalker(
-            TransferToObjectFIFOPattern(tile_op_manager),
+            TransferToObjectFIFOPattern(object_fifo_manager),
             apply_recursively=False,
         ).rewrite_module(op)
-
 
         PatternRewriteWalker(
             TestPatttern(tile_op_manager),
             apply_recursively=False,
         ).rewrite_module(op)
-
-
-        # add loop roller
-
-        # add a runtime sequence operation
-        runtime_sequence = RuntimeSequenceOp(Region(Block()))
-        rewriter.insert_op(runtime_sequence, InsertPoint.at_end(device_op.region.block))
-
-        PatternRewriteWalker(InsertRuntimeDMAs(runtime_sequence), apply_recursively=False).rewrite_module(op)

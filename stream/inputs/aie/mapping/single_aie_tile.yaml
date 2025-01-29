@@ -25,7 +25,7 @@
   intra_core_tiling:
     - OY, 32
   inter_core_tiling:
-    - K, 2
+    - K, 1
   kernel:
     name: conv_kernel
     utilization: 44.33 
