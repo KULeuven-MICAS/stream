@@ -27,7 +27,7 @@
   inter_core_tiling:
     - K, 1
   kernel:
-    name: conv_kernel
+    name: conv2dk1_i8
     utilization: 44.33 
 
     
