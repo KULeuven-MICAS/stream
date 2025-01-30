@@ -229,12 +229,23 @@ class TestPatttern(RewritePattern):
 
         func_op = FuncOp(op.kernel.data, (input_types, []), Region(), "private")
 
+        # find  device op to insert function call
         device_op = op
         while not isinstance(device_op, DeviceOp):
             assert device_op.parent
             device_op = device_op.parent
+        device_op = cast(DeviceOp, device_op)
 
         SymbolTable.insert_or_update(device_op, func_op)
+
+        # find core op to set link_with attribute
+        core_op = op
+        while not isinstance(core_op, CoreOp):
+            assert core_op.parent
+            core_op = core_op.parent
+        core_op = cast(CoreOp, core_op)
+
+        core_op.link_with = StringAttr(op.kernel.data + ".o")
 
         c32 = ConstantOp.from_int_and_width(32, i32)
         c64 = ConstantOp.from_int_and_width(64, i32)
@@ -312,7 +323,6 @@ class ConvertStreamToAIEPass(ModulePass):
             None,
             core_tile,
             rewriter.move_region_contents_to_new_regions(device_op.region),
-            link_with=StringAttr("conv2dk1_i8.o"),
         )
         # add end op
         rewriter.insert_op(EndOp(), InsertPoint.at_end(core_op.region.block))
