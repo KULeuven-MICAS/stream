@@ -133,16 +133,15 @@ class AIECodeGenerationStage(Stage):
 
                 transfers[(tensor.id[0], tensor.id[2])] = op
 
-            # make sure the operation uses the result of this transfer
-            # order = ["I", "W", "O"]
-            # nodes[tensor.origin].operands[order.index(tensor.layer_operand.name)] = op.results[0]
 
+        # Connect the operands of transfers to computation nodes
         for node_id, nodes_list in nodes_steady_state.items():
             node = nodes_list[0]  # first node as reference
             operands = node.layer_operands
-            for i, operand in enumerate(reversed(operands)):
+            operand_order = ['I', 'W', 'O']
+            for operand in operands:
                 tensor = node.operand_tensors[operand]
-                nodes[node].operands[i] = transfers[(tensor.id[0], tensor.id[2])].results[0]
+                nodes[node].operands[operand_order.index(operand.name)] = transfers[(tensor.id[0], tensor.id[2])].results[0]
 
         # add all nodes and transfers to the module
         transfer_ops = tuple(transfers.values())
