@@ -13,7 +13,7 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 ############################################INPUTS############################################
-workload_path = "stream/inputs/aie/workload/conv1x1_64_64_32_32.onnx"
+workload_path = "stream/inputs/aie/workload/gemm_256_256_256.onnx"
 accelerator = "stream/inputs/aie/hardware/single_aie_tile.yaml"
 mapping_path = "stream/inputs/aie/mapping/single_aie_tile.yaml"
 # mode = "lbl"
