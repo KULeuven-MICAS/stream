@@ -1,6 +1,9 @@
+from collections import defaultdict
 from dataclasses import dataclass, field
+from os import stat
 from typing import cast
 
+from numpy import isin
 from xdsl.context import MLContext
 from xdsl.dialects.arith import ConstantOp
 from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, NoneType, StringAttr, i32
@@ -34,7 +37,8 @@ from xdsl_aie.dialects.aiex import (
     RuntimeSequenceOp,
 )
 
-from stream.compiler.dialects.stream import ComputationNodeOp, TransferOp
+from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, TransferOp
+from stream.workload.tensor import Tensor
 
 
 def get_tile(value: str) -> tuple[int, int]:
@@ -112,6 +116,11 @@ class ObjectFifoManager:
         # object fifo should be defined at start of device
         replaced = SymbolTable.insert_or_update(self.device_op, object_fifo)
 
+        # for now, don't let this add runtime sequence ops, this needs to be done by 
+        # the transfer transform itself
+
+        return object_fifo
+
         rewriter = Rewriter()
 
         # find out the multiplicity of this transfer
@@ -156,11 +165,37 @@ class ObjectFifoManager:
 
         return object_fifo
 
+    def of_from_name(self, name: str) -> ObjectFifoOp:
+        result = SymbolTable.lookup_symbol(self.device_op, name)
+        assert isinstance(result, ObjectFifoOp)
+        return result
+
+    def update_depths(self):
+
+        current_fifo_depth: dict[str, int] = defaultdict(lambda:0)
+
+        for op in self.device_op.region.block.walk():
+            if isinstance(op, ObjectFifoAcquireOp):
+                of_name = op.objFifo_name.root_reference.data
+                current_fifo_depth[of_name] += 1
+                of = self.of_from_name(of_name)
+                if of.elemNumber.value.data < current_fifo_depth[of_name]:
+                    of.elemNumber = IntegerAttr.from_int_and_width(current_fifo_depth[of_name], 32)
+            elif isinstance(op, ObjectFIFOReleaseOp):
+                current_fifo_depth[op.objFifo_name.root_reference.data] -= 1
+
+        breakpoint()
+
+
+
+
 
 @dataclass
 class TransferToObjectFIFOPattern(RewritePattern):
 
     object_fifo_manager: ObjectFifoManager
+
+    release_op: dict[str, Operation | None] = field(default_factory=dict) # pyright: ignore
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter):
@@ -200,16 +235,68 @@ class TransferToObjectFIFOPattern(RewritePattern):
             assert (parent := first_use_op.parent_op()) is not None
             first_use_op = parent
 
-        last_use_op: Operation = next(o for o in op.parent.walk(reverse=True) if o in operation_uses)
+        # last use OR release op of previous acquire. depending on which comes first
+        if of_name not in self.release_op:
+            self.release_op[of_name] = None
+        last_use_op: Operation = next(o for o in op.parent.walk(reverse=True) if o in operation_uses or o is self.release_op[of_name])
         while op.parent_op() is not last_use_op.parent_op():
             assert (parent := last_use_op.parent_op()) is not None
             last_use_op = parent
+
+        self.release_op[of_name] = last_use_op
+
+        # # count the number of acquires inbetween acquire and release for fifo depth
+        # min_fifo_depth = 1
+        # current_op = first_use_op
+        # while current_op is not last_use_op:
+        #     current_op = current_op.next_op
+        #     assert current_op
+        #     if isinstance(current_op, ObjectFifoAcquireOp):
+        #         print(of_name)
+        #         print(
+        #         if current_op.objFifo_name.root_reference.data == of_name:
+        #             min_fifo_depth += 1
+
+        # if of.elemNumber.value.data < min_fifo_depth:
+        #     of.elemNumber = IntegerAttr.from_int_and_width(min_fifo_depth, 32)
 
         rewriter.insert_op(release_op, InsertPoint.after(last_use_op))
         rewriter.insert_op([acquire_op, access_op], InsertPoint.before(first_use_op))
 
         op.results[0].replace_by(access_op.results[0])
         rewriter.erase_matched_op()
+
+        # insert runtime sequence memcpy
+        runtime_sequence = self.object_fifo_manager.sequence_op
+
+        arg_order = ["I", "W", "O"]
+        arg_index = arg_order.index(op.tensor.data[-2])
+        arg = runtime_sequence.body.block.args[arg_index]
+
+        static_offsets = cast(tuple[int], op.offsets.get_values())
+        static_sizes = cast(tuple[int], op.sizes.get_values())
+        static_strides = cast(tuple[int], op.strides.get_values())
+
+        static_offsets = (0,) * (4 - len(static_offsets)) + static_offsets
+        static_sizes = (0,) * (4 - len(static_sizes)) + static_sizes
+        static_strides = (0,) * (4 - len(static_strides)) + static_strides
+
+        # Insert DMA
+        memcpy = DmaMemcpyNdOp(
+            0,
+            0,
+            arg,
+            static_offsets=static_offsets,
+            static_sizes=static_sizes,
+            static_strides=static_strides,
+            metadata=of_name,
+            id=0,
+            issue_token=True,
+        )
+
+        rewriter.insert_op(memcpy, InsertPoint.at_end(runtime_sequence.body.block))
+
+
 
 
 @dataclass
@@ -329,7 +416,16 @@ class ConvertStreamToAIEPass(ModulePass):
         device_op.region.add_block(Block([core_tile, core_op]))
 
         # add a runtime sequence operation
-        runtime_sequence = RuntimeSequenceOp(Region(Block(arg_types=[NoneType(), NoneType(), NoneType()])))
+        # find all edges
+        edges: list[EdgeOp] = [edge for edge in op.walk() if isinstance(edge, EdgeOp)]
+        order = ['I', 'W', 'O']
+
+        runtime_arg_types = []
+        for operand_name in order:
+            edge = next(edge for edge in edges if edge.tensor.data[-2] == operand_name)
+            runtime_arg_types.append(edge.output.type)
+
+        runtime_sequence = RuntimeSequenceOp(Region(Block(arg_types=runtime_arg_types)))
         rewriter.insert_op(runtime_sequence, InsertPoint.at_end(device_op.region.block))
 
         tile_op_manager = TileOpManager(device_op)
@@ -339,6 +435,8 @@ class ConvertStreamToAIEPass(ModulePass):
             TransferToObjectFIFOPattern(object_fifo_manager),
             apply_recursively=False,
         ).rewrite_module(op)
+
+        object_fifo_manager.update_depths()
 
         PatternRewriteWalker(
             TestPatttern(tile_op_manager),
