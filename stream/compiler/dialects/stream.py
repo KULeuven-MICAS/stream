@@ -32,7 +32,7 @@ class EdgeOp(IRDLOperation):
     def __init__(self, memref_type: MemRefType, tensor: str | StringAttr):
         if isinstance(tensor, str):
             tensor = StringAttr(tensor)
-        super().__init__(properties={'tensor': tensor}, result_types=(memref_type,))
+        super().__init__(properties={"tensor": tensor}, result_types=(memref_type,))
 
 
 @irdl_op_definition

@@ -1,14 +1,14 @@
 from collections import defaultdict
 from dataclasses import dataclass, field
-from os import stat
+from math import prod
 from typing import cast
 
-from numpy import isin
 from xdsl.context import MLContext
 from xdsl.dialects.arith import ConstantOp
-from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, NoneType, StringAttr, i32
+from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, StringAttr, i32
 from xdsl.dialects.func import CallOp, FuncOp
 from xdsl.ir import Attribute, Operation, Region, SSAValue
+from xdsl.parser import IntegerType
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
     PatternRewriter,
@@ -38,7 +38,6 @@ from xdsl_aie.dialects.aiex import (
 )
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, TransferOp
-from stream.workload.tensor import Tensor
 
 
 def get_tile(value: str) -> tuple[int, int]:
@@ -116,7 +115,7 @@ class ObjectFifoManager:
         # object fifo should be defined at start of device
         replaced = SymbolTable.insert_or_update(self.device_op, object_fifo)
 
-        # for now, don't let this add runtime sequence ops, this needs to be done by 
+        # for now, don't let this add runtime sequence ops, this needs to be done by
         # the transfer transform itself
 
         return object_fifo
@@ -172,7 +171,7 @@ class ObjectFifoManager:
 
     def update_depths(self):
 
-        current_fifo_depth: dict[str, int] = defaultdict(lambda:0)
+        current_fifo_depth: dict[str, int] = defaultdict(lambda: 0)
 
         for op in self.device_op.region.block.walk():
             if isinstance(op, ObjectFifoAcquireOp):
@@ -184,18 +183,13 @@ class ObjectFifoManager:
             elif isinstance(op, ObjectFIFOReleaseOp):
                 current_fifo_depth[op.objFifo_name.root_reference.data] -= 1
 
-        breakpoint()
-
-
-
-
 
 @dataclass
 class TransferToObjectFIFOPattern(RewritePattern):
 
     object_fifo_manager: ObjectFifoManager
 
-    release_op: dict[str, Operation | None] = field(default_factory=dict) # pyright: ignore
+    release_op: dict[str, Operation | None] = field(default_factory=dict)  # pyright: ignore
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter):
@@ -238,7 +232,9 @@ class TransferToObjectFIFOPattern(RewritePattern):
         # last use OR release op of previous acquire. depending on which comes first
         if of_name not in self.release_op:
             self.release_op[of_name] = None
-        last_use_op: Operation = next(o for o in op.parent.walk(reverse=True) if o in operation_uses or o is self.release_op[of_name])
+        last_use_op: Operation = next(
+            o for o in op.parent.walk(reverse=True) if o in operation_uses or o is self.release_op[of_name]
+        )
         while op.parent_op() is not last_use_op.parent_op():
             assert (parent := last_use_op.parent_op()) is not None
             last_use_op = parent
@@ -278,8 +274,11 @@ class TransferToObjectFIFOPattern(RewritePattern):
         static_strides = cast(tuple[int], op.strides.get_values())
 
         static_offsets = (0,) * (4 - len(static_offsets)) + static_offsets
-        static_sizes = (0,) * (4 - len(static_sizes)) + static_sizes
+        static_sizes = (1,) * (4 - len(static_sizes)) + static_sizes
         static_strides = (0,) * (4 - len(static_strides)) + static_strides
+        static_strides = (0, 0, 64, 1)
+
+        ids = {"I": 0, "W": 1, "O": 2}
 
         # Insert DMA
         memcpy = DmaMemcpyNdOp(
@@ -290,13 +289,55 @@ class TransferToObjectFIFOPattern(RewritePattern):
             static_sizes=static_sizes,
             static_strides=static_strides,
             metadata=of_name,
-            id=0,
+            id=ids[op.tensor.data[-2]],
             issue_token=True,
         )
 
         rewriter.insert_op(memcpy, InsertPoint.at_end(runtime_sequence.body.block))
 
 
+@dataclass
+class MMPattern(RewritePattern):
+
+    tile_op_manager: TileOpManager
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
+
+        if op.kernel.data != "mm_32x32x32":
+            return
+
+        input_types = [operand.type for operand in op.inputs]
+        if op.outputs:
+            input_types.append(op.outputs.type)
+
+        func_op = FuncOp(op.kernel.data, (input_types, []), Region(), "private")
+
+        # find  device op to insert function call
+        device_op = op
+        while not isinstance(device_op, DeviceOp):
+            assert device_op.parent
+            device_op = device_op.parent
+        device_op = cast(DeviceOp, device_op)
+
+        SymbolTable.insert_or_update(device_op, func_op)
+
+        # find core op to set link_with attribute
+        core_op = op
+        while not isinstance(core_op, CoreOp):
+            assert core_op.parent
+            core_op = core_op.parent
+        core_op = cast(CoreOp, core_op)
+
+        core_op.link_with = StringAttr(op.kernel.data + ".o")
+
+        inputs: list[SSAValue | Operation] = list(op.inputs)
+        if op.outputs:
+            inputs.append(op.outputs)
+
+        func_call = CallOp(op.kernel.data, inputs, [])
+
+        rewriter.replace_matched_op(func_call)
 
 
 @dataclass
@@ -306,6 +347,9 @@ class TestPatttern(RewritePattern):
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
+
+        if op.kernel.data != "conv2d_k1_i8":
+            return
 
         input_types = [operand.type for operand in op.inputs]
         if op.outputs:
@@ -390,6 +434,55 @@ class InsertRuntimeDMAs(RewritePattern):
         rewriter.insert_op(wait, InsertPoint.at_end(sequence_block))
 
 
+@dataclass
+class EraseEdges(RewritePattern):
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: EdgeOp, rewriter: PatternRewriter) -> None:
+        rewriter.erase_matched_op()
+
+
+@dataclass
+class ManageSyncs(RewritePattern):
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter):
+
+        active_ids: set[str] = set()
+
+        for memcpy in op.walk():
+            if not isinstance(memcpy, DmaMemcpyNdOp):
+                continue
+
+            symbol = memcpy.metadata.string_value()
+
+            if symbol in active_ids:
+                rewriter.insert_op(DmaWaitOp(symbol), InsertPoint.before(memcpy))
+
+            active_ids.add(symbol)
+
+        for symbol in active_ids:
+            rewriter.insert_op(DmaWaitOp(symbol), InsertPoint.at_end(op.body.block))
+
+
+@dataclass
+class SquashMemRefs(RewritePattern):
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: ObjectFifoAcquireOp, rewriter: PatternRewriter) -> None:
+
+        element_type = cast(IntegerType, op.result.type.parameters[0].element_type)
+        shape = op.result.type.parameters[0].shape
+        if len(shape) == 1:
+            # already squashed
+            return
+        shape = [x.data for x in shape]
+
+        new_op = ObjectFifoAcquireOp(op.port, op.size, op.objFifo_name, [prod(shape)], element_type)
+
+        rewriter.replace_matched_op(new_op)
+
+
 class ConvertStreamToAIEPass(ModulePass):
     name = "convert-stream-to-aie"
 
@@ -418,7 +511,7 @@ class ConvertStreamToAIEPass(ModulePass):
         # add a runtime sequence operation
         # find all edges
         edges: list[EdgeOp] = [edge for edge in op.walk() if isinstance(edge, EdgeOp)]
-        order = ['I', 'W', 'O']
+        order = ["I", "W", "O"]
 
         runtime_arg_types = []
         for operand_name in order:
@@ -442,3 +535,12 @@ class ConvertStreamToAIEPass(ModulePass):
             TestPatttern(tile_op_manager),
             apply_recursively=False,
         ).rewrite_module(op)
+
+        PatternRewriteWalker(
+            MMPattern(tile_op_manager),
+            apply_recursively=False,
+        ).rewrite_module(op)
+
+        PatternRewriteWalker(EraseEdges()).rewrite_module(op)
+        PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)
+        # PatternRewriteWalker(SquashMemRefs()).rewrite_module(op)

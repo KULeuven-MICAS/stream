@@ -9,7 +9,6 @@ from zigzag.datatypes import Constants, LayerOperand
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, EmptySSAValue, Stream, TransferOp
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
-from stream.compiler.transforms.stream_loop_roller import StreamLoopRollerPass
 from stream.cost_model.communication_manager import CommunicationLinkEvent
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
@@ -47,9 +46,9 @@ class AIECodeGenerationStage(Stage):
         edges: dict[tuple[int, LayerOperand], EdgeOp] = {}
 
         # hardcoded edges because i don't know where to find the information
-        edges[0, LayerOperand('O')] = EdgeOp(MemRefType(IntegerType(16), (256, 256)), 'Tensor(0, O)')
-        edges[0, LayerOperand('I')] = EdgeOp(MemRefType(IntegerType(16), (256, 256)), 'Tensor(0, I)')
-        edges[0, LayerOperand('W')] = EdgeOp(MemRefType(IntegerType(16), (256, 256)), 'Tensor(0, W)')
+        edges[0, LayerOperand("O")] = EdgeOp(MemRefType(IntegerType(32), (64, 64)), "Tensor(0, O)")
+        edges[0, LayerOperand("I")] = EdgeOp(MemRefType(IntegerType(16), (64, 64)), "Tensor(0, I)")
+        edges[0, LayerOperand("W")] = EdgeOp(MemRefType(IntegerType(16), (64, 64)), "Tensor(0, W)")
 
         # create computation nodes for all computation nodes
         nodes: dict[ComputationNode, ComputationNodeOp] = {}
@@ -89,6 +88,8 @@ class AIECodeGenerationStage(Stage):
                     for event in link.events:
                         transfer_list.append((event, link))
 
+        transfer_list.sort(key=lambda x: x[0].start)
+
         # transfers are unique per Layer Operand and Steady state stuff
         transfers: dict[Tensor, list[tuple[CommunicationLinkEvent, TransferOp]]] = defaultdict(list)
         transfer_ops: list[TransferOp] = []
@@ -109,7 +110,6 @@ class AIECodeGenerationStage(Stage):
             else:
                 precision = tensor.origin.operand_precision[tensor.layer_operand]
 
-
             offsets = [x[0] for x in tensor.loop_ranges]
             sizes = [x[1] - x[0] for x in tensor.loop_ranges]
             strides = [1 for x in tensor.loop_ranges]
@@ -128,7 +128,7 @@ class AIECodeGenerationStage(Stage):
         # Connect the operands of transfers to computation nodes
         for node, node_op in nodes.items():
             operands = node.layer_operands
-            operand_order = ['I', 'W', 'O']
+            operand_order = ["I", "W", "O"]
             for operand in operands:
                 tensor = node.operand_tensors[operand]
                 # find last transfer for this tensor
@@ -207,6 +207,8 @@ class AIECodeGenerationStage(Stage):
                     for event in link.events:
                         transfer_list.append((event, link))
 
+        transfer_list.sort(key=lambda x: x[0].start)
+
         # create transfer ops for every transfer
         # transfers: dict[Tensor, TransferOp] = {}
 
@@ -241,15 +243,16 @@ class AIECodeGenerationStage(Stage):
 
                 transfers[(tensor.id[0], tensor.id[2])] = op
 
-
         # Connect the operands of transfers to computation nodes
         for node_id, nodes_list in nodes_steady_state.items():
             node = nodes_list[0]  # first node as reference
             operands = node.layer_operands
-            operand_order = ['I', 'W', 'O']
+            operand_order = ["I", "W", "O"]
             for operand in operands:
                 tensor = node.operand_tensors[operand]
-                nodes[node].operands[operand_order.index(operand.name)] = transfers[(tensor.id[0], tensor.id[2])].results[0]
+                nodes[node].operands[operand_order.index(operand.name)] = transfers[
+                    (tensor.id[0], tensor.id[2])
+                ].results[0]
 
         # add all nodes and transfers to the module
         transfer_ops = tuple(transfers.values())
@@ -264,10 +267,6 @@ class AIECodeGenerationStage(Stage):
         # generate workload based on cme:
         module = self.generate_stream_workload(cme)
 
-        print(module)
-
-        breakpoint()
-        
         # Process stream thingies
         # StreamLoopRollerPass().apply(self.context, module)
 
