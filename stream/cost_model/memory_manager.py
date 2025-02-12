@@ -138,6 +138,8 @@ class MemoryManager:
 
         # Check if the tensor is already present
         if self.contains(tensor, top_instance):
+            # Update the available since timestep which corresponds to timestep_end
+            self.top_instance_available_since_timestep[top_instance][tensor.equality_hash()] = timestep_end
             return
 
         # Add the tensor
