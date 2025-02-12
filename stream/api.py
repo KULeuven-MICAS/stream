@@ -20,6 +20,7 @@ from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 from stream.stages.stage import MainStage, StageCallable
+from onnx import ModelProto
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
@@ -30,7 +31,7 @@ def _sanity_check_inputs(
     hardware: str, workload: str, mapping: str, mode: Literal["lbl"] | Literal["fused"], output_path: str
 ):
     assert os.path.exists(hardware), f"Hardware file {hardware} does not exist"
-    assert os.path.exists(workload), f"Workload file {workload} does not exist"
+    assert isinstance(workload, ModelProto) or os.path.exists(workload), f"Workload file {workload} does not exist"
     assert os.path.exists(mapping), f"Mapping file {mapping} does not exist"
     assert mode in ["lbl", "fused"], "Mode must be either 'lbl' or 'fused'"
     if not os.path.exists(output_path):
