@@ -26,7 +26,7 @@ class AIECodeGenerationStage(Stage):
         super().__init__(list_of_callables, **kwargs)
 
         # set up the correct xDSL context
-        self.context: MLContext = xDSLOptMain().ctx.clone()
+        self.context: MLContext = MLContext()
 
         # add custom dialects and passes
         self.context.load_dialect(Stream)
