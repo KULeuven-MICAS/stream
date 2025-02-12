@@ -4,8 +4,8 @@ import onnx.helper as helper
 import onnx.shape_inference
 from onnx import TensorProto
 
-M = 64
-N = 64
+M = 128
+N = 128
 K = 64
 
 ACT_SIZE = 16
