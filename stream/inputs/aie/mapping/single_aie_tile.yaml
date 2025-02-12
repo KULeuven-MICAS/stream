@@ -23,11 +23,12 @@
 - name: Conv
   core_allocation: [2]
   intra_core_tiling:
-    - OY, 32
+    - OY, all
   inter_core_tiling:
     - K, 1
   kernel:
     name: conv2dk1_i8
-    utilization: 44.33 
+    utilization: 44.33
+
 
     
