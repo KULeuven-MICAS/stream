@@ -148,7 +148,6 @@ class ONNXModelParser:
                 assert node_obj.id == node_id
                 node_id += 1
 
-            # TODO also use this concept to fix SoftmaxParser
             workload.first_to_last_expanded_id[id_of_first_node] = node_id - 1
 
             nodes_outputs[node_id - 1] = node.output

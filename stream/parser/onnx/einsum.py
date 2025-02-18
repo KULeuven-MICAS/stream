@@ -59,7 +59,6 @@ class EinsumParser(OnnxComputeOperatorParser):
         sizes_dict: dict[str, int] = {}
         for layer_dims, sizes in zip(layer_dims_per_op, shapes):
             if len(layer_dims) != len(sizes):
-                # TODO is the order of the equation guaranteed to be the same as the input order?
                 raise ValueError(f"Einsum equation part {layer_dims} and operand input shape {sizes} do not match")
             for layer_dim, size in zip(layer_dims.upper(), sizes):
                 if layer_dim not in sizes_dict:
@@ -73,7 +72,7 @@ class EinsumParser(OnnxComputeOperatorParser):
     def get_layer_node_user_format(
         self,
         input_shape: list[int],  # Argument required because of a caller function in superclass
-        output_shape: list[int],  # TODO put shape logic in this method for all `OnnxComputeOperatorParser` subclasses
+        output_shape: list[int],
         mapping: InterCoreMappingAttributes | None = None,
     ) -> dict[str, Any]:
         """Generate layer data in user input format for Einsum."""

@@ -110,20 +110,13 @@ class ZigZagCoreMappingEstimationStage(Stage):
                     node_duplicate = pickle_deepcopy(node)
                     # Remove duplicate cores with same id in case the core definition has changed
                     self.cost_lut.remove_cores_with_same_id(node, core)
-                    # We need to compute the optimal performance for this node-core combination
-                    # It's possible this node might not fully fit within the core's top level memories.
-                    #  If so, we update the core
+                    # Compute the optimal performance for this node-core combination. If this node does not fully fit
+                    # within the core's top level memories, we update the core to include an offchip memory.
                     too_large_operands_for_cme = self.check_core_capacity_for_node(core, node_duplicate)
-                    # # ! --- ensure all constant weights are accessed via blocking behavior i.s.o. transfer
+                    # # ! --- ensure all constant weights are accessed via blocking behavior i.s.o. transfer -RG
                     # for layer_op in node.constant_operands:
                     #     mem_op = node.memory_operand_links.layer_to_mem_op(layer_op)
                     #     if mem_op not in too_large_operands_for_cme and node.operand_precision[layer_op] > 0:
-                    #         too_large_operands_for_cme.append(mem_op)
-                    # # ! ---
-                    # # ! --- FOR TESTING ONLY enforce blocking for all operands always
-                    # for layer_op in node.input_operands + [node.output_operand]:
-                    #     mem_op = node.memory_operand_links.layer_to_mem_op(layer_op)
-                    #     if mem_op not in too_large_operands_for_cme:
                     #         too_large_operands_for_cme.append(mem_op)
                     # # ! ---
                     node_duplicate.set_chosen_core_allocation(core_id)
@@ -255,19 +248,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
                 # Case 1: constant operand (e.g. 'W' and the first layer's 'I') or output operand
                 if layer_operand in constant_operands + [output_operand]:
                     nb_bits = node.operand_size_bit[layer_operand]
-
-                # # Case 2: variable operand -> sum up the the total data amount on the in edges
-                # # (can be larger than the ideal required data size)
-                # elif len(self.workload.in_edges(node)) > 0:
-                #     in_edges_data = [data for (_, _, data) in self.workload.in_edges(node, data=True)]
-                #     nb_bits = sum(
-                #         [
-                #             data["bits"]
-                #             for data in in_edges_data
-                #             if "operand" in data and data["operand"] == layer_operand
-                #         ]
-                #     )
-                # # Case 3: not constant, but no edges found
+                # # Case 2: not constant, but no edges found
                 else:
                     nb_bits = node.operand_size_bit[layer_operand]
 
@@ -280,10 +261,9 @@ class ZigZagCoreMappingEstimationStage(Stage):
 
             # Step 3: compare the total required capacity with the top level memory capacity
             if top_level_capacity < total_required_capacity:
-                # when the memory capacity is smaller than the requirement,
-                # sort the required capacity of each operand that shares this memory based on the operand's required
-                #  size, from small to large
-                # fit the operands to the memory from small to large
+                # when the memory capacity is smaller than the requirement, sort the required capacity of each operand
+                # that shares this memory based on the operand's required size, from small to large
+                # Fit the operands to the memory from small to large
                 bits_to_be_stored_in_top_level = {
                     k: v for k, v in sorted(bits_to_be_stored_in_top_level.items(), key=lambda item: item[1])
                 }
@@ -394,12 +374,12 @@ class ZigZagCoreMappingEstimationStage(Stage):
         logger.warning(f"Adding offchip memory for {core}, layer={layer_idx}, memory_operands={too_large_operands}.")
         offchip_core: Core = pickle_deepcopy(self.accelerator.get_core(self.accelerator.offchip_core_id))
 
-        # Sanity checks
-        # Make sure that there is only one offchip memory
+        # Sanity checks: make sure that there is only one offchip memory
         offchip_memory_levels = offchip_core.memory_hierarchy.mem_level_list
         assert (
             len(offchip_memory_levels) == 1
         ), "There is more than one offchip memory, unsure which one to take for intra core mapping"
+
         offchip_memory_level: MemoryLevel = pickle_deepcopy(offchip_memory_levels[0])
         offchip_memory_instance = offchip_memory_level.memory_instance
         offchip_memory_operands = too_large_operands
@@ -468,7 +448,7 @@ class MinimalBandwidthLatencyStage(Stage):
         total_bw = sum(sum(x) for x in bw_per_direction.info_list)
         return total_bw
 
-    def objective_function(self, cme: CostModelEvaluation):
+    def objective_function(self, cme: CostModelEvaluation) -> float:
         """
         # TODO this does not cover all cases
         """

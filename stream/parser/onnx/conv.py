@@ -85,7 +85,7 @@ class ConvParser(OnnxComputeOperatorParser):
             ]
         else:
             assert len(input_shape) == 4 and len(output_shape) == 4 and len(padding) == 4 and len(strides) == 2
-            FY = kernel_shape[1]  # TODO is kernel_shape in (FX, FY) format or (FY, FX)? (I assumed the former)
+            FY = kernel_shape[1]
             IY = input_shape[3]
             OY = output_shape[3]
             loop_size_dict = {"B": B, "K": K, "G": G, "OX": OX, "C": C, "FX": FX, "OY": OY, "FY": FY}

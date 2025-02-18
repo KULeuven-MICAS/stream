@@ -261,8 +261,6 @@ class CommunicationManager:
             for link, tensors_this_link in tensors_per_link.items()
         }
 
-        # TODO Should the bandwidth be capped at the link BW?
-
         # Get idle window of the involved links
         block_start = self.get_links_idle_window(tensor_bw_per_link, start_timestep, duration)
 

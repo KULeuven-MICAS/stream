@@ -304,7 +304,7 @@ class TiledWorkloadGenerationStage(Stage):
         divisors: dict[LayerDim, set[int]] = defaultdict(lambda: set())
 
         if isinstance(node, GeneratedComputationNode):
-            # Too hard to manage this for generated nodes for now # TODO is there a cleaner way?
+            # Too hard to manage this for generated nodes for now
             return divisors
 
         # Find nodes in stack

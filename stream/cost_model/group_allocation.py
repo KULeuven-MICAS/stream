@@ -81,12 +81,6 @@ class GroupIdManager:
             # In this case, the tiles should not be split between cores yet
             return 0
 
-        # if not self.node.constant_operands and len(self.node.core_allocation) == 1:
-        #     # If the node can only be assigned to a single core, we give all nodes the same group id
-        #     # This is to prevent the CostModelEvaluationLUT from identifying each node as unique
-        #     # This is the case for e.g. 'Add' nodes if there is only a single 'Add' core
-        #     return 0
-
         # Differentiate based on node's inter core tiling
         range_identifier = self.__get_range_identifier(tile_loop_ranges)
 

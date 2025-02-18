@@ -74,20 +74,6 @@ def convert_inner_cn_loops(inner_cn_loops: TILING_T, layer: ComputationNode):
     return outer_loops
 
 
-def modify_layer_dim_for_op(layer_dim: LayerDim, layer: ComputationNode) -> LayerDim:
-    """Modify the layer_dim for the operator.
-
-    Args:
-        layer_dim (LayerDim): The layer dimension.
-        layer (ComputationNode): The original layer.
-
-    # TODO this code can be omitted of proper intra core tilings are defined by the user
-    """
-    if layer.type == "add" and layer_dim == LayerDim("OY"):
-        return LayerDim("D")  # add operator does not have OY dimension
-    return layer_dim
-
-
 def convert_outer_cn_loops(outer_cn_loops: TILING_T, node: ComputationNode):
     """Converts a list of string-defined outer-cn loops to outer-cn TemporalLoop objects.
     "all" in ("K", "all") is converted to the size of that dimension for the node.

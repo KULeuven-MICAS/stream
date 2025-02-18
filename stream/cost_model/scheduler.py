@@ -416,7 +416,7 @@ class Schedule:
         # is_first_node_of_layer = not any(
         #     layer_id == best_candidate.id for layer_id, _ in self.scheduling_order[0:best_candidate_idx]
         # )
-        # Fast way to compute
+        # ! Fast way to compute -RG
         is_first_node_of_layer = best_candidate.sub_id == 0 and (
             not isinstance(best_candidate, GeneratedComputationNode) or (best_candidate.gen_id == 0)
         )
@@ -651,7 +651,7 @@ class Schedule:
                 tensor_to_remove=tensor_to_evict,
                 core_to_remove_from=core,
                 memory_op=memory_op,
-                timestep=timestep,  # TODO should this be `enough_space_timestep`?
+                timestep=timestep,
                 transfer_bandwidth_fraction=transfer_bandwidth_fraction,
                 write_back_to_offchip=True,
                 transfer_cause=TransferCause.EVICTION,

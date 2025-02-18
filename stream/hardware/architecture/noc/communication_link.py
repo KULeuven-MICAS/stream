@@ -178,13 +178,11 @@ class CommunicationLink:
         if any((previous_event.start == event.start for previous_event in previous_events)):
             return False
 
-        # idx_start = np.searchsorted(self.active_ts[-1000:], start) + len(self.active_ts) - 1000
-
         idx_start = np.searchsorted(self.active_ts, start)
         if self.active_ts[idx_start] == start:
             self.active_deltas[idx_start] += activity
         else:
-            # ! np.insert is the slow part of the code: active_ts becomes too large -RG
+            # TODO np.insert is the slow part of the code for long sequences: active_ts becomes too large
             self.active_ts = np.insert(self.active_ts, idx_start, start)
             self.active_deltas = np.insert(self.active_deltas, idx_start, activity)
         idx_end = np.searchsorted(self.active_ts, end)
@@ -193,8 +191,8 @@ class CommunicationLink:
         else:
             self.active_ts = np.insert(self.active_ts, idx_end, end)
             self.active_deltas = np.insert(self.active_deltas, idx_end, -activity)
-            # Track that this link has transferred the tensors of this event for future broadcasts
 
+        # Track that this link has transferred the tensors of this event for future broadcasts
         self.previously_seen_tensors[event.tensor] = previous_events + [event]
         self.events.append(event)
         return True
@@ -202,7 +200,6 @@ class CommunicationLink:
     def get_idle_window(
         self,
         bandwidth_per_tensor: list[tuple["Tensor", int]],
-        # activity: float,
         duration: int,
         earliest_t: int,
     ):
@@ -214,7 +211,7 @@ class CommunicationLink:
         def find_valid_window_for_given_bw(required_bandwidth: int):
             valid_windows: list[tuple[int, int]] = []
 
-            ## Check other possible periods given the activity
+            # Check other possible periods given the activity
             activities = np.cumsum(self.active_deltas)
             earliest_t_index = np.searchsorted(self.active_ts, earliest_t, side="right")
             relevant_ts = self.active_ts[earliest_t_index:]
@@ -273,21 +270,7 @@ class CommunicationLink:
             tensor: get_previous_valid_windows(tensor) for tensor in tensors if get_previous_valid_windows(tensor) != []
         }
 
-        # # Case 1: previous windows for 1 tensor found
-        # # NOTE functionality fully covered by case 2
-        # if len(valid_windows_per_tensor) == 1:
-        #     previously_seen_tensor, previous_windows = next(iter(valid_windows_per_tensor.items()))
-        #     remaining_req_bw = sum([bw for tensor, bw in bandwidth_per_tensor if tensor != previously_seen_tensor])
-        #     all_valid_windows = [
-        #         previous_window
-        #         for previous_window in previous_windows
-        #         if window_has_bandwidth_left(previous_window, remaining_req_bw)
-        #     ]
-        #     # If valid windows are found, return those
-        #     if all_valid_windows:
-        #         return
-
-        # Case 2: check all previously seen window combinations:
+        # Check all previously seen window combinations:
         all_valid_windows: list[tuple[int, int]] = []
         for r in range(1, len(valid_windows_per_tensor) + 1, -1)[::-1]:
             # e.g. if 3 tensors have been seen before, check the windows for tensors (1,2,3), (1,2), (2,3), (1,3), ...
@@ -310,32 +293,3 @@ class CommunicationLink:
         # Base case: don't assume previous transfers and find new window for all tensors
         total_req_bw = sum([bw for _, bw in bandwidth_per_tensor])
         return find_valid_window_for_given_bw(total_req_bw)
-
-        # NOTE checks if all tensors are previously seen
-        # valid_windows: list[tuple[int, int]] = []
-        # ## Check if the tensors have already been transferred on this link before
-        # # If so, check duration and earliest timestep requirements of this call
-        # if all(tensor in self.previously_seen_tensors for tensor in tensors):
-        #     previous_event_per_tensor = [self.previously_seen_tensors[tensor] for tensor in tensors]
-
-        #     # We need to find a window where all required tensors were simultaneously transferred
-        #     for previous_event_combination in product(*previous_event_per_tensor):
-        #         duration_valid = all(event.duration >= duration for event in previous_event_combination)
-        #         earliest_t_valid = all(event.start >= earliest_t for event in previous_event_combination)
-
-        #         # TODO should all events of this combination overlap exactly?
-
-        #         if duration_valid and earliest_t_valid:
-        #             valid_windows.append((previous_event_combination[0].start, previous_event_combination[0].end))
-
-        # NOTE original code
-        # for tensor in tensors:
-        #     if tensor in self.previously_seen_tensors:
-        #         previous_events = self.previously_seen_tensors[tensor]
-        #         for previous_event in previous_events:
-        #             # Previous event needs to be long enough
-        #             duration_valid = previous_event.duration >= duration
-        #             # Previous event needs to have happened at late enough time
-        #             earliest_t_valid = previous_event.start >= earliest_t
-        #             if duration_valid and earliest_t_valid:
-        #                 valid_windows.append((previous_event.start, previous_event.end))
