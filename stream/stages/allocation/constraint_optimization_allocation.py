@@ -464,27 +464,9 @@ class ConstraintOptimizationAllocationStage(Stage):
             n = next(n for n in workload.node_list if n.id == layer_id)
             n.possible_core_allocation = list(cores)
 
-        # Find any layers that might not have been in the steady state allocation and need to be allocated manually
-        # The nodes of these layers will be allocated across all possible cores in the K dimension if possible
-        layer_ids_not_in_ss = [
-            layer_id for stack in self.layer_stacks for layer_id in stack if layer_id not in layer_ids
-        ]
-
-        # TODO this piece of code is outdated
-        for layer_id_not_in_ss in layer_ids_not_in_ss:
-            layer_ids_idx = np.searchsorted(layer_ids, layer_id_not_in_ss)
-            for n in filter(lambda n: n.id == layer_id_not_in_ss, workload.node_list):
-                assert isinstance(n.core_allocation, list)
-                n.possible_core_allocation = n.core_allocation
-                assert "K" in n.loop_dim_size
-                layer_ids.insert(layer_ids_idx, layer_id_not_in_ss)
-                core_ids.insert(layer_ids_idx, n.core_allocation)
-                logger.warning(f"{n} not in steady state allocation; allocated to: {n.core_allocation}.")
-
     def replace_wildcard_in_tiling(self, tiling: TILING_T, nb_cores_split: int):
         """The user can define a wildcard `*` in the inter core tiling, meaning that the value found by the CO
         must be used instead.
-        # TODO in case multiple splits are given (e.g. C and D), should the nb_cores_split be scaled?
         """
         if len(tiling) > 1:
             raise ValueError("Only 1 partition dimension should be defined in inter core tiling")

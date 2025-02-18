@@ -273,7 +273,6 @@ class CommunicationManager:
                 cle, is_new_event = link.block(
                     block_start, duration, tensor, bandwidth=bandwidth, sender=sender, receiver=receiver
                 )
-                # TODO: Group multiple CommunicationLinkEvents into a single CommunicationEvent as opposed to one event per link and tensor
                 if is_new_event:
                     event = CommunicationEvent(
                         id=self.event_id,

@@ -357,7 +357,6 @@ class TilingGenerationStage(Stage):
                 node.input.insert(output_name_idx, concat_output_name)
 
         # If the original node is a graph output, replace it with the Concat output name
-        # TODO: Check if the concat output shape is equal to the original node's output shape
         if node_output_is_graph_output:
             for output in graph.output:
                 if output.name == original_node_output_name:

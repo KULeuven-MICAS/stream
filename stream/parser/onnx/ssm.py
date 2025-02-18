@@ -86,7 +86,6 @@ class SSMParser(OnnxComputeOperatorParser):
             all_y_ids.append(mul_h_C_node.id)
             prev_h_id = mul_add_dBx_node.id
 
-        # TODO make sure the last h is loaded back to DRAM
         final_concat_node = self.create_concat_node(all_y_ids)
         yield final_concat_node
 
