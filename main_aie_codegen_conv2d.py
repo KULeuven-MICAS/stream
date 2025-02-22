@@ -1,16 +1,17 @@
+import argparse
 import logging as _logging
 import re
 
 from stream.api import optimize_allocation_co
+from stream.inputs.aie.workload.make_conv2d_onnx import make_conv2d
 from stream.utils import CostModelEvaluationLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.perfetto import convert_scme_to_perfetto_json
-from stream.inputs.aie.workload.make_conv2d_onnx import make_conv2d
-import argparse
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
 _logging.basicConfig(level=_logging_level, format=_logging_format)
+
 
 def run_main_aie_codegen(H):
     ############################################INPUTS############################################
@@ -39,7 +40,6 @@ def run_main_aie_codegen(H):
     percent_shown = (100,)
     #####################################
 
-
     ################################PATHS################################
     timeline_fig_path_plotly = f"outputs/{experiment_id}/schedule.html"
     memory_fig_path = f"outputs/{experiment_id}/memory.png"
@@ -62,7 +62,7 @@ def run_main_aie_codegen(H):
     cost_lut_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
     cost_lut = CostModelEvaluationLUT(cost_lut_path)
     #############################################################################
-    
+
     # Save json for perfetto visualization (Visualize at http://ui.perfetto.dev/)
     convert_scme_to_perfetto_json(scme, cost_lut, json_path=json_path)
 
