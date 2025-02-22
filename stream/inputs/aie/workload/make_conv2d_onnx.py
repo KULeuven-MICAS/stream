@@ -1,9 +1,11 @@
+import argparse
+
 import numpy as np
 import onnx
 import onnx.helper as helper
 import onnx.shape_inference
 from onnx import TensorProto
-import argparse
+
 
 def make_conv2d(H):
     IC = 64
@@ -66,6 +68,7 @@ def make_conv2d(H):
     print(f"{name} exported to {save_path}.")
 
     return save_path
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Create an ONNX model with a specified height.")

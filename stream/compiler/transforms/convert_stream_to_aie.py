@@ -1,6 +1,5 @@
 from collections import defaultdict
 from dataclasses import dataclass, field
-from math import prod
 from typing import cast
 
 from xdsl.context import MLContext
@@ -8,7 +7,6 @@ from xdsl.dialects.arith import ConstantOp
 from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, StringAttr, i32
 from xdsl.dialects.func import CallOp, FuncOp
 from xdsl.ir import Attribute, Operation, Region, SSAValue
-from xdsl.parser import IntegerType
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
     PatternRewriter,
@@ -120,50 +118,6 @@ class ObjectFifoManager:
 
         return object_fifo
 
-        rewriter = Rewriter()
-
-        # find out the multiplicity of this transfer
-        multiplicity: int = transfer.repeat.value.data
-
-        # update the runtime sequence operation
-        if replaced is None:
-            # new, create new ops in runtime sequence
-
-            # Add Block Argument to SequenceOp
-            shape = list(memref_type.get_shape())
-            shape[0] = shape[0] * multiplicity
-            runtime_memref_type = MemRefType(memref_type.get_element_type(), shape)
-
-            # find the index such that the order (I, W, O) is achieved
-            desired_order = ["I", "W", "O"]
-            arg = self.sequence_op.body.block.args[desired_order.index(transfer.tensor.data[-2])]
-
-            # change type of the block argument
-            arg.type = runtime_memref_type
-
-            # Insert DMA
-            memcpy = DmaMemcpyNdOp(
-                0,
-                0,
-                arg,
-                static_offsets=[0, 0, 0, 0],
-                static_sizes=[1, 1, 1, runtime_memref_type.get_shape()[0]],
-                static_strides=[0, 0, 0, 1],
-                metadata=object_fifo.sym_name,
-                id=0,
-                issue_token=True,
-            )
-            rewriter.insert_op(memcpy, InsertPoint.at_start(self.sequence_op.body.block))
-
-            # wait for it ...
-            wait = DmaWaitOp(object_fifo.sym_name)
-            rewriter.insert_op(wait, InsertPoint.at_end(self.sequence_op.body.block))
-
-        else:
-            raise NotImplementedError("need to increase the multiplicity of the existing dma operation")
-
-        return object_fifo
-
     def of_from_name(self, name: str) -> ObjectFifoOp:
         result = SymbolTable.lookup_symbol(self.device_op, name)
         assert isinstance(result, ObjectFifoOp)
@@ -240,21 +194,6 @@ class TransferToObjectFIFOPattern(RewritePattern):
             last_use_op = parent
 
         self.release_op[of_name] = last_use_op
-
-        # # count the number of acquires inbetween acquire and release for fifo depth
-        # min_fifo_depth = 1
-        # current_op = first_use_op
-        # while current_op is not last_use_op:
-        #     current_op = current_op.next_op
-        #     assert current_op
-        #     if isinstance(current_op, ObjectFifoAcquireOp):
-        #         print(of_name)
-        #         print(
-        #         if current_op.objFifo_name.root_reference.data == of_name:
-        #             min_fifo_depth += 1
-
-        # if of.elemNumber.value.data < min_fifo_depth:
-        #     of.elemNumber = IntegerAttr.from_int_and_width(min_fifo_depth, 32)
 
         rewriter.insert_op(release_op, InsertPoint.after(last_use_op))
         rewriter.insert_op([acquire_op, access_op], InsertPoint.before(first_use_op))
@@ -341,7 +280,7 @@ class MMPattern(RewritePattern):
 
 
 @dataclass
-class TestPatttern(RewritePattern):
+class ConvPattern(RewritePattern):
 
     tile_op_manager: TileOpManager
 
@@ -465,24 +404,6 @@ class ManageSyncs(RewritePattern):
             rewriter.insert_op(DmaWaitOp(symbol), InsertPoint.at_end(op.body.block))
 
 
-@dataclass
-class SquashMemRefs(RewritePattern):
-
-    @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: ObjectFifoAcquireOp, rewriter: PatternRewriter) -> None:
-
-        element_type = cast(IntegerType, op.result.type.parameters[0].element_type)
-        shape = op.result.type.parameters[0].shape
-        if len(shape) == 1:
-            # already squashed
-            return
-        shape = [x.data for x in shape]
-
-        new_op = ObjectFifoAcquireOp(op.port, op.size, op.objFifo_name, [prod(shape)], element_type)
-
-        rewriter.replace_matched_op(new_op)
-
-
 class ConvertStreamToAIEPass(ModulePass):
     name = "convert-stream-to-aie"
 
@@ -531,8 +452,10 @@ class ConvertStreamToAIEPass(ModulePass):
 
         object_fifo_manager.update_depths()
 
+        ## lower computation node ops for known kernels
+
         PatternRewriteWalker(
-            TestPatttern(tile_op_manager),
+            ConvPattern(tile_op_manager),
             apply_recursively=False,
         ).rewrite_module(op)
 
@@ -541,6 +464,10 @@ class ConvertStreamToAIEPass(ModulePass):
             apply_recursively=False,
         ).rewrite_module(op)
 
-        PatternRewriteWalker(EraseEdges()).rewrite_module(op)
+        # insert dma wait statements for bd collisions
+
         PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)
-        # PatternRewriteWalker(SquashMemRefs()).rewrite_module(op)
+
+        ## cleanup
+
+        PatternRewriteWalker(EraseEdges()).rewrite_module(op)

@@ -4,7 +4,6 @@ from typing import Any, cast
 from xdsl.context import MLContext
 from xdsl.dialects.builtin import IndexType, IntegerAttr, IntegerType, MemRefType, ModuleOp
 from xdsl.printer import Printer
-from xdsl.xdsl_opt_main import xDSLOptMain
 from zigzag.datatypes import Constants, LayerOperand
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, EmptySSAValue, Stream, TransferOp
