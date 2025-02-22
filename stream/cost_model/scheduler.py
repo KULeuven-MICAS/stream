@@ -111,14 +111,14 @@ def get_tensors_needed_for_node(node: ComputationNode, G: ComputationNodeWorkloa
     """
     tensors_this_candidate_needs: list[Tensor] = []
     tensors_operands: list[MemoryOperand] = []
-    # Constant operands
+    # Constant input operands
     for layer_op in node.constant_operands:
         memory_op = node.memory_operand_links.layer_to_mem_op(layer_op)
         if memory_op in node.too_large_operands:
             continue
         tensors_this_candidate_needs.append(node.operand_tensors[layer_op])
         tensors_operands.append(memory_op)
-    # Non-constant operands
+    # Non-constant input operands
     for pred, node, edge_data in sorted(G.in_edges(node, data=True), key=itemgetter(0)):
         if pred.id == node.id:
             continue  # Skip if predecessor was from the same layer (intra-edge)
@@ -130,7 +130,6 @@ def get_tensors_needed_for_node(node: ComputationNode, G: ComputationNodeWorkloa
         tensors_this_candidate_needs.append(pred_output_tensor)
         tensors_operands.append(consumer_memory_op)
     if tensors_this_candidate_needs:
-        # Sort these tensors based on their earliest possible transfer time
         tensors_this_candidate_needs, tensors_operands = zip(
             *sorted(zip(tensors_this_candidate_needs, tensors_operands))
         )
@@ -310,6 +309,7 @@ def schedule_graph(
         start = max(cores_idle_from[core_id], preds_end)
         # Step 0
         tensors_this_candidate_needs, tensors_operands = get_tensors_needed_for_node(best_candidate, G)
+        output_tensor = best_candidate.operand_tensors[best_candidate.output_operand]
         # Step 1
         # There could be operands that are too large to store in the highest memory on the core
         # The tensors stored in these memories should be evicted and potentially written back to off-chip
@@ -324,7 +324,7 @@ def schedule_graph(
             core,
             best_candidate.too_large_operands,
             timestep,
-            exceptions=tensors_this_candidate_needs,
+            exceptions=tensors_this_candidate_needs + (output_tensor,),
         )
         total_eviction_to_offchip_link_energy += clear_link_energy
         total_eviction_to_offchip_memory_energy += clear_memory_energy
@@ -345,7 +345,7 @@ def schedule_graph(
                 tensor,
                 core_id,
                 tensor_operand,
-                tensors_this_candidate_needs,
+                tensors_this_candidate_needs + (output_tensor,),
             )
             # Update the possible start time of this node
             timestep = max(timestep, transfer_complete_timestep)
@@ -377,7 +377,6 @@ def schedule_graph(
         # output memory
         output_layer_operand = best_candidate.output_operand
         output_memory_operand = best_candidate.memory_operand_links[output_layer_operand]
-        output_tensor = best_candidate.operand_tensors[output_layer_operand]
         if output_memory_operand in best_candidate.too_large_operands:
             core_to_add_output_to = offchip_core
         else:
@@ -391,7 +390,7 @@ def schedule_graph(
             core_to_add_output_to,
             output_memory_operand,
             timestep,
-            tensors_this_candidate_needs,
+            tensors_this_candidate_needs + (output_tensor,),
         )
         total_eviction_to_offchip_link_energy += eviction_link_energy_cost
         total_eviction_to_offchip_memory_energy += eviction_memory_energy_cost

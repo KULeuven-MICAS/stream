@@ -257,6 +257,7 @@ class TiledWorkloadGenerationStage(Stage):
 
         finer_nodes: list[ComputationNode] = []
         tensors: list[Tensor] = []
+        output_tensor_range_to_final_producer: dict[tuple[int], ComputationNode] = {}
         group_id_manager = GroupIdManager(original_node)
         for n in range(nb_cns):
             outer_loop_values: list[int] = []
@@ -321,6 +322,8 @@ class TiledWorkloadGenerationStage(Stage):
 
             # Replace any of the tensors with identical tensors of previous finer nodes
             for op, tensor in finer_node.operand_tensors.items():
+                if op == Constants.OUTPUT_LAYER_OP:
+                    continue
                 replaced = False
                 for previous_tensor in tensors:
                     if tensor.equality_hash() == previous_tensor.equality_hash():
@@ -328,6 +331,9 @@ class TiledWorkloadGenerationStage(Stage):
                         replaced = True
                 if not replaced:
                     tensors.append(tensor)
+
+            output_tensor_loop_ranges = finer_node.operand_tensors[Constants.OUTPUT_LAYER_OP].loop_ranges
+            output_tensor_range_to_final_producer[output_tensor_loop_ranges] = finer_node
 
             # Compute the output data produced by each finer node, assuming that all the data produced by different CNs
             # are unique
@@ -347,6 +353,13 @@ class TiledWorkloadGenerationStage(Stage):
                 finer_node.set_chosen_core_allocation(chosen_core_allocation)
 
             finer_nodes.append(finer_node)
+
+        # Correct the output tensor of all CNs to the final producer (if multiple nodes handle the same output range)
+        for node in finer_nodes:
+            output_op = Constants.OUTPUT_LAYER_OP
+            output_range = node.operand_tensors[output_op].loop_ranges
+            final_producer = output_tensor_range_to_final_producer[output_range]
+            node.operand_tensors[output_op] = final_producer.operand_tensors[output_op]
 
         # NOTE We take the first node as only unique one as they are all generated equally now.
         unique_finer_nodes = [finer_nodes[0]]

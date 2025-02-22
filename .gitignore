@@ -156,3 +156,6 @@ docs/make.bat
 
 # json files (for perfetto)
 *.json
+
+# auto-generated mlir files
+*.mlir

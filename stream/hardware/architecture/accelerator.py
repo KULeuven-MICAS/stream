@@ -191,6 +191,10 @@ class Accelerator:
 
         top_instance = self.get_top_instance_of_core(core, memory_op)
 
+        # If the tensor is already present in the core, no need to evict anything
+        if self.memory_manager.contains(tensor, top_instance):
+            return timestep, total_eviction_link_energy_cost, total_eviction_memory_energy_cost
+
         # Get the timestep at which there's enough space for this tensor
         enough_space_timestep = self.memory_manager.get_timestep_for_tensor_addition(
             tensor,
