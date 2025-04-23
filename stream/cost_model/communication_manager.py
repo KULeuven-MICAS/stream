@@ -7,7 +7,7 @@ from zigzag.datatypes import Constants, MemoryOperand
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.utils import intersections
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
@@ -50,7 +50,17 @@ class CommunicationLinkEvent:
             * the bits per clock cycle used of the link bandwidth
     """
 
-    def __init__(self, type: str, start: int, end: int, tensors: list[Tensor], energy: float, activity: float) -> None:
+    def __init__(
+        self,
+        type: str,
+        start: int,
+        end: int,
+        tensors: list[SubviewTensor],
+        energy: float,
+        activity: float,
+        source: Core,
+        destinations: list[Core],
+    ) -> None:
         self.type = type
         self.start = start
         self.end = end
@@ -58,10 +68,13 @@ class CommunicationLinkEvent:
         self.tensors = tensors
         self.energy = energy
         self.activity = activity
+        self.source = source
+        self.destinations = destinations
 
     def __str__(self) -> str:
         return (
-            f"CommunicationLinkEvent(type={self.type}, start={self.start}, end={self.end}, tensors={self.tensors}, "
+            f"CommunicationLinkEvent(type={self.type}, src={self.source}, dests={self.destinations}, "
+            f"start={self.start}, end={self.end}, tensors={self.tensors}, "
             f"energy={self.energy:.2e}, activity={self.activity:.2f})"
         )
 
@@ -72,7 +85,7 @@ class CommunicationLinkEvent:
         return [tensor.layer_operand for tensor in self.tensors]
 
     def get_origin(self):
-        origins = [tensor.origin for tensor in self.tensors]
+        origins = [tensor.cn_source for tensor in self.tensors]
         assert all([origin == origins[0] for origin in origins])
         return origins[0]
 
@@ -123,7 +136,7 @@ class CommunicationManager:
 
     def update_links(
         self,
-        tensor: Tensor,
+        tensor: SubviewTensor,
         sender: Core | int,
         receiver: Core | int,
         receiver_memory_operand: MemoryOperand,
@@ -162,6 +175,8 @@ class CommunicationManager:
                 tensors=[tensor],
                 energy=duration * link.unit_energy_cost,
                 activity=link.bandwidth,
+                source=sender,
+                destinations=[receiver],
             )
             for link in links
         ]
@@ -210,7 +225,14 @@ class CommunicationManager:
         core = self.accelerator.get_core(core_id)
         assert self.accelerator.offchip_core_id is not None, "Off-chip core id is not set."
         offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
-        tensors_per_link: dict["CommunicationLink", list[Tensor]] = {}
+        tensors_per_link: dict["CommunicationLink", list[SubviewTensor]] = {}
+        # Determine the flow of data from source to destination depending on the operands
+        if Constants.OUTPUT_MEM_OP in too_large_operands:
+            source = core
+            destinations = [offchip_core]
+        else:
+            source = offchip_core
+            destinations = [core]
         if Constants.OUTPUT_MEM_OP in too_large_operands:
             links_to_offchip = set(self.get_links_for_pair(core, offchip_core))
             req_bw_to_offchip = cn.offchip_bw.wr_in_by_low
@@ -237,7 +259,9 @@ class CommunicationManager:
         # Block them
         for link, req_bw in links_to_block.items():
             req_bw = ceil(req_bw)
-            link.block(block_start, duration, tensors_per_link[link], activity=req_bw)
+            link.block(
+                block_start, duration, tensors_per_link[link], activity=req_bw, source=source, destinations=destinations
+            )
         return block_start
 
     def get_links_idle_window(
@@ -245,7 +269,7 @@ class CommunicationManager:
         links: dict["CommunicationLink", int],
         best_case_start: int,
         duration: int,
-        tensors_per_link: dict["CommunicationLink", list[Tensor]],
+        tensors_per_link: dict["CommunicationLink", list[SubviewTensor]],
     ) -> int:
         """Return the timestep at which tensor can be transfered across the links.
         Both links must have an idle window large enough for the transfer.

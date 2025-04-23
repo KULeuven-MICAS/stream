@@ -17,7 +17,7 @@ from zigzag.datatypes import LayerOperand
 
 from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 
 if TYPE_CHECKING:
     from stream.cost_model.cost_model import StreamCostModelEvaluation
@@ -419,7 +419,7 @@ def get_communication_dicts(scme):
             runtime = end - start
             energy = event.energy
             tensors = event.tensors
-            node = event.tensors[0].origin
+            node = event.tensors[0].cn_source
             layer_id = node.id
             activity = event.activity
             if runtime == 0:
@@ -549,7 +549,7 @@ def get_sorted_y_labels(df):
     return sorted(computation_labels) + sorted(communication_labels)
 
 
-def format_tensors(tensors: list[Tensor]):
+def format_tensors(tensors: list[SubviewTensor]):
     # Group tensors by their id attribute
     tensor_groups = defaultdict(list)
     for tensor in tensors:

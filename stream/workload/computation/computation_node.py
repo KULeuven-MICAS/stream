@@ -1,7 +1,8 @@
 from copy import deepcopy
-from math import prod
 from typing import TypeAlias
 
+from xdsl.dialects.builtin import MemRefType, i8, i16, i32
+from xdsl.dialects.memref import AllocOp, SubviewOp
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 from zigzag.utils import hash_sha512
 from zigzag.visualization.results.plot_cme import shorten_onnx_layer_name
@@ -13,10 +14,16 @@ from zigzag.workload.layer_node import LayerNode, LayerNodeAttributes
 from stream.node_tensor import NodeTensor
 from stream.workload.mapping import INTRA_CORE_MAPPING_DEFAULT, InterCoreMappingAttributes
 from stream.workload.node import Node
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 
 OperandTensorReshape: TypeAlias = dict[LayerOperand, tuple[int, ...]]
 LoopRanges: TypeAlias = dict[LayerDim, tuple[int, int]]
+
+PRECISION_TYPE_MAP = {
+    8: i8,
+    16: i16,
+    32: i32,
+}
 
 
 class ComputationNode(LayerNode, Node):
@@ -61,6 +68,7 @@ class ComputationNode(LayerNode, Node):
         produces_final_output: bool = False,
         group_id: int = 0,
         sub_id: int = -1,  # To distinguish alternative versions of this node
+        subview_ops: dict[SubviewOp] = {},
     ):
         op_type = op_type.lower()
 
@@ -119,10 +127,11 @@ class ComputationNode(LayerNode, Node):
 
         # Each ComputationNode will save a tensor for all its defined operands.
         # For example, a conv layer will have an I tensor, W tensor and O tensor.
-        self.operand_tensors: dict[LayerOperand, Tensor] = {}
-        self.set_operand_tensors()
+        self.operand_tensors: dict[LayerOperand, SubviewTensor] = {}
+        self.set_operand_tensors(subview_ops)
 
-    def set_operand_tensors(self):
+    def set_operand_tensors(self, subview_ops: dict[SubviewOp] | None):
+        """Set the operand tensors for this node based on the given subview ops."""
         for op in self.layer_operands:
             if op == Constants.OUTPUT_LAYER_OP:
                 precision = self.operand_precision.final_output_precision
@@ -131,10 +140,23 @@ class ComputationNode(LayerNode, Node):
 
             op_dimensionality_order = self.operand_dimensionality_order[op]
             ranges = tuple([self.loop_ranges[dim] for dim in op_dimensionality_order])
-            size = prod([upper_bound - lower_bound for (lower_bound, upper_bound) in ranges]) * precision
-            self.operand_tensors[op] = Tensor(
-                size=size,
-                origin=self,
+            offsets = [x[0] for x in ranges]
+            sizes = [x[1] - x[0] for x in ranges]
+            strides = [1] * len(ranges)
+            precision_type = PRECISION_TYPE_MAP.get(precision)
+            memref_type = MemRefType(precision_type, sizes)
+            if subview_ops:
+                assert op in subview_ops, f"SubviewOp not found for operand {op}"
+                memref_source = subview_ops[op]
+            else:
+                memref_source = AllocOp([], [], memref_type)
+            self.operand_tensors[op] = SubviewTensor(
+                memref_source=memref_source,
+                memref_type=memref_type,
+                offsets=offsets,
+                sizes=sizes,
+                strides=strides,
+                cn_source=self,
                 layer_operand=op,
                 loop_dimensions=op_dimensionality_order,
                 loop_ranges=ranges,
