@@ -7,7 +7,7 @@ from stream.cost_model.communication_manager import CommunicationLinkEvent
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
-    from stream.workload.tensor import Tensor
+    from stream.workload.tensor import SubviewTensor
 
 
 def get_bidirectional_edges(
@@ -81,7 +81,7 @@ class CommunicationLink:
         self.active_periods = [(0, float("inf"), 0)]
         self.active_ts = np.array([0, float("inf")])
         self.active_deltas = np.array([0, 0])
-        self.previously_seen_tensors: dict[Tensor, list[CommunicationLinkEvent]] = {}
+        self.previously_seen_tensors: dict[SubviewTensor, list[CommunicationLinkEvent]] = {}
 
     def __str__(self) -> str:
         return f"CommunicationLink({self.sender}, {self.receiver}, bw={self.bandwidth})"
@@ -128,10 +128,10 @@ class CommunicationLink:
         self,
         start: int,
         duration: int,
-        tensor: "Tensor",
-        bandwidth: int,
-        sender: "Core",
-        receiver: "Core",
+        tensors: list["SubviewTensor"],
+        activity: int = 100,
+        source: "Core" = None,
+        destinations: "Core" = None,
     ):
         """Block this communication link from start timestep for a given duration.
 
@@ -150,11 +150,11 @@ class CommunicationLink:
             type="block",
             start=start,
             end=end,
-            tensor=tensor,
-            energy=tensor.origin.get_offchip_energy(),
-            activity=bandwidth,
-            sender=sender,
-            receiver=receiver,
+            tensors=tensors,
+            energy=tensors[0].cn_source.get_offchip_energy(),
+            activity=activity,
+            source=source,
+            destinatons=destinations,
         )
         is_new_event = self.update_activity(event)
         return event, is_new_event
@@ -172,12 +172,12 @@ class CommunicationLink:
             return False
 
         # Check if this is a duplicate event for broadcast
-        previous_events = (
-            self.previously_seen_tensors[event.tensor] if event.tensor in self.previously_seen_tensors else []
-        )
-        if any(previous_event.start == event.start for previous_event in previous_events):
-            return False
-
+        for tensor in event.tensors:
+            previous_events = self.tensors.get(tensor, [])
+            for previous_event in previous_events:
+                if previous_event.start == event.start and previous_event.end == event.end:
+                    # Update the previous event's destinations with this event's destinations
+                    return
         idx_start = np.searchsorted(self.active_ts, start)
         if self.active_ts[idx_start] == start:
             self.active_deltas[idx_start] += activity
@@ -197,12 +197,7 @@ class CommunicationLink:
         self.events.append(event)
         return True
 
-    def get_idle_window(
-        self,
-        bandwidth_per_tensor: list[tuple["Tensor", int]],
-        duration: int,
-        earliest_t: int,
-    ):
+    def get_idle_window(self, activity: float, duration: int, earliest_t: int, tensors: list["SubviewTensor"]):
         """
         Get the earliest time window of duration `duration` from `earliest_t` with at least `activity` percent
         available.

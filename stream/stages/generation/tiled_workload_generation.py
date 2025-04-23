@@ -18,13 +18,13 @@ from stream.node_tensor import NodeTensor
 from stream.opt.partitioning.TemporalLoop import TemporalLoop
 from stream.opt.partitioning.utils import convert_outer_cn_loops
 from stream.stages.stage import Stage, StageCallable
-from stream.utils import contains_wildcard, get_inter_core_tiling_size
+from stream.utils import contains_wildcard
 from stream.workload.computation.computation_node import LOOP_RANGES_T, ComputationNode, GeneratedComputationNode
 from stream.workload.dependency_propagation.dummy_node import DummyNode
 from stream.workload.dependency_propagation.propagation_node import PropagationNode
 from stream.workload.node import Node
 from stream.workload.onnx_workload import ComputationNodeWorkload, ONNXWorkload
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 
 logger = logging.getLogger(__name__)
 
@@ -449,117 +449,123 @@ class TiledWorkloadGenerationStage(Stage):
                 [temporal_loop.size for temporal_loop in lower_outer_cn_loops if temporal_loop.dimension == loop_dim]
             )
             mult_factors.append(int(inner_span * outer_span))
-        return mult_factors
 
-    def _get_outer_loop_values(
-        self, n: int, outer_temporal_loops: list[TemporalLoop], stop_values: list[int]
-    ) -> list[int]:
-        outer_loop_values: list[int] = []
-        for i, outer_loop in enumerate(outer_temporal_loops):
-            stop_value = outer_loop.size
-            m = prod(stop_values[:i])
-            outer_loop_values.append((n // m) % stop_value)
-        return outer_loop_values
-
-    def _get_dim_min_max(
-        self,
-        original_node: ComputationNode,
-        n: int,
-        outer_temporal_loops: list[TemporalLoop],
-        tile_span: LayerDimSizes,
-        stop_values: list[int],
-        multiplication_factors: list[int],
-    ) -> LOOP_RANGES_T:
-        outer_loop_values = self._get_outer_loop_values(n, outer_temporal_loops, stop_values)
-
-        dim_min_max: LOOP_RANGES_T = {}
-        for loop_dim in original_node.layer_dims:
-            # multiply all outer-cn loop values that iterate over this loop_dim by their mult_factor
-            dim_min = 0
+        finer_nodes: list[ComputationNode] = []
+        tensors: list[SubviewTensor] = []
+        output_tensor_range_to_final_producer: dict[tuple[int], ComputationNode] = {}
+        group_id_manager = GroupIdManager(original_node)
+        for n in range(nb_cns):
+            outer_loop_values: list[int] = []
             for i, outer_loop in enumerate(outer_temporal_loops):
-                if outer_loop.dimension == loop_dim:
-                    # current loop value of this outer-cn loop
-                    loop_val = outer_loop_values[i]
-                    # mult factor of this outer-cn loop
-                    mult_factor = multiplication_factors[i]
-                    dim_min += loop_val * mult_factor
-            # max value is exclusive
-            dim_max = dim_min + (tile_span[loop_dim] if loop_dim in tile_span else 1)
-            dim_min_max[loop_dim] = (dim_min, dim_max)
-        return dim_min_max
+                loop_dim = outer_loop.dimension
+                stop_value = outer_loop.size
+                m = prod(stop_values[:i])
+                outer_loop_values.append(int((n // m) % stop_value))
+            dim_min_max: LoopRanges = {}
+            for loop_dim in loop_dims:
+                # find all outer-cn loops that iterate over this loop_dim
+                # and multiply their loop values by their mult_factor
+                dim_min = 0
+                for i, outer_loop in enumerate(outer_temporal_loops):
+                    dim = outer_loop.dimension
+                    stop_value = outer_loop.size
+                    if dim == loop_dim:
+                        # current loop value of this outer-cn loop
+                        loop_val = outer_loop_values[i]
+                        # mult factor of this outer-cn loop
+                        mult_factor = mult_factors[i]
+                        dim_min += loop_val * mult_factor
+                # max value is exclusive
+                dim_max = dim_min + (finer_span[loop_dim] if loop_dim in finer_span else 1)
+                dim_min_max[loop_dim] = (dim_min, dim_max)
 
-    def produces_final_output(self, node: ComputationNode, dim_min_max: LOOP_RANGES_T) -> bool:
-        """If all the output irrelevant loops are at a max, this is producing a final output, so set a flag"""
-        original_node_output_ir_dims = node.loop_relevancy_info.get_ir_layer_dims(Constants.OUTPUT_LAYER_OP)
-        return all([dim_min_max[dim][1] >= node.layer_dim_sizes[dim] for dim in original_node_output_ir_dims])
+            # finer_node_mapping_copy = deepcopy(original_node.extract_mapping_attr())
+            group_id = group_id_manager.get_group_id(dim_min_max)
 
-    def _replace_identical_tensors(self, tile: ComputationNode, previous_tensors: list[Tensor]):
-        """Replace any of the tensors with identical tensors of previous tiles.
-        If no identical tensor is found, add the tensor to the list of previous tensors."""
-        for op, tensor in tile.operand_tensors.items():
-            replaced = False
-            for previous_tensor in previous_tensors:
-                if tensor.equality_hash == previous_tensor.equality_hash:
-                    tile.operand_tensors[op] = previous_tensor
-                    replaced = True
-            if not replaced:
-                previous_tensors.append(tensor)
-        return previous_tensors
-
-    def _get_data_produced_unique(self, tile: ComputationNode):
-        """Compute the output data produced by each tile, assuming that all the data produced by different CNs unique"""
-        return int(
-            tile.operand_size_elem[Constants.OUTPUT_LAYER_OP] * tile.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
-        )
-
-    def _set_core_allocation_for_tile(self, tile: ComputationNode, group_id: int, original_node: ComputationNode):
-        """If the core allocation is fixed, we need to set the chosen core allocation. It's possible the core allocation
-        contains multiple entries. In that case, we select the core allocation based on the group id.
-        Only set the core allocation if the number of core allocations is equal to the inter-core tiling size, i.e.
-        the user meant to parallelize the original nodes over the given cores. Otherwise, the CO or GA will set the
-        allocation later."""
-        inter_core_tiling_size = get_inter_core_tiling_size(original_node)
-        if len(original_node.possible_core_allocation) == inter_core_tiling_size:
-            assert group_id < len(original_node.possible_core_allocation), (
-                f"Group id {group_id} too large for core allocation list {original_node.possible_core_allocation}"
+            # Create the computation node object with the computed ranges of the loop dimensions
+            node_name = original_node.name
+            # If all the output irrelevant loops are at a max, this is producing a final output, so set a flag
+            original_node_output_ir_dims = original_node.loop_relevancy_info.get_ir_layer_dims(
+                Constants.OUTPUT_LAYER_OP
             )
-            chosen_core_allocation = original_node.possible_core_allocation[group_id]
-            tile.set_chosen_core_allocation(chosen_core_allocation)
 
-    def create_tile(
-        self,
-        original_node: ComputationNode,
-        sub_id: int,
-        tile_attrs: LayerNodeAttributes,
-        produces_final_output: bool,
-        group_id: int,
-    ):
-        if isinstance(original_node, GeneratedComputationNode):
-            return GeneratedComputationNode(
-                node_id=original_node.id,
-                sub_id=sub_id,
-                base_id=original_node.base_id,
-                gen_id=original_node.gen_id,
-                gen_split_layer_dim=original_node.gen_split_layer_dim,
-                node_name=original_node.name,
-                node_attr=tile_attrs,
-                mapping_attr=original_node.extract_inter_core_mapping_attr(),
+            produces_final_output = all(
+                [dim_min_max[dim][1] >= original_node.layer_dim_sizes[dim] for dim in original_node_output_ir_dims]
+            )
+
+            # Get the operand tensors SubViewOps of the original node to build the SubViewTensors from
+            original_subviews = {}
+            for layer_op, tensor in original_node.operand_tensors.items():
+                original_subviews[layer_op] = tensor.subview
+
+            finer_node = ComputationNode(
+                node_id=original_node_id,
+                sub_id=n,
+                node_name=node_name,
+                node_attr=finer_node_attrs,
+                mapping_attr=finer_node_mapping,
                 op_type=original_node.type,
                 produces_final_output=produces_final_output,
                 group_id=group_id,
+                subview_ops=original_subviews,
             )
-        else:
-            return ComputationNode(
-                node_id=original_node.id,
-                sub_id=sub_id,
-                node_name=original_node.name,
-                node_attr=tile_attrs,
-                mapping_attr=original_node.extract_inter_core_mapping_attr(),
-                op_type=original_node.type,
-                produces_final_output=produces_final_output,
-                group_id=group_id,
-                partially_constant_operands=original_node.partially_constant_operands,
+            # Override loop_ranges property
+            finer_node.update_loop_ranges(dim_min_max)
+            # Re-calculate pr loop ranges based on new loop_ranges
+            finer_node.calculate_pr_loop_ranges()
+            # Re-set the operand tensors for the new loop_ranges
+            finer_node.set_operand_tensors(original_subviews)
+
+            # Initialize the priorities (total inter-CN data reuse factor) for the constant operands of this finer_node
+            for constant_operand in finer_node.constant_operands:
+                tensor = finer_node.operand_tensors[constant_operand]
+                tensor.set_base_priorities(tensor_reuse_factors[constant_operand][n])
+
+            # Replace any of the tensors with identical tensors of previous finer nodes
+            for op, tensor in finer_node.operand_tensors.items():
+                if op == Constants.OUTPUT_LAYER_OP:
+                    continue
+                replaced = False
+                for previous_tensor in tensors:
+                    if tensor.equality_hash() == previous_tensor.equality_hash():
+                        finer_node.operand_tensors[op] = previous_tensor
+                        replaced = True
+                if not replaced:
+                    tensors.append(tensor)
+
+            output_tensor_loop_ranges = finer_node.operand_tensors[Constants.OUTPUT_LAYER_OP].loop_ranges
+            output_tensor_range_to_final_producer[output_tensor_loop_ranges] = finer_node
+
+            # Compute the output data produced by each finer node, assuming that all the data produced by different CNs
+            # are unique
+            finer_node.data_produced_unique = int(
+                finer_node.operand_size_elem[Constants.OUTPUT_LAYER_OP]
+                * finer_node.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
             )
+
+            # If the core allocation is fixed, we need to set the chosen core allocation.
+            # It's possible the core allocation contains multiple entries.
+            # In that case, we select the core allocation based on the group id.
+            if original_node.core_allocation_is_fixed:
+                assert group_id < len(original_node.possible_core_allocation), (
+                    f"Group id {group_id} too large for core allocation list {original_node.core_allocation}"
+                )
+                chosen_core_allocation = original_node.possible_core_allocation[group_id]
+                finer_node.set_chosen_core_allocation(chosen_core_allocation)
+
+            finer_nodes.append(finer_node)
+
+        # Correct the output tensor of all CNs to the final producer (if multiple nodes handle the same output range)
+        for node in finer_nodes:
+            output_op = Constants.OUTPUT_LAYER_OP
+            output_range = node.operand_tensors[output_op].loop_ranges
+            final_producer = output_tensor_range_to_final_producer[output_range]
+            node.operand_tensors[output_op] = final_producer.operand_tensors[output_op]
+
+        # NOTE We take the first node as only unique one as they are all generated equally now.
+        unique_finer_nodes = [finer_nodes[0]]
+
+        return finer_nodes, unique_finer_nodes
 
     @staticmethod
     def get_intra_edges(nodes: list[ComputationNode]):
