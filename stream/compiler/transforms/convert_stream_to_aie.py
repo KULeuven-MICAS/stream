@@ -1,13 +1,17 @@
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
-from typing import cast
+from math import prod
+from typing import Sequence, cast
 
+from snaxc.dialects.snax import LayoutCast
+from snaxc.dialects.tsl import TiledStridedLayoutAttr
+from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.context import MLContext
 from xdsl.dialects.arith import ConstantOp
-from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, StringAttr, i32
+from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, StringAttr, SymbolRefAttr, i32
 from xdsl.dialects.func import CallOp, FuncOp
-from xdsl.ir import Attribute, Operation, Region, SSAValue
+from xdsl.ir import Attribute, Operation, OpResult, Region, SSAValue
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
     PatternRewriter,
@@ -18,14 +22,20 @@ from xdsl.pattern_rewriter import (
 from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl_aie.dialects.aie import (
     AIEDeviceEnum,
+    BDDimLayout,
+    BDDimLayoutArray,
+    BDDimLayoutArrayAttr,
     Block,
     CoreOp,
     DeviceOp,
     EndOp,
+    ObjectFIFO,
     ObjectFifoAcquireOp,
+    ObjectFifoLinkOp,
     ObjectFifoOp,
     ObjectFifoPortEnum,
     ObjectFIFOReleaseOp,
+    ObjectFIFOSubview,
     ObjectFIFOSubviewAccessOp,
     SymbolTable,
     TileOp,
@@ -152,6 +162,40 @@ class ObjectFifoManager:
                 current_fifo_depth[of_name] -= 1
                 op.size = IntegerAttr.from_int_and_width(current_fifo_depth[of_name] + 1, 32)
 
+
+def canonicalize_transformation(sizes: Sequence[int], strides: Sequence[int]) -> tuple[list[int], list[int]]:
+    """
+    Examples:
+
+        Size 1 can be omitted:
+        [1, 1], [1, 1] -> [], []
+        [4, 1], [1, 1] -> [4], [1]
+        [1, 4], [4, 1] -> [4], [1]
+
+        Squash redundancy:
+        [4, 4], [4, 1] -> [16], [1]
+
+    """
+
+    resulting_strides: list[int] = []
+    resulting_sizes: list[int] = []
+
+    for size, stride in zip(reversed(sizes), reversed(strides)):
+        assert size != 0
+        if size == 1:
+            continue
+        if not resulting_sizes:
+            resulting_sizes.insert(0, size)
+            resulting_strides.insert(0, stride)
+            continue
+        # check for squash
+        if stride == resulting_sizes[0] * resulting_strides[0]:
+            resulting_sizes[0] *= size
+        else:
+            resulting_sizes.insert(0, size)
+            resulting_strides.insert(0, stride)
+
+    return resulting_sizes, resulting_strides
 
 
 @dataclass
@@ -397,6 +441,95 @@ class ConvPattern(RewritePattern):
 
 
 @dataclass
+class PassThroughMemTile(RewritePattern):
+
+    changes: dict[str, str]
+    tile_op_manager: TileOpManager
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: ObjectFifoOp, rewriter: PatternRewriter):
+
+        # not supporting any broadcast yet
+        if len(op.consumerTiles) != 1:
+            return
+
+        # if connects to shim:
+        assert isinstance(producerTile := op.producerTile, OpResult)
+        assert isinstance(producerTile.op, TileOp)
+        assert isinstance(consumerTile := op.consumerTiles[0], OpResult)
+        assert isinstance(consumerTile.op, TileOp)
+
+        # source/dest must be shim
+        if producerTile.op.row.value.data == 0:
+            shim = producerTile
+            compute = consumerTile
+            shim_is_producer = True
+        elif consumerTile.op.row.value.data == 0:
+            shim = consumerTile
+            compute = producerTile
+            shim_is_producer = False
+        else:
+            return
+
+        # other one must be compute tile
+        assert isinstance(compute.op, TileOp)
+        if compute.op.row.value.data < 2:
+            return
+
+        memtile = self.tile_op_manager.insert_or_update(0, 1)
+
+        if shim_is_producer:
+            producer_name = op.sym_name.data
+            consumer_name = op.sym_name.data + "_mem"
+        else:
+            consumer_name = op.sym_name.data
+            producer_name = op.sym_name.data + "_mem"
+
+        objectfifo_producer = ObjectFifoOp(
+            op.producerTile,
+            [memtile],
+            op.elemNumber,
+            op.elemType,
+            producer_name,
+            op.dimensionsToStream,
+            op.dimensionsFromStreamPerConsumer,
+            op.disable_synchronization,
+            op.plio,
+            op.via_DMA,
+        )
+
+        objectfifo_consumer = ObjectFifoOp(
+            memtile,
+            list(op.consumerTiles),
+            op.elemNumber,
+            op.elemType,
+            consumer_name,
+            op.dimensionsToStream,
+            op.dimensionsFromStreamPerConsumer,
+            op.disable_synchronization,
+            op.plio,
+            op.via_DMA,
+        )
+
+        link = ObjectFifoLinkOp([producer_name], [consumer_name], [], [])
+
+        rewriter.replace_matched_op([objectfifo_producer, objectfifo_consumer, link])
+
+        self.changes[op.sym_name.data] = op.sym_name.data + "_mem"
+
+
+@dataclass
+class OfNameRewriter(RewritePattern):
+
+    changes: dict[str, str]
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: ObjectFifoAcquireOp | ObjectFIFOReleaseOp, rewriter: PatternRewriter):
+        if op.objFifo_name.root_reference.data in self.changes:
+            op.objFifo_name = SymbolRefAttr(self.changes[op.objFifo_name.root_reference.data])
+
+
+@dataclass
 class InsertRuntimeDMAs(RewritePattern):
 
     sequence_op: RuntimeSequenceOp
@@ -469,6 +602,204 @@ class ManageSyncs(RewritePattern):
             rewriter.insert_op(DmaWaitOp(symbol), InsertPoint.at_end(op.body.block))
 
 
+@dataclass
+class SetKernelLayouts(RewritePattern):
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: CallOp, rewriter: PatternRewriter):
+
+        # handle the conv case
+        if op.callee.root_reference.data == "conv2dk1_i8":
+
+            input = op.arguments[0]
+            output = op.arguments[2]
+            input_type = cast(MemRefType[Attribute], op.arguments[0].type)
+
+            if isinstance(input_type.layout, TiledStridedLayoutAttr):
+                return
+
+            input_layout = TiledStridedLayout(
+                [
+                    TiledStride([Stride(32 * 64, 1)]),  # N
+                    TiledStride([Stride(32 * 64, 1)]),  # G
+                    TiledStride([Stride(32 * 64, 1)]),  # H
+                    TiledStride([Stride(8, 32)]),  # W
+                    TiledStride([Stride(8 * 32, 8), Stride(1, 8)]),  # C
+                ]
+            )
+
+            input_type = MemRefType(
+                input_type.element_type, input_type.shape, TiledStridedLayoutAttr(input_layout), input_type.memory_space
+            )
+
+            new_input = LayoutCast(input, input_type)
+            new_output = LayoutCast(output, input_type)
+
+            rewriter.insert_op([new_input, new_output], InsertPoint.before(op))
+
+            op.operands[0] = new_input.results[0]
+            op.operands[2] = new_output.results[0]
+
+        if op.callee.root_reference.data == "matmul_i16_i16":
+
+            A_operand = op.operands[0]
+            A_type = cast(MemRefType[Attribute], op.arguments[0].type)
+            if isinstance(A_type.layout, TiledStridedLayoutAttr):
+                return
+            layout_A = TiledStridedLayout(
+                [
+                    TiledStride([Stride(16 * 32 // 4, 32 // 4), Stride(4, 4)]),
+                    TiledStride([Stride(16, 32 // 4), Stride(1, 4)]),
+                ]
+            )
+            A_type_new = MemRefType(
+                A_type.element_type, A_type.shape, TiledStridedLayoutAttr(layout_A), A_type.memory_space
+            )
+            A_new = LayoutCast(A_operand, A_type_new)
+
+            B_operand = op.operands[1]
+            B_type = cast(MemRefType[Attribute], op.arguments[1].type)
+            if isinstance(B_type.layout, TiledStridedLayoutAttr):
+                return
+            layout_B = TiledStridedLayout(
+                [
+                    TiledStride([Stride(16 * 32 // 4, 32 // 4), Stride(4, 4)]),
+                    TiledStride([Stride(16, 32 // 4), Stride(1, 4)]),
+                ]
+            )
+            B_type_new = MemRefType(
+                B_type.element_type, B_type.shape, TiledStridedLayoutAttr(layout_B), B_type.memory_space
+            )
+            B_new = LayoutCast(B_operand, B_type_new)
+
+            D_operand = op.operands[2]
+            D_type = cast(MemRefType[Attribute], op.arguments[2].type)
+            if isinstance(D_type.layout, TiledStridedLayoutAttr):
+                return
+            layout_D = TiledStridedLayout(
+                [
+                    TiledStride([Stride(16 * 32 // 4, 32 // 4), Stride(4, 4)]),
+                    TiledStride([Stride(16, 32 // 4), Stride(1, 4)]),
+                ]
+            )
+            D_type_new = MemRefType(
+                D_type.element_type, D_type.shape, TiledStridedLayoutAttr(layout_D), D_type.memory_space
+            )
+            D_new = LayoutCast(D_operand, D_type_new)
+
+            rewriter.insert_op((A_new, B_new, D_new), InsertPoint.before(op))
+
+            op.operands[0] = A_new.results[0]
+            op.operands[1] = B_new.results[0]
+            op.operands[2] = D_new.results[0]
+
+
+def get_transform(source: TiledStridedLayout, dest: TiledStridedLayout) -> tuple[list[int], list[int]]:
+    """
+    Returns sizes, strides
+    """
+
+    # list of dim, depth
+    keys: list[tuple[int, int]] = []
+
+    for dim in range(source.dimension()):
+        for depth in range(source.tstrides[dim].depth()):
+            keys.append((dim, depth))
+
+    strides: list[dict[str, Stride]] = []
+
+    for key in keys:
+        strides.append(
+            {
+                "stride_src": source.get_stride(*key),
+                "stride_dest": dest.get_stride(*key),
+            }
+        )
+
+    strides.sort(key=lambda x: x["stride_dest"].step or 0, reverse=True)
+
+    sizes_src, strides_src = zip(*[(x["stride_src"].bound, x["stride_src"].step) for x in strides])
+    sizes_dest, strides_dest = zip(*[(x["stride_dest"].bound, x["stride_dest"].step) for x in strides])
+
+    # canonicalize
+    sizes_src, strides_src = canonicalize_transformation(sizes_src, strides_src)
+    sizes_dest, strides_dest = canonicalize_transformation(sizes_dest, strides_dest)
+
+    # we only consider transformations at the source for now, so no transform should be happening at dest
+    if len(sizes_dest) != 1:
+        raise RuntimeError("did not expect dest transformation")
+
+    return (sizes_src, strides_src)
+
+
+@dataclass
+class RealizeLayoutCats(RewritePattern):
+
+    of_manager: ObjectFifoManager
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: LayoutCast, rewriter: PatternRewriter):
+
+        # gather some variables
+        assert isinstance(op.source, OpResult)
+        assert isinstance(subview_access := op.source.op, ObjectFIFOSubviewAccessOp)
+        assert isinstance(subview_access.subview, OpResult)
+        assert isinstance(of_acquire := subview_access.subview.op, ObjectFifoAcquireOp)
+
+        dest_type = cast(MemRefType[Attribute], op.dest.type)
+
+        # get the objectfifo
+        # check if producer or consumer
+        port = ObjectFifoPortEnum.from_int(of_acquire.port.value.data)
+
+        if port == ObjectFifoPortEnum.Consume:
+            # for consume, take objectfifo (mem -> compute)
+            of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data)
+        else:
+            # for produce, take objectfifo (mem -> shim) (name without '_mem')
+            of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data[:-4])
+
+        # get the element_type
+        element_type = cast(MemRefType[Attribute], of.elemType.buffer)
+
+        of_layout = element_type.layout
+
+        if of_layout == dest_type.layout:
+            # transform has already been applied to ObjectFIFO
+            of_acquire.results[0].type = ObjectFIFOSubview([dest_type])
+            subview_access.results[0].type = dest_type
+            assert op.source.type == op.dest.type
+            op.dest.replace_by(op.source)
+            rewriter.erase_matched_op()
+            return
+
+        tsl_dest = cast(TiledStridedLayoutAttr, dest_type.layout).data
+        strides = [1]
+        for size in reversed(element_type.shape.data[1:]):
+            strides = [size.data * strides[0]] + strides
+        tile_bounds = tsl_dest.tile_bounds()
+
+        tsl_in = TiledStridedLayout.from_strides(strides, tile_bounds)  # pyright: ignore
+        tsl_out = cast(TiledStridedLayoutAttr, dest_type.layout).data
+
+        # calculate transform
+
+        # check if producer on consumer
+        if port == ObjectFifoPortEnum.Consume:
+            sizes, strides = get_transform(tsl_in, tsl_out)
+        else:  # Produce
+            sizes, strides = get_transform(tsl_out, tsl_in)
+
+        # create BDDimlayout
+        bd_layout = BDDimLayoutArrayAttr(
+            BDDimLayoutArray([BDDimLayout((size, stride)) for size, stride in zip(sizes, strides)])
+        )
+        of.dimensionsToStream = bd_layout
+
+        # set of_layout to the memref layout
+        of.elemType = ObjectFIFO([dest_type])
+
+
 class ConvertStreamToAIEPass(ModulePass):
     name = "convert-stream-to-aie"
 
@@ -536,6 +867,16 @@ class ConvertStreamToAIEPass(ModulePass):
         # insert dma wait statements for bd collisions
 
         PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)
+
+        # pass through memtile to enable transformations
+
+        passthrough = PassThroughMemTile({}, tile_op_manager)
+        PatternRewriteWalker(passthrough, apply_recursively=False).rewrite_module(op)
+        PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
+
+        # handle layouts
+        PatternRewriteWalker(SetKernelLayouts()).rewrite_module(op)
+        PatternRewriteWalker(RealizeLayoutCats(object_fifo_manager)).rewrite_module(op)
 
         ## cleanup
 
