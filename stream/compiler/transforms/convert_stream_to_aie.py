@@ -306,7 +306,10 @@ class MMPattern(RewritePattern):
         if op.outputs:
             input_types.append(op.outputs.type)
 
-        func_op = FuncOp(op.kernel.data, (input_types, []), Region(), "private")
+        function_name = "matmul_i16_i16"
+
+        func_op = FuncOp(function_name, (input_types, []), Region(), "private")
+        zero_func_op = FuncOp("zero_i16", (input_types[-1:], []), Region(), "private")
 
         # find  device op to insert function call
         device_op = op
@@ -316,6 +319,7 @@ class MMPattern(RewritePattern):
         device_op = cast(DeviceOp, device_op)
 
         SymbolTable.insert_or_update(device_op, func_op)
+        SymbolTable.insert_or_update(device_op, zero_func_op)
 
         # find core op to set link_with attribute
         core_op = op
@@ -330,8 +334,13 @@ class MMPattern(RewritePattern):
         if op.outputs:
             inputs.append(op.outputs)
 
-        func_call = CallOp(op.kernel.data, inputs, [])
+        # insert zero func call for first use
+        output = SSAValue.get(inputs[-1])
+        if not any(isinstance(use.operation, CallOp) for use in output.uses):
+            zero_call = CallOp("zero_i16", inputs[-1:], [])
+            rewriter.insert_op(zero_call, InsertPoint.before(op))
 
+        func_call = CallOp(function_name, inputs, [])
         rewriter.replace_matched_op(func_call)
 
 
@@ -343,7 +352,7 @@ class ConvPattern(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
 
-        if op.kernel.data != "conv2d_k1_i8":
+        if op.kernel.data != "conv2dk1_i8":
             return
 
         input_types = [operand.type for operand in op.inputs]
