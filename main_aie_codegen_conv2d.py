@@ -34,14 +34,14 @@ def run_main_aie_codegen(H):
     ######################################################################
 
     ##############PLOTTING###############
-    draw_dependencies = True
-    plot_data_transfer = True
+    # draw_dependencies = True
+    # plot_data_transfer = True
     section_start_percent = (0,)
     percent_shown = (100,)
     #####################################
 
     ################################PATHS################################
-    timeline_fig_path_plotly = f"outputs/{experiment_id}/schedule.html"
+    # timeline_fig_path_plotly = f"outputs/{experiment_id}/schedule.html"
     memory_fig_path = f"outputs/{experiment_id}/memory.png"
     json_path = f"outputs/{experiment_id}/scme.json"
     #####################################################################
