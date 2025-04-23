@@ -1,3 +1,4 @@
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import cast
@@ -39,11 +40,11 @@ from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, TransferO
 
 
 def get_tile(value: str) -> tuple[int, int]:
-    if value == "Any":
-        return (0, 0)
-    elif value == "Core(0)":
-        return (0, 2)
-    raise ValueError("unknown tile")
+    match = re.match(r"Core\((\d+)\)", value)
+    if match:
+        return 0, int(match.group(1))
+    else:
+        raise ValueError(f"Invalid tile value: {value}")
 
 
 def get_of_name(source: TileOp, dest: TileOp, operand: str) -> str:
