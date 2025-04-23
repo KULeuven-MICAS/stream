@@ -67,13 +67,11 @@ def get_of_name(source: TileOp, dest: TileOp, operand: str) -> str:
 
 @dataclass
 class TileOpManager:
-
     device_op: DeviceOp
 
     tile_ops: dict[tuple[int, int], TileOp] = field(init=False)
 
     def __post_init__(self):
-
         self.tile_ops = {}
 
         # index existing tile ops
@@ -82,7 +80,6 @@ class TileOpManager:
                 self.tile_ops[(op.col.value.data, op.row.value.data)] = op
 
     def insert_or_update(self, x: int, y: int) -> TileOp:
-
         # return pre-existing op
         if (x, y) in self.tile_ops:
             return self.tile_ops[(x, y)]
@@ -96,13 +93,11 @@ class TileOpManager:
 
 @dataclass
 class ObjectFifoManager:
-
     tile_op_manager: TileOpManager
     sequence_op: RuntimeSequenceOp
     device_op: DeviceOp
 
     def insert_or_update(self, transfer: TransferOp) -> ObjectFifoOp:
-
         source_tile = self.tile_op_manager.insert_or_update(*get_tile(transfer.source.data))
         dest_tile = self.tile_op_manager.insert_or_update(*get_tile(transfer.dest.data))
 
@@ -132,11 +127,9 @@ class ObjectFifoManager:
         return result
 
     def update_depths(self):
-
         current_fifo_depth: dict[str, int] = defaultdict(int)
 
         for op in self.device_op.region.block.walk():
-
             if isinstance(op, ObjectFifoAcquireOp):
                 of_name = op.objFifo_name.root_reference.data
 
@@ -202,7 +195,6 @@ def canonicalize_transformation(sizes: Sequence[int], strides: Sequence[int]) ->
 class PutTransfersBeforeFirstUse(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter):
-
         assert op.parent
         operation_uses = set(x.operation for x in op.results[0].uses)
         first_use_op: Operation = next(o for o in op.parent.walk() if o in operation_uses)
@@ -216,14 +208,12 @@ class PutTransfersBeforeFirstUse(RewritePattern):
 
 @dataclass
 class TransferToObjectFIFOPattern(RewritePattern):
-
     object_fifo_manager: ObjectFifoManager
 
     release_op: dict[str, Operation | None] = field(default_factory=dict)  # pyright: ignore
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter):
-
         of = self.object_fifo_manager.insert_or_update(op)
         of_name = of.sym_name.data
 
@@ -337,12 +327,10 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
 @dataclass
 class MMPattern(RewritePattern):
-
     tile_op_manager: TileOpManager
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
-
         if op.kernel.data != "mm_32x32x32":
             return
 
@@ -390,12 +378,10 @@ class MMPattern(RewritePattern):
 
 @dataclass
 class ConvPattern(RewritePattern):
-
     tile_op_manager: TileOpManager
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
-
         if op.kernel.data != "conv2dk1_i8":
             return
 
@@ -442,13 +428,11 @@ class ConvPattern(RewritePattern):
 
 @dataclass
 class PassThroughMemTile(RewritePattern):
-
     changes: dict[str, str]
     tile_op_manager: TileOpManager
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ObjectFifoOp, rewriter: PatternRewriter):
-
         # not supporting any broadcast yet
         if len(op.consumerTiles) != 1:
             return
@@ -461,11 +445,11 @@ class PassThroughMemTile(RewritePattern):
 
         # source/dest must be shim
         if producerTile.op.row.value.data == 0:
-            shim = producerTile
+            # shim = producerTile
             compute = consumerTile
             shim_is_producer = True
         elif consumerTile.op.row.value.data == 0:
-            shim = consumerTile
+            # shim = consumerTile
             compute = producerTile
             shim_is_producer = False
         else:
@@ -520,7 +504,6 @@ class PassThroughMemTile(RewritePattern):
 
 @dataclass
 class OfNameRewriter(RewritePattern):
-
     changes: dict[str, str]
 
     @op_type_rewrite_pattern
@@ -531,12 +514,10 @@ class OfNameRewriter(RewritePattern):
 
 @dataclass
 class InsertRuntimeDMAs(RewritePattern):
-
     sequence_op: RuntimeSequenceOp
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ObjectFifoOp, rewriter: PatternRewriter):
-
         # Add Block Argument to SequenceOp
         memref_type = op.elemType.buffer
 
@@ -573,7 +554,6 @@ class InsertRuntimeDMAs(RewritePattern):
 
 @dataclass
 class EraseEdges(RewritePattern):
-
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: EdgeOp, rewriter: PatternRewriter) -> None:
         rewriter.erase_matched_op()
@@ -581,10 +561,8 @@ class EraseEdges(RewritePattern):
 
 @dataclass
 class ManageSyncs(RewritePattern):
-
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter):
-
         active_ids: set[str] = set()
 
         for memcpy in op.walk():
@@ -604,13 +582,10 @@ class ManageSyncs(RewritePattern):
 
 @dataclass
 class SetKernelLayouts(RewritePattern):
-
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: CallOp, rewriter: PatternRewriter):
-
         # handle the conv case
         if op.callee.root_reference.data == "conv2dk1_i8":
-
             input = op.arguments[0]
             output = op.arguments[2]
             input_type = cast(MemRefType[Attribute], op.arguments[0].type)
@@ -641,7 +616,6 @@ class SetKernelLayouts(RewritePattern):
             op.operands[2] = new_output.results[0]
 
         if op.callee.root_reference.data == "matmul_i16_i16":
-
             A_operand = op.operands[0]
             A_type = cast(MemRefType[Attribute], op.arguments[0].type)
             if isinstance(A_type.layout, TiledStridedLayoutAttr):
@@ -734,12 +708,10 @@ def get_transform(source: TiledStridedLayout, dest: TiledStridedLayout) -> tuple
 
 @dataclass
 class RealizeLayoutCats(RewritePattern):
-
     of_manager: ObjectFifoManager
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: LayoutCast, rewriter: PatternRewriter):
-
         # gather some variables
         assert isinstance(op.source, OpResult)
         assert isinstance(subview_access := op.source.op, ObjectFIFOSubviewAccessOp)
