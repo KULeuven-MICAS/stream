@@ -245,14 +245,33 @@ class TransferToObjectFIFOPattern(RewritePattern):
         arg_index = arg_order.index(op.tensor.data[-2])
         arg = runtime_sequence.body.block.args[arg_index]
 
-        static_offsets = cast(tuple[int], op.offsets.get_values())
-        static_sizes = cast(tuple[int], op.sizes.get_values())
-        static_strides = cast(tuple[int], op.strides.get_values())
+        offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
+        sizes = cast(tuple[int, ...], op.sizes.get_values()[-4:])
+        strides = cast(tuple[int, ...], op.strides.get_values()[-4:])
+        assert isinstance(arg.type, MemRefType)
+        shapes = tuple(x.data for x in arg.type.shape)[-4:]
 
-        static_offsets = (0,) * (4 - len(static_offsets)) + static_offsets
-        static_sizes = (1,) * (4 - len(static_sizes)) + static_sizes
-        static_strides = (0,) * (4 - len(static_strides)) + static_strides
-        static_strides = (0, 0, 64, 1)
+        # assume default layout here:
+        static_strides = []
+        current_stride = 1
+        for shape, stride in zip(reversed(shapes), reversed(strides)):
+            static_strides.insert(0, current_stride)
+            current_stride *= shape * stride
+
+        static_sizes = list(sizes)
+
+        # canonicalize transformation
+        static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
+
+        # Hacky stuff to convert the offset per dimimension into the last entry
+        total_offset = 0
+        extended_shapes = shapes + (1,)
+        for i in range(len(offsets)):
+            total_offset += prod(extended_shapes[i + 1 :]) * offsets[i]
+
+        static_offsets = (0, 0, 0, total_offset)
+        static_sizes = (1,) * (4 - len(static_sizes)) + tuple(static_sizes)
+        static_strides = (0,) * (4 - len(static_strides)) + tuple(static_strides)
 
         ids = {"I": 0, "W": 1, "O": 2}
 
