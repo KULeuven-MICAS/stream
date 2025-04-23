@@ -155,6 +155,22 @@ class ObjectFifoManager:
 
 
 @dataclass
+class PutTransfersBeforeFirstUse(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter):
+
+        assert op.parent
+        operation_uses = set(x.operation for x in op.results[0].uses)
+        first_use_op: Operation = next(o for o in op.parent.walk() if o in operation_uses)
+        while op.parent_op() is not first_use_op.parent_op():
+            assert (parent := first_use_op.parent_op()) is not None
+            first_use_op = parent
+
+        op.detach()
+        rewriter.insert_op(op, InsertPoint.before(first_use_op))
+
+
+@dataclass
 class TransferToObjectFIFOPattern(RewritePattern):
 
     object_fifo_manager: ObjectFifoManager
@@ -461,6 +477,10 @@ class ConvertStreamToAIEPass(ModulePass):
         tile_op_manager = TileOpManager(device_op)
         object_fifo_manager = ObjectFifoManager(tile_op_manager, runtime_sequence, device_op)
 
+        # Order all transfers based on first use
+        PatternRewriteWalker(PutTransfersBeforeFirstUse(), apply_recursively=False).rewrite_module(op)
+
+        # Convert transfers to object fifo patterns
         PatternRewriteWalker(
             TransferToObjectFIFOPattern(object_fifo_manager),
             apply_recursively=False,
