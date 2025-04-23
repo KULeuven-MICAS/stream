@@ -184,10 +184,15 @@ class TransferToObjectFIFOPattern(RewritePattern):
         of_name = of.sym_name.data
 
         # decide whether to consume or produce
-        if op.source.data == "Any":
-            port = ObjectFifoPortEnum.Consume
-        else:
+        core_op = op.parent_op()
+        assert isinstance(core_op, CoreOp)
+        assert isinstance(core_op.tile, OpResult)
+        tile = core_op.tile.op
+        assert isinstance(tile, TileOp)
+        if str(tile.row.value.data) in op.source.data:
             port = ObjectFifoPortEnum.Produce
+        else:
+            port = ObjectFifoPortEnum.Consume
 
         assert isinstance(memref_type := op.results[0].type, MemRefType)
 
