@@ -187,7 +187,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         core = self.accelerator.get_core(core_id)
         nb_parallel_nodes: int = (
             1 if contains_wildcard(node.inter_core_tiling) else prod(size for _, size in node.inter_core_tiling)
-        )
+        )  # type: ignore
 
         if too_large_operands:
             core = self.add_offchip_to_core(core, too_large_operands, node.id)
@@ -237,25 +237,13 @@ class ZigZagCoreMappingEstimationStage(Stage):
         # Step 2: for each top level memory, for each operand this memory holds, calculate the required capacity
         # (in bit) for holding them
         memory_operand_link = node.memory_operand_links
-        constant_operands = node.constant_operands
-        output_operand = node.output_operand
         for top_memory in unique_top_memories:
             top_level_capacity = top_memory.memory_instance.size
             memory_operands = list(top_memory.mem_level_of_operands.keys())
             layer_operands = [memory_operand_link.mem_to_layer_op(mem_operand) for mem_operand in memory_operands]
             bits_to_be_stored_in_top_level: dict[MemoryOperand, int] = {}
             for layer_operand, memory_operand in zip(layer_operands, memory_operands):
-                # Case 1: constant operand (e.g. 'W' and the first layer's 'I') or output operand
-                if layer_operand in constant_operands + [output_operand]:
-                    nb_bits = node.operand_size_bit[layer_operand]
-                # # Case 2: not constant, but no edges found
-                else:
-                    nb_bits = node.operand_size_bit[layer_operand]
-
-                # Patchwork for edge cases where the node has input data that is not present in the edges (e.g.
-                # in case of KV-cache). The data on the edges should always be > operand_size_bit, except in this case
-                nb_bits = max(nb_bits, node.operand_size_bit[layer_operand])
-
+                nb_bits = node.operand_size_bit[layer_operand]
                 bits_to_be_stored_in_top_level[memory_operand] = nb_bits
             total_required_capacity = sum(bits_to_be_stored_in_top_level.values())
 

@@ -47,18 +47,18 @@ def deduce_tensor_reuse_factors(
         data_reuse_factor (dict[list[int]]): a list of data reuse factor (base priority) for constant operands of each
         CN
     """
+    constant_operands = original_node.constant_operands + original_node.partially_constant_operands
 
     # If there is no loop in the r_ir_loop, meaning that there is no outer-CN loop -> layer-by-layer
     if not outer_temporal_loops:
         return {}
 
-    if not original_node.constant_operands:
+    if not constant_operands:
         return {}
 
     # Transfer the outer_temporal_loops to r_ir_loop.
     #  An example can be r_ir_loop = {'W': [('ir', 3), ('r', 2), ('ir', 3)]}.
     r_ir_LUT = original_node.loop_relevancy_info
-    constant_operands = original_node.constant_operands
     r_ir_loop: dict[LayerOperand, list[tuple[str, int]]] = {}
     for constant_operand in constant_operands:
         r_ir_loop[constant_operand] = []
@@ -191,11 +191,11 @@ class TiledWorkloadGenerationStage(Stage):
         """Check if the tiles match the cached tiled workload.
         Can't use 'has_same_performance' because nb_real_predecessors is not set yet for tiles."""
 
-        # ! find a better way to check if the cached workload is valid -RG
-        logger.warn(
-            "Cached workload is not checked for correctness. Manually remove the cache if it no longer matches the workload"
-        )
-        return True
+        # # ! find a better way to check if the cached workload is valid -RG
+        # logger.warn(
+        #     "Cached workload is not checked for correctness. Manually remove the cache if it no longer matches the workload"
+        # )
+        # return True
 
         logger.info("Checking if the cached workload is valid for this run.")
         return all(
@@ -385,7 +385,7 @@ class TiledWorkloadGenerationStage(Stage):
             tile.update_loop_ranges(dim_min_max)
 
             # Initialize the priorities (total inter-CN data reuse factor) for the constant operands of this tile
-            for constant_operand in tile.constant_operands:
+            for constant_operand in tile.constant_operands + tile.partially_constant_operands:
                 tensor = tile.operand_tensors[constant_operand]
                 tensor.set_base_priorities(tensor_reuse_factors[constant_operand][n])
 
@@ -571,6 +571,7 @@ class TiledWorkloadGenerationStage(Stage):
                 op_type=original_node.type,
                 produces_final_output=produces_final_output,
                 group_id=group_id,
+                partially_constant_operands=original_node.partially_constant_operands,
             )
 
     @staticmethod

@@ -114,7 +114,9 @@ class Schedule:
         for n in self.G.node_list:
             for op, tensor in n.operand_tensors.items():
                 # For constant operands or inputs of first node
-                if op in n.constant_operands or (op != Constants.OUTPUT_LAYER_OP and len(self.G.in_edges(n)) == 0):
+                if op in n.constant_operands + n.partially_constant_operands or (
+                    op != Constants.OUTPUT_LAYER_OP and len(self.G.in_edges(n)) == 0
+                ):
                     if not any(
                         (
                             self.accelerator.contains_tensor(tensor, offchip_top_instance)
@@ -372,7 +374,7 @@ class Schedule:
             return
 
         # Constant operands that are in `too_large_operands` don't get a tensor, so there can be no smaller sub-tensor
-        for layer_op in node.constant_operands:
+        for layer_op in node.constant_operands + node.partially_constant_operands:
             memory_op = node.memory_operand_links.layer_to_mem_op(layer_op)
             if memory_op in node.too_large_operands:
                 return
@@ -446,8 +448,9 @@ class Schedule:
         """
         tensors_this_candidate_needs: list[Tensor] = []
         tensors_operands: list[MemoryOperand] = []
+
         # Constant operands
-        for layer_op in node.constant_operands:
+        for layer_op in node.constant_operands + node.partially_constant_operands:
             memory_op = node.memory_operand_links.layer_to_mem_op(layer_op)
             if memory_op in node.too_large_operands:
                 continue
