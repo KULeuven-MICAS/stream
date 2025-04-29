@@ -311,8 +311,6 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
         # Insert DMA
         memcpy = DmaMemcpyNdOp(
-            0,
-            0,
             arg,
             static_offsets=static_offsets,
             static_sizes=static_sizes,
@@ -532,8 +530,6 @@ class InsertRuntimeDMAs(RewritePattern):
 
         # Insert DMA
         memcpy = DmaMemcpyNdOp(
-            0,
-            0,
             sequence_block.args[0],
             static_offsets=[0, 0, 0, 0],
             static_sizes=[1, 1, 1, memref_type.get_shape()[0]],
