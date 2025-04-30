@@ -2,8 +2,8 @@ import numpy as np
 import onnx
 import onnx.helper as helper
 import onnx.shape_inference
-from onnx import TensorProto
 import yaml
+from onnx import TensorProto
 
 
 def make_gemm_mapping(M, N, K):
@@ -24,26 +24,21 @@ def make_gemm_mapping(M, N, K):
             "core_allocation": [2],
             "intra_core_tiling": tiling_strings,
             "inter_core_tiling": inter_core_tiling,
-            "kernel": {
-                "name": "mm_32x32x32",
-                "utilization": 61.8
-            }
+            "kernel": {"name": "mm_32x32x32", "utilization": 61.8},
         },
         {
             "name": "default",
             "core_allocation": [2],
             "intra_core_tiling": tiling_strings,
             "inter_core_tiling": inter_core_tiling,
-            "kernel": {
-                "name": "mm_32x32x32",
-                "utilization": 61.8
-            }
-        }
+            "kernel": {"name": "mm_32x32x32", "utilization": 61.8},
+        },
     ]
 
-    with open(output_file, 'w') as f:
+    with open(output_file, "w") as f:
         yaml.dump(mapping, f, default_flow_style=False, sort_keys=False)
     return output_file
+
 
 def make_gemm_workload(M, N, K):
     ACT_SIZE = 16

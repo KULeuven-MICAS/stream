@@ -3,7 +3,7 @@ import logging as _logging
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_mapping, make_gemm_workload
+from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
 from stream.utils import CostModelEvaluationLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.perfetto import convert_scme_to_perfetto_json
