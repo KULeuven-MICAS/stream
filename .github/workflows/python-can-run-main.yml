@@ -31,3 +31,6 @@ jobs:
       - name: Run codegeneration for gemm main without errors
         run: |
           python main_aie_codegen_gemm.py --M 64 --N 64 --K 64
+      - name: Run codegeneration for gemm on a column main without errors
+        run: |
+          python main_aie_codegen_gemm_col.py --M 64 --N 64 --K 64
