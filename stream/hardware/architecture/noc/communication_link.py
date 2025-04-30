@@ -129,7 +129,7 @@ class CommunicationLink:
             energy=tensors[0].cn_source.get_offchip_energy(),
             activity=activity,
             source=source,
-            destinatons=destinations,
+            destinations=destinations,
         )
         self.update_activity(event)
         return
