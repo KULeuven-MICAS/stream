@@ -276,8 +276,6 @@ class AIECodeGenerationStage(Stage):
         # generate workload based on cme:
         module = self.generate_stream_workload(cme)
 
-        # StreamLoopRollerPass().apply(self.context, module)
-
         # Convert to AIE
         ConvertStreamToAIEPass().apply(self.context, module)
 
