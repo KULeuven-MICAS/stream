@@ -218,15 +218,10 @@ class TransferToObjectFIFOPattern(RewritePattern):
         of_name = of.sym_name.data
 
         # decide whether to consume or produce
-        core_op = op.parent_op()
-        assert isinstance(core_op, CoreOp)
-        assert isinstance(core_op.tile, OpResult)
-        tile = core_op.tile.op
-        assert isinstance(tile, TileOp)
-        if str(tile.row.value.data) in op.source.data:
-            port = ObjectFifoPortEnum.Produce
-        else:
+        if op.source.data[-2] == "0":
             port = ObjectFifoPortEnum.Consume
+        else:
+            port = ObjectFifoPortEnum.Produce
 
         assert isinstance(memref_type := op.results[0].type, MemRefType)
 
@@ -768,6 +763,37 @@ class RealizeLayoutCats(RewritePattern):
         of.elemType = ObjectFIFO([dest_type])
 
 
+@dataclass
+class WrapInCoreOps(RewritePattern):
+    tile_op_manager: TileOpManager
+    of_manager: ObjectFifoManager
+    core_ops: dict[tuple[int, int], CoreOp]
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: Operation, rewriter: PatternRewriter):
+        if isinstance(op, ComputationNodeOp):
+            core = int(op.core_allocation.data)
+        elif isinstance(op, TransferOp):
+            source = int(op.source.data[-2])
+            dest = int(op.dest.data[-2])
+            # core is the one that isn't zero
+            core = source if source != 0 else dest
+        else:
+            return
+
+        # create core op if it doesn't exist yet
+        if (0, core) not in self.core_ops:
+            core_op = CoreOp(None, self.tile_op_manager.insert_or_update(0, core), Region(Block([EndOp()])))
+            rewriter.insert_op(core_op, InsertPoint.at_end(self.tile_op_manager.device_op.region.block))
+            self.core_ops[(0, core)] = core_op
+        else:
+            core_op = self.core_ops[(0, core)]
+
+        op.detach()
+        assert core_op.region.block.last_op
+        rewriter.insert_op(op, InsertPoint.before(core_op.region.block.last_op))
+
+
 class ConvertStreamToAIEPass(ModulePass):
     name = "convert-stream-to-aie"
 
@@ -780,18 +806,6 @@ class ConvertStreamToAIEPass(ModulePass):
             rewriter.move_region_contents_to_new_regions(op.body),
         )
         op.body.add_block(Block([device_op]))
-
-        # wrap everything in a core op
-        core_tile = TileOp(0, 2)
-
-        core_op = CoreOp(
-            None,
-            core_tile,
-            rewriter.move_region_contents_to_new_regions(device_op.region),
-        )
-        # add end op
-        rewriter.insert_op(EndOp(), InsertPoint.at_end(core_op.region.block))
-        device_op.region.add_block(Block([core_tile, core_op]))
 
         # add a runtime sequence operation
         # find all edges
@@ -812,6 +826,10 @@ class ConvertStreamToAIEPass(ModulePass):
         # Order all transfers based on first use
         PatternRewriteWalker(PutTransfersBeforeFirstUse(), apply_recursively=False).rewrite_module(op)
 
+        PatternRewriteWalker(
+            WrapInCoreOps(tile_op_manager, object_fifo_manager, {}), apply_recursively=False
+        ).rewrite_module(op)
+
         # Convert transfers to object fifo patterns
         PatternRewriteWalker(
             TransferToObjectFIFOPattern(object_fifo_manager),
@@ -819,6 +837,18 @@ class ConvertStreamToAIEPass(ModulePass):
         ).rewrite_module(op)
 
         object_fifo_manager.update_depths()
+
+        # insert dma wait statements for bd collisions
+
+        PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)
+
+        # pass through memtile to enable transformations
+
+        passthrough = PassThroughMemTile({}, tile_op_manager)
+        PatternRewriteWalker(passthrough, apply_recursively=False).rewrite_module(op)
+        PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
+
+        # wrap in core ops
 
         ## lower computation node ops for known kernels
 
@@ -831,16 +861,6 @@ class ConvertStreamToAIEPass(ModulePass):
             MMPattern(tile_op_manager),
             apply_recursively=False,
         ).rewrite_module(op)
-
-        # insert dma wait statements for bd collisions
-
-        PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)
-
-        # pass through memtile to enable transformations
-
-        passthrough = PassThroughMemTile({}, tile_op_manager)
-        PatternRewriteWalker(passthrough, apply_recursively=False).rewrite_module(op)
-        PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
 
         # handle layouts
         PatternRewriteWalker(SetKernelLayouts()).rewrite_module(op)
