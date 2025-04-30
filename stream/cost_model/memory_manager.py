@@ -7,7 +7,7 @@ from zigzag.hardware.architecture.memory_instance import MemoryInstance
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 
 from stream.hardware.architecture.core import Core
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
@@ -43,7 +43,7 @@ class MemoryManager:
         # Some top level memories instances might be shared, thus we keep info for each unique top memory instance
         self.top_instance_capacities: dict[MemoryInstance, int] = {}
         self.top_instance_available: dict[MemoryInstance, int] = {}
-        self.top_instance_stored_tensors: dict[MemoryInstance, list[Tensor]] = {}
+        self.top_instance_stored_tensors: dict[MemoryInstance, list[SubviewTensor]] = {}
         self.top_instance_stored_since_timestep: dict[MemoryInstance, dict[int, int]] = {}
         self.top_instance_available_since_timestep: dict[MemoryInstance, dict[int, int]] = {}
         self.top_instance_stored_cumsum: dict[MemoryInstance, np.ndarray[Any, Any]] = {}
@@ -68,7 +68,7 @@ class MemoryManager:
 
         self.offchip_core_id = self.accelerator.offchip_core_id
 
-    def contains(self, tensor: Tensor, top_instance: MemoryInstance):
+    def contains(self, tensor: SubviewTensor, top_instance: MemoryInstance):
         return any(
             [
                 tensor.equality_hash() == stored_tensor.equality_hash()
@@ -76,7 +76,7 @@ class MemoryManager:
             ]
         )
 
-    def find_tensor_in_top_instances(self, tensor: Tensor):
+    def find_tensor_in_top_instances(self, tensor: SubviewTensor):
         """Find the top memory instances that are storing this tensor."""
         equality_hash = tensor.equality_hash()
         # Find all instances storing this tensor
@@ -93,7 +93,7 @@ class MemoryManager:
             raise ValueError(f"Tensor {tensor} was not found in any of the instances.")
         return instances_storing_tensor, available_since_timesteps
 
-    def find_tensor(self, tensor: Tensor):
+    def find_tensor(self, tensor: SubviewTensor):
         instances_storing_tensor, available_since_timesteps = self.find_tensor_in_top_instances(tensor)
         cores_storing_tensor: list[int] = []
         top_instance_idxs: list[int] = []
@@ -113,7 +113,7 @@ class MemoryManager:
 
     def add_tensor_to_core(
         self,
-        tensor: Tensor,
+        tensor: SubviewTensor,
         core: Core,
         timestep: int,
         timestep_end: int,
@@ -175,7 +175,7 @@ class MemoryManager:
 
     def get_timestep_for_tensor_addition(
         self,
-        tensor: Tensor,
+        tensor: SubviewTensor,
         core_id: int,
         timestep: int,
         memory_op: MemoryOperand,
@@ -219,10 +219,10 @@ class MemoryManager:
     def find_best_tensor_combination_to_evict_fast(
         self,
         top_instance: MemoryInstance,
-        tensor_to_add: Tensor,
+        tensor_to_add: SubviewTensor,
         timestep: int,
-        exceptions: list[Tensor],
-    ) -> list[Tensor]:
+        exceptions: list[SubviewTensor],
+    ) -> list[SubviewTensor]:
         # Get all tensors that were being stored at the given timestep
         stored_tensors = self.get_tensors_stored_at_timestep(top_instance, timestep)
 
@@ -268,7 +268,7 @@ class MemoryManager:
     def remove_tensor_from_top_instance(
         self,
         top_instance: MemoryInstance,
-        tensor: Tensor,
+        tensor: SubviewTensor,
         timestep: int,
     ):
         tensor_size = tensor.size

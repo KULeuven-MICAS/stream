@@ -28,7 +28,7 @@ from stream.workload.dependency_propagation.transpose_node import TransposeNode
 from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.node import Node
 from stream.workload.onnx_workload import ComputationNodeWorkload, ONNXWorkload
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +256,7 @@ class TiledWorkloadGenerationStage(Stage):
             mult_factors.append(int(inner_span * outer_span))
 
         finer_nodes: list[ComputationNode] = []
-        tensors: list[Tensor] = []
+        tensors: list[SubviewTensor] = []
         output_tensor_range_to_final_producer: dict[tuple[int], ComputationNode] = {}
         group_id_manager = GroupIdManager(original_node)
         for n in range(nb_cns):
@@ -298,6 +298,11 @@ class TiledWorkloadGenerationStage(Stage):
                 [dim_min_max[dim][1] >= original_node.layer_dim_sizes[dim] for dim in original_node_output_ir_dims]
             )
 
+            # Get the operand tensors SubViewOps of the original node to build the SubViewTensors from
+            original_subviews = {}
+            for layer_op, tensor in original_node.operand_tensors.items():
+                original_subviews[layer_op] = tensor.subview
+
             finer_node = ComputationNode(
                 node_id=original_node_id,
                 sub_id=n,
@@ -307,13 +312,14 @@ class TiledWorkloadGenerationStage(Stage):
                 op_type=original_node.type,
                 produces_final_output=produces_final_output,
                 group_id=group_id,
+                subview_ops=original_subviews,
             )
             # Override loop_ranges property
             finer_node.update_loop_ranges(dim_min_max)
             # Re-calculate pr loop ranges based on new loop_ranges
             finer_node.calculate_pr_loop_ranges()
             # Re-set the operand tensors for the new loop_ranges
-            finer_node.set_operand_tensors()
+            finer_node.set_operand_tensors(original_subviews)
 
             # Initialize the priorities (total inter-CN data reuse factor) for the constant operands of this finer_node
             for constant_operand in finer_node.constant_operands:

@@ -1,19 +1,21 @@
 from collections import defaultdict
 from typing import Any, cast
 
+from snaxc.dialects.tsl import TSL
 from xdsl.context import MLContext
 from xdsl.dialects.builtin import IndexType, IntegerAttr, IntegerType, MemRefType, ModuleOp
 from xdsl.printer import Printer
 from zigzag.datatypes import Constants, LayerOperand
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, EmptySSAValue, Stream, TransferOp
+from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
 from stream.cost_model.communication_manager import CommunicationLinkEvent
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 
 
 class AIECodeGenerationStage(Stage):
@@ -29,6 +31,7 @@ class AIECodeGenerationStage(Stage):
 
         # add custom dialects and passes
         self.context.load_dialect(Stream)
+        self.context.load_dialect(TSL)
 
         self.output_path: str = kwargs["codegen_path"]
 
@@ -42,12 +45,26 @@ class AIECodeGenerationStage(Stage):
 
     def generate_stream_workload(self, cme: StreamCostModelEvaluation) -> ModuleOp:
 
-        edges: dict[tuple[int, LayerOperand], EdgeOp] = {}
+        # (precision, [loop_range_0, .. loop_range_n-1])
+        edges_ranges: dict[tuple[int, LayerOperand], tuple[int, list[int]]] = {}
+        edge_ops: dict[tuple[int, LayerOperand], EdgeOp] = {}
 
-        # hardcoded edges because i don't know where to find the information
-        edges[0, LayerOperand("O")] = EdgeOp(MemRefType(IntegerType(32), (64, 64)), "Tensor(0, O)")
-        edges[0, LayerOperand("I")] = EdgeOp(MemRefType(IntegerType(16), (64, 64)), "Tensor(0, I)")
-        edges[0, LayerOperand("W")] = EdgeOp(MemRefType(IntegerType(16), (64, 64)), "Tensor(0, W)")
+        for node in cme.workload.node_list:
+            for operand in node.layer_operands:
+                key = (node.id, operand)
+                tensor = node.operand_tensors[operand]
+
+                if tensor.layer_operand == Constants.OUTPUT_LAYER_OP:
+                    precision = tensor.cn_source.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
+                else:
+                    precision = tensor.cn_source.operand_precision[tensor.layer_operand]
+
+                edges_ranges[key] = (precision, tensor.original_shape)
+
+        edge_ops = {
+            key: EdgeOp(MemRefType(IntegerType(precision), loop_ranges), str(key))
+            for key, (precision, loop_ranges) in edges_ranges.items()
+        }
 
         # create computation nodes for all computation nodes
         nodes: dict[ComputationNode, ComputationNodeOp] = {}
@@ -90,24 +107,24 @@ class AIECodeGenerationStage(Stage):
         transfer_list.sort(key=lambda x: x[0].start)
 
         # transfers are unique per Layer Operand and Steady state stuff
-        transfers: dict[Tensor, list[tuple[CommunicationLinkEvent, TransferOp]]] = defaultdict(list)
+        transfers: dict[SubviewTensor, list[tuple[CommunicationLinkEvent, TransferOp]]] = defaultdict(list)
         transfer_ops: list[TransferOp] = []
 
         for transfer, link in transfer_list:
 
             tensor = transfer.tensors[0]
 
-            edge = edges[(tensor.id[0], tensor.id[2])]
+            edge = edge_ops[(tensor.id[0], tensor.id[2])]
 
-            # TODO: why is this backwards?
-            dest = str(link.sender)
-            source = str(link.receiver)
+            # Get source and dest and convert to string for TransferOp creation which uses string
+            source = str(transfer.source)
+            dest = str(transfer.destinations[0])  # TODO: Support broadcasting to multiple destinations
 
             # size = cast(int, tensor.origin.operand_size_elem[tensor.layer_operand])
             if tensor.layer_operand == Constants.OUTPUT_LAYER_OP:
-                precision = tensor.origin.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
+                precision = tensor.cn_source.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
             else:
-                precision = tensor.origin.operand_precision[tensor.layer_operand]
+                precision = tensor.cn_source.operand_precision[tensor.layer_operand]
 
             offsets = [x[0] for x in tensor.loop_ranges]
             sizes = [x[1] - x[0] for x in tensor.loop_ranges]
@@ -143,7 +160,7 @@ class AIECodeGenerationStage(Stage):
 
         # add all nodes and transfers to the module
         node_ops = tuple(nodes.values())
-        all_ops = tuple(edges.values()) + tuple(transfer_ops) + node_ops
+        all_ops = tuple(edge_ops.values()) + tuple(transfer_ops) + node_ops
         module = ModuleOp(list(all_ops))
 
         return module
@@ -230,11 +247,11 @@ class AIECodeGenerationStage(Stage):
                 dest = str(link.sender)
                 source = str(link.receiver)
 
-                size = cast(int, tensor.origin.operand_size_elem[tensor.layer_operand])
+                size = cast(int, tensor.cn_source.operand_size_elem[tensor.layer_operand])
                 if tensor.layer_operand == Constants.OUTPUT_LAYER_OP:
-                    precision = tensor.origin.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
+                    precision = tensor.cn_source.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
                 else:
-                    precision = tensor.origin.operand_precision[tensor.layer_operand]
+                    precision = tensor.cn_source.operand_precision[tensor.layer_operand]
 
                 result_type = MemRefType(IntegerType(precision), [size])
 
@@ -266,11 +283,13 @@ class AIECodeGenerationStage(Stage):
         # generate workload based on cme:
         module = self.generate_stream_workload(cme)
 
-        # Process stream thingies
         # StreamLoopRollerPass().apply(self.context, module)
 
         # Convert to AIE
         ConvertStreamToAIEPass().apply(self.context, module)
+
+        # Remove custom layout attributes
+        ClearMemorySpace().apply(self.context, module)
 
         # print output to codegen path
         file = open(self.output_path, "w")

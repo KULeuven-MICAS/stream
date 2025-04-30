@@ -10,7 +10,7 @@ from stream.cost_model.communication_manager import CommunicationManager
 from stream.cost_model.memory_manager import MemoryManager
 from stream.hardware.architecture.core import Core
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 
 
 class CoreGraph(DiGraphWrapper[Core]):
@@ -65,7 +65,7 @@ class Accelerator:
 
     def spawn(
         self,
-        tensor: Tensor,
+        tensor: SubviewTensor,
         core: Core,
         memory_op: MemoryOperand,
         initial_timestep: int,
@@ -84,7 +84,12 @@ class Accelerator:
         self.memory_manager.add_tensor_to_core(tensor, core, initial_timestep, available_timestep, memory_op)
 
     def remove(
-        self, tensor: Tensor, core: Core, memory_op: MemoryOperand, timestep: int, write_back_to_offchip: bool = False
+        self,
+        tensor: SubviewTensor,
+        core: Core,
+        memory_op: MemoryOperand,
+        timestep: int,
+        write_back_to_offchip: bool = False,
     ):
         """Remove tensor from core. If required, transfer to offchip before removal.
 
@@ -143,7 +148,7 @@ class Accelerator:
         core: Core,
         memory_operand: MemoryOperand,
         timestep: int,
-        exceptions: list[Tensor] = [],
+        exceptions: list[SubviewTensor] = [],
         write_back_to_offchip: bool = False,
     ):
         """Remove all tensors from a core's memory with the given memory operand.
@@ -172,11 +177,11 @@ class Accelerator:
 
     def make_space_for(
         self,
-        tensor: Tensor,
+        tensor: SubviewTensor,
         core: Core,
         memory_op: MemoryOperand,
         timestep: int,
-        tensors_to_avoid_evicting: list[Tensor] = [],
+        tensors_to_avoid_evicting: list[SubviewTensor] = [],
     ):
         """Make space for the given tensor on the given core by evicting already stored tensors if necessary.
 
@@ -236,10 +241,10 @@ class Accelerator:
 
     def transfer_tensor_to_core(
         self,
-        tensor: Tensor,
+        tensor: SubviewTensor,
         receiving_core_id: int,
         tensor_operand: MemoryOperand,
-        non_evictable_tensors: list[Tensor],
+        non_evictable_tensors: list[SubviewTensor],
         sending_core_id: int | None = None,
     ) -> tuple[int, float, float, float, float, bool]:
         """
@@ -353,7 +358,7 @@ class Accelerator:
             pass
         # Don't remove it from the producing core
         else:
-            not_on_producing_core = sender_core.id != tensor.origin.core_allocation
+            not_on_producing_core = sender_core.id != tensor.cn_source.core_allocation
             if (storing_instance not in tensor.instance_priorities) or (
                 not_on_producing_core and tensor.instance_priorities[storing_instance] == 0
             ):
@@ -379,7 +384,7 @@ class Accelerator:
 
     def get_memory_energy_cost_of_transfer(
         self,
-        tensor: Tensor,
+        tensor: SubviewTensor,
         sender: Core | int,
         receiver: Core | int,
         sender_memory_operand: MemoryOperand,
@@ -413,17 +418,17 @@ class Accelerator:
     ) -> int:
         return self.communication_manager.block_offchip_links(too_large_operands, core_id, start_timestep, duration, cn)
 
-    def contains_tensor(self, tensor: Tensor, top_instance: int | MemoryInstance):
+    def contains_tensor(self, tensor: SubviewTensor, top_instance: int | MemoryInstance):
         if isinstance(top_instance, int):  # assume core id
             memory_op = tensor.memory_operand
             top_instance = self.get_top_instance_of_core(top_instance, memory_op)
         assert isinstance(top_instance, MemoryInstance)
         return self.memory_manager.contains(tensor, top_instance)
 
-    def find_tensor(self, tensor: Tensor):
+    def find_tensor(self, tensor: SubviewTensor):
         return self.memory_manager.find_tensor(tensor)
 
-    def find_tensor_in_top_instances(self, tensor: Tensor):
+    def find_tensor_in_top_instances(self, tensor: SubviewTensor):
         return self.memory_manager.find_tensor_in_top_instances(tensor)
 
     def has_shared_memory(self, core_id_a: int, core_id_b: int, mem_op_a: MemoryOperand, mem_op_b: MemoryOperand):

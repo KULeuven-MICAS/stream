@@ -43,9 +43,9 @@ class ConvParser(OnnxComputeOperatorParser):
         # the equation. This is because we construct the dimensionality order and then add the padding to those last
         # dimensions in the order
         if group_size > 1:
-            data["equation"] = "O[b][g][k][oy][ox]+=W[g][c][fy][fx]*I[b][g][c][iy][ix]"
+            data["equation"] = "O[b][g][oy][ox][c]+=W[g][c][fy][fx]*I[b][g][iy][ix][c]"
         else:
-            data["equation"] = "O[b][g][k][oy][ox]+=W[k][c][fy][fx]*I[b][g][c][iy][ix]"
+            data["equation"] = "O[b][g][oy][ox][c]+=W[k][c][fy][fx]*I[b][g][iy][ix][c]"
 
         # Get dimension sizes from input parameters
         assert ia_shape[0] == oa_shape[0], "Batch size is different for input and output activations."

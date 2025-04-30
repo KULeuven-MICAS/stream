@@ -5,11 +5,10 @@ on: [push]
 
 jobs:
   build:
-
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: ["3.11", "3.12"]
+        python-version: ["3.12"]
 
     steps:
       - uses: actions/checkout@v4
@@ -26,6 +25,9 @@ jobs:
       - name: Run without errors
         run: |
           python main_aie_ga.py
-      - name: Run codegeneration main without errors
+      - name: Run codegeneration for conv2d main without errors
         run: |
-          python main_aie_codegen.py
+          python main_aie_codegen_conv2d.py --height 2
+      - name: Run codegeneration for gemm main without errors
+        run: |
+          python main_aie_codegen_gemm.py --M 64 --N 64 --K 64

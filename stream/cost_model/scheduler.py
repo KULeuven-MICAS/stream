@@ -7,7 +7,7 @@ from zigzag.datatypes import Constants, LayerOperand, MemoryOperand
 from stream.hardware.architecture.core import Core
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
@@ -109,7 +109,7 @@ def get_tensors_needed_for_node(node: ComputationNode, G: ComputationNodeWorkloa
     Returns:
         tuple: A tuple of tensors and a tuple of memory operands for the node.
     """
-    tensors_this_candidate_needs: list[Tensor] = []
+    tensors_this_candidate_needs: list[SubviewTensor] = []
     tensors_operands: list[MemoryOperand] = []
     # Constant input operands
     for layer_op in node.constant_operands:
@@ -141,7 +141,7 @@ def clear_memories(
     core: Core,
     memory_operands: list[MemoryOperand],
     timestep: int,
-    exceptions: list[Tensor] = [],
+    exceptions: list[SubviewTensor] = [],
 ):
     total_eviction_to_offchip_link_energy = 0
     total_eviction_to_offchip_memory_energy = 0
@@ -161,7 +161,7 @@ def clear_memories(
 
 
 def decrease_priority(
-    tensors: list[Tensor],
+    tensors: list[SubviewTensor],
     tensors_operands: list[MemoryOperand],
     accelerator: "Accelerator",
     node: ComputationNode,
@@ -175,7 +175,7 @@ def decrease_priority(
 
 
 def check_for_removal(
-    tensors: list[Tensor],
+    tensors: list[SubviewTensor],
     accelerator: "Accelerator",
     node: ComputationNode,
     G: ComputationNodeWorkload,
@@ -192,8 +192,8 @@ def check_for_removal(
                 # If this tensor is an output tensor, find all nodes that needed it
                 # to get an accurate timestep at which it can be removed
                 timestep_for_removal = timestep
-                if tensor_used_by_node.layer_operand == tensor_used_by_node.origin.output_operand:
-                    origin = tensor_used_by_node.origin
+                if tensor_used_by_node.layer_operand == tensor_used_by_node.cn_source.output_operand:
+                    origin = tensor_used_by_node.cn_source
                     if offchip_core_id in core_ids_of_instance:
                         # If wanting to discard it from offchip, look at the max end time across all successors
                         nodes_that_needed_tensor = [n for n in G.successors(origin) if n.id != origin.id]

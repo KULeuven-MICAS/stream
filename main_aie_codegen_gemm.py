@@ -3,7 +3,7 @@ import logging as _logging
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.workload.make_conv2d_onnx import make_conv2d
+from stream.inputs.aie.workload.make_onnx_gemm import make_gemm
 from stream.utils import CostModelEvaluationLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.perfetto import convert_scme_to_perfetto_json
@@ -13,10 +13,10 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
-def run_main_aie_codegen(H):
+def run_main_aie_codegen_gemm(M, N, K):
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
-    workload_path = make_conv2d(H)
+    workload_path = make_gemm(M, N, K)
     accelerator = "stream/inputs/aie/hardware/single_aie_tile.yaml"
     mapping_path = "stream/inputs/aie/mapping/single_aie_tile.yaml"
     # mode = "lbl"
@@ -34,14 +34,11 @@ def run_main_aie_codegen(H):
     ######################################################################
 
     ##############PLOTTING###############
-    # draw_dependencies = True
-    # plot_data_transfer = True
     section_start_percent = (0,)
     percent_shown = (100,)
     #####################################
 
     ################################PATHS################################
-    # timeline_fig_path_plotly = f"outputs/{experiment_id}/schedule.html"
     memory_fig_path = f"outputs/{experiment_id}/memory.png"
     json_path = f"outputs/{experiment_id}/scme.json"
     #####################################################################
@@ -71,8 +68,10 @@ def run_main_aie_codegen(H):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run AIE code generation")
-    parser.add_argument("--height", type=int, required=True, help="Height parameter for the model")
+    parser = argparse.ArgumentParser(description="Run AIE code generation for Gemm")
+    parser.add_argument("--M", type=int, required=True, help="M parameter for the model")
+    parser.add_argument("--N", type=int, required=True, help="N parameter for the model")
+    parser.add_argument("--K", type=int, required=True, help="K parameter for the model")
     args = parser.parse_args()
 
-    run_main_aie_codegen(args.height)
+    run_main_aie_codegen_gemm(args.M, args.N, args.K)
