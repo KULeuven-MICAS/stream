@@ -87,6 +87,7 @@ class TileOpManager:
         # create and insert op
         rewriter = Rewriter()
         rewriter.insert_op(tile_op := TileOp(x, y), InsertPoint.at_start(self.device_op.region.block))
+        tile_op.result.name_hint = f"tile-{x}-{y}"
         self.tile_ops[(x, y)] = tile_op
         return tile_op
 
