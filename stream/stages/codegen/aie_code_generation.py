@@ -89,36 +89,34 @@ class AIECodeGenerationStage(Stage):
                 [EmptySSAValue(typ) for typ in input_operands],
                 EmptySSAValue(output_operand),
                 kernel=node.kernel.name,
-                core_allocation=str(node.core_allocation[0]),
+                core_allocation=str(node.chosen_core_allocation),
                 repeat=1,
             )
 
             nodes[node] = op
 
         # gather all transfers
-        transfer_list: list[tuple[CommunicationLinkEvent, CommunicationLink]] = []
+        transfer_list: list[CommunicationLinkEvent] = []
 
-        for _, link_pair in cme.accelerator.communication_manager.pair_links.items():
-            if link_pair:
-                for link in link_pair:
-                    for event in link.events:
-                        transfer_list.append((event, link))
+        for communication_event in cme.accelerator.communication_manager.events:
+            for cle in communication_event.tasks:
+                transfer_list.append(cle)
 
-        transfer_list.sort(key=lambda x: x[0].start)
+        transfer_list.sort(key=lambda x: x.start)
 
         # transfers are unique per Layer Operand and Steady state stuff
         transfers: dict[SubviewTensor, list[tuple[CommunicationLinkEvent, TransferOp]]] = defaultdict(list)
         transfer_ops: list[TransferOp] = []
 
-        for transfer, link in transfer_list:
+        for cle in transfer_list:
 
-            tensor = transfer.tensors[0]
+            tensor = cle.tensors[0]
 
-            edge = edge_ops[(tensor.id[0], tensor.id[2])]
+            layer_id_and_op = edge_ops[(tensor.id[0], tensor.id[2])]
 
             # Get source and dest and convert to string for TransferOp creation which uses string
-            source = str(transfer.source)
-            dest = str(transfer.destinations[0])  # TODO: Support broadcasting to multiple destinations
+            source = str(cle.source)
+            dest = str(cle.destinations[0])  # TODO: Support broadcasting to multiple destinations
 
             # size = cast(int, tensor.origin.operand_size_elem[tensor.layer_operand])
             if tensor.layer_operand == Constants.OUTPUT_LAYER_OP:
@@ -132,9 +130,9 @@ class AIECodeGenerationStage(Stage):
 
             result_type = MemRefType(IntegerType(precision), sizes)
 
-            op = TransferOp(edge, [result_type], source, dest, str(tensor), 1, offsets, sizes, strides)
+            op = TransferOp(layer_id_and_op, [result_type], source, dest, str(tensor), 1, offsets, sizes, strides)
 
-            transfers[tensor].append((transfer, op))
+            transfers[tensor].append((cle, op))
             transfer_ops.append(op)
 
         # sort ops based on start
@@ -148,11 +146,13 @@ class AIECodeGenerationStage(Stage):
             for operand in operands:
                 tensor = node.operand_tensors[operand]
                 # find last transfer for this tensor
-                for transfer, transfer_op in transfers[tensor]:
+                for cle, transfer_op in transfers[tensor]:
                     assert node.start
                     if not operand.is_output():
-                        if transfer.end > node.start:
+                        if cle.end > node.start:
                             break
+                        if cle.destinations[0].id != node.chosen_core_allocation:
+                            continue
                     else:
                         # TODO
                         pass
