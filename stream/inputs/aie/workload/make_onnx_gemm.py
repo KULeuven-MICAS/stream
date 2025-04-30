@@ -3,9 +3,49 @@ import onnx
 import onnx.helper as helper
 import onnx.shape_inference
 from onnx import TensorProto
+import yaml
 
 
-def make_gemm(M, N, K):
+def make_gemm_mapping(M, N, K):
+    name = f"gemm_{M}_{N}_{K}"
+    output_file = f"stream/inputs/aie/mapping/{name}.yaml"
+    # Construct tiling entries as comma-separated strings
+    tiling_strings = [
+        f"C, {N // 32}",
+        f"D, {M // 32}",
+        f"K, {K // 32}",
+    ]
+
+    inter_core_tiling = ["K, 1"]
+
+    mapping = [
+        {
+            "name": "Gemm",
+            "core_allocation": [2],
+            "intra_core_tiling": tiling_strings,
+            "inter_core_tiling": inter_core_tiling,
+            "kernel": {
+                "name": "mm_32x32x32",
+                "utilization": 61.8
+            }
+        },
+        {
+            "name": "default",
+            "core_allocation": [2],
+            "intra_core_tiling": tiling_strings,
+            "inter_core_tiling": inter_core_tiling,
+            "kernel": {
+                "name": "mm_32x32x32",
+                "utilization": 61.8
+            }
+        }
+    ]
+
+    with open(output_file, 'w') as f:
+        yaml.dump(mapping, f, default_flow_style=False, sort_keys=False)
+    return output_file
+
+def make_gemm_workload(M, N, K):
     ACT_SIZE = 16
     WEIGHT_SIZE = 16
     OUTPUT_SIZE = 16
@@ -70,6 +110,6 @@ if __name__ == "__main__":
     M = 128
     N = 128
     K = 64
-    model = make_gemm(M, N, K)
+    model = make_gemm_workload(M, N, K)
     onnx.save(model, f"gemm_{M}_{N}_{K}.onnx")
     print(f"Model exported to gemm_{M}_{N}_{K}.onnx with shape inference.")
