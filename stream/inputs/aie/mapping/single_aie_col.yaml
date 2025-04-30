@@ -4,11 +4,17 @@
     - OY, 8
   inter_core_tiling:
     - K, *
+  kernel:
+    name: mm_32x32x32
+    utilization: 61.8 
 
-- name: MatMul
-  core_allocation: [0, 1, 2, 3]
+- name: Gemm
+  core_allocation: [2, 3]
   intra_core_tiling:
-    - D, 8
+    - C, 2
+    - D, 2
   inter_core_tiling:
     - K, *
-
+  kernel:
+    name: mm_32x32x32
+    utilization: 61.8 
