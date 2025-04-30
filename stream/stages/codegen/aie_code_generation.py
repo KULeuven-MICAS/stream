@@ -44,7 +44,6 @@ class AIECodeGenerationStage(Stage):
             yield cme, extra_info
 
     def generate_stream_workload(self, cme: StreamCostModelEvaluation) -> ModuleOp:
-
         # (precision, [loop_range_0, .. loop_range_n-1])
         edges_ranges: dict[tuple[int, LayerOperand], tuple[int, list[int]]] = {}
         edge_ops: dict[tuple[int, LayerOperand], EdgeOp] = {}
@@ -70,7 +69,6 @@ class AIECodeGenerationStage(Stage):
         nodes: dict[ComputationNode, ComputationNodeOp] = {}
 
         for node in cme.workload.node_list:
-
             # build operand types:
             operand_types = []
 
@@ -109,7 +107,6 @@ class AIECodeGenerationStage(Stage):
         transfer_ops: list[TransferOp] = []
 
         for cle in transfer_list:
-
             tensor = cle.tensors[0]
 
             layer_id_and_op = edge_ops[(tensor.id[0], tensor.id[2])]
@@ -166,7 +163,6 @@ class AIECodeGenerationStage(Stage):
         return module
 
     def generate_stream_workload_steady_state(self, cme: StreamCostModelEvaluation) -> ModuleOp:
-
         # steady state nodes: need some representation here
         # this is currently a mapping id -> list[node]
         # assuming that a layer is entirely steady state and can
@@ -184,7 +180,6 @@ class AIECodeGenerationStage(Stage):
         nodes: dict[ComputationNode, ComputationNodeOp] = {}
 
         for node_list in nodes_steady_state.values():
-
             # take first node as the reference
             node = node_list[0]
 
@@ -232,7 +227,6 @@ class AIECodeGenerationStage(Stage):
         transfers: dict[tuple[int, LayerOperand], TransferOp] = {}
 
         for transfer, link in transfer_list:
-
             tensor = transfer.tensors[0]
 
             if (tensor.id[0], tensor.id[2]) in transfers:
@@ -279,7 +273,6 @@ class AIECodeGenerationStage(Stage):
         return module
 
     def codegen_main(self, cme: StreamCostModelEvaluation):
-
         # generate workload based on cme:
         module = self.generate_stream_workload(cme)
 
