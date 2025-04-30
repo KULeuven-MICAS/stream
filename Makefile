@@ -19,3 +19,10 @@ run_height:
 
 single_gemm:
 	python3 main_aie_codegen_gemm.py --M 64 --N 64 --K 64
+
+.PHONY: run_uniform_gemms
+
+SIZES := 64 128 256
+
+run_uniform_gemms:
+	$(foreach s,$(SIZES), python3 main_aie_codegen_gemm.py --M $(s) --N $(s) --K $(s);)
