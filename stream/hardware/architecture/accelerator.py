@@ -218,7 +218,168 @@ class Accelerator:
         """
         self.memory_manager.add_tensor(tensor, core, initial_timestep, available_timestep, memory_op)
 
-    def register_tensor_transfer(
+    def remove(
+        self,
+        tensor: SubviewTensor,
+        core: Core,
+        memory_op: MemoryOperand,
+        timestep: int,
+        write_back_to_offchip: bool = False,
+    ):
+        """Remove tensor from core. If required, transfer to offchip before removal.
+
+        Args:
+            tensor (Tensor): The tensor to remove.
+            core (Core): The Core to remove the tensor from.
+            memory_op (str): The memory operand of the tensor.
+            timestep (int): The timestep to remove the tensor at.
+            write_back_to_offchip (bool, optional): Write the tensor to offchip before removal. Defaults to False.
+        """
+        assert self.offchip_core_id is not None
+        ################################# STEP 1 #################################
+        # Transfer the tensor to off-chip if required and not present there
+        link_energy_cost = 0
+        memory_energy_cost = 0
+        offchip_instance = self.get_top_instance_of_core(self.offchip_core_id, memory_op)
+        should_be_written_to_offchip = write_back_to_offchip and not self.contains_tensor(tensor, offchip_instance)
+        current_timestep = timestep
+        if should_be_written_to_offchip:
+            assert self.offchip_core_id is not None
+            (
+                transfer_end,
+                transfer_link_energy_cost,
+                transfer_memory_energy_cost,
+                eviction_link_energy_cost,
+                eviction_memory_energy_cost,
+                came_from_offchip,
+            ) = self.transfer_tensor_to_core(
+                tensor,
+                self.offchip_core_id,
+                memory_op,
+                non_evictable_tensors=[],
+                sending_core_id=core.id,
+            )
+            # There should be no evictions as we are writing to offchip
+            assert eviction_link_energy_cost == 0
+            assert eviction_memory_energy_cost == 0
+            assert not came_from_offchip
+            link_energy_cost = transfer_link_energy_cost
+            memory_energy_cost = transfer_memory_energy_cost
+            current_timestep = max(current_timestep, transfer_end)
+
+        ################################# STEP 2 #################################
+        # Remove the tensor from the memory manager's attributes
+        top_instance = self.get_top_instance_of_core(core, memory_op)
+        self.memory_manager.remove_tensor_from_top_instance(
+            top_instance,
+            tensor,
+            timestep,
+        )
+
+        return current_timestep, link_energy_cost, memory_energy_cost
+
+    def remove_all(
+        self,
+        core: Core,
+        memory_operand: MemoryOperand,
+        timestep: int,
+        exceptions: list[SubviewTensor] = [],
+        write_back_to_offchip: bool = False,
+    ):
+        """Remove all tensors from a core's memory with the given memory operand.
+        If required, the tensors are written back to offchip before removal.
+
+        Args:
+            core (Core): The Core to remove the tensor from
+            memory_operand (str): The memory operand for which all tensors should be evicted.
+            timestep (int): The timestep to remove the tensor at.
+            exceptions (list): A list of tensors that should not be evicted.
+            write_back_to_offchip (bool, optional): Write the tensor to offchip before removal. Defaults to False.
+        """
+        total_link_energy_cost = 0
+        total_memory_energy_cost = 0
+        top_instance = self.get_top_instance_of_core(core, memory_operand)
+        # stored_tensors = self.stored_tensors[core][top_level_idx]
+        t = timestep
+        for tensor in self.memory_manager.get_tensors_stored_at_timestep(top_instance, timestep):
+            if tensor not in exceptions:
+                t, link_energy_cost, memory_energy_cost = self.remove(
+                    tensor, core, memory_operand, t, write_back_to_offchip
+                )
+                total_link_energy_cost += link_energy_cost
+                total_memory_energy_cost += memory_energy_cost
+        return t, total_link_energy_cost, total_memory_energy_cost
+
+    def make_space_for(
+        self,
+        tensor: SubviewTensor,
+        core: Core,
+        memory_op: MemoryOperand,
+        timestep: int,
+        tensors_to_avoid_evicting: list[SubviewTensor] = [],
+    ):
+        """Make space for the given tensor on the given core by evicting already stored tensors if necessary.
+
+        Args:
+            tensor (Tensor): The tensor to make space for.
+            core (Core): The core where the tensor will be stored.
+            memory_operand (str): The memory operand on the core.
+            timestep (int): The timestep at which to make space for.
+        """
+        # Added for debug
+        l1 = next(mem for mem in self.memory_manager.top_instance_stored_tensors.keys() if "l1" in mem.name)
+        nb_stored_tensors = self.memory_manager.get_nb_stored_tensors_at_timestep(l1, timestep)
+        print(f"{l1.name} contains {nb_stored_tensors} stored tensors at timestep {timestep}")
+        #################
+        total_eviction_link_energy_cost = 0
+        total_eviction_memory_energy_cost = 0
+
+        top_instance = self.get_top_instance_of_core(core, memory_op)
+
+        # If the tensor is already present in the core, no need to evict anything
+        if self.memory_manager.contains(tensor, top_instance):
+            return timestep, total_eviction_link_energy_cost, total_eviction_memory_energy_cost
+
+        # Get the timestep at which there's enough space for this tensor
+        enough_space_timestep = self.memory_manager.get_timestep_for_tensor_addition(
+            tensor,
+            core.id,
+            timestep,
+            memory_op=tensor.memory_operand,
+        )
+
+        tensors_to_evict = self.memory_manager.find_best_tensor_combination_to_evict_aie2(
+            top_instance,
+            tensor,
+            enough_space_timestep,
+            exceptions=tensors_to_avoid_evicting,
+        )
+        if core.id == self.offchip_core_id and tensors_to_evict:
+            raise ValueError("Evictions required in offchip memory. Consider making offchip larger.")
+        t_evictions_complete = timestep
+        for tensor_to_evict in tensors_to_evict:
+            (
+                t_eviction_complete,
+                eviction_link_energy_cost,
+                eviction_memory_energy_cost,
+            ) = self.remove(
+                tensor_to_evict,
+                core,
+                memory_op,
+                timestep,
+                write_back_to_offchip=True,
+            )
+            t_evictions_complete = max(t_evictions_complete, t_eviction_complete)
+            total_eviction_link_energy_cost += eviction_link_energy_cost
+            total_eviction_memory_energy_cost += eviction_memory_energy_cost
+        t_evictions_complete = max(enough_space_timestep, t_evictions_complete)
+        return (
+            t_evictions_complete,
+            total_eviction_link_energy_cost,
+            total_eviction_memory_energy_cost,
+        )
+
+    def transfer_tensor_to_core(
         self,
         tensor: SubviewTensor,
         receiving_core_id: int,

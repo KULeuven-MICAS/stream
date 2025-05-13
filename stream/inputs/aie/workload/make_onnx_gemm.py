@@ -11,9 +11,9 @@ def make_gemm_mapping(M, N, K):
     output_file = f"stream/inputs/aie/mapping/{name}.yaml"
     # Construct tiling entries as comma-separated strings
     tiling_strings = [
-        f"C, {N // 32}",
+        f"C, {K // 32}",
         f"D, {M // 32}",
-        f"K, {K // 32}",
+        f"K, {N // 32}",
     ]
 
     inter_core_tiling = ["K, 1"]
