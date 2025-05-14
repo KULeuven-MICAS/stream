@@ -328,8 +328,8 @@ class Accelerator:
         """
         # Added for debug
         l1 = next(mem for mem in self.memory_manager.top_instance_stored_tensors.keys() if "l1" in mem.name)
-        nb_stored_tensors = self.memory_manager.get_nb_stored_tensors_at_timestep(l1, timestep)
-        print(f"{l1.name} contains {nb_stored_tensors} stored tensors at timestep {timestep}")
+        nb_stored_tensors = sum(self.memory_manager.top_instance_max_nb_stored_tensors[l1].values())
+        print(f"{l1.name} contains max {nb_stored_tensors} stored tensors at timestep {timestep}")
         #################
         total_eviction_link_energy_cost = 0
         total_eviction_memory_energy_cost = 0
