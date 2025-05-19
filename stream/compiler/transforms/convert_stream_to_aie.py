@@ -893,8 +893,6 @@ class RealizeLayoutCats(RewritePattern):
         # check if producer or consumer
         port = ObjectFifoPortEnum.from_int(of_acquire.port.value.data)
 
-        breakpoint()
-
         if port == ObjectFifoPortEnum.Consume:
             # for consume, take objectfifo (mem -> compute)
             of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data)
@@ -1028,15 +1026,11 @@ class ConvertStreamToAIEPass(ModulePass):
         passthrough = PassThroughMemTile({}, tile_op_manager, object_fifo_manager)
         PatternRewriteWalker(passthrough, apply_recursively=False).rewrite_module(op)
 
-        breakpoint()
-
         PatternRewriteWalker(
             SetDistribution(runtime_sequence, object_fifo_manager), apply_recursively=False
         ).rewrite_module(op)
 
         PatternRewriteWalker(SetJoin(runtime_sequence, object_fifo_manager), apply_recursively=False).rewrite_module(op)
-
-        breakpoint()
 
         # PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
 
