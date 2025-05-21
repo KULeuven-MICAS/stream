@@ -496,6 +496,8 @@ class PassThroughMemTile(RewritePattern):
             op.via_DMA,
         )
 
+        self.changes[op.sym_name.data] = shim_name
+
         self.object_fifo_manager.insert_or_update_of(objectfifo_compute)
         self.object_fifo_manager.insert_or_update_of(objectfifo_shim)
 
@@ -561,11 +563,6 @@ class SetDistribution(RewritePattern):
                     new_op.detach()
                     rewriter.insert_op(new_op, InsertPoint.after(op))
                     op = new_op
-
-            # rename everything to use the linked source object fifo
-            for clist in copies.values():
-                for copy in clist:
-                    copy.metadata = source
 
             # create link op
             # calculate destination offset
@@ -644,11 +641,6 @@ class SetJoin(RewritePattern):
                     new_op.detach()
                     rewriter.insert_op(new_op, InsertPoint.after(op))
                     op = new_op
-
-            # rename everything to use the linked dest object fifo
-            for clist in copies.values():
-                for copy in clist:
-                    copy.metadata = dest
 
             # create link op
             # calculate destination offset
@@ -739,9 +731,9 @@ class OfNameRewriter(RewritePattern):
     changes: dict[str, str]
 
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: ObjectFifoAcquireOp | ObjectFIFOReleaseOp, rewriter: PatternRewriter):
-        if op.objFifo_name.root_reference.data in self.changes:
-            op.objFifo_name = SymbolRefAttr(self.changes[op.objFifo_name.root_reference.data])
+    def match_and_rewrite(self, op: DmaMemcpyNdOp, rewriter: PatternRewriter):
+        if op.metadata.root_reference.data in self.changes:
+            op.metadata = SymbolRefAttr(self.changes[op.metadata.root_reference.data])
 
 
 @dataclass
@@ -1093,6 +1085,8 @@ class ConvertStreamToAIEPass(ModulePass):
         ).rewrite_module(op)
 
         PatternRewriteWalker(SetJoin(runtime_sequence, object_fifo_manager), apply_recursively=False).rewrite_module(op)
+
+        PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
 
         PatternRewriteWalker(CollapseMemcpys()).rewrite_module(op)
 
