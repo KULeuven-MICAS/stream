@@ -218,6 +218,15 @@ class Accelerator:
         """
         self.memory_manager.add_tensor(tensor, core, initial_timestep, available_timestep, memory_op)
 
+    def fix_memory_usage_and_nb_stored_tensors(self, core: Core, start_timestep: int, end_timestep: int):
+        """Fix the memory usage and number of stored tensors for a given timestep.
+
+        Args:
+            start_timestep (int): The start timestep.
+            end_timestep (int): The end timestep.
+        """
+        self.memory_manager.fix_memory_usage_and_nb_stored_tensors(core, start_timestep, end_timestep)
+
     def remove(
         self,
         tensor: SubviewTensor,
