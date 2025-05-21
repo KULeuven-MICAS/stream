@@ -545,13 +545,15 @@ class MemoryManager:
             insert_idx = len(all_timesteps)
             if not start_timestep >= all_timesteps[-1]:
                 # This requires different logic to make sure timesteps in between also are updated correctly
-                raise NotImplementedError("This scenario should only occur for multi-core accelerators. Not yet implemented.")
+                raise NotImplementedError(
+                    "This scenario should only occur for multi-core accelerators. Not yet implemented."
+                )
 
             # Get the current usage and nb_stored_tensors at start_timestep
             current_usage = self.top_instance_stored_cumsum[top_instance][insert_idx - 1, 1]
             current_nb_stored_tensors = {
-            mem_op: self.nb_stored_tensors[top_instance][mem_op][insert_idx - 1]
-            for mem_op in self.nb_stored_tensors[top_instance]
+                mem_op: self.nb_stored_tensors[top_instance][mem_op][insert_idx - 1]
+                for mem_op in self.nb_stored_tensors[top_instance]
             }
 
             # Update stored_cumsum for the end timestep
@@ -564,8 +566,8 @@ class MemoryManager:
             # Update nb_stored_tensors for each memory operand for the end timestep
             for mem_op in self.nb_stored_tensors[top_instance]:
                 self.nb_stored_tensors[top_instance][mem_op] = np.insert(
-                self.nb_stored_tensors[top_instance][mem_op],
-                insert_idx,
-                current_nb_stored_tensors[mem_op],
-                axis=0,
+                    self.nb_stored_tensors[top_instance][mem_op],
+                    insert_idx,
+                    current_nb_stored_tensors[mem_op],
+                    axis=0,
                 )
