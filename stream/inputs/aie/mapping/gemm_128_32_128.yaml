@@ -2,8 +2,8 @@
   core_allocation:
   - 2
   intra_core_tiling: &id001
-  - D, 4
   - C, 4
+  - D, 4
   - K, 1
   inter_core_tiling: &id002
   - K, 1
