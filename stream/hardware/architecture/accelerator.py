@@ -326,11 +326,6 @@ class Accelerator:
             memory_operand (str): The memory operand on the core.
             timestep (int): The timestep at which to make space for.
         """
-        # Added for debug
-        l1 = next(mem for mem in self.memory_manager.top_instance_stored_tensors.keys() if "l1" in mem.name)
-        nb_stored_tensors = self.memory_manager.get_nb_stored_tensors_from_timestep(l1, timestep)
-        print(f"{l1.name} contains tensors: {nb_stored_tensors} @ timestep {timestep}")
-        #################
         total_eviction_link_energy_cost = 0
         total_eviction_memory_energy_cost = 0
 
