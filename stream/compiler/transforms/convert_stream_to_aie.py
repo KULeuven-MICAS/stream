@@ -59,9 +59,13 @@ def get_tile(value: str) -> tuple[int, int]:
 
 def get_of_name(source: TileOp, dest: TileOp, operand: str) -> str:
     of_name: str = "of_"
-    of_name += f"{source.col.value.data}{source.row.value.data}to"
-    of_name += f"{dest.col.value.data}{dest.row.value.data}_"
-    of_name += operand
+    # compute tile specific objectfifos:
+    if source.row.value.data > 1 or dest.row.value.data > 1:
+        of_name += f"{source.col.value.data}{source.row.value.data}"
+        of_name += f"to{dest.col.value.data}{dest.row.value.data}"
+    else:  # shim objectififos
+        of_name += f"{source.col.value.data}shim"
+    of_name += "_" + operand
     return of_name
 
 
@@ -120,6 +124,10 @@ class ObjectFifoManager:
         # object fifo should be defined at start of device
         SymbolTable.insert_or_update(self.device_op, object_fifo)
 
+        return object_fifo
+
+    def insert_or_update_of(self, object_fifo: ObjectFifoOp) -> ObjectFifoOp:
+        SymbolTable.insert_or_update(self.device_op, object_fifo)
         return object_fifo
 
     def of_from_name(self, name: str) -> ObjectFifoOp:
@@ -423,6 +431,7 @@ class ConvPattern(RewritePattern):
 class PassThroughMemTile(RewritePattern):
     changes: dict[str, str]
     tile_op_manager: TileOpManager
+    object_fifo_manager: ObjectFifoManager
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ObjectFifoOp, rewriter: PatternRewriter):
@@ -455,19 +464,31 @@ class PassThroughMemTile(RewritePattern):
 
         memtile = self.tile_op_manager.insert_or_update(0, 1)
 
+        objectfifo_compute = ObjectFifoOp(
+            memtile if shim_is_producer else op.producerTile,
+            list(op.consumerTiles) if shim_is_producer else [memtile],
+            op.elemNumber,
+            op.elemType,
+            op.sym_name,
+            op.dimensionsToStream,
+            op.dimensionsFromStreamPerConsumer,
+            op.disable_synchronization,
+            op.plio,
+            op.via_DMA,
+        )
+
+        operand = op.sym_name.data.split("_")[-1]
         if shim_is_producer:
-            producer_name = op.sym_name.data
-            consumer_name = op.sym_name.data + "_mem"
+            shim_name = get_of_name(producerTile.op, memtile, operand)
         else:
-            consumer_name = op.sym_name.data
-            producer_name = op.sym_name.data + "_mem"
+            shim_name = get_of_name(memtile, consumerTile.op, operand)
 
-        objectfifo_producer = ObjectFifoOp(
-            op.producerTile,
-            [memtile],
+        objectfifo_shim = ObjectFifoOp(
+            op.producerTile if shim_is_producer else memtile,
+            [memtile] if shim_is_producer else list(op.consumerTiles),
             op.elemNumber,
             op.elemType,
-            producer_name,
+            shim_name,
             op.dimensionsToStream,
             op.dimensionsFromStreamPerConsumer,
             op.disable_synchronization,
@@ -475,24 +496,242 @@ class PassThroughMemTile(RewritePattern):
             op.via_DMA,
         )
 
-        objectfifo_consumer = ObjectFifoOp(
-            memtile,
-            list(op.consumerTiles),
-            op.elemNumber,
-            op.elemType,
-            consumer_name,
-            op.dimensionsToStream,
-            op.dimensionsFromStreamPerConsumer,
-            op.disable_synchronization,
-            op.plio,
-            op.via_DMA,
-        )
+        self.object_fifo_manager.insert_or_update_of(objectfifo_compute)
+        self.object_fifo_manager.insert_or_update_of(objectfifo_shim)
 
-        link = ObjectFifoLinkOp([producer_name], [consumer_name], [], [])
+        if shim_is_producer:
+            link = ObjectFifoLinkOp([shim_name], [op.sym_name.data], [], [])
+        else:
+            link = ObjectFifoLinkOp([op.sym_name.data], [shim_name], [], [])
 
-        rewriter.replace_matched_op([objectfifo_producer, objectfifo_consumer, link])
+        rewriter.insert_op(link, InsertPoint.after(objectfifo_shim))
 
-        self.changes[op.sym_name.data] = op.sym_name.data + "_mem"
+
+@dataclass
+class SetDistribution(RewritePattern):
+    runtime_sequence: RuntimeSequenceOp
+    object_fifo_manager: ObjectFifoManager
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, device_op: DeviceOp, rewriter: PatternRewriter):
+        of_links: dict[SymbolRefAttr, list[SymbolRefAttr]] = defaultdict(list)
+        of_link_ops: dict[tuple[SymbolRefAttr, SymbolRefAttr], ObjectFifoLinkOp] = {}
+
+        for op in device_op.region.block.ops:
+            if isinstance(op, ObjectFifoLinkOp):
+                if len(op.fifoIns) != 1 or len(op.fifoOuts) != 1:
+                    continue
+                of_links[op.fifoIns.data[0]].append(op.fifoOuts.data[0])
+                of_link_ops[(op.fifoIns.data[0], op.fifoOuts.data[0])] = op
+
+        # filter out sets with only one link, no distribute needed
+        of_links = {
+            source: dests
+            for source, dests in of_links.items()
+            if len(dests) > 1 and "shim" in source.root_reference.data
+        }
+        # otherwise, sort values
+        of_links = {
+            source: sorted(dests, key=lambda dest: dest.root_reference.data) for source, dests in of_links.items()
+        }
+
+        # order the copies
+        for source, dests in of_links.items():
+            # list of copies mapping destination to list of copies
+            copies: dict[SymbolRefAttr, list[DmaMemcpyNdOp]] = {}
+            for dest in dests:
+                copies[dest] = []
+
+            for op in self.runtime_sequence.walk():
+                if not isinstance(op, DmaMemcpyNdOp):
+                    continue
+                if op.metadata in copies:
+                    copies[op.metadata].append(op)
+
+            # for a correct distribute pattern, all elements should copy the same number of elements
+            lengths = [len(v) for v in copies.values()]
+            if len(set(lengths)) != 1:
+                raise RuntimeError("distribute pattern detected with differing number of dma copies")
+
+            # reorder memcpys based on the first root reference
+            for i in range(lengths[0]):
+                op = copies[dests[0]][i]
+                for j in range(1, len(dests)):
+                    new_op = copies[dests[j]][i]
+                    new_op.detach()
+                    rewriter.insert_op(new_op, InsertPoint.after(op))
+                    op = new_op
+
+            # rename everything to use the linked source object fifo
+            for clist in copies.values():
+                for copy in clist:
+                    copy.metadata = source
+
+            # create link op
+            # calculate destination offset
+            of_source = self.object_fifo_manager.of_from_name(source.root_reference.data)
+            assert isinstance(memref_type := of_source.elemType.buffer, MemRefType)
+            nb_elements = prod(memref_type.get_shape())
+            dst_offsets = list(range(0, nb_elements * len(dests), nb_elements))
+
+            # update source object fifo shape
+            of_source.elemType = ObjectFIFO.from_element_type_and_shape(
+                memref_type.get_element_type(), (len(dests),) + memref_type.get_shape()
+            )
+
+            # create new link op
+            new_link_op = ObjectFifoLinkOp([source], dests, [], dst_offsets)
+
+            # insert after last link
+            rewriter.insert_op(new_link_op, InsertPoint.after(of_link_ops[(source, dests[-1])]))
+
+            # erase all the rest:
+            for i in range(len(dests)):
+                rewriter.erase_op(of_link_ops[(source, dests[i])])
+
+
+@dataclass
+class SetJoin(RewritePattern):
+    runtime_sequence: RuntimeSequenceOp
+    object_fifo_manager: ObjectFifoManager
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, device_op: DeviceOp, rewriter: PatternRewriter):
+        of_links: dict[SymbolRefAttr, list[SymbolRefAttr]] = defaultdict(list)
+        of_link_ops: dict[tuple[SymbolRefAttr, SymbolRefAttr], ObjectFifoLinkOp] = {}
+
+        for op in device_op.region.block.ops:
+            if isinstance(op, ObjectFifoLinkOp):
+                if len(op.fifoIns) != 1 or len(op.fifoOuts) != 1:
+                    continue
+                of_links[op.fifoOuts.data[0]].append(op.fifoIns.data[0])
+                of_link_ops[(op.fifoOuts.data[0], op.fifoIns.data[0])] = op
+
+        # filter out sets with only one link, no distribute needed
+        of_links = {
+            dest: sources
+            for dest, sources in of_links.items()
+            if len(sources) > 1 and "shim" in dest.root_reference.data
+        }
+        # otherwise, sort values
+        of_links = {
+            dest: sorted(sources, key=lambda source: source.root_reference.data) for dest, sources in of_links.items()
+        }
+
+        # order the copies
+        for dest, sources in of_links.items():
+            # list of copies mapping destination to list of copies
+            copies: dict[SymbolRefAttr, list[DmaMemcpyNdOp]] = {}
+            for source in sources:
+                copies[source] = []
+
+            for op in self.runtime_sequence.walk():
+                if not isinstance(op, DmaMemcpyNdOp):
+                    continue
+                if op.metadata in copies:
+                    copies[op.metadata].append(op)
+
+            # for a correct distribute pattern, all elements should copy the same number of elements
+            lengths = [len(v) for v in copies.values()]
+            if len(set(lengths)) != 1:
+                raise RuntimeError("join pattern detected with differing number of dma copies")
+
+            # reorder memcpys based on the first root reference
+            for i in range(lengths[0]):
+                op = copies[sources[0]][i]
+                for j in range(1, len(sources)):
+                    new_op = copies[sources[j]][i]
+                    new_op.detach()
+                    rewriter.insert_op(new_op, InsertPoint.after(op))
+                    op = new_op
+
+            # rename everything to use the linked dest object fifo
+            for clist in copies.values():
+                for copy in clist:
+                    copy.metadata = dest
+
+            # create link op
+            # calculate destination offset
+            of_dest = self.object_fifo_manager.of_from_name(dest.root_reference.data)
+            assert isinstance(memref_type := of_dest.elemType.buffer, MemRefType)
+            nb_elements = prod(memref_type.get_shape())
+            src_offsets = list(range(0, nb_elements * len(sources), nb_elements))
+
+            # update dest object fifo shape
+            of_dest.elemType = ObjectFIFO.from_element_type_and_shape(
+                memref_type.get_element_type(), (len(sources),) + memref_type.get_shape()
+            )
+
+            # create new link op
+            new_link_op = ObjectFifoLinkOp(sources, [dest], src_offsets, [])
+
+            # insert after last link
+            rewriter.insert_op(new_link_op, InsertPoint.after(of_link_ops[(dest, sources[-1])]))
+
+            # erase all the rest:
+            for i in range(len(sources)):
+                rewriter.erase_op(of_link_ops[(dest, sources[i])])
+
+
+@dataclass
+class CollapseMemcpys(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: DmaMemcpyNdOp, rewriter: PatternRewriter):
+        # find next memcpy with the same metadata
+        next_op = op
+        while True:
+            next_op = next_op.next_op
+            if next_op is None:
+                return
+            if isinstance(next_op, DmaMemcpyNdOp) and next_op.metadata == op.metadata:
+                break
+
+        # strides should fully overlap
+        # gather offsets, sizes and strides
+        offset_1 = cast(tuple[int, ...], op.static_offsets.get_values())[-1]
+        sizes_1 = cast(tuple[int, ...], op.static_sizes.get_values())
+        strides_1 = cast(tuple[int, ...], op.static_strides.get_values())
+
+        first_non_1 = next((i for i, x in enumerate(sizes_1) if x != 1), len(sizes_1))
+        sizes_1 = sizes_1[first_non_1:]
+        strides_1 = strides_1[first_non_1:]
+
+        offset_2 = cast(tuple[int, ...], next_op.static_offsets.get_values())[-1]
+        sizes_2 = cast(tuple[int, ...], next_op.static_sizes.get_values())
+        strides_2 = cast(tuple[int, ...], next_op.static_strides.get_values())
+
+        first_non_1 = next((i for i, x in enumerate(sizes_2) if x != 1), len(sizes_2))
+        sizes_2 = sizes_2[first_non_1:]
+        strides_2 = strides_2[first_non_1:]
+
+        # full overlap:
+        if sizes_1 == sizes_2 and strides_1 == strides_2:
+            if (offset_2 - offset_1) == 0:
+                # special case as only 4th can be zero
+                sizes_1 = (1,) * (3 - len(sizes_1)) + sizes_1
+                strides_1 = (0,) * (3 - len(strides_1)) + strides_1
+            sizes_1 = (2,) + sizes_1
+            strides_1 = (offset_2 - offset_1,) + strides_1
+
+            if len(sizes_1) > 4:
+                # not possible to collapse
+                return
+            sizes_1 = (1,) * (4 - len(sizes_1)) + sizes_1
+            strides_1 = (0,) * (4 - len(strides_1)) + strides_1
+            # remove next op
+            new_op = DmaMemcpyNdOp(
+                op.memref,
+                op.static_offsets,
+                sizes_1,
+                strides_1,
+                op.metadata,
+                op.id,
+                op.issue_token,
+                op.offsets,
+                op.strides,
+            )
+            rewriter.replace_matched_op(new_op)
+            rewriter.erase_op(next_op)
 
 
 @dataclass
@@ -720,7 +959,12 @@ class RealizeLayoutCats(RewritePattern):
             of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data)
         else:
             # for produce, take objectfifo (mem -> shim) (name without '_mem')
-            of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data[:-4])
+            # of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data[:-4])
+            # of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data[:-4])
+            # TODO: make this less hardcoded to the current of naming scheme
+            operand = of_acquire.objFifo_name.root_reference.data[-2:]
+            col = of_acquire.objFifo_name.root_reference.data[-4]
+            of = self.of_manager.of_from_name(f"of_{col}shim{operand}")
 
         # get the element_type
         element_type = cast(MemRefType[Attribute], of.elemType.buffer)
@@ -838,15 +1082,23 @@ class ConvertStreamToAIEPass(ModulePass):
 
         object_fifo_manager.update_depths()
 
-        # insert dma wait statements for bd collisions
-
-        PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)
-
         # pass through memtile to enable transformations
 
-        passthrough = PassThroughMemTile({}, tile_op_manager)
+        passthrough = PassThroughMemTile({}, tile_op_manager, object_fifo_manager)
         PatternRewriteWalker(passthrough, apply_recursively=False).rewrite_module(op)
-        PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
+
+        PatternRewriteWalker(
+            SetDistribution(runtime_sequence, object_fifo_manager), apply_recursively=False
+        ).rewrite_module(op)
+
+        PatternRewriteWalker(SetJoin(runtime_sequence, object_fifo_manager), apply_recursively=False).rewrite_module(op)
+
+        PatternRewriteWalker(CollapseMemcpys()).rewrite_module(op)
+
+        # PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
+
+        # insert dma wait statements for bd collisions
+        PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)
 
         # wrap in core ops
 
