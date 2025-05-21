@@ -205,7 +205,15 @@ class PutTransfersBeforeFirstUse(RewritePattern):
     def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter):
         assert op.parent
         operation_uses = set(x.operation for x in op.results[0].uses)
-        first_use_op: Operation = next(o for o in op.parent.walk() if o in operation_uses)
+        try:
+            first_use_op: Operation = next(o for o in op.parent.walk() if o in operation_uses)
+        except StopIteration:
+            # Print descriptive error message with relevant operation uses
+            raise RuntimeError(
+                f"TransferOp has no uses in the parent region. "
+                f"Operation uses: {operation_uses}. "
+                f"TransferOp details: {op}."
+            ) from None
         while op.parent_op() is not first_use_op.parent_op():
             assert (parent := first_use_op.parent_op()) is not None
             first_use_op = parent

@@ -1,4 +1,3 @@
-from itertools import combinations, product
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -8,6 +7,8 @@ from stream.cost_model.communication_manager import CommunicationLinkEvent
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
     from stream.workload.tensor import SubviewTensor
+
+ENABLE_BROADCASTING = False
 
 
 def get_bidirectional_edges(
@@ -202,89 +203,45 @@ class CommunicationLink:
         Get the earliest time window of duration `duration` from `earliest_t` with at least `activity` percent
         available.
         """
-
-        def find_valid_window_for_given_bw(required_bandwidth: int):
-            valid_windows: list[tuple[int, int]] = []
-
-            # Check other possible periods given the activity
-            activities = np.cumsum(self.active_deltas)
-            earliest_t_index = np.searchsorted(self.active_ts, earliest_t, side="right")
-            relevant_ts = self.active_ts[earliest_t_index:]
-            updated_ts = relevant_ts.copy()
-            relevant_activities = activities[earliest_t_index:]
-            # Insert the earliest timestep and the activity at that timestep
-            updated_ts = np.insert(updated_ts, 0, earliest_t)
-            updated_activities = np.insert(relevant_activities, 0, activities[earliest_t_index - 1])
-            updated_activities = updated_activities + required_bandwidth
-            idxs = np.argwhere(updated_activities > self.bandwidth)
-            idxs = [idx[0] for idx in idxs]
-            idxs.append(len(updated_ts) - 1)
-            start = earliest_t
-            for idx in idxs:
-                end: int = updated_ts[idx]  # type: ignore
-                if end - start >= duration:
-                    valid_windows.append((start, end))
-                try:
-                    start: int = updated_ts[idx + 1]  # type: ignore
-                except IndexError:
-                    break
-
-            if not valid_windows:
-                raise ValueError(
-                    f"There are no valid windows of activity {required_bandwidth} and duration {duration} for {self}."
-                )
-            return valid_windows
-
-        def get_previous_valid_windows(tensor: "Tensor"):
-            windows: list[tuple[int, int]] = []
-            if tensor in self.previously_seen_tensors:
-                previous_events = self.previously_seen_tensors[tensor]
-                for previous_event in previous_events:
-                    # Previous event needs to be long enough
-                    duration_valid = previous_event.duration >= duration
-                    # Previous event needs to have happened at late enough time
-                    earliest_t_valid = previous_event.start >= earliest_t
-                    if duration_valid and earliest_t_valid:
-                        windows.append((previous_event.start, previous_event.end))
-            return windows
-
-        def window_has_bandwidth_left(window: tuple[int, int], remaining_req_bw: int):
-            if remaining_req_bw == 0:
-                return True
-
-            start, end = window
-            assert start in self.active_ts and end in self.active_ts
-            start_idx = np.where(self.active_ts == start)[0]
-            end_idx = np.where(self.active_ts == end)[0]
-            activities = np.cumsum(self.active_deltas)
-            activities_in_window = activities[start_idx:end_idx]
-            return all(activities_in_window + remaining_req_bw <= self.bandwidth)
-
-        tensors = [tensor for tensor, _ in bandwidth_per_tensor]
-        valid_windows_per_tensor = {
-            tensor: get_previous_valid_windows(tensor) for tensor in tensors if get_previous_valid_windows(tensor) != []
-        }
-
-        # Check all previously seen window combinations:
-        all_valid_windows: list[tuple[int, int]] = []
-        for r in range(1, len(valid_windows_per_tensor) + 1, -1)[::-1]:
-            # e.g. if 3 tensors have been seen before, check the windows for tensors (1,2,3), (1,2), (2,3), (1,3), ...
-            for tensor_combination in combinations(valid_windows_per_tensor, r):
-                # Bandwidth that needs to be allocated, for tensors not in the previously registered window
-                remaining_req_bw = sum([bw for tensor, bw in bandwidth_per_tensor if tensor not in tensor_combination])
-                all_window_combinations = product(*[valid_windows_per_tensor[tensor] for tensor in tensor_combination])
-                for window_combination in all_window_combinations:
-                    curr_window = window_combination[0]
-                    # Windows must overlap exactly and have bandwidth left
-                    if all(window == curr_window for window in window_combination[1::]) and window_has_bandwidth_left(
-                        curr_window, remaining_req_bw
-                    ):
-                        all_valid_windows.append(curr_window)
-
-        # If valid windows have been found in previously registered windows, return those
-        if all_valid_windows:
-            return all_valid_windows
-
-        # Base case: don't assume previous transfers and find new window for all tensors
-        total_req_bw = sum([bw for _, bw in bandwidth_per_tensor])
-        return find_valid_window_for_given_bw(total_req_bw)
+        valid_windows: list[tuple[int, int]] = []
+        ## Check if this tensor has already been transferred on this link before
+        if ENABLE_BROADCASTING:
+            # If so, check duration and earliest timestep requirements of this call
+            for tensor in tensors:
+                if tensor in self.tensors:
+                    previous_events = self.tensors[tensor]
+                    # Get the latest valid previous event
+                    duration_and_earliest_t_valid_previous_events = [
+                        previous_event
+                        for previous_event in previous_events
+                        if previous_event.start >= earliest_t and previous_event.duration >= duration
+                    ]
+                    if duration_and_earliest_t_valid_previous_events:
+                        # Add the latest valid previous event to the list of valid windows
+                        previous_valid_event = duration_and_earliest_t_valid_previous_events[-1]
+                        valid_windows.append((previous_valid_event.start, previous_valid_event.end))
+        ## Check other possible periods given the activity
+        activities = np.cumsum(self.active_deltas)
+        earliest_t_index = np.searchsorted(self.active_ts, earliest_t, side="right")
+        relevant_ts = self.active_ts[earliest_t_index:]
+        updated_ts = relevant_ts.copy()
+        relevant_activities = activities[earliest_t_index:]
+        # Insert the earliest timestep and the activity at that timestep
+        updated_ts = np.insert(updated_ts, 0, earliest_t)
+        updated_activities = np.insert(relevant_activities, 0, activities[earliest_t_index - 1])
+        updated_activities = updated_activities + activity
+        idxs = np.argwhere(updated_activities > self.bandwidth)
+        idxs = [idx[0] for idx in idxs]
+        idxs.append(len(updated_ts) - 1)
+        start = earliest_t
+        for idx in idxs:
+            end: int = updated_ts[idx]
+            if end - start >= duration:
+                valid_windows.append((start, end))
+            try:
+                start: int = updated_ts[idx + 1]
+            except IndexError:
+                break
+        if not valid_windows:
+            raise ValueError(f"There are no valid windows of activity {activity} and duration {duration} for {self}.")
+        return valid_windows
