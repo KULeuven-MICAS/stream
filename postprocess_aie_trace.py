@@ -1,5 +1,6 @@
 import json
 import os
+import os
 
 
 def parse_perfetto_trace(file_path):
@@ -17,11 +18,10 @@ def parse_perfetto_trace(file_path):
 
     if len(instr_event_0_times) != len(instr_event_1_times):
         if len(instr_event_0_times) == len(instr_event_1_times) + 1:
+        if len(instr_event_0_times) == len(instr_event_1_times) + 1:
             instr_event_0_times = instr_event_0_times[:-1]
         else:
-            raise ValueError(
-                f"Mismatched INSTR_EVENT_0 ({len(instr_event_0_times)}) and INSTR_EVENT_1 ({len(instr_event_1_times)}) events"
-            )
+            raise ValueError(f"Mismatched INSTR_EVENT_0 ({len(instr_event_0_times)}) and INSTR_EVENT_1 ({len(instr_event_1_times)}) events")
 
     time_differences = [end - start for start, end in zip(instr_event_0_times, instr_event_1_times)]
     total_difference = instr_event_1_times[-1] - instr_event_0_times[0]
@@ -45,8 +45,8 @@ def plot_time_differences(time_differences, fig_path):
 if __name__ == "__main__":
     M, N, K = 128, 128, 32
     MAX_MACS_PER_CYCLE_PER_CORE = 64  # for int16 x int16
-    input_folder = "/home/asymons/Documents/traces/gemm/stream_squashed_dma_copies"
-    output_folder = "/home/asymons/Documents/traces/gemm/stream_squashed_dma_copies/png_outputs"
+    input_folder = "/home/asymons/Documents/traces/gemm/stream"
+    output_folder = "/home/asymons/Documents/traces/gemm/stream/png_outputs"
 
     os.makedirs(output_folder, exist_ok=True)
 
@@ -65,9 +65,7 @@ if __name__ == "__main__":
         macs = M * N * K
         macs_per_cycle = macs / total_difference
         print(f"File: {file_path}, MACs/cycle = {macs_per_cycle}")
-        print(
-            f"Theoretical peak efficiency = {macs_per_cycle / MAX_MACS_PER_CYCLE_PER_CORE * 100:.1f} % (assuming {MAX_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)"
-        )
+        print(f"Theoretical peak efficiency = {macs_per_cycle / MAX_MACS_PER_CYCLE_PER_CORE * 100:.1f} % (assuming {MAX_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)")
         # Generate output PNG file path
         base_name = os.path.basename(file_path)
         png_name = os.path.splitext(base_name)[0] + ".png"
