@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 class MemoryManager:
     """Class that keeps track of the memory state of all top level memories of each core."""
+
     MAX_NB_TENSORS_COMPUTE_TILE = 3
     MAX_NB_TENSORS_MEM_TILE = 3
     MAX_NB_TENSORS_SHIM_TILE = 1000
@@ -68,7 +69,14 @@ class MemoryManager:
                     self.top_instance_available_since_timestep[top_instance] = {}
                     self.top_instance_stored_cumsum[top_instance] = np.array([[0, 0]])
                     self.top_instance_current_timestep[top_instance] = 0
-                    self.nb_stored_tensors[top_instance] = {mem_op: np.array([0,]) for mem_op in top_level.operands}
+                    self.nb_stored_tensors[top_instance] = {
+                        mem_op: np.array(
+                            [
+                                0,
+                            ]
+                        )
+                        for mem_op in top_level.operands
+                    }
                 else:
                     self.cores_per_top_instance[top_instance].append(core)
                     self.memory_operands_per_top_instance[top_instance].append(tuple(top_level.operands))
@@ -148,7 +156,7 @@ class MemoryManager:
             # Update the available since timestep which corresponds to timestep_end
             self.top_instance_available_since_timestep[top_instance][tensor.equality_hash()] = timestep_end
             return
-        
+
         # Add the tensor
         self.top_instance_stored_tensors[top_instance].append(tensor)
         self.top_instance_stored_since_timestep[top_instance][tensor.equality_hash()] = timestep
@@ -244,7 +252,9 @@ class MemoryManager:
         last_max_usage_idx = len(relevant_usages_reversed) - np.argmax(relevant_usages_reversed) - 1
         max_usage_ok = max_usage + tensor.size <= top_instance_capacity
         # Check max number of tensors that will be stored
-        total_max_nb_stored_tensors_after_addition = self.get_max_nb_tensors_after_addition(top_instance, tensor, timestep)
+        total_max_nb_stored_tensors_after_addition = self.get_max_nb_tensors_after_addition(
+            top_instance, tensor, timestep
+        )
         max_nb_stored_tensors_ok = total_max_nb_stored_tensors_after_addition <= top_instance_max_nb_tensors
         # If both are ok, we can add the tensor at this timestep
         if max_usage_ok and max_nb_stored_tensors_ok:
@@ -440,7 +450,9 @@ class MemoryManager:
         # Check max number of tensors
         max_nb_tensors_after_addition = self.get_max_nb_tensors_after_addition(top_instance, tensor_to_add, timestep)
         nb_tensors_to_evict = max(0, max_nb_tensors_after_addition - max_nb_tensors_on_core)
-        if min_size_to_evict <= 0 and nb_tensors_to_evict <= 0:  # no need to evict any tensor, the memory's space is enough
+        if (
+            min_size_to_evict <= 0 and nb_tensors_to_evict <= 0
+        ):  # no need to evict any tensor, the memory's space is enough
             return []
         evictable_tensors = [t for t in stored_tensors if t not in relevant_exceptions]
         # Sort the stored tensors based on what timestep they were added (from smallest to largest timestep)
@@ -477,16 +489,16 @@ class MemoryManager:
             nb_stored_per_mem_op = nb_stored_per_mem_op[insert_idx:]
             relevant_nb_stored_tensors[mem_op] = nb_stored_per_mem_op
         return relevant_nb_stored_tensors
-            
+
     def get_max_nb_tensors_allowed(self, core: Core):
         if core.id == self.offchip_core_id:
             return MemoryManager.MAX_NB_TENSORS_SHIM_TILE
         elif core.type == "memory":
             return MemoryManager.MAX_NB_TENSORS_MEM_TILE
         return MemoryManager.MAX_NB_TENSORS_COMPUTE_TILE
-        
+
     def get_max_nb_tensors_after_addition(self, top_instance: MemoryInstance, tensor: SubviewTensor, timestep: int):
-        """ 
+        """
         Get the maximum number of tensors that will be stored in the instance across all operands after adding the tensor.
         """
         memory_op = tensor.memory_operand
@@ -520,13 +532,15 @@ class MemoryManager:
             insert_idx = len(all_timesteps)
             if not start_timestep >= all_timesteps[-1]:
                 # This requires different logic to make sure timesteps in between also are updated correctly
-                raise NotImplementedError("This scenario should only occur for multi-core accelerators. Not yet implemented.")
+                raise NotImplementedError(
+                    "This scenario should only occur for multi-core accelerators. Not yet implemented."
+                )
 
             # Get the current usage and nb_stored_tensors at start_timestep
             current_usage = self.top_instance_stored_cumsum[top_instance][insert_idx - 1, 1]
             current_nb_stored_tensors = {
-            mem_op: self.nb_stored_tensors[top_instance][mem_op][insert_idx - 1]
-            for mem_op in self.nb_stored_tensors[top_instance]
+                mem_op: self.nb_stored_tensors[top_instance][mem_op][insert_idx - 1]
+                for mem_op in self.nb_stored_tensors[top_instance]
             }
 
             # Update stored_cumsum for the end timestep
@@ -539,8 +553,8 @@ class MemoryManager:
             # Update nb_stored_tensors for each memory operand for the end timestep
             for mem_op in self.nb_stored_tensors[top_instance]:
                 self.nb_stored_tensors[top_instance][mem_op] = np.insert(
-                self.nb_stored_tensors[top_instance][mem_op],
-                insert_idx,
-                current_nb_stored_tensors[mem_op],
-                axis=0,
+                    self.nb_stored_tensors[top_instance][mem_op],
+                    insert_idx,
+                    current_nb_stored_tensors[mem_op],
+                    axis=0,
                 )

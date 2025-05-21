@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 
 ENABLE_BROADCASTING = False
 
+
 def get_bidirectional_edges(
     core_a: "Core",
     core_b: "Core",

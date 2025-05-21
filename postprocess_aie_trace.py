@@ -21,7 +21,9 @@ def parse_perfetto_trace(file_path):
         if len(instr_event_0_times) == len(instr_event_1_times) + 1:
             instr_event_0_times = instr_event_0_times[:-1]
         else:
-            raise ValueError(f"Mismatched INSTR_EVENT_0 ({len(instr_event_0_times)}) and INSTR_EVENT_1 ({len(instr_event_1_times)}) events")
+            raise ValueError(
+                f"Mismatched INSTR_EVENT_0 ({len(instr_event_0_times)}) and INSTR_EVENT_1 ({len(instr_event_1_times)}) events"
+            )
 
     time_differences = [end - start for start, end in zip(instr_event_0_times, instr_event_1_times)]
     total_difference = instr_event_1_times[-1] - instr_event_0_times[0]
@@ -65,7 +67,9 @@ if __name__ == "__main__":
         macs = M * N * K
         macs_per_cycle = macs / total_difference
         print(f"File: {file_path}, MACs/cycle = {macs_per_cycle}")
-        print(f"Theoretical peak efficiency = {macs_per_cycle / MAX_MACS_PER_CYCLE_PER_CORE * 100:.1f} % (assuming {MAX_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)")
+        print(
+            f"Theoretical peak efficiency = {macs_per_cycle / MAX_MACS_PER_CYCLE_PER_CORE * 100:.1f} % (assuming {MAX_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)"
+        )
         # Generate output PNG file path
         base_name = os.path.basename(file_path)
         png_name = os.path.splitext(base_name)[0] + ".png"
