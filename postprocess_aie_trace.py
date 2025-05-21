@@ -45,8 +45,8 @@ def plot_time_differences(time_differences, fig_path):
 if __name__ == "__main__":
     M, N, K = 128, 128, 32
     MAX_MACS_PER_CYCLE_PER_CORE = 64  # for int16 x int16
-    input_folder = "/home/asymons/Documents/traces/gemm/stream"
-    output_folder = "/home/asymons/Documents/traces/gemm/stream/png_outputs"
+    input_folder = "/home/asymons/Documents/traces/gemm/stream_squashed_dma_copies"
+    output_folder = "/home/asymons/Documents/traces/gemm/stream_squashed_dma_copies/png_outputs"
 
     os.makedirs(output_folder, exist_ok=True)
 
