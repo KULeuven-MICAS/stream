@@ -493,7 +493,11 @@ class MemoryManager:
         # Use numpy searchsorted to find the where the timestep should be inserted
         all_timesteps = self.top_instance_stored_cumsum[top_instance][:, 0]
         insert_idx = np.searchsorted(all_timesteps, timestep)
+        timstep_already_present = insert_idx < len(all_timesteps) and all_timesteps[insert_idx] == timestep
+        if not timstep_already_present:
+            insert_idx -= 1
         relevant_nb_stored_tensors = self.nb_stored_tensors[top_instance][memory_op][insert_idx:]
+        assert len(relevant_nb_stored_tensors) > 0, "Something went wrong when getting the relevant nb stored tensors."
         updated_relevant_nb_stored_tensors = relevant_nb_stored_tensors + 1  # Adds 1 for all relevant timesteps
         # Check that by adding this tensor we don't exceed the maximum number of tensors that can be stored
         max_nb_tensors_for_this_mem_op = np.max(updated_relevant_nb_stored_tensors, initial=0)
@@ -505,3 +509,38 @@ class MemoryManager:
             ]
         )
         return max_nb_tensors_for_this_mem_op + max_nb_tensors_for_other_mem_ops
+
+    def fix_memory_usage_and_nb_stored_tensors(self, core: Core, start_timestep: int, end_timestep: int):
+        """Fix the memory usage and nb of tensors aliveof all top_instances of the core between start_timestep and end_timestep.
+        This is used to fix the memory usage and nb of tensors alive during computation of a node.
+        """
+        for top_instance in self.top_instances_per_core[core]:
+            # Use numpy searchsorted to find the indices for start_timestep and end_timestep
+            all_timesteps = self.top_instance_stored_cumsum[top_instance][:, 0]
+            insert_idx = len(all_timesteps)
+            if not start_timestep >= all_timesteps[-1]:
+                # This requires different logic to make sure timesteps in between also are updated correctly
+                raise NotImplementedError("This scenario should only occur for multi-core accelerators. Not yet implemented.")
+
+            # Get the current usage and nb_stored_tensors at start_timestep
+            current_usage = self.top_instance_stored_cumsum[top_instance][insert_idx - 1, 1]
+            current_nb_stored_tensors = {
+            mem_op: self.nb_stored_tensors[top_instance][mem_op][insert_idx - 1]
+            for mem_op in self.nb_stored_tensors[top_instance]
+            }
+
+            # Update stored_cumsum for the end timestep
+            self.top_instance_stored_cumsum[top_instance] = np.insert(
+                self.top_instance_stored_cumsum[top_instance],
+                insert_idx,
+                [end_timestep, current_usage],
+                axis=0,
+            )
+            # Update nb_stored_tensors for each memory operand for the end timestep
+            for mem_op in self.nb_stored_tensors[top_instance]:
+                self.nb_stored_tensors[top_instance][mem_op] = np.insert(
+                self.nb_stored_tensors[top_instance][mem_op],
+                insert_idx,
+                current_nb_stored_tensors[mem_op],
+                axis=0,
+                )
