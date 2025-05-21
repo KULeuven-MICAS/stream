@@ -1004,7 +1004,8 @@ class RealizeLayoutCats(RewritePattern):
         of.dimensionsToStream = bd_layout
 
         # set of_layout to the memref layout
-        of.elemType = ObjectFIFO([dest_type])
+        # TODO: improve for join patterns
+        of.elemType = ObjectFIFO([MemRefType(element_type.element_type, element_type.shape, dest_type.layout)])
 
 
 @dataclass
