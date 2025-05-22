@@ -20,6 +20,11 @@ from stream.parser.onnx.reshape import ReshapeParser
 from stream.parser.onnx.simd import SimdParser
 from stream.parser.onnx.softmax import SoftmaxParser
 from stream.parser.onnx.transpose import TransposeParser
+from stream.parser.onnx.softmaxcrossentropy import SoftmaxCrossEntropyParser
+from stream.parser.onnx.softmaxcrossentropygrad import SoftmaxCrossEntropyGradParser
+from stream.parser.onnx.convtranspose import ConvTransposeParser
+from stream.parser.onnx.reducesum import ReduceSumParser
+from stream.parser.onnx.InPlaceAccumulator import InPlaceAccumulatorParser
 from stream.utils import get_onnx_input_shapes, has_asymmetric_input_data
 from stream.workload.mapping import InterCoreMappingAttributes
 from stream.workload.onnx_workload import ONNXWorkload
@@ -52,6 +57,12 @@ class ONNXModelParser:
         "Reshape": ReshapeParser,
         "Flatten": FlattenParser,
         "Concat": ConcatParser,
+        "SoftmaxCrossEntropyLoss" : SoftmaxCrossEntropyParser,
+        "SoftmaxCrossEntropyLossGrad": SoftmaxCrossEntropyGradParser,
+        "ConvTranspose": ConvTransposeParser,
+        "ReduceSum" :ReduceSumParser,
+        "InPlaceAccumulatorV2": InPlaceAccumulatorParser,
+        # "ConvGrad": ConvGradParser,
     }
 
     def __init__(

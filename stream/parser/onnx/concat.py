@@ -16,14 +16,14 @@ class ConcatParser(OnnxOperatorParser):
 
         try:  # Try first one as constant input
             constant_tensor = get_onnx_tensor_type(input_1, self.onnx_model)
-            if constant_tensor.category != OnnxTensorCategory.HIDDEN or "constant" not in input_1.lower():
+            if constant_tensor.category not in[ OnnxTensorCategory.HIDDEN, OnnxTensorCategory.CONSTANT] :
                 raise ValueError
 
             constant_shape = tuple(constant_tensor.shape)
             variable_input_first = True
         except ValueError:  # Try second one as constant input
             constant_tensor = get_onnx_tensor_type(input_2, self.onnx_model)
-            if constant_tensor.category != OnnxTensorCategory.HIDDEN or "constant" not in input_2.lower():
+            if constant_tensor.category not in[ OnnxTensorCategory.HIDDEN, OnnxTensorCategory.CONSTANT] :
                 raise ValueError
 
             constant_shape = tuple(constant_tensor.shape)

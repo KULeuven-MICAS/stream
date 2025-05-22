@@ -48,6 +48,12 @@ class ComputationNode(LayerNode, Node):
         "relu": [LayerDim("K")],
         "gelu": [LayerDim("K")],
         "silu": [LayerDim("K")],
+        "softmaxcrossentropyloss": [LayerDim("K")],
+        "log":[LayerDim("K")],
+        "reduce":[LayerDim("K")],
+        "reducesum":[LayerDim("K")],
+        "convtranspose":[LayerDim("IY"), LayerDim("IX")],
+        "accumulate": [LayerDim("K")]
     }  # TODO default to "K" ?
 
     def __init__(
@@ -150,8 +156,20 @@ class ComputationNode(LayerNode, Node):
                 LayerOperand("I"): (size_B, -1, size_IX, size_IY),
                 LayerOperand("O"): (size_B, -1, size_OX, size_OY),
             }
-        except KeyError:
-            return None
+        except KeyError as e:
+            try:
+                size_B = self.layer_dim_sizes[LayerDim("B")]
+                size_IX = self.layer_dim_sizes[LayerDim("IX")]
+                size_IY = self.layer_dim_sizes[LayerDim("IY")]
+                size_OX = self.pr_layer_dim_sizes[LayerDim("OX")]
+                size_OY = self.pr_layer_dim_sizes[LayerDim("OY")]
+                return {
+                    LayerOperand("I"): (size_B, -1, size_IX, size_IY),
+                    LayerOperand("O"): (size_B, -1, size_OX, size_OY),
+                }
+            except KeyError as e:
+                
+                return None
 
     @property
     def short_name(self) -> str:
