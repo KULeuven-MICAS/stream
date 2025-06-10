@@ -673,10 +673,58 @@ class SetJoin(RewritePattern):
                 rewriter.erase_op(of_link_ops[(dest, sources[i])])
 
 
+def simplify_strides(
+    strides: tuple[int, ...], sizes: tuple[int, ...]
+) -> tuple[tuple[int, ...], tuple[int, ...]] | None:
+    """
+    Simplify strides. If possible, collapse two dimensions with the same stride into one.
+    If not possible, return None.
+    """
+
+    same_strides = [strides[i] == strides[i + 1] * sizes[i + 1] for i in range(len(strides) - 1)]
+    if True in same_strides:
+        collapse_idx = same_strides.index(True)
+        new_size = sizes[collapse_idx] * sizes[collapse_idx + 1]
+        new_stride = strides[collapse_idx + 1]
+        sizes = sizes[:collapse_idx] + (new_size,) + sizes[collapse_idx + 2 :]
+        strides = strides[:collapse_idx] + (new_stride,) + strides[collapse_idx + 2 :]
+        return sizes, strides
+
+
 @dataclass
 class CollapseMemcpys(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: DmaMemcpyNdOp, rewriter: PatternRewriter):
+        # gather offsets, sizes and strides
+        offset_1 = cast(tuple[int, ...], op.static_offsets.get_values())[-1]
+        sizes_1 = cast(tuple[int, ...], op.static_sizes.get_values())
+        strides_1 = cast(tuple[int, ...], op.static_strides.get_values())
+
+        first_non_1 = next((i for i, x in enumerate(sizes_1) if x != 1), len(sizes_1))
+        sizes_1 = sizes_1[first_non_1:]
+        strides_1 = strides_1[first_non_1:]
+
+        # check if we can simplify
+        simplified = simplify_strides(strides_1, sizes_1)
+        if simplified is not None:
+            sizes_1 = (1,) * (4 - len(simplified[0])) + simplified[0]
+            strides_1 = (0,) * (4 - len(simplified[1])) + simplified[1]
+
+            new_op = DmaMemcpyNdOp(
+                op.memref,
+                op.static_offsets,
+                sizes_1,
+                strides_1,
+                op.metadata,
+                op.id,
+                op.issue_token,
+                op.offsets,
+                op.strides,
+            )
+            # breakpoint()
+            rewriter.replace_matched_op(new_op)
+            return
+
         # find next memcpy with the same metadata
         next_op = op
         while True:
@@ -687,15 +735,6 @@ class CollapseMemcpys(RewritePattern):
                 break
 
         # strides should fully overlap
-        # gather offsets, sizes and strides
-        offset_1 = cast(tuple[int, ...], op.static_offsets.get_values())[-1]
-        sizes_1 = cast(tuple[int, ...], op.static_sizes.get_values())
-        strides_1 = cast(tuple[int, ...], op.static_strides.get_values())
-
-        first_non_1 = next((i for i, x in enumerate(sizes_1) if x != 1), len(sizes_1))
-        sizes_1 = sizes_1[first_non_1:]
-        strides_1 = strides_1[first_non_1:]
-
         offset_2 = cast(tuple[int, ...], next_op.static_offsets.get_values())[-1]
         sizes_2 = cast(tuple[int, ...], next_op.static_sizes.get_values())
         strides_2 = cast(tuple[int, ...], next_op.static_strides.get_values())
@@ -713,8 +752,12 @@ class CollapseMemcpys(RewritePattern):
             sizes_1 = (2,) + sizes_1
             strides_1 = (offset_2 - offset_1,) + strides_1
 
+            simplified = simplify_strides(strides_1, sizes_1)
+            if simplified is not None:
+                sizes_1 = simplified[0]
+                strides_1 = simplified[1]
+
             if len(sizes_1) > 4:
-                # not possible to collapse
                 return
             sizes_1 = (1,) * (4 - len(sizes_1)) + sizes_1
             strides_1 = (0,) * (4 - len(strides_1)) + strides_1
