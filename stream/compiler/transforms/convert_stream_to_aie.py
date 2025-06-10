@@ -156,8 +156,8 @@ class ObjectFifoManager:
 
                 # increase the depth of objectfifo if it does not suffice
                 of = self.of_from_name(of_name)
-                if of.elemNumber.value.data < current_fifo_depth[of_name]:
-                    of.elemNumber = IntegerAttr.from_int_and_width(current_fifo_depth[of_name], 32)
+                if of.elemNumber.value.data < current_fifo_depth[of_name] + 1:
+                    of.elemNumber = IntegerAttr.from_int_and_width(current_fifo_depth[of_name] + 1, 32)
 
             elif isinstance(op, ObjectFIFOReleaseOp):
                 of_name = op.objFifo_name.root_reference.data
