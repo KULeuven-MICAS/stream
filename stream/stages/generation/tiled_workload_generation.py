@@ -190,23 +190,14 @@ class TiledWorkloadGenerationStage(Stage):
     def cached_workload_matches(self, tiles: list[ComputationNode], cached_tiles: ComputationNodeWorkload) -> bool:
         """Check if the tiles match the cached tiled workload.
         Can't use 'has_same_performance' because nb_real_predecessors is not set yet for tiles."""
-
-        # ! find a better way to check if the cached workload is valid -RG
-        logger.warn(
-            "Cached workload is not checked for correctness. Manually remove the cache if it no longer matches the workload"
-        )
-        return True
-
         logger.info("Checking if the cached workload is valid for this run.")
-        return all(
-            any(
-                cached_tile.id == tile.id
-                and cached_tile.sub_id == tile.sub_id
-                and cached_tile.loop_ranges == tile.loop_ranges
-                for cached_tile in cached_tiles.node_list
-            )
-            for tile in tiles
-        )
+        # Create hashes of the cached tiles
+        cached_tiles_hashes = [tile.static_hash for tile in cached_tiles.node_list]
+        # Check for each tile hash if it is in the cached tile hashes
+        for tile in tiles:
+            if tile.static_hash not in cached_tiles_hashes:
+                return False
+        return True
 
     @staticmethod
     def get_scheduling_order(workload: ComputationNodeWorkload):
