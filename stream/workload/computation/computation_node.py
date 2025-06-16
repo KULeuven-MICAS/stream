@@ -44,9 +44,26 @@ class ComputationNode(LayerNode, Node):
         operand_tensor_reshape: OperandTensorReshape | None = None,
         produces_final_output: bool = False,
         group_id: int = 0,
-        sub_id: int = -1,  # To distinguish alternative versions of this node
+        sub_id: int = -1,
         input_names: list[str] = [],
+        partially_constant_operands: list[LayerOperand] = [],
     ):
+        """
+        Args:
+            node_id: Unique ID for each node
+            node_name: Name of the node (e.g. parsed from ONNX)
+            node_attr: ...
+            mapping_attr: ...
+            op_type: Operation type e.g. `Conv`
+            operand_tensor_reshape: ...
+            produces_final_output: Whether the node produces the final output (without further dependencies)
+            group_id: To determine which nodes are placed on the same core
+            sub_id: To distinguish alternative versions of this node
+            input_names: Names of the incoming ONNX nodes (used for dependency generation)
+            partially_constant_operands: Operands that are treated as regular operand for dependencies, but constant for
+                                         tensor fetching (patchwork for KV-caches)
+        """
+
         # TODO `op_type` is also encapsulated in `node_attr`
         op_type = op_type.lower()
 
@@ -86,6 +103,7 @@ class ComputationNode(LayerNode, Node):
             layer_op: self.equation.get_r_layer_dims(layer_op) for layer_op in self.equation.get_contained_operands()
         }
         self.too_large_operands = []
+        self.partially_constant_operands = partially_constant_operands
 
         # Sizes can be extended to fit division factors
         self.extended_layer_dim_sizes: LayerDimSizes = deepcopy(self.layer_dim_sizes)

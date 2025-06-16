@@ -36,6 +36,9 @@ class SetFixedAllocationPerformanceStage(Stage):
 
     def run(self):
         logger.info("Start SetFixedAllocationPerformanceStage.")
+
+        self.check_and_fix_chosen_core_allocation()
+
         # Set the performance of all nodes that have a fixed allocation
         self.set_fixed_allocation_performance()
         logger.info("Finished SetFixedAllocationPerformanceStage.")
@@ -53,6 +56,7 @@ class SetFixedAllocationPerformanceStage(Stage):
 
     def set_fixed_allocation_performance(self):
         for node in self.workload.node_list:
+            # ! It is still possible nodes don't have a core allocation here! -RG
             if isinstance(node.chosen_core_allocation, int):
                 core_id = node.chosen_core_allocation
                 if core_id is None:
@@ -109,3 +113,28 @@ class SetFixedAllocationPerformanceStage(Stage):
         node.set_offchip_energy(offchip_energy)
         node.set_runtime(runtime)
         node.set_chosen_core_allocation(chosen_core_allocation)
+
+    def check_and_fix_chosen_core_allocation(self):
+        """! Check that all nodes in the workload have a chosen_core_allocation."""
+        for node in self.workload.node_list:
+            if node.chosen_core_allocation is None:
+                try:
+                    core_id = node.possible_core_allocation[node.group]
+                except IndexError:
+                    core_id = node.possible_core_allocation[0]
+
+                node.set_chosen_core_allocation(core_id)
+                logger.warning(
+                    f"{node} does not have a chosen_core_allocation. Setting to {core_id} out of "
+                    f"possible allocations {node.possible_core_allocation}."
+                )
+
+    # def set_core_allocation(self):
+    #     """For all nodes of the (tiled) workload, set the chosen core allocation based on the sub_id and number of
+    #     inter-core splits for this node.
+    #     # TODO this is only necessary if CO is not being used. Move to something like `COSkipStage`
+    #     """
+    #     for node in self.workload.node_list:
+    #         core_id = node.sub_id % inter_core_tiling_factor
+    #         node.set_chosen_core_allocation(core_id)
+    #         node.core_allocation_is_fixed = True

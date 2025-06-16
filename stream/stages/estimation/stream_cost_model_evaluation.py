@@ -39,8 +39,6 @@ class StreamCostModelEvaluationStage(Stage):
         self.operands_to_prefetch = operands_to_prefetch
         self.scheduling_order = kwargs.get("scheduling_order", None)
 
-        self.check_and_fix_chosen_core_allocation(workload)
-
     def run(self) -> Generator[tuple[StreamCostModelEvaluation, Any], None, None]:
         """! Run the StreamCostModelEvaluation."""
         logger.info("Start StreamCostModelEvaluationStage.")

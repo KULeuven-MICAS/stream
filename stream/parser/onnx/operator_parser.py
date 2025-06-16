@@ -2,6 +2,7 @@ from abc import ABCMeta, abstractmethod
 from typing import Any, Generator
 
 from onnx import ModelProto, NodeProto
+from zigzag.datatypes import Constants
 from zigzag.parser.onnx.onnx_operator_parser import ONNXOperatorParser as ONNXOperatorParserZigZag
 from zigzag.parser.onnx.utils import get_node_input_output_dimension_shapes
 from zigzag.parser.workload_factory import LayerNodeFactory
@@ -140,6 +141,12 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
         node_attrs = node_factory.create_node_attr()
         input_names = list(self.node.input)
 
+        # ! Messy patchwork for KV caches. Assumes that operators that take in the cache have a special name
+        if "_cache" in self.node.name:
+            partially_constant_operands = [Constants.LAYER_OP_W]
+        else:
+            partially_constant_operands = []
+
         return ComputationNode(
             node_id=self.node_id,
             node_name=self.node.name,
@@ -147,4 +154,5 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
             node_attr=node_attrs,
             mapping_attr=mapping,
             input_names=input_names,
+            partially_constant_operands=partially_constant_operands,
         )
