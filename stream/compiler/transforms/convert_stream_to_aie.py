@@ -681,6 +681,14 @@ def simplify_strides(
     If not possible, return None.
     """
 
+    if strides[0] == 0 and sizes[0] != 1:
+        # special handling for repeat dma copies
+        if strides[1] == 0 and sizes[1] != 1:
+            strides = (0,) + strides[2:]
+            sizes = (sizes[0] * sizes[1],) + sizes[2:]
+            return sizes, strides
+        else:
+            return None
     same_strides = [strides[i] == strides[i + 1] * sizes[i + 1] for i in range(len(strides) - 1)]
     if True in same_strides:
         collapse_idx = same_strides.index(True)
@@ -721,7 +729,6 @@ class CollapseMemcpys(RewritePattern):
                 op.offsets,
                 op.strides,
             )
-            # breakpoint()
             rewriter.replace_matched_op(new_op)
             return
 
