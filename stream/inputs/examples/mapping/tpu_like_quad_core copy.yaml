@@ -1,0 +1,55 @@
+- name: default
+  core_allocation: [0, 1, 2, 3]
+  intra_core_tiling:
+    - D, 1
+  inter_core_tiling:
+    - K, *
+
+- name: Conv
+  core_allocation: [0, 1, 2, 3]
+  intra_core_tiling:
+    - OY, 1
+  inter_core_tiling:
+    - K, *
+
+- name: Gemm
+  core_allocation: [0, 1, 2, 3]
+  intra_core_tiling:
+    - D, 1
+  inter_core_tiling:
+    - H, *
+
+- name: Pool
+  core_allocation: [4]
+  intra_core_tiling:
+    - OY, 1
+  inter_core_tiling:
+    - K, *
+
+- name: MaxPool
+  core_allocation: [4]
+  intra_core_tiling:
+    - OY, 1
+  inter_core_tiling:
+    - K, *
+
+- name: AveragePool
+  core_allocation: [4]
+  intra_core_tiling:
+    - OY, 1
+  inter_core_tiling:
+    - K, *
+
+- name: GlobalAveragePool
+  core_allocation: [4]
+  intra_core_tiling:
+    - OY, 1
+  inter_core_tiling:
+    - K, *
+
+- name: Add
+  core_allocation: [5]
+  intra_core_tiling:
+    - D, 1
+  inter_core_tiling:
+    - H, *

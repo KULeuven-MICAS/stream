@@ -27,7 +27,7 @@ def update_occupations(
         constant_operands = node.constant_operands
         if not constant_operands:
             continue
-        # Assume last constant operand is correctr one for stack calculation
+        # Assume last constant operand is correct one for stack calculation
         constant_operand = constant_operands[-1]
         # Assert that the memory operand matches the assumed one for capacities
         memory_operand = node.memory_operand_links[constant_operand]

@@ -1,6 +1,6 @@
 from zigzag.datatypes import LayerOperand
 
-from stream.cost_model.scheduler import schedule_graph
+from stream.cost_model.scheduler import CoalaScheduler
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import plot_timeline_brokenaxes
@@ -8,9 +8,9 @@ from stream.workload.onnx_workload import ComputationNodeWorkload
 
 
 class StreamCostModelEvaluation:
-    """Stream's cost model evaluation class which includes a scheduler and memory utilization tracer.
-    Throughout SCME will be used as abbreviation.
-    This evaluation computes the total latency and activation memory utilization throughout the inference.
+    """
+    Evaluates the cost model for a given workload and accelerator using the Schedule class.
+    Computes latency and various energy metrics by running the schedule.
     """
 
     def __init__(
@@ -43,28 +43,29 @@ class StreamCostModelEvaluation:
     def __str__(self):
         return f"SCME(energy={self.energy:.2e}, latency={self.latency:.2e})"
 
-    def run(self):
-        """Run the SCME by scheduling the graph through time.
-        The scheduler takes into account inter-core data movement and also tracks energy and memory through the memory
-        manager.
-        This assumes each node in the graph has an energy and runtime of the core to which they are allocated to.
+    def evaluate(self):
         """
-        results = schedule_graph(
-            self.workload,
-            self.accelerator,
-            operands_to_prefetch=self.operands_to_prefetch,
+        Runs the scheduling and cost model evaluation, updating latency and energy attributes.
+        Uses the Schedule class for modular scheduling and result extraction.
+        """
+        schedule = CoalaScheduler(
+            G=self.workload,
+            accelerator=self.accelerator,
             scheduling_order=self.scheduling_order,
+            operands_to_prefetch=self.operands_to_prefetch,
         )
-        self.latency = results[0]
-        self.total_cn_onchip_energy = results[1]
-        self.total_cn_offchip_link_energy = results[2]
-        self.total_cn_offchip_memory_energy = results[3]
-        self.total_eviction_to_offchip_link_energy = results[4]
-        self.total_eviction_to_offchip_memory_energy = results[5]
-        self.total_sink_layer_output_offchip_link_energy = results[6]
-        self.total_sink_layer_output_offchip_memory_energy = results[7]
-        self.total_core_to_core_link_energy = results[8]
-        self.total_core_to_core_memory_energy = results[9]
+        schedule.run()
+
+        self.latency = schedule.latency
+        self.total_cn_onchip_energy = schedule.total_cn_onchip_energy
+        self.total_cn_offchip_link_energy = schedule.total_cn_offchip_link_energy
+        self.total_cn_offchip_memory_energy = schedule.total_cn_offchip_memory_energy
+        self.total_eviction_to_offchip_link_energy = schedule.total_eviction_to_offchip_link_energy
+        self.total_eviction_to_offchip_memory_energy = schedule.total_eviction_to_offchip_memory_energy
+        self.total_sink_layer_output_offchip_link_energy = schedule.total_sink_layer_output_offchip_link_energy
+        self.total_sink_layer_output_offchip_memory_energy = schedule.total_sink_layer_output_offchip_memory_energy
+        self.total_core_to_core_link_energy = schedule.total_core_to_core_link_energy
+        self.total_core_to_core_memory_energy = schedule.total_core_to_core_memory_energy
 
         self.energy = (
             self.total_cn_onchip_energy

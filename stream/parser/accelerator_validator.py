@@ -16,7 +16,7 @@ class AcceleratorValidator:
     INPUT_DIR_LOCATION = "stream/inputs/"
     GRAPH_TYPES = ["2d_mesh", "bus"]
     FILENAME_REGEX = r"^(?:[a-zA-Z0-9_\-]+|[a-zA-Z0-9_\-\///]+(\.yaml|\.yml))$"
-    CORE_IDS_REGEX = r"^\d+\s*,\s*\d+$"
+    CORE_IDS_REGEX = r"^(\d+\s*,\s*)+\d+$"
 
     SCHEMA: dict[str, Any] = {
         "name": {"type": "string", "required": True},

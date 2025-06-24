@@ -3,10 +3,15 @@ from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
+from zigzag.mapping.data_movement import MemoryAccesses
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.stages.stage import Stage, StageCallable
-from stream.utils import CostModelEvaluationLUT, get_required_offchip_bandwidth, get_too_large_operands
+from stream.utils import (
+    CostModelEvaluationLUT,
+    get_too_large_operands,
+    get_top_level_inst_bandwidth,
+)
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
@@ -31,6 +36,9 @@ class SetFixedAllocationPerformanceStage(Stage):
 
     def run(self):
         logger.info("Start SetFixedAllocationPerformanceStage.")
+
+        self.check_and_fix_chosen_core_allocation()
+
         # Set the performance of all nodes that have a fixed allocation
         self.set_fixed_allocation_performance()
         logger.info("Finished SetFixedAllocationPerformanceStage.")
@@ -48,10 +56,8 @@ class SetFixedAllocationPerformanceStage(Stage):
 
     def set_fixed_allocation_performance(self):
         for node in self.workload.node_list:
-            if isinstance(node.core_allocation, list) and len(node.core_allocation) == 1:
-                node.core_allocation_is_fixed = True
-                node.set_chosen_core_allocation(node.core_allocation[0])
-            if node.core_allocation_is_fixed:
+            # ! It is still possible nodes don't have a core allocation here! -RG
+            if isinstance(node.chosen_core_allocation, int):
                 core_id = node.chosen_core_allocation
                 if core_id is None:
                     raise ValueError(f"Node {node} has fixed allocation but the chosen_core_allocation was not set.")
@@ -62,11 +68,16 @@ class SetFixedAllocationPerformanceStage(Stage):
                 latency = getattr(cme, self.latency_attr)
                 too_large_operands = get_too_large_operands(cme, self.accelerator, core_id=core_id)
                 onchip_energy, offchip_energy = self.get_energy_distribution(cme, too_large_operands)
+
                 # Get the required offchip bandwidth during the execution of the node for all directions
-                offchip_bandwidth = get_required_offchip_bandwidth(cme, too_large_operands)
+                bandwidth_scaling = cme.ideal_temporal_cycle / latency
+                offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses] = {
+                    mem_op: get_top_level_inst_bandwidth(cme, mem_op, bandwidth_scaling)
+                    for mem_op in too_large_operands
+                }
                 self.set_hw_performance_node(node, onchip_energy, offchip_energy, latency, core_id)
                 node.set_too_large_operands(too_large_operands.copy())
-                node.set_offchip_bandwidth(offchip_bandwidth)
+                node.set_offchip_bandwidth(offchip_bandwidth_per_op)
 
     def get_energy_distribution(
         self, cme: CostModelEvaluation, too_large_operands: list[MemoryOperand]
@@ -95,10 +106,35 @@ class SetFixedAllocationPerformanceStage(Stage):
             node (Node): The node of which to set the
             onchip_energy (float): on-chip energy of executing this node
             offchip_energy (float): off-chip energy of executing this node
-            runtime (int): runtime of executing this node
-            core_allocation (int): the core_id on which this node will be ran
+            runtime: runtime of executing this node
+            core_allocation: the core_id on which this node will be ran
         """
         node.set_onchip_energy(onchip_energy)
         node.set_offchip_energy(offchip_energy)
         node.set_runtime(runtime)
         node.set_chosen_core_allocation(chosen_core_allocation)
+
+    def check_and_fix_chosen_core_allocation(self):
+        """! Check that all nodes in the workload have a chosen_core_allocation."""
+        for node in self.workload.node_list:
+            if node.chosen_core_allocation is None:
+                try:
+                    core_id = node.possible_core_allocation[node.group]
+                except IndexError:
+                    core_id = node.possible_core_allocation[0]
+
+                node.set_chosen_core_allocation(core_id)
+                logger.warning(
+                    f"{node} does not have a chosen_core_allocation. Setting to {core_id} out of "
+                    f"possible allocations {node.possible_core_allocation}."
+                )
+
+    # def set_core_allocation(self):
+    #     """For all nodes of the (tiled) workload, set the chosen core allocation based on the sub_id and number of
+    #     inter-core splits for this node.
+    #     # TODO this is only necessary if CO is not being used. Move to something like `COSkipStage`
+    #     """
+    #     for node in self.workload.node_list:
+    #         core_id = node.sub_id % inter_core_tiling_factor
+    #         node.set_chosen_core_allocation(core_id)
+    #         node.core_allocation_is_fixed = True

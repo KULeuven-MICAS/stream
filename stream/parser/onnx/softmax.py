@@ -4,6 +4,8 @@ from zigzag.datatypes import Constants
 
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
 from stream.parser.onnx.reduce_1d import Reduce1DParser
+from stream.parser.onnx.simd import SimdParser
+from stream.workload.mapping import InterCoreMappingAttributes
 
 
 class SoftmaxParser(OnnxComputeOperatorParser):
@@ -21,7 +23,9 @@ class SoftmaxParser(OnnxComputeOperatorParser):
         for node in self.get_nodes():
             yield node
 
-    def get_layer_node_user_format(self, input_shape: list[int], output_shape: list[int]) -> dict[str, Any]:
+    def get_layer_node_user_format(
+        self, input_shape: list[int], output_shape: list[int], mapping: InterCoreMappingAttributes | None
+    ) -> dict[str, Any]:
         """Not used for this class, but abstract base class requires instantiation anyway"""
         ...
 
@@ -78,12 +82,17 @@ class SoftmaxParser(OnnxComputeOperatorParser):
         node_div.constant_operands = []
 
 
-class SoftmaxExpParser(OnnxComputeOperatorParser):
+class SoftmaxExpParser(SimdParser):
     """Parses a softmax node into a ComputationNode for the element-wise operation exp(row-m) where m is the max value
     of the row.
+    The 'weight' input always has one rank less than the activations input
     """
 
-    def get_layer_node_user_format(self, input_shape: list[int], output_shape: list[int]):
+    DEFAULT_LAYER_DIMENSIONS = ["B", "H", "D", "K"]
+
+    def get_layer_node_user_format(
+        self, input_shape: list[int], output_shape: list[int], mapping: InterCoreMappingAttributes
+    ):
         """
         Generate the necessary dictionary items required for the LayerNode creation.
         """
@@ -93,23 +102,35 @@ class SoftmaxExpParser(OnnxComputeOperatorParser):
         data["name"] = self.node.name
         data["operator_type"] = self.node.op_type
         data["operand_source"] = self.get_operand_source_input_format()
-        data["operand_precision"] = self.get_operand_precision_input_format()
+        data["operand_precision"] = self.get_operand_precision_user_format()
         data["dimension_relations"] = []
-        data["loop_sizes"] = input_shape
 
-        # C is the row dimension, so W should not have this as there is only 1 max value for each row
-        match len(input_shape):
-            case 2:
-                data["equation"] = "O[k][c]+=I[k][c]+W[k]"
-                data["loop_dims"] = ["K", "C"]
-            case 3:
-                data["equation"] = "O[b][k][c]+=I[b][k][c]+W[b][k]"
-                data["loop_dims"] = ["B", "K", "C"]
-            case 4:
-                data["equation"] = "O[b][h][k][c]+=I[b][h][k][c]+W[b][h][k]"
-                data["loop_dims"] = ["B", "H", "K", "C"]
-            case _:
-                raise NotImplementedError
+        if len(input_shape) > len(SimdParser.DEFAULT_LAYER_DIMENSIONS) or len(input_shape) < 2:
+            raise NotImplementedError
+
+        possible_loop_dims = (
+            mapping.layer_dimension_names
+            if len(mapping.layer_dimension_names) == len(output_shape)
+            else SimdParser.DEFAULT_LAYER_DIMENSIONS
+        )
+
+        loop_dims = possible_loop_dims[0 : len(output_shape)]
+
+        # The output of MaxParser will have a arbitrary dim of size 1
+        reduced_dim_output = "R"  # C reduced to 1
+        assert reduced_dim_output not in possible_loop_dims, "Layer dimension `R` is reserved for the reduction axis"
+
+        # W should have one dimension less because the same value is used for a ful row of I
+        loop_dims_W = loop_dims[:-1] + [reduced_dim_output]
+
+        equation_dims = "".join([f"[{dim.lower()}]" for dim in loop_dims])
+        equation_dims_W = "".join([f"[{dim.lower()}]" for dim in loop_dims_W])
+
+        equation = f"O{equation_dims}+=I{equation_dims}*W{equation_dims_W}"
+
+        data["equation"] = equation
+        data["loop_dims"] = loop_dims + [reduced_dim_output]
+        data["loop_sizes"] = input_shape + [1]
 
         return data
 

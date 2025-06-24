@@ -1,5 +1,6 @@
 import logging
-from typing import Any
+from collections import defaultdict
+from typing import Any, Literal
 
 import numpy as np
 from onnx import ModelProto, helper, numpy_helper
@@ -15,6 +16,31 @@ logger = logging.getLogger(__name__)
 
 
 class TilingGenerationStage(Stage):
+
+    # Split the node in this dimension to enable fusion within core
+    FUSION_PARTITION_DIM_DEFAULT: defaultdict[str, LayerDim] = defaultdict(
+        lambda: LayerDim("K"),
+        {
+            "conv": LayerDim("OY"),
+            "matmul": LayerDim("D"),
+            "gemm": LayerDim("D"),
+            "pooling": LayerDim("OY"),
+            "add": LayerDim("D"),
+            "mul": LayerDim("D"),
+            "softmax": LayerDim("K"),
+            "max": LayerDim("K"),
+            "div": LayerDim("K"),
+            "exp": LayerDim("K"),
+            "sum": LayerDim("K"),
+            "relu": LayerDim("K"),
+            "gelu": LayerDim("K"),
+            "silu": LayerDim("K"),
+        },
+    )
+    FUSION_PARTITION_SIZE_DEFAULT = 2
+
+    # Split node in this dimension to partition layer over cores. NOTE this list is ordered
+    INTER_CORE_PARTITION_DIM_DEFAULT = [LayerDim("G"), LayerDim("H"), LayerDim("K")]
 
     def __init__(
         self,
@@ -109,11 +135,22 @@ class TilingGenerationStage(Stage):
 
         node.intra_core_tiling = valid_tiling
 
-    def generate_intra_core_tiling(self, node: ComputationNode) -> TILING_T:
-        partition_dim = node.fusion_partition_dims[0]
+    def get_fusion_partition_dim(self, node: ComputationNode) -> LayerDim:
+        partition_dim = TilingGenerationStage.FUSION_PARTITION_DIM_DEFAULT[node.type]
+
+        # Default partition dim is not present in this node -> take some arbitrary other dim
         if partition_dim not in node.layer_dim_sizes:
-            raise ValueError(f"Suggested partition dimension {partition_dim} for {node} is not part of this node")
-        return [(node.fusion_partition_dims[0], node.layer_dim_sizes[partition_dim])]
+            partition_dim: LayerDim = next(
+                dim for dim in node.layer_dim_sizes if dim != LayerDim("B") and dim != LayerDim("G")
+            )
+
+        return partition_dim
+
+    def generate_intra_core_tiling(self, node: ComputationNode) -> TILING_T:
+        partition_dim = self.get_fusion_partition_dim(node)
+        size = min(TilingGenerationStage.FUSION_PARTITION_SIZE_DEFAULT, node.layer_dim_sizes[partition_dim])
+        tiling = [(partition_dim, size)]
+        return tiling
 
     def remove_invalid_entries_from_inter_core_tiling(self, node: ComputationNode):
         """Check wether this node's inter core tiling has invalid entries: non-existent layer dimension for this node
@@ -142,15 +179,19 @@ class TilingGenerationStage(Stage):
             valid_tiling.append((layer_dim, factor))
         node.inter_core_tiling = valid_tiling
 
-    def generate_inter_core_tiling(self, node: ComputationNode) -> TILING_T:
-        if node.layer_dim_sizes.data.get(LayerDim("G"), 1) > 1:
-            loop_dim = LayerDim("G")
-        elif node.layer_dim_sizes.data.get(LayerDim("K"), 1) > 1:
-            loop_dim = LayerDim("K")
-        else:
-            raise ValueError("Unknown what loop dim to split across cores")
+    def generate_inter_core_tiling(
+        self, node: ComputationNode, default_tiling_size: int | Literal["*"] = 1
+    ) -> TILING_T:
+        """Give some valid inter-core tiling for the given node: either coming from the default inter-core partitions,
+        or any arbitrary layer dimension.
+        #TODO will the default size 1 (instead of `*`) work with ConstraintOptimization?
+        #"""
+        for dim in TilingGenerationStage.INTER_CORE_PARTITION_DIM_DEFAULT:
+            if dim in node.layer_dim_sizes and node.layer_dim_sizes[dim] > 1:
+                return [(dim, default_tiling_size)]
 
-        return [(loop_dim, "*")]
+        # No valid dim found -> just take something
+        return [(next(iter(node.layer_dim_sizes)), default_tiling_size)]
 
     @staticmethod
     def split_operator(model: ModelProto, node_name: str, num_splits: int):
@@ -316,7 +357,6 @@ class TilingGenerationStage(Stage):
                 node.input.insert(output_name_idx, concat_output_name)
 
         # If the original node is a graph output, replace it with the Concat output name
-        # TODO: Check if the concat output shape is equal to the original node's output shape
         if node_output_is_graph_output:
             for output in graph.output:
                 if output.name == original_node_output_name:

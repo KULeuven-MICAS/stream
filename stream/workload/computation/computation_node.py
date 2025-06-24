@@ -6,17 +6,19 @@ from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 from zigzag.utils import hash_sha512
 from zigzag.visualization.results.plot_cme import shorten_onnx_layer_name
 from zigzag.workload.layer_attributes import (
+    LayerDimSizes,
     LayerPadding,
 )
 from zigzag.workload.layer_node import LayerNode, LayerNodeAttributes
 
 from stream.node_tensor import NodeTensor
+from stream.utils import contains_wildcard
 from stream.workload.mapping import INTRA_CORE_MAPPING_DEFAULT, InterCoreMappingAttributes
 from stream.workload.node import Node
 from stream.workload.tensor import Tensor
 
 OperandTensorReshape: TypeAlias = dict[LayerOperand, tuple[int, ...]]
-LoopRanges: TypeAlias = dict[LayerDim, tuple[int, int]]
+LOOP_RANGES_T: TypeAlias = dict[LayerDim, tuple[int, int]]
 
 
 class ComputationNode(LayerNode, Node):
@@ -32,24 +34,6 @@ class ComputationNode(LayerNode, Node):
 
     too_large_operands: list[MemoryOperand]
 
-    # Map the node's op_type to the corresponding layer dimension to split on for fusion
-    FUSION_DIM_MAPPING: dict[str, list[LayerDim]] = {
-        "conv": [LayerDim("OY")],
-        "matmul": [LayerDim("D")],
-        "gemm": [LayerDim("D")],
-        "pooling": [LayerDim("OY")],
-        "add": [LayerDim("D")],
-        "mul": [LayerDim("D")],
-        "softmax": [LayerDim("K")],
-        "max": [LayerDim("K")],
-        "div": [LayerDim("K")],
-        "exp": [LayerDim("K")],
-        "sum": [LayerDim("K")],
-        "relu": [LayerDim("K")],
-        "gelu": [LayerDim("K")],
-        "silu": [LayerDim("K")],
-    }  # TODO default to "K" ?
-
     def __init__(
         self,
         node_id: int,
@@ -60,8 +44,27 @@ class ComputationNode(LayerNode, Node):
         operand_tensor_reshape: OperandTensorReshape | None = None,
         produces_final_output: bool = False,
         group_id: int = 0,
-        sub_id: int = -1,  # To distinguish alternative versions of this node
+        sub_id: int = -1,
+        input_names: list[str] = [],
+        partially_constant_operands: list[LayerOperand] = [],
     ):
+        """
+        Args:
+            node_id: Unique ID for each node
+            node_name: Name of the node (e.g. parsed from ONNX)
+            node_attr: ...
+            mapping_attr: ...
+            op_type: Operation type e.g. `Conv`
+            operand_tensor_reshape: ...
+            produces_final_output: Whether the node produces the final output (without further dependencies)
+            group_id: To determine which nodes are placed on the same core
+            sub_id: To distinguish alternative versions of this node
+            input_names: Names of the incoming ONNX nodes (used for dependency generation)
+            partially_constant_operands: Operands that are treated as regular operand for dependencies, but constant for
+                                         tensor fetching (patchwork for KV-caches)
+        """
+
+        # TODO `op_type` is also encapsulated in `node_attr`
         op_type = op_type.lower()
 
         LayerNode.__init__(
@@ -76,15 +79,16 @@ class ComputationNode(LayerNode, Node):
             offchip_energy=0,
             runtime=0,
             possible_core_allocation=mapping_attr.core_allocation,
+            input_names=input_names,
         )
 
         # Overwrite default spatial mapping with given one
         self.spatial_mapping = mapping_attr.spatial_mapping
         # Unpack other mapping attributes
         self.core_allocation = mapping_attr.core_allocation
-        self.core_allocation_is_fixed = mapping_attr.core_allocation_is_fixed
         self.intra_core_tiling = mapping_attr.intra_core_tiling
         self.inter_core_tiling = mapping_attr.inter_core_tiling
+        self.user_given_layer_dimension_names = mapping_attr.layer_dimension_names
 
         self.sub_id = sub_id
         self.group = group_id
@@ -92,36 +96,39 @@ class ComputationNode(LayerNode, Node):
             operand_tensor_reshape if operand_tensor_reshape is not None else self.get_operand_tensor_reshape_default()
         )
         self.produces_final_output = produces_final_output
-        self.loop_ranges: LoopRanges = {  # type: ignore
+        self.loop_ranges: LOOP_RANGES_T = {  # type: ignore
             layer_dim: (0, size) for layer_dim, size in self.layer_dim_sizes.items()
         }
         self.operand_dimensionality_order: dict[LayerOperand, list[LayerDim]] = {
             layer_op: self.equation.get_r_layer_dims(layer_op) for layer_op in self.equation.get_contained_operands()
         }
+        self.too_large_operands = []
+        self.partially_constant_operands = partially_constant_operands
+
+        # Sizes can be extended to fit division factors
+        self.extended_layer_dim_sizes: LayerDimSizes = deepcopy(self.layer_dim_sizes)
 
         # adds pr dimensions loop ranges to self.loop_ranges
         self.calculate_pr_loop_ranges()
-        # Rename function
-        self.get_node_operand = self.memory_operand_links.mem_to_layer_op
-        self.extract_node_info = self.extract_layer_info
 
         # Number of real predecessors is saved to deal with edge cases where some nodes of the same layer have differing predecessors
         # This is used to hash the node and to get accurate knowledge of the number of unique nodes.
         # This should be set after the node is created and the number of predecessors is known.
         self.nb_real_predecessors = None
-        self._static_hash_value = self.__compute_static_hash()
+        self.static_hash = self.__compute_static_hash()
 
-        try:
-            self.fusion_partition_dims = ComputationNode.FUSION_DIM_MAPPING[op_type]
-        except KeyError:
-            raise NotImplementedError(f"Fusion partitioning dimensions not defined for {op_type}")
-
-        # Each ComputationNode will save a tensor for all its defined operands.
-        # For example, a conv layer will have an I tensor, W tensor and O tensor.
-        self.operand_tensors: dict[LayerOperand, Tensor] = {}
         self.set_operand_tensors()
 
+        # Rename function
+        self.get_node_operand = self.memory_operand_links.mem_to_layer_op
+        self.extract_node_info = self.extract_layer_info
+
     def set_operand_tensors(self):
+        """Each ComputationNode will save a tensor for all its defined operands.
+        For example, a conv layer will have an I tensor, W tensor and O tensor.
+        """
+        self.operand_tensors: dict[LayerOperand, Tensor] = {}
+
         for op in self.layer_operands:
             if op == Constants.OUTPUT_LAYER_OP:
                 precision = self.operand_precision.final_output_precision
@@ -153,6 +160,16 @@ class ComputationNode(LayerNode, Node):
         except KeyError:
             return None
 
+    def get_output_tensor(self) -> Tensor:
+        return self.operand_tensors[self.output_operand]
+
+    def get_total_inter_core_splits(self) -> int:
+        """Return the total number of inter-core splits for this node, i.e. over how many cores this node is split"""
+        if contains_wildcard(self.inter_core_tiling):
+            return 1
+        assert all(isinstance(factor, int) for _, factor in self.inter_core_tiling)
+        return prod(factor for _, factor in self.inter_core_tiling)
+
     @property
     def short_name(self) -> str:
         return shorten_onnx_layer_name(self.name)
@@ -171,24 +188,6 @@ class ComputationNode(LayerNode, Node):
                 self.nb_real_predecessors,
             )
         )
-
-    def __str__(self):
-        return f"ComputationNode{self.id}_{self.sub_id}"
-
-    def __hash__(self) -> int:
-        """The hash operator of a node.
-
-        Returns:
-            the pre-computed hash
-        """
-        return self._static_hash_value
-
-    def __eq__(self, other: object):
-        """Fast equality comparison between two nodes"""
-        # Optimization: this method is used many times to compare with `0`, to count empty tensor elements
-        if not other:
-            return False
-        return isinstance(other, ComputationNode) and self._static_hash_value == other._static_hash_value
 
     def has_same_performance(self, other: object) -> bool:
         """Compare the equality between two nodes.
@@ -214,21 +213,10 @@ class ComputationNode(LayerNode, Node):
             and self.dimension_relations == other.dimension_relations
             and self.operand_precision == other.operand_precision
             and self.memory_operand_links == other.memory_operand_links
-            and self.id == other.id
             and self.nb_real_predecessors == other.nb_real_predecessors
+            and self.id == other.id
             # NOTE: don't include sub_id
         )
-
-    def __lt__(self, other: "ComputationNode"):
-        """Compare two ComputationNodes for the 'less than (<)' operator.
-
-        Args:
-            other (ComputationNode): The other ComputationNode.
-
-        Returns:
-            bool: self < other
-        """
-        return (self.id, self.sub_id) < (other.id, other.sub_id)
 
     def get_operand_for_dim(self, dim: LayerDim) -> LayerOperand:
         """Return the first operand in the operand_list that has this dim as one of is dimensions
@@ -270,20 +258,25 @@ class ComputationNode(LayerNode, Node):
     def set_too_large_operands(self, too_large_operands: list[MemoryOperand]):
         self.too_large_operands = too_large_operands
 
-    def update_loop_ranges(self, new_ranges: LoopRanges):
+    def update_loop_ranges(self, new_ranges: LOOP_RANGES_T):
         """Override the loop ranges with a new value for each of the given LayerDims. Keep the old range for the
         LayerDims not defined in `new_ranges`"""
         for layer_dim in new_ranges:
             self.loop_ranges[layer_dim] = new_ranges[layer_dim]
+
+        # Re-calculate pr loop ranges based on new loop_ranges
+        self.calculate_pr_loop_ranges()
+        # Re-set the operand tensors for the new loop_ranges
+        self.set_operand_tensors()
 
     def extract_inter_core_mapping_attr(self):
         mapping_attr = InterCoreMappingAttributes(
             op_type=self.type,
             spatial_mapping=self.spatial_mapping,
             core_allocation=self.core_allocation,
-            core_allocation_is_fixed=self.core_allocation_is_fixed,
             intra_core_tiling=self.intra_core_tiling,
             inter_core_tiling=self.inter_core_tiling,
+            layer_dimension_names=self.user_given_layer_dimension_names,
         )
         return deepcopy(mapping_attr)
 
@@ -294,4 +287,92 @@ class ComputationNode(LayerNode, Node):
     @nb_real_predecessors.setter
     def nb_real_predecessors(self, nb_real_predecessors: int | None):
         self.__nb_real_predecessors = nb_real_predecessors
-        self._static_hash_value = self.__compute_static_hash()
+        self.static_hash = self.__compute_static_hash()
+
+    def __repr__(self):
+        return str(self)
+
+    def __str__(self):
+        return f"{self.name} ({self.id},{self.sub_id})"
+
+    def __hash__(self) -> int:
+        """Returns the pre-computed hash"""
+        return self.static_hash
+
+    def __eq__(self, other: object):
+        """Fast equality comparison between two nodes"""
+        # Optimization: this method is used many times to compare with `0`, to count empty tensor elements
+        if not other:
+            return False
+        return isinstance(other, ComputationNode) and self.static_hash == other.static_hash
+
+    def __lt__(self, other: "ComputationNode"):
+        """Compare two ComputationNodes for the 'less than (<)' operator.
+
+        Returns:
+            bool: self < other
+        """
+        return (self.id, self.sub_id) < (other.id, other.sub_id)
+
+
+class GeneratedComputationNode(ComputationNode):
+    """A ComputationNode that has been iteratively generated"""
+
+    too_large_operands: list[MemoryOperand]
+
+    def __init__(
+        self,
+        node_id: int,
+        gen_id: int,
+        gen_split_layer_dim: LayerDim,
+        base_id: int,
+        node_name: str,
+        node_attr: LayerNodeAttributes,
+        mapping_attr: InterCoreMappingAttributes,
+        op_type: str = "computation",
+        operand_tensor_reshape: OperandTensorReshape | None = None,
+        produces_final_output: bool = False,
+        group_id: int = 0,
+        sub_id: int = -1,  # To distinguish alternative versions of this node
+        input_names: list[str] = [],
+    ):
+        """
+
+        Args:
+            node_id: Unique ID for reach generated node
+            base_id: ID that is identical for all similar generated nodes
+            gen_id: Unique ID for each generated node, ranging from 0 to the number of generated nodes
+
+        """
+
+        node_name = f"{node_name}_{gen_id}"
+        super().__init__(
+            node_id=node_id,
+            node_name=node_name,
+            node_attr=node_attr,
+            mapping_attr=mapping_attr,
+            op_type=op_type,
+            operand_tensor_reshape=operand_tensor_reshape,
+            produces_final_output=produces_final_output,
+            group_id=group_id,
+            sub_id=sub_id,
+            input_names=input_names,
+        )
+
+        self.gen_id = gen_id
+        self.base_id = base_id
+        self.gen_split_layer_dim = gen_split_layer_dim
+
+    def has_same_performance(self, other: object) -> bool:
+        """Compare the equality between two nodes. Overrides `ComputationNodes` method with the following difference:
+        - node ids can be different if the base id is the same
+        """
+        return (
+            isinstance(other, GeneratedComputationNode)
+            and self.layer_dim_sizes == other.layer_dim_sizes
+            and self.dimension_relations == other.dimension_relations
+            and self.operand_precision == other.operand_precision
+            and self.memory_operand_links == other.memory_operand_links
+            and self.nb_real_predecessors == other.nb_real_predecessors
+            and self.base_id == other.base_id
+        )

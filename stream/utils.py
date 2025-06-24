@@ -4,11 +4,9 @@ import pprint
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from numpy.typing import NDArray
-from onnx import ModelProto, NodeProto
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.mapping.data_movement import FourWayDataMoving
-from zigzag.parser.onnx.utils import get_onnx_tensor_type
+from zigzag.mapping.data_movement import MemoryAccesses
 
 from stream.hardware.architecture.core import Core
 from stream.workload.mapping import TILING_T
@@ -21,32 +19,13 @@ if TYPE_CHECKING:
 ARRAY_T: TypeAlias = NDArray[Any]
 
 
-def get_onnx_input_shapes(node: NodeProto, onnx_model: ModelProto) -> tuple[list[int], list[int]]:
-    if len(node.input) != 2:
-        raise ValueError(f"Node {node.name} does not have two inputs")
-    input_name1 = node.input[0]
-    input_name2 = node.input[1]
-    input_shape1 = get_onnx_tensor_type(input_name1, onnx_model).shape
-    input_shape2 = get_onnx_tensor_type(input_name2, onnx_model).shape
-    return input_shape1, input_shape2
-
-
-def has_asymmetric_input_data(node: NodeProto, onnx_model: ModelProto):
-    """Return true iff the node has two inputs and the input nodes have a different shape"""
-    if len(node.input) != 2:
-        return False
-
-    input_shape1, input_shape2 = get_onnx_input_shapes(node, onnx_model)
-    return input_shape1 != input_shape2
-
-
 def get_too_large_operands(cme: CostModelEvaluation, accelerator: "Accelerator", core_id: int) -> list[MemoryOperand]:
     """Create a list of memory operands for which an extra memory level (i.e. offchip) was added.
 
     Args:
         cme (CostModelEvaluation): The CostModelEvaluation containing information wrt the memory utilization.
         accelerator (Accelerator): The accelerator object containing the different cores.
-        core_id (int): The id of the core of which we wish to get the too large operands.
+        core_id: The id of the core of which we wish to get the too large operands.
     """
     too_large_operands: list[MemoryOperand] = []
     core = accelerator.get_core(core_id)
@@ -72,7 +51,7 @@ def save_core_allocation(
         type (str, optional): The type of core allocation: fixed or flexible.
 
     Returns:
-        allocations (dict): The dictionary containing core allocations for each node name
+        allocations: The dictionary containing core allocations for each node name
     """
     node_allocations = {}
     node_allocations_grouped = {}
@@ -110,33 +89,37 @@ def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNo
     """! Get the unique nodes from a workload."""
     unique_nodes: list[ComputationNode] = []
     for node in workload.node_list:
-        equal_nodes = list(
-            (
-                unique_node
-                for unique_node in unique_nodes
-                if node.has_same_performance(unique_node) and node.group == unique_node.group
-            )
-        )
+        equal_nodes = list((unique_node for unique_node in unique_nodes if node.has_same_performance(unique_node)))
         if not equal_nodes:
             unique_nodes.append(node)
     return unique_nodes
 
 
-def get_required_offchip_bandwidth(
-    cme: CostModelEvaluation, too_large_operands: list[MemoryOperand]
-) -> FourWayDataMoving:
-    if not too_large_operands:
-        return FourWayDataMoving(0, 0, 0, 0)
-    # If there was offchip memory added for some operands, get the offchip bandwidth required
-    offchip_level = cme.accelerator.get_memory_level(too_large_operands[0], -1)
-    req_offchip_bw = cme.get_total_inst_bandwidth(offchip_level)
-    return req_offchip_bw
+def get_top_level_inst_bandwidth(cme: CostModelEvaluation, mem_op: MemoryOperand, scaling: float = 1) -> MemoryAccesses:
+    """Given a cost model evaluation and a memory instance, compute the memory's total instantaneous bandwidth
+    required throughout the execution of the layer that corresponds to this CME. Returns empty bandwidth
+    requirements if the given memory instance is not included in this CME's memory hierarchy.
+    The scaling factor can be used to scale the returned bandwidth.
+    """
+    memory_level = cme.accelerator.get_memory_level(mem_op, -1)
+    return cme.get_inst_bandwidth(memory_level=memory_level, memory_operand=mem_op, scaling=scaling)
 
 
 def contains_wildcard(tiling: TILING_T):
     """Returns wether the given tiling contains a wildcard number `*`. The wildcard must later be replaced by the
     constraint optimization into the optimal number of tiles"""
     return any(tiling == "*" for _, tiling in tiling)
+
+
+def get_inter_core_tiling_size(node: "ComputationNode") -> int:
+    inter_core_tiling = node.inter_core_tiling
+    if inter_core_tiling and not contains_wildcard(inter_core_tiling):
+        assert len(inter_core_tiling) == 1, "Only one inter_core_tiling entry is supported."
+        inter_core_tiling_size = inter_core_tiling[0][1]
+        if inter_core_tiling_size == "all":
+            inter_core_tiling_size = node.layer_dim_sizes[inter_core_tiling[0][0]]
+        return inter_core_tiling_size  # type: ignore
+    return 1
 
 
 class CostModelEvaluationLUT:

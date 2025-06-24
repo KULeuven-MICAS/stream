@@ -2,11 +2,13 @@ from abc import ABCMeta, abstractmethod
 from typing import Any, Generator
 
 from onnx import ModelProto, NodeProto
+from zigzag.datatypes import Constants
 from zigzag.parser.onnx.onnx_operator_parser import ONNXOperatorParser as ONNXOperatorParserZigZag
 from zigzag.parser.onnx.utils import get_node_input_output_dimension_shapes
 from zigzag.parser.workload_factory import LayerNodeFactory
 
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.onnx_utils import get_axis_attribute
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.mapping import InterCoreMappingAttributes
 from stream.workload.node import Node
@@ -39,6 +41,9 @@ class OnnxOperatorParser(ONNXOperatorParserZigZag, metaclass=ABCMeta):
     def get_operand_source_input_format(self):
         predecessors = self.get_node_predecessors()
         match len(predecessors):
+            case 0:
+                # e.g. first node of graph
+                return {"W": self.node_id, "I": self.node_id}
             case 1:
                 # One source operand, one constant
                 return {"W": self.node_id, "I": predecessors[0]}
@@ -49,6 +54,9 @@ class OnnxOperatorParser(ONNXOperatorParserZigZag, metaclass=ABCMeta):
             case _:
                 raise ValueError("No more than 2 layer predecessors expected")
 
+    def get_axis_attribute(self):
+        return get_axis_attribute(self.node)
+
 
 class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
 
@@ -56,14 +64,24 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
         yield self.generate_node()
 
     @abstractmethod
-    def get_layer_node_user_format(self, input_shape: list[int], output_shape: list[int]) -> dict[str, Any]: ...
+    def get_layer_node_user_format(
+        self, input_shape: list[int], output_shape: list[int], mapping: InterCoreMappingAttributes | None
+    ) -> dict[str, Any]: ...
 
-    def get_operand_precision_input_format(self) -> dict[str, int]:
-        act_precision = self.get_activation_precision()
-        weight_precision = self.get_weight_precision()
-        intermediate_output_precision = self.get_intermediate_output_precision()
+    def get_operand_precision_user_format(self) -> dict[str, int]:
+        act_precision: int = self.get_activation_precision()
+        weight_precision: int = self.get_weight_precision()
+        intermediate_output_precision: int = self.get_intermediate_output_precision()
         predecessors = self.get_node_predecessors()
         match len(predecessors):
+            case 0:
+                # e.g. the first node in the network -> assume only one variable input
+                return {
+                    "W": weight_precision,
+                    "I": act_precision,
+                    "O_final": act_precision,
+                    "O": intermediate_output_precision,
+                }
             case 1:
                 # One source operand, one constant
                 return {
@@ -117,11 +135,17 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
         input_shape, output_shape = get_node_input_output_dimension_shapes(self.node, self.onnx_model)
 
         # From the ONNX node
-        node_data = self.get_layer_node_user_format(input_shape, output_shape)
+        mapping = self.get_mapping_this_node()
+        node_data = self.get_layer_node_user_format(input_shape, output_shape, mapping)
         node_factory = LayerNodeFactory(node_data, mapping_data=[])
         node_attrs = node_factory.create_node_attr()
+        input_names = list(self.node.input)
 
-        mapping = self.get_mapping_this_node()
+        # ! Messy patchwork for KV caches. Assumes that operators that take in the cache have a special name
+        if "_cache" in self.node.name:
+            partially_constant_operands = [Constants.LAYER_OP_W]
+        else:
+            partially_constant_operands = []
 
         return ComputationNode(
             node_id=self.node_id,
@@ -129,4 +153,6 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
             op_type=self.node.op_type,
             node_attr=node_attrs,
             mapping_attr=mapping,
+            input_names=input_names,
+            partially_constant_operands=partially_constant_operands,
         )

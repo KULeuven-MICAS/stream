@@ -26,6 +26,7 @@ def get_optimal_allocations(
     iterations: int,
     gap: float = 0.5,
     time_limit: int = 600,
+    latency_attr: str = "latency_total1",
 ) -> ALLOCATION_T:
     core_ids = sorted((core.id for core in accelerator.cores.node_list if core.id != accelerator.offchip_core_id))
     core_capacities = get_core_capacities(accelerator, MemoryOperand("I2"), core_ids)
@@ -34,7 +35,13 @@ def get_optimal_allocations(
     ids = convert_ids(nodes)
 
     latencies, possible_allocation_splits = get_latencies(
-        nodes, core_ids, accelerator, cost_lut, impossible_lat=0, ids=ids
+        nodes,
+        core_ids,
+        accelerator,
+        cost_lut,
+        impossible_lat=0,
+        ids=ids,
+        latency_attr=latency_attr,
     )
     energies = get_energies(nodes, core_ids, accelerator, cost_lut, impossible_energy=0, ids=ids)
     output_operand = LayerOperand("O")
@@ -100,12 +107,12 @@ def constraint_allocation_optimization(
     The timeline is divided into a number of slots. Each node will be assigned to one slot.
 
     Args:
-        latencies (dict): Latency for each node in form {id: latency}
-        weights_per_id (dict): Weights (in bits) for each node in form {id: weights}
-        dependencies (dict): Dependencies between nodes in form {(producer_id, consumer_id): tensor_size}
-        core_capacities (dict): Weight capacity (in bits) of each core in form {core: capacity}
-        allocations (dict): TODO: Add fixed allocation constraints
-        N (int): The number of iterations of the steady state
+        latencies: Latency for each node in form {id: latency}
+        weights_per_id: Weights (in bits) for each node in form {id: weights}
+        dependencies: Dependencies between nodes in form {(producer_id, consumer_id): tensor_size}
+        core_capacities: Weight capacity (in bits) of each core in form {core: capacity}
+        allocations: TODO: Add fixed allocation constraints
+        N: The number of iterations of the steady state
     """
     node_core_k_ids, lats = gp.multidict(latencies)
     node_ids = sorted(set([node_core_id[0] for node_core_id in node_core_k_ids]))

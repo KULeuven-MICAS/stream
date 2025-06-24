@@ -5,22 +5,26 @@ from onnx import NodeProto
 from zigzag.parser.onnx.utils import parse_onnx_model_from_path
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.parser.onnx.asymmetric_simd import AsymmetricSimdParser
 from stream.parser.onnx.concat import ConcatParser
 from stream.parser.onnx.conv import ConvParser
 from stream.parser.onnx.default import DefaultNodeParser
+from stream.parser.onnx.einsum import EinsumParser
 from stream.parser.onnx.flatten import FlattenParser
 from stream.parser.onnx.gather import GatherParser
 from stream.parser.onnx.gemm import GemmParser
 from stream.parser.onnx.lpnormalization import LpNormalizationParser
 from stream.parser.onnx.matmul import MatMulParser
+from stream.parser.onnx.mul import MulParser
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.parser.onnx.pooling import PoolingParser
+from stream.parser.onnx.reduce_1d import Reduce1DParser
 from stream.parser.onnx.reshape import ReshapeParser
 from stream.parser.onnx.simd import SimdParser
+from stream.parser.onnx.slice import SliceParser
 from stream.parser.onnx.softmax import SoftmaxParser
+from stream.parser.onnx.split import SplitParser
+from stream.parser.onnx.ssm import SSMParser
 from stream.parser.onnx.transpose import TransposeParser
-from stream.utils import get_onnx_input_shapes, has_asymmetric_input_data
 from stream.workload.mapping import InterCoreMappingAttributes
 from stream.workload.onnx_workload import ONNXWorkload
 
@@ -32,26 +36,41 @@ class ONNXModelParser:
 
     # Map the node's op_type to the corresponding Parser class
     OP_TYPE_TO_PARSER: dict[str, Type[OnnxOperatorParser]] = {
+        # General
         "QLinearConv": ConvParser,
         "Conv": ConvParser,
         "MatMul": MatMulParser,
         "Gemm": GemmParser,
+        "Einsum": EinsumParser,
         "MaxPool": PoolingParser,
         "AveragePool": PoolingParser,
         "GlobalMaxPool": PoolingParser,
         "GlobalAveragePool": PoolingParser,
-        "Add": SimdParser,
-        "Mul": SimdParser,
+        "Add": MulParser,
+        "Mul": MulParser,
+        # Special operators
+        "SSM": SSMParser,
         "Softmax": SoftmaxParser,
+        # Single-input element-wise
+        "Exp": SimdParser,
+        "ReduceMean": Reduce1DParser,
         "Relu": SimdParser,
         "Gelu": SimdParser,
         "Silu": SimdParser,
+        "Sigmoid": SimdParser,
+        "Sqrt": SimdParser,
+        "Div": SimdParser,
+        "Pow": SimdParser,
+        "Reciprocal": SimdParser,  # Div with 1 as numerator
+        # Dependency propagation
         "LpNormalization": LpNormalizationParser,
         "Gather": GatherParser,
         "Transpose": TransposeParser,
         "Reshape": ReshapeParser,
         "Flatten": FlattenParser,
         "Concat": ConcatParser,
+        "Split": SplitParser,
+        "Slice": SliceParser,
     }
 
     def __init__(
@@ -71,16 +90,6 @@ class ONNXModelParser:
         self.workload = self.parse_workload()
 
     def get_parser_class(self, node: NodeProto):
-        # A temporary fix an element-wise Add or Mul which has asymmetric input data -> treat it as a  DummyNode.
-        # TODO support node with asymmetric input data.
-        if node.op_type in ["Add", "Mul"] and has_asymmetric_input_data(node, self.onnx_model):
-            in_shape_1, in_shape_2 = get_onnx_input_shapes(node, self.onnx_model)
-            # In case only the batch dimension is missing. Other cases are not supported for now
-            if abs(len(in_shape_1) - len(in_shape_2)) == 1:
-                return AsymmetricSimdParser
-            else:
-                return DefaultNodeParser
-
         parser_class = ONNXModelParser.OP_TYPE_TO_PARSER.get(node.op_type)
         if not parser_class:
             return DefaultNodeParser
@@ -132,10 +141,14 @@ class ONNXModelParser:
             )
 
             logger.info("Parsed %s node %s.", node.op_type, node.name)
+            id_of_first_node = node_id
             for node_obj in parser.run():
                 # Parsers that yield multiple nodes increment the node id internally, so we must keep count here.
                 workload.add(node_id, node_obj)
+                assert node_obj.id == node_id
                 node_id += 1
+
+            workload.first_to_last_expanded_id[id_of_first_node] = node_id - 1
 
             nodes_outputs[node_id - 1] = node.output
 

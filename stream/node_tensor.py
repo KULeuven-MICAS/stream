@@ -34,20 +34,23 @@ class NodeTensor(np.ndarray[Any, Any]):
         ComputationNodes are accumulated in the last dimension and space is pre-allocated in memory for performance"""
         return NodeTensor(np.zeros(shape + (pre_allocation_size,), dtype=object), pre_allocation_size)
 
-    def _get_and_increment_pointer(self):
+    def _get_pointer(self):
+        return self.__node_count
+
+    def _increment_and_get_pointer(self):
         """Get the index pointer in the last dimension. which points to the next free spot to allocate nodes.
         Automatically increments the pointer after each use. If the index exceeds the allocated space, an error is
         raised."""
+        self.__node_count += 1
         pointer = self.__node_count
         if pointer >= self.__pre_allocation_size:
             raise IndexError
-        self.__node_count += 1
         return pointer
 
     @property
     def shape(self) -> None:  # type: ignore
         """Protect the original shape attribute to prevent errors"""
-        raise ValueError("The numpy shape of NodeTensor is hidden in an abstraction layer")
+        raise ValueError("The numpy shape of NodeTensor is hidden in an abstraction layer. Call `tensor_shape` instead")
 
     @property
     def full_shape(self):
@@ -77,19 +80,31 @@ class NodeTensor(np.ndarray[Any, Any]):
     def get_nb_empty_elements(self, slices: tuple[slice, ...]):
         """Returns the number of points for which there are no ComputationNodes."""
         assert self.is_valid_shape_dimension(slices), "Last dimension of tensor is reserved for CNs"
-        extended_slices = slices + (slice(0, self.__node_count),)
+        extended_slices = slices + (slice(0, self._get_pointer() + 1),)
         tensor_slice = self.as_ndarray()[extended_slices]
-        all_empty_mask = np.logical_and.reduce(tensor_slice == 0, axis=-1)
-        return int(np.sum(all_empty_mask))
+        all_empty_mask = np.all(tensor_slice == 0, axis=-1)
+        return int(np.count_nonzero(all_empty_mask))
 
     def extend_with_node(self, slices: tuple[slice, ...], node: object) -> "NodeTensor":
         assert self.is_valid_shape_dimension(slices), "Last dimension of tensor is reserved for CNs"
 
+        # Case 1: Try to assign at the current pointer for given slices
+        idx = self._get_pointer()
+        extended_slices = slices + (slice(idx, idx + 1),)
+        assert all(s.stop <= self.full_shape[i] for i, s in enumerate(extended_slices)), "Index out of bounds"
+
+        # Slice is all 0
+        if not np.any(self[extended_slices]):
+            self[extended_slices] = node
+            return self
+
+        # Case 2: increment pointer and assign at empty slice
         try:
-            idx = self._get_and_increment_pointer()
+            idx = self._increment_and_get_pointer()
             extended_slices = slices + (slice(idx, idx + 1),)
             self[extended_slices] = node
             return self
+        # Case 3: pointer exceeds the tensor's accumulation dimension -> increase tensor size
         except IndexError:
             # Happens when all allocated space has been used up. Create new one and double allocated space
             new_pre_alloc_size = 2 * self.__pre_allocation_size
@@ -125,6 +140,19 @@ class NodeTensor(np.ndarray[Any, Any]):
         axis = axis - 1 if axis < 0 else axis
         return (np.take(self.as_ndarray(), gather_indices, axis=axis)).view(NodeTensor)
 
+    def split(self, split_indices: list[int], axis: int) -> "list[NodeTensor]":
+        axis = axis - 1 if axis < 0 else axis
+        return [t.view(NodeTensor) for t in np.split(self.as_ndarray(), split_indices, axis=axis)]
+
+    def slice(self, starts: int, ends: int, axis: int, steps: int = 1) -> "NodeTensor":
+        assert ends >= 0, "Negative indices not supported"
+        axis = len(self.tensor_shape) - 1 if axis < 0 else axis
+
+        slices = [slice(None)] * len(self.full_shape)
+        slices[axis] = slice(starts, ends, steps)
+
+        return self.as_ndarray()[tuple(slices)].view(NodeTensor)
+
     def concat_with_empty(self, shape: tuple[int, ...], axis: int, variable_input_first: bool):
         empty_shape = self.convert_to_full_shape(shape)
         empty_tensor = np.zeros(empty_shape, dtype=object)
@@ -134,8 +162,38 @@ class NodeTensor(np.ndarray[Any, Any]):
         else:
             return np.concat((self.as_ndarray(), empty_tensor), axis=axis).view(NodeTensor)
 
+    def concat_with_empty_both_sides(
+        self, output_shape: tuple[int, ...], axis: int, slice_idx: int, axis_exists_in_input: bool = False
+    ):
+        """Return a new tensor with shape `output_shape` that is all zero, except for the slice at `slice_idx` in
+        the given axis. This slice is equal to this instance.
+        In other words, a new dimension is created and the current instance is sandwiched between tensors of zeros in
+        this dimension"""
+        full_shape = self.convert_to_full_shape(output_shape)
+        full_tensor = np.zeros(full_shape, dtype=object)
+
+        if axis_exists_in_input:
+            assert len(output_shape) == len(self.tensor_shape)
+            assert self.tensor_shape[axis] == 1
+            # Remove the size-1 dimension
+            slice_to_assign = np.squeeze(self, axis)
+        else:
+            assert len(output_shape) == len(self.tensor_shape) + 1
+            slice_to_assign = self
+
+        slices = [slice(None)] * len(full_shape)
+        slices[axis] = slice_idx
+
+        full_tensor[tuple(slices)] = slice_to_assign
+        return full_tensor.view(NodeTensor)
+
+    def expand_dims(self, axis: int):
+        """Insert a size-1 dimension at axis"""
+        axis = axis - 1 if axis < 0 else axis
+        return np.expand_dims(self.as_ndarray(), axis).view(NodeTensor)
+
     def __repr__(self):
-        return f"TensorNode{self.tensor_shape}[depth={self.__node_count}]"
+        return f"NodeTensor{self.tensor_shape}[depth={self.__node_count}]"
 
     def __reduce__(self):
         return self.as_ndarray().__reduce__()

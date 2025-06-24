@@ -1,9 +1,10 @@
-from zigzag.datatypes import LayerOperand
+from zigzag.datatypes import LayerOperand, MemoryOperand
+from zigzag.mapping.data_movement import MemoryAccesses
 from zigzag.utils import pickle_deepcopy
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.utils import CostModelEvaluationLUT, get_required_offchip_bandwidth, get_too_large_operands
+from stream.utils import CostModelEvaluationLUT, get_too_large_operands, get_top_level_inst_bandwidth
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
@@ -35,6 +36,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
         layer_groups_flexible,
         operands_to_prefetch: list[LayerOperand],
         scheduling_order: list[tuple[int, int]],
+        latency_attr: str,
     ) -> None:
         super().__init__(workload, accelerator, cost_lut)
 
@@ -44,6 +46,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
         self.layer_groups_flexible = layer_groups_flexible
         self.operands_to_prefetch = operands_to_prefetch
         self.scheduling_order = scheduling_order
+        self.latency_attr = latency_attr
 
     def get_fitness(self, core_allocations: list[int], return_scme: bool = False):
         """Get the fitness of the given core_allocations
@@ -58,7 +61,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
             self.operands_to_prefetch,
             self.scheduling_order,
         )
-        scme.run()
+        scme.evaluate()
         energy = scme.energy
         latency = scme.latency
         if not return_scme:
@@ -88,7 +91,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                 assert equal_unique_node is not None, "Node not found in CostModelEvaluationLUT"
                 cme = self.cost_lut.get_cme(equal_unique_node, core)
                 onchip_energy = cme.energy_total  # Initialize on-chip energy as total energy
-                latency = cme.latency_total1
+                latency = getattr(cme, self.latency_attr)
                 too_large_operands = get_too_large_operands(cme, self.accelerator, core_id=core_allocation)
                 # If there is a too_large_operand, we separate the off-chip energy.
                 offchip_energy = 0
@@ -99,11 +102,15 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                     layer_operand_offchip_energy = cme.mem_energy_breakdown[layer_operand][-1]
                     offchip_energy += layer_operand_offchip_energy
                     onchip_energy -= layer_operand_offchip_energy
-                # If there was offchip memory added for too_large_operands, get the offchip bandwidth
-                required_offchip_bandwidth = get_required_offchip_bandwidth(cme, too_large_operands)
+                # Get the required offchip bandwidth during the execution of the node for all directions
+                bandwidth_scaling = cme.ideal_temporal_cycle / latency
+                offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses] = {
+                    mem_op: get_top_level_inst_bandwidth(cme, mem_op, bandwidth_scaling)
+                    for mem_op in too_large_operands
+                }
                 node.set_onchip_energy(onchip_energy)
                 node.set_offchip_energy(offchip_energy)
                 node.set_runtime(int(latency))
                 node.set_chosen_core_allocation(core_allocation)
                 node.set_too_large_operands(too_large_operands)
-                node.set_offchip_bandwidth(required_offchip_bandwidth)
+                node.set_offchip_bandwidth(offchip_bandwidth_per_op)
