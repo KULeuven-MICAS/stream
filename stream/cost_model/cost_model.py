@@ -1,6 +1,6 @@
 from zigzag.datatypes import LayerOperand
 
-from stream.cost_model.scheduler import Schedule
+from stream.cost_model.scheduler import CoalaScheduler
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import plot_timeline_brokenaxes
@@ -49,7 +49,7 @@ class StreamCostModelEvaluation:
         manager.
         This assumes each node in the graph has an energy and runtime of the core to which they are allocated to.
         """
-        schedule = Schedule(
+        schedule = CoalaScheduler(
             G=self.workload,
             accelerator=self.accelerator,
             scheduling_order=self.scheduling_order,

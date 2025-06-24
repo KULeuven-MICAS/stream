@@ -28,7 +28,7 @@ class TransferCause(Enum):
     NO_LOG = auto()
 
 
-class Schedule:
+class CoalaScheduler:
     def __init__(
         self,
         G: ComputationNodeWorkload,

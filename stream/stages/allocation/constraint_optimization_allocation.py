@@ -21,7 +21,7 @@ from stream.stages.generation.tiled_workload_generation import (
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 from stream.stages.stage import MainStage, Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT
-from stream.visualization.constraint_optimization import to_perfetto_json, visualize_waco
+from stream.visualization.constraint_optimization import to_perfetto_json
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.mapping import TILING_T
@@ -230,10 +230,10 @@ class ConstraintOptimizationAllocationStage(Stage):
                 latency_attr=self.latency_attr,
             )
             pickle_save(allocation, stack_allocations_path)
-        fig_path = stack_allocations_path.replace(".pickle", ".html")
-        visualize_waco(sg, allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr, fig_path)
         json_path = stack_allocations_path.replace(".pickle", ".json")
-        to_perfetto_json(allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr, json_path)
+        to_perfetto_json(
+            self.workload, allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr, json_path
+        )
 
         return allocation
 

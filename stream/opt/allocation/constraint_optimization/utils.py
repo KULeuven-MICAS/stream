@@ -1,11 +1,14 @@
 from math import prod
+from typing import TYPE_CHECKING
 
 from zigzag.datatypes import LayerDim, LayerOperand, UnrollFactor
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.hardware.architecture.core import Core
 from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
+
+if TYPE_CHECKING:
+    from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_T
 
 MODULATION_NUMBER = 1 << 20  # Must be higher than any node's sub id
 
@@ -130,20 +133,27 @@ def get_energies(
     return energies
 
 
-def get_k_splits(allocation):
-    k_splits: dict[int, list[Core]] = {}
+def get_k_splits(allocation: "ALLOCATION_T") -> dict[tuple[int, int], list[str]]:
+    k_splits: dict[tuple[int, int], list[str]] = {}
     for _, core, id in allocation:
         k_splits[id] = k_splits.get(id, []) + [core]
     return k_splits
 
 
-def get_node_latencies(workload, allocation, cost_lut, accelerator, k_splits, latency_attr):
-    node_latencies = {}
+def get_node_latencies(
+    nodes: set[ComputationNode],
+    allocation: "ALLOCATION_T",
+    cost_lut: CostModelEvaluationLUT,
+    accelerator: Accelerator,
+    k_splits: dict[tuple[int, int], list[str]],
+    latency_attr: str,
+) -> dict[tuple[tuple[int, int], str], int]:
+    node_latencies: dict[tuple[tuple[int, int], str], int] = {}
     core_names = sorted(set([a for _, a, _ in allocation]))
     core_ids = [int(core_name.split(" ")[-1]) for core_name in core_names]
     for _, a, combined_id in allocation:
         layer_id, _ = combined_id
-        node = next(node for node in workload.node_list if node.id == layer_id)
+        node = next(node for node in nodes if node.id == layer_id)
         latencies, _ = get_latencies([node], core_ids, accelerator, cost_lut, latency_attr=latency_attr)
         nb_k_splits = len(k_splits[combined_id])
         lat = latencies[(node.id, a, nb_k_splits)]
@@ -151,37 +161,43 @@ def get_node_latencies(workload, allocation, cost_lut, accelerator, k_splits, la
     return node_latencies
 
 
-def get_layer_ids(allocation):
-    layer_ids: set[int] = set()
+def get_layer_ids(allocation: "ALLOCATION_T") -> list[int]:
+    layer_ids_set: set[int] = set()
     for _, _, id in allocation:
-        layer_ids.add(id[0])
-    layer_ids = sorted(layer_ids)
+        layer_ids_set.add(id[0])
+    layer_ids = sorted(layer_ids_set)
     return layer_ids
 
 
-def get_timesteps(allocation) -> list[int]:
+def get_timesteps(allocation: "ALLOCATION_T") -> list[int]:
     return [item[0] for item in allocation]
 
 
-def get_resources(allocation) -> set[int]:
+def get_resources(allocation: "ALLOCATION_T") -> set[str]:
     return set(item[1] for item in allocation)
 
 
-def get_node_timesteps(allocation):
-    node_timesteps = {}
+def get_node_timesteps(allocation: "ALLOCATION_T") -> dict[tuple[tuple[int, int], str], int]:
+    node_timesteps: dict[tuple[tuple[int, int], str], int] = {}
     for t, a, id in allocation:
         node_timesteps[id, a] = t
     return node_timesteps
 
 
-def get_timestep_latencies(allocation, node_latencies, timesteps):
+def get_timestep_latencies(
+    allocation: "ALLOCATION_T", node_latencies: dict[tuple[tuple[int, int], str], int], timesteps: list[int]
+) -> dict[int, int]:
     timestep_latencies = {t: 0 for t in range(max(timesteps) + 1)}
     for t, a, id in allocation:
         timestep_latencies[t] = max(timestep_latencies.get(t, 0), node_latencies[id, a])
     return timestep_latencies
 
 
-def get_node_start_timesteps(k_splits, node_timesteps, timestep_latencies):
+def get_node_start_timesteps(
+    k_splits: dict[tuple[int, int], list[str]],
+    node_timesteps: dict[tuple[tuple[int, int], str], int],
+    timestep_latencies: dict[int, int],
+):
     starts = {}
     for id, allocations in k_splits.items():
         for a in allocations:
@@ -198,10 +214,17 @@ def get_start_time_of_node(id, a, timesteps, timestep_latencies, t_start=0):
     return t_start
 
 
-def calculate_total_latency(workload, allocation, cost_lut, accelerator, iterations, latency_attr) -> tuple[int, str]:
+def calculate_total_latency(
+    nodes: set[ComputationNode],
+    allocation: "ALLOCATION_T",
+    cost_lut: CostModelEvaluationLUT,
+    accelerator: Accelerator,
+    iterations: int,
+    latency_attr: str,
+) -> tuple[int, str]:
     k_splits = get_k_splits(allocation)
     timesteps = get_timesteps(allocation)
-    node_latencies = get_node_latencies(workload, allocation, cost_lut, accelerator, k_splits, latency_attr)
+    node_latencies = get_node_latencies(nodes, allocation, cost_lut, accelerator, k_splits, latency_attr)
     timestep_latencies = get_timestep_latencies(allocation, node_latencies, timesteps)
     node_timesteps = get_node_timesteps(allocation)
     starts = get_node_start_timesteps(k_splits, node_timesteps, timestep_latencies)
