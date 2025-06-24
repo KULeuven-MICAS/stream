@@ -25,5 +25,17 @@ def prune_workload(G: DiGraph, keep_types=[]):
     return G
 
 
+def get_real_predecessors(node: "ComputationNode", g: "ComputationNodeWorkload"):
+    return list(n for n in g.predecessors(node) if n.id != node.id)
+
+
 def get_real_successors(node: "ComputationNode", g: "ComputationNodeWorkload"):
     return list(n for n in g.successors(node) if n.id != node.id)
+
+
+def get_real_in_edges(node: "ComputationNode", g: "ComputationNodeWorkload"):
+    return list(e for e in g.in_edges(node, data=True) if e[0].id != node.id)
+
+
+def get_real_out_edges(node: "ComputationNode", g: "ComputationNodeWorkload"):
+    return list(e for e in g.out_edges(node, data=True) if e[1].id != node.id)

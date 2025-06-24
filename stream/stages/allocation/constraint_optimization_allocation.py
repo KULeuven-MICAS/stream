@@ -1,16 +1,20 @@
-import itertools
 import logging
 import os
 from time import time
-from typing import Any, TypeAlias
+from typing import Any, Optional, TypeAlias
 
 import networkx as nx
 import numpy as np
 from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
+from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_T, get_optimal_allocations
+from stream.opt.allocation.constraint_optimization.allocation import (
+    NodeType,
+    TimeSlotAllocation,
+    get_optimal_allocations,
+)
 from stream.opt.allocation.constraint_optimization.utils import calculate_total_latency
 from stream.stages.estimation.stream_cost_model_evaluation import StreamCostModelEvaluationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
@@ -21,7 +25,6 @@ from stream.stages.generation.tiled_workload_generation import (
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 from stream.stages.stage import MainStage, Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT
-from stream.visualization.constraint_optimization import to_perfetto_json, visualize_waco
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.mapping import TILING_T
@@ -88,7 +91,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.steady_state_hashes: dict[STACK_T, int] = {}
         self.compute_per_sink_node: dict[STACK_T, dict[ComputationNode, set[ComputationNode]]] = {}
         self.ss_iterations_per_stack: dict[STACK_T, int] = {}
-        self.optimal_allocation_per_stack: dict[STACK_T, ALLOCATION_T] = {}
+        self.optimal_allocation_per_stack: dict[STACK_T, TimeSlotAllocation] = {}
         self.nb_macs_per_stack: dict[STACK_T, int] = {}
         self.nb_macs_in_ss_per_stack: dict[STACK_T, int] = {}
         self.ss_mac_percentages_per_stack: dict[STACK_T, int] = {}
@@ -99,23 +102,190 @@ class ConstraintOptimizationAllocationStage(Stage):
 
         self.extract_steady_state_per_stack()
         self.find_best_allocation_per_stack()
+        _ = self.run_simple_scheduler()
         scme = self.run_coala()
 
         logger.info("End ConstraintOptimizationAllocationStage.")
         yield (scme, None)
 
     def run_coala(self):
-        combined_allocation: ALLOCATION_T = []
+        combined_allocation: TimeSlotAllocation = TimeSlotAllocation([], self.accelerator, self.workload)
         timestep_offset = 0
         for optimal_allocation in self.optimal_allocation_per_stack.values():
             # Update all timesteps in this allocation with the offset and add it to the combined allocation
-            for t, a, id in optimal_allocation:
-                new_t = t + timestep_offset
-                combined_allocation.append((new_t, a, id))
-            max_timestep = max(list(zip(*combined_allocation))[0])
+            combined_allocation.merge_with_allocation(optimal_allocation, timestep_offset)
+            max_timestep = optimal_allocation.slot_max
             timestep_offset = max_timestep + 1
         scme = self.schedule_allocation(combined_allocation)
         return scme
+
+    def run_simple_scheduler(self):
+        """
+        Run a simple scheduler that unrolls the steady state allocations of different stacks into a single
+        allocation to get a latency and energy estimate.
+        """
+        # tsa = TimeSlotAllocation([], self.accelerator, self.workload)
+        # for stack, optimal_allocation in self.optimal_allocation_per_stack.items():
+        #     warmup, already_computed = self.get_warmup_timeslot_allocation(stack, tsa, optimal_allocation)
+        #     steady_state, already_computed = self.get_steady_state_timeslot_allocation(stack, warmup, optimal_allocation, already_computed)
+        #     cooldown = self.get_cooldown_timeslot_allocation(stack, steady_state, optimal_allocation, already_computed)
+        #     cooldown.visualize_allocation()
+        #     tsa = cooldown
+        # return cooldown
+        for stack, optimal_allocation in self.optimal_allocation_per_stack.items():
+            stack_subgraph = self.workload.get_subgraph([n for n in self.workload.node_list if n.id in stack])
+            scheduler = SteadyStateScheduler(stack_subgraph, self.accelerator, self.original_workload)
+            schedule = scheduler.run(optimal_allocation)
+        return schedule
+
+    def get_warmup_timeslot_allocation(
+        self, stack: STACK_T, initial_tsa: TimeSlotAllocation, optimal_allocation: TimeSlotAllocation
+    ) -> tuple[TimeSlotAllocation, set[ComputationNode]]:
+        """
+        Get the TimeSlotAllocation for the warmup phase of the given stack.
+        """
+        steady_state_hash = self.steady_state_hashes[stack]
+        # Add all sink nodes that are part of the warmup (before steady state starts)
+        warmup_sink_nodes = []
+        for sink_node, memoization_hash in self.hashes_per_sink_node[stack].items():
+            if memoization_hash != steady_state_hash:
+                warmup_sink_nodes.append(sink_node)
+            else:
+                break
+        # Build the TimeSlotAllocation for the warmup phase
+        already_computed = set()
+        warmup_tsa = initial_tsa
+        for sink_node in warmup_sink_nodes:
+            warmup_tsa, already_computed = self.update_timeslot_allocation_with_ancestors(
+                sink_node, warmup_tsa, optimal_allocation, already_computed, NodeType.WARMUP
+            )
+        return warmup_tsa, already_computed
+
+    def get_steady_state_timeslot_allocation(
+        self,
+        stack: STACK_T,
+        warmup: TimeSlotAllocation,
+        optimal_allocation: TimeSlotAllocation,
+        already_computed: set[ComputationNode] = set(),
+    ) -> tuple[TimeSlotAllocation, set[ComputationNode]]:
+        """
+        Get the TimeSlotAllocation for the steady state phase of the given stack.
+        This is the allocation that is used to compute the steady state latency and energy.
+        The given optimal_allocation is a single iteration of the steady state, which is unrolled here for all iterations.
+        """
+        # Get all the steady state sink nodes
+        steady_state_hash = self.steady_state_hashes[stack]
+        in_ss = False
+        steady_state_sink_nodes = []
+        for sink_node, memoization_hash in self.hashes_per_sink_node[stack].items():
+            if memoization_hash != steady_state_hash:
+                if not in_ss:
+                    # We are still in the warmup phase
+                    continue
+                else:
+                    # We are now in cooldown, so break
+                    break
+            in_ss = True
+            steady_state_sink_nodes.append(sink_node)
+        # Build the TimeSlotAllocation for the steady state phase
+        steady_state_tsa = warmup  # Initialize with the warmup allocation
+        for sink_node in steady_state_sink_nodes:
+            steady_state_tsa, already_computed = self.update_timeslot_allocation_with_ancestors(
+                sink_node, steady_state_tsa, optimal_allocation, already_computed, NodeType.STEADY_STATE
+            )
+        return steady_state_tsa, already_computed
+
+    def get_cooldown_timeslot_allocation(
+        self,
+        stack: STACK_T,
+        steady_state: TimeSlotAllocation,
+        optimal_allocation: TimeSlotAllocation,
+        already_computed: set[ComputationNode] = set(),
+    ) -> TimeSlotAllocation:
+        """
+        Get the TimeSlotAllocation for the cooldown phase of the given stack.
+        """
+        steady_state_hash = self.steady_state_hashes[stack]
+        # Add all sink nodes that are part of the cooldown (after steady state starts)
+        cooldown_sink_nodes = []
+        seen_ss = False
+        for sink_node, memoization_hash in self.hashes_per_sink_node[stack].items():
+            if memoization_hash != steady_state_hash and seen_ss:
+                cooldown_sink_nodes.append(sink_node)
+            else:
+                seen_ss = True
+        # Build the TimeSlotAllocation for the warmup phase
+        cooldown_tsa = steady_state  # Initialize with the steady state allocation
+        for sink_node in cooldown_sink_nodes:
+            cooldown_tsa, already_computed = self.update_timeslot_allocation_with_ancestors(
+                sink_node, cooldown_tsa, optimal_allocation, already_computed, NodeType.COOLDOWN
+            )
+        return cooldown_tsa
+
+    def update_timeslot_allocation_with_ancestors(
+        self,
+        node: ComputationNode,
+        tsa: TimeSlotAllocation,
+        optimal_allocation: TimeSlotAllocation,
+        already_computed: set[ComputationNode],
+        node_type: NodeType,
+    ) -> tuple[TimeSlotAllocation, set[ComputationNode]]:
+        """
+        Update the TimeSlotAllocation with all ancestors of the given node that are not already computed.
+        This is used to ensure that all nodes needed for the node are included in the allocation.
+        """
+        needed_compute = nx.ancestors(self.workload, node) | {node}
+        new_compute = needed_compute - already_computed
+        subgraph = self.workload.get_subgraph(new_compute)
+        sorted_like_steady_state = self.sort_like_steady_state(subgraph, optimal_allocation, node_type)
+        for node in sorted_like_steady_state:
+            if isinstance(node, ComputationNode):
+                already_computed.add(node)
+                core_allocations = optimal_allocation.get_cores_for_node_id(node.id)
+                # Get the predecessors, and update the minimum slot this can be scheduled in accordingly
+                preds = list(self.workload.predecessors(node))
+                pred_slots = [tsa.get_timeslot_of_node(pred) for pred in preds]
+                latest_pred_slot = max(pred_slots, default=0)
+                for core in core_allocations:
+                    tsa.add_node_to_next_slot(node, core, min_slot=latest_pred_slot + 1, node_type=node_type)
+        return tsa, already_computed
+
+    def sort_like_steady_state(
+        self, subgraph: ComputationNodeWorkload, optimal_allocation: TimeSlotAllocation, node_type: NodeType
+    ) -> list[ComputationNode]:
+        """
+        Sort the nodes in the subgraph like they are sorted in the steady state allocation.
+        This is used to ensure that the nodes are scheduled in the same order as in the steady state allocation.
+        """
+        if node_type == NodeType.WARMUP:
+            order: list[ComputationNode] = nx.topological_sort(subgraph)
+        elif node_type == NodeType.STEADY_STATE:
+            # There will be exactly the same amount of nodes in the given subgraph as in the optimal allocation.
+            # We go through the nodes topologically and sort them based on the earliest optimal node with same id,
+            # that we haven't seen yet.
+            seen_optimal_nodes = set()
+            seen_idxs = set()
+            ss_nodes = optimal_allocation.nodes
+            nb_nodes = len(ss_nodes)
+            order_tmp: list[Optional[ComputationNode]] = [None] * nb_nodes
+            for node in nx.topological_sort(subgraph):
+                assert isinstance(node, ComputationNode), "Expected only ComputationNodes in the subgraph."
+                eq_node = next(
+                    n
+                    for n in ss_nodes
+                    if n.id == node.id and n not in seen_optimal_nodes and ss_nodes.index(n) not in seen_idxs
+                )
+                eq_node_idx = ss_nodes.index(eq_node)
+                seen_optimal_nodes.add(eq_node)
+                seen_idxs.add(eq_node_idx)
+                order_tmp[eq_node_idx] = node
+            assert None not in order_tmp, "Not all nodes were sorted correctly like in the steady state allocation."
+            order = [node for node in order_tmp if node is not None]
+        elif node_type == NodeType.COOLDOWN:
+            order = nx.topological_sort(subgraph)
+        else:
+            raise ValueError(f"Unknown node type: {node_type}. Expected WARMUP, STEADY_STATE or COOLDOWN.")
+        return order
 
     def extract_steady_state_per_stack(self):
         for i, stack in enumerate(self.layer_stacks):
@@ -128,27 +298,25 @@ class ConstraintOptimizationAllocationStage(Stage):
             sink_nodes: list[ComputationNode] = sorted(
                 n for n in sg.nodes() if len(get_real_successors(n, sg)) == 0  # type: ignore
             )
-            sink_layer_ids = set(n.id for n in sink_nodes)
-            sink_layer_nodes = [tuple(sorted(n for n in sink_nodes if n.id == layer_id)) for layer_id in sink_layer_ids]
-            interlaced = [tuple(filter(lambda x: x is not None, t)) for t in itertools.zip_longest(*sink_layer_nodes)]
+            sink_layer_ids = sorted(set(n.id for n in sink_nodes))
+            assert len(sink_layer_ids) == 1, "Expected only one sink layer per layer stack. Update your layer stacks."
+            sink_nodes_sorted = sorted(n for n in sink_nodes)
             computed: set[ComputationNode] = set()
             to_compute_sets: dict[int, set[ComputationNode]] = dict()
-            memoization_hashes: dict[int, frozenset[ComputationNode]] = dict()
+            memoization_hashes: dict[int, frozenset[tuple[int, int]]] = dict()
             to_compute_counts: dict[int, int] = dict()
             state_ids: dict[int, list[int]] = dict()
-            to_compute_unique: dict[tuple[ComputationNode, ...], set[ComputationNode]] = dict()
-            hashes_per_sink_pair: dict[tuple[ComputationNode, ComputationNode], int] = dict()
-            for pair in interlaced:
-                needed_compute: set[ComputationNode] = set()
-                for sink_node in pair:
-                    needed_compute |= nx.ancestors(sg, sink_node) | {sink_node}  # type: ignore
+            to_compute_unique: dict[ComputationNode, set[ComputationNode]] = dict()
+            hashes_per_sink_pair: dict[ComputationNode, int] = dict()
+            for sink_node in sink_nodes_sorted:
+                needed_compute = nx.ancestors(sg, sink_node) | {sink_node}  # type: ignore
                 to_compute: set[ComputationNode] = needed_compute - computed  # type: ignore
-                to_compute_unique[pair] = to_compute
+                to_compute_unique[sink_node] = to_compute
                 to_compute_ids = [n.id for n in to_compute]
                 to_compute_per_layer = {id: to_compute_ids.count(id) for id in stack}
                 to_compute_set = frozenset(sorted(to_compute_per_layer.items()))
                 memoization_hash = hash(to_compute_set)
-                hashes_per_sink_pair[pair] = memoization_hash
+                hashes_per_sink_pair[sink_node] = memoization_hash
                 if memoization_hash in memoization_hashes:
                     to_compute_counts[memoization_hash] += 1
                 else:
@@ -199,7 +367,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             t_start = time()
             optimal_allocation = self.find_best_allocation(to_compute, iterations, stack, self.co_time_limit)
             ss_latency, _ = calculate_total_latency(
-                to_compute, optimal_allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr
+                optimal_allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr
             )
             t_end = time()
             logger.info(
@@ -211,7 +379,7 @@ class ConstraintOptimizationAllocationStage(Stage):
 
     def find_best_allocation(
         self, to_compute: set[ComputationNode], iterations: int, stack: STACK_T = (0,), time_limit: int = 600
-    ):
+    ) -> TimeSlotAllocation:
         """# TODO: Implement overhead of tensor transfers between cores"""
         # Check if the allocation is already cached, if not: find it
         stack_str = "_".join([str(id) for id in stack])
@@ -230,12 +398,11 @@ class ConstraintOptimizationAllocationStage(Stage):
                 latency_attr=self.latency_attr,
             )
             pickle_save(allocation, stack_allocations_path)
-        fig_path = stack_allocations_path.replace(".pickle", ".html")
-        visualize_waco(sg, allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr, fig_path)
-        json_path = stack_allocations_path.replace(".pickle", ".json")
-        to_perfetto_json(allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr, json_path)
+        allocation_obj = TimeSlotAllocation(allocation, self.accelerator, self.workload)
+        # json_path = stack_allocations_path.replace(".pickle", ".json")
+        # to_perfetto_json(allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr, json_path)
 
-        return allocation
+        return allocation_obj
 
     def get_scheduling_order(self, unpartitioned_workload: DNNWorkloadStream) -> SCHEDULE_ORDER_T:
         """
@@ -244,7 +411,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         The scheduling order is altered to accommodate the inter core tiling of the given workload
 
         Args:
-           unpartitioned_workload: original workload (before partitioning into finder nodes), used to extract the inter-
+           unpartitioned_workload: original workload (before partitioning into finer nodes), used to extract the inter-
                                    core tiling loops
         """
 
@@ -324,7 +491,7 @@ class ConstraintOptimizationAllocationStage(Stage):
 
     def get_cn_order(
         self,
-        allocation: ALLOCATION_T,
+        allocation: TimeSlotAllocation,
         compute_per_sink_node: dict[ComputationNode, set[ComputationNode]],
         hashes_per_sink_node: dict[ComputationNode, int],
         memoization_hash_ss: int,
@@ -336,7 +503,9 @@ class ConstraintOptimizationAllocationStage(Stage):
         """
         order: SCHEDULE_ORDER_T = []
         allocation = sorted(allocation, key=lambda x: (x[0], x[2], x[1]))
-        allocation_adjusted: ALLOCATION_T = []  # allocation with removed inter core splits (which have same sub id)
+        allocation_adjusted: TimeSlotAllocation = (
+            []
+        )  # allocation with removed inter core splits (which have same sub id)
         seen_ids: set[tuple[int, int]] = set()
         for t, c, id in allocation:
             if id not in seen_ids:
@@ -370,16 +539,15 @@ class ConstraintOptimizationAllocationStage(Stage):
 
         return [(n.id, n.sub_id) for n in sorted(to_compute, key=lambda x: (-x.id, -x.sub_id))]
 
-    def schedule_allocation(self, allocation: ALLOCATION_T) -> StreamCostModelEvaluation:
-        # Create a modified sub-workload with the extra inter core splits
-        max_layer_id = max(id[0] for _, _, id in allocation)
+    def schedule_allocation(self, allocation: TimeSlotAllocation) -> StreamCostModelEvaluation:
+        # Get the involved layer ids we want to schedule and their core allocations
+        layer_ids = [node.id for node in allocation.nodes]
+        core_ids = [core.id for core in allocation.cores]
+
+        # Get the max layer id in the allocation, and a subgraph of the original workload
+        max_layer_id = max(layer_ids)
         sub_nodes = filter(lambda n: n.id <= max_layer_id, self.original_workload.node_list)
         unpartitioned_sub_workload: DNNWorkloadStream = pickle_deepcopy(self.original_workload.subgraph(sub_nodes))
-
-        # Get the involved layer ids we want to schedule and their core allocations
-        layer_ids = sorted(set(id[0] for _, _, id in allocation))
-        core_strs = [sorted(set((c for _, c, id in allocation if id[0] == layer_id))) for layer_id in layer_ids]
-        core_ids = [[int(s.split(" ")[-1]) for s in core_str] for core_str in core_strs]
 
         # Manually add the wanted core ids for layers not in the steady state
         layer_ids, core_ids = self.add_core_ids_for_layers_not_in_steady_state(

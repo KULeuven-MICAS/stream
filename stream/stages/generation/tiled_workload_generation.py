@@ -298,6 +298,9 @@ class TiledWorkloadGenerationStage(Stage):
             # Too hard to manage this for generated nodes for now
             return divisors
 
+        # TODO: Discuss with Robin regarding the mandatory divisors
+        return divisors
+
         # Find nodes in stack
         try:
             curr_stack = next(stack for stack in self.layer_stacks if node.id in stack)
