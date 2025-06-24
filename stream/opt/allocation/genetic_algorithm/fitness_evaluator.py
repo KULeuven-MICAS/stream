@@ -61,7 +61,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
             self.operands_to_prefetch,
             self.scheduling_order,
         )
-        scme.run()
+        scme.evaluate()
         energy = scme.energy
         latency = scme.latency
         if not return_scme:

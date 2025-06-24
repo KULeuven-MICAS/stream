@@ -15,7 +15,10 @@ if TYPE_CHECKING:
 
 
 class CommunicationEvent:
-    """Represents a communication event involving one or more CommunicationLinks."""
+    """
+    Represents a communication event between two cores, aggregating one or more CommunicationLinkEvents.
+    Tracks sender, receiver, and total energy for the event.
+    """
 
     def __init__(self, id: int, tasks: list["CommunicationLinkEvent"], sender: Core, receiver: Core) -> None:
         # Sanity checks
@@ -33,23 +36,18 @@ class CommunicationEvent:
         self.receiver = receiver
 
     def __str__(self) -> str:
-        return f"CommunicationEvent(id={self.id}, sender={self.sender}, receiver={self.receiver}, tensor={self.tasks[0].tensor}, energy={self.energy:.2e})"
+        return (
+            f"CommunicationEvent(id={self.id}, sender={self.sender}, receiver={self.receiver}, "
+            f"tensor={self.tasks[0].tensor}, energy={self.energy:.2e})"
+        )
 
     def __repr__(self) -> str:
         return str(self)
 
 
 class CommunicationLinkEvent:
-    """Represents an event on a communication link.
-    An event has:
-        - a type, e.g. "transfer" or "block"
-        - a start time
-        - an end time
-        - a tensors relevant for the event:
-            * the tensor being transferred
-            * the tensor for which we are blocking
-        - an activity:
-            * the bits per clock cycle used of the link bandwidth
+    """
+    Represents a communication event on a single link, including sender, receiver, tensor, and activity.
     """
 
     def __init__(
@@ -83,14 +81,23 @@ class CommunicationLinkEvent:
         return str(self)
 
     def get_operands(self):
+        """
+        Returns the operand associated with the tensor for this event.
+        """
         return self.tensor.layer_operand
 
     def get_origin(self):
+        """
+        Returns the origin node of the tensor for this event.
+        """
         return self.tensor.origin
 
 
 class CommunicationManager:
-    """Manages the inter-core and offchip communication of an Accelerator."""
+    """
+    Manages communication events and link usage between cores, including bandwidth normalization and event creation.
+    Handles both data transfers and link blocking for memory constraints.
+    """
 
     shortest_paths: dict[tuple[Core, Core], list[Core]]
     events: list[CommunicationEvent]
@@ -112,6 +119,9 @@ class CommunicationManager:
         return shortest_paths
 
     def get_links_for_all_core_pairs(self):
+        """
+        Returns a dictionary mapping (sender, receiver) core pairs to their CommunicationLink objects.
+        """
         communication_links: dict[tuple[Core, Core], "CommunicationLink"] = {}
         for pair, path in self.shortest_paths.items():
             traversed_edges = [(i, j) for i, j in zip(path, path[1:])]
@@ -121,11 +131,8 @@ class CommunicationManager:
         return communication_links
 
     def get_links_for_pair(self, sender: Core, receiver: Core) -> list["CommunicationLink"]:
-        """Return the list of traversed CommunicationLinks for sending data from sender core to receiver core.
-
-        Args:
-            sender_id (Core): the sending core
-            receiver_id (Core): the receiving core
+        """
+        Returns the list of CommunicationLink objects between a sender and receiver core.
         """
         return self.pair_links[(sender, receiver)]
 
@@ -133,30 +140,20 @@ class CommunicationManager:
         """Return all unique CommunicationLinks."""
         return list(set(d["cl"] for _, _, d in self.accelerator.cores.edges(data=True)))
 
-    def update_links(
+    def transfer_tensor(
         self,
+        sender: Core,
+        receiver: Core,
         tensor: Tensor,
-        sender: Core | int,
-        receiver: Core | int,
         receiver_memory_operand: MemoryOperand,
         start_timestep: int,
         duration: int,
         link_bw_fraction: float = 1.0,
-    ) -> tuple[float, float]:
-        """Update the links for transfer of a tensor between sender and receiver core at a given timestep.
-        A CommunicationEvent is created containing one or more CommunicationLinkEvents,
-        i.e. one CommunicationLinkEvent per involved CommunicationLink.
-
-        Args:
-            tensor (Tensor): The tensor to be transferred.
-            sender (Core): The sending core.
-            receiver (Core): The receiving core.
-            receiver_memory_operand (str): The memory operand storing the tensor on the receiving end of the transfer.
-            start_timestep: The timestep at which to start the data transfer.
-            duration: Duration of the transfer
-
-        Returns:
-            tuple: A tuple containing the link and memory energy costs associated with this transfer.
+    ):
+        """
+        Transfers a tensor from sender to receiver, possibly using a fraction of the link bandwidth.
+        Normalizes bandwidth if total requested exceeds link capacity.
+        Creates a CommunicationEvent if the transfer is new across all links.
         """
         assert 0 <= link_bw_fraction <= 1
         end_timestep = start_timestep + duration
@@ -211,23 +208,16 @@ class CommunicationManager:
 
     def block_offchip_links(
         self,
-        too_large_operands: list[MemoryOperand],
+        too_large_operands: list,
         core_id: int,
         start_timestep: int,
         duration: int,
         node: ComputationNode,
-    ) -> int:
-        """Block the communication link between 'core' and the offchip core starting at timestep 'start_timestep' for
-        duration 'duration'.
-
-        Args:
-            too_large_operands: List of insufficient memory operands. This decides which links to block
-            core_id: The core id.
-            start_timestep: The ideal start timestep of the blocking.
-            duration: The duration of the blocking in cycles.
-            node: The computational node for which we are blocking the links.
+    ):
         """
-
+        Blocks off-chip links for operands that are too large to fit in memory, for the duration of the node's execution.
+        Handles both output and input operands, and creates CommunicationEvents for new blocks.
+        """
         if not too_large_operands:
             return start_timestep
         core = self.accelerator.get_core(core_id)
@@ -286,6 +276,9 @@ class CommunicationManager:
 
     @staticmethod
     def get_instantaneous_offchip_bandwidth(node: ComputationNode, op: MemoryOperand) -> int:
+        """
+        Returns the instantaneous off-chip bandwidth for a given operand.
+        """
         assert op in node.offchip_bandwidth_per_op
         if op == Constants.OUTPUT_MEM_OP:
             return node.offchip_bandwidth_per_op[op].wr_in_by_low
@@ -294,38 +287,31 @@ class CommunicationManager:
     def get_links_idle_window(
         self,
         tensor_bw_per_link: dict["CommunicationLink", list[tuple[Tensor, int]]],
-        best_case_start: int,
+        start_timestep: int,
         duration: int,
-    ) -> int:
-        """Return the timestep at which tensor can be transfered across the links.
-        Both links must have an idle window large enough for the transfer.
-        The timestep must be greater than or equal to best_case_start.
-
-        Args:
-            links: CommunicationLinks involved in the transfer and their required bandwidth.
-            best_case_start: The best case start timestep of the transfer.
-            duration: The required duration of the idle window.
-            tensors: The tensors to be transferred. Used to broadcast from previous transfer.
+    ):
+        """
+        Finds the earliest idle window for all involved links, normalizing bandwidth if needed.
+        Returns the start time for the transfer/block.
         """
         assert len(tensor_bw_per_link) > 0
         idle_intersections: list[tuple[int, int]] = []
         for i, (link, bandwidth_per_tensor) in enumerate(tensor_bw_per_link.items()):
-
-            # Make sure total bandwidth <= link bandwidth
+            # Normalize bandwidth if total requested exceeds link bandwidth
             total_req_bw = sum([bw for _, bw in bandwidth_per_tensor])
             if total_req_bw > link.bandwidth:
                 normalization_factor = link.bandwidth / total_req_bw
                 bandwidth_per_tensor = [
                     (tensor, floor(normalization_factor * bw)) for tensor, bw in bandwidth_per_tensor
                 ]
-
-            windows = link.get_idle_window(bandwidth_per_tensor, duration, best_case_start)
+            windows = link.get_idle_window(bandwidth_per_tensor, duration, start_timestep)
             if i == 0:
                 idle_intersections = windows
             else:
                 idle_intersections = intersections(idle_intersections, windows)
                 idle_intersections = [period for period in idle_intersections if period[1] - period[0] >= duration]
 
-        earliest_window = idle_intersections[0]  # TODO is this the earliest
+        # Note: The earliest window is chosen; if more sophisticated selection is needed, update here.
+        earliest_window = idle_intersections[0]
         start_time, _ = earliest_window
         return start_time

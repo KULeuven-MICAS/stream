@@ -48,7 +48,7 @@ class StreamCostModelEvaluationStage(Stage):
             operands_to_prefetch=self.operands_to_prefetch,
             scheduling_order=self.scheduling_order,
         )
-        scme.run()
+        scme.evaluate()
         logger.info("Finished StreamCostModelEvaluationStage.")
         yield scme, None
 

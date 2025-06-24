@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class TransferCause(Enum):
-    """Log transfer energies in different categories"""
+    """Enumerates the causes for tensor transfers, used for logging energy in different categories."""
 
     SINK_LAYER = auto()
     EVICTION = auto()
@@ -29,6 +29,12 @@ class TransferCause(Enum):
 
 
 class CoalaScheduler:
+    """
+    Schedules computation nodes on an accelerator, handling memory, communication, and subtensor logic.
+    Uses a class-based approach for modularity and extensibility.
+    Handles splitting of tensors into subtensors when only partial data is needed by a node.
+    """
+
     def __init__(
         self,
         G: ComputationNodeWorkload,
@@ -41,9 +47,9 @@ class CoalaScheduler:
         Args:
             G: Graph containing the nodes to be scheduled.
             accelerator: The accelerator to schedule the nodes on.
-            scheduling_order:
-            cores_idle_from: A dict containing for each core_id its start offset. Defaults to None.
-            operands_to_prefetch: The layer operands that should be prefetched at the start of the schedule.
+            scheduling_order: List of (layer_id, sub_id) tuples indicating scheduling order.
+            cores_idle_from: Optional dict mapping core_id to start offset.
+            operands_to_prefetch: Layer operands to prefetch at the start of the schedule.
         """
         self.G = G
         self.accelerator = accelerator
@@ -77,7 +83,9 @@ class CoalaScheduler:
         self.initialize_offchip_tensors()
 
     def _initialize_scheduling_order_lookup(self):
-        """Initialize look-up dictionaries to speed up going from (id, sub_id) to index in the scheduling order"""
+        """
+        Initializes lookup dictionaries for fast access from (id, sub_id) to scheduling order index.
+        """
         # {item: idx for idx, item in enumerate(self.scheduling_order)}
         self.scheduling_order_lookup: dict[tuple[int, int], int] = {}
         self.scheduling_order_lookup_tiered: dict[int, dict[int, int]] = {}
@@ -90,7 +98,9 @@ class CoalaScheduler:
                 self.scheduling_order_lookup_tiered[layer_id][sub_id] = idx
 
     def get_initial_candidates(self):
-        """Put the very first nodes of a layer that doesn't have any incoming edges as the first candidates"""
+        """
+        Returns the initial candidate nodes (those with no incoming edges) for scheduling.
+        """
         candidates: list[tuple[int, ComputationNode]] = []
         for source_node in (n for n, d in self.G.in_degree() if d == 0):
             core_allocation = source_node.chosen_core_allocation
@@ -98,19 +108,25 @@ class CoalaScheduler:
         return candidates
 
     def get_sink_layer_nodes(self):
-        """Get all the nodes with no successors that produce final outputs, used for off-loading final outputs"""
+        """
+        Returns all nodes with no successors that produce final outputs (used for off-loading outputs).
+        """
         sink_layer_ids = self.G.get_sink_layer_ids()
         sink_layer_nodes = set((n for n in self.G.node_list if (n.id in sink_layer_ids) and n.produces_final_output))
         return sink_layer_nodes
 
     def initialize_tensor_priorities(self):
-        """Initialize the memory instance priorities for each tensor in the workload."""
+        """
+        Initializes memory instance priorities for each tensor in the workload.
+        """
         for n in self.G.node_list:
             for tensor in n.operand_tensors.values():
                 tensor.initialize_instance_priorities(self.G, n, self.accelerator)
 
     def initialize_offchip_tensors(self):
-        """Add the constant operand tensors of all nodes to the off-chip initially."""
+        """
+        Adds constant operand tensors of all nodes to off-chip memory at timestep 0.
+        """
         for n in self.G.node_list:
             for op, tensor in n.operand_tensors.items():
                 # For constant operands or inputs of first node
@@ -133,6 +149,14 @@ class CoalaScheduler:
                         )
 
     def run(self):
+        """
+        Main scheduling loop. For each candidate node, handles:
+        - Subtensor creation if only a portion of a tensor is needed
+        - Memory management and transfer
+        - Scheduling and output tensor spawning
+        - Memory cleanup and candidate extension
+        Returns the total latency of the schedule.
+        """
         nb_scheduled_nodes = 0
         done = False
 
@@ -251,12 +275,14 @@ class CoalaScheduler:
             self.extend_candidates(best_candidate)
             nb_scheduled_nodes += 1
             done = nb_scheduled_nodes == self.nb_graph_nodes
-
+        logger.info(f"Scheduled {nb_nodes_scheduled}/{total_nodes_to_schedule} nodes")
         self.latency = self.get_total_latency()
         return self.latency
 
     def prefetch_constant_operands(self):
-        """Load the `operands_to_prefetch` to the cores they belong to."""
+        """
+        Loads the specified operands_to_prefetch to the cores they belong to at the start of the schedule.
+        """
         for n in self.G.node_list:
             for op, tensor in n.operand_tensors.items():
                 if op in n.constant_operands and op in self.operands_to_prefetch:
@@ -271,8 +297,10 @@ class CoalaScheduler:
                         )
 
     def pop_best_candidate(self) -> tuple[ComputationNode, int]:
-        """Get the best candidate node to schedule next, given the selection priority. Remove that candidate from the
-        list of candidates and return it."""
+        """
+        Returns the best candidate node to schedule next, based on scheduling order priority.
+        Removes the candidate from the list.
+        """
         if not self.candidates:
             raise ValueError("There are no candidates to schedule.")
         preds_ends, cn_candidates = zip(*self.candidates)
@@ -285,9 +313,10 @@ class CoalaScheduler:
         return best_candidate, preds_end
 
     def split_tensor_if_needed(self, tensor: Tensor, node: ComputationNode, core: Core, timestep: int):
-        """Check if the tensor needed for the node should be split and split them if necessary.
-        This is the case if the predecessor of the node has a different loop dimension than the tensor, e.g. when one
-        predecessor tile feeds multiple tiles of the current node's layer.
+        """
+        Returns a subtensor if only a portion of the original tensor is needed by the node.
+        If the tensor is already present in the core or no splitting is required, returns the original tensor.
+        Handles cases where loop dimensions differ between producer and consumer nodes.
         """
         #  Only do it if the tensor is still in offchip
         if self.accelerator.core_contains_tensor(tensor, core):
@@ -328,7 +357,15 @@ class CoalaScheduler:
     def create_sub_tensor(
         self, tensor: Tensor, loop_dims_to_split: list[LayerDim], sub_loop_ranges: list[tuple[int, int]]
     ):
-        """Create a sub-tensor of the given tensor with the given loop range."""
+        """
+        Creates a new Tensor object representing a subtensor with updated loop ranges and size.
+        Args:
+            tensor: The original tensor to split.
+            loop_dims_to_split: List of loop dimensions to split on.
+            sub_loop_ranges: The required ranges for each split dimension.
+        Returns:
+            A new Tensor object representing the subtensor.
+        """
         assert all(
             dim in tensor.loop_dimensions for dim in loop_dims_to_split
         ), f"The loop dimensions to split {loop_dims_to_split} are not in the tensor: {tensor.loop_dimensions}."
@@ -361,12 +398,10 @@ class CoalaScheduler:
         memory_operands: list[MemoryOperand],
         core: Core,
     ):
-        """`node.too_large_operands` was initially calculated for the incoming edges, i.e. based on the full
-        tensor. The full tensors have been split into sub-tensors to include only the data this node actually needs.
-        In the case that all sub-tensors now do fit in memory, the too_large_operands are cleared.
-        NOTE too_large_operands is computed differently than originally, so we are cautious and either clear everything
-        or clear nothing."""
-
+        """
+        Recomputes node.too_large_operands after subtensor splitting.
+        If all subtensors now fit in memory, clears too_large_operands for the node.
+        """
         if not node.too_large_operands:
             return
 
@@ -400,11 +435,8 @@ class CoalaScheduler:
         best_candidate: ComputationNode,
     ):
         """
-        Sync the cores_idle_from dict values if the best candidate is the first node of a layer and we detect
-        layer-by-layer execution. The layer-by-layer execution is detected through the scheduling_order.
-        # TODO this assumes the scheduling order is the order in which nodes are actually scheduled
+        Synchronizes cores_idle_from values if the best candidate is the first node of a layer and synchronization is needed.
         """
-
         # Get the predecessor ids of the best_candidate from the workload graph G
         predecessor_ids = (pred.id for pred in self.G.predecessors(best_candidate) if pred.id != best_candidate.id)
         predecessor_idxs: list[int] = []
@@ -436,21 +468,16 @@ class CoalaScheduler:
             self.cores_idle_from[core_id] = max_idle_time
 
     def get_tensors_needed_for_node(self, node: ComputationNode):
-        """Determine all the tensors needed to compute a node.
-        The node might need multiple outputs from previous nodes, depending on the graph.
-
-        Args:
-            node (ComputationNode): The node to be computed.
-            G : The graph of all nodes.
-
+        """
+        Determines all the tensors needed to compute a node, including constant and non-constant operands.
         Returns:
-            A tuple of tensors and a tuple of memory operands for the node.
+            tensors_this_candidate_needs: list[Tensor]
+            tensors_operands: list[MemoryOperand]
         """
         tensors_this_candidate_needs: list[Tensor] = []
         tensors_operands: list[MemoryOperand] = []
-
         # Constant operands
-        for layer_op in node.constant_operands + node.partially_constant_operands:
+        for layer_op in node.constant_operands:
             memory_op = node.memory_operand_links.layer_to_mem_op(layer_op)
             if memory_op in node.too_large_operands:
                 continue
@@ -460,18 +487,18 @@ class CoalaScheduler:
         for pred, node, edge_data in sorted(self.G.in_edges(node, data=True), key=itemgetter(0)):
             if pred.id == node.id:
                 continue  # Skip if predecessor was from the same layer (intra-edge)
-            consumer_layer_op: LayerOperand = edge_data["operand"]
-            consumer_memory_op = node.memory_operand_links.layer_to_mem_op(consumer_layer_op)
+            consumer_layer_op = edge_data["operand"]
+            consumer_memory_op = node.memory_operand_links[consumer_layer_op]
             if consumer_memory_op in node.too_large_operands:
-                continue  # Skip if tensor will be fetched fromm offchip throughout computation
+                continue  # Skip if tensor will be fetched from offchip throughout computation
             pred_output_tensor = pred.operand_tensors[pred.output_operand]
             tensors_this_candidate_needs.append(pred_output_tensor)
             tensors_operands.append(consumer_memory_op)
         if tensors_this_candidate_needs:
             # Sort these tensors based on their earliest possible transfer time
-            tensors_this_candidate_needs, tensors_operands = zip(
-                *sorted(zip(tensors_this_candidate_needs, tensors_operands))
-            )
+            zipped = list(zip(tensors_this_candidate_needs, tensors_operands))
+            zipped.sort(key=lambda x: x[0].origin.id if hasattr(x[0], "origin") and hasattr(x[0].origin, "id") else 0)
+            tensors_this_candidate_needs, tensors_operands = map(list, zip(*zipped))
         return tensors_this_candidate_needs, tensors_operands
 
     def clear_memories(

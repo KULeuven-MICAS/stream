@@ -217,7 +217,7 @@ class Accelerator:
             available_timestep: The timestep at which the tensor will become available. Different from
             initial_timestep when it is transferred.
         """
-        self.memory_manager.add_tensor_to_core(tensor, core, initial_timestep, available_timestep, memory_op)
+        self.memory_manager.add_tensor(tensor, core, initial_timestep, available_timestep, memory_op)
 
     def register_tensor_transfer(
         self,
@@ -240,10 +240,10 @@ class Accelerator:
         (
             transfer_link_energy_cost,
             transfer_memory_energy_cost,
-        ) = self.communication_manager.update_links(
+        ) = self.communication_manager.transfer_tensor(
+            sending_core,
+            receiving_core,
             tensor,
-            sending_core.id,
-            receiving_core.id,
             tensor_operand,
             transfer_start,
             transfer_duration,
@@ -291,7 +291,7 @@ class Accelerator:
         tensor_bw_per_link = {link: [(tensor, link_bw)] for link, link_bw in links_bw.items()}
         transfer_start = self.communication_manager.get_links_idle_window(
             tensor_bw_per_link=tensor_bw_per_link,
-            best_case_start=earliest_t,
+            start_timestep=earliest_t,
             duration=transfer_duration,
         )
         transfer_end = transfer_start + transfer_duration

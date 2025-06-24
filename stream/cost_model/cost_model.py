@@ -8,9 +8,9 @@ from stream.workload.onnx_workload import ComputationNodeWorkload
 
 
 class StreamCostModelEvaluation:
-    """Stream's cost model evaluation class which includes a scheduler and memory utilization tracer.
-    Throughout SCME will be used as abbreviation.
-    This evaluation computes the total latency and activation memory utilization throughout the inference.
+    """
+    Evaluates the cost model for a given workload and accelerator using the Schedule class.
+    Computes latency and various energy metrics by running the schedule.
     """
 
     def __init__(
@@ -43,11 +43,10 @@ class StreamCostModelEvaluation:
     def __str__(self):
         return f"SCME(energy={self.energy:.2e}, latency={self.latency:.2e})"
 
-    def run(self):
-        """Run the SCME by scheduling the graph through time.
-        The scheduler takes into account inter-core data movement and also tracks energy and memory through the memory
-        manager.
-        This assumes each node in the graph has an energy and runtime of the core to which they are allocated to.
+    def evaluate(self):
+        """
+        Runs the scheduling and cost model evaluation, updating latency and energy attributes.
+        Uses the Schedule class for modular scheduling and result extraction.
         """
         schedule = CoalaScheduler(
             G=self.workload,

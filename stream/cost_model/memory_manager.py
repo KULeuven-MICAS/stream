@@ -16,7 +16,11 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryManager:
-    """Class that keeps track of the memory state of all top level memories of each core."""
+    """
+    Manages memory allocation, tensor storage, and availability for each core and memory instance.
+    Uses hash-based tracking for efficient tensor lookup and removal.
+    Handles addition, removal, and querying of tensors in memory.
+    """
 
     def __init__(self, accelerator: "Accelerator") -> None:
         """For each core in the accelerator, create a list containing the top level memories, instances, which memory
@@ -71,7 +75,25 @@ class MemoryManager:
         self.offchip_core_id = self.accelerator.offchip_core_id
 
     def contains(self, tensor: Tensor, top_instance: MemoryInstance):
+        """
+        Returns True if the tensor (by hash) is present in the given memory instance.
+        """
         return tensor.equality_hash in self.top_instance_stored_tensors_hash[top_instance]
+
+    def get_available_timestep(self, tensor: Tensor, top_instance: MemoryInstance):
+        """
+        Returns the earliest timestep at which the tensor is available in the given memory instance.
+        """
+        available_since_timesteps: dict[MemoryInstance, int] = {}
+        for top_instance, stored_tensor_hashes in self.top_instance_stored_tensors_hash.items():
+            if tensor.equality_hash in stored_tensor_hashes:
+                available_since_timesteps[top_instance] = self.top_instance_available_since_timestep[top_instance][
+                    tensor.equality_hash
+                ]
+
+        if not available_since_timesteps:
+            raise ValueError(f"Tensor {tensor} was not found in any of the instances.")
+        return available_since_timesteps
 
     def find_tensor_in_top_instances(self, tensor: Tensor):
         """Find the top memory instances that are storing this tensor."""
@@ -107,28 +129,10 @@ class MemoryManager:
 
         return cores_storing_tensor, top_instance_idxs, available_since
 
-    def add_tensor_to_core(
-        self,
-        tensor: Tensor,
-        core: Core,
-        timestep: int,
-        timestep_end: int,
-        memory_op: MemoryOperand | None = None,
-    ):
-        """Add the tensor to the relevant memory manager attributes.
-        This function does not handle evictions.
-        An error is raised if there is not enough space to add it.
-
-        Args:
-            tensor: The tensor to be added.
-            core (Core): The core to add it to.
-            timestep: The timestep at which space should be reserved for the tensor.
-            timestep_ The timestep at which the tensor is available.
-            memory_op: The memory operand where the tensor will be stored. Defaults to None.
+    def add_tensor(self, tensor: Tensor, core: Core, timestep: int, timestep_end: int, memory_op: MemoryOperand):
         """
-
-        if not memory_op:
-            memory_op = tensor.memory_operand
+        Adds a tensor to the memory of a core at a given timestep, updating all hash-based tracking structures.
+        """
         top_level_idx = self.get_top_level_idx(core, memory_op)
         top_instance = self.top_instances_per_core[core][top_level_idx]
 
@@ -163,16 +167,9 @@ class MemoryManager:
 
         return
 
-    def get_timestep_for_tensor_addition(
-        self,
-        tensor: Tensor,
-        core: Core,
-        timestep: int,
-        memory_op: MemoryOperand,
-    ) -> int:
+    def get_timestep_for_tensor_addition(self, tensor: Tensor, core: Core, timestep: int, memory_op: str) -> int:
         """
-        This function gives the earliest timestep since 'timestep' that the tensor can be added to the core.
-        If there is never enough space, the latest timestep is returned.
+        Returns the earliest timestep at which the tensor can be added to the core's memory, considering memory usage.
 
         Args:
             tensor: The tensor to be added to the core.
@@ -315,6 +312,9 @@ class MemoryManager:
         )
 
     def get_tensors_stored_at_timestep(self, top_instance: MemoryInstance, timestep: int):
+        """
+        Returns a list of all tensors stored in the given memory instance at the specified timestep.
+        """
         all_stored_tensors = self.top_instance_stored_tensors[top_instance]
         all_stored_tensors_timestep = self.top_instance_stored_since_timestep[top_instance]
         stored_at_timestep = [
@@ -341,6 +341,9 @@ class MemoryManager:
         timestep_stored: int,
         timestep_available: int,
     ):
+        """
+        Internal method to add a tensor to a memory instance, updating all hash-based tracking structures.
+        """
         self.top_instance_stored_tensors[top_instance].append(tensor)
         self.top_instance_stored_tensors_hash[top_instance].add(tensor.equality_hash)
         self.top_instance_stored_since_timestep[top_instance][tensor.equality_hash] = timestep_stored
@@ -352,6 +355,9 @@ class MemoryManager:
         tensor: Tensor,
         top_instance: MemoryInstance,
     ):
+        """
+        Removes a tensor from the given memory instance, updating all hash-based tracking structures.
+        """
         self.top_instance_stored_tensors[top_instance].remove(tensor)
         self.top_instance_stored_tensors_hash[top_instance].remove(tensor.equality_hash)
         del self.top_instance_available_since_timestep[top_instance][tensor.equality_hash]
