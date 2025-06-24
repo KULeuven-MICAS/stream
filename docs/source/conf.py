@@ -1,85 +1,64 @@
 # Configuration file for the Sphinx documentation builder.
-#
-# This file only contains a selection of the most common options. For a full
-# list see the documentation:
-# https://www.sphinx-doc.org/en/master/usage/configuration.html
-
-# -- Path setup --------------------------------------------------------------
-
-# If extensions (or modules to document with autodoc) are in another directory,
-# add these directories to sys.path here. If the directory is relative to the
-# documentation root, use os.path.abspath to make it absolute, like shown here.
-#
 import os
 import sys
+from datetime import datetime
 
+# -- Path setup --------------------------------------------------------------
 sys.path.insert(0, os.path.abspath("."))
 
-
 # -- Project information -----------------------------------------------------
-
 project = "Stream"
-copyright = "2023, XX XX"
-author = "XX XX"
+copyright = f"2023–{datetime.now().year}, MICAS, KU Leuven"
 
-# The full version, including alpha/beta/rc tags
+author = "Arne Symons"
 release = "1.0.0"
 
-
 # -- General configuration ---------------------------------------------------
+extensions = [
+    "sphinx.ext.autodoc",
+    # Uncomment these if needed:
+    # "sphinx.ext.napoleon",
+    # "sphinx.ext.viewcode",
+    # "autoapi.extension",
+]
 
-# Add any Sphinx extension module names here, as strings. They can be
-# extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
-# ones.
-extensions = ["sphinx.ext.autodoc"]
-
-# extensions = [
-#     'sphinx.ext.autodoc',
-#     'sphinx.ext.napoleon',
-#     'sphinx.ext.viewcode',
-#     'autoapi.extension'
-# ]
-
-# Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
-
-# List of patterns, relative to source directory, that match files and
-# directories to ignore when looking for source files.
-# This pattern also affects html_static_path and html_extra_path.
 exclude_patterns = []
 
-
 # -- Options for HTML output -------------------------------------------------
+html_theme = "furo"
 
-# The theme to use for HTML and HTML Help pages.  See the documentation for
-# a list of builtin themes.
-#
-html_theme = "sphinx_material"
-
-# Logo
-html_logo = "./zigzag_logo_white_32x32.svg"
-
-# Favicon
-html_favicon = "./zigzag_logo_white_32x32.svg"
-
-# Material theme options
+# Furo-compatible theme options
 html_theme_options = {
-    "base_url": "http://kuleuven-micas.github.io/stream/",
-    "repo_url": "https://github.com/kuleuven-micas/stream",
-    "repo_name": "Stream Framework",
-    "google_analytics_account": "UA-XXXXX",
-    "html_minify": True,
-    "css_minify": True,
-    "nav_title": "Stream Framework",
-    # 'logo_icon': '&#x1D56B',  # '&#x2124',
-    "globaltoc_depth": 2,
-    "color_primary": "blue-grey",
-    "color_accent": "grey",
+    "light_logo": "stream_horizontal_logo_light.svg",
+    "dark_logo": "stream_horizontal_logo_dark.svg",
+    "sidebar_hide_name": False,
+    "navigation_with_keys": True,
+    "source_repository": "https://github.com/kuleuven-micas/stream/",
+    "source_branch": "master",
+    "source_directory": "docs/source/",
+    # Color customization
+    "light_css_variables": {
+        # Brand color (used for links, TOC highlights, etc.)
+        "color-brand-primary": "#2B6CB0",  # A calm, rich blue
+        "color-brand-content": "#1A202C",  # Near-black for main content text
+        "color-admonition-title-background": "#EBF8FF",  # Pale blue for note titles
+        "color-admonition-background": "#FCF7F7",  # Very light grey-blue background
+    },
+    "dark_css_variables": {
+        "color-brand-primary": "#63B3ED",  # Lighter blue for contrast
+        "color-brand-content": "#E2E8F0",  # Soft light grey for readability
+        "color-admonition-title-background": "#2C5282",  # Muted blue block titles
+        "color-admonition-background": "#1A202C",  # Deep grey-blue for content
+    },
 }
 
-html_sidebars = {"**": ["logo-text.html", "globaltoc.html", "localtoc.html", "searchbox.html"]}
+html_sidebars = {
+    "**": [
+        "sidebar/brand.html",
+        "sidebar/search.html",
+        "sidebar/navigation.html",
+    ]
+}
 
-# Add any paths that contain custom static files (such as style sheets) here,
-# relative to this directory. They are copied after the builtin static files,
-# so a file named "default.css" will overwrite the builtin "default.css".
 html_static_path = ["_static"]
