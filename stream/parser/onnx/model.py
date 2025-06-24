@@ -124,8 +124,6 @@ class ONNXModelParser:
         workload = ONNXWorkload()
         node_id = 0
         for node in self.onnx_model.graph.node:
-            if node_id > 11:
-                break
             # If this node has no inputs, don't take it into consideration (e.g. Constant operator has no inputs)
             if not node.input:
                 continue
