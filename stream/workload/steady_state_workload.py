@@ -17,6 +17,18 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
     def __init__(self, **attr: Any):
         super().__init__(**attr)
 
+    def __str__(self) -> str:
+        return (
+            f"SteadyStateWorkload("
+            f"computations={len(self.computation_nodes)}, "
+            f"transfers={len(self.transfer_nodes)}, "
+            f"tensors={len(self.tensor_nodes)}, "
+            f"edges={self.number_of_edges()})"  # type: ignore
+        )
+
+    def __repr__(self) -> str:
+        return str(self)
+
     def add(self, node_obj: SteadyStateNode):
         self.add_node(node_obj)
         # Edges should be added externally as needed

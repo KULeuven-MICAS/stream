@@ -27,7 +27,7 @@ from stream.stages.stage import MainStage, Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.dnn_workload import DNNWorkloadStream
-from stream.workload.mapping import TILING_T
+from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
 from stream.workload.onnx_workload import ComputationNodeWorkload
 from stream.workload.utils import get_real_successors
 
@@ -102,21 +102,15 @@ class ConstraintOptimizationAllocationStage(Stage):
 
         self.extract_steady_state_per_stack()
         self.find_best_allocation_per_stack()
-        _ = self.run_simple_scheduler()
+        # _ = self.run_simple_scheduler()
         scme = self.run_coala()
 
         logger.info("End ConstraintOptimizationAllocationStage.")
         yield (scme, None)
 
     def run_coala(self):
-        combined_allocation: TimeSlotAllocation = TimeSlotAllocation([], self.accelerator, self.workload)
-        timestep_offset = 0
-        for optimal_allocation in self.optimal_allocation_per_stack.values():
-            # Update all timesteps in this allocation with the offset and add it to the combined allocation
-            combined_allocation.merge_with_allocation(optimal_allocation, timestep_offset)
-            max_timestep = optimal_allocation.slot_max
-            timestep_offset = max_timestep + 1
-        scme = self.schedule_allocation(combined_allocation)
+        unrolled_allocation = self.get_unrolled_allocation()
+        scme = self.schedule_allocation(unrolled_allocation)
         return scme
 
     def run_simple_scheduler(self):
@@ -124,22 +118,35 @@ class ConstraintOptimizationAllocationStage(Stage):
         Run a simple scheduler that unrolls the steady state allocations of different stacks into a single
         allocation to get a latency and energy estimate.
         """
-        # tsa = TimeSlotAllocation([], self.accelerator, self.workload)
-        # for stack, optimal_allocation in self.optimal_allocation_per_stack.items():
-        #     warmup, already_computed = self.get_warmup_timeslot_allocation(stack, tsa, optimal_allocation)
-        #     steady_state, already_computed = self.get_steady_state_timeslot_allocation(stack, warmup, optimal_allocation, already_computed)
-        #     cooldown = self.get_cooldown_timeslot_allocation(stack, steady_state, optimal_allocation, already_computed)
-        #     cooldown.visualize_allocation()
-        #     tsa = cooldown
-        # return cooldown
         for stack, optimal_allocation in self.optimal_allocation_per_stack.items():
             stack_subgraph = self.workload.get_subgraph([n for n in self.workload.node_list if n.id in stack])
             scheduler = SteadyStateScheduler(stack_subgraph, self.accelerator, self.original_workload)
             schedule = scheduler.run(optimal_allocation)
         return schedule
 
+    def get_unrolled_allocation(self) -> TimeSlotAllocation:
+        tsa = TimeSlotAllocation([], self.accelerator, self.workload)
+        min_slot = 0
+        for stack, optimal_allocation in self.optimal_allocation_per_stack.items():
+            warmup, already_computed = self.get_warmup_timeslot_allocation(stack, tsa, optimal_allocation, min_slot)
+            steady_state, already_computed = self.get_steady_state_timeslot_allocation(
+                stack, warmup, optimal_allocation, already_computed, min_slot
+            )
+            cooldown = self.get_cooldown_timeslot_allocation(
+                stack, steady_state, optimal_allocation, already_computed, min_slot
+            )
+            tsa = cooldown
+            min_slot = tsa.slot_max + 1  # Update the minimum slot for the next stack
+        print(f"Unrolled allocation has {tsa.slot_max - tsa.slot_min + 1} slots:")
+        tsa.visualize_allocation()
+        return tsa
+
     def get_warmup_timeslot_allocation(
-        self, stack: STACK_T, initial_tsa: TimeSlotAllocation, optimal_allocation: TimeSlotAllocation
+        self,
+        stack: STACK_T,
+        initial_tsa: TimeSlotAllocation,
+        optimal_allocation: TimeSlotAllocation,
+        min_slot: int = 0,
     ) -> tuple[TimeSlotAllocation, set[ComputationNode]]:
         """
         Get the TimeSlotAllocation for the warmup phase of the given stack.
@@ -157,7 +164,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         warmup_tsa = initial_tsa
         for sink_node in warmup_sink_nodes:
             warmup_tsa, already_computed = self.update_timeslot_allocation_with_ancestors(
-                sink_node, warmup_tsa, optimal_allocation, already_computed, NodeType.WARMUP
+                sink_node, warmup_tsa, optimal_allocation, already_computed, NodeType.WARMUP, min_slot
             )
         return warmup_tsa, already_computed
 
@@ -167,6 +174,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         warmup: TimeSlotAllocation,
         optimal_allocation: TimeSlotAllocation,
         already_computed: set[ComputationNode] = set(),
+        min_slot: int = 0,
     ) -> tuple[TimeSlotAllocation, set[ComputationNode]]:
         """
         Get the TimeSlotAllocation for the steady state phase of the given stack.
@@ -191,7 +199,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         steady_state_tsa = warmup  # Initialize with the warmup allocation
         for sink_node in steady_state_sink_nodes:
             steady_state_tsa, already_computed = self.update_timeslot_allocation_with_ancestors(
-                sink_node, steady_state_tsa, optimal_allocation, already_computed, NodeType.STEADY_STATE
+                sink_node, steady_state_tsa, optimal_allocation, already_computed, NodeType.STEADY_STATE, min_slot
             )
         return steady_state_tsa, already_computed
 
@@ -201,6 +209,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         steady_state: TimeSlotAllocation,
         optimal_allocation: TimeSlotAllocation,
         already_computed: set[ComputationNode] = set(),
+        min_slot: int = 0,
     ) -> TimeSlotAllocation:
         """
         Get the TimeSlotAllocation for the cooldown phase of the given stack.
@@ -218,7 +227,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         cooldown_tsa = steady_state  # Initialize with the steady state allocation
         for sink_node in cooldown_sink_nodes:
             cooldown_tsa, already_computed = self.update_timeslot_allocation_with_ancestors(
-                sink_node, cooldown_tsa, optimal_allocation, already_computed, NodeType.COOLDOWN
+                sink_node, cooldown_tsa, optimal_allocation, already_computed, NodeType.COOLDOWN, min_slot
             )
         return cooldown_tsa
 
@@ -229,6 +238,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         optimal_allocation: TimeSlotAllocation,
         already_computed: set[ComputationNode],
         node_type: NodeType,
+        min_slot: int,
     ) -> tuple[TimeSlotAllocation, set[ComputationNode]]:
         """
         Update the TimeSlotAllocation with all ancestors of the given node that are not already computed.
@@ -246,8 +256,9 @@ class ConstraintOptimizationAllocationStage(Stage):
                 preds = list(self.workload.predecessors(node))
                 pred_slots = [tsa.get_timeslot_of_node(pred) for pred in preds]
                 latest_pred_slot = max(pred_slots, default=0)
+                slot = max(latest_pred_slot + 1, min_slot)
                 for core in core_allocations:
-                    tsa.add_node_to_next_slot(node, core, min_slot=latest_pred_slot + 1, node_type=node_type)
+                    tsa.add_node_to_next_slot(node, core, min_slot=slot, node_type=node_type)
         return tsa, already_computed
 
     def sort_like_steady_state(
@@ -404,82 +415,29 @@ class ConstraintOptimizationAllocationStage(Stage):
 
         return allocation_obj
 
-    def get_scheduling_order(self, unpartitioned_workload: DNNWorkloadStream) -> SCHEDULE_ORDER_T:
+    def get_scheduling_order(self, allocation: TimeSlotAllocation) -> SCHEDULE_ORDER_T:
         """
         Get the scheduling order of all ids that will exist in the transformed workload.
         Returns a list with all ids where the earlier the higher priority
-        The scheduling order is altered to accommodate the inter core tiling of the given workload
-
-        Args:
-           unpartitioned_workload: original workload (before partitioning into finer nodes), used to extract the inter-
-                                   core tiling loops
-        """
-
-        scheduling_order: SCHEDULE_ORDER_T = []
-        for stack in sorted(self.compute_per_sink_node):
-            compute_this_stack = self.compute_per_sink_node[stack]
-            hash_steady_state = self.steady_state_hashes[stack]
-            allocation_steady_state = self.optimal_allocation_per_stack[stack]
-            hashes_per_sink_node = self.hashes_per_sink_node[stack]
-            order = self.get_cn_order(
-                allocation=allocation_steady_state,
-                compute_per_sink_node=compute_this_stack,
-                hashes_per_sink_node=hashes_per_sink_node,
-                memoization_hash_ss=hash_steady_state,
-            )
-
-            adjusted_order = self.adjust_order_to_inter_core_tiling(stack, order, unpartitioned_workload)
-            scheduling_order += adjusted_order
-
-        return scheduling_order
-
-    def adjust_order_to_inter_core_tiling(
-        self, stack: STACK_T, order: SCHEDULE_ORDER_T, unpartitioned_workload: DNNWorkloadStream
-    ):
-        """Given an allocation order for a given stack, extend the order to extra outer loops that result from the
-        inter core tiling. This method anticipates the fact that later on, CNs will be split further to allow for inter-
-        core tiling, and adjusts the scheduling beforehand.
-
+        The scheduling order is altered to accommodate the inter core tiling of the given workload:
         Example: [(0, 12), (0, 13)] and inter_core_tiling = 4
             -> [(0, 4*12+0), (0, 49), (0, 50), (0, 51), (0, 4*13+0), ...]
                 <------intra-core partition 12------->  <---- partition 13 ---->
 
-        NOTE The ordering given by this method must match the order in which tiles are generated in `get_tiles`
-
         Args:
-            stack: CN stack for which the order applies
-            order: scheduling order for this stack, without inter core tiling
-            unpartitioned_workload: original workload (before partitioning into finder nodes), used to extract the inter-
-                                    core tiling loops
-
+           allocation: TimeSlotAllocation for which the scheduling order should be generated
         """
-        adjusted_order = order.copy()
-
-        for curr_node in self.get_computation_nodes(stack, unpartitioned_workload):
-            # NOTE this uses `inter_core_tiling`, because the inter core tiling is added to the intra core tiling
-            # in `schedule_allocation` in order to alter the workload
-            outer_loops = curr_node.inter_core_tiling
-
-            for _, inter_core_split_factor in outer_loops:
-                assert isinstance(
-                    inter_core_split_factor, int
-                ), "tiling options `*` and `all` should be replaced by now"
-                if inter_core_split_factor == 1:
-                    # In case CO decides to not split up the node across cores
-                    continue
-
-                i = 0
-                while i < len(adjusted_order):
-                    layer_id, sub_id = adjusted_order[i]
-                    if layer_id == curr_node.id:
-                        adjusted_order[i : i + 1] = [
-                            (layer_id, sub_id * inter_core_split_factor + j) for j in range(inter_core_split_factor)
-                        ]
-                        i += inter_core_split_factor
-                    else:
-                        i += 1
-
-        return adjusted_order
+        order: SCHEDULE_ORDER_T = []
+        for t in range(allocation.slot_min, allocation.slot_max + 1):
+            for node in allocation.get_allocations_in_slot(t).values():
+                nb_cores = len(allocation.get_cores_for_node_id(node.id))
+                sub_id = node.sub_id
+                adjusted_sub_id = nb_cores * sub_id
+                while (node.id, adjusted_sub_id) in order:
+                    # Increment the adjusted_sub_id with the sub_id until it is unique
+                    adjusted_sub_id += 1
+                order.append((node.id, adjusted_sub_id))
+        return order
 
     def get_nb_nodes_for_layer(self, layer_id: int):
         return len(list(n for n in self.workload.node_list if n.id == layer_id))
@@ -489,91 +447,32 @@ class ConstraintOptimizationAllocationStage(Stage):
         computation_nodes = [n for n in nodes if isinstance(n, ComputationNode)]
         return computation_nodes
 
-    def get_cn_order(
-        self,
-        allocation: TimeSlotAllocation,
-        compute_per_sink_node: dict[ComputationNode, set[ComputationNode]],
-        hashes_per_sink_node: dict[ComputationNode, int],
-        memoization_hash_ss: int,
-    ) -> SCHEDULE_ORDER_T:
-        """
-        Get the scheduling orders of all cns of a stack based on the order in the steady state allocation.
-        For nodes belonging to sink nodes that are not steady state, we sort by deepest id.
-        For nodes belonging to steady state sink nodes, we sort according to the found allocation
-        """
-        order: SCHEDULE_ORDER_T = []
-        allocation = sorted(allocation, key=lambda x: (x[0], x[2], x[1]))
-        allocation_adjusted: TimeSlotAllocation = (
-            []
-        )  # allocation with removed inter core splits (which have same sub id)
-        seen_ids: set[tuple[int, int]] = set()
-        for t, c, id in allocation:
-            if id not in seen_ids:
-                allocation_adjusted.append((t, c, id))
-                seen_ids.add(id)
-
-        allocation_adjusted = sorted(allocation_adjusted, key=lambda x: (x[0], x[2], x[1]))
-        layer_order_steady_state = [layer_id for layer_id, _ in [id for (_, _, id) in allocation_adjusted]]
-        for sink_node, to_compute in compute_per_sink_node.items():
-            if hashes_per_sink_node[sink_node] == memoization_hash_ss:
-                order_i = self.get_order_steady_state(to_compute, layer_order_steady_state)
-            else:
-                order_i = self.get_order_non_steady_state(to_compute)
-            order += order_i
-        return order
-
-    def get_order_steady_state(self, to_compute: set[ComputationNode], layer_order_steady_state: list[int]):
-        assert len(to_compute) == len(layer_order_steady_state)
-        # Obtain for each layer the nodes that have to be scheduled
-        nodes_per_layer = {
-            layer_id: sorted(n for n in to_compute if n.id == layer_id)
-            for layer_id in sorted(set(layer_order_steady_state))
-        }
-        order: SCHEDULE_ORDER_T = []
-        for layer_id in layer_order_steady_state:
-            first_node = nodes_per_layer[layer_id].pop(0)
-            order.append((first_node.id, first_node.sub_id))
-        return order
-
     def get_order_non_steady_state(self, to_compute: set[ComputationNode]):
 
         return [(n.id, n.sub_id) for n in sorted(to_compute, key=lambda x: (-x.id, -x.sub_id))]
 
     def schedule_allocation(self, allocation: TimeSlotAllocation) -> StreamCostModelEvaluation:
         # Get the involved layer ids we want to schedule and their core allocations
+        # Get the relevant subgraph of the original layer-wise workload
         layer_ids = [node.id for node in allocation.nodes]
-        core_ids = [core.id for core in allocation.cores]
+        relevant_nodes = list(filter(lambda n: n.id in layer_ids, self.original_workload.node_list))
+        unpartitioned_sub_workload: DNNWorkloadStream = pickle_deepcopy(self.original_workload.subgraph(relevant_nodes))
 
-        # Get the max layer id in the allocation, and a subgraph of the original workload
-        max_layer_id = max(layer_ids)
-        sub_nodes = filter(lambda n: n.id <= max_layer_id, self.original_workload.node_list)
-        unpartitioned_sub_workload: DNNWorkloadStream = pickle_deepcopy(self.original_workload.subgraph(sub_nodes))
-
-        # Manually add the wanted core ids for layers not in the steady state
-        layer_ids, core_ids = self.add_core_ids_for_layers_not_in_steady_state(
-            layer_ids=layer_ids, core_ids=core_ids, sub_workload=unpartitioned_sub_workload
-        )
+        for n in unpartitioned_sub_workload.node_list:
+            if n.id not in layer_ids:
+                raise ValueError(
+                    f"{n} not in steady state allocation. If this is intended, set their core allocation manually."
+                )
+        # # Manually add the wanted core ids for layers not in the steady state
+        # layer_ids, core_ids = self.add_core_ids_for_layers_not_in_steady_state(
+        #     layer_ids=layer_ids, core_ids=core_ids, sub_workload=unpartitioned_sub_workload
+        # )
 
         # Set the correct allocations for the layers in the copied workload
-        self.set_fixed_allocations_for_workload(unpartitioned_sub_workload, layer_ids, core_ids)
-
+        self.set_fixed_allocations_for_workload(unpartitioned_sub_workload, allocation)
         # Generate/check inter core mapping for all nodes
-        for node in unpartitioned_sub_workload.node_list:
-            # No allocation for this node (e.g. DummyNode)
-            if node.id not in layer_ids:
-                continue
-
-            core_allocation_this_node = next(
-                core_ids_this_node for core_ids_this_node, node_id in zip(core_ids, layer_ids) if node_id == node.id
-            )
-            nb_cores_split = len(core_allocation_this_node)
-
-            # Set correct inter core tiling. Replacing the wildcard will signal to the TiledWorkloadGenerationStage
-            # to also spit in the inter core tiling
-            inter_core_tiling = self.replace_wildcard_in_tiling(node.inter_core_tiling, nb_cores_split)
-            node.inter_core_tiling = inter_core_tiling
-
-        scheduling_order = self.get_scheduling_order(unpartitioned_sub_workload)
+        self.update_inter_core_mapping(unpartitioned_sub_workload, allocation)
+        scheduling_order = self.get_scheduling_order(allocation)
 
         loma_lpf_limit = 7
         kwargs = self.kwargs.copy()
@@ -600,6 +499,16 @@ class ConstraintOptimizationAllocationStage(Stage):
         scme = scme[0]
         return scme
 
+    def update_inter_core_mapping(
+        self, unpartitioned_sub_workload: ComputationNodeWorkload, allocation: TimeSlotAllocation
+    ):
+        for node in unpartitioned_sub_workload.node_list:
+            nb_cores = len(allocation.get_cores_for_node_id(node.id))
+            # Set correct inter core tiling. Replacing the wildcard will signal to the TiledWorkloadGenerationStage
+            # to also split in the inter core tiling
+            inter_core_tiling = self.replace_wildcard_in_tiling(node.inter_core_tiling, nb_cores)
+            node.inter_core_tiling = inter_core_tiling
+
     def add_core_ids_for_layers_not_in_steady_state(
         self, layer_ids: list[int], core_ids: list[list[int]], sub_workload: ComputationNodeWorkload
     ) -> tuple[list[int], list[list[int]]]:
@@ -623,16 +532,13 @@ class ConstraintOptimizationAllocationStage(Stage):
 
         return layer_ids, core_ids
 
-    def set_fixed_allocations_for_workload(
-        self, workload: ComputationNodeWorkload, layer_ids: list[int], core_ids: list[list[int]]
-    ):
+    def set_fixed_allocations_for_workload(self, workload: ComputationNodeWorkload, allocation: TimeSlotAllocation):
         """! Modify the workload to fix the core allocations to the given core_ids for the given layer_ids."""
-        assert len(layer_ids) == len(core_ids)
-        for layer_id, cores in zip(layer_ids, core_ids):
-            n = next(n for n in workload.node_list if n.id == layer_id)
-            n.possible_core_allocation = list(cores)
+        for n in workload.node_list:
+            cores = allocation.get_cores_for_node_id(n.id)
+            n.possible_core_allocation = list(core.id for core in cores)
 
-    def replace_wildcard_in_tiling(self, tiling: TILING_T, nb_cores_split: int):
+    def replace_wildcard_in_tiling(self, tiling: TILING_WILDCARD_T, nb_cores_split: int):
         """The user can define a wildcard `*` in the inter core tiling, meaning that the value found by the CO
         must be used instead.
         """

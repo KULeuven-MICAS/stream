@@ -52,6 +52,13 @@ class SteadyStateScheduler:
             TimeSlotAllocation: The scheduled allocation.
         """
         # Get the subgraph of the workload that is relevant for the steady state allocation
+        ssw = self.prepare_graph(allocation)
+        tla = TensorLifetimeAnalyzer(ssw)
+        tla.summary()
+        tla.visualize()
+        return allocation
+
+    def prepare_graph(self, allocation: "TimeSlotAllocation") -> SteadyStateWorkload:
         steady_state_subgraph = self.workload.get_subgraph(allocation.nodes)
         # Create a new SteadyStateWorkload to hold the scheduled nodes, tensors and transfers
         ssw = SteadyStateWorkload()
@@ -70,10 +77,7 @@ class SteadyStateScheduler:
         # Bufferize the non-constant steady state tensors
         ssw = self.bufferize_nonconstant_tensors(ssw)
         ssw.visualize_to_file("steady_state_workload_4.png")
-        tla = TensorLifetimeAnalyzer(ssw)
-        tla.summary()
-        tla.visualize()
-        return allocation
+        return ssw
 
     def add_computation_nodes(
         self,
