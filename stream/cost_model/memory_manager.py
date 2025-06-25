@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 class MemoryManager:
     """Class that keeps track of the memory state of all top level memories of each core."""
 
-    MAX_NB_TENSORS_COMPUTE_TILE = 3
-    MAX_NB_TENSORS_MEM_TILE = 3
+    MAX_NB_TENSORS_COMPUTE_TILE = 16
+    MAX_NB_TENSORS_MEM_TILE = 16
     MAX_NB_TENSORS_SHIM_TILE = 1000
 
     def __init__(self, accelerator: "Accelerator") -> None:
@@ -532,9 +532,7 @@ class MemoryManager:
             insert_idx = len(all_timesteps)
             if not start_timestep >= all_timesteps[-1]:
                 # This requires different logic to make sure timesteps in between also are updated correctly
-                raise NotImplementedError(
-                    "This scenario should only occur for multi-core accelerators. Not yet implemented."
-                )
+                print("WARNING: Small inaccuracy in memory usage modeling because of early start.")
 
             # Get the current usage and nb_stored_tensors at start_timestep
             current_usage = self.top_instance_stored_cumsum[top_instance][insert_idx - 1, 1]
