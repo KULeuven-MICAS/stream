@@ -35,7 +35,7 @@ def plot_time_differences(time_differences, fig_path):
     import matplotlib.pyplot as plt
 
     plt.grid()
-    plt.plot(list(range(len(time_differences))), time_differences, marker='o', linestyle='-', color='b')
+    plt.plot(list(range(len(time_differences))), time_differences, marker="o", linestyle="-", color="b")
     plt.xticks(ticks=list(range(len(time_differences))), labels=list(range(len(time_differences))))
     plt.xlabel("Event number")
     plt.ylabel("Time difference (cycles)")
@@ -64,9 +64,7 @@ if __name__ == "__main__":
     for file_path in file_paths:
         time_differences, total_difference = parse_perfetto_trace(file_path)
         if len(time_differences) != nb_kernels:
-            raise ValueError(
-                f"Expected {nb_kernels} time differences, but got {len(time_differences)} in {file_path}"
-            )
+            raise ValueError(f"Expected {nb_kernels} time differences, but got {len(time_differences)} in {file_path}")
         print(f"File: {file_path}")
         print(f"Total difference: {total_difference} cycles")
         avg_diff = sum(time_differences) / len(time_differences)
