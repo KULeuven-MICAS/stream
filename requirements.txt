@@ -8,3 +8,4 @@ pandas
 cerberus
 pre-commit
 gurobipy
+pydot
