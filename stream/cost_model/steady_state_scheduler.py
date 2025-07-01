@@ -1,19 +1,16 @@
-from math import ceil
-
 import networkx as nx
-from zigzag.datatypes import LayerDim, LayerOperand
-from zigzag.workload.layer_node import LoopRelevancyInfo
-
-from stream.cost_model.steady_state_tensor_lifetime import TensorLifetimeAnalyzer
 
 # if TYPE_CHECKING:
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.hardware.architecture.core import Core
-from stream.opt.allocation.constraint_optimization.allocation import TimeSlotAllocation
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
+from stream.opt.allocation.constraint_optimization.timeslot_allocation import TimeSlotAllocation
+from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
+from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 from stream.workload.steady_state_computation import SteadyStateComputation
-from stream.workload.steady_state_iteration_space import IterationVariable, SteadyStateIterationSpace
+from stream.workload.steady_state_iteration_space import SteadyStateIterationSpace
+from stream.workload.steady_state_node import SteadyStateNode
 from stream.workload.steady_state_rolling_buffer import SteadyStateRollingBuffer
 from stream.workload.steady_state_tensor import SteadyStateTensor, TensorFlag
 from stream.workload.steady_state_transfer import SteadyStateTransfer, TransferType
@@ -28,6 +25,8 @@ class SteadyStateScheduler:
         workload: "ComputationNodeWorkload",
         accelerator: "Accelerator",
         original_workload: "ComputationNodeWorkload",
+        cost_lut: CostModelEvaluationLUT,
+        iterations: int,
     ):
         """
         Initialize the SteadyStateScheduler with the allocation and accelerator.
@@ -37,9 +36,11 @@ class SteadyStateScheduler:
         """
         self.workload = workload  # Only contains nodes that are part of the current fusion stack
         self.accelerator = accelerator
+        self.original_workload = original_workload
+        self.cost_lut = cost_lut
+        self.iterations = iterations
         self.current_node_id = 0
         self.partitioned_nodes: dict[ComputationNode, list[SteadyStateComputation]] = {}
-        self.original_workload = original_workload
 
     def run(self, allocation: "TimeSlotAllocation"):
         """
@@ -53,13 +54,22 @@ class SteadyStateScheduler:
         """
         # Get the subgraph of the workload that is relevant for the steady state allocation
         ssw = self.prepare_graph(allocation)
-        tla = TensorLifetimeAnalyzer(ssw)
-        tla.summary()
-        tla.visualize()
-        return allocation
+        # Convert to TimeSlotAllocation with fixed timeslots for all nodes
+        tsa = ssw.to_timeslotallocation()
+        # At this point, the only nodes without an allocation are the transfer nodes
+        offchip_core_id = self.accelerator.offchip_core_id
+        tta = TransferAndTensorAllocator(ssw, tsa, offchip_core_id=offchip_core_id, iterations=self.iterations)
+        tsa_upd, total_latency = tta.solve()
+        print(tsa_upd)
+        tot, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations)
+        print(f"Total latency: {tot}, per iteration: {per_iter}, overlap: {ov}")
+        # tla = TensorLifetimeAnalyzer(ssw)
+        # tla.summary()
+        # tla.visualize()
+        return tsa_upd
 
     def prepare_graph(self, allocation: "TimeSlotAllocation") -> SteadyStateWorkload:
-        steady_state_subgraph = self.workload.get_subgraph(allocation.nodes)
+        steady_state_subgraph = self.get_workload_subgraph(allocation)
         # Create a new SteadyStateWorkload to hold the scheduled nodes, tensors and transfers
         ssw = SteadyStateWorkload()
         # Add all computation nodes from the subgraph to the SteadyStateWorkload
@@ -79,6 +89,18 @@ class SteadyStateScheduler:
         ssw.visualize_to_file("steady_state_workload_4.png")
         return ssw
 
+    def get_workload_subgraph(self, allocation: "TimeSlotAllocation") -> ComputationNodeWorkload:
+        """
+        Get the subgraph of the workload that is relevant for the steady state allocation.
+        This subgraph contains only the computation nodes that are part of the current fusion stack.
+        """
+        # Get the nodes that are part of the current fusion stack
+        assert all(isinstance(node, SteadyStateComputation) for node in allocation.nodes)
+        subgraph_nodes = [
+            next(n for n in self.workload if n.id == node.id and n.sub_id == node.sub_id) for node in allocation.nodes
+        ]
+        return self.workload.get_subgraph(subgraph_nodes)
+
     def add_computation_nodes(
         self,
         steady_state_workload: SteadyStateWorkload,
@@ -92,11 +114,16 @@ class SteadyStateScheduler:
         for node in reversed(list(nx.topological_sort(subgraph))):  # type: ignore
             if not isinstance(node, ComputationNode):
                 continue
-            core_allocations = allocation.get_cores_for_node(node)
-            new_nodes = self.get_partitioned_nodes(node, core_allocations)
-            self.partitioned_nodes[node] = new_nodes
-            for new_node in new_nodes:
-                steady_state_workload.add(new_node)
+            # Get the SteadyStateComputation nodes corresponding to this node
+            sscns = [
+                n
+                for n in allocation.nodes
+                if isinstance(n, SteadyStateComputation) and n.id == node.id and n.sub_id == node.sub_id
+            ]
+            core_allocations = [node.chosen_core_allocation for node in sscns]
+            self.partitioned_nodes[node] = sscns
+            for sscn in sscns:
+                steady_state_workload.add(sscn)
                 self.current_node_id += 1
                 for edge in get_real_out_edges(node, subgraph):
                     _, dst, attrs = edge
@@ -106,79 +133,11 @@ class SteadyStateScheduler:
                         attrs = attrs.copy()
                         attrs["bits"] = attrs["bits"] / len(core_allocations)
                     # Add the edge from new_node to destination node
-                    dst_new_nodes = self.partitioned_nodes[dst]
-                    for dst_new_node in dst_new_nodes:
+                    dst_sscns = self.partitioned_nodes[dst]
+                    for dst_sscn in dst_sscns:
                         # If the destination node is partitioned, we add an edge to each partitioned node
-                        steady_state_workload.add_edge(new_node, dst_new_node, **attrs)
+                        steady_state_workload.add_edge(sscn, dst_sscn, **attrs)
         return steady_state_workload
-
-    def get_partitioned_nodes(self, node: ComputationNode, core_allocations: set[Core]) -> list[SteadyStateComputation]:
-        """
-        Get the partitioned nodes for a given computation node based on the core allocations.
-        This creates new ComputationNode objects for each core allocation.
-        """
-        # If the node is not partitioned, return it as is
-        if len(core_allocations) == 1:
-            new_node = SteadyStateComputation(
-                id=node.id,
-                sub_id=node.sub_id,
-                node_name=node.name,
-                node_attr=node.extract_node_attr(),
-                mapping_attr=node.extract_inter_core_mapping_attr(),
-                operand_tensor_reshape=node.operand_tensor_reshape,
-                produces_final_output=node.produces_final_output,
-                group_id=node.group,
-                input_names=node.input_names,
-                partially_constant_operands=node.partially_constant_operands,
-            )
-            new_node.chosen_resource_allocation = next(iter(core_allocations))
-            return [new_node]
-        # Get the inter-core-tiling
-        inter_core_tiling = node.inter_core_tiling
-        if len(inter_core_tiling) > 1:
-            raise NotImplementedError(
-                f"Partitioning of nodes with inter-core tiling {inter_core_tiling} is not supported yet."
-            )
-        tiling_dim = inter_core_tiling[0][0]
-        original_size = node.layer_dim_sizes[tiling_dim]
-        nb_tiles = len(core_allocations)
-        # Get the original loop range of the node for the tiling dimension
-        original_loop_range = node.loop_ranges[tiling_dim]
-        # Calculate the new loop range for each partitioned node
-        partitioned_loop_ranges = [
-            (
-                original_loop_range[0] + i * (original_loop_range[1] // nb_tiles),
-                original_loop_range[0] + (i + 1) * (original_loop_range[1] // nb_tiles),
-            )
-            for i in range(nb_tiles)
-        ]
-        size_per_tile = ceil(original_size / nb_tiles)
-        partitioned_nodes: list[SteadyStateComputation] = []
-        for i, core in enumerate(core_allocations):
-            # Update the layer_dim_sizes for the smaller partitioned tile
-            node_attr = node.extract_node_attr()
-            node_attr.layer_dim_sizes[tiling_dim] = size_per_tile
-            inter_core_mapping_attr = node.extract_inter_core_mapping_attr()
-            inter_core_mapping_attr.inter_core_tiling = [(tiling_dim, nb_tiles)]
-            # Create a new ComputationNode for each core allocation
-            partitioned_node = SteadyStateComputation(
-                id=node.id,
-                sub_id=node.sub_id,
-                node_name=node.name + f".part{i}",
-                node_attr=node_attr,
-                mapping_attr=inter_core_mapping_attr,
-                operand_tensor_reshape=node.operand_tensor_reshape,
-                produces_final_output=node.produces_final_output,
-                group_id=node.group,
-                input_names=node.input_names,
-                partially_constant_operands=node.partially_constant_operands,
-            )
-            partitioned_node.chosen_resource_allocation = core
-            partitioned_node.loop_ranges[tiling_dim] = partitioned_loop_ranges[i]
-
-            partitioned_node.set_chosen_core_allocation(core.id)
-            partitioned_nodes.append(partitioned_node)
-        return partitioned_nodes
 
     def add_constant_tensor_nodes(
         self, steady_state_workload: SteadyStateWorkload, subgraph: ComputationNodeWorkload
@@ -195,15 +154,24 @@ class SteadyStateScheduler:
             original_node = next(n for n in self.original_workload.node_list if n.id == node.id)
             loop_relevancy_info = original_node.loop_relevancy_info
             intra_core_tiling = original_node.intra_core_tiling
-            intra_core_tiling_dims = [dim for dim, _ in intra_core_tiling]
             # Create a ConstantTensorNode for each constant tensor in the computation node
             for input_op in node.input_operands:
-                ssis = self.extract_steady_state_iteration_space(loop_relevancy_info, intra_core_tiling_dims, input_op)
+                ssis = SteadyStateIterationSpace.from_loop_info(
+                    loop_relevancy=loop_relevancy_info,
+                    intra_core_tiling=intra_core_tiling,
+                    operand=input_op,
+                )
                 if input_op in node.constant_operands:
                     # This is a constant tensor, add it to the steady state workload
                     tensor = node.operand_tensors[input_op]
+                    original_tensor = original_node.operand_tensors[input_op]
                     if tensor not in seen_tensors:
                         seen_tensors.add(tensor)
+                        possible_resource_allocation = [
+                            offchip_core,
+                        ] + list(set(n.chosen_resource_allocation for n in self.partitioned_nodes[node]))
+                        full_shape = [ub - lb for lb, ub in original_tensor.loop_ranges]
+                        slices_per_full = ssis.slices_per_full
                         constant_node = SteadyStateTensor(
                             type=TensorFlag.INPUT | TensorFlag.CONSTANT,
                             id=node.id,
@@ -211,11 +179,10 @@ class SteadyStateScheduler:
                             size=tensor.size,
                             operand=input_op,
                             steady_state_iteration_space=ssis,
-                            possible_resource_allocation=[
-                                offchip_core,
-                            ],
+                            possible_resource_allocation=possible_resource_allocation,
+                            full_shape=full_shape,
+                            slices_per_full=slices_per_full,
                         )
-                        constant_node.chosen_resource_allocation = offchip_core
                         steady_state_workload.add(constant_node)
                         self.current_node_id += 1
                         for new_node in self.partitioned_nodes[node]:
@@ -228,14 +195,21 @@ class SteadyStateScheduler:
                 output_operand = node.output_operand
                 output_tensor = node.operand_tensors[output_operand]
                 original_node = next(n for n in self.original_workload.node_list if n.id == node.id)
+                original_output_tensor = original_node.operand_tensors[output_operand]
                 loop_relevancy_info = original_node.loop_relevancy_info
                 intra_core_tiling = original_node.intra_core_tiling
-                intra_core_tiling_dims = [dim for dim, _ in intra_core_tiling]
                 if output_tensor not in seen_tensors:
                     seen_tensors.add(output_tensor)
-                    ssis = self.extract_steady_state_iteration_space(
-                        loop_relevancy_info, intra_core_tiling_dims, output_operand
+                    ssis = SteadyStateIterationSpace.from_loop_info(
+                        loop_relevancy=loop_relevancy_info,
+                        intra_core_tiling=intra_core_tiling,
+                        operand=output_operand,
                     )
+                    possible_resource_allocation = [
+                        offchip_core,
+                    ] + list(set(n.chosen_resource_allocation for n in self.partitioned_nodes[node]))
+                    full_shape = [ub - lb for lb, ub in original_output_tensor.loop_ranges]
+                    slices_per_full = ssis.slices_per_full
                     constant_node = SteadyStateTensor(
                         type=TensorFlag.OUTPUT | TensorFlag.CONSTANT,
                         id=node.id,
@@ -243,44 +217,22 @@ class SteadyStateScheduler:
                         size=output_tensor.size,
                         operand=output_operand,
                         steady_state_iteration_space=ssis,
-                        possible_resource_allocation=[
-                            offchip_core,
-                        ],
+                        possible_resource_allocation=possible_resource_allocation,
+                        full_shape=full_shape,
+                        slices_per_full=slices_per_full,
                     )
-                    constant_node.chosen_resource_allocation = offchip_core
                     steady_state_workload.add(constant_node)
                     for new_node in self.partitioned_nodes[node]:
                         steady_state_workload.add_edge(new_node, constant_node)
         return steady_state_workload
-
-    def extract_steady_state_iteration_space(
-        self, loop_relevancy_info: LoopRelevancyInfo, intra_core_tiling_dims: list[LayerDim], input_op: LayerOperand
-    ):
-        ssis_list: list[IterationVariable] = []
-        seen_relevant = False
-        relevant_dims = loop_relevancy_info.get_r_or_pr_layer_dims(input_op)
-        # Append dimensions that are partially relevant
-        for relevant_dim in list(relevant_dims):
-            if relevant_dim in loop_relevancy_info.pr_dims[input_op]:
-                for pr_dim in loop_relevancy_info.pr_dims[input_op][relevant_dim]:
-                    relevant_dims.append(pr_dim)
-        for dim in intra_core_tiling_dims:
-            is_relevant = dim in relevant_dims
-            if seen_relevant:
-                is_relevant = True
-            if is_relevant:
-                seen_relevant = True
-            ssis_list.append(IterationVariable(dim, is_relevant))
-        ssis = SteadyStateIterationSpace(ssis_list)
-        return ssis
 
     def add_transfer_nodes(self, steady_state_workload: SteadyStateWorkload) -> SteadyStateWorkload:
         """
         Add the transfer nodes to the steady state workload.
         The transfer nodes are nodes that transfer data between cores or between off-chip and on-chip memory.
         """
-        for node in steady_state_workload.tensor_nodes:
-            out_edges = list(steady_state_workload.out_edges(node, data=True))
+        for tensor in steady_state_workload.tensor_nodes:
+            out_edges = list(steady_state_workload.out_edges(tensor, data=True))
             successors = [i for _, i, _ in out_edges]
             if not successors:
                 continue
@@ -288,53 +240,57 @@ class SteadyStateScheduler:
                 transfer_type = TransferType.BROADCAST
             else:
                 transfer_type = TransferType.UNICAST
-            tensor = node
             # Insert a transfer node after the node and connect it to all the successors
-            ssis = node.steady_state_iteration_space
+            ssis = tensor.steady_state_iteration_space
+            possible_resource_allocation = self.get_transfer_paths(tensor, successors)
             transfer_node = SteadyStateTransfer(
                 transfer_type=transfer_type,
-                id=node.id,
-                node_name=f"Transfer({node.node_name} -> {[succ.node_name for succ in successors]})",
-                src=node,
+                id=tensor.id,
+                node_name=f"Transfer({tensor.node_name} -> {[succ.node_name for succ in successors]})",
+                src=tensor,
                 dst=successors,
                 tensor=tensor,
-                possible_resource_allocation=[
-                    node.chosen_resource_allocation,
-                ],
+                possible_resource_allocation=possible_resource_allocation,
                 steady_state_iteration_space=ssis,
             )
-            transfer_node.chosen_resource_allocation = node.chosen_resource_allocation
             steady_state_workload.add(transfer_node)
             # Add edge from the original node to the transfer node
-            steady_state_workload.add_edge(node, transfer_node)
+            steady_state_workload.add_edge(tensor, transfer_node)
             for i, (_, successor, data) in enumerate(out_edges):
                 # Create the tensor node that comes after the transfer node we just created
                 if isinstance(successor, SteadyStateTensor):
                     # If the successor is a tensor node, we check that it is a sink node output (viewed as constant output)
                     assert TensorFlag.CONSTANT in successor.tensor_flag and TensorFlag.OUTPUT in successor.tensor_flag
-                post_transfer_node_name = f"{tensor.node_name}{'*' * (i + 1)}"
-                ssis = transfer_node.steady_state_iteration_space
-                post_transfer_tensor_node = SteadyStateTensor(
-                    type=tensor.tensor_flag,
-                    id=node.id,
-                    node_name=post_transfer_node_name,
-                    size=tensor.size,
-                    operand=tensor.operand,
-                    steady_state_iteration_space=ssis,
-                    possible_resource_allocation=[
-                        successor.chosen_resource_allocation,
-                    ],
-                )
-                post_transfer_tensor_node.chosen_resource_allocation = successor.chosen_resource_allocation
-                attrs = data.copy()
-                # Add the post transfer tensor node to the steady state workload
-                steady_state_workload.add(post_transfer_tensor_node)
-                # Remove original edge between node and successor
-                steady_state_workload.remove_edge(node, successor)  # type: ignore
-                # Add edge from transfer node to post transfer tensor node
-                steady_state_workload.add_edge(transfer_node, post_transfer_tensor_node, **attrs)
-                # Add edge from post transfer node to successor
-                steady_state_workload.add_edge(post_transfer_tensor_node, successor, **attrs)
+                    # If this is the case, we don't create a post transfer tensor node, but instead just connect the transfer node to the successor
+                    steady_state_workload.add_edge(transfer_node, successor, **data)
+                    # Remove original edge between node and successor
+                    steady_state_workload.remove_edge(tensor, successor)
+                else:
+                    post_transfer_node_name = f"{tensor.node_name}{'*' * (i + 1)}"
+                    ssis = transfer_node.steady_state_iteration_space
+                    full_shape = tensor.full_shape
+                    slices_per_full = ssis.slices_per_full
+                    assert not isinstance(successor, SteadyStateTransfer), "Successor should not be a transfer node."
+                    post_transfer_tensor_node = SteadyStateTensor(
+                        type=tensor.tensor_flag,
+                        id=tensor.id,
+                        node_name=post_transfer_node_name,
+                        size=tensor.size,
+                        operand=tensor.operand,
+                        steady_state_iteration_space=ssis,
+                        possible_resource_allocation=successor.possible_resource_allocation,
+                        full_shape=full_shape,
+                        slices_per_full=slices_per_full,
+                    )
+                    attrs = data.copy()
+                    # Add the post transfer tensor node to the steady state workload
+                    steady_state_workload.add(post_transfer_tensor_node)
+                    # Remove original edge between node and successor
+                    steady_state_workload.remove_edge(tensor, successor)
+                    # Add edge from transfer node to post transfer tensor node
+                    steady_state_workload.add_edge(transfer_node, post_transfer_tensor_node, **attrs)
+                    # Add edge from post transfer node to successor
+                    steady_state_workload.add_edge(post_transfer_tensor_node, successor, **attrs)
         return steady_state_workload
 
     def add_this_iteration_nonconstant_tensor_nodes(
@@ -362,19 +318,30 @@ class SteadyStateScheduler:
                     original_node = next(n for n in self.original_workload.node_list if n.id == node.id)
                     loop_relevancy_info = original_node.loop_relevancy_info
                     intra_core_tiling = original_node.intra_core_tiling
-                    intra_core_tiling_dims = [dim for dim, _ in intra_core_tiling]
-                    ssis = self.extract_steady_state_iteration_space(
-                        loop_relevancy_info, intra_core_tiling_dims, node.output_operand
+                    ssis = SteadyStateIterationSpace.from_loop_info(
+                        loop_relevancy=loop_relevancy_info,
+                        intra_core_tiling=intra_core_tiling,
+                        operand=node.output_operand,
                     )
                     output_operand = node.output_operand
+                    possible_resource_allocation = [
+                        resource,
+                    ]
+                    full_shape = [ub - lb for lb, ub in original_node.operand_tensors[output_operand].loop_ranges]
+                    slices_per_full = ssis.slices_per_full
                 elif isinstance(node, SteadyStateTransfer):  # type: ignore
                     tensor_size = node.size
                     tensor_name = f"{node.node_name}*"
                     resource = successor.chosen_resource_allocation
                     ssis = node.steady_state_iteration_space
                     output_operand = node.tensor.operand
+                    possible_resource_allocation = [
+                        resource,
+                    ]
+                    full_shape = node.tensor.full_shape
+                    slices_per_full = ssis.slices_per_full
                 else:
-                    raise ValueError(f"Unexpected successor type: {type(successor)}")
+                    raise ValueError(f"Unexpected node type: {type(node)}")
                 variable_tensor_node = SteadyStateTensor(
                     type=TensorFlag.OUTPUT | TensorFlag.NONCONSTANT,
                     id=node.id,
@@ -382,11 +349,10 @@ class SteadyStateScheduler:
                     size=tensor_size,
                     operand=output_operand,
                     steady_state_iteration_space=ssis,
-                    possible_resource_allocation=[
-                        node.chosen_resource_allocation,
-                    ],
+                    possible_resource_allocation=possible_resource_allocation,
+                    full_shape=full_shape,
+                    slices_per_full=slices_per_full,
                 )
-                variable_tensor_node.chosen_resource_allocation = resource
                 if variable_tensor_node in seen_tensors:
                     variable_tensor_node = next(t for t in seen_tensors if variable_tensor_node == t)
                 else:
@@ -453,3 +419,68 @@ class SteadyStateScheduler:
                     # Remove the original tensor node. This also removes edges to/from it.
                     steady_state_workload.remove_node(tensor)  # type: ignore
         return steady_state_workload
+
+    def get_transfer_paths(
+        self, predecessor: SteadyStateTensor, successors: list[SteadyStateNode]
+    ) -> tuple[tuple[CommunicationLink]]:
+        """
+        Get the possible resource allocations for the transfer node based on the predecessor and successors.
+        The possible allocations are all the paths that can be taken from the predecessor to each successor.
+        If there's no overlap between paths from predecessor to each successor, the first path for each is combined.
+        """
+        all_common_paths: set[tuple[CommunicationLink]] = set()
+        for pred_alloc in predecessor.possible_resource_allocation:
+            assert pred_alloc is not None, f"Predecessor {predecessor.node_name} has no chosen resource allocation."
+            paths_per_successor: dict[SteadyStateNode, set[tuple[CommunicationLink]]] = {}
+            for successor in successors:
+                all_succ_paths = set()
+                succ_allocs = (
+                    [
+                        successor.chosen_resource_allocation,
+                    ]
+                    if successor.chosen_resource_allocation
+                    else successor.possible_resource_allocation
+                )
+                for succ_alloc in succ_allocs:
+                    assert (
+                        succ_alloc is not None
+                    ), f"Successor {successor.node_name} has no possible resource allocation."
+                    if isinstance(successor, SteadyStateTensor):
+                        # If the successor is a tensor node, we check that it is a sink node output (viewed as constant output)
+                        assert (
+                            TensorFlag.CONSTANT in successor.tensor_flag and TensorFlag.OUTPUT in successor.tensor_flag
+                        )
+                    # Get the paths from the predecessor to the successor
+                    paths = self.accelerator.communication_manager.get_all_links_for_pair(pred_alloc, succ_alloc)
+                    all_succ_paths.update(paths)
+                    if not paths:
+                        raise ValueError(
+                            f"No communication paths found from {predecessor.node_name} to {successor.node_name}."
+                        )
+                paths_per_successor[successor] = all_succ_paths
+            # Find all overlapping paths for all successors
+            # Flatten all paths into a set of unique paths (as tuples for hashability)
+            all_paths = set(tuple(path) for paths in paths_per_successor.values() for path in paths)
+            # Find intersection: paths that are supersets of a path present in every successor's path list
+            common_paths = [
+                tuple(path)
+                for path in all_paths
+                if all(any(all(y in list(path) for y in z) for z in paths) for paths in paths_per_successor.values())
+            ]
+            if not common_paths:
+                raise ValueError(
+                    f"No common communication paths found for predecessors {pred_alloc} and successors {[succ.chosen_resource_allocation for succ in successors]}."
+                )
+            # # If there are no common paths, we take the first path for each successor and join them into a single path.
+            # if not common_paths:
+            #     unique_links: list[CommunicationLink] = []
+            #     seen_links: set[CommunicationLink] = set()
+            #     for paths in paths_per_successor.values():
+            #         if paths:
+            #             for link in paths[0]:
+            #                 if link not in seen_links:
+            #                     unique_links.append(link)
+            #                     seen_links.add(link)
+            #     common_paths = [unique_links]
+            all_common_paths.update(common_paths)
+        return tuple(all_common_paths)

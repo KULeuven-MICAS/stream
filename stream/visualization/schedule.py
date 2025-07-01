@@ -184,7 +184,7 @@ def plot_timeline_brokenaxes(
     if plot_data_transfer:
         # First get all used and unique communication links
         used_cl_collect: list[CommunicationLink] = []
-        for ky, pair_link in accelerator.communication_manager.pair_links.items():
+        for ky, pair_link in accelerator.communication_manager.all_pair_links.items():
             if pair_link:
                 for link in pair_link:
                     if link.events and link not in used_cl_collect:
@@ -404,9 +404,12 @@ def get_communication_dicts(scme: "StreamCostModelEvaluation"):
     dicts = []
     accelerator: Accelerator = scme.accelerator
 
-    active_links: set["CommunicationLink"] = set(
-        link for link_pair in accelerator.communication_manager.pair_links.values() for link in link_pair if link.events
-    )
+    active_links: set["CommunicationLink"] = set()
+    for all_links_pairs in accelerator.communication_manager.all_pair_links.values():
+        for link_pair in all_links_pairs:
+            for link in link_pair:
+                if link.events:
+                    active_links.add(link)
 
     for cl in active_links:
         for cl_event in cl.events:

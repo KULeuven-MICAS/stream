@@ -2,6 +2,7 @@ from abc import ABC
 from typing import Optional
 
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.workload.steady_state_iteration_space import SteadyStateIterationSpace
 
 
@@ -14,7 +15,7 @@ class SteadyStateNode(ABC):
         node_name: str,
         type: str,
         steady_state_iteration_space: SteadyStateIterationSpace,
-        possible_resource_allocation: list[Core | None],
+        possible_resource_allocation: None | list[Core] | tuple[tuple[CommunicationLink]],
         onchip_energy: Optional[float] = None,
         offchip_energy: Optional[float] = None,
         runtime: Optional[float] = None,
