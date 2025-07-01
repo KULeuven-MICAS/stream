@@ -3,7 +3,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.opt.allocation.constraint_optimization.allocation import TimeSlotAllocation
+from stream.opt.allocation.constraint_optimization.timeslot_allocation import TimeSlotAllocation
 from stream.opt.allocation.constraint_optimization.utils import (
     get_node_latencies,
     get_node_start_timesteps,

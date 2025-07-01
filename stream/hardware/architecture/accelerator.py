@@ -267,7 +267,9 @@ class Accelerator:
         assert 0 < bandwidth_fraction <= 1
         windows: list[tuple[int, int]] = []
 
-        links = self.communication_manager.get_links_for_pair(sending_core, receiving_core)
+        links = self.communication_manager.get_all_links_for_pair(sending_core, receiving_core)[
+            0
+        ]  # Take the first path
         links_with_bw = {link: ceil(bandwidth_fraction * link.bandwidth) for link in links}
         start, end = self.find_transfer_start_and_end_time(tensor, links_with_bw, earliest_t)
         windows.append((start, end))

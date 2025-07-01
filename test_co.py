@@ -14,9 +14,9 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 ############################################INPUTS############################################
-accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
+accelerator = "stream/inputs/testing/hardware/tpu_like_quad_core.yaml"
 workload_path = "stream/inputs/testing/workload/2_conv.onnx"
-mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
+mapping_path = "stream/inputs/testing/mapping/tpu_like_quad_core.yaml"
 mode = "fused"
 layer_stacks = [
     (0, 1),
@@ -39,7 +39,7 @@ scme = optimize_allocation_co(
     layer_stacks=layer_stacks,
     experiment_id=experiment_id,
     output_path="outputs",
-    skip_if_exists=True,
+    skip_if_exists=False,
 )
 
 ############PLOTTING#############

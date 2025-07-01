@@ -1,6 +1,6 @@
 from enum import Enum
 
-from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.workload.steady_state_iteration_space import SteadyStateIterationSpace
 from stream.workload.steady_state_node import SteadyStateNode
 from stream.workload.steady_state_tensor import SteadyStateTensor
@@ -24,7 +24,7 @@ class SteadyStateTransfer(SteadyStateNode):
         src: object,
         dst: object,
         tensor: SteadyStateTensor,
-        possible_resource_allocation: list[Core | None],
+        possible_resource_allocation: tuple[tuple[CommunicationLink]],
         steady_state_iteration_space: SteadyStateIterationSpace,
     ):
         super().__init__(
@@ -39,6 +39,10 @@ class SteadyStateTransfer(SteadyStateNode):
         self.tensor = tensor
         self.size = tensor.size
         self.transfer_type = transfer_type
+        self.possible_resource_allocation: tuple[tuple[CommunicationLink]]
+        self.chosen_resource_allocation: tuple[CommunicationLink] | None = (
+            None if len(possible_resource_allocation) > 1 else possible_resource_allocation[0]
+        )
 
     def __str__(self):
         return f"Transfer({self.src} -> {self.dst})"
