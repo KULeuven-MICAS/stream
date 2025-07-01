@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 from zigzag.datatypes import LayerDim, LayerOperand, UnrollFactor
 
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.hardware.architecture.core import Core
 from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.steady_state_computation import SteadyStateComputation

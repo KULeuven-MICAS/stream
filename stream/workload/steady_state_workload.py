@@ -148,8 +148,8 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
 
         # -------------------------------------------------------------------
         return TimeSlotAllocation(
-            allocations=allocations,  # every node in SS gets this tag
-        )
+            allocations=allocations,
+        )  # every node in SS gets this tag
 
     def visualize_to_file(self, filepath: str = "workload_graph.png"):
         """Visualize the graph using Graphviz and save it to an image file.

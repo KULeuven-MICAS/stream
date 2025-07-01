@@ -3,7 +3,6 @@ from zigzag.hardware.architecture.accelerator import Accelerator as ZigZagCore
 
 
 class Core(ZigZagCore):
-
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, Core)

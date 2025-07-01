@@ -6,7 +6,6 @@ from stream.workload.node import Node
 
 
 class ElementwiseNode(PropagationNode):
-
     def __init__(
         self,
         node_id: int,

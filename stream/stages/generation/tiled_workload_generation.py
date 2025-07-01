@@ -16,9 +16,7 @@ from stream.cost_model.group_allocation import GroupIdManager
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.node_tensor import NodeTensor
 from stream.opt.partitioning.TemporalLoop import TemporalLoop
-from stream.opt.partitioning.utils import (
-    convert_outer_cn_loops,
-)
+from stream.opt.partitioning.utils import convert_outer_cn_loops
 from stream.stages.stage import Stage, StageCallable
 from stream.utils import contains_wildcard, get_inter_core_tiling_size
 from stream.workload.computation.computation_node import LOOP_RANGES_T, ComputationNode, GeneratedComputationNode

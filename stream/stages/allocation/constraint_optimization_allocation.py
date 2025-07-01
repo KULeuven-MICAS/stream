@@ -20,9 +20,7 @@ from stream.opt.allocation.constraint_optimization.utils import calculate_total_
 from stream.stages.estimation.stream_cost_model_evaluation import StreamCostModelEvaluationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
 from stream.stages.generation.layer_stacks_generation import STACK_T
-from stream.stages.generation.tiled_workload_generation import (
-    TiledWorkloadGenerationStage,
-)
+from stream.stages.generation.tiled_workload_generation import TiledWorkloadGenerationStage
 from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 from stream.stages.stage import MainStage, Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT

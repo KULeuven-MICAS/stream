@@ -5,9 +5,7 @@ from stream.api import optimize_allocation_ga
 from stream.utils import CostModelEvaluationLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.perfetto import convert_scme_to_perfetto_json
-from stream.visualization.schedule import (
-    visualize_timeline_plotly,
-)
+from stream.visualization.schedule import visualize_timeline_plotly
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
