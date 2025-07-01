@@ -179,6 +179,7 @@ class ComputationNode(LayerNode, Node):
         initialization time to speed up dict lookup and instance equality"""
         return hash_sha512(
             (
+                self.name,
                 self.layer_dim_sizes,
                 frozenset(self.dimension_relations),
                 self.operand_precision,

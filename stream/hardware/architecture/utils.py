@@ -50,7 +50,7 @@ def intersections(a: list[Any], b: list[Any]):
 
 
 def get_core_capacities(accelerator: "Accelerator", mem_op: MemoryOperand, core_ids: list[int]):
-    core_capacities: dict[str, int] = {}
+    core_capacities: dict[str, float] = {}
     for core_id in core_ids:
         core_name = f"Core {core_id}"
         core = accelerator.get_core(core_id)

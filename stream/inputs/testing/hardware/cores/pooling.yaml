@@ -1,0 +1,40 @@
+name: pooling
+
+memories:
+  sram_128KB:
+    size: 1048576
+    r_bw: 576  # 9 inputs * 8 channels * 8 bits
+    w_bw: 512
+    r_cost: 60
+    w_cost: 75
+    area: 0
+    r_port: 1
+    w_port: 1
+    rw_port: 0
+    latency: 1
+    operands: [I1, I2, O]
+    ports:
+      - fh: w_port_1
+        tl: r_port_1
+      - fh: w_port_1
+        tl: r_port_1
+      - fh: w_port_1
+        tl: r_port_1
+        fl: w_port_1
+        th: r_port_1
+    served_dimensions: [D1, D2, D3]
+
+
+operational_array:
+  unit_energy: 0.1 # pJ
+  unit_area: 0.01 # unit
+  dimensions: [D1, D2, D3]
+  sizes: [3, 3, 8]
+
+dataflows:
+  D1: 
+    - FX, 3
+  D2: 
+    - FY, 3
+  D3:
+    - K, 8

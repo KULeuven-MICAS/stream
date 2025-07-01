@@ -2,6 +2,7 @@ import itertools
 from math import ceil, floor
 from typing import TYPE_CHECKING
 
+import networkx as nx
 from zigzag.datatypes import Constants, MemoryOperand
 
 from stream.hardware.architecture.core import Core
@@ -105,7 +106,8 @@ class CommunicationManager:
     def __init__(self, accelerator: "Accelerator") -> None:
         self.accelerator = accelerator
         self.shortest_paths = self.get_shortest_paths()
-        self.pair_links = self.get_links_for_all_core_pairs()
+        self.all_shortest_paths = self.get_all_shortest_paths()
+        self.all_pair_links = self.get_all_links_for_all_core_pairs()
         self.events = []
         self.event_id = 0
 
@@ -118,23 +120,34 @@ class CommunicationManager:
             )
         return shortest_paths
 
-    def get_links_for_all_core_pairs(self):
-        """
-        Returns a dictionary mapping (sender, receiver) core pairs to their CommunicationLink objects.
-        """
-        communication_links: dict[tuple[Core, Core], "CommunicationLink"] = {}
-        for pair, path in self.shortest_paths.items():
-            traversed_edges = [(i, j) for i, j in zip(path, path[1:])]
-            communication_links[pair] = [
-                self.accelerator.cores.edges[traversed_edge]["cl"] for traversed_edge in traversed_edges
-            ]
+    def get_all_shortest_paths(self) -> dict[tuple[Core, Core], list[list[Core]]]:
+        """Return a dictionary with all shortest paths between all core pairs."""
+        all_shortest_paths: dict[tuple[Core, Core], list[list[Core]]] = {}
+        for producer_core, consumer_core in itertools.product(self.accelerator.core_list, self.accelerator.core_list):
+            paths = list(nx.all_shortest_paths(self.accelerator.cores, producer_core, consumer_core))
+            all_shortest_paths[(producer_core, consumer_core)] = paths
+        return all_shortest_paths
+
+    def get_all_links_for_all_core_pairs(self):
+        communication_links: dict[tuple[Core, Core], tuple[tuple["CommunicationLink"]]] = {}
+        for pair, paths in self.all_shortest_paths.items():
+            links: list[tuple["CommunicationLink"]] = []
+            for path in paths:
+                traversed_edges = [(i, j) for i, j in zip(path, path[1:])]
+                links.append(
+                    tuple(self.accelerator.cores.edges[traversed_edge]["cl"] for traversed_edge in traversed_edges)
+                )
+            communication_links[pair] = tuple(links)
         return communication_links
 
-    def get_links_for_pair(self, sender: Core, receiver: Core) -> list["CommunicationLink"]:
+    def get_all_links_for_pair(self, sender: Core, receiver: Core) -> tuple[tuple["CommunicationLink"]]:
+        """Return the list of traversed CommunicationLinks for sending data from sender core to receiver core.
+
+        Args:
+            sender_id (Core): the sending core
+            receiver_id (Core): the receiving core
         """
-        Returns the list of CommunicationLink objects between a sender and receiver core.
-        """
-        return self.pair_links[(sender, receiver)]
+        return self.all_pair_links[(sender, receiver)]
 
     def get_all_links(self):
         """Return all unique CommunicationLinks."""
@@ -161,7 +174,8 @@ class CommunicationManager:
             sender = self.accelerator.get_core(sender)
         if isinstance(receiver, int):
             receiver = self.accelerator.get_core(receiver)
-        links = self.get_links_for_pair(sender, receiver)
+        links = self.get_all_links_for_pair(sender, receiver)
+        links = links[0]  # take only the first path
         if not links:  # When sender == receiver
             return 0, 0
 
@@ -227,7 +241,7 @@ class CommunicationManager:
 
         # Output operand
         if Constants.OUTPUT_MEM_OP in too_large_operands:
-            links_to_offchip = set(self.get_links_for_pair(core, offchip_core))
+            links_to_offchip = set(self.get_all_links_for_pair(core, offchip_core)[0])  # Take the first path
 
             for link in links_to_offchip:
                 tensors_per_link[link] = tensors_per_link.get(link, []) + [
@@ -237,7 +251,7 @@ class CommunicationManager:
         # Input operands
         non_output_mem_ops = [op for op in too_large_operands if op != Constants.OUTPUT_MEM_OP]
         if non_output_mem_ops:
-            links_from_offchip = set(self.get_links_for_pair(offchip_core, core))
+            links_from_offchip = set(self.get_all_links_for_pair(offchip_core, core)[0])  # Take the first path
             for link in links_from_offchip:
                 tensors_per_link[link] = tensors_per_link.get(link, []) + [
                     node.operand_tensors[node.memory_operand_links.mem_to_layer_op(op)] for op in non_output_mem_ops

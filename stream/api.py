@@ -11,9 +11,7 @@ from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorit
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
 from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
 from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
-from stream.stages.generation.tiled_workload_generation import (
-    TiledWorkloadGenerationStage,
-)
+from stream.stages.generation.tiled_workload_generation import TiledWorkloadGenerationStage
 from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
@@ -155,7 +153,6 @@ def optimize_allocation_co(
                 TilingGenerationStage,
                 TiledWorkloadGenerationStage,
                 ZigZagCoreMappingEstimationStage,
-                SetFixedAllocationPerformanceStage,
                 ConstraintOptimizationAllocationStage,
             ],
             accelerator=hardware,  # required by AcceleratorParserStage

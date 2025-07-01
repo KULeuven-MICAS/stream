@@ -3,9 +3,7 @@ import random
 
 from deap import algorithms, base, creator, tools
 
-from stream.opt.allocation.genetic_algorithm.statistics_evaluator import (
-    StatisticsEvaluator,
-)
+from stream.opt.allocation.genetic_algorithm.statistics_evaluator import StatisticsEvaluator
 
 
 class GeneticAlgorithm:

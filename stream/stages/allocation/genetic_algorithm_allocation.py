@@ -4,12 +4,8 @@ from typing import Any
 from zigzag.datatypes import LayerOperand
 
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.opt.allocation.genetic_algorithm.fitness_evaluator import (
-    StandardFitnessEvaluator,
-)
-from stream.opt.allocation.genetic_algorithm.genetic_algorithm import (
-    GeneticAlgorithm,
-)
+from stream.opt.allocation.genetic_algorithm.fitness_evaluator import StandardFitnessEvaluator
+from stream.opt.allocation.genetic_algorithm.genetic_algorithm import GeneticAlgorithm
 from stream.stages.stage import Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT, get_unique_nodes
 from stream.workload.computation.computation_node import ComputationNode

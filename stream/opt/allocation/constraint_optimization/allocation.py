@@ -29,6 +29,7 @@ def get_optimal_allocations(
     latency_attr: str = "latency_total1",
 ) -> ALLOCATION_T:
     core_ids = sorted((core.id for core in accelerator.cores.node_list if core.id != accelerator.offchip_core_id))
+    cores = [accelerator.get_core(core_id) for core_id in core_ids]
     core_capacities = get_core_capacities(accelerator, MemoryOperand("I2"), core_ids)
 
     nodes = sorted(workload.node_list)
@@ -40,9 +41,20 @@ def get_optimal_allocations(
         accelerator,
         cost_lut,
         impossible_lat=0,
-        ids=ids,
         latency_attr=latency_attr,
     )
+    # Convert the returned latencies: from ComputationNode to ids and Core to core names
+    latencies = {(ids[node], f"Core {core.id}", p): lat for (node, core, p), lat in latencies.items()}
+    # Convert the possible allocation splits to ids and core names
+    possible_allocation_splits = {
+        ids[node]: {
+            f"Core {core.id}": {
+                p: possible_allocation_splits[node][core][p] for p in possible_allocation_splits[node][core]
+            }
+            for core in cores
+        }
+        for node in nodes
+    }
     energies = get_energies(nodes, core_ids, accelerator, cost_lut, impossible_energy=0, ids=ids)
     output_operand = LayerOperand("O")
     dependencies = {
