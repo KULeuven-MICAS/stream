@@ -282,6 +282,9 @@ class AIECodeGenerationStage(Stage):
         # Remove custom layout attributes
         ClearMemorySpace().apply(self.context, module)
 
+        # Optionally, Add Tracing Script
+        # AIEAddTracingScript().apply(self.context, module)
+
         # print output to codegen path
         file = open(self.output_path, "w")
         printer = Printer(file)
