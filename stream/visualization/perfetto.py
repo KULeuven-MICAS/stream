@@ -7,7 +7,7 @@ from zigzag.utils import pickle_load
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.utils import CostModelEvaluationLUT
-from stream.visualization.schedule import get_dataframe_from_scme
+from stream.visualization.utils import get_dataframe_from_scme
 
 PROCESS_NAME = "scme"
 UNKNOWN_STRING = "Unknown"

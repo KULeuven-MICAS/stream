@@ -26,22 +26,15 @@ By using the ``save_scme()`` function from ``stream.utils``, the user can save a
 Schedule visualization
 ----------------------
 
-Plotly visualization
+Perfetto visualization
 ====================
 
-The schedule of a specific SCME can be saved in a Plotly-html file by calling ``visualize_timeline_plotly()`` from ``stream.visualization.schedule``. The saved file can be opened in a web browser and the different parts of the schedule can be further investigated. The following image shows an example of this visualization:
-
-.. image:: images/plotly-visualization.jpg
-  :width: 900
-
-The first six lines of the diagram (``Core 0`` to ``Core 5``) show the usage of the different cores for this specific SCME. The following nine lines (``Core(0) -> Core(1)`` to ``Core(4) -> Core(1)``) show the communication (i.e. data exchange) between the different processing cores. The last line of the diagram (``Core(6) <-> Any``) shows the utilization of the port to the off-chip memory (i.e. ``Core(6)``).
-
-An example of such an interactive Plotly visualization can be accessed `through this link <interactive-plotly-visualization.html>`_.
+The schedule of a specific SCME can be saved in a Perfetto json file by calling ``convert_scme_to_perfetto_json()`` from ``stream.visualization.perfetto``. The saved file can be opened at `https://ui.perfetto.dev <https://ui.perfetto.dev>`_ and the different parts of the schedule can be further investigated.
 
 PNG visualization
 =================
 
-By using the ``plot_timeline_brokenaxes()`` function from ``stream.visualization.schedule``, a similar visualization than the Plotly schedule can be saved in a ``png`` file.
+By using the ``plot_timeline_brokenaxes()`` function from ``stream.visualization.schedule``, a portion of the entire schedule can be visualized to a ``png`` file.
 
 Memory usage visualization
 --------------------------
