@@ -28,7 +28,7 @@ from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
 from stream.workload.onnx_workload import ComputationNodeWorkload
-from stream.workload.steady_state_computation import SteadyStateComputation
+from stream.workload.steady_state.steady_state_computation import SteadyStateComputation
 from stream.workload.utils import get_real_successors
 
 logger = logging.getLogger(__name__)

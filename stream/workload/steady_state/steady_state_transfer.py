@@ -1,9 +1,9 @@
 from enum import Enum
 
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.workload.steady_state_iteration_space import SteadyStateIterationSpace
-from stream.workload.steady_state_node import SteadyStateNode
-from stream.workload.steady_state_tensor import SteadyStateTensor
+from stream.workload.steady_state.steady_state_iteration_space import SteadyStateIterationSpace
+from stream.workload.steady_state.steady_state_node import SteadyStateNode
+from stream.workload.steady_state.steady_state_tensor import SteadyStateTensor
 
 
 class TransferType(Enum):

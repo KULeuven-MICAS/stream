@@ -5,8 +5,8 @@ from zigzag.workload.layer_node import LayerNodeAttributes
 
 from stream.workload.computation.computation_node import ComputationNode, OperandTensorReshape
 from stream.workload.mapping import InterCoreMappingAttributes
-from stream.workload.steady_state_iteration_space import SteadyStateIterationSpace
-from stream.workload.steady_state_node import SteadyStateNode
+from stream.workload.steady_state.steady_state_iteration_space import SteadyStateIterationSpace
+from stream.workload.steady_state.steady_state_node import SteadyStateNode
 
 
 class SteadyStateComputation(ComputationNode, SteadyStateNode):

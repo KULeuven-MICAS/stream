@@ -7,10 +7,10 @@ from pyparsing import Any
 
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.workload.steady_state_computation import SteadyStateComputation
-from stream.workload.steady_state_node import SteadyStateNode
-from stream.workload.steady_state_tensor import SteadyStateTensor
-from stream.workload.steady_state_transfer import SteadyStateTransfer
+from stream.workload.steady_state.steady_state_computation import SteadyStateComputation
+from stream.workload.steady_state.steady_state_node import SteadyStateNode
+from stream.workload.steady_state.steady_state_tensor import SteadyStateTensor
+from stream.workload.steady_state.steady_state_transfer import SteadyStateTransfer
 
 # --------------------------------------------------------------------------- #
 # Helpers                                                                     #

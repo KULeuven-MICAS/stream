@@ -8,8 +8,8 @@ from typing import Any, Sequence, Tuple
 from zigzag.datatypes import LayerOperand
 
 from stream.hardware.architecture.core import Core
-from stream.workload.steady_state_iteration_space import SteadyStateIterationSpace
-from stream.workload.steady_state_node import SteadyStateNode
+from stream.workload.steady_state.steady_state_iteration_space import SteadyStateIterationSpace
+from stream.workload.steady_state.steady_state_node import SteadyStateNode
 
 
 # ................................................ tensor-type bit-flags ...

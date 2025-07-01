@@ -3,7 +3,7 @@ from typing import Optional
 
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.workload.steady_state_iteration_space import SteadyStateIterationSpace
+from stream.workload.steady_state.steady_state_iteration_space import SteadyStateIterationSpace
 
 
 class SteadyStateNode(ABC):

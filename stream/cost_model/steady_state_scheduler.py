@@ -8,13 +8,13 @@ from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocatio
 from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
-from stream.workload.steady_state_computation import SteadyStateComputation
-from stream.workload.steady_state_iteration_space import SteadyStateIterationSpace
-from stream.workload.steady_state_node import SteadyStateNode
-from stream.workload.steady_state_rolling_buffer import SteadyStateRollingBuffer
-from stream.workload.steady_state_tensor import SteadyStateTensor, TensorFlag
-from stream.workload.steady_state_transfer import SteadyStateTransfer, TransferType
-from stream.workload.steady_state_workload import SteadyStateWorkload
+from stream.workload.steady_state.steady_state_computation import SteadyStateComputation
+from stream.workload.steady_state.steady_state_iteration_space import SteadyStateIterationSpace
+from stream.workload.steady_state.steady_state_node import SteadyStateNode
+from stream.workload.steady_state.steady_state_rolling_buffer import SteadyStateRollingBuffer
+from stream.workload.steady_state.steady_state_tensor import SteadyStateTensor, TensorFlag
+from stream.workload.steady_state.steady_state_transfer import SteadyStateTransfer, TransferType
+from stream.workload.steady_state.steady_state_workload import SteadyStateWorkload
 from stream.workload.tensor import Tensor
 from stream.workload.utils import get_real_in_edges, get_real_out_edges
 

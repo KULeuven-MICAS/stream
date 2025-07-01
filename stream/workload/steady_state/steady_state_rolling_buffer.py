@@ -1,4 +1,4 @@
-from stream.workload.steady_state_tensor import SteadyStateTensor
+from stream.workload.steady_state.steady_state_tensor import SteadyStateTensor
 
 
 class SteadyStateRollingBuffer(SteadyStateTensor):

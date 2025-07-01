@@ -5,8 +5,8 @@ import gurobipy as gp
 from gurobipy import GRB
 
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import TimeSlotAllocation, _resource_key
-from stream.workload.steady_state_transfer import SteadyStateTransfer
-from stream.workload.steady_state_workload import SteadyStateWorkload
+from stream.workload.steady_state.steady_state_transfer import SteadyStateTransfer
+from stream.workload.steady_state.steady_state_workload import SteadyStateWorkload
 
 
 class TransferAllocator:

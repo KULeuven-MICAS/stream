@@ -6,9 +6,9 @@ import seaborn
 from matplotlib import patches
 from matplotlib import pyplot as plt
 
-from stream.workload.steady_state_node import SteadyStateNode
-from stream.workload.steady_state_tensor import SteadyStateTensor
-from stream.workload.steady_state_workload import SteadyStateWorkload
+from stream.workload.steady_state.steady_state_node import SteadyStateNode
+from stream.workload.steady_state.steady_state_tensor import SteadyStateTensor
+from stream.workload.steady_state.steady_state_workload import SteadyStateWorkload
 
 
 @dataclass(frozen=True)

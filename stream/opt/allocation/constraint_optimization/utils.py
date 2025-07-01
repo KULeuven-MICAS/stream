@@ -7,7 +7,7 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.steady_state_computation import SteadyStateComputation
+from stream.workload.steady_state.steady_state_computation import SteadyStateComputation
 
 if TYPE_CHECKING:
     from stream.opt.allocation.constraint_optimization.timeslot_allocation import TimeSlotAllocation

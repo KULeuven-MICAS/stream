@@ -1,7 +1,7 @@
 import gurobipy as gp
 from gurobipy import GRB
 
-from stream.workload.steady_state_workload import SteadyStateWorkload
+from stream.workload.steady_state.steady_state_workload import SteadyStateWorkload
 
 
 class TransferAllocator:
