@@ -13,11 +13,11 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
     TimeSlotAllocation,
     _resource_key,
 )
-from stream.workload.steady_state.steady_state_computation import SteadyStateComputation
-from stream.workload.steady_state.steady_state_node import SteadyStateNode
-from stream.workload.steady_state.steady_state_tensor import SteadyStateTensor
-from stream.workload.steady_state.steady_state_transfer import SteadyStateTransfer
-from stream.workload.steady_state.steady_state_workload import SteadyStateWorkload
+from stream.workload.steady_state.computation import SteadyStateComputation
+from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.steady_state.tensor import SteadyStateTensor
+from stream.workload.steady_state.transfer import SteadyStateTransfer
+from stream.workload.steady_state.workload import SteadyStateWorkload
 
 
 class TransferAndTensorAllocator:

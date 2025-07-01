@@ -158,7 +158,6 @@ class CoalaScheduler:
         Returns the total latency of the schedule.
         """
         nb_scheduled_nodes = 0
-        total_nodes_to_schedule = len(self.G.node_list)
         done = False
         self.prefetch_constant_operands()
         while not done:
@@ -268,7 +267,6 @@ class CoalaScheduler:
             self.extend_candidates(best_candidate)
             nb_scheduled_nodes += 1
             done = nb_scheduled_nodes == self.nb_graph_nodes
-        logger.info(f"Scheduled {nb_scheduled_nodes}/{total_nodes_to_schedule} nodes")
         self.latency = self.get_total_latency()
         return self.latency
 

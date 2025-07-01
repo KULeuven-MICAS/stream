@@ -6,11 +6,11 @@ from networkx.drawing.nx_pydot import to_pydot  # type: ignore
 from zigzag.utils import DiGraphWrapper
 
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import Resource, TimeSlotAllocation
-from stream.workload.steady_state.steady_state_computation import SteadyStateComputation
-from stream.workload.steady_state.steady_state_node import SteadyStateNode
-from stream.workload.steady_state.steady_state_rolling_buffer import SteadyStateRollingBuffer
-from stream.workload.steady_state.steady_state_tensor import SteadyStateTensor
-from stream.workload.steady_state.steady_state_transfer import SteadyStateTransfer
+from stream.workload.steady_state.computation import SteadyStateComputation
+from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.steady_state.rolling_buffer import SteadyStateRollingBuffer
+from stream.workload.steady_state.tensor import SteadyStateTensor
+from stream.workload.steady_state.transfer import SteadyStateTransfer
 
 
 class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
