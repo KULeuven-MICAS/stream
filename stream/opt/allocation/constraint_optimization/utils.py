@@ -113,7 +113,7 @@ def get_energies(
     ids: dict[ComputationNode, int] = {},
 ) -> dict[tuple[int, str], float]:
     if not ids:
-        ids = {node.id: node.id for node in nodes}
+        ids = {node: node.id for node in nodes}
     core_names = [f"Core {id}" for id in core_ids]
     energies = {(ids[node], core_name): impossible_energy for node in nodes for core_name in core_names}
 
@@ -132,12 +132,14 @@ def get_energies(
 
 def get_node_latencies(allocation: "TimeSlotAllocation", cost_lut, accelerator, latency_attr):
     node_latencies = {}
-    for node in allocation.nodes:
+    for node in allocation.get_computation_nodes():
         cores = allocation.get_resources_for_node(node)
-        core_ids = [core.id for core in cores]
+        assert all(isinstance(core, Core) for core in cores), f"Node {node} has non-core resources: {cores}"
+        core_ids = [core.id for core in cores if isinstance(core, Core)]
         latencies, _ = get_latencies([node], core_ids, accelerator, cost_lut, latency_attr=latency_attr)
         p = len(cores)
         for core in cores:
+            assert isinstance(core, Core), f"Resource {core} for node {node} is not a Core."
             combined_id = (node, core, p)
             lat = latencies[combined_id]
             node_latencies[node, core] = lat

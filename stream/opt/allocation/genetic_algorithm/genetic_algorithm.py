@@ -33,7 +33,7 @@ class GeneticAlgorithm:
         # define target of fitness function
         creator.create("FitnessMulti", base.Fitness, weights=self.fitness_evaluator.weights)
         # define individual in population
-        creator.create("Individual", array.array, typecode="i", fitness=creator.FitnessMulti)
+        creator.create("Individual", array.array, typecode="i", fitness=creator.FitnessMulti)  # type: ignore
 
         self.toolbox = base.Toolbox()  # initialize DEAP toolbox
         self.hof = tools.ParetoFront()  # initialize Hall-of-Fame as Pareto Front
@@ -49,10 +49,10 @@ class GeneticAlgorithm:
 
         # structure initializers
         self.toolbox.register(
-            "individual", tools.initIterate, creator.Individual, self.toolbox.attr_bool
+            "individual", tools.initIterate, creator.Individual, self.toolbox.attr_bool  # type: ignore
         )  # indivual has #nodes in graph attributes
         self.toolbox.register(
-            "population", tools.initRepeat, list, self.toolbox.individual
+            "population", tools.initRepeat, list, self.toolbox.individual  # type: ignore
         )  # define polulation based on indiviudal
 
         # link user defined fitness function to toolbox
@@ -69,7 +69,7 @@ class GeneticAlgorithm:
         self.toolbox.register("select", tools.selNSGA2)
 
         # populate random initial generation
-        self.pop = self.toolbox.population(n=self.num_individuals)
+        self.pop = self.toolbox.population(n=self.num_individuals)  # type: ignore
 
         # replace sub part of initial generation with user provided individuals
         for indv_index in range(len(pop)):
@@ -112,30 +112,6 @@ class GeneticAlgorithm:
             stats=stats,
             halloffame=self.hof,
         )
-
-        # latency = []
-        # buffer_size = []
-        # energy = []
-
-        # if len(self.fitness_evaluator.metrics) == 3:
-        #     for index in range(len(logbook[1])):
-        #         latency.append(logbook[1][index]['min (latency, buffer_size, energy)'][0])
-        #         buffer_size.append(logbook[1][index]['min (latency, buffer_size, energy)'][1])
-        #         energy.append(logbook[1][index]['min (latency, buffer_size, energy)'][2])
-
-        # file1 = open("outputs/logbook.py","w+")
-        # file1.write("latency = " + str(latency) + "\n")
-        # file1.write("buffer_size = " + str(buffer_size) + "\n")
-        # file1.write("energy = " + str(energy) + "\n")
-        # file1.close()
-
-        # file1 = open("outputs/log.txt","a")
-        # file1.write(str(logbook[1]))
-        # file1.close()
-
-        # if len(self.fitness_evaluator.metrics) > 1:
-        # self.statistics_evaluator.plot_population(self.hof)
-
         return self.pop, self.hof
 
     def mutate(self, individual):

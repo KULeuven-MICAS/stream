@@ -3,6 +3,7 @@ from typing import Optional
 from zigzag.datatypes import LayerOperand
 from zigzag.workload.layer_node import LayerNodeAttributes
 
+from stream.hardware.architecture.core import Core
 from stream.workload.computation.computation_node import ComputationNode, OperandTensorReshape
 from stream.workload.mapping import InterCoreMappingAttributes
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
@@ -57,6 +58,7 @@ class SteadyStateComputation(ComputationNode, SteadyStateNode):
             steady_state_iteration_space=steady_state_iteration_space,
         )
         self.chosen_resource_allocation = self.chosen_core_allocation
+        self.possible_resource_allocation: list[Core]
 
     @property
     def plot_name(self):

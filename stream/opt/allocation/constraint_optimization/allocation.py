@@ -16,7 +16,7 @@ from stream.opt.allocation.constraint_optimization.utils import (
 from stream.utils import CostModelEvaluationLUT
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
-ALLOCATION_T: TypeAlias = list[tuple[int, str, tuple[int, int]]]
+ALLOCATION_T: TypeAlias = list[tuple[int, int, tuple[int, int]]]
 
 
 def get_optimal_allocations(

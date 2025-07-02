@@ -24,7 +24,7 @@ class StatisticsEvaluator:
             y = []
             x = []
             z = []
-            third_metirc = 0
+            third_metric = 0
 
             for individual in pop:
                 if len(self.fitness_evaluator.metrics) == 1:
@@ -35,12 +35,12 @@ class StatisticsEvaluator:
                     (
                         first_metric,
                         second_metric,
-                        third_metirc,
+                        third_metric,
                     ) = self.fitness_evaluator.get_fitness(individual)
 
                 y.append(second_metric)
                 x.append(first_metric)
-                z.append(third_metirc)
+                z.append(third_metric)
 
             first_values.append(x)
             second_values.append(y)
@@ -94,84 +94,6 @@ class StatisticsEvaluator:
             plt.ylabel(self.fitness_evaluator.metrics[2])
             # plt.legend(loc='upper right')
             plt.show()
-
-    def plot_population(self, pop):
-        # funcion only works if more than two fitness evaluator metrics are used
-
-        y = []
-        x = []
-        z = []
-
-        for individual in pop:
-            if len(self.fitness_evaluator.metrics) == 2:
-                first_metric, second_metric = self.fitness_evaluator.get_fitness(individual)
-                third_metirc = first_metric  # unrelevant assignment
-            elif len(self.fitness_evaluator.metrics) == 3:
-                (
-                    first_metric,
-                    second_metric,
-                    third_metirc,
-                ) = self.fitness_evaluator.get_fitness(individual)
-
-            x.append(first_metric)
-            y.append(second_metric)
-            z.append(third_metirc)
-
-        min_x = min(x)
-        max_x = max(x)
-        min_y = min(y)
-        max_y = max(y)
-        min_z = min(z)
-        max_z = max(z)
-
-        min_max_y = (
-            "["
-            + str(numpy.format_float_scientific(min_y, precision=2))
-            + ", "
-            + str(numpy.format_float_scientific(max_y, precision=2))
-            + "]"
-        )
-        min_max_x = (
-            "["
-            + str(numpy.format_float_scientific(min_x, precision=2))
-            + ", "
-            + str(numpy.format_float_scientific(max_x, precision=2))
-            + "]"
-        )
-        (
-            "["
-            + str(numpy.format_float_scientific(min_z, precision=2))
-            + ", "
-            + str(numpy.format_float_scientific(max_z, precision=2))
-            + "]"
-        )
-
-        if len(self.fitness_evaluator.metrics) == 2:
-            plt.scatter(x, y, c="blue")
-            plt.title("Pareto front of produced solutions")
-            plt.grid()
-            plt.xlabel(self.fitness_evaluator.metrics[0] + "\n" + min_max_x)
-            if len(self.fitness_evaluator.metrics) == 1:
-                plt.ylabel(self.fitness_evaluator.metrics[0] + "\n" + min_max_y)
-            else:
-                plt.ylabel(self.fitness_evaluator.metrics[1] + "\n" + min_max_y)
-            plt.tight_layout()
-            plt.show()
-
-        else:
-            plt.clf()
-            fig = plt.figure()
-            ax = fig.add_subplot(111, projection="3d")
-            ax.scatter(y, x, z, c=z)
-            ax.set_xlabel(self.fitness_evaluator.metrics[1])
-            ax.set_ylabel(self.fitness_evaluator.metrics[0])
-            ax.set_zlabel(self.fitness_evaluator.metrics[2])
-            ax.locator_params(axis="x", nbins=6)
-            ax.locator_params(axis="y", nbins=6)
-            ax.view_init(15, 45)
-            path = "outputs/paretofront_middle"
-            plt.savefig(path)
-            # plt.show()
 
     def print_population(self, pop):
         for individual in pop:
