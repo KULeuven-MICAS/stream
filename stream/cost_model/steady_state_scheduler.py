@@ -2,6 +2,7 @@ import networkx as nx
 
 # if TYPE_CHECKING:
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import TimeSlotAllocation
 from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
@@ -96,8 +97,9 @@ class SteadyStateScheduler:
         """
         # Get the nodes that are part of the current fusion stack
         assert all(isinstance(node, SteadyStateComputation) for node in allocation.nodes)
+        sscs = allocation.get_computation_nodes()
         subgraph_nodes = [
-            next(n for n in self.workload if n.id == node.id and n.sub_id == node.sub_id) for node in allocation.nodes
+            next(n for n in self.workload if n.id == node.id and n.sub_id == node.sub_id) for node in sscs
         ]
         return self.workload.get_subgraph(subgraph_nodes)
 
@@ -167,9 +169,10 @@ class SteadyStateScheduler:
                     original_tensor = original_node.operand_tensors[input_op]
                     if tensor not in seen_tensors:
                         seen_tensors.add(tensor)
+                        compute_allocations = set(n.chosen_resource_allocation for n in self.partitioned_nodes[node])
                         possible_resource_allocation = [
                             offchip_core,
-                        ] + list(set(n.chosen_resource_allocation for n in self.partitioned_nodes[node]))
+                        ] + list(compute_allocations)
                         full_shape = [ub - lb for lb, ub in original_tensor.loop_ranges]
                         slices_per_full = ssis.slices_per_full
                         constant_node = SteadyStateTensor(
@@ -179,7 +182,7 @@ class SteadyStateScheduler:
                             size=tensor.size,
                             operand=input_op,
                             steady_state_iteration_space=ssis,
-                            possible_resource_allocation=possible_resource_allocation,
+                            possible_resource_allocation=possible_resource_allocation,  # type: ignore
                             full_shape=full_shape,
                             slices_per_full=slices_per_full,
                         )
@@ -205,9 +208,10 @@ class SteadyStateScheduler:
                         intra_core_tiling=intra_core_tiling,
                         operand=output_operand,
                     )
+                    compute_allocations = set(n.chosen_resource_allocation for n in self.partitioned_nodes[node])
                     possible_resource_allocation = [
                         offchip_core,
-                    ] + list(set(n.chosen_resource_allocation for n in self.partitioned_nodes[node]))
+                    ] + list(compute_allocations)
                     full_shape = [ub - lb for lb, ub in original_output_tensor.loop_ranges]
                     slices_per_full = ssis.slices_per_full
                     constant_node = SteadyStateTensor(
@@ -217,7 +221,7 @@ class SteadyStateScheduler:
                         size=output_tensor.size,
                         operand=output_operand,
                         steady_state_iteration_space=ssis,
-                        possible_resource_allocation=possible_resource_allocation,
+                        possible_resource_allocation=possible_resource_allocation,  # type: ignore
                         full_shape=full_shape,
                         slices_per_full=slices_per_full,
                     )
@@ -250,7 +254,7 @@ class SteadyStateScheduler:
                 src=tensor,
                 dst=successors,
                 tensor=tensor,
-                possible_resource_allocation=possible_resource_allocation,
+                possible_resource_allocation=possible_resource_allocation,  # type: ignore
                 steady_state_iteration_space=ssis,
             )
             steady_state_workload.add(transfer_node)
@@ -270,7 +274,9 @@ class SteadyStateScheduler:
                     ssis = transfer_node.steady_state_iteration_space
                     full_shape = tensor.full_shape
                     slices_per_full = ssis.slices_per_full
-                    assert not isinstance(successor, SteadyStateTransfer), "Successor should not be a transfer node."
+                    assert isinstance(
+                        successor, SteadyStateComputation
+                    ), "Successor should be a SteadyStateComputation."
                     post_transfer_tensor_node = SteadyStateTensor(
                         type=tensor.tensor_flag,
                         id=tensor.id,
@@ -324,9 +330,7 @@ class SteadyStateScheduler:
                         operand=node.output_operand,
                     )
                     output_operand = node.output_operand
-                    possible_resource_allocation = [
-                        resource,
-                    ]
+                    possible_resource_allocation = [resource]
                     full_shape = [ub - lb for lb, ub in original_node.operand_tensors[output_operand].loop_ranges]
                     slices_per_full = ssis.slices_per_full
                 elif isinstance(node, SteadyStateTransfer):  # type: ignore
@@ -335,9 +339,7 @@ class SteadyStateScheduler:
                     resource = successor.chosen_resource_allocation
                     ssis = node.steady_state_iteration_space
                     output_operand = node.tensor.operand
-                    possible_resource_allocation = [
-                        resource,
-                    ]
+                    possible_resource_allocation = [resource]
                     full_shape = node.tensor.full_shape
                     slices_per_full = ssis.slices_per_full
                 else:
@@ -349,7 +351,7 @@ class SteadyStateScheduler:
                     size=tensor_size,
                     operand=output_operand,
                     steady_state_iteration_space=ssis,
-                    possible_resource_allocation=possible_resource_allocation,
+                    possible_resource_allocation=possible_resource_allocation,  # type: ignore
                     full_shape=full_shape,
                     slices_per_full=slices_per_full,
                 )
@@ -422,13 +424,13 @@ class SteadyStateScheduler:
 
     def get_transfer_paths(
         self, predecessor: SteadyStateTensor, successors: list[SteadyStateNode]
-    ) -> tuple[tuple[CommunicationLink]]:
+    ) -> tuple[tuple[CommunicationLink, ...], ...]:
         """
         Get the possible resource allocations for the transfer node based on the predecessor and successors.
         The possible allocations are all the paths that can be taken from the predecessor to each successor.
         If there's no overlap between paths from predecessor to each successor, the first path for each is combined.
         """
-        all_common_paths: set[tuple[CommunicationLink]] = set()
+        all_common_paths: set[tuple[CommunicationLink, ...]] = set()
         for pred_alloc in predecessor.possible_resource_allocation:
             assert pred_alloc is not None, f"Predecessor {predecessor.node_name} has no chosen resource allocation."
             paths_per_successor: dict[SteadyStateNode, set[tuple[CommunicationLink]]] = {}
@@ -441,15 +443,16 @@ class SteadyStateScheduler:
                     if successor.chosen_resource_allocation
                     else successor.possible_resource_allocation
                 )
+                assert succ_allocs is not None, f"{successor.node_name} has no chosen or possible allocation."
                 for succ_alloc in succ_allocs:
-                    assert (
-                        succ_alloc is not None
-                    ), f"Successor {successor.node_name} has no possible resource allocation."
                     if isinstance(successor, SteadyStateTensor):
                         # If the successor is a tensor node, we check that it is a sink node output (viewed as constant output)
                         assert (
                             TensorFlag.CONSTANT in successor.tensor_flag and TensorFlag.OUTPUT in successor.tensor_flag
                         )
+                    assert isinstance(
+                        succ_alloc, Core
+                    ), f"Successor {successor.node_name} allocation {succ_alloc} is not a Core."
                     # Get the paths from the predecessor to the successor
                     paths = self.accelerator.communication_manager.get_all_links_for_pair(pred_alloc, succ_alloc)
                     all_succ_paths.update(paths)

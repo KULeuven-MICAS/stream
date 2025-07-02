@@ -40,7 +40,7 @@ class SteadyStateTensor(SteadyStateNode):
         type: TensorFlag,
         operand: LayerOperand,
         steady_state_iteration_space: SteadyStateIterationSpace,
-        possible_resource_allocation: list[Core | None],
+        possible_resource_allocation: list[Core],
         full_shape: Sequence[int] | None = None,
         slices_per_full: int | None = None,
     ):

@@ -167,7 +167,9 @@ class MemoryManager:
 
         return
 
-    def get_timestep_for_tensor_addition(self, tensor: Tensor, core: Core, timestep: int, memory_op: str) -> int:
+    def get_timestep_for_tensor_addition(
+        self, tensor: Tensor, core: Core, timestep: int, memory_op: MemoryOperand
+    ) -> int:
         """
         Returns the earliest timestep at which the tensor can be added to the core's memory, considering memory usage.
 
@@ -231,9 +233,11 @@ class MemoryManager:
             instance_priority = tensor.get_instance_priority(top_instance, self)
             importance = instance_priority * tensor.size
             evictable_tensors_priority_size.append(importance)
-        evictable_tensors_priority_size, evictable_tensors = zip(
+        evictable_tensors_priority_size_tuple, evictable_tensors_tuple = zip(
             *sorted(zip(evictable_tensors_priority_size, evictable_tensors))
         )
+        evictable_tensors_priority_size = list(evictable_tensors_priority_size_tuple)
+        evictable_tensors = list(evictable_tensors_tuple)
         evictable_tensors_size = [tensor.size for tensor in evictable_tensors]
         evictable_tensors_size_sums = [
             sum(evictable_tensors_size[:i]) for i in range(0, len(evictable_tensors_size) + 1)
@@ -331,7 +335,7 @@ class MemoryManager:
         stored_cumsum = self.top_instance_stored_cumsum[top_instance]
         timesteps = stored_cumsum[:, 0]
         usages = stored_cumsum[:, 1]
-        idx = max(0, np.searchsorted(timesteps, timestep, "right") - 1)
+        idx = max(0, np.searchsorted(timesteps, timestep, "right") - 1)  # type: ignore
         return usages[idx]
 
     def _add_tensor(

@@ -130,7 +130,7 @@ class CommunicationManager:
         return all_shortest_paths
 
     def get_all_links_for_all_core_pairs(self):
-        communication_links: dict[tuple[Core, Core], tuple[tuple["CommunicationLink"]]] = {}
+        communication_links: dict[tuple[Core, Core], tuple[tuple["CommunicationLink"], ...]] = {}
         for pair, paths in self.all_shortest_paths.items():
             links: list[tuple["CommunicationLink"]] = []
             for path in paths:
@@ -141,7 +141,7 @@ class CommunicationManager:
             communication_links[pair] = tuple(links)
         return communication_links
 
-    def get_all_links_for_pair(self, sender: Core, receiver: Core) -> tuple[tuple["CommunicationLink"]]:
+    def get_all_links_for_pair(self, sender: Core, receiver: Core) -> tuple[tuple["CommunicationLink"], ...]:
         """Return the list of traversed CommunicationLinks for sending data from sender core to receiver core.
 
         Args:

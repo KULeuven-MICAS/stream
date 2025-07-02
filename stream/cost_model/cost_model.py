@@ -103,4 +103,4 @@ class StreamCostModelEvaluation:
 
     def plot_memory_usage(self, fig_path: str = "outputs/memory_usage_plot.png"):
         """Plot the memory usage of this SCME."""
-        plot_memory_usage(self.accelerator.memory_manager, fig_path)
+        plot_memory_usage(self, fig_path=fig_path)
