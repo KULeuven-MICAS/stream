@@ -226,11 +226,11 @@ class CommunicationLink:
             idxs.append(len(updated_ts) - 1)
             start = earliest_t
             for idx in idxs:
-                end: int = updated_ts[idx]
+                end: int = updated_ts[idx]  # type: ignore
                 if end - start >= duration:
                     valid_windows.append((start, end))
                 try:
-                    start: int = updated_ts[idx + 1]
+                    start: int = updated_ts[idx + 1]  # type: ignore
                 except IndexError:
                     break
 
