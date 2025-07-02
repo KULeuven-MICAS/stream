@@ -72,7 +72,7 @@ class AsymmetricSimdParser(OnnxComputeOperatorParser):
                 "At least one of the two input shapes should equal the output shape in an asymmetric SIMD node"
             )
 
-        node_data = self.get_layer_node_user_format(non_batched_input_shape, output_shape)
+        node_data = self.get_layer_node_user_format(non_batched_input_shape, list(output_shape))
         node_factory = LayerNodeFactory(node_data, mapping_data=None)
         node_attrs = node_factory.create_node_attr()
         mapping = self.get_mapping_this_node()

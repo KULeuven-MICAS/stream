@@ -21,16 +21,18 @@ class PoolingParser(OnnxComputeOperatorParser):
         Args:
             attrs (_type_): _description_
         """
+        kernel_shape: list[int] | int = []
         if self.node.op_type in ["MaxPool", "AveragePool"]:
             # Find kernel shape in attrs
             kernel_shape = get_attribute_ints_with_name("kernel_shape", attrs, default=None)
         elif self.node.op_type in ["GlobalMaxPool", "GlobalAveragePool"]:
             assert len(ia_dimension_shape) == 4  # assume the last two dimensions are the pooling kernel dimensions
-            kernel_shape: list[int] = [ia_dimension_shape[2], ia_dimension_shape[3]]
+            kernel_shape = [ia_dimension_shape[2], ia_dimension_shape[3]]
         else:
             raise NotImplementedError(
                 f"Pooling node kernel shape extraction not implemented for operand type {self.node.op_type}."
             )
+        assert isinstance(kernel_shape, list), "Kernel shape should be a list of integers."
         return kernel_shape
 
     def get_layer_node_user_format(

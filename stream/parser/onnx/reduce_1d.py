@@ -70,6 +70,7 @@ class Reduce1DParser(OnnxComputeOperatorParser):
         if len(input_shape) > len(Reduce1DParser.DEFAULT_LAYER_DIMENSIONS):
             raise NotImplementedError
 
+        assert mapping is not None, "Mapping must be provided for Reduce1DParser"
         possible_loop_dims = (
             mapping.layer_dimension_names
             if len(mapping.layer_dimension_names) == len(output_shape)

@@ -25,7 +25,7 @@ class MulParser(OnnxComputeOperatorParser):
             raise NotImplementedError
 
         input_shape = output_shape
-        input_shapes.remove(output_shape)
+        input_shapes.remove(list(output_shape))
         broadcast_shape = input_shapes.pop()
 
         # e.g. (3,5) * (8,3,5) is ok (broadcast over dim 0), but (3,2) * (8,3,5) is unclear

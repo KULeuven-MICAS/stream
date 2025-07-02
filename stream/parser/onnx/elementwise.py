@@ -28,8 +28,8 @@ class ElementwiseParser(OnnxOperatorParser):
         # Get the output name
         node_obj = ElementwiseNode(
             node_id=self.node_id,
-            node_name=self.name,
-            predecessor=predecessors,
+            node_name=self.name,  # type: ignore
+            predecessor=predecessors,  # type: ignore
             input_names=input_names,
         )
         return node_obj
