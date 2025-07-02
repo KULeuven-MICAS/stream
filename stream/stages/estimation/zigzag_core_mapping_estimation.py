@@ -7,6 +7,7 @@ from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import Constants, MemoryOperand
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
+from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
 from zigzag.stages.main import MainStage
 from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
@@ -55,6 +56,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         self.visualize_cost_lut_path = os.path.splitext(self.cost_lut_path)[0] + ".png"
         self.loma_show_progress_bar: bool = kwargs.get("loma_show_progress_bar", False)
         self.layer_stacks: list[STACK_T] = kwargs["layer_stacks"]
+        self.temporal_mapping_type: TemporalMappingType = kwargs["temporal_mapping_type"]
 
         # Extract all unique nodes that will have to be evaluated
         self.unique_nodes = get_unique_nodes(self.workload)
@@ -204,6 +206,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
             accelerator=core,  # Accelerator in zigzag corresponds to Core in stream
             loma_lpf_limit=self.loma_lpf_limit,  # required by LomaEngine
             loma_show_progress_bar=self.loma_show_progress_bar,
+            temporal_mapping_type=self.temporal_mapping_type,
             nb_parallel_nodes=nb_parallel_nodes,
             has_dram_level=(len(too_large_operands) > 0),
         )
@@ -427,13 +430,14 @@ class MinimalBandwidthLatencyStage(Stage):
             self.mem_ops_with_dram = [
                 op for op, nb_levels in zip(self.mem_ops, nb_levels_per_op) if nb_levels == dram_mem_level
             ]
-            self.total_dram_bandwidth = accelerator.mem_r_bw_dict[self.mem_ops_with_dram[0]][-1]
+            ports = accelerator.get_top_memory_instance(self.mem_ops_with_dram[0]).ports
+            self.total_dram_bandwidth = max((port.bw_max for port in ports), default=0)
 
     def get_used_dram_bandwidth_for_op(self, cme: CostModelEvaluation, mem_op: MemoryOperand):
         if mem_op not in self.mem_ops_with_dram:
             return 0
         bw_per_direction = get_top_level_inst_bandwidth(cme, mem_op)
-        total_bw = sum(sum(x) for x in bw_per_direction.info_list)
+        total_bw = sum(bw_per_direction.data.values())
         return total_bw
 
     def objective_function(self, cme: CostModelEvaluation) -> float:

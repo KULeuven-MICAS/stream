@@ -166,7 +166,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         warmup_tsa = initial_tsa
         for sink_node in warmup_sink_nodes:
             warmup_tsa, already_computed = self.update_timeslot_allocation_with_ancestors(
-                sink_node, warmup_tsa, optimal_allocation, already_computed, NodeType.WARMUP, min_slot
+                sink_node, warmup_tsa, optimal_allocation, already_computed, stack, NodeType.WARMUP, min_slot
             )
         return warmup_tsa, already_computed
 
@@ -201,7 +201,13 @@ class ConstraintOptimizationAllocationStage(Stage):
         steady_state_tsa = warmup  # Initialize with the warmup allocation
         for sink_node in steady_state_sink_nodes:
             steady_state_tsa, already_computed = self.update_timeslot_allocation_with_ancestors(
-                sink_node, steady_state_tsa, optimal_allocation, already_computed, NodeType.STEADY_STATE, min_slot
+                sink_node,
+                steady_state_tsa,
+                optimal_allocation,
+                already_computed,
+                stack,
+                NodeType.STEADY_STATE,
+                min_slot,
             )
         return steady_state_tsa, already_computed
 
@@ -229,7 +235,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         cooldown_tsa = steady_state  # Initialize with the steady state allocation
         for sink_node in cooldown_sink_nodes:
             cooldown_tsa, already_computed = self.update_timeslot_allocation_with_ancestors(
-                sink_node, cooldown_tsa, optimal_allocation, already_computed, NodeType.COOLDOWN, min_slot
+                sink_node, cooldown_tsa, optimal_allocation, already_computed, stack, NodeType.COOLDOWN, min_slot
             )
         return cooldown_tsa
 
@@ -239,6 +245,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         tsa: TimeSlotAllocation,
         optimal_allocation: TimeSlotAllocation,
         already_computed: set[ComputationNode],
+        stack: STACK_T,
         node_type: NodeType,
         min_slot: int,
     ) -> tuple[TimeSlotAllocation, set[ComputationNode]]:
@@ -247,8 +254,9 @@ class ConstraintOptimizationAllocationStage(Stage):
         This is used to ensure that all nodes needed for the node are included in the allocation.
         """
         needed_compute = nx.ancestors(self.workload, node) | {node}
-        new_compute = needed_compute - already_computed
-        subgraph = self.workload.get_subgraph(new_compute)
+        new_compute: set[ComputationNode] = needed_compute - already_computed
+        new_compute_this_stack: list[ComputationNode] = [n for n in new_compute if n.id in stack]
+        subgraph = self.workload.get_subgraph(new_compute_this_stack)
         sorted_like_steady_state = self.sort_like_steady_state(subgraph, optimal_allocation, node_type)
         for node in sorted_like_steady_state:
             if isinstance(node, ComputationNode):
@@ -283,11 +291,17 @@ class ConstraintOptimizationAllocationStage(Stage):
             order_tmp: list[Optional[ComputationNode]] = [None] * nb_nodes
             for node in nx.topological_sort(subgraph):
                 assert isinstance(node, ComputationNode), "Expected only ComputationNodes in the subgraph."
-                eq_node = next(
-                    n
-                    for n in ss_nodes
-                    if n.id == node.id and n not in seen_optimal_nodes and ss_nodes.index(n) not in seen_idxs
-                )
+                try:
+                    eq_node = next(
+                        n
+                        for n in ss_nodes
+                        if n.id == node.id and n not in seen_optimal_nodes and ss_nodes.index(n) not in seen_idxs
+                    )
+                except StopIteration:
+                    raise ValueError(
+                        f"Node {node.id} not found in the steady state allocation. "
+                        "This should not happen, please check your steady state allocation."
+                    )
                 eq_node_idx = ss_nodes.index(eq_node)
                 seen_optimal_nodes.add(eq_node)
                 seen_idxs.add(eq_node_idx)

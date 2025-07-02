@@ -54,7 +54,7 @@ scme = optimize_allocation_ga(
     nb_ga_individuals=nb_ga_individuals,
     experiment_id=experiment_id,
     output_path="outputs",
-    skip_if_exists=True,
+    skip_if_exists=False,
 )
 
 # Load in the CostModelEvaluationLUT from the run

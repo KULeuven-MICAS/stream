@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import networkx as nx
 from zigzag.datatypes import Constants, MemoryOperand
+from zigzag.hardware.architecture.memory_port import DataDirection
 
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.utils import intersections
@@ -295,8 +296,10 @@ class CommunicationManager:
         """
         assert op in node.offchip_bandwidth_per_op
         if op == Constants.OUTPUT_MEM_OP:
-            return node.offchip_bandwidth_per_op[op].wr_in_by_low
-        return node.offchip_bandwidth_per_op[op].rd_out_to_low
+            data_dir = DataDirection.WR_IN_BY_LOW
+        else:
+            data_dir = DataDirection.RD_OUT_TO_LOW
+        return node.offchip_bandwidth_per_op[op].get(data_dir)
 
     def get_links_idle_window(
         self,

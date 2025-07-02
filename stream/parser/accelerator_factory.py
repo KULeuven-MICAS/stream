@@ -2,6 +2,7 @@ from typing import Any
 
 from zigzag.datatypes import Constants
 from zigzag.hardware.architecture.memory_level import MemoryLevel
+from zigzag.hardware.architecture.memory_port import MemoryPortType
 from zigzag.parser.accelerator_factory import AcceleratorFactory as ZigZagCoreFactory
 
 from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
@@ -153,11 +154,22 @@ class AcceleratorFactory:
 
         unit_energy_cost = self.data["unit_energy_cost"]
 
-        offchip_read_bandwidth = offchip_core.mem_r_bw_dict[Constants.OUTPUT_MEM_OP][0]
-        offchip_write_bandwidth = offchip_core.mem_w_bw_dict[Constants.OUTPUT_MEM_OP][0]
+        # Get the first read port of the offchip core's top memory
+        offchip_ports = offchip_core.get_top_memory_instance(Constants.OUTPUT_MEM_OP).ports
+        port = next(
+            port for port in offchip_ports if port.type == MemoryPortType.READ or port.type == MemoryPortType.READ_WRITE
+        )
+        offchip_read_bandwidth = port.bw_max
+        # Get the first write port of the offchip core's top memory
+        port = next(
+            port
+            for port in offchip_ports
+            if port.type == MemoryPortType.WRITE or port.type == MemoryPortType.READ_WRITE
+        )
+        offchip_write_bandwidth = port.bw_max
 
         # if the offchip core has only one port
-        if len(offchip_core.mem_hierarchy_dict[Constants.OUTPUT_MEM_OP][0].port_list) == 1:
+        if len(offchip_ports) == 1:
             to_offchip_link = CommunicationLink(
                 offchip_core,
                 "Any",

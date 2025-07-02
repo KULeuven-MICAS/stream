@@ -4,36 +4,46 @@ memories:
 
   weight_registers:
     size: 512  # 8 word-bits * 64 cluster_size
-    r_bw: 8
-    w_bw: 8
     r_cost: 0.08  # TODO
     w_cost: 0.08  # TODO
     area: 0
-    r_port: 1
-    w_port: 1
-    rw_port: 0
     latency: 1
     operands: [I2]  # Weights
     ports:
-      - fh: w_port_1
-        tl: r_port_1
+      - name: r_port_1
+        type: read
+        bandwidth_min: 8
+        bandwidth_max: 8
+        allocation: 
+          - I2, tl
+      - name: w_port_1
+        type: write
+        bandwidth_min: 8
+        bandwidth_max: 8
+        allocation: 
+          - I2, fh
     served_dimensions: []
 
   weight_buffer:
     size: 32768  # 4096 depth * 8 width
-    r_bw: 64  # 8 bits/bank * 8 banks
-    w_bw: 64
     r_cost: 0.5  # TODO
     w_cost: 0.5
     area: 0
-    r_port: 1
-    w_port: 1
-    rw_port: 0
     latency: 1
     operands: [I2]  # Weights
     ports:
-      - fh: w_port_1
-        tl: r_port_1
+      - name: r_port_1
+        type: read
+        bandwidth_min: 64
+        bandwidth_max: 64
+        allocation: 
+          - I2, tl
+      - name: w_port_1
+        type: write
+        bandwidth_min: 64
+        bandwidth_max: 64
+        allocation: 
+          - I2, fh
     served_dimensions: [D3, D4]
 
   accumulation_buffer:

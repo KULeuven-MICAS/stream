@@ -108,7 +108,7 @@ class CommunicationLink:
         else:
             return f"{self.sender} -> {self.receiver}"
 
-    def transfer(self, link_event: CommunicationLinkEvent) -> float:
+    def transfer(self, link_event: CommunicationLinkEvent) -> tuple[float, bool]:
         """Transfer data on this communication link at timestep.
         The transfer can take longer than necessary for this link if another lower-bandwidth link is involved.
 
@@ -130,8 +130,8 @@ class CommunicationLink:
         duration: int,
         tensor: "Tensor",
         bandwidth: int,
-        sender: list["Core"],
-        receiver: list["Core"],
+        sender: "Core",
+        receiver: "Core",
     ):
         """Block this communication link from start timestep for a given duration.
 

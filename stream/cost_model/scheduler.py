@@ -192,7 +192,10 @@ class CoalaScheduler:
 
             # Step 2: Transfer the tensors needed for this node to the core (from off-chip or from another core)
             transfer_headstart = sum(
-                ceil(tensor.size / (self.offchip_core.mem_r_bw_dict[tensor_operand][0] * transfer_bw_fraction))
+                ceil(
+                    tensor.size
+                    / (self.offchip_core.get_top_memory_instance(tensor_operand).ports[0].bw_max * transfer_bw_fraction)
+                )
                 for tensor, tensor_operand in zip(sub_tensors_this_candidate_needs, tensors_operands)
             )
             earliest_t = core_idle_from - transfer_headstart

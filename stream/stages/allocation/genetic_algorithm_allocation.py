@@ -118,6 +118,13 @@ class GeneticAlgorithmAllocationStage(Stage):
             (energy, latency, scme) = self.fitness_evaluator.get_fitness(core_allocations, return_scme=True)
             yield scme, None
         else:
+            logger.info(
+                f"Running Genetic Algorithm with {self.nb_generations} generations and {self.nb_individuals} individuals."
+            )
+            flexible_layer_names = [f"{n.name}" for n in self.unique_nodes_flexible]
+            logger.info(
+                f"Exploring allocation for {len(self.unique_nodes_flexible)} flexible layers: {flexible_layer_names}"
+            )
             # Initialize the genetic algorithm
             self.genetic_algorithm = GeneticAlgorithm(
                 self.fitness_evaluator,
