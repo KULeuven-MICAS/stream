@@ -114,7 +114,7 @@ def constraint_allocation_optimization(
     N: int = 1,
     gap: float = 0.5,
     time_limit: int = 600,
-) -> list[tuple[int, int, int]]:
+) -> list[tuple[int, str, int]]:
     """Get the optimal node-core allocation using constraint optimization.
     The timeline is divided into a number of slots. Each node will be assigned to one slot.
 

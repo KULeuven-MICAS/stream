@@ -88,16 +88,14 @@ class Tensor:
                     self.instance_priorities[top_instance] = 1
 
         else:
+            if self.base_priority is None:
+                return  # No base priority set, this tensor will not be spawned as it will use previous layer output tensors
             assert node.chosen_core_allocation is not None, (
                 f"Chosen core allocation for {node} is None. "
                 "This should not happen, as the chosen core allocation should be set before this method is called."
             )
             core = accelerator.get_core(node.chosen_core_allocation)
             top_instance = core.get_top_memory_instance(self.memory_operand)
-            assert self.base_priority is not None, (
-                f"Base priority for {self} is None. "
-                "This should not happen, as the base priority should be set before this method is called."
-            )
             self.instance_priorities[top_instance] = self.base_priority
 
     def get_total_priority(self):

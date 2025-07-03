@@ -34,10 +34,11 @@ def convert_ids(nodes: list[ComputationNode]):
     return ids
 
 
-def invert_ids_list(ids_list: list[tuple[int, int, int]], nb_nodes: int) -> list[tuple[int, int, tuple[int, int]]]:
+def invert_ids_list(ids_list: list[tuple[int, str, int]], nb_nodes: int) -> list[tuple[int, int, tuple[int, int]]]:
     new_l: list[tuple[int, int, tuple[int, int]]] = []
-    for timestep, core, k in ids_list:
-        new_l.append((timestep, core, invert_id(k)))
+    for timestep, core_str, k in ids_list:
+        core_id = int(core_str.split(" ")[-1])  # Extract core id from "Core <id>"
+        new_l.append((timestep, core_id, invert_id(k)))
     return new_l
 
 

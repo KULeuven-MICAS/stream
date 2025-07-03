@@ -82,8 +82,8 @@ def plot_memory_usage(
     total_nb_of_top_instances = len(cpti)
 
     # Total latency of the SCME
-    latency = scme.latency
-    assert isinstance(latency, int), f"Latency should be an integer, got {type(latency)}."
+    assert scme.latency is not None, "SCME latency is None, cannot plot memory usage."
+    latency = int(scme.latency)
     # Calculate the brokenaxes x ranges based on the given start and show percentage
     x_starts = [int((start / 100) * latency) for start in section_start_percent]
     x_ends = [
