@@ -393,9 +393,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             iterations = self.ss_iterations_per_stack[stack]
             t_start = time()
             optimal_allocation = self.find_best_allocation(to_compute, iterations, stack, self.co_time_limit)
-            ss_latency, _ = calculate_total_latency(
-                optimal_allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr
-            )
+            ss_latency, _ = calculate_total_latency(optimal_allocation, iterations)
             t_end = time()
             logger.info(
                 f"Stack {stack}: Optimization took {t_end - t_start:.3f} seconds; Predicted steady-state latency: {ss_latency} cycles"

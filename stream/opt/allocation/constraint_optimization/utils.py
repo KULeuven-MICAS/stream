@@ -172,9 +172,7 @@ def get_start_time_of_timestep(timestep, timestep_latencies, t_start=0):
     return t_start
 
 
-def calculate_total_latency(
-    allocation: "TimeSlotAllocation", cost_lut, accelerator, iterations, latency_attr
-) -> tuple[int, str]:
+def calculate_total_latency(allocation: "TimeSlotAllocation", iterations) -> tuple[int, str]:
     timesteps = allocation.slots
     timestep_latencies = get_timestep_latencies(allocation, timesteps)
     starts = get_node_start_timesteps(allocation, timestep_latencies)
