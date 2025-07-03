@@ -225,22 +225,23 @@ def get_partitioned_nodes(
             cost_lut,
         )
         runtime = latencies[(node, core, 1)]
+        mapping_attr = node.extract_inter_core_mapping_attr()
+        possible_resource_allocation = [
+            core,
+        ]
         new_node = SteadyStateComputation(
             id=node.id,
             sub_id=node.sub_id,
             node_name=node.name,
             node_attr=node.extract_node_attr(),
-            mapping_attr=node.extract_inter_core_mapping_attr(),
+            mapping_attr=mapping_attr,
             operand_tensor_reshape=node.operand_tensor_reshape,
             produces_final_output=node.produces_final_output,
             group_id=node.group,
             input_names=node.input_names,
             partially_constant_operands=node.partially_constant_operands,
+            possible_resource_allocation=possible_resource_allocation,
         )
-        new_node.possible_resource_allocation = [
-            core,
-        ]
-        new_node.chosen_resource_allocation = core
         new_node.set_runtime(runtime)
         return [
             new_node,
@@ -281,6 +282,9 @@ def get_partitioned_nodes(
         node_attr.layer_dim_sizes[tiling_dim] = size_per_tile
         inter_core_mapping_attr = node.extract_inter_core_mapping_attr()
         inter_core_mapping_attr.inter_core_tiling = [(tiling_dim, nb_tiles)]
+        possible_resource_allocation = [
+            core,
+        ]
         # Create a new ComputationNode for each core allocation
         partitioned_node = SteadyStateComputation(
             id=node.id,
@@ -293,11 +297,8 @@ def get_partitioned_nodes(
             group_id=node.group,
             input_names=node.input_names,
             partially_constant_operands=node.partially_constant_operands,
+            possible_resource_allocation=possible_resource_allocation,
         )
-        partitioned_node.possible_resource_allocation = [
-            core,
-        ]
-        partitioned_node.chosen_resource_allocation = core
         partitioned_node.loop_ranges[tiling_dim] = partitioned_loop_ranges[i]
         partitioned_node.set_chosen_core_allocation(core.id)
         partitioned_node.set_runtime(runtimes[core])

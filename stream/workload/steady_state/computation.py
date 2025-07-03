@@ -20,6 +20,7 @@ class SteadyStateComputation(ComputationNode, SteadyStateNode):
         node_attr: LayerNodeAttributes,
         mapping_attr: InterCoreMappingAttributes,
         input_names: list[str],
+        possible_resource_allocation: list[Core],
         operand_tensor_reshape: Optional[OperandTensorReshape] = None,
         produces_final_output: bool = False,
         group_id: int = 0,
@@ -49,16 +50,16 @@ class SteadyStateComputation(ComputationNode, SteadyStateNode):
         steady_state_iteration_space = SteadyStateIterationSpace([])
 
         # Initialize SteadyStateNode (explicitly, since ComputationNode also inherits from Node)
+        possible_resource_allocation = []
         SteadyStateNode.__init__(
             self=self,
             id=id,
             node_name=node_name,
             type="computation",
-            possible_resource_allocation=mapping_attr.core_allocation,
+            possible_resource_allocation=possible_resource_allocation,
             steady_state_iteration_space=steady_state_iteration_space,
         )
-        self.chosen_resource_allocation = self.chosen_core_allocation
-        self.possible_resource_allocation: list[Core]
+        self.chosen_resource_allocation = possible_resource_allocation[0] if possible_resource_allocation else None
 
     @property
     def plot_name(self):
