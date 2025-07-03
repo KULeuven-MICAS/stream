@@ -22,7 +22,7 @@ def plot_work_done(
         ## REAL
         acc_name = scme.accelerator.name
         workload = scme.workload
-        total_ops = sum([n.total_MAC_count for n in workload.node_list])
+        total_ops = sum([n.total_mac_count for n in workload.node_list])
         ends, cns = zip(*sorted((cn.end, cn) for cn in workload.node_list))
         all_timesteps = [(i / (nb_x_ticks - 1)) * max_latency for i in range(nb_x_ticks)]
         timesteps = []

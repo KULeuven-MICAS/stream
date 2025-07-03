@@ -98,7 +98,7 @@ def visualize_cost_lut_pickle(pickle_filepath, scale_factors=None, fig_path=None
     best_case_energy = sum(min_energy_per_node.values())
 
     # COLORMAP
-    colormap = list(plt.cm.rainbow(np.linspace(0, 1, len(cores))))
+    colormap = list(plt.cm.rainbow(np.linspace(0, 1, len(cores))))  # type: ignore
     # colormap = plt.get_cmap("Set1")
     colors = {core: colormap[i] for i, core in enumerate(cores)}
 

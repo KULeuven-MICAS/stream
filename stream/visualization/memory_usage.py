@@ -42,6 +42,8 @@ def humanbytes(B):
         return "{0:.2f} GB".format(B / GB)
     elif TB <= B:
         return "{0:.2f} TB".format(B / TB)
+    else:
+        raise ValueError(f"Cannot convert {B} bytes to human readable format.")
 
 
 def plot_memory_usage(
@@ -81,6 +83,7 @@ def plot_memory_usage(
 
     # Total latency of the SCME
     latency = scme.latency
+    assert isinstance(latency, int), f"Latency should be an integer, got {type(latency)}."
     # Calculate the brokenaxes x ranges based on the given start and show percentage
     x_starts = [int((start / 100) * latency) for start in section_start_percent]
     x_ends = [

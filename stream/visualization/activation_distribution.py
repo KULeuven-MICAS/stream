@@ -37,8 +37,8 @@ def plot_activation_distribution(
     time_per_iteration = total_animation_time / nb_iterations
     frame_time = (1 - transition_to_frame_ratio) * time_per_iteration
     transition_time = transition_to_frame_ratio * time_per_iteration
-    fig.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = frame_time
-    fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["duration"] = transition_time
+    fig.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = frame_time  # type: ignore
+    fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["duration"] = transition_time  # type: ignore
     fig.update_geos(projection_type="equirectangular", visible=True, resolution=110)
     fig.write_html(fig_path)
     pass

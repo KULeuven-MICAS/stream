@@ -67,13 +67,16 @@ def get_real_input_tensors(n, G):
 
 
 def get_spatial_utilizations(
-    scme: "StreamCostModelEvaluation", node: "ComputationNode", cost_lut: "CostModelEvaluationLUT"
+    scme: "StreamCostModelEvaluation", node: "ComputationNode", cost_lut: "CostModelEvaluationLUT | None"
 ):
     if cost_lut:
         equal_node = cost_lut.get_equal_node(node)
         assert (
             equal_node
         ), f"No equal node for {node} found in CostModelEvaluationLUT. Check LUT path (use the post-CO LUT when using CO)."
+        assert isinstance(
+            node.chosen_core_allocation, int
+        ), f"Chosen core allocation for {node} should be an integer, got {type(node.chosen_core_allocation)}."
         core = scme.accelerator.get_core(node.chosen_core_allocation)
         cme = cost_lut.get_cme(equal_node, core)
         return cme.mac_spatial_utilization, cme.mac_utilization1
@@ -81,13 +84,16 @@ def get_spatial_utilizations(
 
 
 def get_energy_breakdown(
-    scme: "StreamCostModelEvaluation", node: "ComputationNode", cost_lut: "CostModelEvaluationLUT"
+    scme: "StreamCostModelEvaluation", node: "ComputationNode", cost_lut: "CostModelEvaluationLUT | None"
 ):
     if cost_lut:
         equal_node = cost_lut.get_equal_node(node)
         assert (
             equal_node
         ), f"No equal node for {node} found in CostModelEvaluationLUT. Check LUT path (use the post-CO LUT when using CO)."
+        assert isinstance(
+            node.chosen_core_allocation, int
+        ), f"Chosen core allocation for {node} should be an integer, got {type(node.chosen_core_allocation)}."
         core = scme.accelerator.get_core(node.chosen_core_allocation)
         cme = cost_lut.get_cme(equal_node, core)
         total_ops = cme.layer.total_mac_count
@@ -112,7 +118,7 @@ def get_dataframe_from_scme(
     scme: "StreamCostModelEvaluation",
     layer_ids: list[int],
     add_communication: bool = False,
-    cost_lut: "CostModelEvaluationLUT" = None,
+    cost_lut: "CostModelEvaluationLUT | None" = None,
 ):
     nodes = scme.workload.topological_sort()
     dicts = []

@@ -12,7 +12,7 @@ from stream.hardware.architecture.noc.communication_link import CommunicationLin
 if TYPE_CHECKING:
     from stream.cost_model.cost_model import StreamCostModelEvaluation
     from stream.hardware.architecture.accelerator import Accelerator
-    from stream.workload.onnx_workload import ONNXWorkload
+    from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ def plot_timeline_brokenaxes(
     plot_data_transfer: bool = False,
     fig_path: str = "outputs/schedule_plot.png",
 ) -> None:
-    G: ONNXWorkload = scme.workload
+    G: ComputationNodeWorkload = scme.workload
     accelerator: Accelerator = scme.accelerator
 
     nb_layers = len(set(iter([n.id for n in G.node_list])))
@@ -67,8 +67,10 @@ def plot_timeline_brokenaxes(
 
     # Total latency of the SCME
     latency = scme.latency
+    assert isinstance(latency, int), f"Latency should be an integer, got {type(latency)}."
     # Total energy of the SCME
     energy = scme.energy
+    assert isinstance(energy, float), f"Energy should be a float, got {type(energy)}."
     # total EDP of the SCME
     edp = latency * energy
 
@@ -84,7 +86,7 @@ def plot_timeline_brokenaxes(
     nb_axs = len(axs)
 
     # colors = ["#233D4D", "#FE7F2D", "#FCCA46", "#A1C181", "#619B8A", "#BF0603", "#F4D58D", "#708D81", "#1DD3B0"]
-    layer_colors = iter(plt.cm.rainbow(np.linspace(0, 1, nb_layers)))
+    layer_colors = iter(plt.cm.rainbow(np.linspace(0, 1, nb_layers)))  # type: ignore
     colors_seen = []
 
     handles = []
@@ -100,6 +102,7 @@ def plot_timeline_brokenaxes(
         else:
             color = colors_seen[layer_ids_seen.index(layer_id)]
         x = cn.start  # + 0.05
+        assert cn.chosen_core_allocation is not None, f"Chosen core allocation for {cn} is None."
         y = cn.chosen_core_allocation - 0.25
         width = cn.runtime  # - 0.05
         if (
@@ -173,11 +176,12 @@ def plot_timeline_brokenaxes(
     if plot_data_transfer:
         # First get all used and unique communication links
         used_cl_collect: list[CommunicationLink] = []
-        for ky, pair_link in accelerator.communication_manager.all_pair_links.items():
-            if pair_link:
-                for link in pair_link:
-                    if link.events and link not in used_cl_collect:
-                        used_cl_collect.append(link)
+        for paths in accelerator.communication_manager.all_pair_links.values():
+            for pair_link in paths:
+                if pair_link:
+                    for link in pair_link:
+                        if link.events and link not in used_cl_collect:
+                            used_cl_collect.append(link)
 
         # Then plot the active data transfer period on these unique communication links
         pair_link_id = 0

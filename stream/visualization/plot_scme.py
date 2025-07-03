@@ -9,7 +9,7 @@ from stream.cost_model.cost_model import StreamCostModelEvaluation
 def bar_plot_stream_cost_model_evaluations_breakdown(scmes: List[StreamCostModelEvaluation], fig_path: str):
     barWidth = 0.1
 
-    list_attributes = [x for x in scmes[0][0].__dict__.keys() if "energy" in x]
+    list_attributes = [x for x in scmes[0].__dict__.keys() if "energy" in x]
     # list_attributes.remove('input_onloading_link_energy_cost')
     # list_attributes.remove('input_onloading_memory_energy_cost')
     # list_attributes.remove('output_offloading_link_energy_cost')
@@ -31,7 +31,7 @@ def bar_plot_stream_cost_model_evaluations_breakdown(scmes: List[StreamCostModel
             .replace("eviction", "Evi")
         )
     breakdown = [
-        [accelerator[0].__getattribute__(list_attributes[idx]) for accelerator in scmes]
+        [accelerator.__getattribute__(list_attributes[idx]) for accelerator in scmes]
         for idx, _ in enumerate(list_attributes)
     ]
 
