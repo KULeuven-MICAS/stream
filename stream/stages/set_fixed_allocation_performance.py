@@ -4,7 +4,7 @@ from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.mapping.data_movement import MemoryAccesses
+from zigzag.mapping.data_movement import FourWayDataMoving
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.stages.stage import Stage, StageCallable
@@ -73,7 +73,7 @@ class SetFixedAllocationPerformanceStage(Stage):
 
                 # Get the required offchip bandwidth during the execution of the node for all directions
                 bandwidth_scaling = cme.ideal_temporal_cycle / latency
-                offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses] = {
+                offchip_bandwidth_per_op: dict[MemoryOperand, FourWayDataMoving] = {
                     mem_op: get_top_level_inst_bandwidth(cme, mem_op, bandwidth_scaling)
                     for mem_op in too_large_operands
                 }

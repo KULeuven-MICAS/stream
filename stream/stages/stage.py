@@ -53,7 +53,7 @@ class MainStage:
     Can be used as the main entry point
     """
 
-    def __init__(self, list_of_callables: list[Stage], **kwargs: Any):
+    def __init__(self, list_of_callables: list[StageCallable], **kwargs: Any):
         self.kwargs = kwargs
         self.list_of_callables = list_of_callables
 

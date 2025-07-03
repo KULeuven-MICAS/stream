@@ -1,7 +1,7 @@
 from abc import ABCMeta
 
 from zigzag.datatypes import MemoryOperand
-from zigzag.mapping.data_movement import MemoryAccesses
+from zigzag.mapping.data_movement import FourWayDataMoving
 from zigzag.workload.layer_node_abc import LayerNodeABC
 
 
@@ -10,7 +10,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
     Example: ComputationNode, etc.
     """
 
-    offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses]
+    offchip_bandwidth_per_op: dict[MemoryOperand, FourWayDataMoving]
 
     def __init__(
         self,
@@ -128,7 +128,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         """
         return self.end is not None
 
-    def set_offchip_bandwidth(self, offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses]):
+    def set_offchip_bandwidth(self, offchip_bandwidth_per_op: dict[MemoryOperand, FourWayDataMoving]):
         self.offchip_bandwidth_per_op = offchip_bandwidth_per_op
 
     def __str__(self):
