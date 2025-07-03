@@ -94,7 +94,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.optimal_allocation_per_stack: dict[STACK_T, TimeSlotAllocation] = {}
         self.nb_macs_per_stack: dict[STACK_T, int] = {}
         self.nb_macs_in_ss_per_stack: dict[STACK_T, int] = {}
-        self.ss_mac_percentages_per_stack: dict[STACK_T, int] = {}
+        self.ss_mac_percentages_per_stack: dict[STACK_T, float] = {}
 
     def run(self):
         logger.info("Start ConstraintOptimizationAllocationStage.")
@@ -264,11 +264,11 @@ class ConstraintOptimizationAllocationStage(Stage):
                 core_allocations = optimal_allocation.get_resources_for_node_id(node.id)
                 # Get the predecessors, and update the minimum slot this can be scheduled in accordingly
                 preds = list(self.workload.predecessors(node))
-                pred_slots = [tsa.get_timeslot_of_node(pred) for pred in preds]
+                pred_slots = [tsa.get_timeslot_of_node(pred) for pred in preds]  # type: ignore
                 latest_pred_slot = max(pred_slots, default=0)
                 slot = max(latest_pred_slot + 1, min_slot)
                 for core in core_allocations:
-                    tsa.add_node_to_next_slot(node, core, min_slot=slot, node_type=node_type)
+                    tsa.add_node_to_next_slot(node, core, min_slot=slot, node_type=node_type)  # type: ignore
         return tsa, already_computed
 
     def sort_like_steady_state(
@@ -357,7 +357,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             # Get the most important sink node to optimize for by looking at the importance
             total_nb_macs = 0
             for memoization_hash, count in to_compute_counts.items():
-                nb_macs = sum(n.total_mac_count for n in to_compute_sets[memoization_hash])
+                nb_macs = int(sum(n.total_mac_count for n in to_compute_sets[memoization_hash]))
                 scaled_counts[memoization_hash] = nb_macs * count
                 total_nb_macs += nb_macs * count
             max_count = max(scaled_counts.values())
@@ -424,7 +424,7 @@ class ConstraintOptimizationAllocationStage(Stage):
                 time_limit=time_limit,
                 latency_attr=self.latency_attr,
             )
-            pickle_save(allocation, stack_allocations_path)
+            pickle_save(allocation, stack_allocations_path)  # type: ignore
         steady_state_allocation_list = self.get_steady_state_allocation_list(allocation)
         tsa = TimeSlotAllocation(steady_state_allocation_list)  # type: ignore
         # json_path = stack_allocations_path.replace(".pickle", ".json")
@@ -442,11 +442,10 @@ class ConstraintOptimizationAllocationStage(Stage):
         # Get the core allocations for each unique node id and sub id in the allocation
         node_id_to_cores: dict[tuple[int, int], list[Core]] = {}
         node_id_to_slots: dict[tuple[int, int], list[int]] = {}
-        for slot, core_str, (n_id, n_sub_id) in allocation:
+        for slot, core_id, (n_id, n_sub_id) in allocation:
             # Keep slot
             node_id_to_slots[(n_id, n_sub_id)] = node_id_to_slots.get((n_id, n_sub_id), [])
             node_id_to_slots[(n_id, n_sub_id)].append(slot)
-            core_id = int(core_str.split(" ")[-1])  # Extract core id from the core string
             core = self.accelerator.get_core(core_id)
             node_id_to_cores[(n_id, n_sub_id)] = node_id_to_cores.get((n_id, n_sub_id), [])
             node_id_to_cores[(n_id, n_sub_id)].append(core)
@@ -483,7 +482,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         for t in range(allocation.slot_min, allocation.slot_max + 1):
             for node in allocation.get_allocations_in_slot(t).values():
                 nb_cores = len(allocation.get_resources_for_node_id(node.id))
-                sub_id = node.sub_id
+                sub_id = node.sub_id  # type: ignore
                 adjusted_sub_id = nb_cores * sub_id
                 while (node.id, adjusted_sub_id) in order:
                     # Increment the adjusted_sub_id with the sub_id until it is unique
@@ -541,7 +540,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         main_stage = MainStage(
             [
                 TiledWorkloadGenerationStage,  # Splits in intra-core mapping
-                ZigZagCoreMappingEstimationStage,
+                ZigZagCoreMappingEstimationStage,  # type: ignore
                 SetFixedAllocationPerformanceStage,
                 StreamCostModelEvaluationStage,
             ],
@@ -576,11 +575,11 @@ class ConstraintOptimizationAllocationStage(Stage):
         for layer_id_not_in_ss in layer_ids_not_in_ss:
             layer_ids_idx = np.searchsorted(layer_ids, layer_id_not_in_ss)
             for node in filter(lambda n: n.id == layer_id_not_in_ss, sub_workload.node_list):
-                node.chosen_core_allocation = node.core_allocation
+                node.chosen_core_allocation = node.core_allocation[0]
                 node.possible_core_allocation = node.core_allocation
                 layer_ids.insert(layer_ids_idx, layer_id_not_in_ss)
                 core_ids.insert(layer_ids_idx, node.core_allocation)
-                logger.warning(f"{node} not in steady state allocation; allocated to: {node.core_allocation}.")
+                logger.warning(f"{node} not in steady state allocation; allocated to: {node.core_allocation[0]}.")
 
         return layer_ids, core_ids
 
@@ -588,9 +587,9 @@ class ConstraintOptimizationAllocationStage(Stage):
         """! Modify the workload to fix the core allocations to the given core_ids for the given layer_ids."""
         for n in workload.node_list:
             cores = allocation.get_resources_for_node_id(n.id)
-            n.possible_core_allocation = list(core.id for core in cores)
+            n.possible_core_allocation = list(core.id for core in cores)  # type: ignore
 
-    def replace_wildcard_in_tiling(self, tiling: TILING_WILDCARD_T, nb_cores_split: int):
+    def replace_wildcard_in_tiling(self, tiling: TILING_WILDCARD_T | TILING_T, nb_cores_split: int):
         """The user can define a wildcard `*` in the inter core tiling, meaning that the value found by the CO
         must be used instead.
         """

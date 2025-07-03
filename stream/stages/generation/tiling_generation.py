@@ -9,7 +9,7 @@ from zigzag.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.mapping import TILING_T
+from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
 from stream.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)
@@ -157,7 +157,7 @@ class TilingGenerationStage(Stage):
         or too large tiling size. Remove entry if this is the case
         #TODO it would be more logical to put this code somewhere else
         """
-        valid_tiling: TILING_T = []
+        valid_tiling: TILING_WILDCARD_T = []
         for layer_dim, factor in node.inter_core_tiling:
             # Tiling layer dim doesn't exist -> remove
             if layer_dim not in node.layer_dim_sizes:
@@ -181,7 +181,7 @@ class TilingGenerationStage(Stage):
 
     def generate_inter_core_tiling(
         self, node: ComputationNode, default_tiling_size: int | Literal["*"] = 1
-    ) -> TILING_T:
+    ) -> TILING_WILDCARD_T:
         """Give some valid inter-core tiling for the given node: either coming from the default inter-core partitions,
         or any arbitrary layer dimension.
         #TODO will the default size 1 (instead of `*`) work with ConstraintOptimization?
@@ -312,6 +312,7 @@ class TilingGenerationStage(Stage):
             if has_bias:
                 bias_name = f"{original_bias_name}_split_{i}"
                 bias_shape = bias_input_shape
+                assert isinstance(bias_shape, list), "Bias shape should be a list."
                 assert len(bias_shape) == 1, "Correct dim idx not implemented for > 1 bias dim."
                 bias_shape[0] = split_size
                 bias_data = numpy_helper.from_array(np.zeros(bias_shape), name=bias_name)

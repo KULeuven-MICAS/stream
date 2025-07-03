@@ -12,12 +12,12 @@ from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
 from zigzag.stages.main import MainStage
 from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
 from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
+from zigzag.stages.stage import Stage, StageCallable
 from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.stages.generation.layer_stacks_generation import STACK_T
-from stream.stages.stage import Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT, contains_wildcard, get_top_level_inst_bandwidth, get_unique_nodes
 from stream.visualization.cost_model_evaluation_lut import (
     visualize_cost_lut_pickle,
@@ -41,7 +41,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         accelerator: Accelerator,
         loma_lpf_limit: int,
         cost_lut_path: str,
-        **kwargs: dict[str, Any],
+        **kwargs: Any,
     ):
         """
         Initialize the stage by:
@@ -444,7 +444,7 @@ class MinimalBandwidthLatencyStage(Stage):
         """
         # TODO this does not cover all cases
         """
-        latency: int = cme.latency_total2
+        latency: int = int(cme.latency_total2)
 
         if not self.has_dram_level:
             return latency

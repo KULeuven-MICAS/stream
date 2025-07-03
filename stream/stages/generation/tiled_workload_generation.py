@@ -167,7 +167,7 @@ class TiledWorkloadGenerationStage(Stage):
             tiled_workload = self.remake_workload(all_tiles, all_edges)
 
             # Save the tiled workload
-            pickle_save(tiled_workload, self.tiled_workload_path)
+            pickle_save(tiled_workload, self.tiled_workload_path)  # type: ignore
             logger.info(f"Saved tiled workload to {self.tiled_workload_path}.")
 
         logger.info(f"Finer graph: {tiled_workload}.")
@@ -219,6 +219,7 @@ class TiledWorkloadGenerationStage(Stage):
 
             # Now we have all ComputationNode successors
             for successor in successors:
+                assert isinstance(successor, ComputationNode), f"Successor {successor} is not a ComputationNode."
                 intermediates = G.shortest_path(node, successor)[1:-1]
                 complex_pair = False
                 for intermediate in intermediates:
@@ -251,7 +252,7 @@ class TiledWorkloadGenerationStage(Stage):
         else:
             # inter core tiling is ok, also split into these tiles. NOTE: this list is ordered
             tiling_to_split = node.inter_core_tiling + node.intra_core_tiling
-        outer_loops = convert_outer_cn_loops(tiling_to_split)
+        outer_loops = convert_outer_cn_loops(tiling_to_split)  # type: ignore
 
         # In case no valid intra core tiling is found: add an arbitrary tiling of size 1
         if not outer_loops:
@@ -350,7 +351,7 @@ class TiledWorkloadGenerationStage(Stage):
         group_id_manager = GroupIdManager(
             layer_dim_sizes=original_node.extended_layer_dim_sizes,
             intra_core_tiling=original_node.intra_core_tiling,
-            inter_core_tiling=original_node.inter_core_tiling,
+            inter_core_tiling=original_node.inter_core_tiling,  # type: ignore
         )
 
         for n in range(nb_cns):
@@ -418,7 +419,7 @@ class TiledWorkloadGenerationStage(Stage):
 
         for dim, size in tile_attrs.layer_dim_sizes.items():
             new_size = self.pad_until_divisible(
-                dim, size, outer_temporal_loops=outer_temporal_loops, mandatory_divisors=mandatory_divisors
+                dim, int(size), outer_temporal_loops=outer_temporal_loops, mandatory_divisors=mandatory_divisors
             )
             if size != new_size:
                 tile_attrs.layer_dim_sizes[dim] = new_size
@@ -859,6 +860,7 @@ class TiledWorkloadGenerationStage(Stage):
             tilings += node.inter_core_tiling
 
         for dim, size in tilings:
+            assert isinstance(size, int), f"Size of tiling {dim} should be an integer, got {size}"
             if dim in dimensions and size > 1:
                 relevant_axes[dimensions.index(dim)] = True
 
@@ -888,7 +890,7 @@ class TiledWorkloadGenerationStage(Stage):
             operand (LayerOperand): The input operand of final_node for which to get the inter-edges
             relevant_axes (list): A list of boolean values indicating which axes are relevant for the final_node
         """
-        inter_edges: set[tuple[ComputationNode, ComputationNode]] = []
+        inter_edges: set[tuple[ComputationNode, ComputationNode]] = set()
         dims = final_node.operand_dimensionality_order[op]
         assert len(dims) == len(relevant_axes)
         for consumer_tile in self.tiles_dict[final_node]:
@@ -900,10 +902,10 @@ class TiledWorkloadGenerationStage(Stage):
             # Ellipsis adds the entire last axis for the extra dimension in NodeTensor
             slices = tuple(slice(start, stop) for start, stop in relevant_loop_ranges) + (Ellipsis,)
             sliced_tensor = tensor[slices]
-            producer_tiles = set(sliced_tensor[sliced_tensor != 0].flat.flat)
+            producer_tiles = set(sliced_tensor[sliced_tensor != 0].flat.flat)  # type: ignore
 
             for producer_tile in producer_tiles:
-                inter_edges.append((producer_tile, consumer_tile))
+                inter_edges.add((producer_tile, consumer_tile))
         return inter_edges
 
     @staticmethod
@@ -939,6 +941,7 @@ class TiledWorkloadGenerationStage(Stage):
         op: LayerOperand,
     ) -> NodeTensor:
         tensor_dims = node.operand_dimensionality_order[op]
+        assert node.pr_layer_dim_sizes is not None, f"Node {node} must have pr_layer_dim_sizes set"
         all_loop_dim_sizes = node.layer_dim_sizes + node.pr_layer_dim_sizes  # union
         tensor_shapes: tuple[int, ...] = tuple(all_loop_dim_sizes[dim] for dim in tensor_dims)
 
@@ -1022,53 +1025,6 @@ class TiledWorkloadGenerationStage(Stage):
         new_workload.add_nodes_from(tiles)
         new_workload.add_edges_from(edges)
         return new_workload
-
-    def get_weight_capacities(self):
-        # Get the weight capacity of all cores
-        weight_capacities: dict[int, int] = {}
-        for core in self.accelerator.cores.node_list:
-            if core.id == self.accelerator.offchip_core_id:
-                continue  # skip offchip core
-            core_weight_capacity = core.memory_hierarchy.get_operand_top_level(Constants.MEM_OP_2).memory_instance.size
-            weight_capacities[core.id] = core_weight_capacity
-        return weight_capacities
-
-    def get_layer_split_factors_k(self):
-        # Get for each layer the split factor we need to be able to fit weights on possible cores
-        split_factors: dict[ComputationNode, int] = {}
-        for node in self.workload.node_list:
-            if isinstance(node, DummyNode):
-                continue
-            # Get the weight capacity of all possible core allocations of this node
-            core_allocations = node.possible_core_allocation
-            # for fixed single allocation don't consider the splitting
-            if len(core_allocations) == 1:
-                continue
-            core_capacities = [self.weight_capacities[core_id] for core_id in core_allocations]
-            min_core_capacity = min(core_capacities)
-            # Get the weight size of this layer
-            constant_operands = node.constant_operands
-            if not constant_operands:
-                continue
-
-            constant_operand = node.constant_operands[0]
-            weight_size = node.operand_size_bit[constant_operand]
-            if weight_size == 0:
-                continue
-            split_factor = ceil(weight_size / (self.split_W_percentage * min_core_capacity))  # 0.5 for double buffering
-            if split_factor == 1:
-                continue
-            # Check if the split_factor is a divisor of the number of output channels
-            try:
-                output_channels = node.layer_dim_sizes[LayerDim("K")]
-            except KeyError:
-                raise NotImplementedError(f"{node} doesn't have a 'K' loop.")
-            while divmod(output_channels, split_factor)[1] != 0:
-                split_factor += 1
-                if split_factor > output_channels:
-                    raise ValueError("Something went wrong.")
-            split_factors[node] = split_factor
-        return split_factors
 
     def load_cached_tiled_workload(self) -> ComputationNodeWorkload | None:
         if os.path.exists(self.tiled_workload_path):

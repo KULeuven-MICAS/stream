@@ -35,5 +35,5 @@ class InterCoreMappingAttributes:
     spatial_mapping: SpatialMapping
     core_allocation: list[int]
     intra_core_tiling: TILING_T
-    inter_core_tiling: TILING_WILDCARD_T
+    inter_core_tiling: TILING_WILDCARD_T | TILING_T
     layer_dimension_names: list[str]

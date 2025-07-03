@@ -9,7 +9,7 @@ from zigzag.datatypes import MemoryOperand
 from zigzag.mapping.data_movement import MemoryAccesses
 
 from stream.hardware.architecture.core import Core
-from stream.workload.mapping import TILING_T
+from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
@@ -105,7 +105,7 @@ def get_top_level_inst_bandwidth(cme: CostModelEvaluation, mem_op: MemoryOperand
     return cme.get_inst_bandwidth(memory_level=memory_level, memory_operand=mem_op, scaling=scaling)
 
 
-def contains_wildcard(tiling: TILING_T):
+def contains_wildcard(tiling: TILING_T | TILING_WILDCARD_T) -> bool:
     """Returns wether the given tiling contains a wildcard number `*`. The wildcard must later be replaced by the
     constraint optimization into the optimal number of tiles"""
     return any(tiling == "*" for _, tiling in tiling)

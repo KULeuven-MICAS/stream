@@ -93,7 +93,7 @@ class SchedulingOrderGenerationStage(Stage):
 
         # Inter-core tiling logic. Same order as `filtered_stack`
         inter_core_tiling_factor_per_layer: list[int] = [
-            self.get_total_tiling_size(n.inter_core_tiling) for n in some_node_per_layer
+            self.get_total_tiling_size(n.inter_core_tiling) for n in some_node_per_layer  # type: ignore
         ]
 
         return self._generate_scheduling_order_for_stack_with_generated_nodes(
@@ -138,7 +138,7 @@ class SchedulingOrderGenerationStage(Stage):
             base_node.id: self.get_nb_generated_nodes(base_node) for base_node in gen_base_nodes
         }
         gen_node_inter_core_tiling = {
-            base_node.id: self.get_total_tiling_size(base_node.inter_core_tiling) for base_node in gen_base_nodes
+            base_node.id: self.get_total_tiling_size(base_node.inter_core_tiling) for base_node in gen_base_nodes  # type: ignore
         }
 
         # For generated nodes: convert `(base_id, f(sub_id, gen_id))` to `(gen_layer_id, sub_id)`

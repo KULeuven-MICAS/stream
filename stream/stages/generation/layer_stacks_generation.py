@@ -79,7 +79,7 @@ class LayerStacksGenerationStage(Stage):
         assert self.layer_stacks is not None
         updated_layer_stacks: list[tuple[int, ...]] = []
         for stack in self.layer_stacks:
-            update_stack: list[tuple[int, ...]] = []
+            update_stack: list[int] = []
             for layer_id in stack:
                 try:
                     # Ignore node ids that do not exist

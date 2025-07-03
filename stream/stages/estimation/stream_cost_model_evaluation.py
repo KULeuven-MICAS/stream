@@ -37,7 +37,7 @@ class StreamCostModelEvaluationStage(Stage):
         self.workload = workload
         self.accelerator = accelerator
         self.operands_to_prefetch = operands_to_prefetch
-        self.scheduling_order = kwargs.get("scheduling_order", None)
+        self.scheduling_order = kwargs["scheduling_order"]
 
     def run(self) -> Generator[tuple[StreamCostModelEvaluation, Any], None, None]:
         """! Run the StreamCostModelEvaluation."""

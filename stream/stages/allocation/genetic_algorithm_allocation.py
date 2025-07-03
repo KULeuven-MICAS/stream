@@ -115,7 +115,7 @@ class GeneticAlgorithmAllocationStage(Stage):
         if self.individual_length == 0:
             logger.info("Evaluating fixed layer-core allocation.")
             core_allocations = []
-            (energy, latency, scme) = self.fitness_evaluator.get_fitness(core_allocations, return_scme=True)
+            (_, _, scme) = self.fitness_evaluator.get_fitness(core_allocations, return_scme=True)  # type: ignore
             yield scme, None
         else:
             logger.info(
