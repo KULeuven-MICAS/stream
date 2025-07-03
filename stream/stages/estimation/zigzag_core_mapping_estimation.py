@@ -9,15 +9,14 @@ from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
 from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
-from zigzag.stages.main import MainStage
 from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
 from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
-from zigzag.stages.stage import Stage, StageCallable
 from zigzag.utils import pickle_deepcopy
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.stages.generation.layer_stacks_generation import STACK_T
+from stream.stages.stage import MainStage, Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT, contains_wildcard, get_top_level_inst_bandwidth, get_unique_nodes
 from stream.visualization.cost_model_evaluation_lut import (
     visualize_cost_lut_pickle,
@@ -196,7 +195,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
 
         main_stage = MainStage(
             [  # Initializes the MainStage as entry point
-                MinimalBandwidthLatencyStage,
+                MinimalBandwidthLatencyStage,  # type: ignore
                 SpatialMappingGeneratorStage,  # Generates multiple spatial mappings (SM)
                 MinimalBandwidthLatencyStage,  # Reduces all CMEs, returning minimal EDP one
                 TemporalMappingGeneratorStage,  # Generates multiple temporal mappings (TM)

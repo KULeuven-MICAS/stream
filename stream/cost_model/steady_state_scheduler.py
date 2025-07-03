@@ -238,6 +238,9 @@ class SteadyStateScheduler:
         for tensor in steady_state_workload.tensor_nodes:
             out_edges = list(steady_state_workload.out_edges(tensor, data=True))
             successors = [i for _, i, _ in out_edges]
+            assert all(
+                isinstance(s, SteadyStateComputation) for s in successors
+            ), "All successors of a tensor node should be either SteadyStateTensor or SteadyStateComputation nodes."
             if not successors:
                 continue
             if len(successors) > 1:
@@ -252,7 +255,7 @@ class SteadyStateScheduler:
                 id=tensor.id,
                 node_name=f"Transfer({tensor.node_name} -> {[succ.node_name for succ in successors]})",
                 src=tensor,
-                dst=successors,
+                dst=successors,  # type: ignore
                 tensor=tensor,
                 possible_resource_allocation=possible_resource_allocation,  # type: ignore
                 steady_state_iteration_space=ssis,
@@ -284,7 +287,7 @@ class SteadyStateScheduler:
                         size=tensor.size,
                         operand=tensor.operand,
                         steady_state_iteration_space=ssis,
-                        possible_resource_allocation=successor.possible_resource_allocation,
+                        possible_resource_allocation=successor.possible_resource_allocation,  # type: ignore
                         full_shape=full_shape,
                         slices_per_full=slices_per_full,
                     )

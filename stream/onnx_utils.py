@@ -45,7 +45,7 @@ def get_onnx_output_shapes(node: NodeProto, onnx_model: ModelProto) -> list[tupl
     """Return the shape of each output operand"""
 
     output_names = node.output
-    output_shapes = [get_onnx_tensor_type(name, onnx_model).shape for name in output_names]
+    output_shapes = [tuple(get_onnx_tensor_type(name, onnx_model).shape) for name in output_names]
     return output_shapes
 
 

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 from numpy.typing import NDArray
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.mapping.data_movement import MemoryAccesses
+from zigzag.mapping.data_movement import FourWayDataMoving
 
 from stream.hardware.architecture.core import Core
 from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
@@ -95,7 +95,9 @@ def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNo
     return unique_nodes
 
 
-def get_top_level_inst_bandwidth(cme: CostModelEvaluation, mem_op: MemoryOperand, scaling: float = 1) -> MemoryAccesses:
+def get_top_level_inst_bandwidth(
+    cme: CostModelEvaluation, mem_op: MemoryOperand, scaling: float = 1
+) -> FourWayDataMoving[int]:
     """Given a cost model evaluation and a memory instance, compute the memory's total instantaneous bandwidth
     required throughout the execution of the layer that corresponds to this CME. Returns empty bandwidth
     requirements if the given memory instance is not included in this CME's memory hierarchy.
