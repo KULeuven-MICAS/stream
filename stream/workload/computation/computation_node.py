@@ -148,6 +148,7 @@ class ComputationNode(LayerNode, Node):
 
     def get_operand_tensor_reshape_default(self) -> OperandTensorReshape | None:
         try:
+            assert self.pr_layer_dim_sizes is not None, "pr_layer_dim_sizes must be set before calling this method."
             size_B = self.layer_dim_sizes[LayerDim("B")]
             size_OX = self.layer_dim_sizes[LayerDim("OX")]
             size_OY = self.layer_dim_sizes[LayerDim("OY")]
@@ -167,8 +168,7 @@ class ComputationNode(LayerNode, Node):
         """Return the total number of inter-core splits for this node, i.e. over how many cores this node is split"""
         if contains_wildcard(self.inter_core_tiling):
             return 1
-        assert all(isinstance(factor, int) for _, factor in self.inter_core_tiling)
-        return prod(factor for _, factor in self.inter_core_tiling)
+        return prod(factor for _, factor in self.inter_core_tiling)  # type: ignore
 
     @property
     def short_name(self) -> str:

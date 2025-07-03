@@ -41,7 +41,7 @@ class ReshapeNode(PropagationNode):
         """Reshape the tensor back to the representation needed for producer/consumer."""
         new_shape = self.shape
         if not new_shape:
-            return tensor
+            return tensor, relevant_axes
 
         if not self.allow_zero:
             new_shape = tuple(x for x in new_shape if x != 0)

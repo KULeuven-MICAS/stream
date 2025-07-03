@@ -31,8 +31,8 @@ class TransposeNode(PropagationNode):
     ) -> tuple[NodeTensor, list[bool]]:
         """Transpose an input tensor."""
         transposed_tensor = tensor.transpose(axes=self.permute_axes)
-
-        for axis in self.permute_axes:
-            relevant_axes[axis] = True
+        if self.permute_axes is not None:
+            for axis in self.permute_axes:
+                relevant_axes[axis] = True
 
         return transposed_tensor, relevant_axes
