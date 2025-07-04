@@ -3,7 +3,7 @@ Stream is a HW architecture-mapping design space exploration (DSE) framework for
 
 More information with respect to the capabilities of Stream can be found in the following paper:
 
-[A. Symons, L. Mei, S. Colleman, P. Houshmand, S. Karl and M. Verhelst, “Towards Heterogeneous Multi-core Accelerators Exploiting Fine-grained Scheduling of Layer-Fused Deep Neural Networks”, <i>arXiv e-prints</i>, 2022. doi:10.48550/arXiv.2212.10612.](https://arxiv.org/abs/2212.10612)
+[A. Symons, L. Mei, S. Colleman, P. Houshmand, S. Karl and M. Verhelst, “Stream: Design Space Exploration of Layer-Fused DNNs on Heterogeneous Dataflow Accelerators”.](https://ieeexplore.ieee.org/abstract/document/10713407)
 
 
 ## Install required packages:
