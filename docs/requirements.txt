@@ -1,4 +1,8 @@
-# Sphinx
-sphinx==7.1.2
-# Sphinx Theme
-furo
+mkdocs>=1.5.3
+mkdocs-material>=9.5.15
+
+# For advanced Markdown features used in your mkdocs.yml
+pymdown-extensions>=10.7
+mkdocstrings[python]>=0.24
+mkdocs-git-revision-date-localized-plugin>=1.2
+mkdocs-minify-plugin>=0.7.1
