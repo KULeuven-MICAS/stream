@@ -1,5 +1,3 @@
-from typing import Optional
-
 from zigzag.datatypes import LayerOperand
 from zigzag.workload.layer_node import LayerNodeAttributes
 
@@ -13,7 +11,7 @@ from stream.workload.steady_state.node import SteadyStateNode
 class SteadyStateComputation(ComputationNode, SteadyStateNode):
     """A ComputationNode that is also aware of steady-state scheduling and metrics."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         id: int,
         node_name: str,
@@ -21,11 +19,11 @@ class SteadyStateComputation(ComputationNode, SteadyStateNode):
         mapping_attr: InterCoreMappingAttributes,
         input_names: list[str],
         possible_resource_allocation: list[Core],
-        operand_tensor_reshape: Optional[OperandTensorReshape] = None,
+        operand_tensor_reshape: OperandTensorReshape | None = None,
         produces_final_output: bool = False,
         group_id: int = 0,
         sub_id: int = -1,
-        partially_constant_operands: Optional[list[LayerOperand]] = None,
+        partially_constant_operands: list[LayerOperand] | None = None,
     ):
         if partially_constant_operands is None:
             partially_constant_operands = []

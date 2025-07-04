@@ -28,7 +28,7 @@ def parse_non_base_attrs(row: pd.Series, base_attrs: list[str]) -> dict:
         if isinstance(v, float) and np.isnan(v):
             continue
         if isinstance(v, list):
-            v = [str(i) for i in v]
+            v_new = [str(i) for i in v]
         if isinstance(v, dict):
             new_v = {}
             for k2, v2 in v.items():
@@ -36,15 +36,14 @@ def parse_non_base_attrs(row: pd.Series, base_attrs: list[str]) -> dict:
                     new_v[str(k2)] = [str(i) for i in v2]
                 else:
                     new_v[str(k2)] = str(v2)
-            v = new_v
+            v_new = new_v
         else:
-            v = str(v)
-        args[k] = v
+            v_new = str(v)
+        args[k] = v_new
     return args
 
 
 def add_preamble_to_events(df: pd.DataFrame, events: list, process_name: str):
-
     # Extract and sort unique compute resources
     compute_resources = sorted(
         set(row["Resource"] for _, row in df.iterrows() if row["Type"] == "compute"),
@@ -94,13 +93,12 @@ def convert_scme_to_perfetto_json(
     scme: "StreamCostModelEvaluation",
     cost_lut: CostModelEvaluationLUT,
     json_path: str,
-    layer_ids: list[int] = [],
+    layer_ids: list[int] | None = None,
     process_name: str = PROCESS_NAME,
     unknown_string: str = UNKNOWN_STRING,
 ) -> str:
-
     # Get the layer ids from the scme if not provided
-    if not layer_ids:
+    if layer_ids is None:
         layer_ids = sorted(set(n.id for n in scme.workload.node_list))
 
     # Define the base attributes that are common to all events

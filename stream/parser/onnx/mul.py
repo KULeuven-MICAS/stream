@@ -17,7 +17,9 @@ class MulParser(OnnxComputeOperatorParser):
         input_shapes = get_onnx_input_shapes(self.node, self.onnx_model)
         output_shapes = get_onnx_output_shapes(self.node, self.onnx_model)
 
-        if len(input_shapes) != 2 or len(output_shapes) != 1:
+        EXPECTED_INPUTS = 2
+        EXPECTED_OUTPUTS = 1
+        if len(input_shapes) != EXPECTED_INPUTS or len(output_shapes) != EXPECTED_OUTPUTS:
             raise NotImplementedError
 
         output_shape = output_shapes.pop()
@@ -29,9 +31,9 @@ class MulParser(OnnxComputeOperatorParser):
         broadcast_shape = input_shapes.pop()
 
         # e.g. (3,5) * (8,3,5) is ok (broadcast over dim 0), but (3,2) * (8,3,5) is unclear
-        for broadcast_size, in_size in zip(reversed(broadcast_shape), reversed(input_shape)):
-            if broadcast_size != in_size and broadcast_size != 1:
-                raise ValueError
+        for broadcast_size, in_size in zip(reversed(broadcast_shape), reversed(input_shape), strict=False):
+            if broadcast_size not in (1, in_size):
+                raise ValueError(f"Cannot broadcast {broadcast_shape} to {input_shape}")
 
         return input_shape, broadcast_shape
 
@@ -65,8 +67,8 @@ class MulParser(OnnxComputeOperatorParser):
                         else next(i for i in predecessors if i != node_id_W)
                     )
                     return {"W": node_id_W, "I": node_id_I}
-                except StopIteration:
-                    raise ValueError(f"Cannot find correct inputs of {self  .node.name}")
+                except StopIteration as exc:
+                    raise ValueError(f"Cannot find correct inputs of {self.node.name}") from exc
             case _:
                 raise ValueError("No more than 2 layer predecessors expected")
 
@@ -101,7 +103,9 @@ class MulParser(OnnxComputeOperatorParser):
         )
 
         loop_dims = possible_loop_dims[0 : len(common_shape)]
-        loop_dims_broadcast = reversed([dim for dim, _ in zip(reversed(loop_dims), reversed(broadcast_shape))])
+        loop_dims_broadcast = reversed(
+            [dim for dim, _ in zip(reversed(loop_dims), reversed(broadcast_shape), strict=False)]
+        )
 
         equation_dims_common = "".join([f"[{dim.lower()}]" for dim in loop_dims])
         equation_dims_broadcast = "".join([f"[{dim.lower()}]" for dim in loop_dims_broadcast])

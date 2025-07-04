@@ -17,7 +17,7 @@ class ConcatConstantNode(PropagationNode):
         axis: int,
         constant_shape: tuple[int, ...],
         variable_input_first: bool,
-        input_names: list[str] = [],
+        input_names: list[str] | None = None,
     ) -> None:
         """Initialize the ConcatConstantNode
 
@@ -28,6 +28,8 @@ class ConcatConstantNode(PropagationNode):
             variable_input_first: Wether the result is `concat(input, constant_tensor)` or
                 `concat(constant_tensor, input)`
         """
+        if input_names is None:
+            input_names = []
         op_type = "concat"
         super().__init__(node_id, node_name, op_type, input_names)
 
@@ -51,16 +53,15 @@ class ConcatConstantNode(PropagationNode):
         tensor: NodeTensor,
         previous_node: Node | None = None,
         next_node: Node | None = None,
-        relevant_axes: list[bool] = [],
+        relevant_axes: list[bool] | None = None,
     ) -> tuple[NodeTensor, list[bool]]:
         """Perform gather operation on the tensor."""
-
+        if relevant_axes is None:
+            relevant_axes = [False] * len(tensor.tensor_shape)
         relevant_axes[self.axis] = True
-
         extended_tensor = tensor.concat_with_empty(
             shape=self.constant_shape, axis=self.axis, variable_input_first=self.variable_input_first
         )
-
         return extended_tensor, relevant_axes
 
 
@@ -74,7 +75,7 @@ class ConcatNode(PropagationNode):
         predecessors: list[int],
         axis: int,
         output_shape: tuple[int, ...],
-        input_names: list[str] = [],
+        input_names: list[str] | None = None,
         axis_exists_in_input: bool = False,
     ) -> None:
         """Initialize the ConcatConstantNode
@@ -86,6 +87,8 @@ class ConcatNode(PropagationNode):
             axis_exists_in_input: whether the input already has the axis over which the concationation happens
 
         """
+        if input_names is None:
+            input_names = []
         op_type = "concat"
         super().__init__(node_id, node_name, op_type, input_names)
         self.axis = axis
@@ -99,13 +102,15 @@ class ConcatNode(PropagationNode):
         tensor: NodeTensor,
         previous_node: Node | None = None,
         next_node: Node | None = None,
-        relevant_axes: list[bool] = [],
+        relevant_axes: list[bool] | None = None,
     ) -> tuple[NodeTensor, list[bool]]:
         """The input slice is only one of many inputs of this node, but the output tensor should have the shape of the
         concat node output. Return a tensor of all zeros except the input tensor at the correct index"""
-        assert isinstance(
-            previous_node, GeneratedComputationNode
-        ), "Concat only supported for procedurally generated nodes for now"
+        if relevant_axes is None:
+            relevant_axes = [False] * len(tensor.tensor_shape)
+        assert isinstance(previous_node, GeneratedComputationNode), (
+            "Concat only supported for procedurally generated nodes for now"
+        )
         assert not self.axis_exists_in_input or (
             len(tensor.tensor_shape) == len(self.output_shape) and tensor.tensor_shape[self.axis] == 1
         ), """Input tensor does not have size-1 dimension to concatenate on"""

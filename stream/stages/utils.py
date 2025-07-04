@@ -13,5 +13,5 @@ def set_required_kwargs(required_kwargs, obj):
     for required_kwarg in required_kwargs:
         try:
             setattr(obj, required_kwarg, obj.kwargs[required_kwarg])
-        except KeyError:
-            raise ValueError(f'Please define "{required_kwarg}" for {obj.__class__.__name__}.')
+        except KeyError as exc:
+            raise ValueError(f'Please define "{required_kwarg}" for {obj.__class__.__name__}.') from exc

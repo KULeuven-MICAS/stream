@@ -26,7 +26,9 @@ class PoolingParser(OnnxComputeOperatorParser):
             # Find kernel shape in attrs
             kernel_shape = get_attribute_ints_with_name("kernel_shape", attrs, default=None)
         elif self.node.op_type in ["GlobalMaxPool", "GlobalAveragePool"]:
-            assert len(ia_dimension_shape) == 4  # assume the last two dimensions are the pooling kernel dimensions
+            EXPECTED_INPUT_DIMS = 4
+            assert len(ia_dimension_shape) == EXPECTED_INPUT_DIMS
+            # Assume last two DIMS are the pooling kernel dims
             kernel_shape = [ia_dimension_shape[2], ia_dimension_shape[3]]
         else:
             raise NotImplementedError(

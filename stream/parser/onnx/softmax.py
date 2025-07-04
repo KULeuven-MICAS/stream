@@ -20,8 +20,7 @@ class SoftmaxParser(OnnxComputeOperatorParser):
     NODE_TYPES = ["max", "exp", "sum", "div"]
 
     def run(self):
-        for node in self.get_nodes():
-            yield node
+        yield from self.get_nodes()
 
     def get_layer_node_user_format(
         self, input_shape: list[int], output_shape: list[int], mapping: InterCoreMappingAttributes | None
@@ -45,7 +44,7 @@ class SoftmaxParser(OnnxComputeOperatorParser):
                 all_mappings=self.all_mappings,
                 accelerator=self.accelerator,
             )
-            for parser, node_id in zip(parser_classes, node_ids)
+            for parser, node_id in zip(parser_classes, node_ids, strict=False)
         ]
         self.nodes = tuple(next(parser.run()) for parser in parsers)
 
@@ -61,7 +60,7 @@ class SoftmaxParser(OnnxComputeOperatorParser):
 
     def set_nodes_name_and_type(self):
         """Set the name and operator type of all Computation Nodes that stem from the base ONNX node"""
-        for node, node_type in zip(self.nodes, SoftmaxParser.NODE_TYPES):
+        for node, node_type in zip(self.nodes, SoftmaxParser.NODE_TYPES, strict=False):
             node.type = node_type
             node.name += f"-{node_type}/"
 
@@ -105,7 +104,8 @@ class SoftmaxExpParser(SimdParser):
         data["operand_precision"] = self.get_operand_precision_user_format()
         data["dimension_relations"] = []
 
-        if len(input_shape) > len(SimdParser.DEFAULT_LAYER_DIMENSIONS) or len(input_shape) < 2:
+        MINIMUM_INPUT_LENGTH = 1
+        if len(input_shape) > len(SimdParser.DEFAULT_LAYER_DIMENSIONS) or len(input_shape) <= MINIMUM_INPUT_LENGTH:
             raise NotImplementedError
 
         possible_loop_dims = (

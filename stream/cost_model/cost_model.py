@@ -49,7 +49,7 @@ class StreamCostModelEvaluation:
         Uses the Schedule class for modular scheduling and result extraction.
         """
         schedule = CoalaScheduler(
-            G=self.workload,
+            g=self.workload,
             accelerator=self.accelerator,
             scheduling_order=self.scheduling_order,
             operands_to_prefetch=self.operands_to_prefetch,

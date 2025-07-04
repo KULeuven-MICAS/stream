@@ -1,4 +1,3 @@
-import matplotlib.pyplot as plt
 import numpy
 
 
@@ -14,86 +13,6 @@ class StatisticsEvaluator:
     def append_generation(self, pop):
         self.generations.append(list(pop))
         self.num_generation.append(self.current_generation)
-
-    def plot_evolution(self):
-        first_values = []
-        second_values = []
-        third_values = []
-
-        for pop in self.generations:
-            y = []
-            x = []
-            z = []
-            third_metric = 0
-
-            for individual in pop:
-                if len(self.fitness_evaluator.metrics) == 1:
-                    first_metric = second_metric = self.fitness_evaluator.get_fitness(individual)
-                elif len(self.fitness_evaluator.metrics) == 2:
-                    first_metric, second_metric = self.fitness_evaluator.get_fitness(individual)
-                elif len(self.fitness_evaluator.metrics) == 3:
-                    (
-                        first_metric,
-                        second_metric,
-                        third_metric,
-                    ) = self.fitness_evaluator.get_fitness(individual)
-
-                y.append(second_metric)
-                x.append(first_metric)
-                z.append(third_metric)
-
-            first_values.append(x)
-            second_values.append(y)
-            if len(self.fitness_evaluator.metrics) == 3:
-                third_values.append(z)
-
-        plt.clf()
-        for data_row in range(len(first_values)):
-            if data_row != len(first_values) - 1:
-                value = 1 / (data_row + 1.1)
-                col = (value, value, value)
-            else:
-                col = (1, 0, 0)
-
-            plt.scatter(
-                first_values[data_row],
-                second_values[data_row],
-                color=col,
-                label=self.num_generation[data_row],
-            )
-
-        plt.title("Evolution of solutions in population over time")
-        plt.grid()
-        plt.xlabel(self.fitness_evaluator.metrics[0])
-        if len(self.fitness_evaluator.metrics) == 1:
-            plt.ylabel(self.fitness_evaluator.metrics[0])
-        else:
-            plt.ylabel(self.fitness_evaluator.metrics[1])
-        # plt.legend(loc='upper right')
-        plt.show()
-
-        if len(self.fitness_evaluator.metrics) == 3:
-            plt.clf()
-            for data_row in range(len(first_values)):
-                if data_row != len(first_values) - 1:
-                    value = 1 / (data_row + 1.1)
-                    col = (value, value, value)
-                else:
-                    col = (1, 0, 0)
-
-                plt.scatter(
-                    first_values[data_row],
-                    third_values[data_row],
-                    color=col,
-                    label=self.num_generation[data_row],
-                )
-
-            plt.title("Evolution of solutions in population over time")
-            plt.grid()
-            plt.xlabel(self.fitness_evaluator.metrics[0])
-            plt.ylabel(self.fitness_evaluator.metrics[2])
-            # plt.legend(loc='upper right')
-            plt.show()
 
     def print_population(self, pop):
         for individual in pop:

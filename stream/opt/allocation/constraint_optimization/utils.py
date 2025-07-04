@@ -111,19 +111,19 @@ def get_energies(
     accelerator: Accelerator,
     cost_lut: CostModelEvaluationLUT,
     impossible_energy: float = 1e11,
-    ids: dict[ComputationNode, int] = {},
+    ids: dict[ComputationNode, int] | None = None,
 ) -> dict[tuple[int, str], float]:
-    if not ids:
+    if ids is None:
         ids = {node: node.id for node in nodes}
     core_names = [f"Core {id}" for id in core_ids]
     energies = {(ids[node], core_name): impossible_energy for node in nodes for core_name in core_names}
 
     for node in nodes:
-        for core_id, core_name in zip(core_ids, core_names):
+        for core_id, core_name in zip(core_ids, core_names, strict=False):
             core = accelerator.get_core(core_id)
             try:
                 cme = cost_lut.get_cme(node, core)
-                en = getattr(cme, "energy_total")
+                en = cme.energy_total
             except ValueError:
                 en = impossible_energy
             energies[(ids[node], core_name)] = en
@@ -180,11 +180,14 @@ def calculate_total_latency(allocation: "TimeSlotAllocation", iterations) -> tup
     total_timestep_latency = sum(timestep_latencies.values())
     overlap = compute_iterations_overlap(allocation, timestep_latencies, starts, total_timestep_latency)
     total_lat = iterations * total_timestep_latency - (iterations - 1) * overlap
-    total_lat_str = f"total_lat = N * T - (N - 1) * overlap --> {total_lat} = {iterations} * {total_timestep_latency} - {iterations-1} * {overlap}"
+    total_lat_str = (
+        "total_lat = N * T - (N - 1) * overlap --> "
+        f"{total_lat} = {iterations} * {total_timestep_latency} - {iterations - 1} * {overlap}"
+    )
     return total_lat, total_lat_str
 
 
-def compute_iterations_overlap(allocation: "TimeSlotAllocation", timestep_latencies, starts, T):
+def compute_iterations_overlap(allocation: "TimeSlotAllocation", timestep_latencies, starts, iteration_latency):
     slacks = {}
     for core in allocation.resources:
         relevant_starts = [v for k, v in starts.items() if k[1] == core]
@@ -194,7 +197,7 @@ def compute_iterations_overlap(allocation: "TimeSlotAllocation", timestep_latenc
         latest_timestep = allocation.get_timeslot_of_node_on_resource(latest_node_on_this_core, core)
         timestep_latency = timestep_latencies[latest_timestep]
         latest_end = latest_start + timestep_latency
-        slack = T - latest_end + earliest_start
+        slack = iteration_latency - latest_end + earliest_start
         assert slack >= 0
         slacks[core] = slack
     overlap = min(slacks.values())

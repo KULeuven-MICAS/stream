@@ -17,7 +17,7 @@ class SplitNode(PropagationNode):
         axis: int,
         splits: list[int],
         output_names: list[str],
-        input_names: list[str] = [],
+        input_names: list[str] | None = None,
     ) -> None:
         """Initialize the SplitNode
         Split the tensor at axis `axis`. The sizes are given by `splits`. `len(splits)` is the number of output nodes.
@@ -28,6 +28,8 @@ class SplitNode(PropagationNode):
             splits: sizes of the output splits in the given axis
             output_names: the node names that correspond to the splits, used to determine propagation flow
         """
+        if input_names is None:
+            input_names = []
         op_type = "split"
         super().__init__(node_id, node_name, op_type, input_names)
 
@@ -41,9 +43,11 @@ class SplitNode(PropagationNode):
         tensor: NodeTensor,
         previous_node: Node | None = None,
         next_node: Node | None = None,
-        relevant_axes: list[bool] = [],
+        relevant_axes: list[bool] | None = None,
     ) -> tuple[NodeTensor, list[bool]]:
         """Split the tensor back to the representation needed for producer/consumer."""
+        if relevant_axes is None:
+            relevant_axes = [False] * len(tensor.tensor_shape)
         assert next_node is not None
 
         index = self.find_split_index(next_node)
@@ -72,7 +76,7 @@ class SplitNode(PropagationNode):
         try:
             index = next(i for i, output_name in enumerate(self.output_names) if output_name in next_node.input_names)
             return index
-        except StopIteration:
+        except StopIteration as exc:
             raise ValueError(
-                f"Cannot find this nodes' ({self.name}) outputs {self.output_names} in next nodes' inputs {next_node.input_names}"
-            )
+                f"Cannot find outputs {self.output_names} of {self.name} in next inputs {next_node.input_names}"
+            ) from exc

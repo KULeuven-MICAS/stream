@@ -16,7 +16,7 @@ def get_communication_dicts(scme: "StreamCostModelEvaluation"):
     dicts = []
     accelerator: Accelerator = scme.accelerator
 
-    active_links: set["CommunicationLink"] = set()
+    active_links: set[CommunicationLink] = set()
     for all_links_pairs in accelerator.communication_manager.all_pair_links.values():
         for link_pair in all_links_pairs:
             for link in link_pair:
@@ -59,8 +59,8 @@ def get_communication_dicts(scme: "StreamCostModelEvaluation"):
     return dicts
 
 
-def get_real_input_tensors(n, G):
-    preds = list(G.predecessors(n))
+def get_real_input_tensors(n, g):
+    preds = list(g.predecessors(n))
     inputs = [pred.operand_tensors[pred.output_operand] for pred in preds if pred.id != n.id]
     inputs += [n.operand_tensors[op] for op in n.constant_operands]
     return inputs
@@ -71,12 +71,12 @@ def get_spatial_utilizations(
 ):
     if cost_lut:
         equal_node = cost_lut.get_equal_node(node)
-        assert (
-            equal_node
-        ), f"No equal node for {node} found in CostModelEvaluationLUT. Check LUT path (use the post-CO LUT when using CO)."
-        assert isinstance(
-            node.chosen_core_allocation, int
-        ), f"Chosen core allocation for {node} should be an integer, got {type(node.chosen_core_allocation)}."
+        assert equal_node, (
+            f"No equal node for {node} found in CostModelEvaluationLUT. Check if pre/post LUT path is correct."
+        )
+        assert isinstance(node.chosen_core_allocation, int), (
+            f"Chosen core allocation for {node} should be an integer, got {type(node.chosen_core_allocation)}."
+        )
         core = scme.accelerator.get_core(node.chosen_core_allocation)
         cme = cost_lut.get_cme(equal_node, core)
         return cme.mac_spatial_utilization, cme.mac_utilization1
@@ -88,12 +88,12 @@ def get_energy_breakdown(
 ):
     if cost_lut:
         equal_node = cost_lut.get_equal_node(node)
-        assert (
-            equal_node
-        ), f"No equal node for {node} found in CostModelEvaluationLUT. Check LUT path (use the post-CO LUT when using CO)."
-        assert isinstance(
-            node.chosen_core_allocation, int
-        ), f"Chosen core allocation for {node} should be an integer, got {type(node.chosen_core_allocation)}."
+        assert equal_node, (
+            f"No equal node for {node} found in CostModelEvaluationLUT. Check if pre/post LUT path is correct."
+        )
+        assert isinstance(node.chosen_core_allocation, int), (
+            f"Chosen core allocation for {node} should be an integer, got {type(node.chosen_core_allocation)}."
+        )
         core = scme.accelerator.get_core(node.chosen_core_allocation)
         cme = cost_lut.get_cme(equal_node, core)
         total_ops = cme.layer.total_mac_count

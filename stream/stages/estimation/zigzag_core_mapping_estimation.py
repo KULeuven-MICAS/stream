@@ -60,12 +60,12 @@ class ZigZagCoreMappingEstimationStage(Stage):
         # Extract all unique nodes that will have to be evaluated
         self.unique_nodes = get_unique_nodes(self.workload)
 
-        assert all(
-            isinstance(node, ComputationNode) for node in self.unique_nodes
-        ), "ZigZagCoreMappingEstimationStage received a non-ComputationNode."
-        assert all(
-            isinstance(node.possible_core_allocation, list) for node in self.unique_nodes
-        ), "ZigZagCoreMappingEstimationStage received a node with a non-list core allocation."
+        assert all(isinstance(node, ComputationNode) for node in self.unique_nodes), (
+            "ZigZagCoreMappingEstimationStage received a non-ComputationNode."
+        )
+        assert all(isinstance(node.possible_core_allocation, list) for node in self.unique_nodes), (
+            "ZigZagCoreMappingEstimationStage received a node with a non-list core allocation."
+        )
 
         self.valid_allocations: dict[ComputationNode, list[int]] = {
             node: node.possible_core_allocation for node in self.unique_nodes
@@ -83,8 +83,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         kwargs["accelerator"] = self.accelerator
         kwargs["cost_lut"] = self.cost_lut
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
-        for cme, extra_info in sub_stage.run():
-            yield cme, extra_info
+        yield from sub_stage.run()
 
     def update_cost_lut(self):
         for node in self.unique_nodes:
@@ -244,7 +243,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
             memory_operands = list(top_memory.mem_level_of_operands.keys())
             layer_operands = [memory_operand_link.mem_to_layer_op(mem_operand) for mem_operand in memory_operands]
             bits_to_be_stored_in_top_level: dict[MemoryOperand, int] = {}
-            for layer_operand, memory_operand in zip(layer_operands, memory_operands):
+            for layer_operand, memory_operand in zip(layer_operands, memory_operands, strict=False):
                 nb_bits = node.operand_size_bit[layer_operand]
                 bits_to_be_stored_in_top_level[memory_operand] = nb_bits
             total_required_capacity = sum(bits_to_be_stored_in_top_level.values())
@@ -366,9 +365,9 @@ class ZigZagCoreMappingEstimationStage(Stage):
 
         # Sanity checks: make sure that there is only one offchip memory
         offchip_memory_levels = offchip_core.memory_hierarchy.mem_level_list
-        assert (
-            len(offchip_memory_levels) == 1
-        ), "There is more than one offchip memory, unsure which one to take for intra core mapping"
+        assert len(offchip_memory_levels) == 1, (
+            "There is more than one offchip memory, unsure which one to take for intra core mapping"
+        )
 
         offchip_memory_level: MemoryLevel = pickle_deepcopy(offchip_memory_levels[0])
         offchip_memory_instance = offchip_memory_level.memory_instance
@@ -427,7 +426,7 @@ class MinimalBandwidthLatencyStage(Stage):
             nb_levels_per_op = [len(accelerator.memory_hierarchy.get_memory_levels(op)) for op in self.mem_ops]
             dram_mem_level = max(nb_levels_per_op)  # start at 1
             self.mem_ops_with_dram = [
-                op for op, nb_levels in zip(self.mem_ops, nb_levels_per_op) if nb_levels == dram_mem_level
+                op for op, nb_levels in zip(self.mem_ops, nb_levels_per_op, strict=False) if nb_levels == dram_mem_level
             ]
             ports = accelerator.get_top_memory_instance(self.mem_ops_with_dram[0]).ports
             self.total_dram_bandwidth = max((port.bw_max for port in ports), default=0)

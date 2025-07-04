@@ -44,16 +44,16 @@ def _sanity_check_gurobi_license():
         model.optimize()
         # If model.optimize() runs without a license issue, return
         return
-    except gp.GurobiError as e:
+    except gp.GurobiError as exc:
         # Catch any Gurobi errors, especially licensing errors
-        if e.errno == gp.GRB.Error.NO_LICENSE:
+        if exc.errno == gp.GRB.Error.NO_LICENSE:
             error_message = "No valid Gurobi license found. Get an academic WLS license at https://www.gurobi.com/academia/academic-program-and-licenses/"
         else:
-            error_message = f"An unexpected Gurobi error occurred: {e.message}"
-        raise ValueError(error_message)
+            error_message = f"An unexpected Gurobi error occurred: {exc.message}"
+        raise ValueError(error_message) from exc
 
 
-def optimize_allocation_ga(
+def optimize_allocation_ga(  # noqa: PLR0913
     hardware: str,
     workload: str,
     mapping: str,
@@ -124,7 +124,7 @@ def optimize_allocation_ga(
     return scme
 
 
-def optimize_allocation_co(
+def optimize_allocation_co(  # noqa: PLR0913
     hardware: str,
     workload: str,
     mapping: str,

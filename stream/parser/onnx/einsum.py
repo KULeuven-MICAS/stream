@@ -10,7 +10,6 @@ logger = logging.getLogger(__name__)
 
 
 class EinsumParser(OnnxComputeOperatorParser):
-
     def get_einsum_equation(self):
         ATTR_NAME = "equation"
 
@@ -57,15 +56,14 @@ class EinsumParser(OnnxComputeOperatorParser):
             raise ValueError("Einsum equation has more parts than node inputs")
 
         sizes_dict: dict[str, int] = {}
-        for layer_dims, sizes in zip(layer_dims_per_op, shapes):
+        for layer_dims, sizes in zip(layer_dims_per_op, shapes, strict=False):
             if len(layer_dims) != len(sizes):
                 raise ValueError(f"Einsum equation part {layer_dims} and operand input shape {sizes} do not match")
-            for layer_dim, size in zip(layer_dims.upper(), sizes):
+            for layer_dim, size in zip(layer_dims.upper(), sizes, strict=False):
                 if layer_dim not in sizes_dict:
                     sizes_dict[layer_dim] = size
-                else:
-                    if sizes_dict[layer_dim] != size:
-                        raise ValueError(f"Not clear what the size of {layer_dim} is in Einsum")
+                elif sizes_dict[layer_dim] != size:
+                    raise ValueError(f"Not clear what the size of {layer_dim} is in Einsum")
 
         return sizes_dict
 
@@ -86,7 +84,6 @@ class EinsumParser(OnnxComputeOperatorParser):
         data["operand_source"] = self.get_operand_source_user_format(predecessors)
         data["operand_precision"] = self.get_operand_precision_user_format()
 
-        #
         layer_dims_per_op = self.get_layer_dims_per_op()
         sizes_dict = self.get_layer_dim_sizes_dict(layer_dims_per_op)
 

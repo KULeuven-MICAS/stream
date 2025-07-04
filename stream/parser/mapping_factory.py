@@ -14,7 +14,6 @@ from stream.workload.mapping import TILING_T, TILING_WILDCARD_T, InterCoreMappin
 
 
 class MappingFactory:
-
     def __init__(self, mapping_data: list[dict[str, Any]]):
         self.all_mapping_data = mapping_data
 

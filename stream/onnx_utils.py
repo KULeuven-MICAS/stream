@@ -30,7 +30,7 @@ def get_attribute_as_ints(
             return default
         else:
             raise ValueError(
-                f"Node {node.name} has no attribute called {attribute_name} and no default was given. Attributes = {attrs_names}."
+                f"Node {node.name} has no attribute called {attribute_name} and no default. Attributes = {attrs_names}."
             ) from exc
 
 
@@ -51,7 +51,8 @@ def get_onnx_output_shapes(node: NodeProto, onnx_model: ModelProto) -> list[tupl
 
 def has_asymmetric_input_data(node: NodeProto, onnx_model: ModelProto):
     """Return true iff the node has two inputs and the input nodes have a different shape"""
-    if len(node.input) != 2:
+    EXPECTED_INPUT_LENGTH = 2
+    if len(node.input) != EXPECTED_INPUT_LENGTH:
         return False
 
     input_shape1, input_shape2 = get_onnx_input_shapes(node, onnx_model)
@@ -99,7 +100,8 @@ def get_split_attribute(node: NodeProto, onnx_model: ModelProto):
 def get_slice_attributes(node: NodeProto, onnx_model: ModelProto):
     """Get the `starts`, `ends`, `axes` and `steps` tensors for a slice node.
     NOTE: this assumes that the attributes are given as inputs in this order"""
-    if len(node.input) != 5:
+    EXPECTED_INPUT_LENGTH = 5
+    if len(node.input) != EXPECTED_INPUT_LENGTH:
         raise NotImplementedError("Unsure how to get slice attributes from Node")
 
     starts_output_name, ends_output_name, axes_output_name, steps_output_name = node.input[1:5]

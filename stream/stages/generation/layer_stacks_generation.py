@@ -71,8 +71,7 @@ class LayerStacksGenerationStage(Stage):
             self.list_of_callables[1:],
             **self.kwargs,
         )
-        for cme, extra_info in sub_stage.run():
-            yield cme, extra_info
+        yield from sub_stage.run()
 
     def only_keep_computation_node_ids(self):
         """! Update the layer stacks to only keep ids of ComputationNodes"""

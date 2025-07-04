@@ -127,11 +127,9 @@ class Accelerator:
             # Pick the core that has stored the tensor the longest
             available_since_timestep = min(available_since_timesteps.values())
             storing_instance = next(
-                (
-                    top_instance
-                    for (top_instance, timestep) in available_since_timesteps.items()
-                    if timestep == available_since_timestep
-                )
+                top_instance
+                for (top_instance, timestep) in available_since_timesteps.items()
+                if timestep == available_since_timestep
             )
 
         return storing_instance, available_since_timestep
@@ -173,8 +171,10 @@ class Accelerator:
         return self.memory_manager.find_tensor_in_top_instances(tensor)
 
     def find_best_tensor_combination_to_evict_fast(
-        self, tensor: Tensor, core: Core, timestep: int, exceptions: list[Tensor] = []
+        self, tensor: Tensor, core: Core, timestep: int, exceptions: list[Tensor] | None = None
     ):
+        if exceptions is None:
+            exceptions = []
         top_instance = self.get_top_instance_of_core(core, tensor.memory_operand)
         tensors_to_evict = self.memory_manager.find_best_tensor_combination_to_evict_fast(
             top_instance=top_instance,

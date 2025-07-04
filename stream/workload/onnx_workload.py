@@ -13,7 +13,7 @@ class ONNXWorkload(DiGraphWrapper[Node]):
         """Collect all the algorithmic workload information here."""
         super().__init__(**attr)  # type: ignore
         self.node_id_to_obj: dict[int, Node] = {}
-        # In case an ONNX node is converted into multiple Stream nodes, link the id of the first node to the last generated node
+        # In case an ONNX node is converted into multiple Stream nodes, link id of first to last generated node
         self.first_to_last_expanded_id: dict[int, int] = {}
 
     def add(self, node_id: int, node_obj: Node):
@@ -26,12 +26,12 @@ class ONNXWorkload(DiGraphWrapper[Node]):
         self.add_node(node_obj)
         edges: list[tuple[Node, Node]] = []
         for parent_id in node_obj.input_operand_source.values():
-
             if parent_id in self.first_to_last_expanded_id:
                 # If the parent node was replaced with multiple stream nodes, take the last generated one as parent
-                parent_id = self.first_to_last_expanded_id[parent_id]
-
-            parent_node_obj = self.node_id_to_obj[parent_id]
+                parent_id_updated = self.first_to_last_expanded_id[parent_id]
+            else:
+                parent_id_updated = parent_id
+            parent_node_obj = self.node_id_to_obj[parent_id_updated]
             edges.append((parent_node_obj, node_obj))
             self.add_edges_from(edges)
 

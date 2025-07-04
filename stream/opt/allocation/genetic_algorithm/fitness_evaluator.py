@@ -97,7 +97,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                 offchip_energy = 0
                 for too_large_operand in too_large_operands:
                     layer_operand = next(
-                        (k for (k, v) in cme.layer.memory_operand_links.data.items() if v == too_large_operand)
+                        k for (k, v) in cme.layer.memory_operand_links.data.items() if v == too_large_operand
                     )
                     layer_operand_offchip_energy = cme.mem_energy_breakdown[layer_operand][-1]
                     offchip_energy += layer_operand_offchip_energy

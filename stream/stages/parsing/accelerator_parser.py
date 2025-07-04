@@ -26,8 +26,7 @@ class AcceleratorParserStage(Stage):
             accelerator = self.parse_accelerator_from_yaml(self.accelerator)
 
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], accelerator=accelerator, **self.kwargs)
-        for cme, extra_info in sub_stage.run():
-            yield cme, extra_info
+        yield from sub_stage.run()
 
     def parse_accelerator_from_yaml(self, yaml_path: str) -> Accelerator:
         accelerator_data = open_yaml(yaml_path)

@@ -13,8 +13,10 @@ class PoolingNode(ComputationNode):
         node_name: str,
         node_attr: LayerNodeAttributes,
         mapping_attr: InterCoreMappingAttributes,
-        input_names: list[str] = [],
+        input_names: list[str] | None = None,
     ):
+        if input_names is None:
+            input_names = []
         super().__init__(
             node_id=node_id,
             node_name=node_name,

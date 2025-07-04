@@ -31,6 +31,8 @@ class ElementwiseNode(PropagationNode):
         tensor: NodeTensor,
         previous_node: Node | None = None,
         next_node: Node | None = None,
-        relevant_axes: list[bool] = [],
+        relevant_axes: list[bool] | None = None,
     ) -> tuple[NodeTensor, list[bool]]:
+        if relevant_axes is None:
+            relevant_axes = [False] * len(tensor.tensor_shape)
         return tensor, relevant_axes

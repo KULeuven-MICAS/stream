@@ -175,7 +175,7 @@ class CommunicationLink:
         previous_events = (
             self.previously_seen_tensors[event.tensor] if event.tensor in self.previously_seen_tensors else []
         )
-        if any((previous_event.start == event.start for previous_event in previous_events)):
+        if any(previous_event.start == event.start for previous_event in previous_events):
             return False
 
         idx_start = np.searchsorted(self.active_ts, start)

@@ -30,5 +30,5 @@ class PropagationNode(Node, LayerNodeABC):
         tensor: NodeTensor,
         previous_node: Node | None = None,
         next_node: Node | None = None,
-        relevant_axes: list[bool] = [],
+        relevant_axes: list[bool] | None = None,
     ) -> tuple[NodeTensor, list[bool]]: ...

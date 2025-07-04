@@ -23,8 +23,11 @@ class ElementwiseParser(OnnxOperatorParser):
                 if node_input in self.nodes_outputs[n]:
                     predecessors.append(n)
 
+        EXPECTED_PREDECESSORS = 2
         # Get the names of the two inputs
-        assert len(self.node.input) == 2, f"Elementwise node has more than two inputs: {self.node.input}"
+        assert len(self.node.input) == EXPECTED_PREDECESSORS, (
+            f"Elementwise node has more than two inputs: {self.node.input}"
+        )
         # Get the output name
         node_obj = ElementwiseNode(
             node_id=self.node_id,

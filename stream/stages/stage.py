@@ -1,11 +1,11 @@
 from abc import ABCMeta, abstractmethod
-from typing import Any, Generator, Protocol, runtime_checkable
+from collections.abc import Generator
+from typing import Any, Protocol, runtime_checkable
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 
 
 class Stage(metaclass=ABCMeta):
-
     kwargs: dict[str, Any]
 
     def __init__(

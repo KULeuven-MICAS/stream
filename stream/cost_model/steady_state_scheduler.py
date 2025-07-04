@@ -238,9 +238,9 @@ class SteadyStateScheduler:
         for tensor in steady_state_workload.tensor_nodes:
             out_edges = list(steady_state_workload.out_edges(tensor, data=True))
             successors = [i for _, i, _ in out_edges]
-            assert all(
-                isinstance(s, SteadyStateComputation) for s in successors
-            ), "All successors of a tensor node should be either SteadyStateTensor or SteadyStateComputation nodes."
+            assert all(isinstance(s, SteadyStateComputation) for s in successors), (
+                "All successors of a tensor node should be either SteadyStateTensor or SteadyStateComputation nodes."
+            )
             if not successors:
                 continue
             if len(successors) > 1:
@@ -266,9 +266,9 @@ class SteadyStateScheduler:
             for i, (_, successor, data) in enumerate(out_edges):
                 # Create the tensor node that comes after the transfer node we just created
                 if isinstance(successor, SteadyStateTensor):
-                    # If the successor is a tensor node, we check that it is a sink node output (viewed as constant output)
+                    # If the successor is a tensor node, we check that it is a sink node output
                     assert TensorFlag.CONSTANT in successor.tensor_flag and TensorFlag.OUTPUT in successor.tensor_flag
-                    # If this is the case, we don't create a post transfer tensor node, but instead just connect the transfer node to the successor
+                    # If this is the case instead just connect the transfer node to the successor
                     steady_state_workload.add_edge(transfer_node, successor, **data)
                     # Remove original edge between node and successor
                     steady_state_workload.remove_edge(tensor, successor)
@@ -277,9 +277,9 @@ class SteadyStateScheduler:
                     ssis = transfer_node.steady_state_iteration_space
                     full_shape = tensor.full_shape
                     slices_per_full = ssis.slices_per_full
-                    assert isinstance(
-                        successor, SteadyStateComputation
-                    ), "Successor should be a SteadyStateComputation."
+                    assert isinstance(successor, SteadyStateComputation), (
+                        "Successor should be a SteadyStateComputation."
+                    )
                     post_transfer_tensor_node = SteadyStateTensor(
                         type=tensor.tensor_flag,
                         id=tensor.id,
@@ -318,7 +318,7 @@ class SteadyStateScheduler:
             # Go through the non-tensor successors
             for _, successor, data in list(steady_state_workload.out_edges(node, data=True)):
                 if isinstance(successor, SteadyStateTensor):
-                    # If the successor is a tensor node, we check that it is a sink node output (viewed as constant output)
+                    # If the successor is a tensor node, we check that it is a sink node output
                     assert TensorFlag.CONSTANT in successor.tensor_flag and TensorFlag.OUTPUT in successor.tensor_flag
                 if isinstance(node, SteadyStateComputation):
                     tensor_size = node.operand_tensors[node.output_operand].size
@@ -375,31 +375,31 @@ class SteadyStateScheduler:
     def bufferize_nonconstant_tensors(self, steady_state_workload: SteadyStateWorkload) -> SteadyStateWorkload:
         """
         Convert the nonconstant steady state tensors into rolling buffer tensors.
-        This is used to represent multiple logically consecutive versions of a single tensor across steady-state iterations.
+        This is used to represent multiple logically consecutive versions of a single tensor across steady-state iters.
         """
-        # Go through each tensor in the steady state workload and check if it needs to be converted to a rolling buffer tensor
+        # Go through each tensor in the steady state workload and check to convert it to a rolling buffer tensor
         for tensor in steady_state_workload.tensor_nodes:
             # If the tensor is already a rolling buffer tensor, skip it
             if isinstance(tensor, SteadyStateRollingBuffer) or TensorFlag.CONSTANT in tensor.tensor_flag:
                 continue
-            # Check if there's a successor that is a computation node, and get the input operand associated with the edge
+            # Check if there's a successor that is a computation node, and get the input operand associated with edge
             for _, successor, data in list(steady_state_workload.out_edges(tensor, data=True)):
                 if isinstance(successor, SteadyStateComputation):
-                    assert (
-                        "operand" in data
-                    ), f"Expected operand in edge data for tensor {tensor.node_name} to computation {successor.node_name}."
+                    assert "operand" in data, (
+                        f"Expected operand in edge data between {tensor.node_name} and {successor.node_name}."
+                    )
                     operand = data["operand"]
-                    # Find the equivalent computation node in the entire workload that contains all steady state iterations
+                    # Find the equivalent computation node in the entire workload that contains all steady state iters
                     eq_node = next(
                         n for n in self.workload.node_list if n.id == successor.id and n.sub_id == successor.sub_id
                     )
                     # Get the number of in edges of this equivalent node that have the same operand
-                    # TODO: If there are multiple successors, the total rolling buffer size should be determined based on workload grpah.
+                    # TODO: If there are multiple successors, the total rolling buffer size is calculated.
                     in_edges = get_real_in_edges(eq_node, self.workload)
                     num_tensors = sum(1 for _, _, data in in_edges if "operand" in data and data["operand"] == operand)
                     if num_tensors != len(in_edges):
                         raise NotImplementedError(
-                            f"Expected all in edges of {eq_node} to have the same operand {operand}, but found {in_edges}."
+                            f"Expected all in edges of {eq_node} to have the same operand {operand}, but got {in_edges}"
                         )
                     # TODO: The rolling buffer should only be created once, not for each successor!
                     # # Create a rolling buffer tensor to replace the current tensor
@@ -417,10 +417,10 @@ class SteadyStateScheduler:
                     # # Update the outgoing edges
                     for _, succ, out_data in steady_state_workload.out_edges(tensor, data=True):
                         # Update the out_data to include the increased size of the rolling buffer tensor
-                        out_data = out_data.copy()
-                        out_data["bits"] = ssrb.size
+                        out_data_new = out_data.copy()
+                        out_data_new["bits"] = ssrb.size
                         # Add an edge from the rolling buffer tensor to the successor
-                        steady_state_workload.add_edge(ssrb, succ, **out_data)
+                        steady_state_workload.add_edge(ssrb, succ, **out_data_new)
                     # Remove the original tensor node. This also removes edges to/from it.
                     steady_state_workload.remove_node(tensor)  # type: ignore
         return steady_state_workload
@@ -449,13 +449,13 @@ class SteadyStateScheduler:
                 assert succ_allocs is not None, f"{successor.node_name} has no chosen or possible allocation."
                 for succ_alloc in succ_allocs:
                     if isinstance(successor, SteadyStateTensor):
-                        # If the successor is a tensor node, we check that it is a sink node output (viewed as constant output)
+                        # If the successor is a tensor node, we check that it is a sink node output
                         assert (
                             TensorFlag.CONSTANT in successor.tensor_flag and TensorFlag.OUTPUT in successor.tensor_flag
                         )
-                    assert isinstance(
-                        succ_alloc, Core
-                    ), f"Successor {successor.node_name} allocation {succ_alloc} is not a Core."
+                    assert isinstance(succ_alloc, Core), (
+                        f"Successor {successor.node_name} allocation {succ_alloc} is not a Core."
+                    )
                     # Get the paths from the predecessor to the successor
                     paths = self.accelerator.communication_manager.get_all_links_for_pair(pred_alloc, succ_alloc)
                     all_succ_paths.update(paths)
@@ -474,10 +474,9 @@ class SteadyStateScheduler:
                 if all(any(all(y in list(path) for y in z) for z in paths) for paths in paths_per_successor.values())
             ]
             if not common_paths:
-                raise ValueError(
-                    f"No common communication paths found for predecessors {pred_alloc} and successors {[succ.chosen_resource_allocation for succ in successors]}."
-                )
-            # # If there are no common paths, we take the first path for each successor and join them into a single path.
+                succ_allocs = [succ.chosen_resource_allocation for succ in successors]
+                raise ValueError(f"No common paths found for preds alloc {pred_alloc} and succs allocs {succ_allocs}.")
+            # # If there are no common paths, we take the first path for each successor and join them into a single path
             # if not common_paths:
             #     unique_links: list[CommunicationLink] = []
             #     seen_links: set[CommunicationLink] = set()

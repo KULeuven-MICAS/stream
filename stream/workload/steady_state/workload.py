@@ -96,8 +96,8 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
         allocations: list[tuple[int, Resource, SteadyStateNode]] = []
         global_slot = 0  # next free slot number
 
-        for generation in nx.topological_generations(self):
-            generation = list(generation)  # materialise
+        for generation_iter in nx.topological_generations(self):
+            generation = list(generation_iter)
 
             # ------------------------------------------------ computations --
             comp_nodes = [n for n in generation if isinstance(n, SteadyStateComputation)]
@@ -214,7 +214,9 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
                     else (
                         "#eaff76e1"
                         if isinstance(node, SteadyStateRollingBuffer)
-                        else "#c2f0c2" if isinstance(node, SteadyStateTensor) else "#eeeeee"
+                        else "#c2f0c2"
+                        if isinstance(node, SteadyStateTensor)
+                        else "#eeeeee"
                     )
                 )
             )

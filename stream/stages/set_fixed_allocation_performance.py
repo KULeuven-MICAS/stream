@@ -53,8 +53,7 @@ class SetFixedAllocationPerformanceStage(Stage):
             self.list_of_callables[1:],
             **kwargs,
         )
-        for cme, extra_info in sub_stage.run():
-            yield cme, extra_info
+        yield from sub_stage.run()
 
     def set_fixed_allocation_performance(self):
         for node in self.workload.node_list:
@@ -118,8 +117,8 @@ class SetFixedAllocationPerformanceStage(Stage):
 
     def check_and_fix_chosen_core_allocation(self):
         """! Check that all nodes in the workload have a chosen_core_allocation.
-        If self.fix_all is True, the chosen_core_allocation is fixed for all nodes depending on the group and possible_core_allocation.
-        If self.fix_all is False, only nodes where the inter_core_tiling match the possible_core_allolcation length are fixed.
+        If self.fix_all is True, chosen alloc is fixed for all nodes depending on the group and possible alloc.
+        If self.fix_all is False, only nodes where the inter_core_tiling match the possible alloc length are fixed.
         """
         for node in self.workload.node_list:
             if node.chosen_core_allocation is None:
@@ -128,21 +127,22 @@ class SetFixedAllocationPerformanceStage(Stage):
                     inter_core_factors = [tile_size for _, tile_size in node.inter_core_tiling]
                     if "*" in inter_core_factors:
                         raise ValueError(f"{node} has a wildcard in its inter_core_tiling {node.inter_core_tiling}.")
-                    # Only fix the chosen_core_allocation if the inter_core_tiling matches the possible_core_allocation length
+                    # Only fix the chosen_core_allocation if the inter_core_tiling matches possible_core_allocation len
                     if len(node.possible_core_allocation) != prod(inter_core_factors):
                         if len(inter_core_factors) != 1:
                             raise ValueError(
-                                f"{node} has a chosen_core_allocation of None, but the inter_core_tiling {node.inter_core_tiling} "
-                                f"does not match the possible_core_allocation length {len(node.possible_core_allocation)}."
+                                f"{node} has a chosen_core_allocation of None, but the inter_core_tiling "
+                                f"{node.inter_core_tiling} does not match the possible_core_allocation length "
+                                f"{len(node.possible_core_allocation)}."
                             )
                         continue
                 try:
                     core_id = node.possible_core_allocation[node.group]
-                except IndexError:
+                except IndexError as exc:
                     raise IndexError(
                         f"{node} has a group {node.group} that is out of bounds for the possible_core_allocation "
-                        f"{node.possible_core_allocation}. Possible groups are {list(range(len(node.possible_core_allocation)))}."
-                    )
+                        f"{node.possible_core_allocation}. Allowed: {list(range(len(node.possible_core_allocation)))}."
+                    ) from exc
                 node.set_chosen_core_allocation(core_id)
                 logger.warning(
                     f"{node} does not have a chosen_core_allocation. Setting to {core_id} out of "

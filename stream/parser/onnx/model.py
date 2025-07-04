@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Type
+from typing import Any
 
 from onnx import NodeProto
 from zigzag.parser.onnx.utils import parse_onnx_model_from_path
@@ -35,7 +35,7 @@ class ONNXModelParser:
     """Parse the ONNX model into a workload."""
 
     # Map the node's op_type to the corresponding Parser class
-    OP_TYPE_TO_PARSER: dict[str, Type[OnnxOperatorParser]] = {
+    OP_TYPE_TO_PARSER: dict[str, type[OnnxOperatorParser]] = {
         # General
         "QLinearConv": ConvParser,
         "Conv": ConvParser,

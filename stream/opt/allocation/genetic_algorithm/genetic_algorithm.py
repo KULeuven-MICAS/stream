@@ -14,8 +14,10 @@ class GeneticAlgorithm:
         valid_allocations,
         num_generations=250,
         num_individuals=64,
-        pop=[],
+        pop=None,
     ) -> None:
+        if pop is None:
+            pop = []
         self.num_generations = num_generations  # number of generations
         self.num_individuals = num_individuals  # number of individuals in initial generation
         self.para_mu = int(num_individuals / 2)  # number of indiviuals taken from previous generation
@@ -49,16 +51,23 @@ class GeneticAlgorithm:
 
         # structure initializers
         self.toolbox.register(
-            "individual", tools.initIterate, creator.Individual, self.toolbox.attr_bool  # type: ignore
+            "individual",
+            tools.initIterate,
+            creator.Individual,  # type: ignore
+            self.toolbox.attr_bool,  # type: ignore
         )  # indivual has #nodes in graph attributes
         self.toolbox.register(
-            "population", tools.initRepeat, list, self.toolbox.individual  # type: ignore
+            "population",
+            tools.initRepeat,
+            list,
+            self.toolbox.individual,  # type: ignore
         )  # define polulation based on indiviudal
 
         # link user defined fitness function to toolbox
         self.toolbox.register("evaluate", self.fitness_evaluator.get_fitness)
 
-        if self.individual_length > 10:
+        individual_length_threshold = 10
+        if self.individual_length > individual_length_threshold:
             self.toolbox.register("mate", tools.cxOrdered)  # for big graphs use cxOrdered crossover function
         else:
             self.toolbox.register("mate", tools.cxTwoPoint)  # for small graphs use two point crossover function
@@ -118,7 +127,8 @@ class GeneticAlgorithm:
         prob_mutation = 1 / len(individual)
 
         # change one of the position's core allocation
-        if random.random() < 0.75:
+        change_percentage = 0.75
+        if random.random() < change_percentage:
             for position in range(len(list(individual))):
                 individual[position]
                 if random.random() < prob_mutation:

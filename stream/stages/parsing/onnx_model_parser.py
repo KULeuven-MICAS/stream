@@ -39,5 +39,4 @@ class ONNXModelParserStage(Stage):
             workload=workload,
             **self.kwargs,
         )
-        for cme, extra_info in sub_stage.run():
-            yield cme, extra_info
+        yield from sub_stage.run()

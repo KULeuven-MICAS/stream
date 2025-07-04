@@ -59,7 +59,9 @@ push = false
 
 
 [tool.ruff]
+target-version = "py311"
 line-length = 120
-
-[tool.black]
-line-length = 120
+fix = true
+lint.select = ["E", "F", "W", "I", "PL", "N", "UP", "B"]
+lint.ignore = ["D401", "N806"]
+lint.pylint.max-args = 8

@@ -24,7 +24,8 @@ class GemmParser(OnnxComputeOperatorParser):
         predecessors = self.get_node_predecessors()
 
         # If there are 2 input nodes, `weights` represents a variable input
-        weights_are_constant = len(predecessors) < 2
+        NUMBER_OF_PREDECESSORS_FOR_CONSTANT_WEIGHTS = 1
+        weights_are_constant = len(predecessors) <= NUMBER_OF_PREDECESSORS_FOR_CONSTANT_WEIGHTS
 
         data: dict[str, Any] = {}
         data["id"] = self.node_id
