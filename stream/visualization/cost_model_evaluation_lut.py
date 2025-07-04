@@ -19,9 +19,13 @@ BIG_SIZE = 18
 BIGGER_SIZE = 20
 
 
-def autolabel(rects, ax, indices=[], labels=[], offsets=None):
+def autolabel(rects, ax, indices=None, labels=None, offsets=None):
     """Attach a text label above each bar in *rects*, displaying its height."""
     index = 0
+    if indices is None:
+        indices = []
+    if labels is None:
+        labels = []
     if offsets is None:
         offsets = [0 for _ in range(len(labels))]
     offsets = iter(offsets)
@@ -52,27 +56,59 @@ def autolabel(rects, ax, indices=[], labels=[], offsets=None):
 
 
 def visualize_cost_lut_pickle(pickle_filepath, scale_factors=None, fig_path=None):
-    plt.rc("font", size=SMALL_SIZE)  # controls default text sizes
-    plt.rc("axes", titlesize=SMALL_SIZE)  # fontsize of the axes title
-    plt.rc("axes", labelsize=BIGGER_SIZE)  # fontsize of the x and y labels
-    plt.rc("xtick", labelsize=SMALL_SIZE)  # fontsize of the tick labels
-    plt.rc("ytick", labelsize=SMALL_SIZE)  # fontsize of the tick labels
-    plt.rc("legend", fontsize=SMALL_SIZE)  # legend fontsize
-    plt.rc("figure", titlesize=BIGGER_SIZE)  # fontsize of the figure title
+    _set_matplotlib_styles()
+    node_hw_performances = _load_node_hw_performances(pickle_filepath)
+    scale_factors = _get_scale_factors(node_hw_performances, scale_factors)
+    fig_path = _get_fig_path(pickle_filepath, fig_path)
 
+    node_labels, cores, min_latency_per_node, min_energy_per_node = _collect_node_core_data(
+        node_hw_performances, scale_factors
+    )
+    worst_case_latency = sum(min_latency_per_node.values())
+    best_case_energy = sum(min_energy_per_node.values())
+
+    colormap, colors = _get_colormap_and_colors(cores)
+    x, width, offsets = _get_bar_positions(len(node_labels), len(cores))
+
+    fig, axs = plt.subplots(2, 1, figsize=(20, 10), sharex=True)
+    _plot_bars(axs, node_hw_performances, cores, offsets, x, width, colors, scale_factors)
+    _format_axes(axs, x, node_labels, cores, worst_case_latency, best_case_energy)
+    fig.tight_layout()
+    plt.savefig(fig_path, bbox_inches="tight")
+    logger.info(f"Saved CostModelEvaluationLUT visualization to: {fig_path}")
+
+
+def _set_matplotlib_styles():
+    plt.rc("font", size=SMALL_SIZE)
+    plt.rc("axes", titlesize=SMALL_SIZE)
+    plt.rc("axes", labelsize=BIGGER_SIZE)
+    plt.rc("xtick", labelsize=SMALL_SIZE)
+    plt.rc("ytick", labelsize=SMALL_SIZE)
+    plt.rc("legend", fontsize=SMALL_SIZE)
+    plt.rc("figure", titlesize=BIGGER_SIZE)
+
+
+def _load_node_hw_performances(pickle_filepath):
     if isinstance(pickle_filepath, str):
         with open(pickle_filepath, "rb") as handle:
-            node_hw_performances = pickle.load(handle)
-    else:
-        node_hw_performances = pickle_filepath
+            return pickle.load(handle)
+    return pickle_filepath
 
+
+def _get_scale_factors(node_hw_performances, scale_factors):
     if not scale_factors:
-        scale_factors = {node: 1 for node in node_hw_performances}
+        return {node: 1 for node in node_hw_performances}
+    return scale_factors
 
-    if not fig_path:
-        basename = os.path.basename(pickle_filepath).split(".")[0]
-        fig_path = f"outputs/{basename}.png"
 
+def _get_fig_path(pickle_filepath, fig_path):
+    if fig_path:
+        return fig_path
+    basename = os.path.basename(pickle_filepath).split(".")[0]
+    return f"outputs/{basename}.png"
+
+
+def _collect_node_core_data(node_hw_performances, scale_factors):
     node_labels = []
     cores = []
     min_latency_per_node = {}
@@ -88,26 +124,27 @@ def visualize_cost_lut_pickle(pickle_filepath, scale_factors=None, fig_path=None
             if cme.latency_total2 < min_latency_per_node[node]:
                 min_latency_per_node[node] = cme.latency_total2
                 min_energy_per_node[node] = cme.energy_total
-    # Multiply the min_latency_per_node and min_energy_per_node with the scale factor
     for node in min_latency_per_node:
         min_latency_per_node[node] *= scale_factors[node]
         min_energy_per_node[node] *= scale_factors[node]
-    # Sum the latencies (assumes no overlap)
-    worst_case_latency = sum(min_latency_per_node.values())
-    # Sum the energies (assumes every node is mapped to most energy-efficient core)
-    best_case_energy = sum(min_energy_per_node.values())
+    return node_labels, cores, min_latency_per_node, min_energy_per_node
 
-    # COLORMAP
-    colormap = list(plt.cm.rainbow(np.linspace(0, 1, len(cores))))
-    # colormap = plt.get_cmap("Set1")
+
+def _get_colormap_and_colors(cores):
+    colormap = list(plt.cm.rainbow(np.linspace(0, 1, len(cores))))  # type: ignore
     colors = {core: colormap[i] for i, core in enumerate(cores)}
+    return colormap, colors
 
-    x = np.arange(len(node_labels))
-    width = 0.8 / len(cores)
-    offsets = [-(width / 2) - ((len(cores) - 1) // 2) * width + i * width for i in range(len(cores))]
 
-    fig, axs = plt.subplots(2, 1, figsize=(20, 10), sharex=True)
-    for core, offset in zip(cores, offsets):
+def _get_bar_positions(num_labels, num_cores):
+    x = np.arange(num_labels)
+    width = 0.8 / num_cores
+    offsets = [-(width / 2) - ((num_cores - 1) // 2) * width + i * width for i in range(num_cores)]
+    return x, width, offsets
+
+
+def _plot_bars(axs, node_hw_performances, cores, offsets, x, width, colors, scale_factors):
+    for core, offset in zip(cores, offsets, strict=False):
         core_latencies = []
         core_energies = []
         for node in node_hw_performances.get_nodes():
@@ -119,8 +156,11 @@ def visualize_cost_lut_pickle(pickle_filepath, scale_factors=None, fig_path=None
             else:
                 core_latencies.append(0)
                 core_energies.append(0)
-        for ax, y_values in zip(axs, [core_latencies, core_energies]):
+        for ax, y_values in zip(axs, [core_latencies, core_energies], strict=False):
             ax.bar(x + offset, y_values, width, label=f"{core}", color=colors[core])
+
+
+def _format_axes(axs, x, node_labels, cores, worst_case_latency, best_case_energy):
     for ax in axs:
         ax.set_xticks(x)
         ax.set_xticklabels(node_labels)
@@ -138,6 +178,3 @@ def visualize_cost_lut_pickle(pickle_filepath, scale_factors=None, fig_path=None
         loc="right",
     )
     axs[1].set_ylabel("Energy [pJ]")
-    fig.tight_layout()
-    plt.savefig(fig_path, bbox_inches="tight")
-    logger.info(f"Saved CostModelEvaluationLUT visualization to: {fig_path}")

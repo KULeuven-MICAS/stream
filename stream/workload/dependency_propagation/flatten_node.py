@@ -34,9 +34,11 @@ class FlattenNode(PropagationNode):
         tensor: NodeTensor,
         previous_node: Node | None = None,
         next_node: Node | None = None,
-        relevant_axes: list[bool] = [],
+        relevant_axes: list[bool] | None = None,
     ) -> tuple[NodeTensor, list[bool]]:
         """Reshape an input tensor"""
+        if relevant_axes is None:
+            relevant_axes = [False] * len(tensor.tensor_shape)
         shape = tensor.tensor_shape
         # taken from https://github.com/onnx/onnx/blob/main/docs/Operators.md#examples-51
         new_shape = (1, -1) if self.axis == 0 else (np.prod(shape[0 : self.axis]).astype(int), -1)

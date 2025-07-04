@@ -67,9 +67,11 @@ def get_layer_stacks_occupation_based(
         else:
             layer_groups[layer_id] = {group_id}
     # Active cores given the allocations of the workload
-    active_core_ids = sorted(set(n.core_allocation for n in workload.node_list))
-    core_capacities: dict[int, ...] = {
-        core_id: accelerator.get_core(core_id).get_memory_size_dict()[Constants.MEM_OP_2][-1]
+    active_core_ids = sorted(
+        set(n.chosen_core_allocation for n in workload.node_list if n.chosen_core_allocation is not None)
+    )
+    core_capacities: dict[int, int] = {
+        core_id: accelerator.get_core(core_id).get_top_memory_instance(Constants.MEM_OP_2).size
         for core_id in active_core_ids
     }
 
@@ -85,28 +87,27 @@ def get_layer_stacks_occupation_based(
                 continue
             layer_id = original_node.id
             group_ids = layer_groups[layer_id]
-            update_occupations(workload, occupations, layer_id, group_ids)
+            update_occupations(workload, occupations, layer_id, sorted(group_ids))
             # Check if the occupation exceeds the capacity * occupation_factor for any core
             if fits(occupations, core_capacities, occupation_factor):
                 # Add this layer to the current stack as it fits
                 current_stack.append(layer_id)
+            # If no layers in current stack, add the current layer and cut
+            elif not current_stack:
+                current_stack.append(layer_id)
+                all_stacks.append(sorted(current_stack))
+                # Reset the current stack and the current occupations
+                current_stack = []
+                # Reset the occupations
+                occupations = {core_id: 0 for core_id in active_core_ids}
+            # Else, cut the stack and add current layer as first one of next stack
             else:
-                # If no layers in current stack, add the current layer and cut
-                if not current_stack:
-                    current_stack.append(layer_id)
-                    all_stacks.append(sorted(current_stack))
-                    # Reset the current stack and the current occupations
-                    current_stack = []
-                    # Reset the occupations
-                    occupations = {core_id: 0 for core_id in active_core_ids}
-                # Else, cut the stack and add current layer as first one of next stack
-                else:
-                    all_stacks.append(sorted(current_stack))
-                    # Reset the current stack to include the current layer that didn't fit
-                    current_stack = [layer_id]
-                    # Reset the occupations to include the current layer that didn't fit
-                    occupations = {core_id: 0 for core_id in active_core_ids}
-                    update_occupations(workload, occupations, layer_id, group_ids)
+                all_stacks.append(sorted(current_stack))
+                # Reset the current stack to include the current layer that didn't fit
+                current_stack = [layer_id]
+                # Reset the occupations to include the current layer that didn't fit
+                occupations = {core_id: 0 for core_id in active_core_ids}
+                update_occupations(workload, occupations, layer_id, sorted(group_ids))
 
     if current_stack:
         all_stacks.append(current_stack)

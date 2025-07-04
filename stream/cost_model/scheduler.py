@@ -37,11 +37,11 @@ class CoalaScheduler:
 
     def __init__(
         self,
-        G: ComputationNodeWorkload,
+        g: ComputationNodeWorkload,
         accelerator: "Accelerator",
         scheduling_order: list[tuple[int, int]],
         cores_idle_from: dict[int, int] | None = None,
-        operands_to_prefetch: list[LayerOperand] = [],
+        operands_to_prefetch: list[LayerOperand] | None = None,
     ):
         """
         Args:
@@ -51,12 +51,14 @@ class CoalaScheduler:
             cores_idle_from: Optional dict mapping core_id to start offset.
             operands_to_prefetch: Layer operands to prefetch at the start of the schedule.
         """
-        self.G = G
+        if operands_to_prefetch is None:
+            operands_to_prefetch = []
+        self.G = g
         self.accelerator = accelerator
         self.scheduling_order = scheduling_order
         self.operands_to_prefetch = operands_to_prefetch
 
-        core_ids = set(n.chosen_core_allocation for n in G.node_list)
+        core_ids = set(n.chosen_core_allocation for n in g.node_list)
         assert None not in core_ids, "Not all nodes have core allocation. Insert SetFixedAllocationPerformanceStage."
         all_core_ids: list[int] = sorted(list(core_ids))  # type: ignore
         self.cores_idle_from = cores_idle_from if cores_idle_from else {core_id: 0 for core_id in all_core_ids}
@@ -71,7 +73,7 @@ class CoalaScheduler:
         self.sink_layer_nodes = self.get_sink_layer_nodes()
         self.offchip_core = accelerator.get_offchip_core()
         self.offchip_top_instances = self.accelerator.get_top_instances_of_core(self.offchip_core)
-        self.nb_graph_nodes = G.number_of_nodes()
+        self.nb_graph_nodes = g.number_of_nodes()
         self._initialize_scheduling_order_lookup()
 
         # Initialize bookkeeping
@@ -112,7 +114,7 @@ class CoalaScheduler:
         Returns all nodes with no successors that produce final outputs (used for off-loading outputs).
         """
         sink_layer_ids = self.G.get_sink_layer_ids()
-        sink_layer_nodes = set((n for n in self.G.node_list if (n.id in sink_layer_ids) and n.produces_final_output))
+        sink_layer_nodes = set(n for n in self.G.node_list if (n.id in sink_layer_ids) and n.produces_final_output)
         return sink_layer_nodes
 
     def initialize_tensor_priorities(self):
@@ -134,10 +136,8 @@ class CoalaScheduler:
                     op != Constants.OUTPUT_LAYER_OP and len(self.G.in_edges(n)) == 0
                 ):
                     if not any(
-                        (
-                            self.accelerator.contains_tensor(tensor, offchip_top_instance)
-                            for offchip_top_instance in self.offchip_top_instances
-                        )
+                        self.accelerator.contains_tensor(tensor, offchip_top_instance)
+                        for offchip_top_instance in self.offchip_top_instances
                     ):
                         memory_op = n.memory_operand_links.layer_to_mem_op(op)
                         self.accelerator.spawn(
@@ -158,7 +158,6 @@ class CoalaScheduler:
         Returns the total latency of the schedule.
         """
         nb_scheduled_nodes = 0
-        total_nodes_to_schedule = len(self.G.node_list)
         done = False
         self.prefetch_constant_operands()
         while not done:
@@ -193,11 +192,14 @@ class CoalaScheduler:
 
             # Step 2: Transfer the tensors needed for this node to the core (from off-chip or from another core)
             transfer_headstart = sum(
-                ceil(tensor.size / (self.offchip_core.mem_r_bw_dict[tensor_operand][0] * transfer_bw_fraction))
-                for tensor, tensor_operand in zip(sub_tensors_this_candidate_needs, tensors_operands)
+                ceil(
+                    tensor.size
+                    / (self.offchip_core.get_top_memory_instance(tensor_operand).ports[0].bw_max * transfer_bw_fraction)
+                )
+                for tensor, tensor_operand in zip(sub_tensors_this_candidate_needs, tensors_operands, strict=False)
             )
             earliest_t = core_idle_from - transfer_headstart
-            for tensor, tensor_operand in zip(sub_tensors_this_candidate_needs, tensors_operands):
+            for tensor, tensor_operand in zip(sub_tensors_this_candidate_needs, tensors_operands, strict=False):
                 transfer_complete_timestep = self.schedule_tensor_transfer(
                     tensor=tensor,
                     tensor_operand=tensor_operand,
@@ -268,7 +270,6 @@ class CoalaScheduler:
             self.extend_candidates(best_candidate)
             nb_scheduled_nodes += 1
             done = nb_scheduled_nodes == self.nb_graph_nodes
-        logger.info(f"Scheduled {nb_scheduled_nodes}/{total_nodes_to_schedule} nodes")
         self.latency = self.get_total_latency()
         return self.latency
 
@@ -296,7 +297,7 @@ class CoalaScheduler:
         """
         if not self.candidates:
             raise ValueError("There are no candidates to schedule.")
-        preds_ends, cn_candidates = zip(*self.candidates)
+        preds_ends, cn_candidates = zip(*self.candidates, strict=False)
         idxs = [self.scheduling_order_lookup[(n.id, n.sub_id)] for n in cn_candidates]
         best_candidate_idx = idxs.index(min(idxs))
         best_candidate = cn_candidates[best_candidate_idx]
@@ -332,7 +333,7 @@ class CoalaScheduler:
         full_range_sizes = [r[1] - r[0] for r in full_ranges]
 
         # No gain in splitting if the tensor is already the right size
-        if all(size1 == size2 for size1, size2 in zip(needed_range_sizes, full_range_sizes)):
+        if all(size1 == size2 for size1, size2 in zip(needed_range_sizes, full_range_sizes, strict=False)):
             return tensor
 
         creation_timestep = self.accelerator.get_available_timestep(tensor, self.offchip_core)
@@ -359,14 +360,14 @@ class CoalaScheduler:
         Returns:
             A new Tensor object representing the subtensor.
         """
-        assert all(
-            dim in tensor.loop_dimensions for dim in loop_dims_to_split
-        ), f"The loop dimensions to split {loop_dims_to_split} are not in the tensor: {tensor.loop_dimensions}."
+        assert all(dim in tensor.loop_dimensions for dim in loop_dims_to_split), (
+            f"The loop dimensions to split {loop_dims_to_split} are not in the tensor: {tensor.loop_dimensions}."
+        )
         assert loop_dims_to_split, "No loop dimensions to split given."
 
         new_loop_ranges = list(tensor.loop_ranges)
         compression_factor = 1
-        for dim, sub_loop_range in zip(loop_dims_to_split, sub_loop_ranges):
+        for dim, sub_loop_range in zip(loop_dims_to_split, sub_loop_ranges, strict=False):
             idx = tensor.loop_dimensions.index(dim)
             new_loop_ranges[idx] = sub_loop_range
             full_loop_range = tensor.loop_ranges[idx]
@@ -409,7 +410,7 @@ class CoalaScheduler:
 
         # Get total required size for each mem op
         size_per_operand: dict[MemoryOperand, int] = defaultdict(lambda: 0)
-        for tensor, memory_operand in zip(sub_tensors_this_candidate_needs, memory_operands):
+        for tensor, memory_operand in zip(sub_tensors_this_candidate_needs, memory_operands, strict=False):
             size_per_operand[memory_operand] += tensor.size
         output_tensor = node.get_output_tensor()
         size_per_operand[output_tensor.memory_operand] += output_tensor.size
@@ -428,7 +429,7 @@ class CoalaScheduler:
         best_candidate: ComputationNode,
     ):
         """
-        Synchronizes cores_idle_from values if the best candidate is the first node of a layer and synchronization is needed.
+        Synchronizes cores_idle_from values if the best_candidate is the first node of a layer and sync is needed.
         """
         # Get the predecessor ids of the best_candidate from the workload graph G
         predecessor_ids = (pred.id for pred in self.G.predecessors(best_candidate) if pred.id != best_candidate.id)
@@ -477,7 +478,7 @@ class CoalaScheduler:
             tensors_this_candidate_needs.append(node.operand_tensors[layer_op])
             tensors_operands.append(memory_op)
         # Non-constant operands
-        for pred, node, edge_data in sorted(self.G.in_edges(node, data=True), key=itemgetter(0)):
+        for pred, _, edge_data in sorted(self.G.in_edges(node, data=True), key=itemgetter(0)):
             if pred.id == node.id:
                 continue  # Skip if predecessor was from the same layer (intra-edge)
             consumer_layer_op = edge_data["operand"]
@@ -489,9 +490,9 @@ class CoalaScheduler:
             tensors_operands.append(consumer_memory_op)
         if tensors_this_candidate_needs:
             # Sort these tensors based on their earliest possible transfer time
-            zipped = list(zip(tensors_this_candidate_needs, tensors_operands))
+            zipped = list(zip(tensors_this_candidate_needs, tensors_operands, strict=False))
             zipped.sort(key=lambda x: x[0].origin.id if hasattr(x[0], "origin") and hasattr(x[0].origin, "id") else 0)
-            tensors_this_candidate_needs, tensors_operands = map(list, zip(*zipped))
+            tensors_this_candidate_needs, tensors_operands = map(list, zip(*zipped, strict=False))
         return tensors_this_candidate_needs, tensors_operands
 
     def clear_memories(
@@ -499,7 +500,7 @@ class CoalaScheduler:
         core: Core,
         memory_operands: list[MemoryOperand],
         timestep: int,
-        exceptions: list[Tensor] = [],
+        exceptions: list[Tensor] | None = None,
         transfer_bandwidth_fraction: float = 1,
     ):
         """Remove all tensors from a core's memory for the given  memory operands.
@@ -512,6 +513,8 @@ class CoalaScheduler:
             exceptions: A list of tensors that should not be evicted.
             transfer_bandwidth_fraction: Fraction of the bandwidth to use for the transfers.
         """
+        if exceptions is None:
+            exceptions = []
         for memory_operand in memory_operands:
             stored_tensors = self.accelerator.get_tensors_stored_in_core(core, memory_operand, timestep)
             for tensor in stored_tensors:
@@ -574,7 +577,7 @@ class CoalaScheduler:
         receiving_core: Core,
         tensor_operand: MemoryOperand,
         earliest_t: int = 0,
-        non_evictable_tensors: list[Tensor] = [],
+        non_evictable_tensors: list[Tensor] | None = None,
         sending_core: Core | None = None,
         transfer_bandwidth_fraction: float = 1,
         transfer_cause: TransferCause | None = None,
@@ -582,7 +585,8 @@ class CoalaScheduler:
         """Find the earliest time to transfer the tensor to the receiving core, and register the transfer.
         Evictions of older tensors might be necessary
         """
-
+        if non_evictable_tensors is None:
+            non_evictable_tensors = []
         if self.accelerator.core_contains_tensor(tensor, receiving_core):
             return earliest_t
 
@@ -639,7 +643,7 @@ class CoalaScheduler:
         core: Core,
         memory_op: MemoryOperand,
         timestep: int,
-        tensors_to_avoid_evicting: list[Tensor] = [],
+        tensors_to_avoid_evicting: list[Tensor] | None = None,
     ):
         """Make space for the given tensor on the given core by evicting already stored tensors if necessary.
 
@@ -742,7 +746,7 @@ class CoalaScheduler:
         tensors_operands: list[MemoryOperand],
         node: ComputationNode,
     ):
-        for tensor_used_by_node, tensor_memory_operand in zip(tensors, tensors_operands):
+        for tensor_used_by_node, tensor_memory_operand in zip(tensors, tensors_operands, strict=False):
             # TODO: tensor_memory_operand will be 'O' for activation tensors.
             # TODO: If the memory between input and output is not shared, this will give a wrong instance.
             assert node.chosen_core_allocation is not None
@@ -775,8 +779,8 @@ class CoalaScheduler:
                             # If wanting to discard it from offchip, look at the max end time across all successors
                             nodes_that_needed_tensor = [n for n in self.G.successors(origin) if n.id != origin.id]
                         else:
-                            # If discarding it from a regular core, look at the max end time successors that used it from
-                            # that instance
+                            # If discarding it from a regular core, look at the max end time successors that used it
+                            # from that instance
                             nodes_that_needed_tensor = [
                                 n
                                 for n in self.G.successors(origin)
@@ -807,7 +811,7 @@ class CoalaScheduler:
         timestep: int,
     ):
         """Remove all the sub-tensors from the given core, except for the tensors in the exceptions list."""
-        for sub_tensor, tensor_operand in zip(sub_tensors, tensors_operands):
+        for sub_tensor, tensor_operand in zip(sub_tensors, tensors_operands, strict=False):
             if sub_tensor not in exceptions:
                 self.accelerator.remove_tensor(sub_tensor, core, tensor_operand, timestep)
                 self.accelerator.remove_tensor(sub_tensor, self.offchip_core, tensor_operand, timestep)
@@ -815,7 +819,7 @@ class CoalaScheduler:
     def extend_candidates(self, node: ComputationNode):
         """For each successor of this node, check if all of its predecessors have been scheduled"""
         for successor in sorted(self.G.successors(node)):
-            if all((pred in self.scheduled_nodes for pred in self.G.predecessors(successor))):
+            if all(pred in self.scheduled_nodes for pred in self.G.predecessors(successor)):
                 preds_end = max(
                     (predecessor.end for predecessor in self.G.predecessors(successor)),
                     default=0,
@@ -824,7 +828,7 @@ class CoalaScheduler:
 
     def get_total_latency(self):
         """The total schedule latency is the max of all CN end times and the link end times"""
-        cns_end_time = max((n.end for n in self.G.node_list))
+        cns_end_time = max(n.end for n in self.G.node_list)
         links_end_time = max([event.end for event in self.accelerator.communication_manager.events], default=0)
         return max(cns_end_time, links_end_time)
 

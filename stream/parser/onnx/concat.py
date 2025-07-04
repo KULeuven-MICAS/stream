@@ -10,15 +10,14 @@ class ConcatParser(OnnxOperatorParser):
     """
 
     def get_axis_value(self):
-        AXIS_ATTR = "axis"
-
         """Find the value of the axis associated with this concat node in ONNX"""
+        axis_attr = "axis"
         # `axis` is an attribute of the node
         try:
-            axis_attr = next(filter(lambda x: x.name == AXIS_ATTR, self.node.attribute))
+            axis_attr = next(filter(lambda x: x.name == axis_attr, self.node.attribute))
             return axis_attr.i
-        except StopIteration:
-            raise ValueError("Axis attribute not found in ONNX node")
+        except StopIteration as exc:
+            raise ValueError("Axis attribute not found in ONNX node") from exc
 
     def generate_node(self):
         predecessors = self.get_node_predecessors()
@@ -34,10 +33,10 @@ class ConcatParser(OnnxOperatorParser):
 
             constant_shape = tuple(constant_tensor.shape)
             variable_input_first = True
-        except ValueError:  # Try second one as constant input
+        except ValueError as exc:  # Try second one as constant input
             constant_tensor = get_onnx_tensor_type(input_2, self.onnx_model)
             if constant_tensor.category != OnnxTensorCategory.HIDDEN or "constant" not in input_2.lower():
-                raise ValueError
+                raise ValueError("Second input is not a constant tensor") from exc
 
             constant_shape = tuple(constant_tensor.shape)
             variable_input_first = True

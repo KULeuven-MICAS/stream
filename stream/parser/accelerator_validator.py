@@ -115,21 +115,28 @@ class AcceleratorValidator:
         """Find core with given yaml file name and read data."""
         if "./" in core_file_name:
             core_file_path = os.path.normpath(os.path.join(self.accelerator_dirname, core_file_name))
-            return open_yaml(core_file_path)
+            core_data = open_yaml(core_file_path)
+            assert isinstance(core_data, dict), "Core data must be a dictionary."
+            return core_data
         if "/" in core_file_name:
-            return open_yaml(core_file_name)
+            core_data = open_yaml(core_file_name)
+            assert isinstance(core_data, dict), "Core data must be a dictionary."
+            return core_data
         input_location = AcceleratorValidator.INPUT_DIR_LOCATION
         for dir_root_name, _, files_this_dir in os.walk(input_location):
             # Only consider subdirectories of `hardware` folder
             if "hardware" in dir_root_name:
                 if core_file_name in files_this_dir:
                     core_file_path = dir_root_name + "/" + core_file_name
-                    return open_yaml(core_file_path)
+                    core_data = open_yaml(core_file_path)
+                    assert isinstance(core_data, dict), "Core data must be a dictionary."
+                    return core_data
 
         self.invalidate(
             f"Core with filename `{core_file_name}` not found. Make sure `{input_location}` contains a folder "
             f"called `hardware` that contains the core file."
         )
+        return None
 
     def validate_core_connectivity(self):
         connectivity_data = self.data["core_connectivity"]

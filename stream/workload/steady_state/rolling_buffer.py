@@ -1,4 +1,4 @@
-from stream.workload.steady_state_tensor import SteadyStateTensor
+from stream.workload.steady_state.tensor import SteadyStateTensor
 
 
 class SteadyStateRollingBuffer(SteadyStateTensor):
@@ -53,9 +53,7 @@ class SteadyStateRollingBuffer(SteadyStateTensor):
         self.size = self._base_tensor.size * self._num_tensors
 
     def __str__(self):
-        return (
-            f"RollingBufferTensor({self.node_name}, " f"{self.num_tensors} × {self.base_tensor.size}B = {self.size}B)"
-        )
+        return f"RollingBufferTensor({self.node_name}, {self.num_tensors} × {self.base_tensor.size}B = {self.size}B)"
 
     def __repr__(self):
         return str(self)

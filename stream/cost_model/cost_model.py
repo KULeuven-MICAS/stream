@@ -49,7 +49,7 @@ class StreamCostModelEvaluation:
         Uses the Schedule class for modular scheduling and result extraction.
         """
         schedule = CoalaScheduler(
-            G=self.workload,
+            g=self.workload,
             accelerator=self.accelerator,
             scheduling_order=self.scheduling_order,
             operands_to_prefetch=self.operands_to_prefetch,
@@ -101,6 +101,6 @@ class StreamCostModelEvaluation:
             fig_path,
         )
 
-    def plot_memory_usage(self, fig_path: str = "outputs/memory_usage_plot.png"):
+    def plot_memory_usage(self, *args, **kwargs):
         """Plot the memory usage of this SCME."""
-        plot_memory_usage(self.accelerator.memory_manager, fig_path)
+        plot_memory_usage(self, *args, **kwargs)

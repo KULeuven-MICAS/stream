@@ -1,9 +1,10 @@
 from enum import Enum
 
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.workload.steady_state_iteration_space import SteadyStateIterationSpace
-from stream.workload.steady_state_node import SteadyStateNode
-from stream.workload.steady_state_tensor import SteadyStateTensor
+from stream.workload.steady_state.computation import SteadyStateComputation
+from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
+from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.steady_state.tensor import SteadyStateTensor
 
 
 class TransferType(Enum):
@@ -21,8 +22,8 @@ class SteadyStateTransfer(SteadyStateNode):
         id: int,
         node_name: str,
         transfer_type: TransferType,
-        src: object,
-        dst: object,
+        src: SteadyStateTensor,
+        dst: SteadyStateTensor | SteadyStateComputation,
         tensor: SteadyStateTensor,
         possible_resource_allocation: tuple[tuple[CommunicationLink]],
         steady_state_iteration_space: SteadyStateIterationSpace,

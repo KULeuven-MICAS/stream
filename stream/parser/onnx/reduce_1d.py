@@ -16,7 +16,7 @@ class Reduce1DParser(OnnxComputeOperatorParser):
 
         # The case that keepdim=True: the reduced dimension is kept with size 1
         if len(input_shape) == len(output_shape):
-            different_size = [a != b for a, b in zip(input_shape, output_shape)]
+            different_size = [a != b for a, b in zip(input_shape, output_shape, strict=False)]
             match sum(different_size):
                 case 0:
                     # Input and output size are the same: can happen with when a Reduce1D node is inferred but
@@ -36,7 +36,7 @@ class Reduce1DParser(OnnxComputeOperatorParser):
             return reduction_dim
 
         # Other: assume that the reduction is at axis=-1
-        if not all(a == b for a, b in zip(input_shape, output_shape)):
+        if not all(a == b for a, b in zip(input_shape, output_shape, strict=False)):
             raise NotImplementedError("Reduce node with reduction axis other than -1 not implemented yet.")
         reduction_dim = len(input_shape) - 1  # Last dimension
 
@@ -70,6 +70,7 @@ class Reduce1DParser(OnnxComputeOperatorParser):
         if len(input_shape) > len(Reduce1DParser.DEFAULT_LAYER_DIMENSIONS):
             raise NotImplementedError
 
+        assert mapping is not None, "Mapping must be provided for Reduce1DParser"
         possible_loop_dims = (
             mapping.layer_dimension_names
             if len(mapping.layer_dimension_names) == len(output_shape)
@@ -79,9 +80,9 @@ class Reduce1DParser(OnnxComputeOperatorParser):
 
         # If keep_dim: add an arbitrary dim of size 1
         reduced_dim_output = "R"  # C reduced to 1
-        assert (
-            not keep_dim or reduced_dim_output not in possible_loop_dims
-        ), "Layer dimension `R` is reserved for the reduction axis"
+        assert not keep_dim or reduced_dim_output not in possible_loop_dims, (
+            "Layer dimension `R` is reserved for the reduction axis"
+        )
 
         # Output: drop the last dimension: this dimension is reduced
         loop_dims_O = loop_dims[0:-1]

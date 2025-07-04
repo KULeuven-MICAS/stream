@@ -1,21 +1,23 @@
 # time_slot_allocation.py
+import json
 import sys
 from enum import Enum, auto
-from typing import Union
+from io import StringIO
+from itertools import count
 
 from pyparsing import Any
 
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.workload.steady_state_computation import SteadyStateComputation
-from stream.workload.steady_state_node import SteadyStateNode
-from stream.workload.steady_state_tensor import SteadyStateTensor
-from stream.workload.steady_state_transfer import SteadyStateTransfer
+from stream.workload.steady_state.computation import SteadyStateComputation
+from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.steady_state.tensor import SteadyStateTensor
+from stream.workload.steady_state.transfer import SteadyStateTransfer
 
 # --------------------------------------------------------------------------- #
 # Helpers                                                                     #
 # --------------------------------------------------------------------------- #
-Resource = Union[Core, tuple[CommunicationLink], CommunicationLink, None]
+Resource = Core | tuple[CommunicationLink] | CommunicationLink | None
 
 
 def _resource_key(res: Resource) -> str:
@@ -103,7 +105,7 @@ class TimeSlotAllocation:
             return  # already booked exactly like this
         if slot in self._slot_res_to_node and res in self._slot_res_to_node[slot]:
             raise self.AllocationConflictError(
-                f"slot {slot} / {_resource_key(res)} already holds " f"{self._slot_res_to_node[slot][res].node_name}"
+                f"slot {slot} / {_resource_key(res)} already holds {self._slot_res_to_node[slot][res].node_name}"
             )
 
         self.allocations.append((slot, res, node))
@@ -216,8 +218,6 @@ class TimeSlotAllocation:
         str | dict
             Chrome-trace (Perfetto) representation.
         """
-        import json
-        from itertools import count
 
         # ---------- helper IDs ----------------------------------------
         pid_gen = count(0)
@@ -273,8 +273,6 @@ class TimeSlotAllocation:
         with open(filepath, "w", encoding="utf-8") as f:
             f.write(json_out)
 
-        return
-
     # ------------------------------------------------------------------ #
     # latency / overlap utility                                          #
     # ------------------------------------------------------------------ #
@@ -306,7 +304,7 @@ class TimeSlotAllocation:
 
         # ------------------ 1. slot latency (max runtime over resources) ----
         slot_latency: dict[int, int] = {s: 0 for s in range(self.slot_min, self.slot_max + 1)}
-        for slot, res, node in self.allocations:
+        for slot, _, node in self.allocations:
             rt = getattr(node, "runtime", 0) or 0
             slot_latency[slot] = max(slot_latency.get(slot, 0), rt)
 
@@ -345,8 +343,6 @@ class TimeSlotAllocation:
         return f"TimeSlotAllocation({len(self.allocations)} allocs, {len(self.resources)} resources)"
 
     def __str__(self):
-        from io import StringIO
-
         buff = StringIO()
         stdout, sys.stdout = sys.stdout, buff
         try:

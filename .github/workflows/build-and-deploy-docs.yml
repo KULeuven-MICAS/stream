@@ -1,0 +1,64 @@
+name: MkDocs CI/CD
+
+on:
+  pull_request:
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: write  # needed for deployment
+
+jobs:
+  build-docs:
+    name: Build MkDocs Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          cd docs
+          pip install -r requirements.txt
+
+      - name: Build docs
+        run: |
+          cd docs
+          mkdocs build --config-file mkdocs.yml --strict
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build-docs
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          cd docs
+          pip install -r requirements.txt
+
+      - name: Build docs
+        run: |
+          cd docs
+          mkdocs build --config-file mkdocs.yml --strict
+
+      - name: Deploy to GitHub Pages 🚀
+        uses: peaceiris/actions-gh-pages@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: docs/site

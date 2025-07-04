@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 import networkx as nx
 from zigzag.datatypes import Constants, MemoryOperand
+from zigzag.hardware.architecture.memory_port import DataDirection
 
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.utils import intersections
@@ -129,18 +130,18 @@ class CommunicationManager:
         return all_shortest_paths
 
     def get_all_links_for_all_core_pairs(self):
-        communication_links: dict[tuple[Core, Core], tuple[tuple["CommunicationLink"]]] = {}
+        communication_links: dict[tuple[Core, Core], tuple[tuple[CommunicationLink], ...]] = {}
         for pair, paths in self.all_shortest_paths.items():
-            links: list[tuple["CommunicationLink"]] = []
+            links: list[tuple[CommunicationLink]] = []
             for path in paths:
-                traversed_edges = [(i, j) for i, j in zip(path, path[1:])]
+                traversed_edges = [(i, j) for i, j in zip(path, path[1:], strict=False)]
                 links.append(
                     tuple(self.accelerator.cores.edges[traversed_edge]["cl"] for traversed_edge in traversed_edges)
                 )
             communication_links[pair] = tuple(links)
         return communication_links
 
-    def get_all_links_for_pair(self, sender: Core, receiver: Core) -> tuple[tuple["CommunicationLink"]]:
+    def get_all_links_for_pair(self, sender: Core, receiver: Core) -> tuple[tuple["CommunicationLink"], ...]:
         """Return the list of traversed CommunicationLinks for sending data from sender core to receiver core.
 
         Args:
@@ -195,7 +196,7 @@ class CommunicationManager:
 
         link_energy_cost = 0
         is_new_event_across_all_links = True
-        for link, cle in zip(links, cles):
+        for link, cle in zip(links, cles, strict=False):
             transfer_energy_cost, is_new_event = link.transfer(cle)
             if is_new_event:
                 link_energy_cost += transfer_energy_cost
@@ -229,7 +230,7 @@ class CommunicationManager:
         node: ComputationNode,
     ):
         """
-        Blocks off-chip links for operands that are too large to fit in memory, for the duration of the node's execution.
+        Blocks off-chip links for operands that are too large to fit in memory for the duration of the node's execution.
         Handles both output and input operands, and creates CommunicationEvents for new blocks.
         """
         if not too_large_operands:
@@ -237,7 +238,7 @@ class CommunicationManager:
         core = self.accelerator.get_core(core_id)
         assert self.accelerator.offchip_core_id is not None, "Off-chip core id is not set."
         offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
-        tensors_per_link: dict["CommunicationLink", list[Tensor]] = {}
+        tensors_per_link: dict[CommunicationLink, list[Tensor]] = {}
 
         # Output operand
         if Constants.OUTPUT_MEM_OP in too_large_operands:
@@ -295,8 +296,10 @@ class CommunicationManager:
         """
         assert op in node.offchip_bandwidth_per_op
         if op == Constants.OUTPUT_MEM_OP:
-            return node.offchip_bandwidth_per_op[op].wr_in_by_low
-        return node.offchip_bandwidth_per_op[op].rd_out_to_low
+            data_dir = DataDirection.WR_IN_BY_LOW
+        else:
+            data_dir = DataDirection.RD_OUT_TO_LOW
+        return node.offchip_bandwidth_per_op[op].get(data_dir)
 
     def get_links_idle_window(
         self,
@@ -315,10 +318,12 @@ class CommunicationManager:
             total_req_bw = sum([bw for _, bw in bandwidth_per_tensor])
             if total_req_bw > link.bandwidth:
                 normalization_factor = link.bandwidth / total_req_bw
-                bandwidth_per_tensor = [
+                bandwidth_per_tensor_floored = [
                     (tensor, floor(normalization_factor * bw)) for tensor, bw in bandwidth_per_tensor
                 ]
-            windows = link.get_idle_window(bandwidth_per_tensor, duration, start_timestep)
+            else:
+                bandwidth_per_tensor_floored = bandwidth_per_tensor
+            windows = link.get_idle_window(bandwidth_per_tensor_floored, duration, start_timestep)
             if i == 0:
                 idle_intersections = windows
             else:

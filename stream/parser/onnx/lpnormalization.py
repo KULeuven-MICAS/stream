@@ -23,8 +23,8 @@ class LpNormalizationParser(OnnxOperatorParser):
 
         node_obj = LpNormalizationNode(
             node_id=self.node_id,
-            node_name=self.node_name,
-            predecessor=self.predecessor,
-            input_names=input_names,
+            node_name=self.node_name,  # type: ignore
+            predecessor=self.predecessor,  # type: ignore
+            input_names=input_names,  # type: ignore
         )
         return node_obj

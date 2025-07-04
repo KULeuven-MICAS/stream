@@ -10,14 +10,14 @@
   intra_core_tiling:
     - OY, all
   inter_core_tiling:
-    - K, 4
+    - K, 1
 
 - name: Gemm
   core_allocation: [0, 1, 2, 3]
   intra_core_tiling:
     - D, all
   inter_core_tiling:
-    - H, 4
+    - K, 4
 
 - name: Pool
   core_allocation: [4]

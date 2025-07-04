@@ -7,8 +7,8 @@ from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import Constants, MemoryOperand
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
+from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
-from zigzag.stages.main import MainStage
 from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
 from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
 from zigzag.utils import pickle_deepcopy
@@ -16,7 +16,7 @@ from zigzag.utils import pickle_deepcopy
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.stages.generation.layer_stacks_generation import STACK_T
-from stream.stages.stage import Stage, StageCallable
+from stream.stages.stage import MainStage, Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT, contains_wildcard, get_top_level_inst_bandwidth, get_unique_nodes
 from stream.visualization.cost_model_evaluation_lut import (
     visualize_cost_lut_pickle,
@@ -40,7 +40,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         accelerator: Accelerator,
         loma_lpf_limit: int,
         cost_lut_path: str,
-        **kwargs: dict[str, Any],
+        **kwargs: Any,
     ):
         """
         Initialize the stage by:
@@ -55,16 +55,17 @@ class ZigZagCoreMappingEstimationStage(Stage):
         self.visualize_cost_lut_path = os.path.splitext(self.cost_lut_path)[0] + ".png"
         self.loma_show_progress_bar: bool = kwargs.get("loma_show_progress_bar", False)
         self.layer_stacks: list[STACK_T] = kwargs["layer_stacks"]
+        self.temporal_mapping_type: TemporalMappingType = kwargs["temporal_mapping_type"]
 
         # Extract all unique nodes that will have to be evaluated
         self.unique_nodes = get_unique_nodes(self.workload)
 
-        assert all(
-            isinstance(node, ComputationNode) for node in self.unique_nodes
-        ), "ZigZagCoreMappingEstimationStage received a non-ComputationNode."
-        assert all(
-            isinstance(node.possible_core_allocation, list) for node in self.unique_nodes
-        ), "ZigZagCoreMappingEstimationStage received a node with a non-list core allocation."
+        assert all(isinstance(node, ComputationNode) for node in self.unique_nodes), (
+            "ZigZagCoreMappingEstimationStage received a non-ComputationNode."
+        )
+        assert all(isinstance(node.possible_core_allocation, list) for node in self.unique_nodes), (
+            "ZigZagCoreMappingEstimationStage received a node with a non-list core allocation."
+        )
 
         self.valid_allocations: dict[ComputationNode, list[int]] = {
             node: node.possible_core_allocation for node in self.unique_nodes
@@ -82,8 +83,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         kwargs["accelerator"] = self.accelerator
         kwargs["cost_lut"] = self.cost_lut
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
-        for cme, extra_info in sub_stage.run():
-            yield cme, extra_info
+        yield from sub_stage.run()
 
     def update_cost_lut(self):
         for node in self.unique_nodes:
@@ -194,7 +194,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
 
         main_stage = MainStage(
             [  # Initializes the MainStage as entry point
-                MinimalBandwidthLatencyStage,
+                MinimalBandwidthLatencyStage,  # type: ignore
                 SpatialMappingGeneratorStage,  # Generates multiple spatial mappings (SM)
                 MinimalBandwidthLatencyStage,  # Reduces all CMEs, returning minimal EDP one
                 TemporalMappingGeneratorStage,  # Generates multiple temporal mappings (TM)
@@ -204,6 +204,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
             accelerator=core,  # Accelerator in zigzag corresponds to Core in stream
             loma_lpf_limit=self.loma_lpf_limit,  # required by LomaEngine
             loma_show_progress_bar=self.loma_show_progress_bar,
+            temporal_mapping_type=self.temporal_mapping_type,
             nb_parallel_nodes=nb_parallel_nodes,
             has_dram_level=(len(too_large_operands) > 0),
         )
@@ -242,7 +243,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
             memory_operands = list(top_memory.mem_level_of_operands.keys())
             layer_operands = [memory_operand_link.mem_to_layer_op(mem_operand) for mem_operand in memory_operands]
             bits_to_be_stored_in_top_level: dict[MemoryOperand, int] = {}
-            for layer_operand, memory_operand in zip(layer_operands, memory_operands):
+            for layer_operand, memory_operand in zip(layer_operands, memory_operands, strict=False):
                 nb_bits = node.operand_size_bit[layer_operand]
                 bits_to_be_stored_in_top_level[memory_operand] = nb_bits
             total_required_capacity = sum(bits_to_be_stored_in_top_level.values())
@@ -364,9 +365,9 @@ class ZigZagCoreMappingEstimationStage(Stage):
 
         # Sanity checks: make sure that there is only one offchip memory
         offchip_memory_levels = offchip_core.memory_hierarchy.mem_level_list
-        assert (
-            len(offchip_memory_levels) == 1
-        ), "There is more than one offchip memory, unsure which one to take for intra core mapping"
+        assert len(offchip_memory_levels) == 1, (
+            "There is more than one offchip memory, unsure which one to take for intra core mapping"
+        )
 
         offchip_memory_level: MemoryLevel = pickle_deepcopy(offchip_memory_levels[0])
         offchip_memory_instance = offchip_memory_level.memory_instance
@@ -425,22 +426,23 @@ class MinimalBandwidthLatencyStage(Stage):
             nb_levels_per_op = [len(accelerator.memory_hierarchy.get_memory_levels(op)) for op in self.mem_ops]
             dram_mem_level = max(nb_levels_per_op)  # start at 1
             self.mem_ops_with_dram = [
-                op for op, nb_levels in zip(self.mem_ops, nb_levels_per_op) if nb_levels == dram_mem_level
+                op for op, nb_levels in zip(self.mem_ops, nb_levels_per_op, strict=False) if nb_levels == dram_mem_level
             ]
-            self.total_dram_bandwidth = accelerator.mem_r_bw_dict[self.mem_ops_with_dram[0]][-1]
+            ports = accelerator.get_top_memory_instance(self.mem_ops_with_dram[0]).ports
+            self.total_dram_bandwidth = max((port.bw_max for port in ports), default=0)
 
     def get_used_dram_bandwidth_for_op(self, cme: CostModelEvaluation, mem_op: MemoryOperand):
         if mem_op not in self.mem_ops_with_dram:
             return 0
         bw_per_direction = get_top_level_inst_bandwidth(cme, mem_op)
-        total_bw = sum(sum(x) for x in bw_per_direction.info_list)
+        total_bw = sum(bw_per_direction.data.values())
         return total_bw
 
     def objective_function(self, cme: CostModelEvaluation) -> float:
         """
         # TODO this does not cover all cases
         """
-        latency: int = cme.latency_total2
+        latency: int = int(cme.latency_total2)
 
         if not self.has_dram_level:
             return latency

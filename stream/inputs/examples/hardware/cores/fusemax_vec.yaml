@@ -3,40 +3,46 @@ name: vec
 memories:
   rf_I:
     size: 16
-    r_bw: 16
-    w_bw: 16
     r_cost: 0.4
     w_cost: 0.4
     area: 0
-    r_port: 1
-    w_port: 1
-    rw_port: 0
     latency: 1
-    min_r_granularity: 8
-    min_w_granularity: 8
     operands: [I1]
     ports:
-      - fh: w_port_1
-        tl: r_port_1
+      - name: r_port_1
+        type: read
+        bandwidth_min: 8
+        bandwidth_max: 16
+        allocation: 
+          - I1, tl
+      - name: w_port_1
+        type: write
+        bandwidth_min: 8
+        bandwidth_max: 16
+        allocation: 
+          - I1, fh
     served_dimensions: []
 
   rf_W:
     size: 16
-    r_bw: 16
-    w_bw: 16
     r_cost: 0.4
     w_cost: 0.4
     area: 0
-    r_port: 1
-    w_port: 1
-    rw_port: 0
     latency: 1
-    min_r_granularity: 4
-    min_w_granularity: 4
     operands: [I2]
     ports:
-      - fh: w_port_1
-        tl: r_port_1
+      - name: r_port_1
+        type: read
+        bandwidth_min: 4
+        bandwidth_max: 16
+        allocation: 
+          - I2, tl
+      - name: w_port_1
+        type: write
+        bandwidth_min: 4
+        bandwidth_max: 16
+        allocation: 
+          - I2, fh
     served_dimensions: []
 
   rf_O:

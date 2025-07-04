@@ -41,8 +41,7 @@ class SetFixedAllocationStage(Stage):
             self.list_of_callables[1:],
             **kwargs,
         )
-        for cme, extra_info in sub_stage.run():
-            yield cme, extra_info
+        yield from sub_stage.run()
 
     def set_fixed_allocation(self):
         for node in self.workload.node_list:

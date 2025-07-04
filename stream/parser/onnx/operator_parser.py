@@ -1,5 +1,6 @@
 from abc import ABCMeta, abstractmethod
-from typing import Any, Generator
+from collections.abc import Generator
+from typing import Any
 
 from onnx import ModelProto, NodeProto
 from zigzag.datatypes import Constants
@@ -59,7 +60,6 @@ class OnnxOperatorParser(ONNXOperatorParserZigZag, metaclass=ABCMeta):
 
 
 class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
-
     def run(self) -> Generator[ComputationNode, None, None]:
         yield self.generate_node()
 

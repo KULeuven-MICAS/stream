@@ -2,6 +2,7 @@ from typing import Any
 
 from zigzag.datatypes import Constants
 from zigzag.hardware.architecture.memory_level import MemoryLevel
+from zigzag.hardware.architecture.memory_port import MemoryPortType
 from zigzag.parser.accelerator_factory import AcceleratorFactory as ZigZagCoreFactory
 
 from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
@@ -99,7 +100,7 @@ class AcceleratorFactory:
         top_instances_b = [level.memory_instance for level in top_levels_b]
         if len(top_instances_a) != len(top_instances_b):
             return True
-        for instance_a, instance_b in zip(top_instances_a, top_instances_b):
+        for instance_a, instance_b in zip(top_instances_a, top_instances_b, strict=False):
             if frozenset(instance_a.__dict__.values()) != frozenset(instance_b.__dict__.values()):
                 return True
         return False
@@ -115,8 +116,8 @@ class AcceleratorFactory:
         # All links between cores
         for connection in connections:
             connected_cores = [cores[core_id] for core_id in connection]
-
-            if len(connection) == 2:
+            CONNECTION_LENGTH_FOR_ONE_TO_ONE = 2
+            if len(connection) == CONNECTION_LENGTH_FOR_ONE_TO_ONE:
                 core_a, core_b = connected_cores
                 edges += get_bidirectional_edges(
                     core_a,
@@ -153,11 +154,16 @@ class AcceleratorFactory:
 
         unit_energy_cost = self.data["unit_energy_cost"]
 
-        offchip_read_bandwidth = offchip_core.mem_r_bw_dict[Constants.OUTPUT_MEM_OP][0]
-        offchip_write_bandwidth = offchip_core.mem_w_bw_dict[Constants.OUTPUT_MEM_OP][0]
+        # Get the first read port of the offchip core's top memory
+        offchip_ports = offchip_core.get_top_memory_instance(Constants.OUTPUT_MEM_OP).ports
+        port = next(port for port in offchip_ports if port.type in (MemoryPortType.READ, MemoryPortType.READ_WRITE))
+        offchip_read_bandwidth = port.bw_max
+        # Get the first write port of the offchip core's top memory
+        port = next(port for port in offchip_ports if port.type in (MemoryPortType.WRITE, MemoryPortType.READ_WRITE))
+        offchip_write_bandwidth = port.bw_max
 
         # if the offchip core has only one port
-        if len(offchip_core.mem_hierarchy_dict[Constants.OUTPUT_MEM_OP][0].port_list) == 1:
+        if len(offchip_ports) == 1:
             to_offchip_link = CommunicationLink(
                 offchip_core,
                 "Any",

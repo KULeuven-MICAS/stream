@@ -24,13 +24,12 @@ class SSMNode(StrEnum):
 
 
 class SSMInput(StrEnum):
-    dA = "dA"
-    dBx = "dBx"
+    da = "dA"
+    dbx = "dBx"
     C = "C"
 
 
 class SSMParser(OnnxComputeOperatorParser):
-
     def __init__(
         self,
         node_id: int,
@@ -55,14 +54,13 @@ class SSMParser(OnnxComputeOperatorParser):
         self.base_ids: dict[SSMNode, int] = {}
 
     def run(self):
-        for node in self.get_nodes():
-            yield node
+        yield from self.get_nodes()
 
     def get_nodes(self):
         # Nodes that will split dA, dBx and C into L pieces
-        split_node_dA = self.create_split_node(SSMInput.dA)
+        split_node_dA = self.create_split_node(SSMInput.da)
         yield split_node_dA
-        split_node_dBx = self.create_split_node(SSMInput.dBx)
+        split_node_dBx = self.create_split_node(SSMInput.dbx)
         yield split_node_dBx
         split_node_C = self.create_split_node(SSMInput.C)
         yield split_node_C
@@ -158,9 +156,9 @@ class SSMParser(OnnxComputeOperatorParser):
         # TODO input order is assumed
         """
         match ssm_input_type:
-            case SSMInput.dA:
+            case SSMInput.da:
                 relevant_input_name = self.node.input[0]
-            case SSMInput.dBx:
+            case SSMInput.dbx:
                 relevant_input_name = self.node.input[1]
             case SSMInput.C:
                 relevant_input_name = self.node.input[2]
@@ -172,10 +170,10 @@ class SSMParser(OnnxComputeOperatorParser):
                 for node_id, outputs_of_node in self.nodes_outputs.items()
                 if relevant_input_name in outputs_of_node
             )
-        except StopIteration:
+        except StopIteration as exc:
             raise ValueError(
                 f"{ssm_input_type} not seen before! Assuming corresponding input name is {relevant_input_name}"
-            )
+            ) from exc
 
     def get_node_user_format(
         self, ssm_node_type: SSMNode, node_id: int, node_name: str, source_1: int, source_2: int, op_type: str
@@ -219,7 +217,8 @@ class SSMParser(OnnxComputeOperatorParser):
         """Set the SSM dimensions based on the output shapes.
         The output shapes will be (B, L, D) and (B, D, N)"""
         output_shapes = get_onnx_output_shapes(self.node, self.onnx_model)
-        assert len(output_shapes) == 2, "SSM node should have 2 outputs: Y and state"
+        EXPECTED_NUMBER_OF_OUTPUTS = 2
+        assert len(output_shapes) == EXPECTED_NUMBER_OF_OUTPUTS, "SSM node should have 2 outputs: Y and state"
 
         # The ordering is an assumption. Sanity check that B and D dimension are at least the same
         shape_y, shape_h = output_shapes

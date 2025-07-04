@@ -77,7 +77,7 @@ class GeneticAlgorithmAllocationStage(Stage):
         for layer_id, group_id in self.layer_groups:
             # Find the unique node that corresponds to this layer
             # This assumes all the nodes of this layer are identical
-            unique_node = next((n for n in self.unique_nodes if n.id == layer_id))
+            unique_node = next(n for n in self.unique_nodes if n.id == layer_id)
             if unique_node in self.unique_nodes_flexible:
                 cores = self.cost_lut.get_cores(unique_node)
                 valid_core_ids = [core.id for core in cores if core.id < len(self.unique_nodes_flexible)]
@@ -115,9 +115,17 @@ class GeneticAlgorithmAllocationStage(Stage):
         if self.individual_length == 0:
             logger.info("Evaluating fixed layer-core allocation.")
             core_allocations = []
-            (energy, latency, scme) = self.fitness_evaluator.get_fitness(core_allocations, return_scme=True)
+            (_, _, scme) = self.fitness_evaluator.get_fitness(core_allocations, return_scme=True)  # type: ignore
             yield scme, None
         else:
+            logger.info(
+                f"Running Genetic Algorithm with {self.nb_generations} "
+                f"generations and {self.nb_individuals} individuals."
+            )
+            flexible_layer_names = [f"{n.name}" for n in self.unique_nodes_flexible]
+            logger.info(
+                f"Exploring allocation for {len(self.unique_nodes_flexible)} flexible layers: {flexible_layer_names}"
+            )
             # Initialize the genetic algorithm
             self.genetic_algorithm = GeneticAlgorithm(
                 self.fitness_evaluator,

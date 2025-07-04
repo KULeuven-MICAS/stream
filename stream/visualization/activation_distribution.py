@@ -8,7 +8,7 @@ from stream.workload.utils import prune_workload
 
 
 def plot_activation_distribution(
-    workload: ComputationNodeWorkload, order: list = [], fig_path: str = "outputs/distribution.html"
+    workload: ComputationNodeWorkload, order: list | None = None, fig_path: str = "outputs/distribution.html"
 ):
     """
     Plot the output tensor sizes throughout the network depth.
@@ -37,8 +37,8 @@ def plot_activation_distribution(
     time_per_iteration = total_animation_time / nb_iterations
     frame_time = (1 - transition_to_frame_ratio) * time_per_iteration
     transition_time = transition_to_frame_ratio * time_per_iteration
-    fig.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = frame_time
-    fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["duration"] = transition_time
+    fig.layout.updatemenus[0].buttons[0].args[1]["frame"]["duration"] = frame_time  # type: ignore
+    fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["duration"] = transition_time  # type: ignore
     fig.update_geos(projection_type="equirectangular", visible=True, resolution=110)
     fig.write_html(fig_path)
     pass
@@ -70,12 +70,15 @@ def get_sizes_per_node(workload, order):
         node = next(n for n in workload.nodes() if n.id == node_id)
         if not isinstance(node, ComputationNode):
             continue
-        alive_names_per_node.append(tuple((str(t) for t in alive_tensors)))
-        alive_sizes_per_node.append(sum((t.size for t in alive_tensors)))
-        sizes = [sum((t.size for t in alive_tensors if t.origin.id[0] == layer_id)) for layer_id in layer_ids]
-        max_size = max(max_size, max(sizes))
+        alive_names_per_node.append(tuple(str(t) for t in alive_tensors))
+        alive_sizes_per_node.append(sum(t.size for t in alive_tensors))
+        sizes = [sum(t.size for t in alive_tensors if t.origin.id[0] == layer_id) for layer_id in layer_ids]
+        max_size = max(max_size, *sizes)
         sizes_per_layer.append(sizes)
-        data += [{"Iteration": it, "Layer": str(layer_id), "Size": size} for layer_id, size in zip(layer_ids, sizes)]
+        data += [
+            {"Iteration": it, "Layer": str(layer_id), "Size": size}
+            for layer_id, size in zip(layer_ids, sizes, strict=False)
+        ]
         # Tensors that will die by processing this node
         # Input tensors from source nodes
         # for t in alive_tensors.copy():
@@ -95,11 +98,14 @@ def get_sizes_per_node(workload, order):
         nb_tensor_uses[output] = len([n for n in workload.successors(node) if n.id[0] != node.id])
         it += 1
     # Add state after processing last node
-    alive_names_per_node.append(tuple((str(t) for t in alive_tensors)))
-    alive_sizes_per_node.append(sum((t.size for t in alive_tensors)))
-    sizes = [sum((t.size for t in alive_tensors if t.origin.id == layer_id)) for layer_id in layer_ids]
+    alive_names_per_node.append(tuple(str(t) for t in alive_tensors))
+    alive_sizes_per_node.append(sum(t.size for t in alive_tensors))
+    sizes = [sum(t.size for t in alive_tensors if t.origin.id == layer_id) for layer_id in layer_ids]
     sizes_per_layer.append(sizes)
-    max_size = max(max_size, max(sizes))
-    data += [{"Iteration": it, "Layer": str(layer_id), "Size": size} for layer_id, size in zip(layer_ids, sizes)]
+    max_size = max(max_size, *sizes)
+    data += [
+        {"Iteration": it, "Layer": str(layer_id), "Size": size}
+        for layer_id, size in zip(layer_ids, sizes, strict=False)
+    ]
     df = pd.DataFrame(data)
     return df, max_size

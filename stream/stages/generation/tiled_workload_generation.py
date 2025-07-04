@@ -84,7 +84,7 @@ def deduce_tensor_reuse_factors(
     return tensor_reuse_factors
 
 
-class TensorDimensionMismatchException(Exception):
+class TensorDimensionMismatchError(Exception):
     """Facilitates error handling in case incorrect tensor dimensions are passed on"""
 
 
@@ -127,8 +127,7 @@ class TiledWorkloadGenerationStage(Stage):
             if not isinstance(node, ComputationNode):
                 continue
             outer_temporal_loops = self.get_outer_tmap_loop_dimensions(node)
-            mandatory_divisors = self.get_mandatory_divisors(node)
-            tiles, unique_tiles = self.get_tiles(node, outer_temporal_loops, mandatory_divisors)
+            tiles, unique_tiles = self.get_tiles(node, outer_temporal_loops)
 
             # Only log once for generated nodes
             if not isinstance(node, GeneratedComputationNode) or node.gen_id == 0:
@@ -150,7 +149,6 @@ class TiledWorkloadGenerationStage(Stage):
             # Get all pairs of nodes that we have to extract inter edges for
             all_pairs = self.get_all_node_pairs(self.workload)
             for producer, consumer, is_complex in all_pairs:
-
                 if is_complex:
                     inter_edges = self.get_inter_edges_numpy(producer, consumer)
                 else:
@@ -167,7 +165,7 @@ class TiledWorkloadGenerationStage(Stage):
             tiled_workload = self.remake_workload(all_tiles, all_edges)
 
             # Save the tiled workload
-            pickle_save(tiled_workload, self.tiled_workload_path)
+            pickle_save(tiled_workload, self.tiled_workload_path)  # type: ignore
             logger.info(f"Saved tiled workload to {self.tiled_workload_path}.")
 
         logger.info(f"Finer graph: {tiled_workload}.")
@@ -180,8 +178,7 @@ class TiledWorkloadGenerationStage(Stage):
         if "scheduling_order" not in kwargs:
             kwargs["scheduling_order"] = self.get_scheduling_order(tiled_workload)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
-        for cme, extra_info in sub_stage.run():
-            yield cme, extra_info
+        yield from sub_stage.run()
 
         yield None, None
 
@@ -199,27 +196,28 @@ class TiledWorkloadGenerationStage(Stage):
 
     @staticmethod
     def get_scheduling_order(workload: ComputationNodeWorkload):
-        return sorted(((n.id, n.sub_id) for n in workload.node_list))
+        return sorted((n.id, n.sub_id) for n in workload.node_list)
 
     @staticmethod
-    def get_all_node_pairs(G: ONNXWorkload) -> tuple[tuple[ComputationNode, ComputationNode, bool], ...]:
+    def get_all_node_pairs(g: ONNXWorkload) -> tuple[tuple[ComputationNode, ComputationNode, bool], ...]:
         pairs: list[tuple[ComputationNode, ComputationNode, bool]] = []
-        for node in G.topological_sort():
+        for node in g.topological_sort():
             if not isinstance(node, ComputationNode):
                 continue
-            successors = list(G.successors(node))
+            successors = list(g.successors(node))
             is_computation_node = [isinstance(succ, ComputationNode) for succ in successors]
             while not all(is_computation_node):
                 non_computation_node_succ_idx = is_computation_node.index(False)
                 non_computation_node_succ = successors[non_computation_node_succ_idx]
-                succ2 = list(G.successors(non_computation_node_succ))
+                succ2 = list(g.successors(non_computation_node_succ))
                 successors.pop(non_computation_node_succ_idx)
                 successors += succ2
                 is_computation_node = [isinstance(succ, ComputationNode) for succ in successors]
 
             # Now we have all ComputationNode successors
             for successor in successors:
-                intermediates = G.shortest_path(node, successor)[1:-1]
+                assert isinstance(successor, ComputationNode), f"Successor {successor} is not a ComputationNode."
+                intermediates = g.shortest_path(node, successor)[1:-1]
                 complex_pair = False
                 for intermediate in intermediates:
                     if isinstance(intermediate, ComputationNode):
@@ -251,7 +249,7 @@ class TiledWorkloadGenerationStage(Stage):
         else:
             # inter core tiling is ok, also split into these tiles. NOTE: this list is ordered
             tiling_to_split = node.inter_core_tiling + node.intra_core_tiling
-        outer_loops = convert_outer_cn_loops(tiling_to_split, node)
+        outer_loops = convert_outer_cn_loops(tiling_to_split)  # type: ignore
 
         # In case no valid intra core tiling is found: add an arbitrary tiling of size 1
         if not outer_loops:
@@ -324,9 +322,8 @@ class TiledWorkloadGenerationStage(Stage):
         self,
         original_node: ComputationNode,
         outer_temporal_loops: list[TemporalLoop],
-        mandatory_divisors: dict[LayerDim, set[int]] = {},
     ) -> tuple[list[ComputationNode], list[ComputationNode]]:
-
+        mandatory_divisors = self.get_mandatory_divisors(original_node)
         # Pad the layer_dim_sizes to be divisible by the mandatory divisors (coming from the outer_temporal_loops)
         tile_attrs = original_node.extract_node_attr()
         tile_attrs = self._pad_layer_dim_sizes(tile_attrs, outer_temporal_loops, mandatory_divisors)
@@ -350,7 +347,7 @@ class TiledWorkloadGenerationStage(Stage):
         group_id_manager = GroupIdManager(
             layer_dim_sizes=original_node.extended_layer_dim_sizes,
             intra_core_tiling=original_node.intra_core_tiling,
-            inter_core_tiling=original_node.inter_core_tiling,
+            inter_core_tiling=original_node.inter_core_tiling,  # type: ignore
         )
 
         for n in range(nb_cns):
@@ -396,7 +393,7 @@ class TiledWorkloadGenerationStage(Stage):
         layer_dim: LayerDim,
         n: int,
         outer_temporal_loops: list[TemporalLoop],
-        mandatory_divisors: dict[LayerDim, set[int]] = {},
+        mandatory_divisors: dict[LayerDim, set[int]],
     ) -> int:
         """Return x >= n such that x is divisible by `total_outer_size`, as well as by all `mandatory_divisors`
         (coming from the inter-core tiling of other nodes within the same stack)"""
@@ -417,9 +414,7 @@ class TiledWorkloadGenerationStage(Stage):
         """Pad layer_dim_sizes to be divisible by the mandatory divisors."""
 
         for dim, size in tile_attrs.layer_dim_sizes.items():
-            new_size = self.pad_until_divisible(
-                dim, size, outer_temporal_loops=outer_temporal_loops, mandatory_divisors=mandatory_divisors
-            )
+            new_size = self.pad_until_divisible(dim, int(size), outer_temporal_loops, mandatory_divisors)
             if size != new_size:
                 tile_attrs.layer_dim_sizes[dim] = new_size
                 logger.warning(f"Padded layer dimension {dim}: {size} -> {new_size} to be divisible by tiling factors")
@@ -474,7 +469,6 @@ class TiledWorkloadGenerationStage(Stage):
         stop_values: list[int],
         multiplication_factors: list[int],
     ) -> LOOP_RANGES_T:
-
         outer_loop_values = self._get_outer_loop_values(n, outer_temporal_loops, stop_values)
 
         dim_min_max: LOOP_RANGES_T = {}
@@ -525,9 +519,9 @@ class TiledWorkloadGenerationStage(Stage):
         allocation later."""
         inter_core_tiling_size = get_inter_core_tiling_size(original_node)
         if len(original_node.possible_core_allocation) == inter_core_tiling_size:
-            assert group_id < len(
-                original_node.possible_core_allocation
-            ), f"Group id {group_id} too large for core allocation list {original_node.possible_core_allocation}"
+            assert group_id < len(original_node.possible_core_allocation), (
+                f"Group id {group_id} too large for core allocation list {original_node.possible_core_allocation}"
+            )
             chosen_core_allocation = original_node.possible_core_allocation[group_id]
             tile.set_chosen_core_allocation(chosen_core_allocation)
 
@@ -576,7 +570,7 @@ class TiledWorkloadGenerationStage(Stage):
         intra_edges: list[tuple[ComputationNode, ComputationNode, dict[str, int]]] = []
         for group_id in group_ids:
             group_nodes = [n for n in nodes if n.group == group_id]
-            pairs = zip(group_nodes, group_nodes[1:])
+            pairs = zip(group_nodes, group_nodes[1:], strict=False)
             for node_1, node_2 in pairs:
                 intra_edges.append((node_1, node_2, {"bits": 0}))
         return intra_edges
@@ -610,7 +604,7 @@ class TiledWorkloadGenerationStage(Stage):
             bounding_box_flat = tuple([item for sublist in bounding_box for item in sublist])
             return bounding_box_flat
         else:
-            bounding_box_flat = tuple(zip(*bounding_box))
+            bounding_box_flat = tuple(zip(*bounding_box, strict=False))
             bounding_box_flat = tuple([item for sublist in bounding_box_flat for item in sublist])
             return bounding_box_flat
 
@@ -627,7 +621,8 @@ class TiledWorkloadGenerationStage(Stage):
 
             # TODO this is a whacky fix
             # RTree doesn't accept bound of one dimension
-            if len(bounds) == 2:
+            BOUNDS_LENGTH_FOR_SINGLE_DIMENSION = 2
+            if len(bounds) == BOUNDS_LENGTH_FOR_SINGLE_DIMENSION:
                 bounds = (0, 0) + bounds
 
             yield (i, bounds, None)
@@ -788,12 +783,11 @@ class TiledWorkloadGenerationStage(Stage):
         producer: ComputationNode,
         consumer: ComputationNode,
     ):
-
         all_inter_edges: list[tuple[ComputationNode, ComputationNode, dict[str, Any]]] = []
         paths_between = self.workload.find_paths_with_intermediate_type(producer, consumer, PropagationNode)
-        assert (
-            len(paths_between) > 0
-        ), "No paths between producer and consumer found without ComputationNode in intermediates."
+        assert len(paths_between) > 0, (
+            "No paths between producer and consumer found without ComputationNode in intermediates."
+        )
 
         for path_between in paths_between:
             timesteps = (time.time(),)
@@ -822,14 +816,14 @@ class TiledWorkloadGenerationStage(Stage):
             timesteps += (time.time(),)
             self._print_time_delta_to_logger(timesteps, str(path_between))
 
-            for producer, consumer in inter_edges:
+            for p, c in inter_edges:
                 all_inter_edges.append(
                     (
-                        producer,
-                        consumer,
+                        p,
+                        c,
                         {
                             "operand": dependent_operand,
-                            "bits": producer.data_produced_unique,
+                            "bits": p.data_produced_unique,
                         },
                     )
                 )
@@ -859,6 +853,7 @@ class TiledWorkloadGenerationStage(Stage):
             tilings += node.inter_core_tiling
 
         for dim, size in tilings:
+            assert isinstance(size, int), f"Size of tiling {dim} should be an integer, got {size}"
             if dim in dimensions and size > 1:
                 relevant_axes[dimensions.index(dim)] = True
 
@@ -888,7 +883,7 @@ class TiledWorkloadGenerationStage(Stage):
             operand (LayerOperand): The input operand of final_node for which to get the inter-edges
             relevant_axes (list): A list of boolean values indicating which axes are relevant for the final_node
         """
-        inter_edges: set[tuple[ComputationNode, ComputationNode]] = []
+        inter_edges: set[tuple[ComputationNode, ComputationNode]] = set()
         dims = final_node.operand_dimensionality_order[op]
         assert len(dims) == len(relevant_axes)
         for consumer_tile in self.tiles_dict[final_node]:
@@ -900,10 +895,10 @@ class TiledWorkloadGenerationStage(Stage):
             # Ellipsis adds the entire last axis for the extra dimension in NodeTensor
             slices = tuple(slice(start, stop) for start, stop in relevant_loop_ranges) + (Ellipsis,)
             sliced_tensor = tensor[slices]
-            producer_tiles = set(sliced_tensor[sliced_tensor != 0].flat.flat)
+            producer_tiles = set(sliced_tensor[sliced_tensor != 0].flat.flat)  # type: ignore
 
             for producer_tile in producer_tiles:
-                inter_edges.append((producer_tile, consumer_tile))
+                inter_edges.add((producer_tile, consumer_tile))
         return inter_edges
 
     @staticmethod
@@ -917,10 +912,12 @@ class TiledWorkloadGenerationStage(Stage):
             consumer_input_tensor (np.ndarray): A tensor containing for each position which CNs will consume it
         """
         if producer_output_tensor.tensor_shape != consumer_input_tensor.tensor_shape:
-            raise TensorDimensionMismatchException("Arrays to construct inter-layer edges must be equal shape.")
+            raise TensorDimensionMismatchError("Arrays to construct inter-layer edges must be equal shape.")
 
         inter_edges: set[tuple[ComputationNode, ComputationNode]] = set()
-        for producer_array, consumer_array in zip(producer_output_tensor.flat, consumer_input_tensor.flat):
+        for producer_array, consumer_array in zip(
+            producer_output_tensor.flat, consumer_input_tensor.flat, strict=False
+        ):
             for producer in producer_array:
                 # The producer/consumer array may contain a lot of 0
                 if not producer:
@@ -939,6 +936,7 @@ class TiledWorkloadGenerationStage(Stage):
         op: LayerOperand,
     ) -> NodeTensor:
         tensor_dims = node.operand_dimensionality_order[op]
+        assert node.pr_layer_dim_sizes is not None, f"Node {node} must have pr_layer_dim_sizes set"
         all_loop_dim_sizes = node.layer_dim_sizes + node.pr_layer_dim_sizes  # union
         tensor_shapes: tuple[int, ...] = tuple(all_loop_dim_sizes[dim] for dim in tensor_dims)
 
@@ -955,7 +953,7 @@ class TiledWorkloadGenerationStage(Stage):
             # if this layer is the first layer, we assume the inputs are streamed and "free"
 
         node_tensor = NodeTensor.initialize_empty(tensor_shapes)
-        for tile, should_add_to_tensor in zip(tile_list, should_add_to_tensor_list):
+        for tile, should_add_to_tensor in zip(tile_list, should_add_to_tensor_list, strict=False):
             if not should_add_to_tensor:
                 continue  # Skip if we're not at the max ir loop value for output
 
@@ -963,13 +961,13 @@ class TiledWorkloadGenerationStage(Stage):
             op_dim_ranges_max_stop = tuple(tensor_shapes)
 
             # Set this window of the tensor to indicate it will be consumed/produced by this tile
-            # NOTE assert is not guaranteed: tiles of nodes whose ranges have been extended can exceed the NodeTensor shape
+            # NOTE assert is not guaranteed: tiles of range extended nodes can exceed the NodeTensor shape
             # assert all(start < max_stop for (start, _), max_stop in zip(op_dim_ranges, op_dim_ranges_max_stop))
 
             # Slices that exceed the max stop are reduced to a size-1 slice at `max_stop-1`
             bounded_op_dim_ranges = tuple(
                 slice(max(0, min(max_stop - 1, start)), min(max_stop, stop))
-                for ((start, stop), max_stop) in zip(op_dim_ranges, op_dim_ranges_max_stop)
+                for ((start, stop), max_stop) in zip(op_dim_ranges, op_dim_ranges_max_stop, strict=False)
             )
             node_tensor = node_tensor.extend_with_node(bounded_op_dim_ranges, tile)
 
@@ -1022,53 +1020,6 @@ class TiledWorkloadGenerationStage(Stage):
         new_workload.add_nodes_from(tiles)
         new_workload.add_edges_from(edges)
         return new_workload
-
-    def get_weight_capacities(self):
-        # Get the weight capacity of all cores
-        weight_capacities: dict[int, int] = {}
-        for core in self.accelerator.cores.node_list:
-            if core.id == self.accelerator.offchip_core_id:
-                continue  # skip offchip core
-            core_weight_capacity = core.memory_hierarchy.get_operand_top_level(Constants.MEM_OP_2).memory_instance.size
-            weight_capacities[core.id] = core_weight_capacity
-        return weight_capacities
-
-    def get_layer_split_factors_k(self):
-        # Get for each layer the split factor we need to be able to fit weights on possible cores
-        split_factors: dict[ComputationNode, int] = {}
-        for node in self.workload.node_list:
-            if isinstance(node, DummyNode):
-                continue
-            # Get the weight capacity of all possible core allocations of this node
-            core_allocations = node.possible_core_allocation
-            # for fixed single allocation don't consider the splitting
-            if len(core_allocations) == 1:
-                continue
-            core_capacities = [self.weight_capacities[core_id] for core_id in core_allocations]
-            min_core_capacity = min(core_capacities)
-            # Get the weight size of this layer
-            constant_operands = node.constant_operands
-            if not constant_operands:
-                continue
-
-            constant_operand = node.constant_operands[0]
-            weight_size = node.operand_size_bit[constant_operand]
-            if weight_size == 0:
-                continue
-            split_factor = ceil(weight_size / (self.split_W_percentage * min_core_capacity))  # 0.5 for double buffering
-            if split_factor == 1:
-                continue
-            # Check if the split_factor is a divisor of the number of output channels
-            try:
-                output_channels = node.layer_dim_sizes[LayerDim("K")]
-            except KeyError:
-                raise NotImplementedError(f"{node} doesn't have a 'K' loop.")
-            while divmod(output_channels, split_factor)[1] != 0:
-                split_factor += 1
-                if split_factor > output_channels:
-                    raise ValueError("Something went wrong.")
-            split_factors[node] = split_factor
-        return split_factors
 
     def load_cached_tiled_workload(self) -> ComputationNodeWorkload | None:
         if os.path.exists(self.tiled_workload_path):

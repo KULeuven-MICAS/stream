@@ -1,7 +1,7 @@
 from abc import ABCMeta
 
 from zigzag.datatypes import MemoryOperand
-from zigzag.mapping.data_movement import MemoryAccesses
+from zigzag.mapping.data_movement import FourWayDataMoving
 from zigzag.workload.layer_node_abc import LayerNodeABC
 
 
@@ -10,9 +10,9 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
     Example: ComputationNode, etc.
     """
 
-    offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses]
+    offchip_bandwidth_per_op: dict[MemoryOperand, FourWayDataMoving]
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         node_id: int,
         node_name: str,
@@ -22,7 +22,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         runtime: int,
         possible_core_allocation: list[int],
         chosen_core_allocation: int | None = None,
-        input_names: list[str] = [],
+        input_names: list[str] | None = None,
     ) -> None:
         """Initialize the Node metaclass
 
@@ -36,6 +36,8 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
             chosen_core_allocation: The final core allocation of this node
             input_names: Names of the ONNX input node
         """
+        if input_names is None:
+            input_names = []
         super().__init__(node_id, node_name)
 
         self.type = type.lower()
@@ -128,7 +130,7 @@ class Node(LayerNodeABC, metaclass=ABCMeta):
         """
         return self.end is not None
 
-    def set_offchip_bandwidth(self, offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses]):
+    def set_offchip_bandwidth(self, offchip_bandwidth_per_op: dict[MemoryOperand, FourWayDataMoving]):
         self.offchip_bandwidth_per_op = offchip_bandwidth_per_op
 
     def __str__(self):

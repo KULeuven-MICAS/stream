@@ -4,9 +4,9 @@ from typing import Any, TypeAlias
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.stages.stage import Stage, StageCallable
-from stream.utils import contains_wildcard
+from stream.utils import return_tiling_type
 from stream.workload.computation.computation_node import ComputationNode, GeneratedComputationNode
-from stream.workload.mapping import TILING_T
+from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
@@ -47,8 +47,7 @@ class SchedulingOrderGenerationStage(Stage):
             self.list_of_callables[1:],
             **self.kwargs,
         )
-        for cme, extra_info in sub_stage.run():
-            yield cme, extra_info
+        yield from sub_stage.run()
 
     def get_scheduling_order_lbl(self):
         """Generate the scheduling order in case layers are executed sequentially"""
@@ -93,7 +92,8 @@ class SchedulingOrderGenerationStage(Stage):
 
         # Inter-core tiling logic. Same order as `filtered_stack`
         inter_core_tiling_factor_per_layer: list[int] = [
-            self.get_total_tiling_size(n.inter_core_tiling) for n in some_node_per_layer
+            self.get_total_tiling_size(n.inter_core_tiling)
+            for n in some_node_per_layer  # type: ignore
         ]
 
         return self._generate_scheduling_order_for_stack_with_generated_nodes(
@@ -138,7 +138,8 @@ class SchedulingOrderGenerationStage(Stage):
             base_node.id: self.get_nb_generated_nodes(base_node) for base_node in gen_base_nodes
         }
         gen_node_inter_core_tiling = {
-            base_node.id: self.get_total_tiling_size(base_node.inter_core_tiling) for base_node in gen_base_nodes
+            base_node.id: self.get_total_tiling_size(base_node.inter_core_tiling)
+            for base_node in gen_base_nodes  # type: ignore
         }
 
         # For generated nodes: convert `(base_id, f(sub_id, gen_id))` to `(gen_layer_id, sub_id)`
@@ -178,7 +179,7 @@ class SchedulingOrderGenerationStage(Stage):
 
         for i in range(nb_intra_core_slots):
             order_this_slot: SCHEDULE_ORDER_T = []
-            for layer_id, inter_core_tiling in zip(filtered_stack, inter_core_tiling_factors):
+            for layer_id, inter_core_tiling in zip(filtered_stack, inter_core_tiling_factors, strict=False):
                 nb_intra_nodes_per_slot = self._get_total_nb_intra_core_nodes(layer_id) // nb_intra_core_slots
                 assert nb_intra_nodes_per_slot > 0
                 nb_sub_ids_per_slot = inter_core_tiling * nb_intra_nodes_per_slot
@@ -201,17 +202,14 @@ class SchedulingOrderGenerationStage(Stage):
             return nb_nodes_per_gen_id * nb_gen_ids
         return self.get_total_tiling_size(node.intra_core_tiling)
 
-    # def _get_number_of_nodes_per_intra_core_slot(self, layer_id: int, nb_intra_core_slots: int):
-    #     return self.get_total_tiling_size(self.get_some_node_for_id(layer_id).intra_core_tiling) // nb_intra_core_slots
-
     def _get_and_assert_intra_core_tiling(self, nodes: list[ComputationNode]) -> int:
         """For each node, get the intra-core tiling. Make sure the tiling is the same for all nodes, and return the
         tiling factor"""
         all_intra_core_tiling_factors: list[int] = [self.get_total_tiling_size(n.intra_core_tiling) for n in nodes]
         min_tiling_factor = min(all_intra_core_tiling_factors, default=1)
-        assert all(
-            tiling_factor % min_tiling_factor == 0 for tiling_factor in all_intra_core_tiling_factors
-        ), "Intra-core tiling factors are not multiples of minimum"
+        assert all(tiling_factor % min_tiling_factor == 0 for tiling_factor in all_intra_core_tiling_factors), (
+            "Intra-core tiling factors are not multiples of minimum"
+        )
         return min_tiling_factor
 
     def _get_nb_generated_layer_ids_per_intra_slot(self, generated_base_nodes: list[GeneratedComputationNode]) -> int:
@@ -240,7 +238,8 @@ class SchedulingOrderGenerationStage(Stage):
 
         if not nb_layer_ids % tiling_factor == 0:
             raise ValueError(
-                f"Number of generated nodes {nb_layer_ids} in dimension {split_layer_dim} is not a multiple of it's intra-core tiling ({split_layer_dim}, {tiling_factor})"
+                f"Number of generated nodes {nb_layer_ids} in dimension {split_layer_dim} "
+                f"is not a multiple of it's intra-core tiling ({split_layer_dim}, {tiling_factor})"
             )
 
         nb_layer_ids_per_intra_slot = nb_layer_ids // tiling_factor
@@ -255,9 +254,9 @@ class SchedulingOrderGenerationStage(Stage):
         return nb_generated_nodes
 
     @staticmethod
-    def get_total_tiling_size(tiling: TILING_T) -> int:
-        assert not contains_wildcard(tiling)
-        return prod(size for _, size in tiling)
+    def get_total_tiling_size(tiling: TILING_T | TILING_WILDCARD_T) -> int:
+        tiling_converted = return_tiling_type(tiling)
+        return prod(size for _, size in tiling_converted)
 
     def filter_generated_nodes_from_stack(self, stack: tuple[int, ...]):
         """A stack contains all layer ids that are grouped together. It is possible that the stack contains many
@@ -273,10 +272,10 @@ class SchedulingOrderGenerationStage(Stage):
         """Given a base_id and gen_id, return the layer_id of the generated node"""
         try:
             return self.base_and_gen_to_layer_id[(base_id, gen_id)]
-        except KeyError:
+        except KeyError as exc:
             raise KeyError(
-                f"Generated node with base_id={base_id} and gen_id={gen_id} not found in {self.base_and_gen_to_layer_id.keys()}"
-            )
+                f"Generated node with {base_id=} and {gen_id=} not found in {self.base_and_gen_to_layer_id=}"
+            ) from exc
 
     def get_some_node_for_id(self, layer_id: int) -> ComputationNode:
         """Get any node (regardless of sub-id) with the given layer_id"""

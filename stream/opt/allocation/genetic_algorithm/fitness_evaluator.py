@@ -1,5 +1,5 @@
 from zigzag.datatypes import LayerOperand, MemoryOperand
-from zigzag.mapping.data_movement import MemoryAccesses
+from zigzag.mapping.data_movement import FourWayDataMoving
 from zigzag.utils import pickle_deepcopy
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
@@ -97,14 +97,14 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                 offchip_energy = 0
                 for too_large_operand in too_large_operands:
                     layer_operand = next(
-                        (k for (k, v) in cme.layer.memory_operand_links.data.items() if v == too_large_operand)
+                        k for (k, v) in cme.layer.memory_operand_links.data.items() if v == too_large_operand
                     )
                     layer_operand_offchip_energy = cme.mem_energy_breakdown[layer_operand][-1]
                     offchip_energy += layer_operand_offchip_energy
                     onchip_energy -= layer_operand_offchip_energy
                 # Get the required offchip bandwidth during the execution of the node for all directions
                 bandwidth_scaling = cme.ideal_temporal_cycle / latency
-                offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses] = {
+                offchip_bandwidth_per_op: dict[MemoryOperand, FourWayDataMoving] = {
                     mem_op: get_top_level_inst_bandwidth(cme, mem_op, bandwidth_scaling)
                     for mem_op in too_large_operands
                 }

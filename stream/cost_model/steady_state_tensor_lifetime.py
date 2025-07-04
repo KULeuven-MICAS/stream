@@ -1,14 +1,14 @@
 from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 import numpy as np
 import seaborn
 from matplotlib import patches
 from matplotlib import pyplot as plt
 
-from stream.workload.steady_state_node import SteadyStateNode
-from stream.workload.steady_state_tensor import SteadyStateTensor
-from stream.workload.steady_state_workload import SteadyStateWorkload
+from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.steady_state.tensor import SteadyStateTensor
+from stream.workload.steady_state.workload import SteadyStateWorkload
 
 
 @dataclass(frozen=True)
@@ -26,11 +26,11 @@ class TensorLifetimeAnalyzer:
 
     def __init__(self, workload: SteadyStateWorkload):
         self.workload = workload
-        self.tensor_nodes: List[SteadyStateTensor] = workload.tensor_nodes
-        self.lifetimes: List[TensorLifetime] = []
-        self.node_start_times: Dict[SteadyStateNode, int] = {}
-        self.node_finish_times: Dict[SteadyStateNode, int] = {}
-        self.resource_times: Dict[Any, int] = {}
+        self.tensor_nodes: list[SteadyStateTensor] = workload.tensor_nodes
+        self.lifetimes: list[TensorLifetime] = []
+        self.node_start_times: dict[SteadyStateNode, int] = {}
+        self.node_finish_times: dict[SteadyStateNode, int] = {}
+        self.resource_times: dict[Any, int] = {}
         self._schedule_nodes_per_resource()
         self._analyze_lifetimes()
 
@@ -40,7 +40,7 @@ class TensorLifetimeAnalyzer:
         Assumes each node has a .runtime property (default 1 if missing).
         """
         # Group nodes by their chosen_resource_allocation
-        resource_to_nodes: Dict[Any, List[SteadyStateNode]] = {}
+        resource_to_nodes: dict[Any, list[SteadyStateNode]] = {}
         for node in self.workload.nodes():
             resource = getattr(node, "chosen_resource_allocation", None)
             resource_to_nodes.setdefault(resource, []).append(node)
@@ -83,14 +83,14 @@ class TensorLifetimeAnalyzer:
             mem = tensor.chosen_resource_allocation
             self.lifetimes.append(TensorLifetime(tensor, mem, prod_time, cons_time))
 
-    def get_lifetimes_by_memory(self) -> Dict[Any, List[TensorLifetime]]:
+    def get_lifetimes_by_memory(self) -> dict[Any, list[TensorLifetime]]:
         """Group tensor lifetimes by their memory (resource)."""
-        mem_map: Dict[Any, List[TensorLifetime]] = {}
+        mem_map: dict[Any, list[TensorLifetime]] = {}
         for lt in self.lifetimes:
             mem_map.setdefault(lt.memory, []).append(lt)
         return mem_map
 
-    def get_memory_usage_over_time(self, memory: Any) -> Tuple[List[int], List[int]]:
+    def get_memory_usage_over_time(self, memory: Any) -> tuple[list[int], list[int]]:
         """
         For a given memory, return (times, memory_usage) lists.
         """
@@ -113,14 +113,14 @@ class TensorLifetimeAnalyzer:
             current = mem_usage[-1]
         return times, mem_usage
 
-    def get_max_memory_usage(self, memory: Any) -> Tuple[int, int]:
+    def get_max_memory_usage(self, memory: Any) -> tuple[int, int]:
         times, usage = self.get_memory_usage_over_time(memory)
         if not usage:
             return 0, 0
         max_idx = int(np.argmax(usage))
         return times[max_idx], usage[max_idx]
 
-    def get_alive_tensors_at(self, memory: Any, time: int) -> List[SteadyStateTensor]:
+    def get_alive_tensors_at(self, memory: Any, time: int) -> list[SteadyStateTensor]:
         return [lt.tensor for lt in self.get_lifetimes_by_memory().get(memory, []) if lt.start <= time <= lt.end]
 
     def summary(self) -> None:
@@ -138,22 +138,22 @@ class TensorLifetimeAnalyzer:
         - Top: computation/transfer nodes scheduled on that resource (not tensor nodes)
         - Bottom: tensor lifetimes (rectangles) for tensors stored in that memory
         """
-        COLOR_PALETTE = seaborn.color_palette("pastel")
+        color_palette = seaborn.color_palette("pastel")
         tensor_color_map = {}
         node_color_map = {}
         all_tensors = [lt.tensor for lt in self.lifetimes]
         all_nodes = [n for n in self.workload.nodes() if n not in all_tensors]
         for i, tensor in enumerate(all_tensors):
-            tensor_color_map[tensor] = COLOR_PALETTE[i % len(COLOR_PALETTE)]
+            tensor_color_map[tensor] = color_palette[i % len(color_palette)]
         for i, node in enumerate(all_nodes):
-            node_color_map[node] = COLOR_PALETTE[i % len(COLOR_PALETTE)]
+            node_color_map[node] = color_palette[i % len(color_palette)]
 
         for mem, lifetimes in self.get_lifetimes_by_memory().items():
             fig, ax = plt.subplots(figsize=figsize)
             # 1. Plot tensor lifetimes (bottom): rectangles for each tensor
             y_base = 0
             y_gap = 0
-            for i, lt in enumerate(sorted(lifetimes, key=lambda i: i.start)):
+            for lt in sorted(lifetimes, key=lambda i: i.start):
                 start = lt.start
                 end = lt.end
                 color = tensor_color_map.get(lt.tensor, "#bbbbbb")
@@ -177,7 +177,7 @@ class TensorLifetimeAnalyzer:
             )
             y_sched = y_base
             height_sched = y_base / 6  # Fixed height for schedule relative to the tensors
-            for i, node in enumerate(nodes_on_mem):
+            for node in nodes_on_mem:
                 start = self.node_start_times.get(node, 0)
                 end = self.node_finish_times.get(node, 0)
                 color = node_color_map.get(node, "#cccccc")

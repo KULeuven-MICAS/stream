@@ -2,28 +2,31 @@ name: shared_testing_core1
 
 memories:
   sram_64KB:
-    size:   524288
-    r_bw:   512
-    w_bw:   512
+    size: 524288
     r_cost: 26.56
     w_cost: 30.8
     area: 0
-    r_port: 1
-    w_port: 1
-    rw_port: 0
     latency: 1
-    min_r_granularity: 64
-    min_w_granularity: 64
     operands: [I1, I2, O]
     ports:
-      - fh: w_port_1
-        tl: r_port_1
-      - fh: w_port_1
-        tl: r_port_1
-      - fh: w_port_1
-        tl: r_port_1
-        fl: w_port_1
-        th: r_port_1
+      - name: r_port_1
+        type: read
+        bandwidth_min: 64
+        bandwidth_max: 512
+        allocation:
+          - I1, tl
+          - I2, tl
+          - O, tl
+          - O, th
+      - name: w_port_1
+        type: write
+        bandwidth_min: 64
+        bandwidth_max: 512
+        allocation:
+          - I1, fh
+          - I2, fh
+          - O, fh
+          - O, fl
     served_dimensions: [D1, D2]
 
 operational_array:

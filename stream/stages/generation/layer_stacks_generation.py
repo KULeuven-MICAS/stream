@@ -71,15 +71,14 @@ class LayerStacksGenerationStage(Stage):
             self.list_of_callables[1:],
             **self.kwargs,
         )
-        for cme, extra_info in sub_stage.run():
-            yield cme, extra_info
+        yield from sub_stage.run()
 
     def only_keep_computation_node_ids(self):
         """! Update the layer stacks to only keep ids of ComputationNodes"""
         assert self.layer_stacks is not None
         updated_layer_stacks: list[tuple[int, ...]] = []
         for stack in self.layer_stacks:
-            update_stack: list[tuple[int, ...]] = []
+            update_stack: list[int] = []
             for layer_id in stack:
                 try:
                     # Ignore node ids that do not exist

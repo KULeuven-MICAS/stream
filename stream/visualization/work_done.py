@@ -1,5 +1,3 @@
-from typing import List
-
 import numpy as np
 import pandas as pd
 import plotly.express as px
@@ -8,22 +6,22 @@ from stream.cost_model.cost_model import StreamCostModelEvaluation
 
 
 def plot_work_done(
-    scmes: List[StreamCostModelEvaluation],
+    scmes: list[StreamCostModelEvaluation],
     nb_x_ticks,
     max_latency,
-    cores_for_ideal=[],
+    cores_for_ideal=None,
     fig_path="outputs/exploration_co/work_done_ops.html",
 ):
     df_all = pd.DataFrame(columns=["timestep", "ops_done_percentage", "ops_done", "accelerator", "type"])
-    if not cores_for_ideal:
+    if cores_for_ideal is None:
         cores_for_ideal = [tuple() for _ in range(len(scmes))]
     assert len(scmes) == len(cores_for_ideal)
-    for scme, for_ideal in zip(scmes, cores_for_ideal):
+    for scme, for_ideal in zip(scmes, cores_for_ideal, strict=False):
         ## REAL
         acc_name = scme.accelerator.name
         workload = scme.workload
-        total_ops = sum([n.total_MAC_count for n in workload.node_list])
-        ends, cns = zip(*sorted((cn.end, cn) for cn in workload.node_list))
+        total_ops = sum([n.total_mac_count for n in workload.node_list])
+        ends, cns = zip(*sorted((cn.end, cn) for cn in workload.node_list), strict=False)
         all_timesteps = [(i / (nb_x_ticks - 1)) * max_latency for i in range(nb_x_ticks)]
         timesteps = []
         ops_done = []
@@ -64,8 +62,7 @@ def plot_work_done(
             )
             for timestep in all_timesteps:
                 ops = ideal_ops_per_cycle * timestep
-                if ops > total_ops:
-                    ops = total_ops
+                ops = min(ops, total_ops)
                 timesteps_ideal.append(timestep)
                 ops_done_ideal.append(ops)
                 percentages_ideal.append(ops / total_ops)

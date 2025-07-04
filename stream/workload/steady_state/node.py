@@ -1,26 +1,25 @@
 from abc import ABC
-from typing import Optional
 
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.workload.steady_state_iteration_space import SteadyStateIterationSpace
+from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 
 
-class SteadyStateNode(ABC):
+class SteadyStateNode(ABC):  # noqa: B024
     """Abstract base class for nodes in the steady state graph."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         id: int,
         node_name: str,
         type: str,
         steady_state_iteration_space: SteadyStateIterationSpace,
         possible_resource_allocation: None | list[Core] | tuple[tuple[CommunicationLink]],
-        onchip_energy: Optional[float] = None,
-        offchip_energy: Optional[float] = None,
-        runtime: Optional[float] = None,
-        chosen_resource_allocation: Optional[Core] = None,
-        input_names: Optional[list[str]] = None,
+        onchip_energy: float | None = None,
+        offchip_energy: float | None = None,
+        runtime: float | None = None,
+        chosen_resource_allocation: Core | None = None,
+        input_names: list[str] | None = None,
     ):
         self.id = id
         self.node_name = node_name
@@ -34,35 +33,35 @@ class SteadyStateNode(ABC):
         self._input_names = input_names if input_names is not None else []
 
     @property
-    def onchip_energy(self) -> Optional[float]:
+    def onchip_energy(self) -> float | None:
         return self._onchip_energy
 
     @onchip_energy.setter
-    def onchip_energy(self, value: Optional[float]) -> None:
+    def onchip_energy(self, value: float | None) -> None:
         self._onchip_energy = value
 
     @property
-    def offchip_energy(self) -> Optional[float]:
+    def offchip_energy(self) -> float | None:
         return self._offchip_energy
 
     @offchip_energy.setter
-    def offchip_energy(self, value: Optional[float]) -> None:
+    def offchip_energy(self, value: float | None) -> None:
         self._offchip_energy = value
 
     @property
-    def runtime(self) -> Optional[float]:
+    def runtime(self) -> float | None:
         return self._runtime
 
     @runtime.setter
-    def runtime(self, value: Optional[float]) -> None:
+    def runtime(self, value: float | None) -> None:
         self._runtime = value
 
     @property
-    def chosen_resource_allocation(self) -> Optional[Core]:
+    def chosen_resource_allocation(self) -> Core | None:
         return self._chosen_resource_allocation
 
     @chosen_resource_allocation.setter
-    def chosen_resource_allocation(self, value: Optional[Core]) -> None:
+    def chosen_resource_allocation(self, value: Core | None) -> None:
         self._chosen_resource_allocation = value
 
     @property

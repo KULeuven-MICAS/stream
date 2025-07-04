@@ -182,7 +182,7 @@ class NodeTensor(np.ndarray[Any, Any]):
             slice_to_assign = self
 
         slices = [slice(None)] * len(full_shape)
-        slices[axis] = slice_idx
+        slices[axis] = slice_idx  # type: ignore
 
         full_tensor[tuple(slices)] = slice_to_assign
         return full_tensor.view(NodeTensor)

@@ -1,18 +1,15 @@
-# --------------------------------------------------------------------------- #
-#  steady_state_tensor.py  ── extended with “whole-tensor” support            #
-# --------------------------------------------------------------------------- #
+from collections.abc import Sequence
 from enum import Flag, auto
 from math import prod
-from typing import Any, Sequence, Tuple
+from typing import Any
 
 from zigzag.datatypes import LayerOperand
 
 from stream.hardware.architecture.core import Core
-from stream.workload.steady_state_iteration_space import SteadyStateIterationSpace
-from stream.workload.steady_state_node import SteadyStateNode
+from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
+from stream.workload.steady_state.node import SteadyStateNode
 
 
-# ................................................ tensor-type bit-flags ...
 class TensorFlag(Flag):
     CONSTANT = auto()
     NONCONSTANT = auto()
@@ -20,7 +17,6 @@ class TensorFlag(Flag):
     OUTPUT = auto()
 
 
-# ............................................................ main class ...
 class SteadyStateTensor(SteadyStateNode):
     """
     Node representing a tensor (slice) participating in the steady-state graph.
@@ -31,16 +27,16 @@ class SteadyStateTensor(SteadyStateNode):
         equals 1 if you do not want to distinguish.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         *,
         id: int,
         node_name: str,
-        size: int,  # slice size (elements / bits)
+        size: int,  # bits
         type: TensorFlag,
         operand: LayerOperand,
         steady_state_iteration_space: SteadyStateIterationSpace,
-        possible_resource_allocation: list[Core | None],
+        possible_resource_allocation: list[Core],
         full_shape: Sequence[int] | None = None,
         slices_per_full: int | None = None,
     ):
@@ -56,18 +52,15 @@ class SteadyStateTensor(SteadyStateNode):
         )
         self.possible_resource_allocation: list[Core]
 
-        # --------- existing attributes ----------
         self.size: int = size  # slice size
         self.tensor_flag: TensorFlag = type
         self.operand: LayerOperand = operand
         self.runtime: int | float = 0  # kept as before
 
-        # --------- NEW attributes ---------------
-        self.full_shape: Tuple[int, ...] | None = tuple(full_shape) if full_shape else None
+        self.full_shape: tuple[int, ...] | None = tuple(full_shape) if full_shape else None
         self.slices_per_full: int | None = slices_per_full
         self.full_size: int | None = prod(self.full_shape) if self.full_shape else None
 
-    # ..................................................... helpers ...
     # slice == “one steady-state chunk”      whole == “complete layer tensor”
     @property
     def slice_size(self) -> int:
@@ -89,7 +82,8 @@ class SteadyStateTensor(SteadyStateNode):
     def __str__(self) -> str:
         return f"Tensor({self.node_name})"
 
-    __repr__ = __str__  # same textual form
+    def __repr__(self) -> str:
+        return str(self)
 
     def __hash__(self) -> int:
         return hash((self.id, self.node_name, self.tensor_flag, self.chosen_resource_allocation))

@@ -7,9 +7,7 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import Ti
 from stream.opt.allocation.constraint_optimization.utils import (
     get_node_latencies,
     get_node_start_timesteps,
-    get_resources,
     get_timestep_latencies,
-    get_timesteps,
 )
 from stream.utils import CostModelEvaluationLUT
 
@@ -30,10 +28,10 @@ def to_perfetto_json(
     Allocation is a list of tuples, with each tuple being of form (timestep, allocation, node_id). Allocation is a core.
     cost_lut is a CostModelEvaluationLUT storing for each node and each core the hardware performance.
     """
-    timesteps = get_timesteps(allocation)
-    resources = get_resources(allocation)
+    timesteps = allocation.slots
+    resources = allocation.resources
     node_latencies = get_node_latencies(allocation, cost_lut, accelerator, latency_attr)
-    timestep_latencies = get_timestep_latencies(allocation, node_latencies, timesteps)
+    timestep_latencies = get_timestep_latencies(allocation, timesteps)
     starts = get_node_start_timesteps(allocation, timestep_latencies)
     # total_timestep_latency = sum(timestep_latencies.values())
     # overlap = compute_iterations_overlap(allocation, timestep_latencies, starts, total_timestep_latency)
@@ -43,13 +41,13 @@ def to_perfetto_json(
     perfetto_data = []
 
     # Add thread names (cores)
-    for core in resources:
+    for resource in resources:
         thread_name_event = {
             "name": "thread_name",
             "ph": "M",
             "pid": "waco",
-            "tid": core,
-            "args": {"name": f"Core {core}"},
+            "tid": resource,
+            "args": {"name": f"Resource {resource}"},
             "cname": "blue",
         }
         perfetto_data.append(thread_name_event)
@@ -58,9 +56,9 @@ def to_perfetto_json(
     # for iteration in range(iterations):
     #     iteration_offset = iteration * offset
     for slot in range(allocation.slot_min, allocation.slot_max + 1):
-        for core, node in allocation.get_allocations_in_slot(slot).items():
-            start = starts[node, core]  # + iteration_offset
-            runtime = node_latencies[node, core]
+        for resource, node in allocation.get_allocations_in_slot(slot).items():
+            start = starts[node, resource]  # + iteration_offset
+            runtime = node_latencies[node, resource]
             event = {
                 "name": f"{node}",
                 "cat": "compute",
@@ -68,9 +66,9 @@ def to_perfetto_json(
                 "ts": start,
                 "dur": runtime,
                 "pid": "waco",
-                "tid": core.id,
+                "tid": resource,
                 "cname": "blue",
-                "args": {"Runtime": runtime, "Id": node.id, "Sub_id": node.sub_id},
+                "args": {"Runtime": runtime, "Id": node.id, "Name": node.node_name},
             }
             perfetto_data.append(event)
 

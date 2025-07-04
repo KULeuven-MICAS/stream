@@ -1,11 +1,11 @@
 from typing import Any
 
 from zigzag.stages.parser.workload_parser import WorkloadParserStage as ZigZagWorkloadParserStage
+from zigzag.stages.stage import StageCallable
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.parser.mapping_parser import MappingParser
 from stream.parser.workload_factory import WorkloadFactoryStream
-from stream.stages.stage import StageCallable
 from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.mapping import InterCoreMappingAttributes
 
@@ -34,11 +34,10 @@ class UserDefinedModelParserStage(ZigZagWorkloadParserStage):
         workload = self.parse_workload_stream(all_mappings)
         self.kwargs["accelerator"] = self.accelerator
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], workload=workload, **self.kwargs)
-        for cme, extra_info in sub_stage.run():
-            yield cme, extra_info
+        yield from sub_stage.run()
 
     def parse_workload_stream(self, all_mappings: dict[str, InterCoreMappingAttributes]) -> DNNWorkloadStream:
         workload_data = self._parse_workload_data()
         mapping_data = self._parse_mapping_data()
         factory = WorkloadFactoryStream(workload_data, mapping_data)
-        return factory.create()
+        return factory.create(all_mappings)

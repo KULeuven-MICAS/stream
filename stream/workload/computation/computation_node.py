@@ -34,7 +34,7 @@ class ComputationNode(LayerNode, Node):
 
     too_large_operands: list[MemoryOperand]
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         node_id: int,
         node_name: str,
@@ -45,8 +45,8 @@ class ComputationNode(LayerNode, Node):
         produces_final_output: bool = False,
         group_id: int = 0,
         sub_id: int = -1,
-        input_names: list[str] = [],
-        partially_constant_operands: list[LayerOperand] = [],
+        input_names: list[str] | None = None,
+        partially_constant_operands: list[LayerOperand] | None = None,
     ):
         """
         Args:
@@ -63,6 +63,10 @@ class ComputationNode(LayerNode, Node):
             partially_constant_operands: Operands that are treated as regular operand for dependencies, but constant for
                                          tensor fetching (patchwork for KV-caches)
         """
+        if input_names is None:
+            input_names = []
+        if partially_constant_operands is None:
+            partially_constant_operands = []
 
         # TODO `op_type` is also encapsulated in `node_attr`
         op_type = op_type.lower()
@@ -111,7 +115,7 @@ class ComputationNode(LayerNode, Node):
         # adds pr dimensions loop ranges to self.loop_ranges
         self.calculate_pr_loop_ranges()
 
-        # Number of real predecessors is saved to deal with edge cases where some nodes of the same layer have differing predecessors
+        # Number of real predecessors to deal with cases where some nodes of the same layer have differing predecessors
         # This is used to hash the node and to get accurate knowledge of the number of unique nodes.
         # This should be set after the node is created and the number of predecessors is known.
         self.nb_real_predecessors = None
@@ -148,6 +152,7 @@ class ComputationNode(LayerNode, Node):
 
     def get_operand_tensor_reshape_default(self) -> OperandTensorReshape | None:
         try:
+            assert self.pr_layer_dim_sizes is not None, "pr_layer_dim_sizes must be set before calling this method."
             size_B = self.layer_dim_sizes[LayerDim("B")]
             size_OX = self.layer_dim_sizes[LayerDim("OX")]
             size_OY = self.layer_dim_sizes[LayerDim("OY")]
@@ -167,8 +172,7 @@ class ComputationNode(LayerNode, Node):
         """Return the total number of inter-core splits for this node, i.e. over how many cores this node is split"""
         if contains_wildcard(self.inter_core_tiling):
             return 1
-        assert all(isinstance(factor, int) for _, factor in self.inter_core_tiling)
-        return prod(factor for _, factor in self.inter_core_tiling)
+        return prod(factor for _, factor in self.inter_core_tiling)  # type: ignore
 
     @property
     def short_name(self) -> str:
@@ -321,7 +325,7 @@ class GeneratedComputationNode(ComputationNode):
 
     too_large_operands: list[MemoryOperand]
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         node_id: int,
         gen_id: int,
@@ -335,16 +339,17 @@ class GeneratedComputationNode(ComputationNode):
         produces_final_output: bool = False,
         group_id: int = 0,
         sub_id: int = -1,  # To distinguish alternative versions of this node
-        input_names: list[str] = [],
+        input_names: list[str] | None = None,
     ):
         """
-
         Args:
             node_id: Unique ID for reach generated node
             base_id: ID that is identical for all similar generated nodes
             gen_id: Unique ID for each generated node, ranging from 0 to the number of generated nodes
 
         """
+        if input_names is None:
+            input_names = []
 
         node_name = f"{node_name}_{gen_id}"
         super().__init__(

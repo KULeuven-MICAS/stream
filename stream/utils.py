@@ -6,10 +6,10 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 from numpy.typing import NDArray
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.mapping.data_movement import MemoryAccesses
+from zigzag.mapping.data_movement import FourWayDataMoving
 
 from stream.hardware.architecture.core import Core
-from stream.workload.mapping import TILING_T
+from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
@@ -65,7 +65,8 @@ def save_core_allocation(
                 node_allocations_grouped[n.name][n.group] = n.chosen_core_allocation
     if type == "fixed":
         mapping = {
-            k: {"core_allocation": tuple(list(zip(*sorted(v.items())))[1])} for k, v in node_allocations_grouped.items()
+            k: {"core_allocation": tuple(list(zip(*sorted(v.items()), strict=False))[1])}
+            for k, v in node_allocations_grouped.items()
         }
     else:
         mapping = {k: {"core_allocation": sorted(set(v["core_allocation"]))} for k, v in node_allocations.items()}
@@ -89,13 +90,15 @@ def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNo
     """! Get the unique nodes from a workload."""
     unique_nodes: list[ComputationNode] = []
     for node in workload.node_list:
-        equal_nodes = list((unique_node for unique_node in unique_nodes if node.has_same_performance(unique_node)))
+        equal_nodes = list(unique_node for unique_node in unique_nodes if node.has_same_performance(unique_node))
         if not equal_nodes:
             unique_nodes.append(node)
     return unique_nodes
 
 
-def get_top_level_inst_bandwidth(cme: CostModelEvaluation, mem_op: MemoryOperand, scaling: float = 1) -> MemoryAccesses:
+def get_top_level_inst_bandwidth(
+    cme: CostModelEvaluation, mem_op: MemoryOperand, scaling: float = 1
+) -> FourWayDataMoving[int]:
     """Given a cost model evaluation and a memory instance, compute the memory's total instantaneous bandwidth
     required throughout the execution of the layer that corresponds to this CME. Returns empty bandwidth
     requirements if the given memory instance is not included in this CME's memory hierarchy.
@@ -105,10 +108,18 @@ def get_top_level_inst_bandwidth(cme: CostModelEvaluation, mem_op: MemoryOperand
     return cme.get_inst_bandwidth(memory_level=memory_level, memory_operand=mem_op, scaling=scaling)
 
 
-def contains_wildcard(tiling: TILING_T):
+def contains_wildcard(tiling: TILING_T | TILING_WILDCARD_T) -> bool:
     """Returns wether the given tiling contains a wildcard number `*`. The wildcard must later be replaced by the
     constraint optimization into the optimal number of tiles"""
     return any(tiling == "*" for _, tiling in tiling)
+
+
+def return_tiling_type(tiling: TILING_T | TILING_WILDCARD_T) -> TILING_T:
+    if contains_wildcard(tiling):
+        raise ValueError(
+            "Tiling contains wildcard. Use `replace_wildcard_tiling` to replace the wildcard with a number of tiles."
+        )
+    return tiling  # type: ignore
 
 
 def get_inter_core_tiling_size(node: "ComputationNode") -> int:
@@ -135,7 +146,7 @@ class CostModelEvaluationLUT:
     """
 
     def __init__(self, cache_path: str | None, load: bool = True):
-        self.lut: dict["ComputationNode", dict[Core, CostModelEvaluation]] = {}
+        self.lut: dict[ComputationNode, dict[Core, CostModelEvaluation]] = {}
         self.cache_path = cache_path
         if load and self.cache_path and os.path.exists(self.cache_path):
             self.load()
@@ -179,7 +190,7 @@ class CostModelEvaluationLUT:
 
     def get_equal_node(self, node: "ComputationNode"):
         """Retrieve the node in the look-up table that is equal to the given node."""
-        if any((n.has_same_performance(node) for n in self.lut)):
+        if any(n.has_same_performance(node) for n in self.lut):
             return next(n for n in self.lut if n.has_same_performance(node))
         else:
             return None
@@ -188,7 +199,7 @@ class CostModelEvaluationLUT:
         """Retrieve the core in the look-up table that is equal to the given core."""
         try:
             return next(c for c in self.lut[node] if c.has_same_performance(core))
-        except StopIteration or KeyError:
+        except (StopIteration, KeyError):
             return None
 
     def get_nodes(self):

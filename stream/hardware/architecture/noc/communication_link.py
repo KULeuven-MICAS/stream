@@ -108,7 +108,7 @@ class CommunicationLink:
         else:
             return f"{self.sender} -> {self.receiver}"
 
-    def transfer(self, link_event: CommunicationLinkEvent) -> float:
+    def transfer(self, link_event: CommunicationLinkEvent) -> tuple[float, bool]:
         """Transfer data on this communication link at timestep.
         The transfer can take longer than necessary for this link if another lower-bandwidth link is involved.
 
@@ -130,8 +130,8 @@ class CommunicationLink:
         duration: int,
         tensor: "Tensor",
         bandwidth: int,
-        sender: list["Core"],
-        receiver: list["Core"],
+        sender: "Core",
+        receiver: "Core",
     ):
         """Block this communication link from start timestep for a given duration.
 
@@ -175,7 +175,7 @@ class CommunicationLink:
         previous_events = (
             self.previously_seen_tensors[event.tensor] if event.tensor in self.previously_seen_tensors else []
         )
-        if any((previous_event.start == event.start for previous_event in previous_events)):
+        if any(previous_event.start == event.start for previous_event in previous_events):
             return False
 
         idx_start = np.searchsorted(self.active_ts, start)
@@ -226,11 +226,11 @@ class CommunicationLink:
             idxs.append(len(updated_ts) - 1)
             start = earliest_t
             for idx in idxs:
-                end: int = updated_ts[idx]
+                end: int = updated_ts[idx]  # type: ignore
                 if end - start >= duration:
                     valid_windows.append((start, end))
                 try:
-                    start: int = updated_ts[idx + 1]
+                    start: int = updated_ts[idx + 1]  # type: ignore
                 except IndexError:
                     break
 

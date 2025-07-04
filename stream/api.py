@@ -3,6 +3,7 @@ import os
 from typing import Literal
 
 import gurobipy as gp
+from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.utils import pickle_load, pickle_save
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
@@ -43,16 +44,16 @@ def _sanity_check_gurobi_license():
         model.optimize()
         # If model.optimize() runs without a license issue, return
         return
-    except gp.GurobiError as e:
+    except gp.GurobiError as exc:
         # Catch any Gurobi errors, especially licensing errors
-        if e.errno == gp.GRB.Error.NO_LICENSE:
+        if exc.errno == gp.GRB.Error.NO_LICENSE:
             error_message = "No valid Gurobi license found. Get an academic WLS license at https://www.gurobi.com/academia/academic-program-and-licenses/"
         else:
-            error_message = f"An unexpected Gurobi error occurred: {e.message}"
-        raise ValueError(error_message)
+            error_message = f"An unexpected Gurobi error occurred: {exc.message}"
+        raise ValueError(error_message) from exc
 
 
-def optimize_allocation_ga(
+def optimize_allocation_ga(  # noqa: PLR0913
     hardware: str,
     workload: str,
     mapping: str,
@@ -63,6 +64,7 @@ def optimize_allocation_ga(
     experiment_id: str,
     output_path: str,
     skip_if_exists: bool = False,
+    temporal_mapping_type: str = "uneven",
 ) -> StreamCostModelEvaluation:
     _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
 
@@ -76,6 +78,14 @@ def optimize_allocation_ga(
 
     # Get logger
     logger = _logging.getLogger(__name__)
+
+    # Determine temporal mapping type for ZigZag
+    if temporal_mapping_type == "uneven":
+        temporal_mapping_type = TemporalMappingType.UNEVEN
+    elif temporal_mapping_type == "even":
+        temporal_mapping_type = TemporalMappingType.EVEN
+    else:
+        raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
 
     # Load SCME if it exists and skip_if_exists is True
     if os.path.exists(scme_path) and skip_if_exists:
@@ -104,16 +114,17 @@ def optimize_allocation_ga(
             layer_stacks=layer_stacks,
             tiled_workload_path=tiled_workload_path,
             cost_lut_path=cost_lut_path,
+            temporal_mapping_type=temporal_mapping_type,  # required by ZigZagCoreMappingEstimationStage
             operands_to_prefetch=[],  # required by GeneticAlgorithmAllocationStage
         )
         # Launch the MainStage
         answers = mainstage.run()
         scme = answers[0][0]
-        pickle_save(scme, scme_path)
+        pickle_save(scme, scme_path)  # type: ignore
     return scme
 
 
-def optimize_allocation_co(
+def optimize_allocation_co(  # noqa: PLR0913
     hardware: str,
     workload: str,
     mapping: str,
@@ -122,6 +133,7 @@ def optimize_allocation_co(
     experiment_id: str,
     output_path: str,
     skip_if_exists: bool = False,
+    temporal_mapping_type: str = "uneven",
 ) -> StreamCostModelEvaluation:
     _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
     _sanity_check_gurobi_license()
@@ -139,6 +151,14 @@ def optimize_allocation_co(
 
     # Get logger
     logger = _logging.getLogger(__name__)
+
+    # Determine temporal mapping type for ZigZag
+    if temporal_mapping_type == "uneven":
+        temporal_mapping_type = TemporalMappingType.UNEVEN
+    elif temporal_mapping_type == "even":
+        temporal_mapping_type = TemporalMappingType.EVEN
+    else:
+        raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
 
     # Load SCME if it exists and skip_if_exists is True
     if os.path.exists(scme_path) and skip_if_exists:
@@ -166,10 +186,11 @@ def optimize_allocation_co(
             allocations_path=allocations_path,
             tiled_workload_post_co_path=tiled_workload_post_co_path,
             cost_lut_post_co_path=cost_lut_post_co_path,
+            temporal_mapping_type=temporal_mapping_type,  # required by ZigZagCoreMappingEstimationStage
             operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
         )
         # Launch the MainStage
         answers = mainstage.run()
         scme = answers[0][0]
-        pickle_save(scme, scme_path)
+        pickle_save(scme, scme_path)  # type: ignore
     return scme

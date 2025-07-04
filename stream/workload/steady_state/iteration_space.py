@@ -3,8 +3,8 @@
 # --------------------------------------------------------------------------- #
 from __future__ import annotations
 
+from collections.abc import Iterable
 from math import prod
-from typing import Iterable, List
 
 from zigzag.datatypes import LayerDim, LayerOperand
 from zigzag.workload.layer_node import LoopRelevancyInfo
@@ -56,8 +56,8 @@ class SteadyStateIterationSpace:
     """
 
     # ............................................... basic constructor ....
-    def __init__(self, variables: List[IterationVariable]) -> None:
-        self.variables: List[IterationVariable] = list(variables)
+    def __init__(self, variables: list[IterationVariable]) -> None:
+        self.variables: list[IterationVariable] = list(variables)
 
     # ..................................................................... #
     # ── CLASS FACTORY  (replaces the old helper in SteadyStateScheduler) ── #
@@ -69,7 +69,7 @@ class SteadyStateIterationSpace:
         loop_relevancy: LoopRelevancyInfo,
         intra_core_tiling: Iterable[tuple[LayerDim, int]],
         operand: LayerOperand,
-    ) -> "SteadyStateIterationSpace":
+    ) -> SteadyStateIterationSpace:
         """
         Build the SSIS for **one operand** of a computation node.
 

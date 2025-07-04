@@ -80,21 +80,6 @@ class MemoryManager:
         """
         return tensor.equality_hash in self.top_instance_stored_tensors_hash[top_instance]
 
-    def get_available_timestep(self, tensor: Tensor, top_instance: MemoryInstance):
-        """
-        Returns the earliest timestep at which the tensor is available in the given memory instance.
-        """
-        available_since_timesteps: dict[MemoryInstance, int] = {}
-        for top_instance, stored_tensor_hashes in self.top_instance_stored_tensors_hash.items():
-            if tensor.equality_hash in stored_tensor_hashes:
-                available_since_timesteps[top_instance] = self.top_instance_available_since_timestep[top_instance][
-                    tensor.equality_hash
-                ]
-
-        if not available_since_timesteps:
-            raise ValueError(f"Tensor {tensor} was not found in any of the instances.")
-        return available_since_timesteps
-
     def find_tensor_in_top_instances(self, tensor: Tensor):
         """Find the top memory instances that are storing this tensor."""
         # Find all instances storing this tensor
@@ -167,7 +152,9 @@ class MemoryManager:
 
         return
 
-    def get_timestep_for_tensor_addition(self, tensor: Tensor, core: Core, timestep: int, memory_op: str) -> int:
+    def get_timestep_for_tensor_addition(
+        self, tensor: Tensor, core: Core, timestep: int, memory_op: MemoryOperand
+    ) -> int:
         """
         Returns the earliest timestep at which the tensor can be added to the core's memory, considering memory usage.
 
@@ -231,9 +218,11 @@ class MemoryManager:
             instance_priority = tensor.get_instance_priority(top_instance, self)
             importance = instance_priority * tensor.size
             evictable_tensors_priority_size.append(importance)
-        evictable_tensors_priority_size, evictable_tensors = zip(
-            *sorted(zip(evictable_tensors_priority_size, evictable_tensors))
+        evictable_tensors_priority_size_tuple, evictable_tensors_tuple = zip(
+            *sorted(zip(evictable_tensors_priority_size, evictable_tensors, strict=False)), strict=False
         )
+        evictable_tensors_priority_size = list(evictable_tensors_priority_size_tuple)
+        evictable_tensors = list(evictable_tensors_tuple)
         evictable_tensors_size = [tensor.size for tensor in evictable_tensors]
         evictable_tensors_size_sums = [
             sum(evictable_tensors_size[:i]) for i in range(0, len(evictable_tensors_size) + 1)
@@ -259,11 +248,9 @@ class MemoryManager:
         # Get the instance on the storing core
         try:
             equivalent_tensor = next(
-                (
-                    stored_tensor
-                    for stored_tensor in self.top_instance_stored_tensors[top_instance]
-                    if stored_tensor.equality_hash == tensor.equality_hash
-                )
+                stored_tensor
+                for stored_tensor in self.top_instance_stored_tensors[top_instance]
+                if stored_tensor.equality_hash == tensor.equality_hash
             )
         except StopIteration:
             # If the tensor is not present, we don't have to remove it. # This is possible because in
@@ -331,7 +318,7 @@ class MemoryManager:
         stored_cumsum = self.top_instance_stored_cumsum[top_instance]
         timesteps = stored_cumsum[:, 0]
         usages = stored_cumsum[:, 1]
-        idx = max(0, np.searchsorted(timesteps, timestep, "right") - 1)
+        idx = max(0, np.searchsorted(timesteps, timestep, "right") - 1)  # type: ignore
         return usages[idx]
 
     def _add_tensor(

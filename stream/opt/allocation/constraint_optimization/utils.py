@@ -7,7 +7,7 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.steady_state_computation import SteadyStateComputation
+from stream.workload.steady_state.computation import SteadyStateComputation
 
 if TYPE_CHECKING:
     from stream.opt.allocation.constraint_optimization.timeslot_allocation import TimeSlotAllocation
@@ -34,10 +34,11 @@ def convert_ids(nodes: list[ComputationNode]):
     return ids
 
 
-def invert_ids_list(ids_list: list[tuple[int, int, int]], nb_nodes: int) -> list[tuple[int, int, tuple[int, int]]]:
+def invert_ids_list(ids_list: list[tuple[int, str, int]], nb_nodes: int) -> list[tuple[int, int, tuple[int, int]]]:
     new_l: list[tuple[int, int, tuple[int, int]]] = []
-    for timestep, core, k in ids_list:
-        new_l.append((timestep, core, invert_id(k)))
+    for timestep, core_str, k in ids_list:
+        core_id = int(core_str.split(" ")[-1])  # Extract core id from "Core <id>"
+        new_l.append((timestep, core_id, invert_id(k)))
     return new_l
 
 
@@ -110,19 +111,19 @@ def get_energies(
     accelerator: Accelerator,
     cost_lut: CostModelEvaluationLUT,
     impossible_energy: float = 1e11,
-    ids: dict[ComputationNode, int] = {},
+    ids: dict[ComputationNode, int] | None = None,
 ) -> dict[tuple[int, str], float]:
-    if not ids:
-        ids = {node.id: node.id for node in nodes}
+    if ids is None:
+        ids = {node: node.id for node in nodes}
     core_names = [f"Core {id}" for id in core_ids]
     energies = {(ids[node], core_name): impossible_energy for node in nodes for core_name in core_names}
 
     for node in nodes:
-        for core_id, core_name in zip(core_ids, core_names):
+        for core_id, core_name in zip(core_ids, core_names, strict=False):
             core = accelerator.get_core(core_id)
             try:
                 cme = cost_lut.get_cme(node, core)
-                en = getattr(cme, "energy_total")
+                en = cme.energy_total
             except ValueError:
                 en = impossible_energy
             energies[(ids[node], core_name)] = en
@@ -132,12 +133,14 @@ def get_energies(
 
 def get_node_latencies(allocation: "TimeSlotAllocation", cost_lut, accelerator, latency_attr):
     node_latencies = {}
-    for node in allocation.nodes:
+    for node in allocation.get_computation_nodes():
         cores = allocation.get_resources_for_node(node)
-        core_ids = [core.id for core in cores]
+        assert all(isinstance(core, Core) for core in cores), f"Node {node} has non-core resources: {cores}"
+        core_ids = [core.id for core in cores if isinstance(core, Core)]
         latencies, _ = get_latencies([node], core_ids, accelerator, cost_lut, latency_attr=latency_attr)
         p = len(cores)
         for core in cores:
+            assert isinstance(core, Core), f"Resource {core} for node {node} is not a Core."
             combined_id = (node, core, p)
             lat = latencies[combined_id]
             node_latencies[node, core] = lat
@@ -170,20 +173,21 @@ def get_start_time_of_timestep(timestep, timestep_latencies, t_start=0):
     return t_start
 
 
-def calculate_total_latency(
-    allocation: "TimeSlotAllocation", cost_lut, accelerator, iterations, latency_attr
-) -> tuple[int, str]:
+def calculate_total_latency(allocation: "TimeSlotAllocation", iterations) -> tuple[int, str]:
     timesteps = allocation.slots
     timestep_latencies = get_timestep_latencies(allocation, timesteps)
     starts = get_node_start_timesteps(allocation, timestep_latencies)
     total_timestep_latency = sum(timestep_latencies.values())
     overlap = compute_iterations_overlap(allocation, timestep_latencies, starts, total_timestep_latency)
     total_lat = iterations * total_timestep_latency - (iterations - 1) * overlap
-    total_lat_str = f"total_lat = N * T - (N - 1) * overlap --> {total_lat} = {iterations} * {total_timestep_latency} - {iterations-1} * {overlap}"
+    total_lat_str = (
+        "total_lat = N * T - (N - 1) * overlap --> "
+        f"{total_lat} = {iterations} * {total_timestep_latency} - {iterations - 1} * {overlap}"
+    )
     return total_lat, total_lat_str
 
 
-def compute_iterations_overlap(allocation: "TimeSlotAllocation", timestep_latencies, starts, T):
+def compute_iterations_overlap(allocation: "TimeSlotAllocation", timestep_latencies, starts, iteration_latency):
     slacks = {}
     for core in allocation.resources:
         relevant_starts = [v for k, v in starts.items() if k[1] == core]
@@ -193,7 +197,7 @@ def compute_iterations_overlap(allocation: "TimeSlotAllocation", timestep_latenc
         latest_timestep = allocation.get_timeslot_of_node_on_resource(latest_node_on_this_core, core)
         timestep_latency = timestep_latencies[latest_timestep]
         latest_end = latest_start + timestep_latency
-        slack = T - latest_end + earliest_start
+        slack = iteration_latency - latest_end + earliest_start
         assert slack >= 0
         slacks[core] = slack
     overlap = min(slacks.values())
@@ -223,22 +227,23 @@ def get_partitioned_nodes(
             cost_lut,
         )
         runtime = latencies[(node, core, 1)]
+        mapping_attr = node.extract_inter_core_mapping_attr()
+        possible_resource_allocation = [
+            core,
+        ]
         new_node = SteadyStateComputation(
             id=node.id,
             sub_id=node.sub_id,
             node_name=node.name,
             node_attr=node.extract_node_attr(),
-            mapping_attr=node.extract_inter_core_mapping_attr(),
+            mapping_attr=mapping_attr,
             operand_tensor_reshape=node.operand_tensor_reshape,
             produces_final_output=node.produces_final_output,
             group_id=node.group,
             input_names=node.input_names,
             partially_constant_operands=node.partially_constant_operands,
+            possible_resource_allocation=possible_resource_allocation,
         )
-        new_node.possible_resource_allocation = [
-            core,
-        ]
-        new_node.chosen_resource_allocation = core
         new_node.set_runtime(runtime)
         return [
             new_node,
@@ -279,6 +284,9 @@ def get_partitioned_nodes(
         node_attr.layer_dim_sizes[tiling_dim] = size_per_tile
         inter_core_mapping_attr = node.extract_inter_core_mapping_attr()
         inter_core_mapping_attr.inter_core_tiling = [(tiling_dim, nb_tiles)]
+        possible_resource_allocation = [
+            core,
+        ]
         # Create a new ComputationNode for each core allocation
         partitioned_node = SteadyStateComputation(
             id=node.id,
@@ -291,11 +299,8 @@ def get_partitioned_nodes(
             group_id=node.group,
             input_names=node.input_names,
             partially_constant_operands=node.partially_constant_operands,
+            possible_resource_allocation=possible_resource_allocation,
         )
-        partitioned_node.possible_resource_allocation = [
-            core,
-        ]
-        partitioned_node.chosen_resource_allocation = core
         partitioned_node.loop_ranges[tiling_dim] = partitioned_loop_ranges[i]
         partitioned_node.set_chosen_core_allocation(core.id)
         partitioned_node.set_runtime(runtimes[core])

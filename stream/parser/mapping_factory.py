@@ -10,11 +10,10 @@ from zigzag.mapping.spatial_mapping import (
     SpatialMapping,
 )
 
-from stream.workload.mapping import TILING_T, InterCoreMappingAttributes
+from stream.workload.mapping import TILING_T, TILING_WILDCARD_T, InterCoreMappingAttributes
 
 
 class MappingFactory:
-
     def __init__(self, mapping_data: list[dict[str, Any]]):
         self.all_mapping_data = mapping_data
 
@@ -58,15 +57,15 @@ class MappingFactory:
 
         for single_unrolling in mapping_data:
             layer_dim, unrolling = self.__convert_layer_dim_int_pair(single_unrolling)
-            mapping_dict[layer_dim] = unrolling
+            mapping_dict[layer_dim] = unrolling  # type: ignore
 
         return MappingSingleOADim(mapping_dict)
 
-    def create_inter_core_tiling(self, mapping_data: dict[str, Any]) -> TILING_T:
+    def create_inter_core_tiling(self, mapping_data: dict[str, Any]) -> TILING_WILDCARD_T:
         return [self.__convert_layer_dim_int_pair(pair) for pair in mapping_data["inter_core_tiling"]]
 
     def create_intra_core_tiling(self, mapping_data: dict[str, Any]) -> TILING_T:
-        return [self.__convert_layer_dim_int_pair(pair) for pair in mapping_data["intra_core_tiling"]]
+        return [self.__convert_layer_dim_int_pair(pair) for pair in mapping_data["intra_core_tiling"]]  # type: ignore
 
     def __convert_layer_dim_int_pair(self, pair: str):
         """Convert strings such as `D, 4` into a LayerDim and int"""

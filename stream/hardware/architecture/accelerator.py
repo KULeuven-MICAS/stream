@@ -127,11 +127,9 @@ class Accelerator:
             # Pick the core that has stored the tensor the longest
             available_since_timestep = min(available_since_timesteps.values())
             storing_instance = next(
-                (
-                    top_instance
-                    for (top_instance, timestep) in available_since_timesteps.items()
-                    if timestep == available_since_timestep
-                )
+                top_instance
+                for (top_instance, timestep) in available_since_timesteps.items()
+                if timestep == available_since_timestep
             )
 
         return storing_instance, available_since_timestep
@@ -173,8 +171,10 @@ class Accelerator:
         return self.memory_manager.find_tensor_in_top_instances(tensor)
 
     def find_best_tensor_combination_to_evict_fast(
-        self, tensor: Tensor, core: Core, timestep: int, exceptions: list[Tensor] = []
+        self, tensor: Tensor, core: Core, timestep: int, exceptions: list[Tensor] | None = None
     ):
+        if exceptions is None:
+            exceptions = []
         top_instance = self.get_top_instance_of_core(core, tensor.memory_operand)
         tensors_to_evict = self.memory_manager.find_best_tensor_combination_to_evict_fast(
             top_instance=top_instance,
@@ -314,14 +314,20 @@ class Accelerator:
             receiver = self.get_core(receiver)
 
         # Get the top level of output memory for the sender and the top level of input memory for the consumer_operand
-        sender_top_memory_level = sender.memory_hierarchy.get_operand_top_level(sender_memory_operand)
-        receiver_top_memory_level = receiver.memory_hierarchy.get_operand_top_level(receiver_memory_operand)
         # Sender memory energy
-        nb_sender_memory_reads_for_data = ceil(tensor.size / sender_top_memory_level.read_bw)
-        sender_energy = sender_top_memory_level.read_energy * nb_sender_memory_reads_for_data
+        sender_top_instance = sender.get_top_memory_instance(sender_memory_operand)
+        sender_bw_min = sender_top_instance.ports[0].bw_min
+        sender_bw_max = sender_top_instance.ports[0].bw_max
+        nb_sender_memory_reads_for_data = ceil(tensor.size / sender_bw_min)
+        sender_energy = sender_top_instance.r_cost * (sender_bw_min / sender_bw_max) * nb_sender_memory_reads_for_data
         # Receiver memory energy
-        nb_receiver_memory_writes_for_data = ceil(tensor.size / receiver_top_memory_level.write_bw)
-        receiver_energy = receiver_top_memory_level.write_energy * nb_receiver_memory_writes_for_data
+        receiver_top_instance = receiver.get_top_memory_instance(receiver_memory_operand)
+        receiver_bw_min = receiver_top_instance.ports[0].bw_min
+        receiver_bw_max = receiver_top_instance.ports[0].bw_max
+        nb_receiver_memory_writes_for_data = ceil(tensor.size / receiver_bw_min)
+        receiver_energy = (
+            receiver_top_instance.w_cost * (receiver_bw_min / receiver_bw_max) * nb_receiver_memory_writes_for_data
+        )
 
         return sender_energy + receiver_energy
 

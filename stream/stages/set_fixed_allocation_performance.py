@@ -1,9 +1,10 @@
 import logging
+from math import prod
 from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.mapping.data_movement import MemoryAccesses
+from zigzag.mapping.data_movement import FourWayDataMoving
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.stages.stage import Stage, StageCallable
@@ -33,6 +34,7 @@ class SetFixedAllocationPerformanceStage(Stage):
         self.workload = workload
         self.cost_lut = cost_lut
         self.latency_attr = kwargs.get("latency_attr", "latency_total2")
+        self.fix_all = kwargs.get("fix_all", False)
 
     def run(self):
         logger.info("Start SetFixedAllocationPerformanceStage.")
@@ -51,8 +53,7 @@ class SetFixedAllocationPerformanceStage(Stage):
             self.list_of_callables[1:],
             **kwargs,
         )
-        for cme, extra_info in sub_stage.run():
-            yield cme, extra_info
+        yield from sub_stage.run()
 
     def set_fixed_allocation_performance(self):
         for node in self.workload.node_list:
@@ -71,7 +72,7 @@ class SetFixedAllocationPerformanceStage(Stage):
 
                 # Get the required offchip bandwidth during the execution of the node for all directions
                 bandwidth_scaling = cme.ideal_temporal_cycle / latency
-                offchip_bandwidth_per_op: dict[MemoryOperand, MemoryAccesses] = {
+                offchip_bandwidth_per_op: dict[MemoryOperand, FourWayDataMoving] = {
                     mem_op: get_top_level_inst_bandwidth(cme, mem_op, bandwidth_scaling)
                     for mem_op in too_large_operands
                 }
@@ -115,26 +116,35 @@ class SetFixedAllocationPerformanceStage(Stage):
         node.set_chosen_core_allocation(chosen_core_allocation)
 
     def check_and_fix_chosen_core_allocation(self):
-        """! Check that all nodes in the workload have a chosen_core_allocation."""
+        """! Check that all nodes in the workload have a chosen_core_allocation.
+        If self.fix_all is True, chosen alloc is fixed for all nodes depending on the group and possible alloc.
+        If self.fix_all is False, only nodes where the inter_core_tiling match the possible alloc length are fixed.
+        """
         for node in self.workload.node_list:
             if node.chosen_core_allocation is None:
+                if not self.fix_all:
+                    # Check if there is a wildcard in the inter_core_tiling
+                    inter_core_factors = [tile_size for _, tile_size in node.inter_core_tiling]
+                    if "*" in inter_core_factors:
+                        raise ValueError(f"{node} has a wildcard in its inter_core_tiling {node.inter_core_tiling}.")
+                    # Only fix the chosen_core_allocation if the inter_core_tiling matches possible_core_allocation len
+                    if len(node.possible_core_allocation) != prod(inter_core_factors):
+                        if len(inter_core_factors) != 1:
+                            raise ValueError(
+                                f"{node} has a chosen_core_allocation of None, but the inter_core_tiling "
+                                f"{node.inter_core_tiling} does not match the possible_core_allocation length "
+                                f"{len(node.possible_core_allocation)}."
+                            )
+                        continue
                 try:
                     core_id = node.possible_core_allocation[node.group]
-                except IndexError:
-                    core_id = node.possible_core_allocation[0]
-
+                except IndexError as exc:
+                    raise IndexError(
+                        f"{node} has a group {node.group} that is out of bounds for the possible_core_allocation "
+                        f"{node.possible_core_allocation}. Allowed: {list(range(len(node.possible_core_allocation)))}."
+                    ) from exc
                 node.set_chosen_core_allocation(core_id)
                 logger.warning(
                     f"{node} does not have a chosen_core_allocation. Setting to {core_id} out of "
                     f"possible allocations {node.possible_core_allocation}."
                 )
-
-    # def set_core_allocation(self):
-    #     """For all nodes of the (tiled) workload, set the chosen core allocation based on the sub_id and number of
-    #     inter-core splits for this node.
-    #     # TODO this is only necessary if CO is not being used. Move to something like `COSkipStage`
-    #     """
-    #     for node in self.workload.node_list:
-    #         core_id = node.sub_id % inter_core_tiling_factor
-    #         node.set_chosen_core_allocation(core_id)
-    #         node.core_allocation_is_fixed = True
