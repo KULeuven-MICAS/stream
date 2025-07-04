@@ -20,14 +20,17 @@ class MulParser(OnnxComputeOperatorParser):
         EXPECTED_INPUTS = 2
         EXPECTED_OUTPUTS = 1
         if len(input_shapes) != EXPECTED_INPUTS or len(output_shapes) != EXPECTED_OUTPUTS:
-            raise NotImplementedError
+            raise NotImplementedError(
+                f"Expected {EXPECTED_INPUTS} inputs and {EXPECTED_OUTPUTS} output, "
+                f"got {len(input_shapes)} inputs and {len(output_shapes)} outputs"
+            )
 
         output_shape = output_shapes.pop()
         if not any(shape == output_shape for shape in input_shapes):
-            raise NotImplementedError
+            raise NotImplementedError(f"Expected input shape {output_shape} to be one of {input_shapes}")
 
         input_shape = output_shape
-        input_shapes.remove(list(output_shape))
+        input_shapes.remove(output_shape)
         broadcast_shape = input_shapes.pop()
 
         # e.g. (3,5) * (8,3,5) is ok (broadcast over dim 0), but (3,2) * (8,3,5) is unclear

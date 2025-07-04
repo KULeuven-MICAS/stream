@@ -34,10 +34,10 @@ def get_attribute_as_ints(
             ) from exc
 
 
-def get_onnx_input_shapes(node: NodeProto, onnx_model: ModelProto) -> list[list[int]]:
+def get_onnx_input_shapes(node: NodeProto, onnx_model: ModelProto) -> list[tuple[int, ...]]:
     """Return the shape of each input operand"""
     input_names = node.input
-    input_shapes = [get_onnx_tensor_type(name, onnx_model).shape for name in input_names]
+    input_shapes = [tuple(get_onnx_tensor_type(name, onnx_model).shape) for name in input_names]
     return input_shapes
 
 
