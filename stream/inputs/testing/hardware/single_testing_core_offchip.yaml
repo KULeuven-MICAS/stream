@@ -1,16 +1,19 @@
+# Minimal single-core accelerator with an explicit off-chip memory controller
 name: testing-1-core-with-offchip
+
+# Mapping from core-ID → YAML description file
 cores:
-  # index corresponds to core ID
-  - testing_core1.yaml
-  - offchip.yaml
+  0: testing_core1.yaml        # compute core
+  1: offchip.yaml              # DRAM controller
 
-graph:
-  type: 2d_mesh
-  nb_rows: 1
-  nb_cols: 1
-  bandwidth: 64
-  unit_energy_cost: 0
-  offchip_core_id: 1
+# ID of the core that provides the external memory interface
+offchip_core_id: 1
 
+# Default energy cost per word (overridable per connection)
+unit_energy_cost: 0
 
-
+# Explicit connectivity list
+core_connectivity:
+  - type: link                 # point-to-point connection
+    cores: [0, 1]              # compute ↔ off-chip
+    bandwidth: 64              # GB/s (or your chosen units)

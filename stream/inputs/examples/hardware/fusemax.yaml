@@ -1,14 +1,20 @@
+# Two FuseMax cores sharing a top-level on-chip memory, plus an explicit DRAM controller
 name: quad_core
-cores:
-  0: stream/inputs/examples/hardware/cores/fusemax_array.yaml
-  1: stream/inputs/examples/hardware/cores/fusemax_vec.yaml
-offchip_core: stream/inputs/examples/hardware/cores/fusemax_dram.yaml
 
-core_connectivity: []
+cores:
+  0: stream/inputs/examples/hardware/cores/fusemax_array.yaml   # main array core
+  1: stream/inputs/examples/hardware/cores/fusemax_vec.yaml     # SIMD/vector core
+  2: stream/inputs/examples/hardware/cores/fusemax_dram.yaml    # off-chip DRAM controller
+
+offchip_core_id: 2          # core that fronts external memory
+unit_energy_cost: 512       # default energy per transferred word
+
+core_connectivity:
+  # Shared bus that links both compute cores to the DRAM controller
+  - type: bus
+    cores: [0, 1, 2]
+    bandwidth: 512
 
 core_memory_sharing:
-  # Link all simd units to main cores
+  # The SIMD core re-uses the array core’s top-level memory, so no direct link is listed above
   - 0, 1
-
-bandwidth: 512
-unit_energy_cost: 512

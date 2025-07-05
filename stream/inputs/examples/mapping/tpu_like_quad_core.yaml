@@ -17,7 +17,7 @@
   intra_core_tiling:
     - D, all
   inter_core_tiling:
-    - H, *
+    - K, *
 
 - name: Pool
   core_allocation: [4]

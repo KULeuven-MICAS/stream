@@ -1,17 +1,17 @@
+# 6 × 6 SIMBA chiplet mesh plus a package-level DRAM controller
 name: simba_package
 
-cores:
-  # 36 simba chiplets
-  0: simba_chiplet.yaml
-  1: simba_chiplet.yaml
-  2: simba_chiplet.yaml
-  3: simba_chiplet.yaml
-  4: simba_chiplet.yaml
-  5: simba_chiplet.yaml
-  6: simba_chiplet.yaml
-  7: simba_chiplet.yaml
-  8: simba_chiplet.yaml
-  9: simba_chiplet.yaml
+cores:     # id → YAML description
+  0:  simba_chiplet.yaml
+  1:  simba_chiplet.yaml
+  2:  simba_chiplet.yaml
+  3:  simba_chiplet.yaml
+  4:  simba_chiplet.yaml
+  5:  simba_chiplet.yaml
+  6:  simba_chiplet.yaml
+  7:  simba_chiplet.yaml
+  8:  simba_chiplet.yaml
+  9:  simba_chiplet.yaml
   10: simba_chiplet.yaml
   11: simba_chiplet.yaml
   12: simba_chiplet.yaml
@@ -38,70 +38,78 @@ cores:
   33: simba_chiplet.yaml
   34: simba_chiplet.yaml
   35: simba_chiplet.yaml
-offchip_core: simba_offchip.yaml
+  36: simba_offchip.yaml      # DRAM controller
+
+offchip_core_id: 36           # external-memory interface
+unit_energy_cost: 0           # global default
 
 core_connectivity:
-  # 2D mesh
-  - 0, 1
-  - 0, 6
-  - 1, 2
-  - 1, 7
-  - 2, 3
-  - 2, 8
-  - 3, 4
-  - 3, 9
-  - 4, 5
-  - 4, 10
-  - 5, 11
-  - 6, 7
-  - 6, 12
-  - 7, 8
-  - 7, 13
-  - 8, 9
-  - 8, 14
-  - 9, 10
-  - 9, 15
-  - 10, 11
-  - 10, 16
-  - 11, 17
-  - 12, 13
-  - 12, 18
-  - 13, 14
-  - 13, 19
-  - 14, 15
-  - 14, 20
-  - 15, 16
-  - 15, 21
-  - 16, 17
-  - 16, 22
-  - 17, 23
-  - 18, 19
-  - 18, 24
-  - 19, 20
-  - 19, 25
-  - 20, 21
-  - 20, 26
-  - 21, 22
-  - 21, 27
-  - 22, 23
-  - 22, 28
-  - 23, 29
-  - 24, 25
-  - 24, 30
-  - 25, 26
-  - 25, 31
-  - 26, 27
-  - 26, 32
-  - 27, 28
-  - 27, 33
-  - 28, 29
-  - 28, 34
-  - 29, 35
-  - 30, 31
-  - 31, 32
-  - 32, 33
-  - 33, 34
-  - 34, 35
+  # ───────── 2-D mesh links (bandwidth 32 each) ─────────
+  - {type: link, cores: [0, 1],  bandwidth: 32}
+  - {type: link, cores: [0, 6],  bandwidth: 32}
+  - {type: link, cores: [1, 2],  bandwidth: 32}
+  - {type: link, cores: [1, 7],  bandwidth: 32}
+  - {type: link, cores: [2, 3],  bandwidth: 32}
+  - {type: link, cores: [2, 8],  bandwidth: 32}
+  - {type: link, cores: [3, 4],  bandwidth: 32}
+  - {type: link, cores: [3, 9],  bandwidth: 32}
+  - {type: link, cores: [4, 5],  bandwidth: 32}
+  - {type: link, cores: [4, 10], bandwidth: 32}
+  - {type: link, cores: [5, 11], bandwidth: 32}
+  - {type: link, cores: [6, 7],  bandwidth: 32}
+  - {type: link, cores: [6, 12], bandwidth: 32}
+  - {type: link, cores: [7, 8],  bandwidth: 32}
+  - {type: link, cores: [7, 13], bandwidth: 32}
+  - {type: link, cores: [8, 9],  bandwidth: 32}
+  - {type: link, cores: [8, 14], bandwidth: 32}
+  - {type: link, cores: [9, 10], bandwidth: 32}
+  - {type: link, cores: [9, 15], bandwidth: 32}
+  - {type: link, cores: [10,11], bandwidth: 32}
+  - {type: link, cores: [10,16], bandwidth: 32}
+  - {type: link, cores: [11,17], bandwidth: 32}
+  - {type: link, cores: [12,13], bandwidth: 32}
+  - {type: link, cores: [12,18], bandwidth: 32}
+  - {type: link, cores: [13,14], bandwidth: 32}
+  - {type: link, cores: [13,19], bandwidth: 32}
+  - {type: link, cores: [14,15], bandwidth: 32}
+  - {type: link, cores: [14,20], bandwidth: 32}
+  - {type: link, cores: [15,16], bandwidth: 32}
+  - {type: link, cores: [15,21], bandwidth: 32}
+  - {type: link, cores: [16,17], bandwidth: 32}
+  - {type: link, cores: [16,22], bandwidth: 32}
+  - {type: link, cores: [17,23], bandwidth: 32}
+  - {type: link, cores: [18,19], bandwidth: 32}
+  - {type: link, cores: [18,24], bandwidth: 32}
+  - {type: link, cores: [19,20], bandwidth: 32}
+  - {type: link, cores: [19,25], bandwidth: 32}
+  - {type: link, cores: [20,21], bandwidth: 32}
+  - {type: link, cores: [20,26], bandwidth: 32}
+  - {type: link, cores: [21,22], bandwidth: 32}
+  - {type: link, cores: [21,27], bandwidth: 32}
+  - {type: link, cores: [22,23], bandwidth: 32}
+  - {type: link, cores: [22,28], bandwidth: 32}
+  - {type: link, cores: [23,29], bandwidth: 32}
+  - {type: link, cores: [24,25], bandwidth: 32}
+  - {type: link, cores: [24,30], bandwidth: 32}
+  - {type: link, cores: [25,26], bandwidth: 32}
+  - {type: link, cores: [25,31], bandwidth: 32}
+  - {type: link, cores: [26,27], bandwidth: 32}
+  - {type: link, cores: [26,32], bandwidth: 32}
+  - {type: link, cores: [27,28], bandwidth: 32}
+  - {type: link, cores: [27,33], bandwidth: 32}
+  - {type: link, cores: [28,29], bandwidth: 32}
+  - {type: link, cores: [28,34], bandwidth: 32}
+  - {type: link, cores: [29,35], bandwidth: 32}
+  - {type: link, cores: [30,31], bandwidth: 32}
+  - {type: link, cores: [31,32], bandwidth: 32}
+  - {type: link, cores: [32,33], bandwidth: 32}
+  - {type: link, cores: [33,34], bandwidth: 32}
+  - {type: link, cores: [34,35], bandwidth: 32}
 
-bandwidth: 32
-unit_energy_cost: 0
+  # ───────── Shared off-chip bus ─────────
+  - type: bus
+    cores: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+            10,11,12,13,14,15,16,17,18,19,
+            20,21,22,23,24,25,26,27,28,29,
+            30,31,32,33,34,35,36]     # all chiplets + DRAM ctrl
+    bandwidth: 256                    # wider than on-chip links

@@ -1,5 +1,6 @@
 import logging
 import os
+from math import prod
 from time import time
 from typing import Any, TypeAlias
 
@@ -566,6 +567,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         kwargs["tiled_workload_path"] = self.tiled_workload_post_co_path
         kwargs["cost_lut_path"] = self.cost_lut_post_co_path
         kwargs["latency_attr"] = self.latency_attr
+        kwargs["fix_all"] = True  # Fix all core allocations to the given ones
 
         # Create stages that will run a single cost model evaluation (fixed core allocations)
         main_stage = MainStage(
@@ -590,6 +592,12 @@ class ConstraintOptimizationAllocationStage(Stage):
             # to also split in the inter core tiling
             inter_core_tiling = self.replace_wildcard_in_tiling(node.inter_core_tiling, nb_cores)
             node.inter_core_tiling = inter_core_tiling
+            # Check that the length matches the specified inter_core_tiling size
+            inter_core_tiling_size = prod([factor for _, factor in inter_core_tiling])
+            assert len(node.possible_core_allocation) == inter_core_tiling_size, (
+                f"Expected {node} to have {inter_core_tiling_size} "
+                f"possible core allocations, but got {len(node.possible_core_allocation)}."
+            )
 
     def add_core_ids_for_layers_not_in_steady_state(
         self, layer_ids: list[int], core_ids: list[list[int]], sub_workload: ComputationNodeWorkload

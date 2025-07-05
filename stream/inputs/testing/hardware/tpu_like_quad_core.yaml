@@ -7,24 +7,67 @@ cores:
   3: tpu_like.yaml
   4: pooling.yaml
   5: simd.yaml
-offchip_core: offchip.yaml
+  6: offchip.yaml
+
+offchip_core_id: 6
 
 core_connectivity:
-  # 2D mesh
-  - 0, 1
-  - 1, 2
-  - 2, 3
-  - 3, 0
-  # Connect pooling core to all
-  - 0, 4
-  - 1, 4
-  - 2, 4
-  - 3, 4
-  # Connect SIMD to all
-  - 0, 5
-  - 1, 5
-  - 2, 5
-  - 3, 5
+  # -------- 2-D mesh among compute cores (point-to-point links) ------------- #
+  - type: link
+    cores: [0, 1]
+    bandwidth: 128
+    unit_energy_cost: 0
+  - type: link
+    cores: [1, 2]
+    bandwidth: 128
+    unit_energy_cost: 0
+  - type: link
+    cores: [2, 3]
+    bandwidth: 128
+    unit_energy_cost: 0
+  - type: link
+    cores: [3, 0]
+    bandwidth: 128
+    unit_energy_cost: 0
 
-bandwidth: 128
-unit_energy_cost: 0
+  # -------------- Pooling core (id 4) linked to each compute core ----------- #
+  - type: link
+    cores: [0, 4]
+    bandwidth: 128
+    unit_energy_cost: 0
+  - type: link
+    cores: [1, 4]
+    bandwidth: 128
+    unit_energy_cost: 0
+  - type: link
+    cores: [2, 4]
+    bandwidth: 128
+    unit_energy_cost: 0
+  - type: link
+    cores: [3, 4]
+    bandwidth: 128
+    unit_energy_cost: 0
+
+  # -------------- SIMD core (id 5) linked to each compute core -------------- #
+  - type: link
+    cores: [0, 5]
+    bandwidth: 128
+    unit_energy_cost: 0
+  - type: link
+    cores: [1, 5]
+    bandwidth: 128
+    unit_energy_cost: 0
+  - type: link
+    cores: [2, 5]
+    bandwidth: 128
+    unit_energy_cost: 0
+  - type: link
+    cores: [3, 5]
+    bandwidth: 128
+    unit_energy_cost: 0
+
+  # -------- Shared off-chip memory bus: all cores share one medium ---------- #
+  - type: bus
+    cores: [0, 1, 2, 3, 4, 5, 6]  # includes the DRAM controller itself
+    bandwidth: 512               # fatter than on-chip links
+    unit_energy_cost: 0
