@@ -1,19 +1,32 @@
+# 2 × 2 compute mesh with a shared off-chip DRAM controller
 name: testing-4-core-with-offchip
+
 cores:
-  # index corresponds to core ID
-  - testing_core1.yaml
-  - testing_core1.yaml
-  - testing_core1.yaml
-  - testing_core1.yaml
-  - offchip.yaml
+  0: testing_core1.yaml   # compute
+  1: testing_core1.yaml   # compute
+  2: testing_core1.yaml   # compute
+  3: testing_core1.yaml   # compute
+  4: offchip.yaml         # DRAM controller
 
-graph:
-  type: 2d_mesh
-  nb_rows: 2
-  nb_cols: 2
-  bandwidth: 64
-  unit_energy_cost: 0
-  offchip_core_id: 4
+offchip_core_id: 4        # core that fronts external memory
+unit_energy_cost: 0       # default energy per transferred word
 
+core_connectivity:
+  # ───── 2-D mesh links between compute cores ─────
+  - type: link             # 0 ↔ 1 (top row, horizontal)
+    cores: [0, 1]
+    bandwidth: 64
+  - type: link             # 0 ↔ 2 (left column, vertical)
+    cores: [0, 2]
+    bandwidth: 64
+  - type: link             # 1 ↔ 3 (right column, vertical)
+    cores: [1, 3]
+    bandwidth: 64
+  - type: link             # 2 ↔ 3 (bottom row, horizontal)
+    cores: [2, 3]
+    bandwidth: 64
 
-
+  # ───── Shared bus to off-chip memory ─────
+  - type: bus
+    cores: [0, 1, 2, 3, 4] # all cores share one medium
+    bandwidth: 128         # wider than on-chip links

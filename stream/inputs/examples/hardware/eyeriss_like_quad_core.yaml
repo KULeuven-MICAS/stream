@@ -1,29 +1,46 @@
+# Four Eyeriss-like compute cores with pooling, SIMD and an off-chip DRAM controller
 name: eyeriss_like_quad_core
+
 cores:
-  0: eyeriss_like.yaml
-  1: eyeriss_like.yaml
-  2: eyeriss_like.yaml
-  3: eyeriss_like.yaml
-  4: pooling.yaml
-  5: simd.yaml
-offchip_core: offchip.yaml
+  0: eyeriss_like.yaml   # compute A
+  1: eyeriss_like.yaml   # compute B
+  2: eyeriss_like.yaml   # compute C
+  3: eyeriss_like.yaml   # compute D
+  4: pooling.yaml        # pooling helper
+  5: simd.yaml           # SIMD helper
+  6: offchip.yaml        # DRAM controller
+
+offchip_core_id: 6       # core that fronts external memory
+unit_energy_cost: 0      # default energy per transferred word
 
 core_connectivity:
-  # 2D mesh
-  - 0, 1
-  - 1, 2
-  - 2, 3
-  - 3, 1
-  # Connect pooling core to all
-  - 0, 4
-  - 1, 4
-  - 2, 4
-  - 3, 4
-  # Connect SIMD to all
-  - 0, 5
-  - 1, 5
-  - 2, 5
-  - 3, 5
+  # ───── 2-D mesh links among compute cores ─────
+  - type: link
+    cores: [0, 1]
+    bandwidth: 32
+  - type: link
+    cores: [1, 2]
+    bandwidth: 32
+  - type: link
+    cores: [2, 3]
+    bandwidth: 32
+  - type: link            # extra link as in original spec
+    cores: [3, 1]
+    bandwidth: 32
 
-bandwidth: 32
-unit_energy_cost: 0
+  # ───── Pooling core connected to every compute core ─────
+  - {type: link, cores: [0, 4], bandwidth: 32}
+  - {type: link, cores: [1, 4], bandwidth: 32}
+  - {type: link, cores: [2, 4], bandwidth: 32}
+  - {type: link, cores: [3, 4], bandwidth: 32}
+
+  # ───── SIMD core connected to every compute core ─────
+  - {type: link, cores: [0, 5], bandwidth: 32}
+  - {type: link, cores: [1, 5], bandwidth: 32}
+  - {type: link, cores: [2, 5], bandwidth: 32}
+  - {type: link, cores: [3, 5], bandwidth: 32}
+
+  # ───── Shared bus to off-chip DRAM ─────
+  - type: bus
+    cores: [0, 1, 2, 3, 4, 5, 6]   # all on-chip cores + controller
+    bandwidth: 128                 # wider than on-chip point-to-point links

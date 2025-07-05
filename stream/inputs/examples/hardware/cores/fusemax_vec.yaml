@@ -1,4 +1,5 @@
 name: vec
+type: compute
 
 memories:
   rf_I:

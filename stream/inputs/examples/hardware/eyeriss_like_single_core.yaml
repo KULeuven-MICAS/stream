@@ -1,13 +1,25 @@
+# Eyeriss-like single compute core with dedicated pooling, SIMD and an off-chip DRAM controller
 name: eyeriss_like_single_core
+
 cores:
-  0: eyeriss_like.yaml
-  1: pooling.yaml
-  2: simd.yaml
-offchip_core: offchip.yaml
+  0: eyeriss_like.yaml   # main compute core
+  1: pooling.yaml        # pooling engine
+  2: simd.yaml           # SIMD/vector unit
+  3: offchip.yaml        # DRAM controller
+
+offchip_core_id: 3       # which core fronts external memory
+unit_energy_cost: 0      # default energy per transferred word
 
 core_connectivity:
-  - 0, 1
-  - 0, 2
+  # ─── On-chip links from compute core to its helpers ───
+  - type: link
+    cores: [0, 1]        # compute ↔ pooling
+    bandwidth: 32
+  - type: link
+    cores: [0, 2]        # compute ↔ SIMD
+    bandwidth: 32
 
-bandwidth: 32
-unit_energy_cost: 0
+  # ─── Shared bus to off-chip memory (all cores + controller) ───
+  - type: bus
+    cores: [0, 1, 2, 3]
+    bandwidth: 64        # wider than the point-to-point links

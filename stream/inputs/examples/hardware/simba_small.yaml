@@ -1,19 +1,32 @@
+# 2 × 2 SIMBA mesh with an explicit off-chip DRAM controller
 name: simba_package_small
 
 cores:
-  # 4 simba chiplets
-  0: simba_chiplet.yaml
-  1: simba_chiplet.yaml
-  2: simba_chiplet.yaml
-  3: simba_chiplet.yaml
-offchip_core: simba_offchip.yaml
+  0: simba_chiplet.yaml   # chiplet A
+  1: simba_chiplet.yaml   # chiplet B
+  2: simba_chiplet.yaml   # chiplet C
+  3: simba_chiplet.yaml   # chiplet D
+  4: simba_offchip.yaml   # package-level DRAM controller
+
+offchip_core_id: 4        # core that fronts external memory
+unit_energy_cost: 0       # default energy per transferred word
 
 core_connectivity:
-  # 2D mesh
-  - 0, 1
-  - 0, 2
-  - 1, 3
-  - 2, 3
+  # ───── 2-D mesh links between chiplets ─────
+  - type: link
+    cores: [0, 1]
+    bandwidth: 32
+  - type: link
+    cores: [0, 2]
+    bandwidth: 32
+  - type: link
+    cores: [1, 3]
+    bandwidth: 32
+  - type: link
+    cores: [2, 3]
+    bandwidth: 32
 
-bandwidth: 32
-unit_energy_cost: 0
+  # ───── Shared bus to off-chip memory ─────
+  - type: bus
+    cores: [0, 1, 2, 3, 4]   # all chiplets + DRAM controller
+    bandwidth: 128           # wider than on-chip links

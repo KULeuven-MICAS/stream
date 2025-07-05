@@ -3,6 +3,7 @@ import os
 from typing import Literal
 
 import gurobipy as gp
+from onnx import ModelProto
 from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.utils import pickle_load, pickle_save
 
@@ -28,7 +29,7 @@ def _sanity_check_inputs(
     hardware: str, workload: str, mapping: str, mode: Literal["lbl"] | Literal["fused"], output_path: str
 ):
     assert os.path.exists(hardware), f"Hardware file {hardware} does not exist"
-    assert os.path.exists(workload), f"Workload file {workload} does not exist"
+    assert isinstance(workload, ModelProto) or os.path.exists(workload), f"Workload file {workload} does not exist"
     assert os.path.exists(mapping), f"Mapping file {mapping} does not exist"
     assert mode in ["lbl", "fused"], "Mode must be either 'lbl' or 'fused'"
     if not os.path.exists(output_path):

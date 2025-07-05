@@ -1,4 +1,5 @@
 name: simba_offchip
+type: compute
 
 memories:
   dram:

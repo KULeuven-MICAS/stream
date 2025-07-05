@@ -1,8 +1,14 @@
+from typing import Any
+
 from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.accelerator import Accelerator as ZigZagCore
 
 
 class Core(ZigZagCore):
+    def __init__(self, args: Any):
+        super().__init__(**args)
+        self.type = "compute"  # default type for a core
+
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, Core)

@@ -1,4 +1,5 @@
 name: eyeriss_like
+type: compute
 
 memories:
   rf_64B_A:

@@ -1,4 +1,5 @@
 name: meta_prototype
+type: compute
 
 memories:
   rf_1B:

@@ -1,17 +1,39 @@
+# Two meta-prototype compute cores plus pooling, SIMD and an off-chip DRAM controller
 name: meta-proto-2-core-with-pooling-and-offchip-cores
+
 cores:
-  0: meta_prototype.yaml
-  1: meta_prototype.yaml
-  2: pooling.yaml
-  3: simd.yaml
-offchip_core: offchip.yaml
+  0: meta_prototype.yaml   # compute-core A
+  1: meta_prototype.yaml   # compute-core B
+  2: pooling.yaml          # pooling engine
+  3: simd.yaml             # SIMD unit
+  4: offchip.yaml          # DRAM controller
+
+offchip_core_id: 4         # which core fronts external memory
+unit_energy_cost: 0        # default energy per transferred word
 
 core_connectivity:
-  - 0, 1
-  - 0, 2
-  - 0, 3
-  - 1, 2
-  - 1, 3
+  # ─── direct link between the two compute cores ───
+  - type: link
+    cores: [0, 1]
+    bandwidth: 64
 
-bandwidth: 64
-unit_energy_cost: 0
+  # ─── pooling core connected to each compute core ───
+  - type: link
+    cores: [0, 2]
+    bandwidth: 64
+  - type: link
+    cores: [1, 2]
+    bandwidth: 64
+
+  # ─── SIMD core connected to each compute core ───
+  - type: link
+    cores: [0, 3]
+    bandwidth: 64
+  - type: link
+    cores: [1, 3]
+    bandwidth: 64
+
+  # ─── shared bus to off-chip memory (all on-chip cores + controller) ───
+  - type: bus
+    cores: [0, 1, 2, 3, 4]
+    bandwidth: 128        # wider than on-chip point-to-point links

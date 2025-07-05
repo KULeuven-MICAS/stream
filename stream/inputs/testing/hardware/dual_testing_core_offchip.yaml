@@ -1,15 +1,22 @@
+# Two heterogeneous compute cores with an explicit off-chip DRAM controller
 name: testing-2-core-with-offchip
+
+# Core catalogue (id ➜ YAML description)
 cores:
-  # index corresponds to core ID
-  - stream/inputs/testing/hardware/cores/testing_core1.yaml
-  - stream/inputs/testing/hardware/cores/testing_core2.yaml
-  - offchip.yaml
+  0: stream/inputs/testing/hardware/cores/testing_core1.yaml   # compute core A
+  1: stream/inputs/testing/hardware/cores/testing_core2.yaml   # compute core B
+  2: offchip.yaml                                             # DRAM controller
 
-graph:
-  type: 2d_mesh
-  nb_rows: 1
-  nb_cols: 2
-  bandwidth: 64
-  unit_energy_cost: 0
-  offchip_core_id: 2
+offchip_core_id: 2      # which core fronts external memory
+unit_energy_cost: 0     # default energy per transferred word
 
+core_connectivity:
+  # Direct link between the two compute cores
+  - type: link
+    cores: [0, 1]
+    bandwidth: 64
+
+  # Shared bus to off-chip memory (all on-chip cores + controller)
+  - type: bus
+    cores: [0, 1, 2]
+    bandwidth: 128
