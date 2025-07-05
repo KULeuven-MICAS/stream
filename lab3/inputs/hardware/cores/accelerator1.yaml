@@ -1,102 +1,147 @@
 name: accelerator1
-
-operational_array:
-  unit_energy: 0.04 # pJ
-  unit_area: 1 # unit
-  dimensions: [D1, D2]
-  sizes: [32, 32]
+type: compute
 
 memories:
   rf_1B_I2:
     size: 16384
-    r_bw: 8
-    w_bw: 8
-    r_cost: 0.095  # TODO
-    w_cost: 0.095  # TODO
+    r_cost: 0.095
+    w_cost: 0.095
     area: 0
-    r_port: 1
-    w_port: 1
-    rw_port: 0
     latency: 1
     auto_cost_extraction: False
     operands: [I2]
     ports:
-      - fh: w_port_1
-        tl: r_port_1
-    served_dimensions: [] # Fully unrolled over all multipliers
+      - name: r_port_1
+        type: read
+        bandwidth_min: 8
+        bandwidth_max: 8
+        allocation:
+          - I2, tl
+      - name: w_port_1
+        type: write
+        bandwidth_min: 8
+        bandwidth_max: 8
+        allocation:
+          - I2, fh
+    served_dimensions: []
 
   rf_1B_I1:
     size: 8
-    r_bw: 8
-    w_bw: 8
-    r_cost: 0.095  # TODO
-    w_cost: 0.095  # TODO
+    r_cost: 0.095
+    w_cost: 0.095
     area: 0
-    r_port: 1
-    w_port: 1
-    rw_port: 0
     latency: 1
     auto_cost_extraction: False
     operands: [I1]
     ports:
-      - fh: w_port_1
-        tl: r_port_1
-    served_dimensions: [D2] # One RF per column
+      - name: r_port_1
+        type: read
+        bandwidth_min: 8
+        bandwidth_max: 8
+        allocation:
+          - I1, tl
+      - name: w_port_1
+        type: write
+        bandwidth_min: 8
+        bandwidth_max: 8
+        allocation:
+          - I1, fh
+    served_dimensions: [D2]
 
   rf_4B_O:
     size: 32
-    r_bw: 32
-    w_bw: 32
-    r_cost: 0.021  # TODO
-    w_cost: 0.021  # TODO
+    r_cost: 0.021
+    w_cost: 0.021
     area: 0
-    r_port: 2
-    w_port: 2
-    rw_port: 0
     latency: 1
     operands: [O]
     ports:
-      - fh: w_port_1
-        tl: r_port_1
-        fl: w_port_2
-        th: r_port_2
-    served_dimensions: [D1]  # One RF per row
+      - name: r_port_1
+        type: read
+        bandwidth_min: 32
+        bandwidth_max: 32
+        allocation:
+          - O, tl
+      - name: r_port_2
+        type: read
+        bandwidth_min: 32
+        bandwidth_max: 32
+        allocation:
+          - O, th
+      - name: w_port_1
+        type: write
+        bandwidth_min: 32
+        bandwidth_max: 32
+        allocation:
+          - O, fh
+      - name: w_port_2
+        type: write
+        bandwidth_min: 32
+        bandwidth_max: 32
+        allocation:
+          - O, fl
+    served_dimensions: [D1]
 
   sram_16KB_I2:
     size: 131072
-    r_bw: 256
-    w_bw: 256
     r_cost: 10.5
     w_cost: 12.8
     area: 0
-    r_port: 1
-    w_port: 1
-    rw_port: 0
     latency: 1
     operands: [I2]
     ports:
-      - fh: w_port_1
-        tl: r_port_1
+      - name: r_port_1
+        type: read
+        bandwidth_min: 256
+        bandwidth_max: 256
+        allocation:
+          - I2, tl
+      - name: w_port_1
+        type: write
+        bandwidth_min: 256
+        bandwidth_max: 256
+        allocation:
+          - I2, fh
     served_dimensions: [D1, D2]
 
   sram_64KB_I1_O:
     size: 524288
-    r_bw: 512
-    w_bw: 512
     r_cost: 19.6
     w_cost: 22.5
     area: 0
-    r_port: 0
-    w_port: 0
-    rw_port: 2
     latency: 1
     operands: [I1, O]
     ports:
-      - fh: rw_port_1
-        tl: rw_port_1
-      - fh: rw_port_1
-        tl: rw_port_1
-        fl: rw_port_2
-        th: rw_port_2
+      - name: r_port_1
+        type: read
+        bandwidth_min: 512
+        bandwidth_max: 512
+        allocation:
+          - I1, tl
+          - O, tl
+      - name: r_port_2
+        type: read
+        bandwidth_min: 512
+        bandwidth_max: 512
+        allocation:
+          - O, th
+      - name: w_port_1
+        type: write
+        bandwidth_min: 512
+        bandwidth_max: 512
+        allocation:
+          - I1, fh
+          - O, fh
+      - name: w_port_2
+        type: write
+        bandwidth_min: 512
+        bandwidth_max: 512
+        allocation:
+          - O, fl
     served_dimensions: [D1, D2]
 
+operational_array:
+  unit_energy: 0.04 # pJ
+  unit_area: 1      # unit
+  dimensions: [D1, D2]
+  sizes: [32, 32]

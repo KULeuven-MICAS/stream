@@ -1,16 +1,22 @@
-name: tpu_like_quad_core
+# Three compute cores + off-chip DRAM controller
+name: three_core_hda_bus
 
-# Define all cores in the HDA
 cores:
-  0: ./cores/accelerator1.yaml
-  1: ./cores/accelerator2.yaml
-  2: ./cores/accelerator3.yaml
-offchip_core: ./cores/offchip.yaml
+  0: ./cores/accelerator1.yaml   # compute A
+  1: ./cores/accelerator2.yaml   # compute B
+  2: ./cores/accelerator3.yaml   # compute C
+  3: ./cores/offchip.yaml        # DRAM controller
+
+offchip_core_id: 3        # core that fronts external memory
+unit_energy_cost: 0       # default link energy
 
 core_connectivity:
-  # Single link connecting all cores
-  - 0, 1, 2
-  # Links to offchip are automatically added
+  # ───── Single shared on-chip bus among all compute cores ─────
+  - type: bus
+    cores: [0, 1, 2]
+    bandwidth: 32
 
-bandwidth: 32  # Bandwidth of the bus
-unit_energy_cost: 0  # Link energy (memory accesses will be included)
+  # ───── Same bus extended to the off-chip controller ─────
+  - type: bus
+    cores: [0, 1, 2, 3]
+    bandwidth: 32
