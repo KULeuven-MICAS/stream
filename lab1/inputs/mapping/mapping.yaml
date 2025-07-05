@@ -3,31 +3,31 @@
   intra_core_tiling:
     - OY, all
   inter_core_tiling:
-    - K, *
+    - K, 1
 
 - name: Layer1
   core_allocation: [1]
   intra_core_tiling:
     - OY, all
   inter_core_tiling:
-    - K, *
+    - K, 1
 - name: Layer2
   core_allocation: [2]
   intra_core_tiling:
     - OY, all
   inter_core_tiling:
-    - K, *
+    - K, 1
 
 - name: Layer3
   core_allocation: [0]
   intra_core_tiling:
     - OY, all
   inter_core_tiling:
-    - K, *
+    - K, 1
 
 - name: default
   core_allocation: [0]
   intra_core_tiling:
     - OY, all
   inter_core_tiling:
-    - K, *
+    - K, 1
