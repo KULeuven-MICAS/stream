@@ -157,6 +157,7 @@ class TiledWorkloadGenerationStage(Stage):
 
             # The graph construction needs to happen after the base priority and nb_real_predecessors are set
             tiled_workload = ComputationNodeWorkload()
+            tiled_workload.add_nodes_from(all_tiles)
             tiled_workload.add_edges_from(all_edges)
 
             # Set the base_priority and number of real predecessors of all nodes
