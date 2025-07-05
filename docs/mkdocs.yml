@@ -3,7 +3,7 @@ site_url: https://kuleuven-micas.github.io/stream/
 repo_url: https://github.com/KULeuven-MICAS/stream
 repo_name: KULeuven-MICAS/stream
 docs_dir: source
-site_dir: ../site
+site_dir: site
 edit_uri: edit/main/docs/
 
 theme:
