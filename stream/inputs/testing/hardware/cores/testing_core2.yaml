@@ -1,4 +1,5 @@
 name: testing_core2
+type: compute
 
 memories:
   rf_1B_I:

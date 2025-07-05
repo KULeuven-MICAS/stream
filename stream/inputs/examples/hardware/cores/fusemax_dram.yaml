@@ -1,4 +1,5 @@
 name: offchip
+type: compute
 
 memories:
   dram:

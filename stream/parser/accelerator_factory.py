@@ -60,6 +60,7 @@ class AcceleratorFactory:
         core = core_factory.create(core_id, shared_mem_group_id=shared_mem_group_id)
         # Typecast
         core = Core.from_zigzag_core(core)
+        core.type = core_data.get("type", "compute")  # Default type is 'compute'
         return core
 
     def get_shared_mem_group_id(self, core_id: int):

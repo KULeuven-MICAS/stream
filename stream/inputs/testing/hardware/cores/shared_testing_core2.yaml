@@ -1,4 +1,5 @@
 name: shared_testing_core1
+type: compute
 
 memories:
   sram_64KB:
