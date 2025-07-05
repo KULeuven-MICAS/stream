@@ -74,7 +74,7 @@ cost_lut_path = f"{output_folder}/cost_lut.pickle"
 cost_lut = CostModelEvaluationLUT(cost_lut_path)
 
 # Plotting memory usage of best SCME
-plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
+plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path, show_dram=True)
 
 # Save json for perfetto visualization (Visualize at http://ui.perfetto.dev/)
 convert_scme_to_perfetto_json(scme, cost_lut, json_path=json_path)
