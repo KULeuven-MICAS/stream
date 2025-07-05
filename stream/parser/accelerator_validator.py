@@ -14,7 +14,12 @@ logger = logging.getLogger(__name__)
 
 class AcceleratorValidator:
     INPUT_DIR_LOCATION = "stream/inputs/"
-    FILENAME_REGEX = r"^(?:[a-zA-Z0-9_\-]+|[a-zA-Z0-9_\-\///]+(\.yaml|\.yml))$"
+    FILENAME_REGEX = (
+        r"^(?:\.\/)?"  # optional "./"
+        r"(?:[A-Za-z0-9_\-]+\/)*"  # zero or more directories
+        r"[A-Za-z0-9_\-]+"  # file name
+        r"(?:\.ya?ml)?$"  # optional ".yaml" or ".yml"
+    )
     CORE_IDS_REGEX = r"^\d+(?:\s*,\s*\d+){1,}$"
 
     SCHEMA: dict[str, Any] = {
