@@ -42,7 +42,7 @@ class MulParser(OnnxComputeOperatorParser):
 
     def get_operand_source_input_format(
         self,
-        shape_of_w: list[int],
+        shape_of_w: tuple[int, ...],
     ):
         """This method needs more care in this subclass, since the equation assumes that the input with 'broadcast'
         shape is always at `W`"""
