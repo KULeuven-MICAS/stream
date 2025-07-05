@@ -10,12 +10,8 @@ from stream.api import optimize_allocation_ga
 from stream.utils import CostModelEvaluationLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.perfetto import convert_scme_to_perfetto_json
-from stream.visualization.schedule import (
-    visualize_timeline_plotly,
-)
 
 ############################## Initialize the logger ##############################
-
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(levelname)s - %(message)s"
 _logging.basicConfig(level=_logging_level, format=_logging_format)
@@ -77,16 +73,8 @@ else:
 cost_lut_path = f"{output_folder}/cost_lut.pickle"
 cost_lut = CostModelEvaluationLUT(cost_lut_path)
 
-# Plotting schedule timeline of best SCME
-visualize_timeline_plotly(
-    scme,
-    draw_dependencies=draw_dependencies,
-    draw_communication=plot_data_transfer,
-    fig_path=timeline_fig_path_plotly,
-    cost_lut=cost_lut,
-)
 # Plotting memory usage of best SCME
-plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
+plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path, show_dram=True)
 
 # Save json for perfetto visualization (Visualize at http://ui.perfetto.dev/)
 convert_scme_to_perfetto_json(scme, cost_lut, json_path=json_path)
