@@ -43,6 +43,9 @@ class SteadyStateScheduler:
         self.current_node_id = 0
         self.partitioned_nodes: dict[ComputationNode, list[SteadyStateComputation]] = {}
 
+        # Steady state workload that will be set after running the scheduler
+        self.steady_state_workload: SteadyStateWorkload | None = None
+
         # Cost model parameters
         self.latency_total = -1
         self.latency_per_iteration = -1
@@ -76,6 +79,7 @@ class SteadyStateScheduler:
         # tla = TensorLifetimeAnalyzer(ssw)
         # tla.summary()
         # tla.visualize()
+        self.steady_state_workload = ssw
         return self
 
     def prepare_graph(self, allocation: "TimeSlotAllocation") -> SteadyStateWorkload:
