@@ -43,6 +43,11 @@ class SteadyStateScheduler:
         self.current_node_id = 0
         self.partitioned_nodes: dict[ComputationNode, list[SteadyStateComputation]] = {}
 
+        # Cost model parameters
+        self.latency_total = -1
+        self.latency_per_iteration = -1
+        self.overlap_between_iterations = -1
+
     def run(self, allocation: "TimeSlotAllocation"):
         """
         Run the steady state scheduler on the given allocation.
@@ -62,12 +67,16 @@ class SteadyStateScheduler:
         tta = TransferAndTensorAllocator(ssw, tsa, offchip_core_id=offchip_core_id, iterations=self.iterations)
         tsa_upd, total_latency = tta.solve()
         print(tsa_upd)
-        tot, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations)
-        print(f"Total latency: {tot}, per iteration: {per_iter}, overlap: {ov}")
+        total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations)
+        print(f"Total latency: {total}, per iteration: {per_iter}, overlap: {ov}")
+        self.latency_total, self.latency_per_iteration, self.overlap_between_iterations = total, per_iter, ov
+        # Check that all nodes in the steady state workload have a chosen resource allocation
+        self.check_steady_state_workload_allocations(ssw)
+        ssw.visualize_to_file("steady_state_workload_final.png")
         # tla = TensorLifetimeAnalyzer(ssw)
         # tla.summary()
         # tla.visualize()
-        return tsa_upd
+        return self
 
     def prepare_graph(self, allocation: "TimeSlotAllocation") -> SteadyStateWorkload:
         steady_state_subgraph = self.get_workload_subgraph(allocation)
@@ -169,10 +178,10 @@ class SteadyStateScheduler:
                     original_tensor = original_node.operand_tensors[input_op]
                     if tensor not in seen_tensors:
                         seen_tensors.add(tensor)
-                        compute_allocations = set(n.chosen_resource_allocation for n in self.partitioned_nodes[node])
+                        # compute_allocations = set(n.chosen_resource_allocation for n in self.partitioned_nodes[node])
                         possible_resource_allocation = [
                             offchip_core,
-                        ] + list(compute_allocations)
+                        ]  # + list(compute_allocations)
                         full_shape = [ub - lb for lb, ub in original_tensor.loop_ranges]
                         slices_per_full = ssis.slices_per_full
                         constant_node = SteadyStateTensor(
@@ -208,10 +217,10 @@ class SteadyStateScheduler:
                         intra_core_tiling=intra_core_tiling,
                         operand=output_operand,
                     )
-                    compute_allocations = set(n.chosen_resource_allocation for n in self.partitioned_nodes[node])
+                    # compute_allocations = set(n.chosen_resource_allocation for n in self.partitioned_nodes[node])
                     possible_resource_allocation = [
                         offchip_core,
-                    ] + list(compute_allocations)
+                    ]  # + list(compute_allocations)
                     full_shape = [ub - lb for lb, ub in original_output_tensor.loop_ranges]
                     slices_per_full = ssis.slices_per_full
                     constant_node = SteadyStateTensor(
@@ -489,3 +498,14 @@ class SteadyStateScheduler:
             #     common_paths = [unique_links]
             all_common_paths.update(common_paths)
         return tuple(all_common_paths)
+
+    def check_steady_state_workload_allocations(self, steady_state_workload: SteadyStateWorkload) -> None:
+        """
+        Check if all nodes in the steady state workload have a chosen resource allocation.
+        """
+        for node in steady_state_workload.node_list:
+            alloc = node.chosen_resource_allocation
+            assert alloc is not None, (
+                f"Node {node.node_name} has chosen resource allocation {alloc}. "
+                "This should not happen after the TransferAndTensorAllocator has run."
+            )
