@@ -153,63 +153,89 @@ class TransferAndTensorAllocator:
             )
 
     # ...................... path choice ........................ #
-    def _path_choice_constraints(self):
-        # For every transfer, exactly one path must be selected
+    def _path_choice_constraints(self) -> None:
+        """
+        For every transfer, exactly one path must be selected and path choices must be coherent
+        with tensor placements for both source and destination tensors.
+        """
         for tr in self.transfer_nodes:
             paths = [p for p in self.y_path if p[0] is tr]
-            self.model.addConstr(quicksum(self.y_path[p] for p in paths) == 1, name=f"one_path_{tr.node_name}")
+            self._add_one_path_constraint(tr, paths)
+            self._add_source_tensor_coherence_constraints(tr, paths)
+            self._add_destination_tensor_coherence_constraints(tr, paths)
 
-            # coherence with tensor placement of *source* tensor
-            predecessors = list(self.ssw.predecessors(tr))
-            assert all(isinstance(n, SteadyStateTensor) for n in predecessors), (
-                f"Transfer {tr.node_name} has non-tensor predecessor(s): {predecessors}"
-            )
-            for src_tensor in predecessors:
-                if src_tensor in self.tensor_var:
-                    assert isinstance(src_tensor, SteadyStateTensor), (
-                        f"Expected {src_tensor.node_name} to be a SteadyStateTensor, got {type(src_tensor)}"
-                    )
-                    for p in paths:
-                        if not p[1]:  # empty path when sender and receiver are on the same core, handled below
-                            continue
+    def _add_one_path_constraint(
+        self, tr: SteadyStateTransfer, paths: list[tuple[SteadyStateTransfer, tuple[CommunicationLink, ...]]]
+    ) -> None:
+        """Ensure exactly one path is selected for each transfer."""
+        self.model.addConstr(quicksum(self.y_path[p] for p in paths) == 1, name=f"one_path_{tr.node_name}")
+
+    def _add_source_tensor_coherence_constraints(
+        self, tr: SteadyStateTransfer, paths: list[tuple[SteadyStateTransfer, tuple[CommunicationLink, ...]]]
+    ) -> None:
+        """Add constraints to ensure path choice is coherent with source tensor placement."""
+        predecessors = list(self.ssw.predecessors(tr))
+        assert all(isinstance(n, SteadyStateTensor) for n in predecessors), (
+            f"Transfer {tr.node_name} has non-tensor predecessor(s): {predecessors}"
+        )
+        successors = list(self.ssw.successors(tr))
+        for src_tensor in predecessors:
+            if src_tensor in self.tensor_var:
+                assert isinstance(src_tensor, SteadyStateTensor), (
+                    f"Expected {src_tensor.node_name} to be a SteadyStateTensor, got {type(src_tensor)}"
+                )
+                for p in paths:
+                    if p[1]:
                         src_core = p[1][0].sender  # first link’s source core
                         assert isinstance(src_core, Core), f"Expected {src_core} to be a Core, got {type(src_core)}"
                         self.model.addConstr(
                             self.y_path[p] <= self.x_tensor[(src_tensor, src_core)],
                             name=f"path_core_link_src_{tr.node_name}_{_resource_key(src_core)}",
                         )
-
-            # coherence with tensor placement of *destination* tensor
-            successors = list(self.ssw.successors(tr))
-            assert all(isinstance(n, SteadyStateTensor) for n in successors), (
-                f"Transfer {tr.node_name} has non-tensor successor(s): {successors}"
-            )
-            for dst_tensor in successors:
-                if dst_tensor in self.tensor_var:
-                    assert isinstance(dst_tensor, SteadyStateTensor), (
-                        f"Expected {dst_tensor.node_name} to be a SteadyStateTensor, got {type(dst_tensor)}"
-                    )
-                    for p in paths:
-                        if p[1]:
-                            dst_core = p[1][-1].receiver  # last link’s destination core
-                            if isinstance(dst_core, str):
-                                continue  # dst_core is any core, no constraint needed
+                    else:
+                        # empty path is only possible if the src_tensor is fixed on the same core as the dst_tensor
+                        dst_tensor = successors[0] if successors else None
+                        if dst_tensor is not None and dst_tensor in self.tensor_fixed:
+                            dst_core = self.resource_of[dst_tensor]
+                            assert isinstance(dst_core, Core), f"Expected {dst_core} to be a Core, got {type(dst_core)}"
                             self.model.addConstr(
-                                self.y_path[p] <= self.x_tensor[(dst_tensor, dst_core)],
-                                name=f"path_core_link_dst_{tr.node_name}_{_resource_key(dst_core)}",
+                                self.y_path[p] <= self.x_tensor[(src_tensor, dst_core)],
+                                name=f"path_core_link_src_empty_path_{tr.node_name}_{_resource_key(dst_core)}",
                             )
-                        else:
-                            # empty path is only possible if the dst_tensor is fixed on the same core as the src_tensor
-                            src_tensor = predecessors[0] if predecessors else None
-                            if src_tensor is not None and src_tensor in self.tensor_fixed:
-                                src_core = self.resource_of[src_tensor]
-                                assert isinstance(src_core, Core), (
-                                    f"Expected {src_core} to be a Core, got {type(src_core)}"
-                                )
-                                self.model.addConstr(
-                                    self.y_path[p] <= self.x_tensor[(dst_tensor, src_core)],
-                                    name=f"path_core_link_dst_empty_path_{tr.node_name}_{_resource_key(src_core)}",
-                                )
+
+    def _add_destination_tensor_coherence_constraints(
+        self, tr: SteadyStateTransfer, paths: list[tuple[SteadyStateTransfer, tuple[CommunicationLink, ...]]]
+    ) -> None:
+        """Add constraints to ensure path choice is coherent with destination tensor placement."""
+        successors = list(self.ssw.successors(tr))
+        assert all(isinstance(n, SteadyStateTensor) for n in successors), (
+            f"Transfer {tr.node_name} has non-tensor successor(s): {successors}"
+        )
+        predecessors = list(self.ssw.predecessors(tr))
+        for dst_tensor in successors:
+            if dst_tensor in self.tensor_var:
+                assert isinstance(dst_tensor, SteadyStateTensor), (
+                    f"Expected {dst_tensor.node_name} to be a SteadyStateTensor, got {type(dst_tensor)}"
+                )
+                for p in paths:
+                    if p[1]:
+                        dst_core = p[1][-1].receiver  # last link’s destination core
+                        if isinstance(dst_core, str):
+                            continue  # dst_core is any core, no constraint needed
+                        self.model.addConstr(
+                            self.y_path[p] <= self.x_tensor[(dst_tensor, dst_core)],
+                            name=f"path_core_link_dst_{tr.node_name}_{_resource_key(dst_core)}",
+                        )
+                    else:
+                        # empty path is only possible if the dst_tensor is fixed on the same core as the src_tensor
+                        src_tensor = predecessors[0] if predecessors else None
+                        if src_tensor is not None and src_tensor in self.tensor_fixed:
+                            src_core = self.resource_of[src_tensor]
+                            assert isinstance(src_core, Core), f"Expected {src_core} to be a Core, got {type(src_core)}"
+                            self.model.addConstr(
+                                self.y_path[p] <= self.x_tensor[(dst_tensor, src_core)],
+                                name=f"path_core_link_dst_empty_path_{tr.node_name}_{_resource_key(src_core)}",
+                            )
 
     # ...................... link contention .................... #
     def _link_contention_constraints(self):
@@ -388,7 +414,7 @@ class TransferAndTensorAllocator:
     # ------------------------------------------------------------------ #
     # public solve()                                                     #
     # ------------------------------------------------------------------ #
-    def solve(self, *, tee: bool = True) -> tuple[TimeSlotAllocation, int]:
+    def solve(self, *, tee: bool = True) -> tuple[TimeSlotAllocation, int]:  # noqa: PLR0912
         self.model.setParam("OutputFlag", 1 if tee else 0)
         self.model.optimize()
         if self.model.Status != GRB.OPTIMAL:
@@ -422,6 +448,8 @@ class TransferAndTensorAllocator:
                 if res is None:
                     assert node in tensor_alloc, f"Tensor {node.node_name} not found in tensor_alloc."
                     res_new = tensor_alloc[node]
+                else:
+                    res_new = res
                 new_allocs.append((slot, res_new, node))
             elif isinstance(node, SteadyStateTransfer):
                 assert node in routing, f"Transfer {node.node_name} not found in routing."
