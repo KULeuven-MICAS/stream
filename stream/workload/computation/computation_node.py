@@ -1,4 +1,5 @@
 from copy import deepcopy
+from math import prod
 from typing import TypeAlias
 
 from xdsl.dialects.builtin import MemRefType, i8, i16, i32
@@ -19,7 +20,7 @@ from stream.workload.node import Node
 from stream.workload.tensor import SubviewTensor
 
 OperandTensorReshape: TypeAlias = dict[LayerOperand, tuple[int, ...]]
-LoopRanges: TypeAlias = dict[LayerDim, tuple[int, int]]
+LOOP_RANGES_T: TypeAlias = dict[LayerDim, tuple[int, int]]
 
 PRECISION_TYPE_MAP = {
     8: i8,
@@ -54,7 +55,7 @@ class ComputationNode(LayerNode, Node):
         sub_id: int = -1,
         input_names: list[str] | None = None,
         partially_constant_operands: list[LayerOperand] | None = None,
-        subview_ops: dict[SubviewOp] = {},
+        subview_ops: dict[LayerOperand, SubviewOp] | None = None,
     ):
         """
         Args:
@@ -74,6 +75,8 @@ class ComputationNode(LayerNode, Node):
         """
         if input_names is None:
             input_names = []
+        if subview_ops is None:
+            subview_ops = {}
         if partially_constant_operands is None:
             partially_constant_operands = []
 
@@ -131,25 +134,21 @@ class ComputationNode(LayerNode, Node):
         self.nb_real_predecessors = None
         self.static_hash = self.__compute_static_hash()
 
-        try:
-            self.fusion_partition_dims = ComputationNode.FUSION_DIM_MAPPING[op_type]
-        except KeyError:
-            raise NotImplementedError(f"Fusion partitioning dimensions not defined for {op_type}")
-
         # Each ComputationNode will save a tensor for all its defined operands.
         # For example, a conv layer will have an I tensor, W tensor and O tensor.
         self.operand_tensors: dict[LayerOperand, SubviewTensor] = {}
-        self.set_operand_tensors(subview_ops)
+        self.subview_ops = subview_ops  # used in self.set_operand_tensors
+        self.set_operand_tensors()
 
         # Rename function
         self.get_node_operand = self.memory_operand_links.mem_to_layer_op
         self.extract_node_info = self.extract_layer_info
 
-    def set_operand_tensors(self, subview_ops: dict[SubviewOp] | None):
+    def set_operand_tensors(self):
         """Each ComputationNode will save a tensor for all its defined operands.
         For example, a conv layer will have an I tensor, W tensor and O tensor.
         """
-        self.operand_tensors: dict[LayerOperand, Tensor] = {}
+        self.operand_tensors: dict[LayerOperand, SubviewTensor] = {}
 
         """Set the operand tensors for this node based on the given subview ops."""
         for op in self.layer_operands:
@@ -165,9 +164,9 @@ class ComputationNode(LayerNode, Node):
             strides = [1] * len(ranges)
             precision_type = PRECISION_TYPE_MAP.get(precision)
             memref_type = MemRefType(precision_type, sizes)
-            if subview_ops:
-                assert op in subview_ops, f"SubviewOp not found for operand {op}"
-                memref_source = subview_ops[op]
+            if self.subview_ops:
+                assert op in self.subview_ops, f"SubviewOp not found for operand {op}"
+                memref_source = self.subview_ops[op]
             else:
                 memref_source = AllocOp([], [], memref_type)
             self.operand_tensors[op] = SubviewTensor(
@@ -197,7 +196,7 @@ class ComputationNode(LayerNode, Node):
         except KeyError:
             return None
 
-    def get_output_tensor(self) -> Tensor:
+    def get_output_tensor(self) -> SubviewTensor:
         return self.operand_tensors[self.output_operand]
 
     def get_total_inter_core_splits(self) -> int:
@@ -314,6 +313,7 @@ class ComputationNode(LayerNode, Node):
             intra_core_tiling=self.intra_core_tiling,
             inter_core_tiling=self.inter_core_tiling,
             layer_dimension_names=self.user_given_layer_dimension_names,
+            kernel=self.kernel,
         )
         return deepcopy(mapping_attr)
 
@@ -372,6 +372,7 @@ class GeneratedComputationNode(ComputationNode):
         group_id: int = 0,
         sub_id: int = -1,  # To distinguish alternative versions of this node
         input_names: list[str] | None = None,
+        subview_ops: dict[LayerOperand, SubviewOp] | None = None,
     ):
         """
         Args:
@@ -382,6 +383,8 @@ class GeneratedComputationNode(ComputationNode):
         """
         if input_names is None:
             input_names = []
+        if subview_ops is None:
+            subview_ops = {}
 
         node_name = f"{node_name}_{gen_id}"
         super().__init__(
@@ -395,6 +398,7 @@ class GeneratedComputationNode(ComputationNode):
             group_id=group_id,
             sub_id=sub_id,
             input_names=input_names,
+            subview_ops=subview_ops,
         )
 
         self.gen_id = gen_id

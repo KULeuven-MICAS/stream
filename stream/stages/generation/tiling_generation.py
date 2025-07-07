@@ -129,6 +129,8 @@ class TilingGenerationStage(Stage):
                     logger.warning(f"Rounding {node}: {layer_dim} {layer_dim_size} -> {new_layer_dim_size}")
                     node.layer_dim_sizes[layer_dim] = new_layer_dim_size
                     factor_new = factor
+                else:
+                    factor_new = factor
 
                 valid_tiling.append((layer_dim, factor_new))
 

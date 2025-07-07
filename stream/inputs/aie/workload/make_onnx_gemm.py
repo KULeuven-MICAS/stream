@@ -1,12 +1,11 @@
 import numpy as np
 import onnx
-import onnx.helper as helper
 import onnx.shape_inference
 import yaml
-from onnx import TensorProto
+from onnx import TensorProto, helper
 
 
-def make_gemm_mapping(M, N, K):
+def make_gemm_mapping(M, N, K):  # noqa: N803
     name = f"gemm_{M}_{N}_{K}"
     output_file = f"stream/inputs/aie/mapping/{name}.yaml"
     # Construct tiling entries as comma-separated strings
@@ -21,14 +20,14 @@ def make_gemm_mapping(M, N, K):
     mapping = [
         {
             "name": "Gemm",
-            "core_allocation": [2],
+            "core_allocation": [1],
             "intra_core_tiling": tiling_strings,
             "inter_core_tiling": inter_core_tiling,
             "kernel": {"name": "mm_32x32x32", "utilization": 61.8},
         },
         {
             "name": "default",
-            "core_allocation": [2],
+            "core_allocation": [1],
             "intra_core_tiling": tiling_strings,
             "inter_core_tiling": inter_core_tiling,
             "kernel": {"name": "mm_32x32x32", "utilization": 61.8},
@@ -40,7 +39,7 @@ def make_gemm_mapping(M, N, K):
     return output_file
 
 
-def make_gemm_workload(M, N, K):
+def make_gemm_workload(M, N, K):  # noqa: N803
     ACT_SIZE = 16
     WEIGHT_SIZE = 16
     OUTPUT_SIZE = 16

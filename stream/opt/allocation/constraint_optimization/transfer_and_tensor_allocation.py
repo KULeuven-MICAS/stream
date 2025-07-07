@@ -170,6 +170,8 @@ class TransferAndTensorAllocator:
                         f"Expected {src_tensor.node_name} to be a SteadyStateTensor, got {type(src_tensor)}"
                     )
                     for p in paths:
+                        if not p[1]:  # empty path when sender and receiver are on the same core, handled below
+                            continue
                         src_core = p[1][0].sender  # first link’s source core
                         assert isinstance(src_core, Core), f"Expected {src_core} to be a Core, got {type(src_core)}"
                         self.model.addConstr(

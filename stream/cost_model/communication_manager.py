@@ -40,7 +40,7 @@ class CommunicationEvent:
     def __str__(self) -> str:
         return (
             f"CommunicationEvent(id={self.id}, sender={self.sender}, receiver={self.receiver}, "
-            f"tensor={self.tasks[0].tensor}, energy={self.energy:.2e})"
+            f"tensor={self.tasks[0].tensors}, energy={self.energy:.2e})"
         )
 
     def __repr__(self) -> str:
@@ -75,7 +75,7 @@ class CommunicationLinkEvent:
         self.start = start
         self.end = end
         self.duration = self.end - self.start
-        self.tensor = tensor
+        self.tensors = tensors
         self.energy = energy
         self.activity = activity
         self.source = source
@@ -95,7 +95,7 @@ class CommunicationLinkEvent:
         """
         Returns the operand associated with the tensor for this event.
         """
-        return self.tensor.layer_operand
+        return self.tensors.layer_operand
 
     def get_origin(self):
         origins = [tensor.cn_source for tensor in self.tensors]
@@ -280,12 +280,17 @@ class CommunicationManager:
         }
 
         # Get idle window of the involved links
-        block_start = self.get_links_idle_window(links_to_block, start_timestep, duration, tensors_per_link)
+        block_start = self.get_links_idle_window(tensor_bw_per_link, start_timestep, duration, tensors_per_link)
         # Block them
-        for link, req_bw in links_to_block.items():
-            req_bw = ceil(req_bw)
+        for link, req_bw in tensor_bw_per_link.items():
+            req_bw_ceiled = ceil(req_bw)
             link.block(
-                block_start, duration, tensors_per_link[link], activity=req_bw, source=source, destinations=destinations
+                block_start,
+                duration,
+                tensors_per_link[link],
+                activity=req_bw_ceiled,
+                source=source,
+                destinations=destinations,
             )
         return block_start
 
@@ -303,7 +308,7 @@ class CommunicationManager:
 
     def get_links_idle_window(
         self,
-        tensor_bw_per_link: dict["CommunicationLink", list[tuple[Tensor, int]]],
+        tensor_bw_per_link: dict["CommunicationLink", list[tuple[SubviewTensor, int]]],
         start_timestep: int,
         duration: int,
         tensors_per_link: dict["CommunicationLink", list[SubviewTensor]],

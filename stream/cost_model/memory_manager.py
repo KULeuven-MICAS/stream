@@ -98,7 +98,7 @@ class MemoryManager:
         instances_storing_tensor: set[MemoryInstance] = set()
         available_since_timesteps: dict[MemoryInstance, int] = {}
         for top_instance, stored_tensors in self.top_instance_stored_tensors.items():
-            if any((equality_hash == stored_tensor.equality_hash() for stored_tensor in stored_tensors)):
+            if any(equality_hash == stored_tensor.equality_hash() for stored_tensor in stored_tensors):
                 instances_storing_tensor.add(top_instance)
                 available_since_timesteps[top_instance] = self.top_instance_available_since_timestep[top_instance][
                     equality_hash
@@ -139,7 +139,7 @@ class MemoryManager:
         An error is raised if there is not enough space to add it.
 
         Args:
-            tensor (Tensor): The tensor to be added.
+            tensor (SubviewTensor): The tensor to be added.
             core (Core): The core to add it to.
             timestep (int): The timestep at which space should be reserved for the tensor.
             timestep_end (int): The timestep at which the tensor is available.
@@ -226,7 +226,7 @@ class MemoryManager:
         If there is never enough space, the latest timestep is returned.
 
         Args:
-        tensor (Tensor): The tensor to be added to the core.
+        tensor (SubviewTensor): The tensor to be added to the core.
         core_id (int): The core id that is going to receive the tensor.
         timestep (int): The timestep from which to start considering make this tensor data transfer.
         memory_op (str): The memory operand storing the tensor on the receiving end of the transfer.
@@ -302,7 +302,7 @@ class MemoryManager:
             importance = instance_priority * tensor.size
             evictable_tensors_priority_size.append(importance)
         evictable_tensors_priority_size, evictable_tensors = zip(
-            *sorted(zip(evictable_tensors_priority_size, evictable_tensors))
+            *sorted(zip(evictable_tensors_priority_size, evictable_tensors, strict=False)), strict=False
         )
         evictable_tensors_size = [tensor.size for tensor in evictable_tensors]
         evictable_tensors_size_sums = [
@@ -330,11 +330,9 @@ class MemoryManager:
         # Get the instance on the storing core
         try:
             equivalent_tensor = next(
-                (
-                    stored_tensor
-                    for stored_tensor in self.top_instance_stored_tensors[top_instance]
-                    if stored_tensor.equality_hash() == tensor.equality_hash()
-                )
+                stored_tensor
+                for stored_tensor in self.top_instance_stored_tensors[top_instance]
+                if stored_tensor.equality_hash() == tensor.equality_hash()
             )
         except StopIteration:
             # If the tensor is not present, we don't have to remove it. # This is possible because in
@@ -371,7 +369,7 @@ class MemoryManager:
                 [timestep, all_usages[insert_idx - 1] - tensor.size],
                 axis=0,
             )
-            # Even though we're only removing one tensor (with one mem_op) we also add the timestep for the other mem ops
+            # Even though we're only removing one tensor (with one mem_op) we also add the timestep for the other mem op
             for mem_op in self.nb_stored_tensors[top_instance]:
                 if mem_op == tensor.memory_operand:
                     to_remove = 1
@@ -473,8 +471,8 @@ class MemoryManager:
         # If we still haven't evicted enough tensors, raise an error as we went through all evictable ones
         if size_evicted < min_size_to_evict or nb_evicted < nb_tensors_to_evict:
             raise ValueError(
-                f"The evictable tensors {evictable_tensors} and their sizes {sorted_evictable_tensors} are too small to "
-                f"evict a size of {min_size_to_evict} or to reach the maximum of {max_nb_tensors_on_core} stored tensors."
+                f"The evictable tensors {evictable_tensors} and their sizes {sorted_evictable_tensors} are too small "
+                f"to evict a size of {min_size_to_evict} or reach max of {max_nb_tensors_on_core} stored tensors."
             )
         return tensors_to_evict
 
@@ -486,8 +484,8 @@ class MemoryManager:
             # Use numpy searchsorted to find the where the timestep should be inserted
             all_timesteps = self.top_instance_stored_cumsum[top_instance][:, 0]
             insert_idx = np.searchsorted(all_timesteps, timestep)
-            nb_stored_per_mem_op = nb_stored_per_mem_op[insert_idx:]
-            relevant_nb_stored_tensors[mem_op] = nb_stored_per_mem_op
+            nb_stored_per_mem_op_relevant = nb_stored_per_mem_op[insert_idx:]
+            relevant_nb_stored_tensors[mem_op] = nb_stored_per_mem_op_relevant
         return relevant_nb_stored_tensors
 
     def get_max_nb_tensors_allowed(self, core: Core):
@@ -499,7 +497,7 @@ class MemoryManager:
 
     def get_max_nb_tensors_after_addition(self, top_instance: MemoryInstance, tensor: SubviewTensor, timestep: int):
         """
-        Get the maximum number of tensors that will be stored in the instance across all operands after adding the tensor.
+        Get the maximum number of tensors stored in the instance across all operands after adding the tensor.
         """
         memory_op = tensor.memory_operand
         # Use numpy searchsorted to find the where the timestep should be inserted
@@ -523,7 +521,7 @@ class MemoryManager:
         return max_nb_tensors_for_this_mem_op + max_nb_tensors_for_other_mem_ops
 
     def fix_memory_usage_and_nb_stored_tensors(self, core: Core, start_timestep: int, end_timestep: int):
-        """Fix the memory usage and nb of tensors aliveof all top_instances of the core between start_timestep and end_timestep.
+        """Fix the memory usage and nb of tensors alive of all top_instances of the core between start and end timestep.
         This is used to fix the memory usage and nb of tensors alive during computation of a node.
         """
         for top_instance in self.top_instances_per_core[core]:

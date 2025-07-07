@@ -80,7 +80,7 @@ class SteadyStateTensor(SteadyStateNode):
         return self.slices_per_full or 1
 
     def __str__(self) -> str:
-        return f"Tensor({self.node_name})"
+        return f"SubviewTensor({self.node_name})"
 
     def __repr__(self) -> str:
         return str(self)

@@ -79,7 +79,7 @@ class CoalaScheduler:
         # Initialize bookkeeping
         self.nb_scheduled_nodes = 0
         self.scheduled_nodes: set[ComputationNode] = set()
-        self.bw_fraction_to_use_for_tensor: dict[Tensor, float] = {}
+        self.bw_fraction_to_use_for_tensor: dict[SubviewTensor, float] = {}
         self.candidates = self.get_initial_candidates()
         self.initialize_tensor_priorities()
         self.initialize_offchip_tensors()
@@ -306,7 +306,7 @@ class CoalaScheduler:
         del self.candidates[best_candidate_idx]
         return best_candidate, preds_end
 
-    def split_tensor_if_needed(self, tensor: Tensor, node: ComputationNode, core: Core, timestep: int):
+    def split_tensor_if_needed(self, tensor: SubviewTensor, node: ComputationNode, core: Core, timestep: int):
         """
         Returns a subtensor if only a portion of the original tensor is needed by the node.
         If the tensor is already present in the core or no splitting is required, returns the original tensor.
@@ -349,16 +349,16 @@ class CoalaScheduler:
         return sub_tensor
 
     def create_sub_tensor(
-        self, tensor: Tensor, loop_dims_to_split: list[LayerDim], sub_loop_ranges: list[tuple[int, int]]
+        self, tensor: SubviewTensor, loop_dims_to_split: list[LayerDim], sub_loop_ranges: list[tuple[int, int]]
     ):
         """
-        Creates a new Tensor object representing a subtensor with updated loop ranges and size.
+        Creates a new SubviewTensor object representing a subtensor with updated loop ranges and size.
         Args:
             tensor: The original tensor to split.
             loop_dims_to_split: List of loop dimensions to split on.
             sub_loop_ranges: The required ranges for each split dimension.
         Returns:
-            A new Tensor object representing the subtensor.
+            A new SubviewTensor object representing the subtensor.
         """
         assert all(dim in tensor.loop_dimensions for dim in loop_dims_to_split), (
             f"The loop dimensions to split {loop_dims_to_split} are not in the tensor: {tensor.loop_dimensions}."
@@ -375,7 +375,7 @@ class CoalaScheduler:
 
         new_loop_ranges = tuple(new_loop_ranges)
 
-        sub_tensor = Tensor(
+        sub_tensor = SubviewTensor(
             size=int(tensor.size / compression_factor),
             origin=tensor.origin,
             layer_operand=tensor.layer_operand,
@@ -388,7 +388,7 @@ class CoalaScheduler:
     def reset_too_large_operands_for_subtensors(
         self,
         node: ComputationNode,
-        sub_tensors_this_candidate_needs: list[Tensor],
+        sub_tensors_this_candidate_needs: list[SubviewTensor],
         memory_operands: list[MemoryOperand],
         core: Core,
     ):
@@ -465,10 +465,10 @@ class CoalaScheduler:
         """
         Determines all the tensors needed to compute a node, including constant and non-constant operands.
         Returns:
-            tensors_this_candidate_needs: list[Tensor]
+            tensors_this_candidate_needs: list[SubviewTensor]
             tensors_operands: list[MemoryOperand]
         """
-        tensors_this_candidate_needs: list[Tensor] = []
+        tensors_this_candidate_needs: list[SubviewTensor] = []
         tensors_operands: list[MemoryOperand] = []
         # Constant operands
         for layer_op in node.constant_operands:
@@ -532,7 +532,7 @@ class CoalaScheduler:
 
     def schedule_tensor_removal(
         self,
-        tensor_to_remove: Tensor,
+        tensor_to_remove: SubviewTensor,
         core_to_remove_from: Core,
         memory_op: MemoryOperand,
         timestep: int,
@@ -573,11 +573,11 @@ class CoalaScheduler:
 
     def schedule_tensor_transfer(
         self,
-        tensor: Tensor,
+        tensor: SubviewTensor,
         receiving_core: Core,
         tensor_operand: MemoryOperand,
         earliest_t: int = 0,
-        non_evictable_tensors: list[Tensor] | None = None,
+        non_evictable_tensors: list[SubviewTensor] | None = None,
         sending_core: Core | None = None,
         transfer_bandwidth_fraction: float = 1,
         transfer_cause: TransferCause | None = None,
@@ -639,11 +639,11 @@ class CoalaScheduler:
 
     def make_space_for_tensor(
         self,
-        tensor: Tensor,
+        tensor: SubviewTensor,
         core: Core,
         memory_op: MemoryOperand,
         timestep: int,
-        tensors_to_avoid_evicting: list[Tensor] | None = None,
+        tensors_to_avoid_evicting: list[SubviewTensor] | None = None,
     ):
         """Make space for the given tensor on the given core by evicting already stored tensors if necessary.
 
@@ -691,7 +691,7 @@ class CoalaScheduler:
     def remove_sink_node_tensor(
         self,
         node: ComputationNode,
-        tensor_to_remove: Tensor,
+        tensor_to_remove: SubviewTensor,
         core_to_remove_from: Core,
         timestep: int,
         transfer_bandwidth_fraction: float,
@@ -716,7 +716,7 @@ class CoalaScheduler:
         self,
         node: ComputationNode,
         start_time: int,
-        output_tensor: Tensor,
+        output_tensor: SubviewTensor,
         output_memory_operand: MemoryOperand,
         core_to_add_output_to: Core,
         core_to_run_on: Core,
@@ -741,8 +741,8 @@ class CoalaScheduler:
         return end_time
 
 
-def decrease_priority(
-    tensors: list[Tensor],
+def decrease_priority(  # noqa: PLR0915
+    tensors: list[SubviewTensor],
     tensors_operands: list[MemoryOperand],
     accelerator: "Accelerator",
     node: ComputationNode,
@@ -806,9 +806,9 @@ def decrease_priority(
     def remove_sub_tensors(
         self,
         core: Core,
-        sub_tensors: list[Tensor],
+        sub_tensors: list[SubviewTensor],
         tensors_operands: list[MemoryOperand],
-        exceptions: list[Tensor],
+        exceptions: list[SubviewTensor],
         timestep: int,
     ):
         """Remove all the sub-tensors from the given core, except for the tensors in the exceptions list."""
@@ -859,7 +859,7 @@ def decrease_priority(
         possible_parallel_nb_nodes = node.get_total_inter_core_splits()
         return 1 / possible_parallel_nb_nodes
 
-    def get_transfer_bandwidth_fraction_for_eviction(self, tensor: Tensor):
+    def get_transfer_bandwidth_fraction_for_eviction(self, tensor: SubviewTensor):
         """Get the fraction of the off-chip bandwidth to be used to evict this tensor at the given timestep.
         Instead of using the total inter-core splits of the current node, we use the inter-core tiling (i.e. the number
         of cores dealing with the tensor) of the source node of this tensor.

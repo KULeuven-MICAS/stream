@@ -98,11 +98,11 @@ class ConstraintOptimizationAllocationStage(Stage):
         logger.info("Start ConstraintOptimizationAllocationStage.")
         self.extract_steady_state_per_stack()
         self.find_best_allocation_per_stack()
-        # _ = self.run_simple_scheduler()
-        scme = self.run_coala()
+        tsa = self.run_simple_scheduler()
+        # scme = self.run_coala()
 
         logger.info("End ConstraintOptimizationAllocationStage.")
-        yield (scme, None)
+        yield (tsa, None)
 
     def run_coala(self):
         unrolled_allocation = self.get_unrolled_allocation()

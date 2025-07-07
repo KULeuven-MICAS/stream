@@ -128,6 +128,11 @@ class ONNXModelParser:
             if not node.input:
                 continue
 
+            if not node.name:
+                # If the node has no name, we generate a unique name based on the node id.
+                # This is useful for debugging and visualization purposes.
+                node.name = f"Op{node_id}"
+
             nodes_inputs[node_id] = node.input
 
             parser_class = self.get_parser_class(node)

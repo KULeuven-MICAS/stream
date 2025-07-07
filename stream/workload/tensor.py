@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from math import prod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeAlias
 
 from xdsl.dialects.builtin import MemRefType
 from xdsl.dialects.memref import AllocOp, SubviewOp
@@ -11,7 +11,7 @@ if TYPE_CHECKING:
 
     from stream.cost_model.memory_manager import MemoryManager
     from stream.hardware.architecture.accelerator import Accelerator
-    from stream.workload.computation.computation_node import ComputationNode
+    from stream.workload.computation.computation_node import LOOP_RANGES_T, ComputationNode
     from stream.workload.onnx_workload import ComputationNodeWorkload
 
 TensorHash: TypeAlias = int
@@ -22,7 +22,7 @@ class SubviewTensor:
     TODO: Add from which layer this tensor originates and its dimension ranges
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         memref_source: AllocOp,
         memref_type: MemRefType,
@@ -34,7 +34,7 @@ class SubviewTensor:
         loop_dimensions: list[LayerDim],
         loop_ranges: tuple[tuple[int, int], ...],
     ):
-        """Initialize the Tensor instance.
+        """Initialize the SubviewTensor instance.
 
         Args:
             size: the size of the tensor in bits
@@ -53,7 +53,7 @@ class SubviewTensor:
         self.subview = subview
         self.size = prod(sizes)
         self.cn_source = cn_source
-        self.layer_operand = layer_operand
+        self.__layer_operand = layer_operand
         self.memory_operand = self.cn_source.memory_operand_links.layer_to_mem_op(layer_operand)
         self.loop_dimensions = loop_dimensions
         self.__loop_ranges = loop_ranges
@@ -62,7 +62,7 @@ class SubviewTensor:
         self.id = (self.cn_source.id, self.cn_source.sub_id, layer_operand)
 
     def __str__(self) -> str:
-        return f"Tensor{self.id}"
+        return f"SubviewTensor{self.id}"
 
     def __repr__(self) -> str:
         return str(self)
@@ -146,3 +146,23 @@ class SubviewTensor:
         assert isinstance(source, AllocOp)
         results_type: MemRefType = source.results[0].type
         return results_type.get_shape()
+
+    @property
+    def origin(self):
+        """Protect property so static hash can't be altered"""
+        return self.cn_source
+
+    @property
+    def loop_ranges(self):
+        """Protect property so static hash can't be altered"""
+        return self.__loop_ranges
+
+    @property
+    def layer_operand(self):
+        """Protect property so static hash can't be altered"""
+        return self.__layer_operand
+
+    @property
+    def loop_ranges_per_dim(self) -> "LOOP_RANGES_T":
+        """Same format as ComputationNode.loop_ranges"""
+        return {dim: loop_range for dim, loop_range in zip(self.loop_dimensions, self.loop_ranges, strict=False)}

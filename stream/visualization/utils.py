@@ -30,7 +30,7 @@ def get_communication_dicts(scme: "StreamCostModelEvaluation"):
             end = cl_event.end
             runtime = end - start
             energy = cl_event.energy
-            tensor = cl_event.tensor
+            tensor = cl_event.tensors
             node = tensor.origin
             layer_id = node.id
             activity = cl_event.activity

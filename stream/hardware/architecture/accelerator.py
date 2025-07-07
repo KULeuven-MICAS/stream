@@ -9,6 +9,7 @@ from zigzag.utils import DiGraphWrapper
 from stream.cost_model.communication_manager import CommunicationManager
 from stream.cost_model.memory_manager import MemoryManager
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.tensor import SubviewTensor
 
@@ -106,7 +107,7 @@ class Accelerator:
         )
         return top_memory_instance_a is top_memory_instance_b
 
-    def get_storing_memory_instance_and_timestep(self, tensor: Tensor, suggested_core: Core | None):
+    def get_storing_memory_instance_and_timestep(self, tensor: SubviewTensor, suggested_core: Core | None):
         """Get the top instance storing the given tensor, and the timestep since which it was available.
         If a core id is provided, we get the instance of that core. Else, we find the instance where the tensor has
         been stored the longest.
@@ -133,15 +134,15 @@ class Accelerator:
 
         return storing_instance, available_since_timestep
 
-    def get_available_timestep(self, tensor: SubViewTensor, suggested_core: Core | None):
+    def get_available_timestep(self, tensor: SubviewTensor, suggested_core: Core | None):
         _, available_since_timestep = self.get_storing_memory_instance_and_timestep(tensor, suggested_core)
         return available_since_timestep
 
-    def get_storing_memory_instance(self, tensor: SubViewTensor, suggested_core: Core | None):
+    def get_storing_memory_instance(self, tensor: SubviewTensor, suggested_core: Core | None):
         storing_instance, _ = self.get_storing_memory_instance_and_timestep(tensor, suggested_core)
         return storing_instance
 
-    def get_storing_cores(self, tensor: SubViewTensor, suggested_core: Core | None):
+    def get_storing_cores(self, tensor: SubviewTensor, suggested_core: Core | None):
         storing_instance, _ = self.get_storing_memory_instance_and_timestep(tensor, suggested_core)
         storing_cores = self.memory_manager.cores_per_top_instance[storing_instance]
         return storing_cores
@@ -151,26 +152,26 @@ class Accelerator:
         tensors = self.memory_manager.get_tensors_stored_at_timestep(top_instance, timestep)
         return tensors
 
-    def core_contains_tensor(self, tensor: SubViewTensor, core: int | Core):
+    def core_contains_tensor(self, tensor: SubviewTensor, core: int | Core):
         memory_op = tensor.memory_operand
         top_instance = self.get_top_instance_of_core(core, memory_op)
         assert isinstance(top_instance, MemoryInstance)
         return self.memory_manager.contains(tensor, top_instance)
 
-    def contains_tensor(self, tensor: SubViewTensor, top_instance: int | MemoryInstance):
+    def contains_tensor(self, tensor: SubviewTensor, top_instance: int | MemoryInstance):
         if isinstance(top_instance, int):  # assume core id
             return self.core_contains_tensor(tensor, top_instance)
         assert isinstance(top_instance, MemoryInstance)
         return self.memory_manager.contains(tensor, top_instance)
 
-    def find_tensor(self, tensor: SubViewTensor):
+    def find_tensor(self, tensor: SubviewTensor):
         return self.memory_manager.find_tensor(tensor)
 
-    def find_tensor_in_top_instances(self, tensor: SubViewTensor):
+    def find_tensor_in_top_instances(self, tensor: SubviewTensor):
         return self.memory_manager.find_tensor_in_top_instances(tensor)
 
     def find_best_tensor_combination_to_evict_fast(
-        self, tensor: SubViewTensor, core: Core, timestep: int, exceptions: list[SubViewTensor] | None = None
+        self, tensor: SubviewTensor, core: Core, timestep: int, exceptions: list[SubviewTensor] | None = None
     ):
         if exceptions is None:
             exceptions = []
@@ -227,15 +228,6 @@ class Accelerator:
         """
         self.memory_manager.fix_memory_usage_and_nb_stored_tensors(core, start_timestep, end_timestep)
 
-    def fix_memory_usage_and_nb_stored_tensors(self, core: Core, start_timestep: int, end_timestep: int):
-        """Fix the memory usage and number of stored tensors for a given timestep.
-
-        Args:
-            start_timestep (int): The start timestep.
-            end_timestep (int): The end timestep.
-        """
-        self.memory_manager.fix_memory_usage_and_nb_stored_tensors(core, start_timestep, end_timestep)
-
     def remove(
         self,
         tensor: SubviewTensor,
@@ -247,7 +239,7 @@ class Accelerator:
         """Remove tensor from core. If required, transfer to offchip before removal.
 
         Args:
-            tensor (Tensor): The tensor to remove.
+            tensor (SubviewTensor): The tensor to remove.
             core (Core): The Core to remove the tensor from.
             memory_op (str): The memory operand of the tensor.
             timestep (int): The timestep to remove the tensor at.
@@ -301,7 +293,7 @@ class Accelerator:
         core: Core,
         memory_operand: MemoryOperand,
         timestep: int,
-        exceptions: list[SubviewTensor] = [],
+        exceptions: list[SubviewTensor] | None = None,
         write_back_to_offchip: bool = False,
     ):
         """Remove all tensors from a core's memory with the given memory operand.
@@ -314,6 +306,8 @@ class Accelerator:
             exceptions (list): A list of tensors that should not be evicted.
             write_back_to_offchip (bool, optional): Write the tensor to offchip before removal. Defaults to False.
         """
+        if exceptions is None:
+            exceptions = []
         total_link_energy_cost = 0
         total_memory_energy_cost = 0
         top_instance = self.get_top_instance_of_core(core, memory_operand)
@@ -334,16 +328,18 @@ class Accelerator:
         core: Core,
         memory_op: MemoryOperand,
         timestep: int,
-        tensors_to_avoid_evicting: list[SubviewTensor] = [],
+        tensors_to_avoid_evicting: list[SubviewTensor] | None = None,
     ):
         """Make space for the given tensor on the given core by evicting already stored tensors if necessary.
 
         Args:
-            tensor (Tensor): The tensor to make space for.
+            tensor (SubviewTensor): The tensor to make space for.
             core (Core): The core where the tensor will be stored.
             memory_operand (str): The memory operand on the core.
             timestep (int): The timestep at which to make space for.
         """
+        if tensors_to_avoid_evicting is None:
+            tensors_to_avoid_evicting = []
         total_eviction_link_energy_cost = 0
         total_eviction_memory_energy_cost = 0
 
@@ -397,8 +393,9 @@ class Accelerator:
         tensor: SubviewTensor,
         receiving_core_id: int,
         tensor_operand: MemoryOperand,
-        non_evictable_tensors: list[SubViewTensor],
+        non_evictable_tensors: list[SubviewTensor],
         sending_core_id: int | None = None,
+        transfer_bandwidth_fraction: float = 100.0,
     ) -> tuple[int, float, float, float, float, bool]:
         """
         Transfer a tensor to a given core id.
@@ -416,7 +413,7 @@ class Accelerator:
         If one of the links already transferred the tensor, we broadcast if possible.
 
         Args:
-            tensor (SubViewTensor): The tensor to transfer.
+            tensor (SubviewTensor): The tensor to transfer.
             receiving_core_id (int): The id of the core that needs to receive the tensor.
             tensor_operand (str): The memory operand where the tensor needs to be stored.
             non_evictable_tensors (list): the stored tensor that cannot be evicted
@@ -476,7 +473,7 @@ class Accelerator:
         # TODO there will be multiple possible cores to transfer between.
         # TODO For now, we take the first one
         sender_core = sender_cores[0]
-        links = self.communication_manager.get_links_for_pair(sender_core, receiving_core)
+        links = self.communication_manager.get_all_links_for_pair(sender_core, receiving_core)[0]
         links = {link: link.bandwidth for link in links}
         transfer_duration = max([ceil(tensor.size / link.bandwidth) for link in links])
         transfer_start = self.communication_manager.get_links_idle_window(
@@ -495,7 +492,7 @@ class Accelerator:
             transfer_link_energy_cost,
             transfer_memory_energy_cost,
         ) = self.communication_manager.transfer_tensor(
-            sending_core,
+            sender_core,
             receiving_core,
             tensor,
             tensor_operand,
@@ -504,19 +501,19 @@ class Accelerator:
             link_bw_fraction=transfer_bandwidth_fraction,
         )
 
-        # Remove from sending core (except if it is offchip)
-        if sending_core.id != self.offchip_core_id:
-            not_on_producing_core = sending_core.id != tensor.origin.chosen_core_allocation
-            storing_instance = self.get_storing_memory_instance(tensor, sending_core)
+        # Remove from sender core (except if it is offchip)
+        if sender_core.id != self.offchip_core_id:
+            not_on_producing_core = sender_core.id != tensor.origin.chosen_core_allocation
+            storing_instance = self.get_storing_memory_instance(tensor, sender_core)
             tensor_priority = tensor.get_instance_priority(storing_instance, self.memory_manager)
             if not_on_producing_core and tensor_priority == 0:
-                self.remove_tensor(tensor, sending_core, memory_op=tensor.memory_operand, timestep=transfer_end)
+                self.remove_tensor(tensor, sender_core, memory_op=tensor.memory_operand, timestep=transfer_end)
 
         return transfer_link_energy_cost, transfer_memory_energy_cost
 
     def find_earliest_time_for_transfer(
         self,
-        tensor: SubViewTensor,
+        tensor: SubviewTensor,
         sending_core: Core,
         receiving_core: Core,
         earliest_t: int,
@@ -539,7 +536,7 @@ class Accelerator:
         return best_window
 
     def find_transfer_start_and_end_time(
-        self, tensor: SubViewTensor, links_bw: dict[CommunicationLink, int], earliest_t: int
+        self, tensor: SubviewTensor, links_bw: dict[CommunicationLink, int], earliest_t: int
     ):
         """
         Given the links to transfer across and corresponding available bandwidths, return the earliest transfer start

@@ -48,7 +48,6 @@ class SteadyStateComputation(ComputationNode, SteadyStateNode):
         steady_state_iteration_space = SteadyStateIterationSpace([])
 
         # Initialize SteadyStateNode (explicitly, since ComputationNode also inherits from Node)
-        possible_resource_allocation = []
         SteadyStateNode.__init__(
             self=self,
             id=id,

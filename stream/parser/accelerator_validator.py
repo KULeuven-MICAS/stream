@@ -5,30 +5,79 @@ from itertools import combinations
 from typing import Any
 
 from cerberus import Validator
-from zigzag.parser.accelerator_validator import AcceleratorValidator as CoreValidator
 from zigzag.utils import open_yaml
+
+from stream.parser.core_validator import CoreValidator
 
 logger = logging.getLogger(__name__)
 
 
 class AcceleratorValidator:
     INPUT_DIR_LOCATION = "stream/inputs/"
-    GRAPH_TYPES = ["2d_mesh", "bus"]
-    FILENAME_REGEX = r"^(?:[a-zA-Z0-9_\-]+|[a-zA-Z0-9_\-\///]+(\.yaml|\.yml))$"
+    FILENAME_REGEX = (
+        r"^(?:\.\/)?"  # optional "./"
+        r"(?:[A-Za-z0-9_\-]+\/)*"  # zero or more directories
+        r"[A-Za-z0-9_\-]+"  # file name
+        r"(?:\.ya?ml)?$"  # optional ".yaml" or ".yml"
+    )
     CORE_IDS_REGEX = r"^\d+(?:\s*,\s*\d+){1,}$"
 
     SCHEMA: dict[str, Any] = {
+        # ------------------------------------------------------------------ #
+        # Basic identification                                               #
+        # ------------------------------------------------------------------ #
         "name": {"type": "string", "required": True},
+        # ------------------------------------------------------------------ #
+        # Core catalogue (file names relative to the inputs folder)          #
+        # ------------------------------------------------------------------ #
         "cores": {
             "type": "dict",
             "required": True,
             "valuesrules": {"type": "string", "regex": FILENAME_REGEX},
         },
-        "offchip_core": {"type": "string", "regex": FILENAME_REGEX, "required": False},
-        "offchip_core_id": {"type": "integer", "required": False},
-        "unit_energy_cost": {"type": "float", "default": 0},
-        "bandwidth": {"type": "float", "required": True},
-        "core_connectivity": {"type": "list", "required": True, "schema": {"type": "string", "regex": CORE_IDS_REGEX}},
+        # Id of the core that acts as the off-chip memory controller
+        "offchip_core_id": {"type": "integer", "min": 0, "required": True},
+        # ------------------------------------------------------------------ #
+        # Optional unit_energy_cost that is used for all connections         #
+        # that don't specify their own unit_energy_cost                      #
+        # ------------------------------------------------------------------ #
+        "unit_energy_cost": {
+            "type": "float",
+            "min": 0,
+            "required": False,
+            "default": 0,
+        },
+        # ------------------------------------------------------------------ #
+        # Topology description                                               #
+        # ------------------------------------------------------------------ #
+        "core_connectivity": {
+            "type": "list",
+            "required": True,
+            "schema": {
+                "type": "dict",
+                "schema": {
+                    # "link" = point-to-point, "bus" = shared medium
+                    "type": {
+                        "type": "string",
+                        "allowed": ["link", "bus"],
+                        "default": "link",
+                    },
+                    # List of core ids that participate in this connection
+                    "cores": {
+                        "type": "list",
+                        "minlength": 2,
+                        "schema": {"type": "integer", "min": 0},
+                    },
+                    # Peak bandwidth for the link / bus (GB/s or chosen units)
+                    "bandwidth": {"type": "float", "min": 0, "required": True},
+                    # Optional override of the global unit energy cost
+                    "unit_energy_cost": {"type": "float", "min": 0, "required": False},
+                },
+            },
+        },
+        # ------------------------------------------------------------------ #
+        # Optional memory-sharing groups                                     #
+        # ------------------------------------------------------------------ #
         "core_memory_sharing": {
             "type": "list",
             "default": [],
@@ -71,6 +120,10 @@ class AcceleratorValidator:
         core_ids = list(self.data["cores"].keys())
         if not all(isinstance(core_id, int) and core_id >= 0 for core_id in core_ids):
             self.invalidate("Invalid core id in `cores`: id is not a positive integer.")
+        if len(core_ids) != max(core_ids) + 1:
+            self.invalidate("Invalid core id in `cores`: not all core ids in range are in use.")
+        if self.data["offchip_core_id"] not in core_ids:
+            self.invalidate("offchip_core_id does not correspond to any entry in `cores`.")
 
     def validate_all_cores(self) -> None:
         """For all given core file paths:
@@ -86,14 +139,6 @@ class AcceleratorValidator:
                 return
             self.data["cores"][core_id] = normalized_core_data
 
-        # Offchip core (not part of cores list)
-        if "offchip_core" in self.data:
-            offchip_core_file_name = self.data["offchip_core"]
-            normalized_core_data = self.validate_single_core(offchip_core_file_name)
-            if not normalized_core_data:
-                return
-            self.data["offchip_core"] = normalized_core_data
-
     def validate_single_core(self, core_file_name: str) -> None | dict[str, Any]:
         core_data = self.open_core(core_file_name)
         # Stop validation if invalid core name is found
@@ -103,7 +148,7 @@ class AcceleratorValidator:
         core_validator = CoreValidator(core_data)
         validate_success = core_validator.validate()
         if not validate_success:
-            self.invalidate(f"User-given core {core_file_name} cannot be validated.")
+            self.invalidate(f"User-given core  {core_file_name} cannot be validated.")
 
         # Fill in default values
         normalized_core_data = core_validator.normalized_data
@@ -113,43 +158,52 @@ class AcceleratorValidator:
         """Find core with given yaml file name and read data."""
         if "./" in core_file_name:
             core_file_path = os.path.normpath(os.path.join(self.accelerator_dirname, core_file_name))
-            return open_yaml(core_file_path)
+            core_data = open_yaml(core_file_path)
+            assert isinstance(core_data, dict), "Core data must be a dictionary."
+            return core_data
         if "/" in core_file_name:
-            return open_yaml(core_file_name)
+            core_data = open_yaml(core_file_name)
+            assert isinstance(core_data, dict), "Core data must be a dictionary."
+            return core_data
         input_location = AcceleratorValidator.INPUT_DIR_LOCATION
         for dir_root_name, _, files_this_dir in os.walk(input_location):
             # Only consider subdirectories of `hardware` folder
             if "hardware" in dir_root_name:
                 if core_file_name in files_this_dir:
                     core_file_path = dir_root_name + "/" + core_file_name
-                    return open_yaml(core_file_path)
+                    core_data = open_yaml(core_file_path)
+                    assert isinstance(core_data, dict), "Core data must be a dictionary."
+                    return core_data
 
         self.invalidate(
             f"Core with filename `{core_file_name}` not found. Make sure `{input_location}` contains a folder "
             f"called `hardware` that contains the core file."
         )
+        return None
 
     def validate_core_connectivity(self):
-        connectivity_data = self.data["core_connectivity"]
+        connections = self.data["core_connectivity"]
+        if connections == []:
+            return  # empty graph is allowed
 
-        # Empty data is okay
-        if connectivity_data == []:
-            return
+        core_ids = set(self.data["cores"].keys())
+        for idx, conn in enumerate(connections):
+            cores = conn["cores"]
+            bw = conn["bandwidth"]
+            ue = conn.get("unit_energy_cost", self.data.get("unit_energy_cost", 0))
 
-        # Replace string of core ids with tuple of ints
-        connectivity_groups = [tuple(int(i) for i in group.replace(" ", "").split(",")) for group in connectivity_data]
-        self.data["core_connectivity"] = connectivity_groups
+            # basic semantic checks (most syntactic ones are done by Cerberus)
+            if not all(cid in core_ids for cid in cores):
+                self.invalidate(f"`core_connectivity[{idx}].cores` contains unknown core id.")
+            if bw <= 0:
+                self.invalidate(f"`core_connectivity[{idx}].bandwidth` must be > 0.")
+            if ue < 0:
+                self.invalidate(f"`core_connectivity[{idx}].unit_energy_cost` must be ≥ 0.")
 
-        all_connected_core_ids = reduce(lambda x, y: x + y, connectivity_groups)
-        core_ids = list(self.data["cores"].keys())
-
-        # Connection length >= 2
-        if not all(len(group) > 1 for group in connectivity_groups):
-            self.invalidate("Core connection should contain at least 2 core ids.")
-
-        # No unknown core ids
-        if not all(connected_id in core_ids for connected_id in all_connected_core_ids):
-            self.invalidate("`core_connectivity` contains unknown core id.")
+            # normalise: store cores as an immutable tuple & fill in defaults
+            conn["cores"] = tuple(cores)
+            conn.setdefault("type", "link")
+            conn.setdefault("unit_energy_cost", self.data.get("unit_energy_cost", 0))
 
     def validate_core_mem_sharing(self):
         # Replace string of core ids with tuple of ints
@@ -171,14 +225,11 @@ class AcceleratorValidator:
             self.invalidate("`core_memory_sharing` contains unknown core id.")
 
         # Cores that share memory should not have an explicit connection
-        connectivity_groups = self.data["core_connectivity"]
+        connectivity_groups = [set(conn["cores"]) for conn in self.data["core_connectivity"]]
         for mem_sharing_group in mem_sharing_groups:
             # Check each link within the mem_sharing_group
             for id_a, id_b in combinations(mem_sharing_group, 2):
-                if any(
-                    id_a in connectivity_group and id_b in connectivity_group
-                    for connectivity_group in connectivity_groups
-                ):
+                if any({id_a, id_b}.issubset(group) for group in connectivity_groups):
                     self.invalidate(
                         "Cores that share memory should must not be explicitly connected in `core_connectivity`"
                     )

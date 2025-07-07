@@ -16,7 +16,7 @@ from stream.workload.steady_state.rolling_buffer import SteadyStateRollingBuffer
 from stream.workload.steady_state.tensor import SteadyStateTensor, TensorFlag
 from stream.workload.steady_state.transfer import SteadyStateTransfer, TransferType
 from stream.workload.steady_state.workload import SteadyStateWorkload
-from stream.workload.tensor import Tensor
+from stream.workload.tensor import SubviewTensor
 from stream.workload.utils import get_real_in_edges, get_real_out_edges
 
 
@@ -151,7 +151,7 @@ class SteadyStateScheduler:
         """
         assert self.accelerator.offchip_core_id is not None, "Off-chip core ID must be set in the accelerator."
         offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
-        seen_tensors: set[Tensor] = set()
+        seen_tensors: set[SubviewTensor] = set()
         for node in subgraph.node_list:
             original_node = next(n for n in self.original_workload.node_list if n.id == node.id)
             loop_relevancy_info = original_node.loop_relevancy_info
@@ -178,7 +178,7 @@ class SteadyStateScheduler:
                         constant_node = SteadyStateTensor(
                             type=TensorFlag.INPUT | TensorFlag.CONSTANT,
                             id=node.id,
-                            node_name=f"{node.name}.{input_op}",
+                            node_name=f"{node.name}.{input_op}_in",
                             size=tensor.size,
                             operand=input_op,
                             steady_state_iteration_space=ssis,
@@ -217,7 +217,7 @@ class SteadyStateScheduler:
                     constant_node = SteadyStateTensor(
                         type=TensorFlag.OUTPUT | TensorFlag.CONSTANT,
                         id=node.id,
-                        node_name=f"{node.name}.{output_operand}",
+                        node_name=f"{node.name}.{output_operand}_out",
                         size=output_tensor.size,
                         operand=output_operand,
                         steady_state_iteration_space=ssis,
@@ -238,7 +238,7 @@ class SteadyStateScheduler:
         for tensor in steady_state_workload.tensor_nodes:
             out_edges = list(steady_state_workload.out_edges(tensor, data=True))
             successors = [i for _, i, _ in out_edges]
-            assert all(isinstance(s, SteadyStateComputation) for s in successors), (
+            assert all(isinstance(s, (SteadyStateTensor | SteadyStateComputation)) for s in successors), (
                 "All successors of a tensor node should be either SteadyStateTensor or SteadyStateComputation nodes."
             )
             if not successors:

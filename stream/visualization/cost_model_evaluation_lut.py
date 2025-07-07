@@ -108,7 +108,7 @@ def _get_fig_path(pickle_filepath, fig_path):
     return f"outputs/{basename}.png"
 
 
-def _collect_node_core_data(node_hw_performances, scale_factors):
+def _collect_node_core_data(cost_lut, scale_factors):
     node_labels = []
     cores = []
     min_latency_per_node = {}
@@ -143,7 +143,7 @@ def _get_bar_positions(num_labels, num_cores):
     return x, width, offsets
 
 
-def _plot_bars(axs, node_hw_performances, cores, offsets, x, width, colors, scale_factors):
+def _plot_bars(axs, cost_lut, cores, offsets, x, width, colors, scale_factors):
     for core, offset in zip(cores, offsets, strict=False):
         core_latencies = []
         core_energies = []

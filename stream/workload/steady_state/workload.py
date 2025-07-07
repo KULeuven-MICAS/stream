@@ -197,7 +197,14 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
         for i in range(len(cluster_heads) - 1):
             upper = cluster_heads[i]
             lower = cluster_heads[i + 1]
-            dot.add_edge(pydot.Edge(upper, lower, style="invis"))
+            edge_seen = False
+            for e in dot.get_edges():
+                src, dst = e.obj_dict["points"]
+                if src == upper and dst == lower:
+                    edge_seen = True
+                    break  # edge already exists
+            if not edge_seen:
+                dot.add_edge(pydot.Edge(upper, lower, style="invis"))
 
         # Customize node appearance
         for node in self.nodes():
