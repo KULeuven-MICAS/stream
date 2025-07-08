@@ -109,7 +109,7 @@ class TransferAndTensorAllocator:
         if not path:
             return 0
         min_bw = min(link.bandwidth for link in path)
-        return ceil(tr.tensor.size / min_bw)
+        return ceil(tr.size / min_bw)
 
     # ------------------------------------------------------------ #
     # model construction                                           #
