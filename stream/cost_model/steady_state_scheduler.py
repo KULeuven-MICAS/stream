@@ -302,7 +302,7 @@ class SteadyStateScheduler:
                     assert isinstance(successor, SteadyStateComputation), (
                         "Successor should be a SteadyStateComputation."
                     )
-                    tensor_inputs = tensor.get_inputs()
+                    tensor_inputs = successor.operand_tensors[tensor.operand].get_inputs()
                     post_transfer_tensor_node = SteadyStateTensor(
                         type=tensor.tensor_flag,
                         id=tensor.id,
