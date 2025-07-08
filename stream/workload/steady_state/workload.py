@@ -139,8 +139,8 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
 
             for tr in transfer_nodes:
                 # the *source* core – may legitimately be None
-                src_core = tr.src.chosen_resource_allocation
-                allocations.append((transfer_slot, src_core, tr))
+                resource = tr.chosen_resource_allocation
+                allocations.append((transfer_slot, resource, tr))
                 transfer_slot += 1
 
             # prepare *slot0* for the next generation

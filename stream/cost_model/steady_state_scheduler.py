@@ -68,9 +68,12 @@ class SteadyStateScheduler:
         # At this point, the only nodes without an allocation are the transfer nodes
         offchip_core_id = self.accelerator.offchip_core_id
         tta = TransferAndTensorAllocator(ssw, tsa, offchip_core_id=offchip_core_id, iterations=self.iterations)
-        tsa_upd, total_latency = tta.solve()
+        tsa_upd, total_latency_solver = tta.solve()
         print(tsa_upd)
-        total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations)
+        total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
+        assert total == total_latency_solver, (
+            f"Total latency from tsa_upd {total} does not match total latency from solver {total_latency_solver}."
+        )
         print(f"Total latency: {total}, per iteration: {per_iter}, overlap: {ov}")
         self.latency_total, self.latency_per_iteration, self.overlap_between_iterations = total, per_iter, ov
         # Check that all nodes in the steady state workload have a chosen resource allocation

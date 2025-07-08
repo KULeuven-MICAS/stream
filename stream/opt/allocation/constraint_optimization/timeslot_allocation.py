@@ -152,6 +152,23 @@ class TimeSlotAllocation:
             raise ValueError(f"{node.node_name} not scheduled.")
         return max(slots)
 
+    def get_timeslot_runtime(self, slot: int) -> int:
+        if slot < self.slot_min or slot > self.slot_max:
+            raise ValueError(f"Slot {slot} is out of range ({self.slot_min} - {self.slot_max}).")
+        timeslot_runtime = 0
+        if slot in self._slot_res_to_node:
+            for node in self._slot_res_to_node[slot].values():
+                timeslot_runtime = max(timeslot_runtime, getattr(node, "runtime", 0) or 0)
+        return timeslot_runtime
+
+    def get_timeslot_start_time(self, slot: int) -> int:
+        if slot < self.slot_min or slot > self.slot_max:
+            raise ValueError(f"Slot {slot} is out of range ({self.slot_min} - {self.slot_max}).")
+        t_start = 0
+        for i in range(self.slot_min, slot):  # sum runtimes of all previous slots
+            t_start += self.get_timeslot_runtime(i)
+        return t_start
+
     # ...................................................... visualization
     def visualize_allocation(self, cols_per_row: int = 10):
         """
@@ -193,18 +210,14 @@ class TimeSlotAllocation:
         self,
         filepath: str,
         *,
-        slot_length: float = 1.0,
         time_unit: str = "us",
-        default_runtime: float = 1.0,
+        default_runtime: float = 0.0,
     ):
         """
         Convert the allocation to a Perfetto-compatible JSON trace.
 
         Parameters
         ----------
-        slot_length : float, default 1.0
-            Wall-clock duration that one timeslot represents **in the chosen
-            time unit** ( e.g. 1.0 µs ).
         time_unit : {"us","ms","ns"}, default "us"
             Unit used for *ts* / *dur* in the resulting trace.
         default_runtime : float, default 1.0
@@ -220,30 +233,31 @@ class TimeSlotAllocation:
         """
 
         # ---------- helper IDs ----------------------------------------
-        pid_gen = count(0)
-        pid_of: dict[Resource, int] = {r: next(pid_gen) for r in self.resources}
+        pid = "steady_state_allocation"
+        tid_gen = count(0)
+        tid_of: dict[Resource, int] = {r: next(tid_gen) for r in self.resources}
 
         # ---------- trace events list ---------------------------------
         trace_events: list[dict[str, Any]] = []
 
         # ---------- metadata (one thread per resource) ----------------
-        for res, pid in pid_of.items():
+        for res, tid in tid_of.items():
             trace_events.append(
                 {
                     "name": "thread_name",
                     "ph": "M",
                     "pid": pid,
-                    "tid": 0,
+                    "tid": tid,
                     "args": {"name": _resource_key(res)},
                 }
             )
 
         # ---------- main "X" (complete) events ------------------------
         for slot, res, node in self.allocations:
-            pid = pid_of[res]
+            tid = tid_of[res]
             cat = self._node_types.get(node, NodeType.STEADY_STATE).name
-            ts = slot * slot_length
-            dur = node.runtime if getattr(node, "runtime", None) not in (None, 0) else default_runtime
+            ts = self.get_timeslot_start_time(slot)
+            dur = node.runtime
             trace_events.append(
                 {
                     "name": node.node_name,
@@ -252,7 +266,7 @@ class TimeSlotAllocation:
                     "ts": ts,
                     "dur": dur,
                     "pid": pid,
-                    "tid": 0,
+                    "tid": tid,
                     "args": {
                         "id": node.id,
                         "type": node.type,
@@ -276,12 +290,14 @@ class TimeSlotAllocation:
     # ------------------------------------------------------------------ #
     # latency / overlap utility                                          #
     # ------------------------------------------------------------------ #
-    def compute_latency(self, iterations: int = 1) -> tuple[int, int, int]:
+    def compute_latency(self, iterations: int = 1, offchip_core_id: int | None = None) -> tuple[int, int, int]:
         """
         Parameters
         ----------
-        iterations : int
+        iterations : int, default 1
             Number of steady-state iterations that will run back-to-back.
+        offchip_core_id : int | None, default None
+            If given, the off-chip core ID to use for the overlap calculation.
 
         Returns
         -------
@@ -303,38 +319,30 @@ class TimeSlotAllocation:
         """
 
         # ------------------ 1. slot latency (max runtime over resources) ----
-        slot_latency: dict[int, int] = {s: 0 for s in range(self.slot_min, self.slot_max + 1)}
-        for slot, _, node in self.allocations:
-            rt = getattr(node, "runtime", 0) or 0
-            slot_latency[slot] = max(slot_latency.get(slot, 0), rt)
-
+        slot_latency: dict[int, int] = {
+            s: self.get_timeslot_runtime(s) for s in range(self.slot_min, self.slot_max + 1)
+        }
         if not slot_latency:  # empty schedule
             return 0, 0, 0
-
         latency_per_iter = sum(slot_latency[s] for s in range(self.slot_min, self.slot_max + 1))
 
         # ------------------ 2. idle-latency per resource --------------------
         idle_lat_per_res: dict[Resource, int] = {}
-
         for res in self.resources:
+            if isinstance(res, Core) and res.id == offchip_core_id:
+                continue  # overlap doesn't take off-chip core into account
             # list of busy slots for this resource
             busy = sorted(slot for slot, res_map in self._slot_res_to_node.items() if res in res_map)
             if not busy:
                 continue  # never used → ignore
-
             first_busy, last_busy = busy[0], busy[-1]
-
             idle_lat = sum(
                 slot_latency[s] for s in range(self.slot_min, self.slot_max + 1) if s < first_busy or s > last_busy
             )
             idle_lat_per_res[res] = idle_lat
-
-        if not idle_lat_per_res:
-            # should not happen – means no resource ever used
-            return latency_per_iter * iterations, latency_per_iter, 0
-
         overlap = min(idle_lat_per_res.values())
 
+        # ------------------ 3. total latency across iterations --------------------
         total_latency = iterations * latency_per_iter - (iterations - 1) * overlap
         return total_latency, latency_per_iter, overlap
 
