@@ -1,21 +1,24 @@
-from collections import defaultdict
-from typing import Any, cast
+from typing import Any
 
 from snaxc.dialects.tsl import TSL
 from xdsl.context import MLContext
-from xdsl.dialects.builtin import IndexType, IntegerAttr, IntegerType, MemRefType, ModuleOp
+from xdsl.dialects.builtin import MemRefType, ModuleOp
+from xdsl.ir import Operation
 from xdsl.printer import Printer
-from zigzag.datatypes import Constants, LayerOperand
+from zigzag.utils import DiGraphWrapper
 
-from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, EmptySSAValue, Stream, TransferOp
+from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, Stream, TransferOp
+from stream.compiler.transforms.aie_add_tracing_script import AIEAddTracingScript
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
-from stream.cost_model.communication_manager import CommunicationLinkEvent
-from stream.cost_model.cost_model import StreamCostModelEvaluation
-from stream.hardware.architecture.noc.communication_link import CommunicationLink
+from stream.compiler.transforms.stream_split_transfers import StreamSplitTransfersPass
+from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.stages.stage import Stage, StageCallable
-from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.tensor import SubviewTensor
+from stream.workload.steady_state.computation import SteadyStateComputation
+from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.steady_state.tensor import SteadyStateTensor
+from stream.workload.steady_state.transfer import SteadyStateTransfer
+from stream.workload.steady_state.workload import SteadyStateWorkload
 
 
 class AIECodeGenerationStage(Stage):
@@ -43,238 +46,162 @@ class AIECodeGenerationStage(Stage):
                 self.codegen_main(cme)
             yield cme, extra_info
 
-    def generate_stream_workload(self, cme: StreamCostModelEvaluation) -> ModuleOp:
-        # (precision, [loop_range_0, .. loop_range_n-1])
-        edges_ranges: dict[tuple[int, LayerOperand], tuple[int, list[int]]] = {}
-        edge_ops: dict[tuple[int, LayerOperand], EdgeOp] = {}
+    def create_edge_op(
+        self,
+        workload: DiGraphWrapper[SteadyStateNode],
+        edge: SteadyStateTensor,
+        transfer_ops: dict[SteadyStateTransfer, TransferOp],
+    ) -> EdgeOp:
+        """
+        Create an EdgeOp for a given SteadyStateTensor.
+        """
+        assert edge.full_shape is not None
+        memref_type = edge.subview.result.type
+        assert isinstance(memref_type, MemRefType)
+        # get rid of layout for now
+        memref_type = MemRefType(memref_type.element_type, memref_type.shape)
+        if workload.out_degree(edge) > 0:
+            edge_op = EdgeOp(memref_type, edge.node_name)
+        else:
+            # find transfer:
+            transfer = next(workload.predecessors(edge))
+            assert isinstance(transfer, SteadyStateTransfer)
+            transfer_op = transfer_ops[transfer]
+            edge_op = EdgeOp(None, edge.node_name, transfer_op.results[0])
+        return edge_op
 
-        for node in cme.workload.node_list:
-            for operand in node.layer_operands:
-                key = (node.id, operand)
-                tensor = node.operand_tensors[operand]
+    def create_transfer_op(
+        self,
+        workload: DiGraphWrapper[SteadyStateNode],
+        transfer: SteadyStateTransfer,
+        compute_ops: dict[SteadyStateComputation, ComputationNodeOp],
+        edge_ops: dict[SteadyStateTensor, EdgeOp],
+    ) -> TransferOp:
+        """
+        Create a TransferOp for a given SteadyStateTransfer.
+        """
+        # Get source and dest and convert to string for TransferOp creation which uses string
+        source = transfer.src
+        dest = transfer.dsts[0]
 
-                if tensor.layer_operand == Constants.OUTPUT_LAYER_OP:
-                    precision = tensor.cn_source.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
-                else:
-                    precision = tensor.cn_source.operand_precision[tensor.layer_operand]
+        if isinstance(dest, SteadyStateComputation):
+            pass
 
-                edges_ranges[key] = (precision, tensor.original_shape)
+        dest_tensor = next(workload.successors(transfer))
+        assert isinstance(dest_tensor, SteadyStateTensor)
+        dest_type = dest_tensor.subview.result.type
+        assert isinstance(dest_type, MemRefType)
 
-        edge_ops = {
-            key: EdgeOp(MemRefType(IntegerType(precision), loop_ranges), str(key))
-            for key, (precision, loop_ranges) in edges_ranges.items()
-        }
+        # get rid of layout for now
+        assert isinstance(dest_type, MemRefType)
+        dest_type = MemRefType(dest_type.element_type, dest_type.shape)
 
-        # create computation nodes for all computation nodes
-        nodes: dict[ComputationNode, ComputationNodeOp] = {}
+        if source in edge_ops:
+            source_val = edge_ops[source]
+        else:
+            # find source op
+            source = next(workload.predecessors(source))
+            assert isinstance(source, SteadyStateComputation)
+            source_val = compute_ops[source]
 
-        for node in cme.workload.node_list:
-            # build operand types:
-            operand_types = []
+        if isinstance(source_val, EdgeOp):
+            tensor = transfer.dsts[0]
+        else:
+            tensor = transfer.src
+        offsets = [x[0] for x in tensor.loop_ranges]
+        sizes = [x[1] - x[0] for x in tensor.loop_ranges]
+        strides = [1 for x in tensor.loop_ranges]
+        op = TransferOp(
+            source_val.results[0],
+            [dest_type],
+            "source_todo",
+            "dest_todo",
+            "tensor_todo",
+            transfer.steady_state_iteration_space,
+            offsets,
+            sizes,
+            strides,
+            [str(dim) for dim in tensor.loop_dimensions],
+        )
 
-            for operand in (*node.constant_operands, node.output_operand):
-                size = cast(int, node.operand_size_elem[operand])
-                if operand == node.output_operand:
-                    operand = Constants.FINAL_OUTPUT_LAYER_OP
-                precision = cast(int, node.operand_precision[operand])
-                typ = MemRefType(IntegerType(precision), [size])
-                operand_types.append(typ)
+        return op
 
-            input_operands, output_operand = operand_types[:-1], operand_types[-1]
+    def create_computation_node_op(
+        self,
+        workload: DiGraphWrapper[SteadyStateNode],
+        compute: SteadyStateComputation,
+        transfer_ops: dict[SteadyStateTransfer, TransferOp],
+    ) -> ComputationNodeOp:
+        # get inputs
+        inputs = list(workload.predecessors(compute))
+        transfers: list[TransferOp] = []
+        for input in inputs:
+            transfer = next(workload.predecessors(input))
+            assert isinstance(transfer, SteadyStateTransfer)
+            transfers.append(transfer_ops[transfer])
 
-            # create computation node op with the needed information
-            op = ComputationNodeOp(
-                [EmptySSAValue(typ) for typ in input_operands],
-                EmptySSAValue(output_operand),
-                kernel=node.kernel.name,
-                core_allocation=str(node.chosen_core_allocation),
-                repeat=1,
-            )
+        # get output type:
+        output_type = next(
+            tensor
+            for tensor in workload.successors(compute)
+            if isinstance(tensor, SteadyStateTensor) and tensor.operand == compute.output_operand
+        ).subview.result.type
+        # get rid of layout for now
+        assert isinstance(output_type, MemRefType)
+        output_type = MemRefType(output_type.element_type, output_type.shape)
 
-            nodes[node] = op
+        # create computation node op with the needed information
+        op = ComputationNodeOp(
+            [transfer.results[0] for transfer in transfers],
+            None,
+            kernel=compute.kernel.name,
+            core_allocation=str(compute.chosen_resource_allocation),
+            ssis=compute.steady_state_iteration_space,
+            result_types=[output_type],
+        )
 
-        # gather all transfers
-        transfer_list: list[CommunicationLinkEvent] = []
+        return op
 
-        for communication_event in cme.accelerator.communication_manager.events:
-            for cle in communication_event.tasks:
-                transfer_list.append(cle)
+    def generate_steady_state_workload(self, workload: SteadyStateWorkload) -> ModuleOp:
+        edge_ops: dict[SteadyStateTensor, EdgeOp] = {}
+        transfer_ops: dict[SteadyStateTransfer, TransferOp] = {}
+        compute_ops: dict[SteadyStateComputation, ComputationNodeOp] = {}
 
-        transfer_list.sort(key=lambda x: x.start)
+        all_ops: list[Operation] = []
 
-        # transfers are unique per Layer Operand and Steady state stuff
-        transfers: dict[SubviewTensor, list[tuple[CommunicationLinkEvent, TransferOp]]] = defaultdict(list)
-        transfer_ops: list[TransferOp] = []
+        for node in workload.topological_sort():
+            # create edge
+            if isinstance(node, SteadyStateTensor) and (
+                workload.in_degree(node) == 0 or workload.out_degree(node) == 0
+            ):
+                # Create edge op for the tensor
+                edge_op = self.create_edge_op(workload, node, transfer_ops)
+                edge_ops[node] = edge_op
+                all_ops.append(edge_op)
 
-        for cle in transfer_list:
-            tensor = cle.tensors[0]
+            # create transfer
+            if isinstance(node, SteadyStateTransfer):
+                transfer_op = self.create_transfer_op(workload, node, compute_ops, edge_ops)
+                transfer_ops[node] = transfer_op
+                all_ops.append(transfer_op)
 
-            layer_id_and_op = edge_ops[(tensor.id[0], tensor.id[2])]
+            if isinstance(node, SteadyStateComputation):
+                computation_node_op = self.create_computation_node_op(workload, node, transfer_ops)
+                compute_ops[node] = computation_node_op
+                all_ops.append(computation_node_op)
 
-            # Get source and dest and convert to string for TransferOp creation which uses string
-            source = str(cle.source)
-            dest = str(cle.destinations[0])  # TODO: Support broadcasting to multiple destinations
-
-            # size = cast(int, tensor.origin.operand_size_elem[tensor.layer_operand])
-            if tensor.layer_operand == Constants.OUTPUT_LAYER_OP:
-                precision = tensor.cn_source.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
-            else:
-                precision = tensor.cn_source.operand_precision[tensor.layer_operand]
-
-            offsets = [x[0] for x in tensor.loop_ranges]
-            sizes = [x[1] - x[0] for x in tensor.loop_ranges]
-            strides = [1 for x in tensor.loop_ranges]
-
-            result_type = MemRefType(IntegerType(precision), sizes)
-
-            op = TransferOp(layer_id_and_op, [result_type], source, dest, str(tensor), 1, offsets, sizes, strides)
-
-            transfers[tensor].append((cle, op))
-            transfer_ops.append(op)
-
-        # sort ops based on start
-        for ops in transfers.values():
-            ops.sort(key=lambda x: x[0].start)
-
-        # Connect the operands of transfers to computation nodes
-        for node, node_op in nodes.items():
-            operands = node.layer_operands
-            operand_order = ["I", "W", "O"]
-            for operand in operands:
-                tensor = node.operand_tensors[operand]
-                # find last transfer for this tensor
-                for cle, transfer_op in transfers[tensor]:
-                    assert node.start
-                    if not operand.is_output():
-                        if cle.end > node.start:
-                            break
-                        if cle.destinations[0].id != node.chosen_core_allocation:
-                            continue
-                    else:
-                        # TODO
-                        pass
-                    node_op.operands[operand_order.index(operand.name)] = transfer_op.results[0]
-
-        # add all nodes and transfers to the module
-        node_ops = tuple(nodes.values())
-        all_ops = tuple(edge_ops.values()) + tuple(transfer_ops) + node_ops
         module = ModuleOp(list(all_ops))
 
         return module
 
-    def generate_stream_workload_steady_state(self, cme: StreamCostModelEvaluation) -> ModuleOp:
-        # steady state nodes: need some representation here
-        # this is currently a mapping id -> list[node]
-        # assuming that a layer is entirely steady state and can
-        # be differentiated based on its id.
-        # The values of this dict are sequential lists of the computation
-        # nodes that are `equal` (<-> can be represented with a for loop)
-        nodes_steady_state: dict[int, list[ComputationNode]] = defaultdict(list)
+    def codegen_main(self, cme: SteadyStateScheduler):
+        workload = cme.steady_state_workload
+        assert workload is not None
 
-        # assuming node_list is ordered in order of execution
-        # (tends to be correct, but I guess this is not necessarily correct to assume)
-        for node in cme.workload.node_list:
-            nodes_steady_state[node.id].append(node)
+        module = self.generate_steady_state_workload(workload)
 
-        # create computation nodes for all computation nodes
-        nodes: dict[ComputationNode, ComputationNodeOp] = {}
-
-        for node_list in nodes_steady_state.values():
-            # take first node as the reference
-            node = node_list[0]
-
-            # build operand types:
-            operand_types = []
-
-            for operand in (*node.constant_operands, node.output_operand):
-                size = cast(int, node.operand_size_elem[operand])
-                if operand == node.output_operand:
-                    operand = Constants.FINAL_OUTPUT_LAYER_OP
-                precision = cast(int, node.operand_precision[operand])
-                typ = MemRefType(IntegerType(precision), [size])
-                operand_types.append(typ)
-
-            input_operands, output_operand = operand_types[:-1], operand_types[-1]
-
-            # create computation node op with the needed information
-            op = ComputationNodeOp(
-                [EmptySSAValue(typ) for typ in input_operands],
-                EmptySSAValue(output_operand),
-                kernel=node.kernel.name,
-                core_allocation=str(node.core_allocation[0]),
-                repeat=len(node_list),
-            )
-
-            # complete mapping from node -> ComputationNodeOp
-            for node in node_list:
-                nodes[node] = op
-
-        # gather all transfers
-        transfer_list: list[tuple[CommunicationLinkEvent, CommunicationLink]] = []
-
-        for _, link_pair in cme.accelerator.communication_manager.pair_links.items():
-            if link_pair:
-                for link in link_pair:
-                    for event in link.events:
-                        transfer_list.append((event, link))
-
-        transfer_list.sort(key=lambda x: x[0].start)
-
-        # create transfer ops for every transfer
-        # transfers: dict[Tensor, TransferOp] = {}
-
-        # transfers are unique per Layer Operand and Steady state stuff
-        transfers: dict[tuple[int, LayerOperand], TransferOp] = {}
-
-        for transfer, link in transfer_list:
-            tensor = transfer.tensors[0]
-
-            if (tensor.id[0], tensor.id[2]) in transfers:
-                # increse repeat field of existing transfer op
-                transfer_op = transfers[(tensor.id[0], tensor.id[2])]
-                transfer_op.repeat = IntegerAttr(transfer_op.repeat.value.data + 1, IndexType())
-
-            else:
-                # create transfer op
-
-                # TODO: why is this backwards?
-                dest = str(link.sender)
-                source = str(link.receiver)
-
-                size = cast(int, tensor.cn_source.operand_size_elem[tensor.layer_operand])
-                if tensor.layer_operand == Constants.OUTPUT_LAYER_OP:
-                    precision = tensor.cn_source.operand_precision[Constants.FINAL_OUTPUT_LAYER_OP]
-                else:
-                    precision = tensor.cn_source.operand_precision[tensor.layer_operand]
-
-                result_type = MemRefType(IntegerType(precision), [size])
-
-                op = TransferOp(None, [result_type], source, dest, str(tensor), repeat=1)
-
-                transfers[(tensor.id[0], tensor.id[2])] = op
-
-        # Connect the operands of transfers to computation nodes
-        for node_id, nodes_list in nodes_steady_state.items():
-            node = nodes_list[0]  # first node as reference
-            operands = node.layer_operands
-            operand_order = ["I", "W", "O"]
-            for operand in operands:
-                tensor = node.operand_tensors[operand]
-                nodes[node].operands[operand_order.index(operand.name)] = transfers[
-                    (tensor.id[0], tensor.id[2])
-                ].results[0]
-
-        # add all nodes and transfers to the module
-        transfer_ops = tuple(transfers.values())
-        node_ops = tuple(nodes[node_list[0]] for node_list in nodes_steady_state.values())
-        all_ops = transfer_ops + node_ops
-        module = ModuleOp(list(all_ops))
-
-        return module
-
-    def codegen_main(self, cme: StreamCostModelEvaluation):
-        # generate workload based on cme:
-        module = self.generate_stream_workload(cme)
+        # Split transfers in push and pull
+        StreamSplitTransfersPass().apply(self.context, module)
 
         # Convert to AIE
         ConvertStreamToAIEPass().apply(self.context, module)
@@ -283,7 +210,7 @@ class AIECodeGenerationStage(Stage):
         ClearMemorySpace().apply(self.context, module)
 
         # Optionally, Add Tracing Script
-        # AIEAddTracingScript().apply(self.context, module)
+        AIEAddTracingScript().apply(self.context, module)
 
         # print output to codegen path
         file = open(self.output_path, "w")

@@ -180,22 +180,22 @@ class TimeSlotAllocation:
             NodeType.COOLDOWN: "\033[94m",
             "END": "\033[0m",
         }
-        col_w = 12
+        col_w = 20
         slots = self.slots or [0]
         rows = self.resources
 
         for row_slots in [slots[i : i + cols_per_row] for i in range(0, len(slots), cols_per_row)]:
-            header = " " * 15 + "".join(f"|{s:^{col_w}}" for s in row_slots) + "|"
+            header = " " * 20 + "".join(f"|{s:^{col_w}}" for s in row_slots) + "|"
             print(header)
             print("-" * len(header))
             for res in rows:
-                label = _resource_key(res)
-                row = f"{label:<14}"
+                label = _resource_key(res)[:20]
+                row = f"{label:<20}"
                 for s in row_slots:
                     node = self._slot_res_to_node.get(s, {}).get(res)
                     if node:
                         nt = self._node_types.get(node, NodeType.STEADY_STATE)
-                        txt = f"{node.node_name}"
+                        txt = f"{node.node_name}"[:20]
                         row += f"|{color[nt]}{txt:^{col_w}}{color['END']}"
                     else:
                         row += f"|{'':^{col_w}}"

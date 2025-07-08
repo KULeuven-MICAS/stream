@@ -1,8 +1,9 @@
 import re
 from collections import defaultdict
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from math import prod
-from typing import Sequence, cast
+from typing import cast
 
 from snaxc.dialects.snax import LayoutCast
 from snaxc.dialects.tsl import TiledStridedLayoutAttr
@@ -46,10 +47,15 @@ from xdsl_aie.dialects.aiex import (
     RuntimeSequenceOp,
 )
 
-from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, TransferOp
+from stream.compiler.dialects.stream import Channel, ChannelOp, ComputationNodeOp, EdgeOp, PullOp, PushOp, TransferOp
+from stream.compiler.transforms import iteration_space_to_for
+from stream.compiler.transforms.iteration_space_to_for import iteration_space_to_for
 
 
 def get_tile(value: str) -> tuple[int, int]:
+    if value == "Core(1)":
+        return 0, 2
+    raise RuntimeError(f"Unknown tile value: {value}")
     match = re.match(r"Core\((\d+)\)", value)
     if match:
         return 0, int(match.group(1))
@@ -102,23 +108,42 @@ class ObjectFifoManager:
     sequence_op: RuntimeSequenceOp
     device_op: DeviceOp
 
-    def insert_or_update(self, transfer: TransferOp) -> ObjectFifoOp:
-        source_tile = self.tile_op_manager.insert_or_update(*get_tile(transfer.source.data))
-        dest_tile = self.tile_op_manager.insert_or_update(*get_tile(transfer.dest.data))
+    counter: int = 0
+    channel_to_of_name: dict[SSAValue, str] = field(default_factory=dict)
 
-        assert isinstance(memref_type := transfer.results[0].type, MemRefType)
-        memref_type = cast(MemRefType[Attribute], memref_type)
+    def insert_or_update(self, channel: SSAValue, memref_type: MemRefType[Attribute]) -> ObjectFifoOp:
+        # find previous
+        if channel in self.channel_to_of_name:
+            of_name = self.channel_to_of_name[channel]
+            return self.of_from_name(of_name)
 
-        # this will reuse objectfifos of the same source dest, and type.
-        of_name = get_of_name(source_tile, dest_tile, transfer.tensor.data[-2])
+        assert isinstance(channel.type, Channel)
+        name = f"of_{self.counter}"
+        self.channel_to_of_name[channel] = name
+        self.counter += 1
+
+        def get_tile(use: PushOp | PullOp) -> SSAValue:
+            parent = use
+            while True:
+                if isinstance(parent, CoreOp):
+                    return parent.tile
+                if isinstance(parent, RuntimeSequenceOp):
+                    return self.tile_op_manager.insert_or_update(0, 0).result
+                parent = parent.parent_op()
+                if parent is None:
+                    raise RuntimeError()
+
+        # find source tile:
+        source = next(get_tile(use.operation) for use in channel.uses if isinstance(use.operation, PushOp))
+        dests = list(get_tile(use.operation) for use in channel.uses if isinstance(use.operation, PullOp))
 
         object_fifo = ObjectFifoOp.from_referenced_type(
             elemNumber=IntegerAttr(1, i32),
-            producerTile=source_tile,
-            consumerTiles=[dest_tile],
+            producerTile=source,
+            consumerTiles=dests,
             referenced_type=memref_type.get_element_type(),
             shape=memref_type.get_shape(),
-            name=of_name,
+            name=name,
         )
 
         # object fifo should be defined at start of device
@@ -181,7 +206,7 @@ def canonicalize_transformation(sizes: Sequence[int], strides: Sequence[int]) ->
     resulting_strides: list[int] = []
     resulting_sizes: list[int] = []
 
-    for size, stride in zip(reversed(sizes), reversed(strides)):
+    for size, stride in zip(reversed(sizes), reversed(strides), strict=False):
         assert size != 0
         if size == 1:
             continue
@@ -223,23 +248,140 @@ class PutTransfersBeforeFirstUse(RewritePattern):
 
 
 @dataclass
+class TransferToRuntimeSequence(RewritePattern):
+    object_fifo_manager: ObjectFifoManager
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: PushOp | PullOp, rewriter: PatternRewriter):
+        if not isinstance(runtime_sequence := op.parent_op(), RuntimeSequenceOp):
+            return
+
+        if isinstance(op, PushOp):
+            memref_type = op.input.type
+        else:
+            memref_type = op.output.type
+        assert isinstance(memref_type, MemRefType)
+        of = self.object_fifo_manager.insert_or_update(op.channel, memref_type)
+        of_name = of.sym_name.data
+
+        # get edge
+        if isinstance(op, PushOp):
+            assert isinstance(op.input, OpResult)
+            edge = op.input.op
+        else:
+            edge = next(use.operation for use in op.output.uses)
+        assert isinstance(edge, EdgeOp)
+
+        arg_order = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]
+
+        arg_index = arg_order.index(edge.tensor.data)
+        arg = runtime_sequence.body.block.args[arg_index]
+
+        offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
+        sizes = cast(tuple[int, ...], op.sizes.get_values()[-4:])
+        strides = cast(tuple[int, ...], op.strides.get_values()[-4:])
+        assert isinstance(arg.type, MemRefType)
+        shapes = tuple(x.data for x in arg.type.shape)[-4:]
+
+        # assume default layout here:
+        static_strides = []
+        current_stride = 1
+        for shape, stride in zip(reversed(shapes), reversed(strides), strict=False):
+            static_strides.insert(0, current_stride)
+            current_stride *= shape * stride
+
+        static_sizes = list(sizes)
+
+        static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
+
+        # add the repeating pattern
+        # offset is definitely zero for now
+        for i, iter_var in enumerate(op.ssis.data.variables):
+            loop_dimensions = [x.data for x in op.loop_dimensions]
+            if iter_var.relevant:
+                if str(iter_var.dimension) in loop_dimensions:
+                    index = loop_dimensions.index(str(iter_var.dimension))
+                    stride = prod(memref_type.get_shape()[index + 1 :]) * op.sizes.get_values()[index]
+                    # stride = prod(op.sizes.get_values()[index:])
+                    assert isinstance(stride, int)
+                else:
+                    # repeat
+                    stride = 0
+                static_sizes.insert(0, iter_var.size)
+                static_strides.insert(0, stride)
+
+        # canonicalize transformation
+        # static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
+
+        if len(static_sizes) > 5:
+            raise RuntimeError()
+        if len(static_sizes) == 5:
+            software_size = static_sizes.pop(0)
+            software_stride = static_strides.pop(0)
+        else:
+            software_size = 1
+            software_stride = 0
+
+        static_sizes = (1,) * (4 - len(static_sizes)) + tuple(static_sizes)
+        static_strides = (0,) * (4 - len(static_strides)) + tuple(static_strides)
+
+        ids = {"Op0.I_in": 0, "Op0.W_in": 1, "Op0.O_out": 2}
+
+        for i in range(software_size):
+            offset = i * software_stride
+            static_offsets = (0, 0, 0, offset)
+            # Insert DMA
+            memcpy = DmaMemcpyNdOp(
+                arg,
+                static_offsets=static_offsets,
+                static_sizes=static_sizes,
+                static_strides=static_strides,
+                metadata=of_name,
+                id=ids[edge.tensor.data],
+                issue_token=True,
+            )
+            rewriter.insert_op(memcpy, InsertPoint.before(op))
+
+        rewriter.erase_op(edge, safe_erase=False)
+        rewriter.erase_matched_op()
+
+
+@dataclass
 class TransferToObjectFIFOPattern(RewritePattern):
     object_fifo_manager: ObjectFifoManager
 
     release_op: dict[str, Operation | None] = field(default_factory=dict)  # pyright: ignore
 
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter):
-        of = self.object_fifo_manager.insert_or_update(op)
+    def match_and_rewrite(self, op: PushOp | PullOp, rewriter: PatternRewriter):
+        # do the runtime sequence thing elsewhere, must have a core_op parent
+        parent = op
+        while True:
+            if isinstance(parent, CoreOp):
+                break
+            parent = parent.parent_op()
+            if parent is None:
+                return
+
+        if isinstance(op, PushOp):
+            memref_type = op.input.type
+        else:
+            memref_type = op.output.type
+        assert isinstance(memref_type, MemRefType)
+        of = self.object_fifo_manager.insert_or_update(op.channel, memref_type)
         of_name = of.sym_name.data
 
         # decide whether to consume or produce
-        if op.source.data[-2] == "0":
+        if isinstance(op, PullOp):
             port = ObjectFifoPortEnum.Consume
         else:
             port = ObjectFifoPortEnum.Produce
 
-        assert isinstance(memref_type := op.results[0].type, MemRefType)
+        if isinstance(op, PullOp):
+            operand = op.output
+        else:
+            operand = op.input
+        assert isinstance(memref_type := operand.type, MemRefType)
 
         acquire_op = ObjectFifoAcquireOp(
             IntegerAttr.from_int_and_width(port.get_int(), 32),
@@ -257,31 +399,39 @@ class TransferToObjectFIFOPattern(RewritePattern):
             object_fifo=of_name,
         )
 
-        # find first and last use in this region
-        assert op.parent
-        operation_uses = set(x.operation for x in op.results[0].uses)
-        first_use_op: Operation = next(o for o in op.parent.walk() if o in operation_uses)
-        while op.parent_op() is not first_use_op.parent_op():
-            assert (parent := first_use_op.parent_op()) is not None
-            first_use_op = parent
+        # there should only be one use now
+        if isinstance(op, PullOp):
+            use_op = next(use.operation for use in op.output.uses)
+        else:
+            assert isinstance(op.input, OpResult)
+            use_op = op.input.op
 
-        # last use OR release op of previous acquire. depending on which comes first
-        if of_name not in self.release_op:
-            self.release_op[of_name] = None
-        last_use_op: Operation = next(
-            o for o in op.parent.walk(reverse=True) if o in operation_uses or o is self.release_op[of_name]
-        )
-        while op.parent_op() is not last_use_op.parent_op():
-            assert (parent := last_use_op.parent_op()) is not None
-            last_use_op = parent
+        # get to same level in the iteration tree:
+        while op.parent is not use_op.parent:
+            use_op = use_op.parent_op()
+            assert use_op is not None
 
-        self.release_op[of_name] = last_use_op
+        rewriter.insert_op(release_op, InsertPoint.after(use_op))
+        rewriter.insert_op([acquire_op, access_op], InsertPoint.before(use_op))
 
-        rewriter.insert_op(release_op, InsertPoint.after(last_use_op))
-        rewriter.insert_op([acquire_op, access_op], InsertPoint.before(first_use_op))
+        # set output of computation node op if this was a push op
+        if isinstance(op, PushOp):
+            assert isinstance(op.input, OpResult)
+            assert isinstance(compute := op.input.op, ComputationNodeOp)
+            new_compute = ComputationNodeOp(
+                compute.inputs,
+                access_op.results[0],
+                compute.kernel.data,
+                compute.core_allocation.data,
+                compute.ssis.data,
+                compute.result_types,
+            )
+            rewriter.replace_op(compute, new_compute)
 
-        op.results[0].replace_by(access_op.results[0])
+        operand.replace_by(access_op.results[0])
         rewriter.erase_matched_op()
+
+        return
 
         # insert runtime sequence memcpy
         runtime_sequence = self.object_fifo_manager.sequence_op
@@ -299,7 +449,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
         # assume default layout here:
         static_strides = []
         current_stride = 1
-        for shape, stride in zip(reversed(shapes), reversed(strides)):
+        for shape, stride in zip(reversed(shapes), reversed(strides), strict=False):
             static_strides.insert(0, current_stride)
             current_stride *= shape * stride
 
@@ -377,12 +527,13 @@ class MMPattern(RewritePattern):
 
         # insert zero func call for first use
         output = SSAValue.get(inputs[-1])
-        if not any(isinstance(use.operation, CallOp) for use in output.uses):
-            zero_call = CallOp("zero_i16", inputs[-1:], [])
-            rewriter.insert_op(zero_call, InsertPoint.before(op))
+        assert isinstance(output, OpResult)
+        zero_call = CallOp("zero_i16", inputs[-1:], [])
+        rewriter.insert_op(zero_call, InsertPoint.after(output.op))
 
         func_call = CallOp(function_name, inputs, [])
-        rewriter.replace_matched_op(func_call)
+        rewriter.insert_op(func_call, InsertPoint.after(op))
+        rewriter.erase_matched_op()
 
 
 @dataclass
@@ -835,7 +986,7 @@ class InsertRuntimeDMAs(RewritePattern):
 @dataclass
 class EraseEdges(RewritePattern):
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: EdgeOp, rewriter: PatternRewriter) -> None:
+    def match_and_rewrite(self, op: EdgeOp | ChannelOp, rewriter: PatternRewriter) -> None:
         rewriter.erase_matched_op()
 
 
@@ -858,6 +1009,20 @@ class ManageSyncs(RewritePattern):
 
         for symbol in active_ids:
             rewriter.insert_op(DmaWaitOp(symbol), InsertPoint.at_end(op.body.block))
+
+
+@dataclass
+class OptimizeWaits(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, runtime: RuntimeSequenceOp, rewriter: PatternRewriter):
+        last_wait = None
+        for op in runtime.walk():
+            if isinstance(op, DmaWaitOp):
+                last_wait = op
+            if last_wait is not None and isinstance(op, DmaMemcpyNdOp) and op.metadata != last_wait.symbol:
+                op.detach()
+                rewriter.insert_op(op, InsertPoint.before(last_wait))
+                return
 
 
 @dataclass
@@ -972,8 +1137,8 @@ def get_transform(source: TiledStridedLayout, dest: TiledStridedLayout) -> tuple
 
     strides.sort(key=lambda x: x["stride_dest"].step or 0, reverse=True)
 
-    sizes_src, strides_src = zip(*[(x["stride_src"].bound, x["stride_src"].step) for x in strides])
-    sizes_dest, strides_dest = zip(*[(x["stride_dest"].bound, x["stride_dest"].step) for x in strides])
+    sizes_src, strides_src = zip(*[(x["stride_src"].bound, x["stride_src"].step) for x in strides], strict=False)
+    sizes_dest, strides_dest = zip(*[(x["stride_dest"].bound, x["stride_dest"].step) for x in strides], strict=False)
 
     # canonicalize
     sizes_src, strides_src = canonicalize_transformation(sizes_src, strides_src)
@@ -1008,13 +1173,13 @@ class RealizeLayoutCats(RewritePattern):
             # for consume, take objectfifo (mem -> compute)
             of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data)
         else:
-            # for produce, take objectfifo (mem -> shim) (name without '_mem')
-            # of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data[:-4])
-            # of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data[:-4])
+            of_name = of_acquire.objFifo_name.root_reference.data
             # TODO: make this less hardcoded to the current of naming scheme
-            operand = of_acquire.objFifo_name.root_reference.data[-2:]
-            col = of_acquire.objFifo_name.root_reference.data[-4]
-            of = self.of_manager.of_from_name(f"of_{col}shim{operand}")
+            # from of_2
+            # to of_0shim_2
+            # parent = op.parent_op().parent_op().parent_op().parent_op().parent_op()
+            of_name = of_name[:2] + "_0shim" + of_name[2:]
+            of = self.of_manager.of_from_name(of_name)
 
         # get the element_type
         element_type = cast(MemRefType[Attribute], of.elemType.buffer)
@@ -1022,6 +1187,7 @@ class RealizeLayoutCats(RewritePattern):
         of_layout = element_type.layout
 
         if of_layout == dest_type.layout:
+            # TODO: this code no longer necessary with steady state?
             # transform has already been applied to ObjectFIFO
             of_acquire.results[0].type = ObjectFIFOSubview([dest_type])
             subview_access.results[0].type = dest_type
@@ -1049,7 +1215,7 @@ class RealizeLayoutCats(RewritePattern):
 
         # create BDDimlayout
         bd_layout = BDDimLayoutArrayAttr(
-            BDDimLayoutArray([BDDimLayout((size, stride)) for size, stride in zip(sizes, strides)])
+            BDDimLayoutArray([BDDimLayout((size, stride)) for size, stride in zip(sizes, strides, strict=False)])
         )
         of.dimensionsToStream = bd_layout
 
@@ -1057,22 +1223,50 @@ class RealizeLayoutCats(RewritePattern):
         # TODO: improve for join patterns
         of.elemType = ObjectFIFO([MemRefType(element_type.element_type, element_type.shape, dest_type.layout)])
 
+        element_type = cast(MemRefType[Attribute], of.elemType.buffer)
+
+        of_layout = element_type.layout
+
+        assert of_layout == dest_type.layout
+        # transform has already been applied to ObjectFIFO
+        of_acquire.results[0].type = ObjectFIFOSubview([dest_type])
+        subview_access.results[0].type = dest_type
+        assert op.source.type == op.dest.type
+        op.dest.replace_by(op.source)
+        rewriter.erase_matched_op()
+
 
 @dataclass
 class WrapInCoreOps(RewritePattern):
     tile_op_manager: TileOpManager
     of_manager: ObjectFifoManager
-    core_ops: dict[tuple[int, int], CoreOp]
+    core_ops: dict[tuple[int, int], CoreOp | RuntimeSequenceOp]
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: Operation, rewriter: PatternRewriter):
         if isinstance(op, ComputationNodeOp):
-            core = int(op.core_allocation.data)
-        elif isinstance(op, TransferOp):
-            source = int(op.source.data[-2])
-            dest = int(op.dest.data[-2])
-            # core is the one that isn't zero
-            core = source if source != 0 else dest
+            core = get_tile(op.core_allocation.data)[1]
+        elif isinstance(op, EdgeOp):
+            core = 0
+        elif isinstance(op, PushOp):
+            # what am i pushing?
+            assert isinstance(op.input, OpResult)
+            if isinstance(op.input.op, EdgeOp):
+                core = 0
+            elif isinstance(op.input.op, ComputationNodeOp):
+                core = get_tile(op.input.op.core_allocation.data)[1]
+            else:
+                raise NotImplementedError()
+        elif isinstance(op, PullOp):
+            # where am i pulling to?
+            assert len(op.output.uses) == 1
+            use = next(iter(op.output.uses))
+            if isinstance(use.operation, EdgeOp):
+                core = 0
+            elif isinstance(use.operation, ComputationNodeOp):
+                core = get_tile(use.operation.core_allocation.data)[1]
+            else:
+                raise NotImplementedError()
         else:
             return
 
@@ -1085,8 +1279,12 @@ class WrapInCoreOps(RewritePattern):
             core_op = self.core_ops[(0, core)]
 
         op.detach()
-        assert core_op.region.block.last_op
-        rewriter.insert_op(op, InsertPoint.before(core_op.region.block.last_op))
+        if isinstance(core_op, CoreOp):
+            assert core_op.region.block.last_op
+            insert_point = InsertPoint.before(core_op.region.block.last_op)
+        else:
+            insert_point = InsertPoint.at_end(core_op.body.block)
+        rewriter.insert_op(op, insert_point)
 
 
 class ConvertStreamToAIEPass(ModulePass):
@@ -1105,12 +1303,14 @@ class ConvertStreamToAIEPass(ModulePass):
         # add a runtime sequence operation
         # find all edges
         edges: list[EdgeOp] = [edge for edge in op.walk() if isinstance(edge, EdgeOp)]
-        order = ["I", "W", "O"]
+        order = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]
 
         runtime_arg_types = []
         for operand_name in order:
-            edge = next(edge for edge in edges if edge.tensor.data[-2] == operand_name)
-            runtime_arg_types.append(edge.output.type)
+            edge = next(edge for edge in edges if edge.tensor.data == operand_name)
+            operand = edge.input if edge.input is not None else edge.output
+            assert operand is not None
+            runtime_arg_types.append(operand.type)
 
         runtime_sequence = RuntimeSequenceOp(Region(Block(arg_types=runtime_arg_types)))
         rewriter.insert_op(runtime_sequence, InsertPoint.at_end(device_op.region.block))
@@ -1119,11 +1319,23 @@ class ConvertStreamToAIEPass(ModulePass):
         object_fifo_manager = ObjectFifoManager(tile_op_manager, runtime_sequence, device_op)
 
         # Order all transfers based on first use
-        PatternRewriteWalker(PutTransfersBeforeFirstUse(), apply_recursively=False).rewrite_module(op)
+        # PatternRewriteWalker(PutTransfersBeforeFirstUse(), apply_recursively=False).rewrite_module(op)
 
         PatternRewriteWalker(
-            WrapInCoreOps(tile_op_manager, object_fifo_manager, {}), apply_recursively=False
+            WrapInCoreOps(
+                tile_op_manager,
+                object_fifo_manager,
+                {
+                    (0, 0): runtime_sequence,
+                },
+            ),
+            apply_recursively=False,
         ).rewrite_module(op)
+
+        for core_op in device_op.region.block.ops:
+            if isinstance(core_op, CoreOp):
+                # insert runtime sequence op
+                iteration_space_to_for(core_op.region.block, rewriter)
 
         # Convert transfers to object fifo patterns
         PatternRewriteWalker(
@@ -1131,7 +1343,12 @@ class ConvertStreamToAIEPass(ModulePass):
             apply_recursively=False,
         ).rewrite_module(op)
 
-        object_fifo_manager.update_depths()
+        PatternRewriteWalker(
+            TransferToRuntimeSequence(object_fifo_manager),
+            apply_recursively=False,
+        ).rewrite_module(op)
+
+        # object_fifo_manager.update_depths()
 
         # pass through memtile to enable transformations
 
@@ -1146,14 +1363,11 @@ class ConvertStreamToAIEPass(ModulePass):
 
         PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
 
-        PatternRewriteWalker(CollapseMemcpys()).rewrite_module(op)
-
         # PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
 
         # insert dma wait statements for bd collisions
         PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)
-
-        # wrap in core ops
+        PatternRewriteWalker(OptimizeWaits()).rewrite_module(op)
 
         ## lower computation node ops for known kernels
 
@@ -1172,5 +1386,4 @@ class ConvertStreamToAIEPass(ModulePass):
         PatternRewriteWalker(RealizeLayoutCats(object_fifo_manager)).rewrite_module(op)
 
         ## cleanup
-
         PatternRewriteWalker(EraseEdges()).rewrite_module(op)

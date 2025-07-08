@@ -19,10 +19,8 @@ from stream.compiler.dialects.stream import ComputationNodeOp, TransferOp
 
 @dataclass
 class LoopRollerPattern(RewritePattern):
-
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
-
         if op.repeat.value.data == 1:
             return
 
