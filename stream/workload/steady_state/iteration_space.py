@@ -39,7 +39,7 @@ class IterationVariable:
         yield from (self.dimension, self.size, self.relevant)
 
     def __repr__(self):
-        tag = "R" if self.relevant else "C"
+        tag = "R" if self.relevant else "IR"
         return f"IterVar({self.dimension.name},{self.size},{tag})"
 
 

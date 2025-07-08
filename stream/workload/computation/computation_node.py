@@ -169,12 +169,17 @@ class ComputationNode(LayerNode, Node):
                 memref_source = self.subview_ops[op]
             else:
                 memref_source = AllocOp([], [], memref_type)
-            self.operand_tensors[op] = SubviewTensor(
-                memref_source=memref_source,
-                memref_type=memref_type,
+            # Create subview
+            subview = SubviewOp.from_static_parameters(
+                source=memref_source,
+                source_type=memref_type,
                 offsets=offsets,
                 sizes=sizes,
                 strides=strides,
+            )
+            self.operand_tensors[op] = SubviewTensor(
+                subview=subview,
+                sizes=sizes,
                 cn_source=self,
                 layer_operand=op,
                 loop_dimensions=op_dimensionality_order,

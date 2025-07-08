@@ -171,25 +171,24 @@ class SteadyStateScheduler:
         for node in subgraph.node_list:
             original_node = next(n for n in self.original_workload.node_list if n.id == node.id)
             loop_relevancy_info = original_node.loop_relevancy_info
-            intra_core_tiling = original_node.intra_core_tiling
             # Create a ConstantTensorNode for each constant tensor in the computation node
             for input_op in node.input_operands:
                 ssis = SteadyStateIterationSpace.from_loop_info(
                     loop_relevancy=loop_relevancy_info,
-                    intra_core_tiling=intra_core_tiling,
+                    intra_core_tiling=[],  # make tensor for entire layer
                     operand=input_op,
                 )
                 if input_op in node.constant_operands:
                     # This is a constant tensor, add it to the steady state workload
-                    tensor = node.operand_tensors[input_op]
-                    original_tensor = original_node.operand_tensors[input_op]
+                    tensor = original_node.operand_tensors[input_op]
+                    tensor_inputs = tensor.get_inputs()
                     if tensor not in seen_tensors:
                         seen_tensors.add(tensor)
                         # compute_allocations = set(n.chosen_resource_allocation for n in self.partitioned_nodes[node])
                         possible_resource_allocation = [
                             offchip_core,
                         ]  # + list(compute_allocations)
-                        full_shape = [ub - lb for lb, ub in original_tensor.loop_ranges]
+                        full_shape = [ub - lb for lb, ub in tensor.loop_ranges]
                         slices_per_full = ssis.slices_per_full
                         constant_node = SteadyStateTensor(
                             type=TensorFlag.INPUT | TensorFlag.CONSTANT,
@@ -199,6 +198,7 @@ class SteadyStateScheduler:
                             operand=input_op,
                             steady_state_iteration_space=ssis,
                             possible_resource_allocation=possible_resource_allocation,  # type: ignore
+                            subviewtensor_inputs=tensor_inputs,
                             full_shape=full_shape,
                             slices_per_full=slices_per_full,
                         )
@@ -211,24 +211,22 @@ class SteadyStateScheduler:
             out_edges = get_real_out_edges(node, self.workload)
             if len(out_edges) == 0:
                 # This is a sink node, add its output tensor as a constant tensor
-                output_operand = node.output_operand
-                output_tensor = node.operand_tensors[output_operand]
-                original_node = next(n for n in self.original_workload.node_list if n.id == node.id)
-                original_output_tensor = original_node.operand_tensors[output_operand]
+                output_operand = original_node.output_operand
+                output_tensor = original_node.operand_tensors[output_operand]
+                output_tensor_inputs = output_tensor.get_inputs()
                 loop_relevancy_info = original_node.loop_relevancy_info
-                intra_core_tiling = original_node.intra_core_tiling
                 if output_tensor not in seen_tensors:
                     seen_tensors.add(output_tensor)
                     ssis = SteadyStateIterationSpace.from_loop_info(
                         loop_relevancy=loop_relevancy_info,
-                        intra_core_tiling=intra_core_tiling,
+                        intra_core_tiling=[],  # make tensor for entire layer
                         operand=output_operand,
                     )
                     # compute_allocations = set(n.chosen_resource_allocation for n in self.partitioned_nodes[node])
                     possible_resource_allocation = [
                         offchip_core,
                     ]  # + list(compute_allocations)
-                    full_shape = [ub - lb for lb, ub in original_output_tensor.loop_ranges]
+                    full_shape = [ub - lb for lb, ub in output_tensor.loop_ranges]
                     slices_per_full = ssis.slices_per_full
                     constant_node = SteadyStateTensor(
                         type=TensorFlag.OUTPUT | TensorFlag.CONSTANT,
@@ -238,6 +236,7 @@ class SteadyStateScheduler:
                         operand=output_operand,
                         steady_state_iteration_space=ssis,
                         possible_resource_allocation=possible_resource_allocation,  # type: ignore
+                        subviewtensor_inputs=output_tensor_inputs,
                         full_shape=full_shape,
                         slices_per_full=slices_per_full,
                     )
@@ -263,8 +262,15 @@ class SteadyStateScheduler:
                 transfer_type = TransferType.BROADCAST
             else:
                 transfer_type = TransferType.UNICAST
+            # Get correct steady state iteration space for the intra core tilling
+            loop_relevancy_info = tensor.origin.loop_relevancy_info
+            intra_core_tiling = tensor.origin.intra_core_tiling
+            ssis = SteadyStateIterationSpace.from_loop_info(
+                loop_relevancy=loop_relevancy_info,
+                intra_core_tiling=intra_core_tiling,
+                operand=tensor.operand,
+            )
             # Insert a transfer node after the node and connect it to all the successors
-            ssis = tensor.steady_state_iteration_space
             possible_resource_allocation = self.get_transfer_paths(tensor, successors)
             transfer_node = SteadyStateTransfer(
                 transfer_type=transfer_type,
@@ -296,6 +302,7 @@ class SteadyStateScheduler:
                     assert isinstance(successor, SteadyStateComputation), (
                         "Successor should be a SteadyStateComputation."
                     )
+                    tensor_inputs = tensor.get_inputs()
                     post_transfer_tensor_node = SteadyStateTensor(
                         type=tensor.tensor_flag,
                         id=tensor.id,
@@ -304,6 +311,7 @@ class SteadyStateScheduler:
                         operand=tensor.operand,
                         steady_state_iteration_space=ssis,
                         possible_resource_allocation=successor.possible_resource_allocation,  # type: ignore
+                        subviewtensor_inputs=tensor_inputs,
                         full_shape=full_shape,
                         slices_per_full=slices_per_full,
                     )
@@ -337,7 +345,9 @@ class SteadyStateScheduler:
                     # If the successor is a tensor node, we check that it is a sink node output
                     assert TensorFlag.CONSTANT in successor.tensor_flag and TensorFlag.OUTPUT in successor.tensor_flag
                 if isinstance(node, SteadyStateComputation):
-                    tensor_size = node.operand_tensors[node.output_operand].size
+                    output_tensor = node.operand_tensors[node.output_operand]
+                    tensor_inputs = output_tensor.get_inputs()
+                    tensor_size = output_tensor.size
                     tensor_name = f"{node.name}.{node.output_operand}"
                     resource = node.chosen_resource_allocation
                     original_node = next(n for n in self.original_workload.node_list if n.id == node.id)
@@ -358,6 +368,7 @@ class SteadyStateScheduler:
                     resource = successor.chosen_resource_allocation
                     ssis = node.steady_state_iteration_space
                     output_operand = node.tensor.operand
+                    tensor_inputs = node.tensor.get_inputs()
                     possible_resource_allocation = [resource]
                     full_shape = node.tensor.full_shape
                     slices_per_full = ssis.slices_per_full
@@ -371,6 +382,7 @@ class SteadyStateScheduler:
                     operand=output_operand,
                     steady_state_iteration_space=ssis,
                     possible_resource_allocation=possible_resource_allocation,  # type: ignore
+                    subviewtensor_inputs=tensor_inputs,
                     full_shape=full_shape,
                     slices_per_full=slices_per_full,
                 )

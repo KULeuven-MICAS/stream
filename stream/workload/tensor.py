@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from dataclasses import dataclass
 from math import prod
 from typing import TYPE_CHECKING, TypeAlias
 
@@ -17,6 +18,18 @@ if TYPE_CHECKING:
 TensorHash: TypeAlias = int
 
 
+@dataclass
+class SubviewTensorInputs:
+    """Inputs to the SubviewTensor constructor for easier instantiation."""
+
+    subview: SubviewOp
+    sizes: Sequence[int]
+    cn_source: "ComputationNode"
+    layer_operand: LayerOperand
+    loop_dimensions: list[LayerDim]
+    loop_ranges: tuple[tuple[int, int], ...]
+
+
 class SubviewTensor:
     """Class to represent a data tensor.
     TODO: Add from which layer this tensor originates and its dimension ranges
@@ -24,11 +37,8 @@ class SubviewTensor:
 
     def __init__(  # noqa: PLR0913
         self,
-        memref_source: AllocOp,
-        memref_type: MemRefType,
-        offsets: Sequence[int],
+        subview: SubviewOp,
         sizes: Sequence[int],
-        strides: Sequence[int],
         cn_source: "ComputationNode",
         layer_operand: LayerOperand,
         loop_dimensions: list[LayerDim],
@@ -43,14 +53,8 @@ class SubviewTensor:
             loop_dimensions (tuple, optional): The loop dimensions for this tensor
             loop_ranges (tuple, optional): The loop range span for the different dimensions of this operand
         """
-        subview = SubviewOp.from_static_parameters(
-            source=memref_source,
-            source_type=memref_type,
-            offsets=offsets,
-            sizes=sizes,
-            strides=strides,
-        )
         self.subview = subview
+        self.sizes = sizes
         self.size = prod(sizes)
         self.cn_source = cn_source
         self.__layer_operand = layer_operand
@@ -75,6 +79,19 @@ class SubviewTensor:
 
     def __lt__(self, __o: object) -> bool:
         return isinstance(__o, SubviewTensor) and self.size < __o.size
+
+    def get_inputs(self) -> SubviewTensorInputs:
+        """Get the inputs to the SubviewTensor constructor."""
+        memref_type = self.subview.source.type
+        assert isinstance(memref_type, MemRefType)
+        return SubviewTensorInputs(
+            subview=self.subview,
+            sizes=self.sizes,
+            cn_source=self.cn_source,
+            layer_operand=self.layer_operand,
+            loop_dimensions=self.loop_dimensions,
+            loop_ranges=self.loop_ranges,
+        )
 
     def equality_hash(self):
         return hash((self.cn_source.id, self.layer_operand, self.loop_ranges))

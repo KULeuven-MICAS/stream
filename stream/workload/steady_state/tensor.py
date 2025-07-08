@@ -8,6 +8,7 @@ from zigzag.datatypes import LayerOperand
 from stream.hardware.architecture.core import Core
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.tensor import SubviewTensor, SubviewTensorInputs
 
 
 class TensorFlag(Flag):
@@ -17,7 +18,7 @@ class TensorFlag(Flag):
     OUTPUT = auto()
 
 
-class SteadyStateTensor(SteadyStateNode):
+class SteadyStateTensor(SteadyStateNode, SubviewTensor):
     """
     Node representing a tensor (slice) participating in the steady-state graph.
     full_shape : tuple[int, ...] | None
@@ -37,10 +38,12 @@ class SteadyStateTensor(SteadyStateNode):
         operand: LayerOperand,
         steady_state_iteration_space: SteadyStateIterationSpace,
         possible_resource_allocation: list[Core],
+        subviewtensor_inputs: SubviewTensorInputs,
         full_shape: Sequence[int] | None = None,
         slices_per_full: int | None = None,
     ):
-        super().__init__(
+        SteadyStateNode.__init__(
+            self=self,
             id=id,
             node_name=node_name,
             type="tensor",
@@ -51,6 +54,17 @@ class SteadyStateTensor(SteadyStateNode):
             None if len(possible_resource_allocation) > 1 else possible_resource_allocation[0]
         )
         self.possible_resource_allocation: list[Core]
+
+        SubviewTensor.__init__(
+            self=self,
+            subview=subviewtensor_inputs.subview,
+            sizes=subviewtensor_inputs.sizes,
+            cn_source=subviewtensor_inputs.cn_source,
+            layer_operand=operand,
+            loop_dimensions=subviewtensor_inputs.loop_dimensions,
+            loop_ranges=subviewtensor_inputs.loop_ranges,
+        )
+        self.id = id
 
         self.size: int = size  # slice size
         self.tensor_flag: TensorFlag = type
@@ -80,7 +94,7 @@ class SteadyStateTensor(SteadyStateNode):
         return self.slices_per_full or 1
 
     def __str__(self) -> str:
-        return f"SubviewTensor({self.node_name})"
+        return f"SteadyStateTensor({self.node_name})"
 
     def __repr__(self) -> str:
         return str(self)
