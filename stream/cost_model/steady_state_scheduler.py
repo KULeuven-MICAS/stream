@@ -310,17 +310,17 @@ class SteadyStateScheduler:
             steady_state_workload.add_edge(tensor, transfer_node)
             out_edges_data = [data for _, _, data in out_edges]
             for ptn, succ, data in zip(post_transfer_tensor_nodes, successors, out_edges_data, strict=True):
-                if ptn is succ:  # happens for the constant tensors that were already in the graph
-                    continue
+                if ptn not in steady_state_workload:  # happens for the constant tensors that were already in the graph
+                    # Add the post transfer tensor node to the steady state workload
+                    steady_state_workload.add(ptn)
                 attrs = data.copy()
-                # Add the post transfer tensor node to the steady state workload
-                steady_state_workload.add(ptn)
                 # Remove original edge between node and successor
                 steady_state_workload.remove_edge(tensor, succ)
                 # Add edge from transfer node to post transfer tensor node
                 steady_state_workload.add_edge(transfer_node, ptn, **attrs)
-                # Add edge from post transfer node to successor
-                steady_state_workload.add_edge(ptn, succ, **attrs)
+                if ptn is not succ:
+                    # Add edge from post transfer node to successor
+                    steady_state_workload.add_edge(ptn, succ, **attrs)
         return steady_state_workload
 
     def get_post_transfer_tensor_nodes(
