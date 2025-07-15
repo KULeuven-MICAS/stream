@@ -206,5 +206,5 @@ def optimize_allocation_co(  # noqa: PLR0913
         # Launch the MainStage
         answers = mainstage.run()
         scme = answers[0][0]
-        pickle_save(scme, scme_path)  # type: ignore
+        # pickle_save(scme, scme_path)  # type: ignore
     return scme
