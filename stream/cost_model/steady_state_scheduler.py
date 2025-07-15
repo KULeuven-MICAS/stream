@@ -53,6 +53,9 @@ class SteadyStateScheduler:
         self.latency_per_iteration = -1
         self.overlap_between_iterations = -1
 
+        self.allow_constant_tensors_on_mem_core = True
+        self.allow_constant_tensors_on_compute_core = True
+
     def run(self, allocation: "TimeSlotAllocation"):
         """
         Run the steady state scheduler on the given allocation.
@@ -74,7 +77,7 @@ class SteadyStateScheduler:
         print(tsa_upd)
         total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
         assert total == total_latency_solver, (
-            f"Total latency from tsa_upd {total} does not match total latency from solver {total_latency_solver}."
+            f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
         )
         print(f"Total latency: {total}, per iteration: {per_iter}, overlap: {ov}")
         self.latency_total, self.latency_per_iteration, self.overlap_between_iterations = total, per_iter, ov
@@ -188,10 +191,9 @@ class SteadyStateScheduler:
                     tensor_inputs = tensor.get_inputs()
                     if tensor not in seen_tensors:
                         seen_tensors.add(tensor)
-                        # compute_allocations = set(n.chosen_resource_allocation for n in self.partitioned_nodes[node])
-                        possible_resource_allocation = [
-                            offchip_core,
-                        ]  # + list(compute_allocations)
+                        possible_resource_allocation = self.get_constant_tensor_resource_allocation(
+                            self.partitioned_nodes[node], offchip_core
+                        )
                         full_shape = [ub - lb for lb, ub in tensor.loop_ranges]
                         slices_per_full = ssis.slices_per_full
                         constant_node = SteadyStateTensor(
@@ -227,10 +229,9 @@ class SteadyStateScheduler:
                         intra_core_tiling=[],  # make tensor for entire layer
                         operand=output_operand,
                     )
-                    # compute_allocations = set(n.chosen_resource_allocation for n in self.partitioned_nodes[node])
-                    possible_resource_allocation = [
-                        offchip_core,
-                    ]  # + list(compute_allocations)
+                    possible_resource_allocation = self.get_constant_tensor_resource_allocation(
+                        self.partitioned_nodes[node], offchip_core
+                    )
                     full_shape = [ub - lb for lb, ub in output_tensor.loop_ranges]
                     slices_per_full = ssis.slices_per_full
                     constant_node = SteadyStateTensor(
@@ -249,6 +250,32 @@ class SteadyStateScheduler:
                     for new_node in self.partitioned_nodes[node]:
                         steady_state_workload.add_edge(new_node, constant_node)
         return steady_state_workload
+
+    def get_constant_tensor_resource_allocation(
+        self, partitioned_nodes: list[SteadyStateComputation], offchip_core: Core
+    ) -> list[Core]:
+        """
+        Get the resource allocation for the constant tensor.
+        The constant tensor is allocated on the off-chip core, and optionally on the compute cores.
+        """
+        # Initialize with offchip memory core
+        possible_resource_allocation = [offchip_core]
+        if self.allow_constant_tensors_on_mem_core:
+            # If we allow constant tensors on memory cores, add them
+            other_mem_cores = [
+                core for core in self.accelerator.core_list if core != offchip_core and core.type == "memory"
+            ]
+            possible_resource_allocation += other_mem_cores
+        if self.allow_constant_tensors_on_compute_core:
+            # If we allow constant tensors on compute cores, add them
+            compute_allocations: list[Core] = [
+                n.chosen_resource_allocation for n in partitioned_nodes if n.chosen_resource_allocation is not None
+            ]
+            assert len(compute_allocations) == len(partitioned_nodes), (
+                f"Not all partitioned nodes have a chosen resource allocation. {partitioned_nodes}"
+            )
+            possible_resource_allocation += compute_allocations
+        return possible_resource_allocation
 
     def add_transfer_nodes(self, steady_state_workload: SteadyStateWorkload) -> SteadyStateWorkload:
         """

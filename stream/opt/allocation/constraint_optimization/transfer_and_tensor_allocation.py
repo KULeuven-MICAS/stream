@@ -282,7 +282,7 @@ class TransferAndTensorAllocator:
             self.model.addConstr(self.slot_latency[s] >= lat * y, name=f"tr_lat_{tr.node_name}_{hash(p)}")
 
     # ...................... overlap + objective ................. #
-    def _overlap_and_objective(self) -> None:
+    def _overlap_and_objective(self) -> None:  # noqa: PLR0915
         """
         ▸ idle_start[res,s]  == 1  ⇔  slot *s* is *before* the first activity on *res*
         ▸ idle_end  [res,s]  == 1  ⇔  slot *s* is *after*  the last  activity on *res*
@@ -327,7 +327,9 @@ class TransferAndTensorAllocator:
         # idleS = 1  ⇔  prefix_sum[s]==0        (no activity up to *s*)
         # idleE = 1  ⇔  suffix_sum[s]==0        (no activity after *s*)
 
-        link_used: dict[CommunicationLink, gp.Var] = {}
+        self.link_used: dict[CommunicationLink, gp.Var] = {}
+        self.prefixs: dict[CommunicationLink, list[gp.Var]] = {}
+        self.suffixs: dict[CommunicationLink, list[gp.Var]] = {}
 
         for link in self.link_set:
             # ---------- active_{link,s} expression ------------------------
@@ -341,11 +343,12 @@ class TransferAndTensorAllocator:
 
             # ---------- link_used binary ----------------------------------
             lu = self.model.addVar(vtype=GRB.BINARY, name=f"linkUsed_{_resource_key(link)}")
-            link_used[link] = lu
-            self.model.addConstr(
-                quicksum(active_s.values()) >= lu,  # if lu==1 ⇒ some activity
-                name=f"link_used_def_{_resource_key(link)}",
-            )
+            self.link_used[link] = lu
+            sum_active = quicksum(active_s.values())
+            # (1) if lu == 1  ⇒  link carries traffic
+            self.model.addConstr(sum_active >= lu, name=f"link_used_def_{_resource_key(link)}")
+            # (2) if link carries traffic  ⇒  lu == 1
+            self.model.addConstr(sum_active <= big_m * lu, name=f"link_used_def2_{_resource_key(link)}")
 
             # ---------- cumulative sums -----------------------------------
             prefix = [
@@ -354,6 +357,8 @@ class TransferAndTensorAllocator:
             suffix = [
                 self.model.addVar(vtype=GRB.INTEGER, name=f"suf_{_resource_key(link)}_{s}") for s in range(max_s + 1)
             ]
+            self.prefixs[link] = prefix
+            self.suffixs[link] = suffix
 
             self.model.addConstr(prefix[0] == active_s[0])
             self.model.addConstr(suffix[-1] == active_s[max_s])
@@ -370,14 +375,14 @@ class TransferAndTensorAllocator:
 
                 # prefix_sum == 0  →  is_ = 1
                 self.model.addConstr(prefix[s] <= big_m * (1 - is_))
-                self.model.addConstr(prefix[s] >= 1 - big_m * is_)
+                self.model.addConstr(prefix[s] >= lu - big_m * is_)
 
                 # suffix_sum == 0  →  ie_ = 1
                 self.model.addConstr(suffix[s] <= big_m * (1 - ie_))
-                self.model.addConstr(suffix[s] >= 1 - big_m * ie_)
+                self.model.addConstr(suffix[s] >= lu - big_m * ie_)
 
-                # If the link is never used (lu==0) → force is_=ie_=0
-                self.model.addConstr(is_ <= lu)
+                # If the link is never used (lu==0) → force is_=1 and ie_=0 for correct idle_lat calculation
+                self.model.addConstr(is_ >= 1 - lu)
                 self.model.addConstr(ie_ <= lu)
 
         # ------------------------------------------------------------------
