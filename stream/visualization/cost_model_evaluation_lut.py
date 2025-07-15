@@ -97,7 +97,7 @@ def _load_node_hw_performances(pickle_filepath):
 
 def _get_scale_factors(node_hw_performances, scale_factors):
     if not scale_factors:
-        return {node: 1 for node in node_hw_performances}
+        return {node: 1 for node in node_hw_performances.get_nodes()}
     return scale_factors
 
 

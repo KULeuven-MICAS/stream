@@ -17,8 +17,8 @@ def run_main_aie_codegen_gemm(M, N, K):  # noqa: N803
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
     workload_path = make_gemm_workload(M, N, K)
-    accelerator = "stream/inputs/aie/hardware/single_aie_tile.yaml"
-    mapping_path = make_gemm_mapping_single_core(M, N, K, has_mem_tile=False)
+    accelerator = "stream/inputs/aie/hardware/single_aie_tile_with_mem_tile.yaml"
+    mapping_path = make_gemm_mapping_single_core(M, N, K, has_mem_tile=True)
     # mode = "lbl"
     # layer_stacks = [(0,),]
     mode = "fused"

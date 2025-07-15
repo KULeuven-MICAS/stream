@@ -5,7 +5,7 @@ import yaml
 from onnx import TensorProto, helper
 
 
-def make_gemm_mapping(M, N, K):  # noqa: N803
+def make_gemm_mapping_single_core(M, N, K, has_mem_tile: bool = False):  # noqa: N803
     name = f"gemm_{M}_{N}_{K}"
     output_file = f"stream/inputs/aie/mapping/{name}.yaml"
     # Construct tiling entries as comma-separated strings
@@ -16,18 +16,19 @@ def make_gemm_mapping(M, N, K):  # noqa: N803
     ]
 
     inter_core_tiling = ["K, 1"]
+    compute_allocation = [1] if not has_mem_tile else [2]
 
     mapping = [
         {
             "name": "Gemm",
-            "core_allocation": [1],
+            "core_allocation": compute_allocation,
             "intra_core_tiling": tiling_strings,
             "inter_core_tiling": inter_core_tiling,
             "kernel": {"name": "mm_32x32x32", "utilization": 61.8},
         },
         {
             "name": "default",
-            "core_allocation": [1],
+            "core_allocation": compute_allocation,
             "intra_core_tiling": tiling_strings,
             "inter_core_tiling": inter_core_tiling,
             "kernel": {"name": "mm_32x32x32", "utilization": 61.8},
