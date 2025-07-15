@@ -73,7 +73,7 @@ class SteadyStateScheduler:
         # At this point, the only nodes without an allocation are the transfer nodes
         offchip_core_id = self.accelerator.offchip_core_id
         tta = TransferAndTensorAllocator(ssw, tsa, offchip_core_id=offchip_core_id, iterations=self.iterations)
-        tsa_upd, total_latency_solver = tta.solve()
+        tsa_upd, ssw_upd, total_latency_solver = tta.solve()
         print(tsa_upd)
         total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
         assert total == total_latency_solver, (
@@ -87,7 +87,7 @@ class SteadyStateScheduler:
         # tla = TensorLifetimeAnalyzer(ssw)
         # tla.summary()
         # tla.visualize()
-        self.steady_state_workload = ssw
+        self.steady_state_workload = ssw_upd
         tsa_upd.to_perfetto("steady_state_workload_single_tile.json")
         return self
 

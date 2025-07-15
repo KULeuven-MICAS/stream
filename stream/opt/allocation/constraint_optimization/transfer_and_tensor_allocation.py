@@ -419,7 +419,7 @@ class TransferAndTensorAllocator:
     # ------------------------------------------------------------------ #
     # public solve()                                                     #
     # ------------------------------------------------------------------ #
-    def solve(self, *, tee: bool = True) -> tuple[TimeSlotAllocation, int]:  # noqa: PLR0912
+    def solve(self, *, tee: bool = True) -> tuple[TimeSlotAllocation, SteadyStateWorkload, int]:  # noqa: PLR0912
         self.model.setParam("OutputFlag", 1 if tee else 0)
         self.model.optimize()
         if self.model.Status != GRB.OPTIMAL:
@@ -466,7 +466,21 @@ class TransferAndTensorAllocator:
                 new_allocs.append((slot, res, node))
             else:
                 raise TypeError(f"Unexpected node type: {type(node)} in TSA allocations.")
-
+        # Update the TimeSlotAllocation with the new allocations
         tsa_upd = TimeSlotAllocation(new_allocs)
+        # Update the steady state workload to prevent graph inconsistencies
+        ssw_upd = self.get_updated_steady_state_workload()
         assert self.total_latency is not None, "Total latency variable was not created."
-        return tsa_upd, int(self.total_latency.X)
+        return tsa_upd, ssw_upd, int(self.total_latency.X)
+
+    def get_updated_steady_state_workload(self) -> SteadyStateWorkload:
+        """Return a new SteadyStateWorkload with updated resource allocations.
+        This is necessary as there's a bug in networkx that doesn't update the edges when node attributes change.
+        """
+        ssw_upd = SteadyStateWorkload()
+        for edge in self.ssw.edges(data=True):
+            src, dst, data = edge
+            src = next(n for n in self.ssw.node_list if n is src)
+            dst = next(n for n in self.ssw.node_list if n is dst)
+            ssw_upd.add_edge(src, dst, **data)
+        return ssw_upd
