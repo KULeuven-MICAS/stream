@@ -4,10 +4,17 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from enum import Flag, auto
 from math import prod
 
 from zigzag.datatypes import LayerDim, LayerOperand
 from zigzag.workload.layer_node import LoopRelevancyInfo
+
+
+class IterationVariableReuse(Flag):
+    NOT_SET = auto()  # default value is not set
+    REUSE = auto()
+    NO_REUSE = auto()
 
 
 # --------------------------------------------------------------------------- #
@@ -33,14 +40,39 @@ class IterationVariable:
         self.dimension: LayerDim = dimension
         self.size: int = int(size)
         self.relevant: bool = bool(relevant)
+        self._reuse: IterationVariableReuse = IterationVariableReuse.NOT_SET
 
     # ---------- nice aliases ------------------------------------------------
     def __iter__(self):
-        yield from (self.dimension, self.size, self.relevant)
+        yield from (self.dimension, self.size, self.relevant, self.reuse)
 
     def __repr__(self):
         tag = "R" if self.relevant else "IR"
-        return f"IterVar({self.dimension.name},{self.size},{tag})"
+        return f"IterVar({self.dimension.name},{self.size},{tag},{self.reuse})"
+
+    def __eq__(self, other):
+        if not isinstance(other, IterationVariable):
+            return NotImplemented
+        return (
+            self.dimension == other.dimension
+            and self.size == other.size
+            and self.relevant == other.relevant
+            and self.reuse == other.reuse
+        )
+
+    def __hash__(self):
+        return hash((self.dimension, self.size, self.relevant, self.reuse))
+
+    # Getter and setter for reuse attribute
+    @property
+    def reuse(self) -> IterationVariableReuse:
+        return self._reuse
+
+    @reuse.setter
+    def reuse(self, value: IterationVariableReuse) -> None:
+        if not isinstance(value, IterationVariableReuse):
+            raise ValueError(f"Expected IterationVariableReuse, got {type(value)}")
+        self._reuse = value
 
 
 # --------------------------------------------------------------------------- #
@@ -58,6 +90,14 @@ class SteadyStateIterationSpace:
     # ............................................... basic constructor ....
     def __init__(self, variables: list[IterationVariable]) -> None:
         self.variables: list[IterationVariable] = list(variables)
+
+    def __eq__(self, other):
+        if not isinstance(other, SteadyStateIterationSpace):
+            return NotImplemented
+        return self.variables == other.variables
+
+    def __hash__(self):
+        return hash(tuple(self.variables))
 
     # ..................................................................... #
     # ── CLASS FACTORY  (replaces the old helper in SteadyStateScheduler) ── #
@@ -92,11 +132,8 @@ class SteadyStateIterationSpace:
             relevant_dims.update(loop_relevancy.pr_dims[operand].get(dim, []))
 
         variables: list[IterationVariable] = []
-        seen_first_relevant = False
         for dim, size in intra_core_tiling:
-            is_rel = dim in relevant_dims or seen_first_relevant
-            if is_rel:
-                seen_first_relevant = True
+            is_rel = dim in relevant_dims
             variables.append(IterationVariable(dim, size, is_rel))
 
         return cls(variables)

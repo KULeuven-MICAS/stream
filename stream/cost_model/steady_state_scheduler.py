@@ -54,7 +54,7 @@ class SteadyStateScheduler:
         self.overlap_between_iterations = -1
 
         self.allow_constant_tensors_on_mem_core = False
-        self.allow_constant_tensors_on_compute_core = True
+        self.allow_constant_tensors_on_compute_core = False
 
     def run(self, allocation: "TimeSlotAllocation"):
         """
