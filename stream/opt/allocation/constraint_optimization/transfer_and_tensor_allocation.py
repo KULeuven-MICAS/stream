@@ -71,6 +71,7 @@ class TransferAndTensorAllocator:
         self.slot_of: dict[Any, int] = {n: tsa.get_timeslot_of_node(n) for n in tsa.nodes}
         self.resource_of: dict[Any, Resource] = {n: next(iter(tsa.get_resources_for_node(n))) for n in tsa.nodes}
 
+
         # --------------- optimisation model ---------------------- #
         self.model = gp.Model("transfer_tensor_alloc")
         self.model.setParam("OutputFlag", gurobi_verbosity)
@@ -93,8 +94,9 @@ class TransferAndTensorAllocator:
 
         # transfer fire helpers init
         # dict((transfer, steady state iteration space index): (fires_across_ss_iterations, extra_mem_bytes))
-        self.reuse_levels: dict[tuple[SteadyStateTransfer, int], tuple[int, int]] = {}
         self._ensure_same_ssis_for_all_transfers()
+        self.reuse_levels: dict[tuple[SteadyStateTransfer, int], tuple[int, int]] = {}
+        self.transfer_nodes_to_optimize_firings_for: list[SteadyStateTransfer] = []
         self._init_transfer_fire_helpers()
 
         self._build_model()
@@ -141,6 +143,12 @@ class TransferAndTensorAllocator:
             ssis = tr.steady_state_iteration_space  # e.g. [Nk, Nk-1, …, N0]
             sizes = [iter_var.size for iter_var in ssis]
             relevancies = [iter_var.relevant for iter_var in ssis]
+            reuses = [iter_var.reuse for iter_var in ssis]
+
+            # Check that all reuses are NOT_SET, else continue
+            if any(r != IterationVariableReuse.NOT_SET for r in reuses):
+                continue
+            self.transfer_nodes_to_optimize_firings_for.append(tr)
 
             # level = -1  →  "transfer every steady state iteration"
             fires = math.prod(sizes)
@@ -198,7 +206,23 @@ class TransferAndTensorAllocator:
                 quicksum(self.z_cache[(tr, s)] for s in range(-1, len(sizes))) == 1,
                 name=f"cacheChooseStop_{tr.node_name}",
             )
-
+            if tr not in self.transfer_nodes_to_optimize_firings_for:
+                # Get the stop value by looking at the reuses of the ssis
+                reuses = [iter_var.reuse for iter_var in tr.steady_state_iteration_space]
+                # Find the index of the last 'REUSE' in the reuses
+                stop = -2
+                for i in range(len(reuses) - 1, -1, -1):
+                    if reuses[i] == IterationVariableReuse.REUSE:
+                        stop = i
+                        break
+                assert stop >= -1, (
+                    f"Something went wrong for Transfer {tr.node_name} REUSE indexing: {reuses}"
+                )
+                # Set the z_cache variable to 1 for the chosen stop
+                self.model.addConstr(
+                    self.z_cache[(tr, stop)] == 1,
+                    name=f"cacheFixedStop_{tr.node_name}_L{stop}",
+                )
     # ...................... tensor placement .................... #
     def _tensor_placement_constraints(self):
         for t in self.tensor_var:
