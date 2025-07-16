@@ -9,9 +9,20 @@ from snaxc.dialects.snax import LayoutCast
 from snaxc.dialects.tsl import TiledStridedLayoutAttr
 from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.context import MLContext
-from xdsl.dialects.arith import ConstantOp
-from xdsl.dialects.builtin import IntegerAttr, MemRefType, ModuleOp, StringAttr, SymbolRefAttr, i32
+from xdsl.dialects.arith import AddiOp, ConstantOp, MuliOp
+from xdsl.dialects.builtin import (
+    DenseArrayBase,
+    IndexType,
+    IntegerAttr,
+    IntegerType,
+    MemRefType,
+    ModuleOp,
+    StringAttr,
+    SymbolRefAttr,
+    i32,
+)
 from xdsl.dialects.func import CallOp, FuncOp
+from xdsl.dialects.scf import ForOp, IndexSwitchOp, YieldOp
 from xdsl.ir import Attribute, Operation, OpResult, Region, SSAValue
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
@@ -50,6 +61,7 @@ from xdsl_aie.dialects.aiex import (
 from stream.compiler.dialects.stream import Channel, ChannelOp, ComputationNodeOp, EdgeOp, PullOp, PushOp, TransferOp
 from stream.compiler.transforms import iteration_space_to_for
 from stream.compiler.transforms.iteration_space_to_for import iteration_space_to_for
+from stream.workload.steady_state.iteration_space import IterationVariableReuse
 
 
 def get_tile(value: str) -> tuple[int, int]:
@@ -383,19 +395,65 @@ class TransferToObjectFIFOPattern(RewritePattern):
             operand = op.input
         assert isinstance(memref_type := operand.type, MemRefType)
 
+        first_relevant_iter = next(iv for iv in op.ssis.data.variables if iv.relevant)
+        first_relevant_index = op.ssis.data.variables.index(first_relevant_iter)
+
+        last_irelevant_reuse = next(
+            iv for iv in op.ssis.data.variables[::-1] if not iv.relevant and iv.reuse == IterationVariableReuse.REUSE
+        )
+        last_irelevant_index = op.ssis.data.variables.index(last_irelevant_reuse)
+
+        reuse_iters = op.ssis.data.variables[first_relevant_index : last_irelevant_index + 1]
+
+        relevant_reuse_iters = [iv for iv in reuse_iters if iv.relevant]
+
+        reuse_factor = prod(iv.size for iv in reuse_iters if iv.relevant)
+
+        # update object fifo depth
+        of.elemNumber = IntegerAttr.from_int_and_width(reuse_factor, 32)
+
+        # acquire:
         acquire_op = ObjectFifoAcquireOp(
             IntegerAttr.from_int_and_width(port.get_int(), 32),
-            IntegerAttr.from_int_and_width(1, 32),
+            IntegerAttr.from_int_and_width(reuse_factor, 32),
             object_fifo=of_name,
             shape=memref_type.get_shape(),
             element_type=memref_type.get_element_type(),
         )
 
-        access_op = ObjectFIFOSubviewAccessOp(IntegerAttr(0, i32), acquire_op)
+        # accesses:
+        access_ops = [ObjectFIFOSubviewAccessOp(IntegerAttr(i, i32), acquire_op) for i in range(reuse_factor)]
+
+        # index op to select correct access:
+        index_ops: list[Operation] = [
+            mult_val := ConstantOp.from_int_and_width(1, IndexType()),
+            add_val := ConstantOp.from_int_and_width(0, IndexType()),
+        ]
+        for_op = op.parent_op()
+        assert isinstance(for_op, ForOp)
+        for iter_var in relevant_reuse_iters:
+            while "layer_dim" not in for_op.attributes and for_op.attributes["layer_dim"] != StringAttr(
+                iter_var.dimension.name
+            ):
+                for_op = for_op.parent_op()
+                assert isinstance(for_op, ForOp)
+            i_arg = MuliOp(mult_val, for_op.body.block.args[0])
+            add_val = AddiOp(add_val, i_arg)
+            mult_val = MuliOp(mult_val, for_op.ub)
+            index_ops.extend([i_arg, add_val, mult_val])
+
+        index_switch = IndexSwitchOp(
+            arg=add_val,
+            cases=DenseArrayBase.from_list(IntegerType(64), list(range(reuse_factor))),
+            default_region=Region(Block([YieldOp(access_ops[0])])),
+            case_regions=[Region(Block([YieldOp(access_ops[i])])) for i in range(reuse_factor)],
+            result_types=access_ops[0].result_types,
+        )
+        index_ops.append(index_switch)
 
         release_op = ObjectFIFOReleaseOp(
             IntegerAttr.from_int_and_width(port.get_int(), 32),
-            IntegerAttr.from_int_and_width(1, 32),
+            IntegerAttr.from_int_and_width(reuse_factor, 32),
             object_fifo=of_name,
         )
 
@@ -411,8 +469,15 @@ class TransferToObjectFIFOPattern(RewritePattern):
             use_op = use_op.parent_op()
             assert use_op is not None
 
-        rewriter.insert_op(release_op, InsertPoint.after(use_op))
-        rewriter.insert_op([acquire_op, access_op], InsertPoint.before(use_op))
+        # put acquire and accesses at last level of reuse:
+        use_op_reuse = use_op
+        for _ in range(len(reuse_iters)):
+            use_op_reuse = use_op_reuse.parent_op()
+            assert use_op_reuse is not None
+
+        rewriter.insert_op(release_op, InsertPoint.after(use_op_reuse))
+        rewriter.insert_op([acquire_op, *access_ops], InsertPoint.before(use_op_reuse))
+        rewriter.insert_op(index_ops, InsertPoint.before(use_op))
 
         # set output of computation node op if this was a push op
         if isinstance(op, PushOp):
@@ -420,7 +485,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
             assert isinstance(compute := op.input.op, ComputationNodeOp)
             new_compute = ComputationNodeOp(
                 compute.inputs,
-                access_op.results[0],
+                index_switch.results[0],
                 compute.kernel.data,
                 compute.core_allocation.data,
                 compute.ssis.data,
@@ -428,7 +493,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
             )
             rewriter.replace_op(compute, new_compute)
 
-        operand.replace_by(access_op.results[0])
+        operand.replace_by(index_switch.results[0])
         rewriter.erase_matched_op()
 
         return
@@ -1159,7 +1224,11 @@ class RealizeLayoutCats(RewritePattern):
     def match_and_rewrite(self, op: LayoutCast, rewriter: PatternRewriter):
         # gather some variables
         assert isinstance(op.source, OpResult)
-        assert isinstance(subview_access := op.source.op, ObjectFIFOSubviewAccessOp)
+        assert isinstance(index_op := op.source.op, IndexSwitchOp)
+        assert isinstance(
+            subview_access := index_op.default_region.block.last_op.operands[0].op, ObjectFIFOSubviewAccessOp
+        )
+        # assert isinstance(subview_access := op.source.op, ObjectFIFOSubviewAccessOp)
         assert isinstance(subview_access.subview, OpResult)
         assert isinstance(of_acquire := subview_access.subview.op, ObjectFifoAcquireOp)
 
@@ -1231,6 +1300,7 @@ class RealizeLayoutCats(RewritePattern):
         # transform has already been applied to ObjectFIFO
         of_acquire.results[0].type = ObjectFIFOSubview([dest_type])
         subview_access.results[0].type = dest_type
+        index_op.results[0].type = dest_type
         assert op.source.type == op.dest.type
         op.dest.replace_by(op.source)
         rewriter.erase_matched_op()
@@ -1384,6 +1454,8 @@ class ConvertStreamToAIEPass(ModulePass):
         # handle layouts
         PatternRewriteWalker(SetKernelLayouts()).rewrite_module(op)
         PatternRewriteWalker(RealizeLayoutCats(object_fifo_manager)).rewrite_module(op)
+
+        breakpoint()
 
         ## cleanup
         PatternRewriteWalker(EraseEdges()).rewrite_module(op)
