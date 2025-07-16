@@ -1455,7 +1455,5 @@ class ConvertStreamToAIEPass(ModulePass):
         PatternRewriteWalker(SetKernelLayouts()).rewrite_module(op)
         PatternRewriteWalker(RealizeLayoutCats(object_fifo_manager)).rewrite_module(op)
 
-        breakpoint()
-
         ## cleanup
         PatternRewriteWalker(EraseEdges()).rewrite_module(op)
