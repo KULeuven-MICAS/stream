@@ -10,7 +10,7 @@ from xdsl_aie.dialects.aie import EndOp
 from stream.compiler.dialects.stream import ComputationNodeOp, PullOp, PushOp
 
 
-def iteration_space_to_for(block: Block, rewriter: Rewriter):  # noqa: PLR0912
+def iteration_space_to_for(block: Block, rewriter: Rewriter):  # noqa: PLR0912, PLR0915
     ops: Sequence[PushOp | PullOp | ComputationNodeOp] = []
     ssis = None
     for op in block.ops:
@@ -59,7 +59,7 @@ def iteration_space_to_for(block: Block, rewriter: Rewriter):  # noqa: PLR0912
         return
     ssis = op.ssis.data.variables
     ssis_op = op.ssis.data.variables
-    for i, iter_var in enumerate(ssis):
+    for i, _ in enumerate(ssis):
         while op is not None and ssis_op[i].relevant:
             op.detach()
             rewriter.insert_op(op, insertion_point)

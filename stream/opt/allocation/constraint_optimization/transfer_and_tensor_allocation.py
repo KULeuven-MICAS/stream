@@ -71,7 +71,6 @@ class TransferAndTensorAllocator:
         self.slot_of: dict[Any, int] = {n: tsa.get_timeslot_of_node(n) for n in tsa.nodes}
         self.resource_of: dict[Any, Resource] = {n: next(iter(tsa.get_resources_for_node(n))) for n in tsa.nodes}
 
-
         # --------------- optimisation model ---------------------- #
         self.model = gp.Model("transfer_tensor_alloc")
         self.model.setParam("OutputFlag", gurobi_verbosity)
@@ -215,14 +214,13 @@ class TransferAndTensorAllocator:
                     if reuses[i] == IterationVariableReuse.REUSE:
                         stop = i
                         break
-                assert stop >= -1, (
-                    f"Something went wrong for Transfer {tr.node_name} REUSE indexing: {reuses}"
-                )
+                assert stop >= -1, f"Something went wrong for Transfer {tr.node_name} REUSE indexing: {reuses}"
                 # Set the z_cache variable to 1 for the chosen stop
                 self.model.addConstr(
                     self.z_cache[(tr, stop)] == 1,
                     name=f"cacheFixedStop_{tr.node_name}_L{stop}",
                 )
+
     # ...................... tensor placement .................... #
     def _tensor_placement_constraints(self):
         for t in self.tensor_var:
