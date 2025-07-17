@@ -10,7 +10,7 @@ from xdsl_aie.dialects.aie import EndOp
 from stream.compiler.dialects.stream import ComputationNodeOp, PullOp, PushOp
 
 
-def iteration_space_to_for(block: Block, rewriter: Rewriter):
+def iteration_space_to_for(block: Block, rewriter: Rewriter):  # noqa: PLR0912
     ops: Sequence[PushOp | PullOp | ComputationNodeOp] = []
     ssis = None
     for op in block.ops:

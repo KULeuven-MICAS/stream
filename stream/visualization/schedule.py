@@ -7,6 +7,8 @@ from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 from zigzag.datatypes import LayerOperand
 
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
+
 if TYPE_CHECKING:
     from stream.cost_model.cost_model import StreamCostModelEvaluation
     from stream.hardware.architecture.accelerator import Accelerator

@@ -1,8 +1,7 @@
 import numpy as np
 import onnx
-import onnx.helper as helper
 import onnx.shape_inference
-from onnx import TensorProto
+from onnx import TensorProto, helper
 
 # Define the model's graph
 input_tensor = helper.make_tensor_value_info("input", TensorProto.FLOAT, [1, 3, 112, 112])

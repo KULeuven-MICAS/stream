@@ -1,10 +1,11 @@
 import json
 import os
-import os
+
+import matplotlib.pyplot as plt
 
 
 def parse_perfetto_trace(file_path):
-    with open(file_path, "r") as file:
+    with open(file_path) as file:
         data = json.load(file)
 
     instr_event_0_times = []
@@ -18,22 +19,19 @@ def parse_perfetto_trace(file_path):
 
     if len(instr_event_0_times) != len(instr_event_1_times):
         if len(instr_event_0_times) == len(instr_event_1_times) + 1:
-        if len(instr_event_0_times) == len(instr_event_1_times) + 1:
             instr_event_0_times = instr_event_0_times[:-1]
         else:
             raise ValueError(
-                f"Mismatched INSTR_EVENT_0 ({len(instr_event_0_times)}) and INSTR_EVENT_1 ({len(instr_event_1_times)}) events"
+                f"Mismatched INSTR_EVENT_0 ({len(instr_event_0_times)}) and INSTR_EVENT_1 ({len(instr_event_1_times)})"
             )
 
-    time_differences = [end - start for start, end in zip(instr_event_0_times, instr_event_1_times)]
+    time_differences = [end - start for start, end in zip(instr_event_0_times, instr_event_1_times, strict=False)]
     total_difference = instr_event_1_times[-1] - instr_event_0_times[0]
 
     return time_differences, total_difference
 
 
 def plot_time_differences(time_differences, fig_path):
-    import matplotlib.pyplot as plt
-
     plt.grid()
     plt.plot(list(range(len(time_differences))), time_differences, marker="o", linestyle="-", color="b")
     plt.xticks(ticks=list(range(len(time_differences))), labels=list(range(len(time_differences))))
@@ -77,11 +75,15 @@ if __name__ == "__main__":
         macs_per_cycle_kernel = macs_kernel / avg_diff
         print(f"MACs per cycle (kernel) = {macs_per_cycle_kernel:.2f}")
         print(
-            f"Theoretical peak efficiency (kernel) = {macs_per_cycle_kernel / MAX_MACS_PER_CYCLE_PER_CORE * 100:.1f} % (assuming {MAX_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)"
+            f"Theoretical peak efficiency (kernel) = "
+            f"{macs_per_cycle_kernel / MAX_MACS_PER_CYCLE_PER_CORE * 100:.1f} % "
+            f"(assuming {MAX_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)."
         )
         print(f"MACs/cycle (system) = {macs_per_cycle_system:.2f}")
         print(
-            f"Theoretical peak efficiency (system) = {macs_per_cycle_system / MAX_MACS_PER_CYCLE_PER_CORE * 100:.1f} % (assuming {MAX_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)"
+            f"Theoretical peak efficiency (system) = "
+            f"{macs_per_cycle_system / MAX_MACS_PER_CYCLE_PER_CORE * 100:.1f} % "
+            f"(assuming {MAX_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)."
         )
         print("=" * 80)
         # Generate output PNG file path

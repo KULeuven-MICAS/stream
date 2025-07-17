@@ -13,7 +13,7 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
-def run_main_aie_codegen_gemm(M, N, K):
+def run_main_aie_codegen_gemm(M, N, K):  # noqa: N803
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
     workload_path = make_gemm_workload(M, N, K)

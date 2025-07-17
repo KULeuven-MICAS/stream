@@ -1,4 +1,4 @@
-from stream.opt.partitioning.TemporalLoop import TemporalLoop
+from stream.opt.partitioning.temporal_loop import TemporalLoop
 from stream.workload.mapping import TILING_T
 
 

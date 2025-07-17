@@ -70,6 +70,6 @@ class ClearMemorySpace(ModulePass):
                         )
                         for index, old_arg in enumerate(old_args)
                     ]
-                    for old_arg, new_arg in zip(old_args, new_args):
+                    for old_arg, new_arg in zip(old_args, new_args, strict=False):
                         old_arg.replace_by(new_arg)
                     op_in_module.body.block._args = tuple(new_args)  # pyright: ignore

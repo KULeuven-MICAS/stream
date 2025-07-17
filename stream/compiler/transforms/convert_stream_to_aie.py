@@ -59,7 +59,6 @@ from xdsl_aie.dialects.aiex import (
 )
 
 from stream.compiler.dialects.stream import Channel, ChannelOp, ComputationNodeOp, EdgeOp, PullOp, PushOp, TransferOp
-from stream.compiler.transforms import iteration_space_to_for
 from stream.compiler.transforms.iteration_space_to_for import iteration_space_to_for
 from stream.workload.steady_state.iteration_space import IterationVariableReuse
 
@@ -264,7 +263,7 @@ class TransferToRuntimeSequence(RewritePattern):
     object_fifo_manager: ObjectFifoManager
 
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: PushOp | PullOp, rewriter: PatternRewriter):
+    def match_and_rewrite(self, op: PushOp | PullOp, rewriter: PatternRewriter):  # noqa: PLR0912, PLR0915
         if not isinstance(runtime_sequence := op.parent_op(), RuntimeSequenceOp):
             return
 
@@ -289,7 +288,7 @@ class TransferToRuntimeSequence(RewritePattern):
         arg_index = arg_order.index(edge.tensor.data)
         arg = runtime_sequence.body.block.args[arg_index]
 
-        offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
+        # offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
         sizes = cast(tuple[int, ...], op.sizes.get_values()[-4:])
         strides = cast(tuple[int, ...], op.strides.get_values()[-4:])
         assert isinstance(arg.type, MemRefType)
@@ -308,7 +307,7 @@ class TransferToRuntimeSequence(RewritePattern):
 
         # add the repeating pattern
         # offset is definitely zero for now
-        for i, iter_var in enumerate(op.ssis.data.variables):
+        for iter_var in op.ssis.data.variables:
             loop_dimensions = [x.data for x in op.loop_dimensions]
             if iter_var.relevant:
                 if str(iter_var.dimension) in loop_dimensions:
@@ -324,10 +323,10 @@ class TransferToRuntimeSequence(RewritePattern):
 
         # canonicalize transformation
         # static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
-
-        if len(static_sizes) > 5:
+        MAX_STATIC_SIZE_LEN = 5
+        if len(static_sizes) > MAX_STATIC_SIZE_LEN:
             raise RuntimeError()
-        if len(static_sizes) == 5:
+        if len(static_sizes) == MAX_STATIC_SIZE_LEN:
             software_size = static_sizes.pop(0)
             software_stride = static_strides.pop(0)
         else:
@@ -365,7 +364,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
     release_op: dict[str, Operation | None] = field(default_factory=dict)  # pyright: ignore
 
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: PushOp | PullOp, rewriter: PatternRewriter):
+    def match_and_rewrite(self, op: PushOp | PullOp, rewriter: PatternRewriter):  # noqa: PLR0912, PLR0915
         # do the runtime sequence thing elsewhere, must have a core_op parent
         parent = op
         while True:
@@ -682,7 +681,7 @@ class PassThroughMemTile(RewritePattern):
 
         # other one must be compute tile
         assert isinstance(compute.op, TileOp)
-        if compute.op.row.value.data < 2:
+        if compute.op.row.value.data < 2:  # noqa: PLR2004
             return
 
         memtile = self.tile_op_manager.insert_or_update(0, 1)
@@ -979,7 +978,7 @@ class CollapseMemcpys(RewritePattern):
                 sizes_1 = simplified[0]
                 strides_1 = simplified[1]
 
-            if len(sizes_1) > 4:
+            if len(sizes_1) > 4:  # noqa: PLR2004
                 return
             sizes_1 = (1,) * (4 - len(sizes_1)) + sizes_1
             strides_1 = (0,) * (4 - len(strides_1)) + strides_1
@@ -1312,7 +1311,7 @@ class WrapInCoreOps(RewritePattern):
     core_ops: dict[tuple[int, int], CoreOp | RuntimeSequenceOp]
 
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: Operation, rewriter: PatternRewriter):
+    def match_and_rewrite(self, op: Operation, rewriter: PatternRewriter):  # noqa: PLR0912
         if isinstance(op, ComputationNodeOp):
             core = get_tile(op.core_allocation.data)[1]
         elif isinstance(op, EdgeOp):

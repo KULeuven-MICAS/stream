@@ -1,3 +1,6 @@
+import aie.utils.trace as trace_utils
+from aie.dialects.aie import AIEDevice, device, tile
+from aie.extras.context import mlir_mod_ctx
 from xdsl.context import Context
 from xdsl.dialects.builtin import ModuleOp
 from xdsl.ir import Operation
@@ -14,10 +17,6 @@ class AIEAddTracingScript(ModulePass):
     trace_size = 65536
 
     def apply(self, ctx: Context, op: ModuleOp) -> None:
-        import aie.utils.trace as trace_utils
-        from aie.dialects.aie import AIEDevice, device, tile
-        from aie.extras.context import mlir_mod_ctx
-
         rewriter = Rewriter()
 
         # 1: Get packet flow

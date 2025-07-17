@@ -4,9 +4,6 @@ import re
 
 from stream.api import optimize_allocation_co
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_mapping_single_core, make_gemm_workload
-from stream.utils import CostModelEvaluationLUT
-from stream.visualization.memory_usage import plot_memory_usage
-from stream.visualization.perfetto import convert_scme_to_perfetto_json
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
@@ -33,17 +30,12 @@ def run_main_aie_codegen_gemm(M, N, K):  # noqa: N803
     experiment_id = f"{hw_name}-{wl_name}-{mode}-constraint-optimization"
     ######################################################################
 
-    ##############PLOTTING###############
-    section_start_percent = (0,)
-    percent_shown = (100,)
-    #####################################
-
-    ################################PATHS################################
-    memory_fig_path = f"outputs/{experiment_id}/memory.png"
-    json_path = f"outputs/{experiment_id}/scme.json"
+    ################################PLOTS################################
+    # memory_fig_path = f"outputs/{experiment_id}/memory.png"
+    # json_path = f"outputs/{experiment_id}/scme.json"
     #####################################################################
 
-    scme = optimize_allocation_co(
+    _ = optimize_allocation_co(
         hardware=accelerator,
         workload=workload_path,
         mapping=mapping_path,

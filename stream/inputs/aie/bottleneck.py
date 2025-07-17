@@ -83,7 +83,9 @@ workload = {
     #     'operand_precision': {'O': 8, 'O_final': 8, 'X': 8, 'Y': 8},
     #     'operand_source': {'X': [0], 'Y': [2]},
     #     'constant_operands': [],
-    #     'operand_source_dimension_mapping': {'X': {'OX': 'OX', 'OY': 'OY', 'G': 'K'}, 'Y': {'OX': 'OX', 'OY': 'OY', 'G': 'K'}},
+    #     'operand_source_dimension_mapping': {
+    #       'X': {'OX': 'OX', 'OY': 'OY', 'G': 'K'}, 'Y': {'OX': 'OX', 'OY': 'OY', 'G': 'K'}
+    #      },
     #     'memory_operand_links': {'O': 'O', 'X': 'I2', 'Y': 'I1'}
     # }
     # 3: {

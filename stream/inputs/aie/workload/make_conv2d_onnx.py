@@ -2,12 +2,11 @@ import argparse
 
 import numpy as np
 import onnx
-import onnx.helper as helper
 import onnx.shape_inference
-from onnx import TensorProto
+from onnx import TensorProto, helper
 
 
-def make_conv2d(H):
+def make_conv2d(H):  # noqa: N803
     IC = 64
     OC = 64
     W = 32

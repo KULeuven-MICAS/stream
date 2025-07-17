@@ -128,7 +128,7 @@ class TransferOp(IRDLOperation):
     dest = prop_def(StringAttr)
     ssis = prop_def(SteadyStateIterationSpaceAttr)
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         input: SSAValue | Operation | None,
         result_types: Sequence[Attribute],
