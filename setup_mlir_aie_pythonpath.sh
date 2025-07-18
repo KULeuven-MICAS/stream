@@ -17,5 +17,5 @@ if [[ ! -d "$MLIR_AIE_PYTHON_DIR" ]]; then
   exit 1
 fi
 
-export PYTHONPATH="$MLIR_AIE_PYTHON_DIR:$PYTHONPATH"
+export PYTHONPATH="$MLIR_AIE_PYTHON_DIR:${PYTHONPATH:-}"
 echo "✅ PYTHONPATH set to include: $MLIR_AIE_PYTHON_DIR"
