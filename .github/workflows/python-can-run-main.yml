@@ -21,6 +21,9 @@ jobs:
         with:
           submodules: recursive  # Ensures submodules like mlir-aie are cloned too
 
+      - name: Install Graphviz (for pydot visualizations)
+        run: sudo apt-get update && sudo apt-get install -y graphviz
+
       - name: Display Python version
         run: python -c "import sys; print(sys.version)"
 
