@@ -28,7 +28,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
-          bash -exo pipefail setup.sh
+          bash setup_mlir_aie_requirements.sh
 
       # - name: Run codegeneration for conv2d main without errors
       #   run: |
@@ -36,7 +36,7 @@ jobs:
  
       - name: Run codegeneration for gemm main without errors
         run: |
-          # source mlir-aie/utils/env_setup.sh
+          source setup_mlir_aie_pythonpath.sh
           python main_aie_codegen_gemm.py --M 64 --N 64 --K 64
 
       # - name: Run codegeneration for gemm on a column main without errors

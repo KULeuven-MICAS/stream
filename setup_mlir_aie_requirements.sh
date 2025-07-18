@@ -16,5 +16,3 @@ python3 -m pip install -r mlir-aie/python/requirements.txt
 # Install MLIR Python Extras
 HOST_MLIR_PYTHON_PACKAGE_PREFIX=aie python3 -m pip install -r mlir-aie/python/requirements_extras.txt
 
-# Source mlir-aie environment
-# source mlir-aie/utils/env_setup.sh
