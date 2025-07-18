@@ -1,5 +1,4 @@
 #!/bin/bash
-set -euo pipefail
 
 if [[ -z "${VIRTUAL_ENV:-}" ]]; then
   echo "⚠️ Warning: Not in a Python virtual environment (.venv). Using system Python."
