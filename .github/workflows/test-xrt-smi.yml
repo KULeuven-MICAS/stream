@@ -1,0 +1,13 @@
+name: Test XRT SMI
+
+on: [push]
+
+jobs:
+  test-xrt:
+    runs-on: [self-hosted, linux, x64]
+
+    steps:
+      - name: Check XRT SMI
+        run: |
+          which xrt-smi || echo "xrt-smi not found"
+          xrt-smi || echo "xrt-smi failed to run"
