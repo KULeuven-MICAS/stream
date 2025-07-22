@@ -22,8 +22,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Graphviz (optional, if not already present on runner)
-        run: sudo apt-get update && sudo apt-get install -y graphviz
+      - name: Check Graphviz installation
+        run: |
+          if ! command -v dot >/dev/null 2>&1; then
+            echo "❌ Graphviz ('dot') not found in PATH. Please install it on the runner."
+            exit 1
+          else
+            echo "✅ Graphviz is installed."
+          fi
 
       - name: Set up environment and dependencies
         run: |
