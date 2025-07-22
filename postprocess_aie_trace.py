@@ -1,6 +1,6 @@
-import json
-import os
 import argparse
+import json
+
 import matplotlib.pyplot as plt
 
 
@@ -59,7 +59,6 @@ def main():
     def save_report(report_path, report_data):
         with open(report_path, "w") as report_file:
             json.dump(report_data, report_file, indent=4)
-            
 
     M, N, K = args.M, args.N, args.K
     m, n, k = args.m, args.n, args.k
@@ -112,6 +111,7 @@ def main():
 
     # Plot and save the figure
     plot_time_differences(time_differences, fig_path)
+
 
 if __name__ == "__main__":
     main()

@@ -1,5 +1,4 @@
 import os
-from workflow.utils.helpers import get_suffix, get_job_by_suffix
 
 # Rule 1: Generate output.mlir file from main script
 rule run_stream_aie_to_generate_mlir_output:
