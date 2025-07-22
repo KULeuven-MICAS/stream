@@ -1,6 +1,6 @@
 import json
 import os
-
+import argparse
 import matplotlib.pyplot as plt
 
 
@@ -43,53 +43,75 @@ def plot_time_differences(time_differences, fig_path):
     plt.close()
 
 
-if __name__ == "__main__":
-    M, N, K = 128, 128, 32  # total layer size
-    m, n, k = 32, 32, 32  # tile size
+def main():
+    parser = argparse.ArgumentParser(description="Postprocess AIE trace data.")
+    parser.add_argument("--input", required=True, help="Path to the input .json trace file.")
+    parser.add_argument("--output", required=True, help="Path to the output .png file for saving the plot.")
+    parser.add_argument("--fig", required=True, help="Path to the output .json file for saving the report.")
+    parser.add_argument("--M", type=int, required=True, help="Total layer size M.")
+    parser.add_argument("--N", type=int, required=True, help="Total layer size N.")
+    parser.add_argument("--K", type=int, required=True, help="Total layer size K.")
+    parser.add_argument("--m", type=int, required=True, help="Tile size m.")
+    parser.add_argument("--n", type=int, required=True, help="Tile size n.")
+    parser.add_argument("--k", type=int, required=True, help="Tile size k.")
+    args = parser.parse_args()
+
+    def save_report(report_path, report_data):
+        with open(report_path, "w") as report_file:
+            json.dump(report_data, report_file, indent=4)
+            
+
+    M, N, K = args.M, args.N, args.K
+    m, n, k = args.m, args.n, args.k
     nb_kernels = (M // m) * (N // n) * (K // k)  # number of kernels
     MAX_MACS_PER_CYCLE_PER_CORE = 64  # for int16 x int16
-    input_folder = "/home/asymons/Documents/traces/gemm/zero_events/"
-    output_folder = "/home/asymons/Documents/traces/gemm/zero_events/plots/"
-    # Automatically generate the output folder based on the input folder
-    output_folder = os.path.join(input_folder, "plots")
 
-    os.makedirs(output_folder, exist_ok=True)
-
-    # Get all .json files from the input folder
-    file_paths = [os.path.join(input_folder, f) for f in os.listdir(input_folder) if f.endswith(".json")]
+    input_file = args.input
+    report_path = args.output
+    fig_path = args.fig
 
     print("=" * 80)
-    for file_path in file_paths:
-        time_differences, total_difference = parse_perfetto_trace(file_path)
-        if len(time_differences) != nb_kernels:
-            raise ValueError(f"Expected {nb_kernels} time differences, but got {len(time_differences)} in {file_path}")
-        print(f"File: {file_path}")
-        print(f"Total difference: {total_difference} cycles")
-        avg_diff = sum(time_differences) / len(time_differences)
-        print(f"Average difference = {avg_diff}")
+    time_differences, total_difference = parse_perfetto_trace(input_file)
+    if len(time_differences) != nb_kernels:
+        raise ValueError(f"Expected {nb_kernels} time differences, but got {len(time_differences)} in {input_file}")
+    print(f"File: {input_file}")
+    print(f"Total difference: {total_difference} cycles")
+    avg_diff = sum(time_differences) / len(time_differences)
+    print(f"Average difference = {avg_diff}")
 
-        # Calculate the macs/cycle
-        macs_total = M * N * K
-        macs_kernel = m * n * k
-        macs_per_cycle_system = macs_total / total_difference
-        macs_per_cycle_kernel = macs_kernel / avg_diff
-        print(f"MACs per cycle (kernel) = {macs_per_cycle_kernel:.2f}")
-        print(
-            f"Theoretical peak efficiency (kernel) = "
-            f"{macs_per_cycle_kernel / MAX_MACS_PER_CYCLE_PER_CORE * 100:.1f} % "
-            f"(assuming {MAX_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)."
-        )
-        print(f"MACs/cycle (system) = {macs_per_cycle_system:.2f}")
-        print(
-            f"Theoretical peak efficiency (system) = "
-            f"{macs_per_cycle_system / MAX_MACS_PER_CYCLE_PER_CORE * 100:.1f} % "
-            f"(assuming {MAX_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)."
-        )
-        print("=" * 80)
-        # Generate output PNG file path
-        base_name = os.path.basename(file_path)
-        png_name = os.path.splitext(base_name)[0] + ".png"
-        fig_path = os.path.join(output_folder, png_name)
+    # Calculate the macs/cycle
+    macs_total = M * N * K
+    macs_kernel = m * n * k
+    macs_per_cycle_system = macs_total / total_difference
+    macs_per_cycle_kernel = macs_kernel / avg_diff
+    print(f"MACs per cycle (kernel) = {macs_per_cycle_kernel:.2f}")
+    print(
+        f"Theoretical peak efficiency (kernel) = "
+        f"{macs_per_cycle_kernel / MAX_MACS_PER_CYCLE_PER_CORE * 100:.1f} % "
+        f"(assuming {MAX_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)."
+    )
+    print(f"MACs/cycle (system) = {macs_per_cycle_system:.2f}")
+    print(
+        f"Theoretical peak efficiency (system) = "
+        f"{macs_per_cycle_system / MAX_MACS_PER_CYCLE_PER_CORE * 100:.1f} % "
+        f"(assuming {MAX_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)."
+    )
+    print("=" * 80)
 
-        # Plot and save the figure
-        plot_time_differences(time_differences, fig_path)
+    # Save report
+    report_data = {
+        "file": input_file,
+        "total_difference_cycles": total_difference,
+        "average_difference_cycles": avg_diff,
+        "macs_per_cycle_kernel": macs_per_cycle_kernel,
+        "theoretical_peak_efficiency_kernel_percent": macs_per_cycle_kernel / MAX_MACS_PER_CYCLE_PER_CORE * 100,
+        "macs_per_cycle_system": macs_per_cycle_system,
+        "theoretical_peak_efficiency_system_percent": macs_per_cycle_system / MAX_MACS_PER_CYCLE_PER_CORE * 100,
+    }
+    save_report(report_path, report_data)
+
+    # Plot and save the figure
+    plot_time_differences(time_differences, fig_path)
+
+if __name__ == "__main__":
+    main()

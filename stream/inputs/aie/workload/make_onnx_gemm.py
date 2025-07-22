@@ -6,7 +6,7 @@ from onnx import TensorProto, helper
 
 
 def make_gemm_mapping_single_core(M, N, K, has_mem_tile: bool = False):  # noqa: N803
-    name = f"gemm_{M}_{N}_{K}"
+    name = f"gemm_{M}_{K}_{N}"
     output_file = f"stream/inputs/aie/mapping/{name}.yaml"
     # Construct tiling entries as comma-separated strings
     tiling_strings = [
@@ -43,9 +43,9 @@ def make_gemm_mapping_single_core(M, N, K, has_mem_tile: bool = False):  # noqa:
 def make_gemm_workload(M, N, K):  # noqa: N803
     ACT_SIZE = 16
     WEIGHT_SIZE = 16
-    OUTPUT_SIZE = 16
+    OUTPUT_SIZE = 32
 
-    name = f"gemm_{M}_{N}_{K}"
+    name = f"gemm_{M}_{K}_{N}"
 
     # Define the model's graph
     input_tensor_A = helper.make_tensor_value_info("A", TensorProto.FLOAT, [M, K])
@@ -106,5 +106,5 @@ if __name__ == "__main__":
     N = 128
     K = 64
     model = make_gemm_workload(M, N, K)
-    onnx.save(model, f"gemm_{M}_{N}_{K}.onnx")
-    print(f"Model exported to gemm_{M}_{N}_{K}.onnx with shape inference.")
+    onnx.save(model, f"gemm_{M}_{K}_{N}.onnx")
+    print(f"Model exported to gemm_{M}_{K}_{N}.onnx with shape inference.")

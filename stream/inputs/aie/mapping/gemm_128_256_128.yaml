@@ -2,9 +2,9 @@
   core_allocation: &id001
   - 1
   intra_core_tiling: &id002
-  - C, 1
+  - C, 4
   - D, 4
-  - K, 4
+  - K, 8
   inter_core_tiling: &id003
   - K, 1
   kernel:
