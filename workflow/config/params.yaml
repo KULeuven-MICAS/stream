@@ -1,0 +1,12 @@
+gemm:
+  defaults:
+    m: 32
+    n: 32
+    k: 32
+    stream_hw_identifier: single_aie_tile
+    mlir_aie_dir: /path/to/mlir-aie
+    use_stream_output: true
+
+  shapes:
+    - { M: 64, K: 64, N: 64 }
+    # - { M: 128, K: 32, N: 128 }
