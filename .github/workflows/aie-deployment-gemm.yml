@@ -1,0 +1,56 @@
+name: AIE Deployment Gemm
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  run-snakemake:
+    runs-on: [self-hosted, linux]
+    defaults:
+      run:
+        shell: bash -l {0}
+
+    steps:
+      - name: Check out repository with submodules
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cache Python virtualenv
+        id: cache-venv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            venv-${{ runner.os }}-
+
+      - name: Set up Python environment and install requirements
+        run: |
+          if [ ! -d ".venv" ]; then
+            python3 -m venv .venv
+          fi
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          bash setup_mlir_aie_requirements.sh
+
+      - name: Configure Python environment
+        run: |
+          source .venv/bin/activate
+          source setup_mlir_aie_pythonpath.sh
+
+      - name: Run Snakemake
+        run: |
+          source .venv/bin/activate
+          snakemake -j 1 --forceall
+
+      - name: Upload trace output artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: trace-efficiency-${{ github.run_id }}
+          path: outputs/*/trace_efficiency_mm.json
+          retention-days: 30
