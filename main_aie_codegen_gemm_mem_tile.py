@@ -1,23 +1,20 @@
 import argparse
 import logging as _logging
+import os
 import re
 
 from stream.api import optimize_allocation_co
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_mapping_single_core, make_gemm_workload
-from stream.utils import CostModelEvaluationLUT
-from stream.visualization.memory_usage import plot_memory_usage
-from stream.visualization.perfetto import convert_scme_to_perfetto_json
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-_logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
 def run_main_aie_codegen_gemm(M, N, K):  # noqa: N803
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
     workload_path = make_gemm_workload(M, N, K)
-    accelerator = "stream/inputs/aie/hardware/single_aie_tile_with_mem_tile.yaml"
+    accelerator = "stream/inputs/aie/hardware/single_core_with_mem_tile.yaml"
     mapping_path = make_gemm_mapping_single_core(M, N, K, has_mem_tile=True)
     # mode = "lbl"
     # layer_stacks = [(0,),]
@@ -33,17 +30,29 @@ def run_main_aie_codegen_gemm(M, N, K):  # noqa: N803
     experiment_id = f"{hw_name}-{wl_name}-{mode}-constraint-optimization"
     ######################################################################
 
-    ##############PLOTTING###############
-    section_start_percent = (0,)
-    percent_shown = (100,)
-    #####################################
+    ################################LOGGING###############################
+    log_path = f"outputs/{experiment_id}/stream.log"
+    # Ensure the output directory exists
+    os.makedirs(os.path.dirname(log_path), exist_ok=True)
+    # Get root logger and remove any existing handlers
+    logger = _logging.getLogger()
+    logger.setLevel(_logging_level)  # or use _logging_level if you define one
+    # Remove all existing handlers (e.g., ones added by Snakemake or libraries)
+    for handler in logger.handlers[:]:
+        logger.removeHandler(handler)
+    # Create a file handler explicitly
+    file_handler = _logging.FileHandler(log_path)
+    file_handler.setFormatter(_logging.Formatter(_logging_format))
+    logger.addHandler(file_handler)
+    logger.info(f"Running AIE code generation for Gemm with M={M}, N={N}, K={K}")
+    ######################################################################
 
-    ################################PATHS################################
-    memory_fig_path = f"outputs/{experiment_id}/memory.png"
-    json_path = f"outputs/{experiment_id}/scme.json"
+    ################################PLOTS################################
+    # memory_fig_path = f"outputs/{experiment_id}/memory.png"
+    # json_path = f"outputs/{experiment_id}/scme.json"
     #####################################################################
 
-    scme = optimize_allocation_co(
+    _ = optimize_allocation_co(
         hardware=accelerator,
         workload=workload_path,
         mapping=mapping_path,
@@ -55,16 +64,16 @@ def run_main_aie_codegen_gemm(M, N, K):  # noqa: N803
         enable_codegen=True,
     )
 
-    #####################CostModelEvaluationLUT LOAD#############################
-    cost_lut_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
-    cost_lut = CostModelEvaluationLUT(cost_lut_path)
-    #############################################################################
+    # #####################CostModelEvaluationLUT LOAD#############################
+    # cost_lut_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
+    # cost_lut = CostModelEvaluationLUT(cost_lut_path)
+    # #############################################################################
 
-    # Save json for perfetto visualization (Visualize at http://ui.perfetto.dev/)
-    convert_scme_to_perfetto_json(scme, cost_lut, json_path=json_path)
+    # # Save json for perfetto visualization (Visualize at http://ui.perfetto.dev/)
+    # convert_scme_to_perfetto_json(scme, cost_lut, json_path=json_path)
 
-    # Plotting memory usage of best SCME
-    plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
+    # # Plotting memory usage of best SCME
+    # plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
 
 
 if __name__ == "__main__":

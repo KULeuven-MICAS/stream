@@ -8,7 +8,7 @@ core_connectivity:
   # ───── Connect shim_dma to mem_tile ─────
   - type: link
     cores: [0, 1]
-    bandwidth: 32
+    bandwidth: 64
   # ───── Connect mem_tile to aie_tile ─────
   - type: link
     cores: [1, 2]
