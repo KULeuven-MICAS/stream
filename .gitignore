@@ -160,3 +160,6 @@ docs/make.bat
 
 # auto-generated mlir files
 *.mlir
+
+# snakemake files
+.snakemake

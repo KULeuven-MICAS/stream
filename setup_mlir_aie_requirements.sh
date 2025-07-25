@@ -8,7 +8,7 @@ python3 -m pip install --upgrade pip
 python3 -m pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels
 
 # Install Peano from llvm-aie wheel
-python3 -m pip install llvm-aie -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
+python3 -m pip install "llvm-aie==19.0.0.2025063001" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
 # Install basic Python requirements (still needed for release v1.0, but is no longer needed for latest wheels)
 python3 -m pip install -r mlir-aie/python/requirements.txt
