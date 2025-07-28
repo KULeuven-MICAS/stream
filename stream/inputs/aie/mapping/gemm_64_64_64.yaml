@@ -1,6 +1,6 @@
 - name: Gemm
   core_allocation: &id001
-  - 2
+  - 1
   intra_core_tiling: &id002
   - C, 2
   - D, 2

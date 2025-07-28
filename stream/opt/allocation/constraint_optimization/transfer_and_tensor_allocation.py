@@ -243,44 +243,6 @@ class TransferAndTensorAllocator:
         for s in range(self.max_slot + 1):
             self.slot_latency[s] = self.model.addVar(vtype=GRB.INTEGER, name=f"L_{s}")
 
-    def __create_mem_core_reuse_vars(self):
-        self.z_stopM: dict[tuple[SteadyStateTransfer, int], gp.Var] = {}
-
-        for tr in self.transfer_nodes:
-            sizes = [iv.size for iv in tr.steady_state_iteration_space]
-            for stop in range(-1, len(sizes)):
-                v = self.model.addVar(vtype=GRB.BINARY, name=f"zStopM_{tr.node_name}_L{stop}")
-                self.z_stopM[(tr, stop)] = v
-            self.model.addConstr(
-                quicksum(self.z_stopM[(tr, s)] for s in range(-1, len(sizes))) == 1,
-                name=f"cacheChooseStopM_{tr.node_name}",
-            )
-
-            # nesting   stopM  ≥  stopC   (‑−> every cached loop for Compute must
-            #                               also be cached in the MemC)
-            for s in range(-1, len(sizes)):
-                cumC = quicksum(self.z_stopC[(tr, u)] for u in range(s, len(sizes)))
-                cumM = quicksum(self.z_stopM[(tr, u)] for u in range(s, len(sizes)))
-                self.model.addConstr(cumC <= cumM, name=f"nest_{tr.node_name}_L{s}")
-
-    def __create_transfer_mem_core_vars(self):
-        self.m_store: dict[tuple[SteadyStateTransfer, Core], gp.Var] = {}
-        for tr in self.transfer_nodes:
-            if not self._is_const_io(tr):
-                continue
-            possible_mem_cores = []
-            for mc in self.mem_cores:
-                v = self.model.addVar(vtype=GRB.BINARY, name=f"mStore_{tr.node_name}_{_resource_key(mc)}")
-                self.m_store[(tr, mc)] = v
-                possible_mem_cores.append(mc)
-            if not self.force_io_transfers_on_mem_tile:
-                v_none = self.model.addVar(vtype=GRB.BINARY, name=f"mStore_{tr.node_name}_NONE")
-                self.m_store[(tr, None)] = v_none
-                possible_mem_cores.append(None)
-            self.model.addConstr(
-                quicksum(self.m_store[(tr, c)] for c in possible_mem_cores) == 1, name=f"chooseMemCore_{tr.node_name}"
-            )
-
     def __create_compute_core_reuse_vars(self):
         self.z_stopC: dict[tuple[SteadyStateTransfer, int], gp.Var] = {}
         for tr in self.transfer_nodes:
@@ -308,6 +270,45 @@ class TransferAndTensorAllocator:
                     self.z_stopC[(tr, stop)] == 1,
                     name=f"zStopC_FixedStop_{tr.node_name}_L{stop}",
                 )
+
+    def __create_mem_core_reuse_vars(self):
+        self.z_stopM: dict[tuple[SteadyStateTransfer, int], gp.Var] = {}
+
+        for tr in self.transfer_nodes:
+            sizes = [iv.size for iv in tr.steady_state_iteration_space]
+            for stop in range(-1, len(sizes)):
+                v = self.model.addVar(vtype=GRB.BINARY, name=f"zStopM_{tr.node_name}_L{stop}")
+                self.z_stopM[(tr, stop)] = v
+            self.model.addConstr(
+                quicksum(self.z_stopM[(tr, s)] for s in range(-1, len(sizes))) == 1,
+                name=f"cacheChooseStopM_{tr.node_name}",
+            )
+
+            # stopM ≥ stopC (every cached loop for Compute must also be cached in the MemC)
+            for s in range(-1, len(sizes)):
+                cumC = quicksum(self.z_stopC[(tr, u)] for u in range(s, len(sizes)))
+                cumM = quicksum(self.z_stopM[(tr, u)] for u in range(s, len(sizes)))
+                self.model.addConstr(cumC <= cumM, name=f"nest_{tr.node_name}_L{s}")
+
+    def __create_transfer_mem_core_vars(self):
+        self.m_store: dict[tuple[SteadyStateTransfer, Core], gp.Var] = {}
+        if not self.mem_cores:
+            return  # no memory cores, nothing to do
+        for tr in self.transfer_nodes:
+            if not self._is_const_io(tr):
+                continue
+            possible_mem_cores = []
+            for mc in self.mem_cores:
+                v = self.model.addVar(vtype=GRB.BINARY, name=f"mStore_{tr.node_name}_{_resource_key(mc)}")
+                self.m_store[(tr, mc)] = v
+                possible_mem_cores.append(mc)
+            if not self.force_io_transfers_on_mem_tile:
+                v_none = self.model.addVar(vtype=GRB.BINARY, name=f"mStore_{tr.node_name}_NONE")
+                self.m_store[(tr, None)] = v_none
+                possible_mem_cores.append(None)
+            self.model.addConstr(
+                quicksum(self.m_store[(tr, c)] for c in possible_mem_cores) == 1, name=f"chooseMemCore_{tr.node_name}"
+            )
 
     def __create_transfer_path_vars(self):
         for tr in self.transfer_nodes:
