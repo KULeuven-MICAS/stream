@@ -227,15 +227,10 @@ class TransferAndTensorAllocator:
     # ------------------------------------------------------------ #
     def _build_model(self):
         self._create_vars()
-        self._path_choice_constraints()
-        self._tensor_placement_constraints()
-        self._transfer_fire_rate_constraints()
-        self._link_contention_constraints()
-        self._memory_capacity_constraints()
-        self._slot_latency_constraints()
+        self._create_constraints()
         self._overlap_and_objective()
 
-    # ...................... variable creation ................... #
+    # ...................... VARIABLES ................... #
     def _create_vars(self):
         self.__create_tensor_placement_vars()
         self.__create_transfer_path_vars()
@@ -336,6 +331,15 @@ class TransferAndTensorAllocator:
                 quicksum(self.x_tensor[(t, c)] for c in t.possible_resource_allocation) == 1,  # type: ignore
                 name=f"place_{t.node_name}",
             )
+
+    # ...................... CONSTRAINTS ................... #
+    def _create_constraints(self):
+        self._path_choice_constraints()
+        self._tensor_placement_constraints()
+        self._transfer_fire_rate_constraints()
+        self._link_contention_constraints()
+        self._memory_capacity_constraints()
+        self._slot_latency_constraints()
 
     def _transfer_fire_rate_constraints(self):
         # firesC = Mem Core to Compute Core
