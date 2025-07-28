@@ -13,8 +13,10 @@ from zigzag.workload.layer_node import LoopRelevancyInfo
 
 class IterationVariableReuse(Flag):
     NOT_SET = auto()  # default value is not set
-    REUSE = auto()
-    NO_REUSE = auto()
+    MEM_TILE_REUSE = auto()
+    MEM_TILE_NO_REUSE = auto()
+    COMPUTE_TILE_REUSE = auto()
+    COMPUTE_TILE_NO_REUSE = auto()
 
 
 # --------------------------------------------------------------------------- #
