@@ -5,7 +5,7 @@ from typing import Any
 from onnx import ModelProto, NodeProto
 from zigzag.datatypes import Constants
 from zigzag.parser.onnx.onnx_operator_parser import ONNXOperatorParser as ONNXOperatorParserZigZag
-from zigzag.parser.onnx.utils import get_node_input_output_dimension_shapes
+from zigzag.parser.onnx.utils import get_attribute_ints_with_name, get_node_input_output_dimension_shapes
 from zigzag.parser.workload_factory import LayerNodeFactory
 
 from stream.hardware.architecture.accelerator import Accelerator
@@ -63,6 +63,18 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
     def run(self) -> Generator[ComputationNode, None, None]:
         yield self.generate_node()
 
+    def get_output_activation_precision(self):
+        """Return the output activation precision for this node.
+        The output activation precision of ONNX nodes can be customized by manually adding the attribute
+         `CUSTOM_OUTPUT_SIZE_ATTR` to the node."""
+        default = 8
+        try:
+            return get_attribute_ints_with_name(
+                name=self.CUSTOM_OUTPUT_SIZE_ATTR, attrs=self.node.attribute, default=default
+            )
+        except NotImplementedError as exc:
+            raise ValueError("Custom activation size attribute must be an integer.") from exc
+
     @abstractmethod
     def get_layer_node_user_format(
         self, input_shape: list[int], output_shape: list[int], mapping: InterCoreMappingAttributes | None
@@ -72,6 +84,7 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
         act_precision: int = self.get_activation_precision()
         weight_precision: int = self.get_weight_precision()
         intermediate_output_precision: int = self.get_intermediate_output_precision()
+        output_act_precision: int = self.get_output_activation_precision()
         predecessors = self.get_node_predecessors()
         match len(predecessors):
             case 0:
@@ -79,7 +92,7 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
                 return {
                     "W": weight_precision,
                     "I": act_precision,
-                    "O_final": act_precision,
+                    "O_final": output_act_precision,
                     "O": intermediate_output_precision,
                 }
             case 1:
@@ -87,7 +100,7 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
                 return {
                     "W": weight_precision,
                     "I": act_precision,
-                    "O_final": act_precision,
+                    "O_final": output_act_precision,
                     "O": intermediate_output_precision,
                 }
             case 2:
@@ -95,7 +108,7 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
                 return {
                     "W": act_precision,
                     "I": act_precision,
-                    "O_final": act_precision,
+                    "O_final": output_act_precision,
                     "O": intermediate_output_precision,
                 }
             case _:
