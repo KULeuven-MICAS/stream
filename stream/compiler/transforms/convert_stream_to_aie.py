@@ -1137,7 +1137,7 @@ class SetKernelLayouts(RewritePattern):
             op.operands[0] = new_input.results[0]
             op.operands[2] = new_output.results[0]
 
-        if op.callee.root_reference.data == "matmul_i16_i16":
+        if op.callee.root_reference.data == "matmul_i16_i32":
             A_operand = op.operands[0]
             A_type = cast(MemRefType[Attribute], op.arguments[0].type)
             if isinstance(A_type.layout, TiledStridedLayoutAttr):
