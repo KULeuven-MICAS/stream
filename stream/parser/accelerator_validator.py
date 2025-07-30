@@ -21,6 +21,7 @@ class AcceleratorValidator:
         r"(?:\.ya?ml)?$"  # optional ".yaml" or ".yml"
     )
     CORE_IDS_REGEX = r"^\d+(?:\s*,\s*\d+){1,}$"
+    COORDINATES_LEN = 2
 
     SCHEMA: dict[str, Any] = {
         # ------------------------------------------------------------------ #
@@ -83,6 +84,14 @@ class AcceleratorValidator:
             "default": [],
             "schema": {"type": "string", "regex": CORE_IDS_REGEX},
         },
+        # ------------------------------------------------------------------ #
+        # Translation from core id to coordinates                            #
+        # ------------------------------------------------------------------ #
+        "core_coordinates": {
+            "type": "dict",
+            "required": True,
+            "valuesrules": {"type": "list", "minlength": 2, "maxlength": 2, "schema": {"type": "integer"}},
+        },
     }
 
     def __init__(self, data: Any, accelerator_path: str):
@@ -110,6 +119,7 @@ class AcceleratorValidator:
         # Validation outside of schema
         self.validate_core_ids()
         self.validate_all_cores()
+        self.validate_core_coordinates()
 
         self.validate_core_connectivity()
         self.validate_core_mem_sharing()
@@ -138,6 +148,19 @@ class AcceleratorValidator:
             if not normalized_core_data:
                 return
             self.data["cores"][core_id] = normalized_core_data
+
+    def validate_core_coordinates(self) -> None:
+        """For all given core coordinates:
+        Check that the key exists in self.data["cores"]
+        """
+        core_coordinates = self.data["core_coordinates"]
+        for core_id, coordinates in core_coordinates.items():
+            if not isinstance(core_id, int) or core_id < 0:
+                self.invalidate(f"Invalid core id in core_coordinates: {core_id} is not a positive integer.")
+            if core_id not in self.data["cores"]:
+                self.invalidate(f"Core id {core_id} in core_coordinates does not exist in cores.")
+            if len(coordinates) != self.COORDINATES_LEN or not all(isinstance(coord, int) for coord in coordinates):
+                self.invalidate(f"Invalid coordinates for core id {core_id}: {coordinates}.")
 
     def validate_single_core(self, core_file_name: str) -> None | dict[str, Any]:
         core_data = self.open_core(core_file_name)

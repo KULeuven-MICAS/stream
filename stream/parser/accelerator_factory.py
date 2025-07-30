@@ -22,7 +22,8 @@ class AcceleratorFactory:
 
         for core_id, core_data in self.data["cores"].items():
             shared_mem_group_id = self.get_shared_mem_group_id(core_id)
-            core = self.create_core(core_data, core_id, shared_mem_group_id)
+            coordinates = self.data["core_coordinates"].get(core_id)
+            core = self.create_core(core_data, core_id, shared_mem_group_id, coordinates)
             cores.append(core)
             unique_shared_mem_group_ids.add(shared_mem_group_id)
 
@@ -48,7 +49,13 @@ class AcceleratorFactory:
             nb_shared_mem_groups=nb_shared_mem_groups,
         )
 
-    def create_core(self, core_data: dict[str, Any], core_id: int, shared_mem_group_id: int | None = None):
+    def create_core(
+        self,
+        core_data: dict[str, Any],
+        core_id: int,
+        shared_mem_group_id: int | None = None,
+        coordinates: list[int] | None = None,
+    ) -> Core:
         core_factory = ZigZagCoreFactory(core_data)
         core = core_factory.create(core_id, shared_mem_group_id=shared_mem_group_id)
         # Typecast
@@ -56,6 +63,9 @@ class AcceleratorFactory:
         core.type = core_data.get("type", "compute")  # Default type is 'compute'
         core.utilization = core_data.get("utilization", 100)
         core.type = core_data.get("type", "compute")
+        if coordinates:
+            core.row_id = coordinates[0]
+            core.col_id = coordinates[1]
         return core
 
     def get_shared_mem_group_id(self, core_id: int):
