@@ -40,7 +40,7 @@ jobs:
       - name: Run codegeneration for gemm main without errors
         run: |
           source setup_mlir_aie_pythonpath.sh
-          python main_aie_codegen_gemm.py --M 64 --N 64 --K 64
+          python main_aie_codegen_gemm_with_mem_tile.py --M 64 --N 64 --K 64
 
       # - name: Run codegeneration for gemm on a column main without errors
       #   run: |
