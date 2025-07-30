@@ -605,7 +605,7 @@ class MMPattern(RewritePattern):
         # insert zero func call for first use
         output = SSAValue.get(inputs[-1])
         assert isinstance(output, OpResult)
-        zero_call = CallOp("zero_i16", inputs[-1:], [])
+        zero_call = CallOp("zero_i32", inputs[-1:], [])
         rewriter.insert_op(zero_call, InsertPoint.after(output.op))
 
         func_call = CallOp(function_name, inputs, [])
