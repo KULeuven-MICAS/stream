@@ -1419,23 +1419,6 @@ class ConvertStreamToAIEPass(ModulePass):
             apply_recursively=False,
         ).rewrite_module(op)
 
-        # object_fifo_manager.update_depths()
-
-        # pass through memtile to enable transformations
-
-        # passthrough = PassThroughMemTile({}, tile_op_manager, object_fifo_manager)
-        # PatternRewriteWalker(passthrough, apply_recursively=False).rewrite_module(op)
-
-        # PatternRewriteWalker(
-        #     SetDistribution(runtime_sequence, object_fifo_manager), apply_recursively=False
-        # ).rewrite_module(op)
-
-        # PatternRewriteWalker(SetJoin(runtime_sequence, object_fifo_manager), apply_recursively=False).rewrite_module(op)
-
-        # PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
-
-        # PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
-
         # insert dma wait statements for bd collisions
         PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(OptimizeWaits()).rewrite_module(op)
