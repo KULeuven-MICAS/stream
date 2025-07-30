@@ -16,8 +16,8 @@ rule copy_stream_mlir_output_to_mlir_aie:
     input:
         rules.run_stream_aie_to_generate_mlir_output.output
     output:
-        "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/build/aie_trace_{M}x{K}x{N}.mlir",
-        # "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/build/aie_trace_{M}x{K}x{N}_32x32x32.mlir",
+        # "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/build/aie_trace_{M}x{K}x{N}.mlir",
+        "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/build/aie_trace_{M}x{K}x{N}_32x32x32.mlir",
     shell:
         """
         aie-opt --canonicalize {input[0]} -o {output[0]} && \
