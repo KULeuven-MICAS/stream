@@ -3,7 +3,7 @@ import logging as _logging
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
+from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_mapping_single_col, make_gemm_workload
 from stream.utils import CostModelEvaluationLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.perfetto import convert_scme_to_perfetto_json
@@ -13,12 +13,12 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
-def run_main_aie_codegen_gemm(M, N, K):  # noqa: N803
+def run_main_aie_codegen_gemm(M, K, N, m, k, n):  # noqa: N803
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
-    workload_path = make_gemm_workload(M, N, K)
-    accelerator = "stream/inputs/aie/hardware/single_aie_col.yaml"
-    mapping_path = "stream/inputs/aie/mapping/single_aie_col.yaml"
+    workload_path = make_gemm_workload(M, K, N)
+    accelerator = "stream/inputs/aie/hardware/single_col_with_mem_tile.yaml"
+    mapping_path = make_gemm_mapping_single_col(M, K, N, m, k, n, has_mem_tile=True, nb_compute_cores=4)
     # mode = "lbl"
     # layer_stacks = [(0,),]
     mode = "fused"
@@ -72,6 +72,9 @@ if __name__ == "__main__":
     parser.add_argument("--M", type=int, required=True, help="M parameter for the model")
     parser.add_argument("--N", type=int, required=True, help="N parameter for the model")
     parser.add_argument("--K", type=int, required=True, help="K parameter for the model")
+    parser.add_argument("--m", type=int, default=32, help="m parameter for the model (default: 32)")
+    parser.add_argument("--k", type=int, default=32, help="k parameter for the model (default: 32)")
+    parser.add_argument("--n", type=int, default=32, help="n parameter for the model (default: 32)")
     args = parser.parse_args()
 
-    run_main_aie_codegen_gemm(args.M, args.N, args.K)
+    run_main_aie_codegen_gemm(args.M, args.K, args.N, args.m, args.k, args.n)

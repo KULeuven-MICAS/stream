@@ -10,12 +10,12 @@ _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
 
 
-def run_main_aie_codegen_gemm(M, N, K):  # noqa: N803
+def run_main_aie_codegen_gemm(M, K, N, m, k, n):  # noqa: N803
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
-    workload_path = make_gemm_workload(M, N, K)
+    workload_path = make_gemm_workload(M, K, N)
     accelerator = "stream/inputs/aie/hardware/single_core.yaml"
-    mapping_path = make_gemm_mapping_single_core(M, N, K, has_mem_tile=False)
+    mapping_path = make_gemm_mapping_single_core(M, K, N, m, k, n, has_mem_tile=False)
     # mode = "lbl"
     # layer_stacks = [(0,),]
     mode = "fused"
@@ -79,8 +79,11 @@ def run_main_aie_codegen_gemm(M, N, K):  # noqa: N803
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run AIE code generation for Gemm")
     parser.add_argument("--M", type=int, required=True, help="M parameter for the model")
-    parser.add_argument("--N", type=int, required=True, help="N parameter for the model")
     parser.add_argument("--K", type=int, required=True, help="K parameter for the model")
+    parser.add_argument("--N", type=int, required=True, help="N parameter for the model")
+    parser.add_argument("--m", type=int, default=32, help="m parameter for the model (default: 32)")
+    parser.add_argument("--k", type=int, default=32, help="k parameter for the model (default: 32)")
+    parser.add_argument("--n", type=int, default=32, help="n parameter for the model (default: 32)")
     args = parser.parse_args()
 
-    run_main_aie_codegen_gemm(args.M, args.N, args.K)
+    run_main_aie_codegen_gemm(args.M, args.K, args.N, args.m, args.k, args.n)
