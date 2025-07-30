@@ -1255,7 +1255,7 @@ class RealizeLayoutCats(RewritePattern):
 
         if port == ObjectFifoPortEnum.Consume:
             # for consume, take objectfifo (mem -> compute)
-            of = chain[0]
+            of = chain[1]
         else:
             # (mem -> shim)
             of = chain[1]
