@@ -78,10 +78,21 @@ def make_gemm_mapping_single_col(M, K, N, m, k, n, has_mem_tile: bool = False, n
     return output_file
 
 
-def make_gemm_workload(M, K, N):  # noqa: N803
-    ACT_SIZE = 16
-    WEIGHT_SIZE = 16
-    OUTPUT_SIZE = 32
+def make_gemm_workload(M, K, N, in_dtype, out_dtype):  # noqa: N803
+    if "16" in in_dtype:
+        ACT_SIZE = 16
+        WEIGHT_SIZE = 16
+    elif "32" in in_dtype:
+        ACT_SIZE = 32
+        WEIGHT_SIZE = 32
+    else:
+        raise ValueError(f"Unsupported input data type: {in_dtype}")
+    if "16" in out_dtype:
+        OUTPUT_SIZE = 16
+    elif "32" in out_dtype:
+        OUTPUT_SIZE = 32
+    else:
+        raise ValueError(f"Unsupported output data type: {out_dtype}")
 
     name = f"gemm_{M}_{K}_{N}"
 

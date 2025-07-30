@@ -10,10 +10,10 @@ _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
 
 
-def run_main_aie_codegen_gemm(M, K, N, m, k, n):  # noqa: N803
+def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype):  # noqa: N803
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
-    workload_path = make_gemm_workload(M, K, N)
+    workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
     accelerator = "stream/inputs/aie/hardware/single_core_with_mem_tile.yaml"
     mapping_path = make_gemm_mapping_single_core(M, K, N, m, k, n, has_mem_tile=True)
     # mode = "lbl"
@@ -84,6 +84,8 @@ if __name__ == "__main__":
     parser.add_argument("--m", type=int, default=32, help="m parameter for the model (default: 32)")
     parser.add_argument("--k", type=int, default=32, help="k parameter for the model (default: 32)")
     parser.add_argument("--n", type=int, default=32, help="n parameter for the model (default: 32)")
+    parser.add_argument("--in_dtype", type=str, default="i16", help="Input data type (default: i16)")
+    parser.add_argument("--out_dtype", type=str, default="i32", help="Output data type (default: i32)")
     args = parser.parse_args()
 
-    run_main_aie_codegen_gemm(args.M, args.K, args.N, args.m, args.k, args.n)
+    run_main_aie_codegen_gemm(args.M, args.K, args.N, args.m, args.k, args.n, args.in_dtype, args.out_dtype)
