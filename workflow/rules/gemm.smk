@@ -8,7 +8,7 @@ rule run_stream_aie_to_generate_mlir_output:
     #     "logs/gemm_{stream_hw_id}_{M}_{K}_{N}.log"
     shell:
         """
-        python3 main_aie_codegen_gemm.py --M {wildcards.M} --K {wildcards.K} --N {wildcards.N} | tee {log}
+        python3 main_aie_codegen_gemm_mem_tile.py --M {wildcards.M} --K {wildcards.K} --N {wildcards.N} | tee {log}
         """
 
 # Rule 2: Canonicalize and copy the MLIR into mlir-aie build dir
@@ -18,10 +18,7 @@ rule copy_stream_mlir_output_to_mlir_aie:
     output:
         "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/build/aie_trace_{M}x{K}x{N}.mlir",
         # "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/build/aie_trace_{M}x{K}x{N}_32x32x32.mlir",
-    # log:
-    #     "logs/gemm_{stream_hw_id}_{M}_{K}_{N}.log"
     shell:
-        # if "stream" in output[0]:
         """
         aie-opt --canonicalize {input[0]} -o {output[0]} && \
         echo '✅ Canonicalized MLIR copied to mlir-aie build directory.' \

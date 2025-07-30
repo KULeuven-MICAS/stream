@@ -3,11 +3,11 @@ gemm:
     m: 32
     n: 32
     k: 32
-    stream_hw_identifier: single_core
+    stream_hw_identifier: single_core_with_mem_tile
     mlir_aie_dir: /path/to/mlir-aie
     use_stream_output: true
 
   shapes:
     # - { M: 32, K: 32, N: 32 }
     - { M: 64, K: 64, N: 64 }
-    - { M: 128, K: 128, N: 128 }
+    # - { M: 128, K: 128, N: 128 }
