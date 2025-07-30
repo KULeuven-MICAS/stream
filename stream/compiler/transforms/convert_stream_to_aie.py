@@ -574,10 +574,10 @@ class MMPattern(RewritePattern):
         if op.outputs:
             input_types.append(op.outputs.type)
 
-        function_name = "matmul_i16_i16"
+        function_name = "matmul_i16_i32"
 
         func_op = FuncOp(function_name, (input_types, []), Region(), "private")
-        zero_func_op = FuncOp("zero_i16", (input_types[-1:], []), Region(), "private")
+        zero_func_op = FuncOp("zero_i32", (input_types[-1:], []), Region(), "private")
 
         # find  device op to insert function call
         device_op = op
