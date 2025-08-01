@@ -466,11 +466,13 @@ class TransferToObjectFIFOPattern(RewritePattern):
         first_relevant_index = op.ssis.data.variables.index(first_relevant_iter)
 
         last_reuse = next(
-            iv for iv in op.ssis.data.variables[::-1] if IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
+            (iv for iv in op.ssis.data.variables[::-1] if IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse), None
         )
-        last_reuse_index = op.ssis.data.variables.index(last_reuse)
-
-        reuse_iters = op.ssis.data.variables[first_relevant_index : last_reuse_index + 1]
+        if last_reuse:
+            last_reuse_index = op.ssis.data.variables.index(last_reuse)
+            reuse_iters = op.ssis.data.variables[first_relevant_index : last_reuse_index + 1]
+        else:
+            reuse_iters = []
 
         relevant_reuse_iters = [iv for iv in reuse_iters if iv.relevant]
 
