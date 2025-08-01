@@ -25,8 +25,8 @@ jobs:
         with:
           path: .venv
           key: venv-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            venv-${{ runner.os }}-
+          # restore-keys: |
+          #   venv-${{ runner.os }}-
 
       - name: Set up Python environment and install requirements
         run: |
