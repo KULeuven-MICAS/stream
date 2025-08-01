@@ -36,7 +36,7 @@ jobs:
             RUNS=$(gh api repos/singagan/stream_aie/actions/runs \
               -H "Accept: application/vnd.github+json" \
               --paginate \
-              --jq '.workflow_runs[] | select(.head_branch == "${{ steps.prmeta.outputs.head_branch }}" and .event == "pull_request" and .conclusion == "success") | {id: .id, artifacts_url: .artifacts_url}')
+              --jq '.workflow_runs[] | select(.head_sha == "${{ github.event.pull_request.head.sha }}" and .event == "pull_request" and .conclusion == "success") | {id: .id, artifacts_url: .artifacts_url}')
 
             if [[ -z "$RUNS" ]]; then
               echo "No matching successful runs yet. Sleeping 60s..."
@@ -70,9 +70,9 @@ jobs:
 
       - name: Download and extract artifact
         run: |
+          echo "Downloading artifact.zip..."
           gh api /repos/singagan/stream_aie/actions/artifacts/$artifact_id/zip \
-            -H "Accept: application/vnd.github+json" \
-            --output artifact.zip
+            -H "Accept: application/vnd.github+json" > artifact.zip
           mkdir artifact_contents
           unzip -q artifact.zip -d artifact_contents
         env:
