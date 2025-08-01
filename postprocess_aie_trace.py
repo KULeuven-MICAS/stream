@@ -19,7 +19,8 @@ def parse_perfetto_trace(file_path):
 
     if len(instr_event_0_times) != len(instr_event_1_times):
         if len(instr_event_0_times) == len(instr_event_1_times) + 1:
-            instr_event_0_times = instr_event_0_times[:-1]
+            last_difference = instr_event_1_times[-1] - instr_event_0_times[-2]
+            instr_event_1_times.append(instr_event_0_times[-1] + last_difference)
         else:
             raise ValueError(
                 f"Mismatched INSTR_EVENT_0 ({len(instr_event_0_times)}) and INSTR_EVENT_1 ({len(instr_event_1_times)})"

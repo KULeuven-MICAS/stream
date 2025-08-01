@@ -137,6 +137,7 @@ def optimize_allocation_co(  # noqa: PLR0913
     skip_if_exists: bool = False,
     temporal_mapping_type: str = "uneven",
     enable_codegen: bool = False,
+    trace_size: int = 1048576,
 ) -> StreamCostModelEvaluation:
     _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
     _sanity_check_gurobi_license()
@@ -202,6 +203,7 @@ def optimize_allocation_co(  # noqa: PLR0913
             operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
             latency_attr="ideal_temporal_cycle",
             codegen_path=codegen_path,
+            trace_size=trace_size,
         )
         # Launch the MainStage
         answers = mainstage.run()

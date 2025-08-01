@@ -1,4 +1,5 @@
 import re
+import string
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -64,7 +65,7 @@ from stream.workload.steady_state.iteration_space import IterationVariableReuse
 
 
 def get_tile(value: str) -> tuple[int, int]:
-    if value == "Core(1)":
+    if value == "Core(2)":
         return 0, 2
     raise RuntimeError(f"Unknown tile value: {value}")
     match = re.match(r"Core\((\d+)\)", value)
@@ -120,47 +121,124 @@ class ObjectFifoManager:
     device_op: DeviceOp
 
     counter: int = 0
-    channel_to_of_name: dict[SSAValue, str] = field(default_factory=dict)
+    channel_to_of: dict[SSAValue, list[ObjectFifoOp]] = field(default_factory=dict)
 
-    def insert_or_update(self, channel: SSAValue, memref_type: MemRefType[Attribute]) -> ObjectFifoOp:
+    def insert_or_update(self, channel: SSAValue, memref_type: MemRefType[Attribute]) -> Sequence[ObjectFifoOp]:  # noqa: PLR0915
         # find previous
-        if channel in self.channel_to_of_name:
-            of_name = self.channel_to_of_name[channel]
-            return self.of_from_name(of_name)
+        if channel in self.channel_to_of:
+            return self.channel_to_of[channel]
 
         assert isinstance(channel.type, Channel)
-        name = f"of_{self.counter}"
-        self.channel_to_of_name[channel] = name
-        self.counter += 1
 
-        def get_tile(use: PushOp | PullOp) -> SSAValue:
+        def get_tile(use: PushOp | PullOp) -> TileOp:
             parent = use
             while True:
                 if isinstance(parent, CoreOp):
-                    return parent.tile
+                    assert isinstance(parent.tile, OpResult) and isinstance(parent.tile.op, TileOp)
+                    return parent.tile.op
                 if isinstance(parent, RuntimeSequenceOp):
-                    return self.tile_op_manager.insert_or_update(0, 0).result
+                    return self.tile_op_manager.insert_or_update(0, 0)
                 parent = parent.parent_op()
                 if parent is None:
                     raise RuntimeError()
 
         # find source tile:
+        # TODO: this needs some fixing for join patterns
         source = next(get_tile(use.operation) for use in channel.uses if isinstance(use.operation, PushOp))
         dests = list(get_tile(use.operation) for use in channel.uses if isinstance(use.operation, PullOp))
 
-        object_fifo = ObjectFifoOp.from_referenced_type(
-            elemNumber=IntegerAttr(1, i32),
-            producerTile=source,
-            consumerTiles=dests,
-            referenced_type=memref_type.get_element_type(),
-            shape=memref_type.get_shape(),
-            name=name,
+        def is_shim(tile: TileOp) -> bool:
+            return tile.row.value.data == 0
+
+        memtile = self.tile_op_manager.insert_or_update(0, 1)
+        if is_shim(source) or is_shim(dests[0]):
+            path = [(source, [memtile]), (memtile, dests)]
+        else:
+            path = [(source, dests)]
+
+        self.channel_to_of[channel] = []
+        name_base = f"of_{self.counter}"
+        self.counter += 1
+
+        # get the reuse factors
+        use = next(use.operation for use in channel.uses)
+        assert isinstance(use, PushOp | PullOp)
+        ssis = use.ssis.data
+
+        shape_mem = tuple(
+            iv.size for iv in ssis.variables if iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
         )
 
-        # object fifo should be defined at start of device
-        SymbolTable.insert_or_update(self.device_op, object_fifo)
+        # reuse: product of the irrelevant loops that are kept local
+        reuse_factor_compute = prod(
+            iv.size
+            for iv in ssis.variables
+            if not iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
+        )
+        uses_compute = prod(
+            iv.size for iv in ssis.variables if iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
+        )
 
-        return object_fifo
+        reuse_factor_mem = (
+            prod(
+                iv.size
+                for iv in ssis.variables
+                if not iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
+            )
+            // reuse_factor_compute
+        )
+
+        ascii = [x for x in string.ascii_lowercase]
+
+        for step in path:
+            if is_shim(step[0]) or is_shim(step[1][0]):
+                name = name_base + "mem"
+                depth = 2
+                repeat_count = 1
+                shape = shape_mem + memref_type.get_shape()
+            else:
+                name = name_base + ascii.pop(0)
+                # use min of 2 in compute for double buffering
+                depth = max(2, uses_compute)
+                shape = memref_type.get_shape()
+                repeat_count = reuse_factor_mem
+
+            object_fifo = ObjectFifoOp.from_referenced_type(
+                elemNumber=IntegerAttr(depth, i32),
+                producerTile=step[0],
+                consumerTiles=step[1],
+                referenced_type=memref_type.get_element_type(),
+                shape=shape,
+                name=name,
+                repeat_count=repeat_count,
+            )
+
+            if repeat_count == 1:
+                del object_fifo.properties["repeat_count"]
+
+            # object fifo should be defined at start of device
+            SymbolTable.insert_or_update(self.device_op, object_fifo)
+
+            # link objectfifos
+            if len(self.channel_to_of[channel]) > 0:
+                source_name = self.channel_to_of[channel][-1].sym_name
+                new_link_op = ObjectFifoLinkOp([source_name.data], [name], [], [])
+
+                region_block = self.device_op.region.block
+                assert region_block.last_op
+                region_block.insert_op_after(new_link_op, region_block.last_op)
+
+            self.channel_to_of[channel].append(object_fifo)
+
+        return self.channel_to_of[channel]
+
+    def get_of_chain(self, of: ObjectFifoOp | str) -> list[ObjectFifoOp]:
+        if isinstance(of, str):
+            of = self.of_from_name(of)
+        for chain in self.channel_to_of.values():
+            if of in chain:
+                return chain
+        raise RuntimeError(f"ObjectFifoOp {of.sym_name.data} not found in channel_to_of mapping")
 
     def insert_or_update_of(self, object_fifo: ObjectFifoOp) -> ObjectFifoOp:
         SymbolTable.insert_or_update(self.device_op, object_fifo)
@@ -272,16 +350,19 @@ class TransferToRuntimeSequence(RewritePattern):
         else:
             memref_type = op.output.type
         assert isinstance(memref_type, MemRefType)
-        of = self.object_fifo_manager.insert_or_update(op.channel, memref_type)
-        of_name = of.sym_name.data
+        of_chain = self.object_fifo_manager.insert_or_update(op.channel, memref_type)
 
         # get edge
         if isinstance(op, PushOp):
             assert isinstance(op.input, OpResult)
             edge = op.input.op
+            of = of_chain[0]
         else:
             edge = next(use.operation for use in op.output.uses)
+            of = of_chain[-1]
         assert isinstance(edge, EdgeOp)
+
+        of_name = of.sym_name.data
 
         arg_order = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]
 
@@ -309,7 +390,7 @@ class TransferToRuntimeSequence(RewritePattern):
         # offset is definitely zero for now
         for iter_var in op.ssis.data.variables:
             loop_dimensions = [x.data for x in op.loop_dimensions]
-            if iter_var.relevant:
+            if iter_var.relevant or IterationVariableReuse.MEM_TILE_NO_REUSE in iter_var.reuse:
                 if str(iter_var.dimension) in loop_dimensions:
                     index = loop_dimensions.index(str(iter_var.dimension))
                     stride = prod(memref_type.get_shape()[index + 1 :]) * op.sizes.get_values()[index]
@@ -379,37 +460,40 @@ class TransferToObjectFIFOPattern(RewritePattern):
         else:
             memref_type = op.output.type
         assert isinstance(memref_type, MemRefType)
-        of = self.object_fifo_manager.insert_or_update(op.channel, memref_type)
-        of_name = of.sym_name.data
+        of_chain = self.object_fifo_manager.insert_or_update(op.channel, memref_type)
 
         # decide whether to consume or produce
         if isinstance(op, PullOp):
             port = ObjectFifoPortEnum.Consume
-        else:
-            port = ObjectFifoPortEnum.Produce
-
-        if isinstance(op, PullOp):
+            of = of_chain[-1]
             operand = op.output
         else:
+            port = ObjectFifoPortEnum.Produce
+            of = of_chain[0]
             operand = op.input
+
+        of_name = of.sym_name.data
+
         assert isinstance(memref_type := operand.type, MemRefType)
 
         first_relevant_iter = next(iv for iv in op.ssis.data.variables if iv.relevant)
         first_relevant_index = op.ssis.data.variables.index(first_relevant_iter)
 
-        last_irelevant_reuse = next(
-            iv for iv in op.ssis.data.variables[::-1] if not iv.relevant and iv.reuse == IterationVariableReuse.REUSE
+        last_reuse = next(
+            (iv for iv in op.ssis.data.variables[::-1] if IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse), None
         )
-        last_irelevant_index = op.ssis.data.variables.index(last_irelevant_reuse)
-
-        reuse_iters = op.ssis.data.variables[first_relevant_index : last_irelevant_index + 1]
+        if last_reuse:
+            last_reuse_index = op.ssis.data.variables.index(last_reuse)
+            reuse_iters = op.ssis.data.variables[first_relevant_index : last_reuse_index + 1]
+        else:
+            reuse_iters = []
 
         relevant_reuse_iters = [iv for iv in reuse_iters if iv.relevant]
 
         reuse_factor = prod(iv.size for iv in reuse_iters if iv.relevant)
 
         # update object fifo depth
-        of.elemNumber = IntegerAttr.from_int_and_width(reuse_factor, 32)
+        # of.elemNumber = IntegerAttr.from_int_and_width(reuse_factor, 32)
 
         # acquire:
         acquire_op = ObjectFifoAcquireOp(
@@ -496,56 +580,6 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
         return
 
-        # insert runtime sequence memcpy
-        runtime_sequence = self.object_fifo_manager.sequence_op
-
-        arg_order = ["I", "W", "O"]
-        arg_index = arg_order.index(op.tensor.data[-2])
-        arg = runtime_sequence.body.block.args[arg_index]
-
-        offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
-        sizes = cast(tuple[int, ...], op.sizes.get_values()[-4:])
-        strides = cast(tuple[int, ...], op.strides.get_values()[-4:])
-        assert isinstance(arg.type, MemRefType)
-        shapes = tuple(x.data for x in arg.type.shape)[-4:]
-
-        # assume default layout here:
-        static_strides = []
-        current_stride = 1
-        for shape, stride in zip(reversed(shapes), reversed(strides), strict=False):
-            static_strides.insert(0, current_stride)
-            current_stride *= shape * stride
-
-        static_sizes = list(sizes)
-
-        # canonicalize transformation
-        static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
-
-        # Hacky stuff to convert the offset per dimimension into the last entry
-        total_offset = 0
-        extended_shapes = shapes + (1,)
-        for i in range(len(offsets)):
-            total_offset += prod(extended_shapes[i + 1 :]) * offsets[i]
-
-        static_offsets = (0, 0, 0, total_offset)
-        static_sizes = (1,) * (4 - len(static_sizes)) + tuple(static_sizes)
-        static_strides = (0,) * (4 - len(static_strides)) + tuple(static_strides)
-
-        ids = {"I": 0, "W": 1, "O": 2}
-
-        # Insert DMA
-        memcpy = DmaMemcpyNdOp(
-            arg,
-            static_offsets=static_offsets,
-            static_sizes=static_sizes,
-            static_strides=static_strides,
-            metadata=of_name,
-            id=ids[op.tensor.data[-2]],
-            issue_token=True,
-        )
-
-        rewriter.insert_op(memcpy, InsertPoint.at_end(runtime_sequence.body.block))
-
 
 @dataclass
 class MMPattern(RewritePattern):
@@ -560,10 +594,10 @@ class MMPattern(RewritePattern):
         if op.outputs:
             input_types.append(op.outputs.type)
 
-        function_name = "matmul_i16_i16"
+        function_name = "matmul_i16_i32"
 
         func_op = FuncOp(function_name, (input_types, []), Region(), "private")
-        zero_func_op = FuncOp("zero_i16", (input_types[-1:], []), Region(), "private")
+        zero_func_op = FuncOp("zero_i32", (input_types[-1:], []), Region(), "private")
 
         # find  device op to insert function call
         device_op = op
@@ -591,7 +625,7 @@ class MMPattern(RewritePattern):
         # insert zero func call for first use
         output = SSAValue.get(inputs[-1])
         assert isinstance(output, OpResult)
-        zero_call = CallOp("zero_i16", inputs[-1:], [])
+        zero_call = CallOp("zero_i32", inputs[-1:], [])
         rewriter.insert_op(zero_call, InsertPoint.after(output.op))
 
         func_call = CallOp(function_name, inputs, [])
@@ -1123,7 +1157,7 @@ class SetKernelLayouts(RewritePattern):
             op.operands[0] = new_input.results[0]
             op.operands[2] = new_output.results[0]
 
-        if op.callee.root_reference.data == "matmul_i16_i16":
+        if op.callee.root_reference.data == "matmul_i16_i32":
             A_operand = op.operands[0]
             A_type = cast(MemRefType[Attribute], op.arguments[0].type)
             if isinstance(A_type.layout, TiledStridedLayoutAttr):
@@ -1236,36 +1270,24 @@ class RealizeLayoutCats(RewritePattern):
         # check if producer or consumer
         port = ObjectFifoPortEnum.from_int(of_acquire.port.value.data)
 
+        # get the chain:
+        chain = self.of_manager.get_of_chain(of_acquire.objFifo_name.root_reference.data)
+
         if port == ObjectFifoPortEnum.Consume:
             # for consume, take objectfifo (mem -> compute)
-            of = self.of_manager.of_from_name(of_acquire.objFifo_name.root_reference.data)
+            of = chain[1]
         else:
-            of_name = of_acquire.objFifo_name.root_reference.data
-            # TODO: make this less hardcoded to the current of naming scheme
-            # from of_2
-            # to of_0shim_2
-            # parent = op.parent_op().parent_op().parent_op().parent_op().parent_op()
-            of_name = of_name[:2] + "_0shim" + of_name[2:]
-            of = self.of_manager.of_from_name(of_name)
+            # (mem -> shim)
+            of = chain[1]
 
         # get the element_type
         element_type = cast(MemRefType[Attribute], of.elemType.buffer)
 
-        of_layout = element_type.layout
-
-        if of_layout == dest_type.layout:
-            # TODO: this code no longer necessary with steady state?
-            # transform has already been applied to ObjectFIFO
-            of_acquire.results[0].type = ObjectFIFOSubview([dest_type])
-            subview_access.results[0].type = dest_type
-            assert op.source.type == op.dest.type
-            op.dest.replace_by(op.source)
-            rewriter.erase_matched_op()
-            return
-
         tsl_dest = cast(TiledStridedLayoutAttr, dest_type.layout).data
+
+        # create default tsl layout for source:
         strides = [1]
-        for size in reversed(element_type.shape.data[1:]):
+        for size in reversed(dest_type.shape.data[1:]):
             strides = [size.data * strides[0]] + strides
         tile_bounds = tsl_dest.tile_bounds()
 
@@ -1360,6 +1382,7 @@ class ConvertStreamToAIEPass(ModulePass):
 
     def apply(self, ctx: MLContext, op: ModuleOp) -> None:
         # wrap everything in a device op
+        #
 
         rewriter = Rewriter()
         device_op = DeviceOp(
@@ -1415,23 +1438,6 @@ class ConvertStreamToAIEPass(ModulePass):
             TransferToRuntimeSequence(object_fifo_manager),
             apply_recursively=False,
         ).rewrite_module(op)
-
-        # object_fifo_manager.update_depths()
-
-        # pass through memtile to enable transformations
-
-        passthrough = PassThroughMemTile({}, tile_op_manager, object_fifo_manager)
-        PatternRewriteWalker(passthrough, apply_recursively=False).rewrite_module(op)
-
-        PatternRewriteWalker(
-            SetDistribution(runtime_sequence, object_fifo_manager), apply_recursively=False
-        ).rewrite_module(op)
-
-        PatternRewriteWalker(SetJoin(runtime_sequence, object_fifo_manager), apply_recursively=False).rewrite_module(op)
-
-        PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
-
-        # PatternRewriteWalker(OfNameRewriter(passthrough.changes)).rewrite_module(op)
 
         # insert dma wait statements for bd collisions
         PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)

@@ -71,10 +71,10 @@ class SteadyStateScheduler:
         # Convert to TimeSlotAllocation with fixed timeslots for all nodes
         tsa = ssw.to_timeslotallocation()
         # At this point, the only nodes without an allocation are the transfer nodes
-        offchip_core_id = self.accelerator.offchip_core_id
-        tta = TransferAndTensorAllocator(ssw, tsa, offchip_core_id=offchip_core_id, iterations=self.iterations)
+        tta = TransferAndTensorAllocator(ssw, tsa, accelerator=self.accelerator, iterations=self.iterations)
         tsa_upd, ssw_upd, total_latency_solver = tta.solve()
         print(tsa_upd)
+        offchip_core_id = self.accelerator.offchip_core_id
         total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
         assert total == total_latency_solver, (
             f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."

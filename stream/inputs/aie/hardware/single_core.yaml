@@ -2,6 +2,9 @@ name: single_core
 cores:
   0: shim_dma.yaml
   1: aie_tile.yaml
+core_coordinates:
+  0: [0, 0]
+  1: [0, 2]
 offchip_core_id: 0
 core_connectivity:
   # ───── Connect shim_dma to aie_tile ─────

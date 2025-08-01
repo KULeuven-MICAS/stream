@@ -14,7 +14,8 @@ from xdsl_aie.dialects.aiex import RuntimeSequenceOp
 class AIEAddTracingScript(ModulePass):
     name = "aie-add-tracing-script"
 
-    trace_size = 65536
+    def __init__(self, trace_size=1048576):
+        self.trace_size = trace_size
 
     def apply(self, ctx: Context, op: ModuleOp) -> None:
         rewriter = Rewriter()
