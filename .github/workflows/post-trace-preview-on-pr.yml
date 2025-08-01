@@ -1,11 +1,14 @@
 name: Post Efficiency Trace Preview to PR
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  workflow_run:
+    workflows: ["AIE Deployment Gemm"]
+    types:
+      - completed
 
 jobs:
   preview-traces:
+    if: ${{ github.event.workflow_run.event == 'pull_request' }}
     runs-on: ubuntu-latest
 
     steps:
