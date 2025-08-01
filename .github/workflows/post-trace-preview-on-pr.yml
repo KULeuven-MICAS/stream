@@ -15,34 +15,51 @@ jobs:
       - name: Install GitHub CLI
         run: |
           sudo apt-get update
-          sudo apt-get install -y gh
+          sudo apt-get install -y gh jq unzip
 
-      - name: Wait for 'outputs' artifact on latest PR workflow run (max 10 min)
+      - name: Get PR metadata
+        id: prmeta
+        run: |
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          HEAD_BRANCH=${{ github.event.pull_request.head.ref }}
+          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
+          echo "head_branch=$HEAD_BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Poll for artifact (max 10 minutes)
         id: wait-artifact
         run: |
-          echo "Polling for 'outputs' artifact from latest CI workflow for this PR..."
+          echo "Looking for 'outputs' artifact on latest successful workflow run for PR #${{ steps.prmeta.outputs.pr_number }} (branch: ${{ steps.prmeta.outputs.head_branch }})"
+
           for i in {1..10}; do
-            echo "Attempt $i of 10..."
-            RUNS=$(gh api repos/${{ github.repository }}/actions/runs \
+            echo "⏳ Attempt $i of 10..."
+
+            RUNS=$(gh api repos/singagan/stream_aie/actions/runs \
+              -H "Accept: application/vnd.github+json" \
               --paginate \
-              -F event=pull_request \
-              --jq '.workflow_runs[] | select(.head_branch == "${{ github.head_ref }}" and .conclusion == "success") | {id: .id, artifacts_url: .artifacts_url}')
+              --jq '.workflow_runs[] | select(.head_branch == "${{ steps.prmeta.outputs.head_branch }}" and .event == "pull_request" and .conclusion == "success") | {id: .id, artifacts_url: .artifacts_url}')
+
+            if [[ -z "$RUNS" ]]; then
+              echo "No matching successful runs yet. Sleeping 60s..."
+              sleep 60
+              continue
+            fi
 
             for row in $(echo "$RUNS" | jq -c '.'); do
               RUN_ID=$(echo "$row" | jq -r '.id')
               ARTIFACTS_URL=$(echo "$row" | jq -r '.artifacts_url')
 
               ARTIFACT_ID=$(gh api "$ARTIFACTS_URL" \
-                --jq '.artifacts[] | select(.name == "outputs") | .id')
+                -H "Accept: application/vnd.github+json" \
+                --jq '.artifacts[] | select(.name == "outputs") | .id' || true)
 
               if [[ -n "$ARTIFACT_ID" ]]; then
-                echo "✅ Found artifact with ID: $ARTIFACT_ID from run $RUN_ID"
+                echo "✅ Found artifact ID: $ARTIFACT_ID from run $RUN_ID"
                 echo "artifact_id=$ARTIFACT_ID" >> $GITHUB_ENV
                 exit 0
               fi
             done
 
-            echo "Artifact not found yet. Sleeping 60 seconds..."
+            echo "Still no artifact. Sleeping 60s..."
             sleep 60
           done
 
@@ -51,22 +68,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Download and unzip artifact
+      - name: Download and extract artifact
         run: |
-          echo "Downloading artifact ID $artifact_id"
-          gh api \
+          gh api /repos/singagan/stream_aie/actions/artifacts/$artifact_id/zip \
             -H "Accept: application/vnd.github+json" \
-            /repos/${{ github.repository }}/actions/artifacts/$artifact_id/zip \
             --output artifact.zip
           mkdir artifact_contents
           unzip -q artifact.zip -d artifact_contents
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: List contents (debug)
-        run: ls -R artifact_contents
-
-      - name: Post PR comment with images
+      - name: Comment on PR with image previews
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -75,10 +87,12 @@ jobs:
             const path = require('path');
 
             const basePath = 'artifact_contents';
-            const folders = fs.readdirSync(basePath).filter(f => fs.statSync(path.join(basePath, f)).isDirectory());
+            const folders = fs.readdirSync(basePath).filter(f =>
+              fs.statSync(path.join(basePath, f)).isDirectory()
+            );
 
             let body = `## 🔍 Efficiency Trace Preview\n`;
-            body += `Preview of \`trace_efficiency_mm.png\` from the CI run for this PR.\n\n`;
+            body += `This comment shows \`trace_efficiency_mm.png\` previews from the latest CI artifact.\n\n`;
 
             for (const folder of folders.sort()) {
               const imgPath = path.join(basePath, folder, 'trace_efficiency_mm.png');
