@@ -13,7 +13,9 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install GitHub CLI
-        uses: cli/cli-action@v2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gh
 
       - name: Wait for 'outputs' artifact (max 10 min)
         id: wait-artifact
