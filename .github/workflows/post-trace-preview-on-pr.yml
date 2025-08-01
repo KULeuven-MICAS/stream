@@ -1,0 +1,89 @@
+name: Post Efficiency Trace Preview to PR
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  preview-traces:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Find and download the latest artifact from a recent successful run of the PR's commits
+      - name: Download latest artifact from current PR
+        uses: dawidd6/action-download-artifact@v3
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          pr: ${{ github.event.pull_request.number }}
+          name: outputs
+          path: artifact_contents
+
+      - name: List downloaded contents (debug)
+        run: ls -R artifact_contents
+
+      - name: Create PR comment with embedded images
+        id: comment
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+
+            const basePath = 'artifact_contents';
+            if (!fs.existsSync(basePath)) {
+              core.setFailed("Artifact contents not found.");
+              return;
+            }
+
+            const folders = fs.readdirSync(basePath).filter(f => fs.statSync(path.join(basePath, f)).isDirectory());
+
+            if (folders.length === 0) {
+              core.setFailed("No folders found in artifact.");
+              return;
+            }
+
+            let body = `## 🔍 Efficiency Trace Preview\n`;
+            body += `This preview shows the \`trace_efficiency_mm.png\` plots from the output artifact.\n\n`;
+
+            for (const folder of folders.sort()) {
+              const imgPath = path.join(basePath, folder, 'trace_efficiency_mm.png');
+              if (fs.existsSync(imgPath)) {
+                const imgData = fs.readFileSync(imgPath).toString('base64');
+                body += `### ${folder}\n`;
+                body += `![${folder}](data:image/png;base64,${imgData})\n\n`;
+              } else {
+                body += `### ${folder}\n`;
+                body += `_No trace_efficiency_mm.png found._\n\n`;
+              }
+            }
+
+            const prNumber = context.payload.pull_request.number;
+
+            // Search for an existing bot comment with this title
+            const { data: comments } = await github.rest.issues.listComments({
+              ...context.repo,
+              issue_number: prNumber,
+            });
+
+            const marker = "## 🔍 Efficiency Trace Preview";
+            const botComment = comments.find(c =>
+              c.user.type === 'Bot' && c.body.includes(marker)
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                ...context.repo,
+                comment_id: botComment.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: prNumber,
+                body,
+              });
+            }

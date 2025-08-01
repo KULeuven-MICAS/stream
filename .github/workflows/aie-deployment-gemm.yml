@@ -76,7 +76,7 @@ jobs:
       - name: Upload output artifact
         uses: actions/upload-artifact@v4
         with:
-          name: outputs -${{ github.run_id }}
+          name: outputs
           path: outputs/*
           retention-days: 30
 
