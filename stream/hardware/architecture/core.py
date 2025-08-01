@@ -43,3 +43,13 @@ class Core(ZigZagCore):
         """
         memory_operand = MemoryOperand("I1")  # Assuming 'I1' is the top level memory operand
         return self.get_top_memory_instance(memory_operand).size
+
+    def get_max_object_fifo_depth(self) -> int:
+        """
+        Get the maximum object FIFO depth for the core.
+        """
+        if self.type == "compute":
+            return 16
+        elif self.type == "memory":
+            return 48
+        return 0

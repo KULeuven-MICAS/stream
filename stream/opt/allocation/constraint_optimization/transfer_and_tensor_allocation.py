@@ -109,6 +109,7 @@ class TransferAndTensorAllocator:
         # dict((transfer, steady state iteration space index): (fires_across_ss_iterations, extra_mem_bytes))
         self._ensure_same_ssis_for_all_transfers()
         self.reuse_levels: dict[tuple[SteadyStateTransfer, int], tuple[int, int]] = {}
+        self.tiles_needed_levels: dict[tuple[SteadyStateTransfer, int], int] = {}
         self.transfer_nodes_to_optimize_firings_for: list[SteadyStateTransfer] = []
         self._init_transfer_fire_helpers()
 
@@ -167,11 +168,15 @@ class TransferAndTensorAllocator:
             fires = math.prod(sizes)
             mem_needed = tr.size
             self.reuse_levels[(tr, -1)] = (fires, mem_needed)
+            tiles_needed = 1
+            self.tiles_needed_levels[(tr, -1)] = tiles_needed
             # level = i  →  keep while loops 0..i stay in cache
             for i, (Nl, relevancy) in enumerate(zip(sizes, relevancies, strict=True)):  # i = 0 … K-1
                 mem_needed *= Nl if relevancy else 1  # enlarge tile size factor only if relevant
+                tiles_needed *= Nl if relevancy else 1
                 fires //= Nl  # fewer transfers
                 self.reuse_levels[(tr, i)] = (fires, mem_needed)
+                self.tiles_needed_levels[(tr, i)] = tiles_needed
 
     # ------------------------------------------------------------------------------
     # only transfers whose src OR dst tensor is CONSTANT are eligible for MemC
@@ -340,6 +345,7 @@ class TransferAndTensorAllocator:
         self._transfer_fire_rate_constraints()
         self._link_contention_constraints()
         self._memory_capacity_constraints()
+        self._object_fifo_depth_constraints()
         self._slot_latency_constraints()
 
     def _transfer_fire_rate_constraints(self):
@@ -487,7 +493,7 @@ class TransferAndTensorAllocator:
     # ...................... memory capacity .................... #
     def _memory_capacity_constraints(self):
         # start with fixed tensors
-        self.core_load: dict[Core, gp.LinExpr] = defaultdict(gp.LinExpr)
+        self.core_load: dict[Core, gp.QuadExpr] = defaultdict(gp.QuadExpr)
         for t in self.tensor_fixed:
             core = self.resource_of[t]
             if isinstance(core, Core):
@@ -524,6 +530,24 @@ class TransferAndTensorAllocator:
         for c, expr in self.core_load.items():
             cap = c.get_memory_capacity()  # user-provided helper
             self.model.addConstr(expr <= cap, name=f"mem_cap_{_resource_key(c)}")
+
+    def _object_fifo_depth_constraints(self):
+        """
+        Ensure that the FIFO depth of each object is respected.
+        This is a placeholder for future implementation.
+        """
+        self.object_fifo_depth: dict[Core, gp.LinExpr] = defaultdict(gp.LinExpr)
+        for tr in self.transfer_nodes:
+            preds_and_succs = list(self.ssw.predecessors(tr)) + list(self.ssw.successors(tr))
+            resources = {self.resource_of[t] for t in preds_and_succs if isinstance(t, SteadyStateTensor)}
+            for c in resources:
+                assert isinstance(c, Core), f"Expected {c} to be a Core, got {type(c)}"
+                for stop in range(-1, len(tr.steady_state_iteration_space)):
+                    tiles_needed = self.tiles_needed_levels[(tr, stop)]
+                    self.object_fifo_depth[c] += tiles_needed * self.z_stopC[(tr, stop)]
+        for c, expr in self.object_fifo_depth.items():
+            max_fifo_depth = c.get_max_object_fifo_depth()
+            self.model.addConstr(expr <= max_fifo_depth, name=f"obj_fifo_depth_{_resource_key(c)}")
 
     # ...................... slot latency ........................ #
     def _slot_latency_constraints(self):
@@ -768,6 +792,13 @@ class TransferAndTensorAllocator:
                 else:
                     flag = IterationVariableReuse.MEM_TILE_NO_REUSE
                 iter_var.reuse |= flag  # append the memory reuse flag
+        # Print the updated reuse levels for debugging
+        for tr in self.transfer_nodes:
+            compute_stop = compute_tile_reuse_levels.get(tr, -1)
+            mem_stop = mem_tile_reuse_levels.get(tr, -1)
+            print(f"Transfer {tr.node_name}: Compute Stop = {compute_stop}, Mem Stop = {mem_stop}")
+            for i, iter_var in enumerate(tr.steady_state_iteration_space):
+                print(f"  Iter {i}: Reuse = {iter_var.reuse.name}, Size = {iter_var.size}")
 
     def get_transfer_routing(
         self,
