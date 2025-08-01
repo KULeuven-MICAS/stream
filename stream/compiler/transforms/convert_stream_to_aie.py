@@ -169,12 +169,19 @@ class ObjectFifoManager:
             iv.size for iv in ssis.variables if iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
         )
 
+        # reuse: product of the irrelevant loops that are kept local
         reuse_factor_compute = prod(
-            iv.size for iv in ssis.variables if iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
+            iv.size
+            for iv in ssis.variables
+            if not iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
         )
 
         reuse_factor_mem = (
-            prod(iv.size for iv in ssis.variables if iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse)
+            prod(
+                iv.size
+                for iv in ssis.variables
+                if not iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
+            )
             // reuse_factor_compute
         )
 
@@ -188,7 +195,8 @@ class ObjectFifoManager:
                 shape = shape_mem + memref_type.get_shape()
             else:
                 name = name_base + ascii.pop(0)
-                depth = reuse_factor_compute
+                # use min of 2 in compute for double buffering
+                depth = max(2, reuse_factor_compute)
                 shape = memref_type.get_shape()
                 repeat_count = 1
 
