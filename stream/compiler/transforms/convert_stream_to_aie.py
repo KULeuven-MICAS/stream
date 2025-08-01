@@ -176,6 +176,9 @@ class ObjectFifoManager:
             for iv in ssis.variables
             if not iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
         )
+        uses_compute = prod(
+            iv.size for iv in ssis.variables if iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
+        )
 
         reuse_factor_mem = (
             prod(
@@ -192,14 +195,14 @@ class ObjectFifoManager:
             if is_shim(step[0]) or is_shim(step[1][0]):
                 name = name_base + "mem"
                 depth = 1
-                repeat_count = reuse_factor_mem
+                repeat_count = 1
                 shape = shape_mem + memref_type.get_shape()
             else:
                 name = name_base + ascii.pop(0)
                 # use min of 2 in compute for double buffering
-                depth = max(2, reuse_factor_compute)
+                depth = max(2, uses_compute)
                 shape = memref_type.get_shape()
-                repeat_count = 1
+                repeat_count = reuse_factor_mem
 
             object_fifo = ObjectFifoOp.from_referenced_type(
                 elemNumber=IntegerAttr(depth, i32),
@@ -491,7 +494,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
         reuse_factor = prod(iv.size for iv in reuse_iters if iv.relevant)
 
         # update object fifo depth
-        of.elemNumber = IntegerAttr.from_int_and_width(reuse_factor, 32)
+        # of.elemNumber = IntegerAttr.from_int_and_width(reuse_factor, 32)
 
         # acquire:
         acquire_op = ObjectFifoAcquireOp(
