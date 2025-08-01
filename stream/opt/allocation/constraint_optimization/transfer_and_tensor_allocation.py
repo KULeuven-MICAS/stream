@@ -765,7 +765,7 @@ class TransferAndTensorAllocator:
         assert self.total_latency is not None, "Total latency variable was not created."
         return tsa_upd, ssw_upd, int(self.total_latency.X)
 
-    def update_transfer_reuse_levels(
+    def update_transfer_reuse_levels(  # noqa: PLR0912
         self,
     ) -> None:
         compute_tile_reuse_levels: dict[SteadyStateTransfer, int] = {}

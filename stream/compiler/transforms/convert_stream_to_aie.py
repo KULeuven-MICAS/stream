@@ -18,7 +18,6 @@ from xdsl.dialects.builtin import (
     IntegerType,
     MemRefType,
     ModuleOp,
-    NoneAttr,
     StringAttr,
     SymbolRefAttr,
     i32,
@@ -124,7 +123,7 @@ class ObjectFifoManager:
     counter: int = 0
     channel_to_of: dict[SSAValue, list[ObjectFifoOp]] = field(default_factory=dict)
 
-    def insert_or_update(self, channel: SSAValue, memref_type: MemRefType[Attribute]) -> Sequence[ObjectFifoOp]:
+    def insert_or_update(self, channel: SSAValue, memref_type: MemRefType[Attribute]) -> Sequence[ObjectFifoOp]:  # noqa: PLR0915
         # find previous
         if channel in self.channel_to_of:
             return self.channel_to_of[channel]
