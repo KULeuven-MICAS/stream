@@ -21,7 +21,6 @@ jobs:
         id: wait-artifact
         run: |
           echo "Polling for 'outputs' artifact from latest CI workflow for this PR..."
-          echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
           for i in {1..10}; do
             echo "Attempt $i of 10..."
             RUNS=$(gh api repos/${{ github.repository }}/actions/runs \
