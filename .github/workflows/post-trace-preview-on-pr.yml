@@ -17,26 +17,37 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y gh
 
-      - name: Wait for 'outputs' artifact (max 10 min)
+      - name: Wait for 'outputs' artifact on latest PR workflow run (max 10 min)
         id: wait-artifact
         run: |
-          echo "Polling for 'outputs' artifact..."
+          echo "Polling for 'outputs' artifact from latest CI workflow for this PR..."
+
           for i in {1..10}; do
             echo "Attempt $i of 10..."
-            ARTIFACT_ID=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts \
-              --jq '.artifacts[] | select(.name == "outputs") | .id')
+            RUNS=$(gh api repos/${{ github.repository }}/actions/runs \
+              --paginate \
+              -F event=pull_request \
+              --jq '.workflow_runs[] | select(.head_branch == "${{ github.head_ref }}" and .conclusion == "success") | {id: .id, artifacts_url: .artifacts_url}')
 
-            if [[ -n "$ARTIFACT_ID" ]]; then
-              echo "✅ Found artifact ID: $ARTIFACT_ID"
-              echo "artifact_id=$ARTIFACT_ID" >> $GITHUB_ENV
-              exit 0
-            fi
+            for row in $(echo "$RUNS" | jq -c '.'); do
+              RUN_ID=$(echo "$row" | jq -r '.id')
+              ARTIFACTS_URL=$(echo "$row" | jq -r '.artifacts_url')
 
-            echo "Artifact not found yet. Sleeping for 60 seconds..."
+              ARTIFACT_ID=$(gh api "$ARTIFACTS_URL" \
+                --jq '.artifacts[] | select(.name == "outputs") | .id')
+
+              if [[ -n "$ARTIFACT_ID" ]]; then
+                echo "✅ Found artifact with ID: $ARTIFACT_ID from run $RUN_ID"
+                echo "artifact_id=$ARTIFACT_ID" >> $GITHUB_ENV
+                exit 0
+              fi
+            done
+
+            echo "Artifact not found yet. Sleeping 60 seconds..."
             sleep 60
           done
 
-          echo "❌ Timed out waiting for artifact 'outputs'"
+          echo "❌ Timed out waiting for 'outputs' artifact."
           exit 1
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
