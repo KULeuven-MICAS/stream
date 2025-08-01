@@ -1,34 +1,60 @@
-name: Post Efficiency Trace Preview to PR
+name: Post Trace Preview Comment
 
 on:
-  workflow_run:
-    workflows: ["AIE Deployment Gemm"]
-    types:
-      - completed
+  pull_request:
+    types: [opened, synchronize, reopened]
 
 jobs:
-  preview-traces:
-    if: ${{ github.event.workflow_run.event == 'pull_request' }}
+  wait-and-comment:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Find and download the latest artifact from a recent successful run of the PR's commits
-      - name: Download latest artifact from current PR
-        uses: dawidd6/action-download-artifact@v3
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          pr: ${{ github.event.pull_request.number }}
-          name: outputs
-          path: artifact_contents
+      - name: Install GitHub CLI
+        uses: cli/cli-action@v2
 
-      - name: List downloaded contents (debug)
+      - name: Wait for 'outputs' artifact (max 10 min)
+        id: wait-artifact
+        run: |
+          echo "Polling for 'outputs' artifact..."
+          for i in {1..10}; do
+            echo "Attempt $i of 10..."
+            ARTIFACT_ID=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts \
+              --jq '.artifacts[] | select(.name == "outputs") | .id')
+
+            if [[ -n "$ARTIFACT_ID" ]]; then
+              echo "✅ Found artifact ID: $ARTIFACT_ID"
+              echo "artifact_id=$ARTIFACT_ID" >> $GITHUB_ENV
+              exit 0
+            fi
+
+            echo "Artifact not found yet. Sleeping for 60 seconds..."
+            sleep 60
+          done
+
+          echo "❌ Timed out waiting for artifact 'outputs'"
+          exit 1
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download and unzip artifact
+        run: |
+          echo "Downloading artifact ID $artifact_id"
+          gh api \
+            -H "Accept: application/vnd.github+json" \
+            /repos/${{ github.repository }}/actions/artifacts/$artifact_id/zip \
+            --output artifact.zip
+          mkdir artifact_contents
+          unzip -q artifact.zip -d artifact_contents
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: List contents (debug)
         run: ls -R artifact_contents
 
-      - name: Create PR comment with embedded images
-        id: comment
+      - name: Post PR comment with images
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -37,20 +63,10 @@ jobs:
             const path = require('path');
 
             const basePath = 'artifact_contents';
-            if (!fs.existsSync(basePath)) {
-              core.setFailed("Artifact contents not found.");
-              return;
-            }
-
             const folders = fs.readdirSync(basePath).filter(f => fs.statSync(path.join(basePath, f)).isDirectory());
 
-            if (folders.length === 0) {
-              core.setFailed("No folders found in artifact.");
-              return;
-            }
-
             let body = `## 🔍 Efficiency Trace Preview\n`;
-            body += `This preview shows the \`trace_efficiency_mm.png\` plots from the output artifact.\n\n`;
+            body += `Preview of \`trace_efficiency_mm.png\` from the CI run for this PR.\n\n`;
 
             for (const folder of folders.sort()) {
               const imgPath = path.join(basePath, folder, 'trace_efficiency_mm.png');
@@ -66,7 +82,6 @@ jobs:
 
             const prNumber = context.payload.pull_request.number;
 
-            // Search for an existing bot comment with this title
             const { data: comments } = await github.rest.issues.listComments({
               ...context.repo,
               issue_number: prNumber,
