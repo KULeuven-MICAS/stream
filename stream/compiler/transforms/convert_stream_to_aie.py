@@ -194,7 +194,7 @@ class ObjectFifoManager:
         for step in path:
             if is_shim(step[0]) or is_shim(step[1][0]):
                 name = name_base + "mem"
-                depth = 1
+                depth = 2
                 repeat_count = 1
                 shape = shape_mem + memref_type.get_shape()
             else:
