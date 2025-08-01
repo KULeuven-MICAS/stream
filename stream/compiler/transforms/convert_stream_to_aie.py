@@ -18,6 +18,7 @@ from xdsl.dialects.builtin import (
     IntegerType,
     MemRefType,
     ModuleOp,
+    NoneAttr,
     StringAttr,
     SymbolRefAttr,
     i32,
@@ -209,6 +210,9 @@ class ObjectFifoManager:
                 name=name,
                 repeat_count=repeat_count,
             )
+
+            if repeat_count == 1:
+                del object_fifo.properties["repeat_count"]
 
             # object fifo should be defined at start of device
             SymbolTable.insert_or_update(self.device_op, object_fifo)
