@@ -6,6 +6,7 @@ gemm:
     stream_hw_identifier: single_core_with_mem_tile
     mlir_aie_dir: /path/to/mlir-aie
     use_stream_output: true
+    trace_size: 1048576
 
   shapes:
     # - { M: 32, K: 32, N: 32 }

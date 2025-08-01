@@ -4,11 +4,9 @@ import os
 rule run_stream_aie_to_generate_mlir_output:
     output:
         "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-fused-constraint-optimization/output.mlir"
-    # log:
-    #     "logs/gemm_{stream_hw_id}_{M}_{K}_{N}.log"
     shell:
         """
-        python3 main_aie_codegen_gemm_mem_tile.py --M {wildcards.M} --K {wildcards.K} --N {wildcards.N} | tee {log}
+        python3 main_aie_codegen_gemm_mem_tile.py --M {wildcards.M} --K {wildcards.K} --N {wildcards.N} --trace_size {trace_size} | tee {log}
         """
 
 # Rule 2: Canonicalize and copy the MLIR into mlir-aie build dir
@@ -16,7 +14,6 @@ rule copy_stream_mlir_output_to_mlir_aie:
     input:
         rules.run_stream_aie_to_generate_mlir_output.output
     output:
-        # "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/build/aie_trace_{M}x{K}x{N}.mlir",
         "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/build/aie_trace_{M}x{K}x{N}_32x32x32.mlir",
     shell:
         """
@@ -38,7 +35,7 @@ rule run_trace:
             set +u && \
             source mlir-aie/utils/env_setup.sh && \
             cd mlir-aie/programming_examples/basic/matrix_multiplication_stream/{wildcards.stream_hw_id} && \
-            make trace M={wildcards.M} K={wildcards.K} N={wildcards.N} \
+            make trace M={wildcards.M} K={wildcards.K} N={wildcards.N} trace_size={trace_size} \
         ) > {log} 2>&1
         """
 

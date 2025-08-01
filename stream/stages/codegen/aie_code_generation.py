@@ -38,12 +38,14 @@ class AIECodeGenerationStage(Stage):
 
         self.output_path: str = kwargs["codegen_path"]
 
+        self.trace_size = kwargs.get("trace_size", 1048576)
+
     def run(self):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **self.kwargs)
 
         for cme, extra_info in sub_stage.run():
             if cme:
-                self.codegen_main(cme)
+                self.codegen_main(cme, self.trace_size)
             yield cme, extra_info
 
     def create_edge_op(
@@ -194,7 +196,7 @@ class AIECodeGenerationStage(Stage):
 
         return module
 
-    def codegen_main(self, cme: SteadyStateScheduler):
+    def codegen_main(self, cme: SteadyStateScheduler, trace_size: int) -> None:
         workload = cme.steady_state_workload
         assert workload is not None
 
@@ -210,7 +212,7 @@ class AIECodeGenerationStage(Stage):
         ClearMemorySpace().apply(self.context, module)
 
         # Optionally, Add Tracing Script
-        AIEAddTracingScript().apply(self.context, module)
+        AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
 
         # print output to codegen path
         file = open(self.output_path, "w")
