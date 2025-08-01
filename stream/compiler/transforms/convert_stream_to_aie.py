@@ -166,10 +166,12 @@ class ObjectFifoManager:
         ssis = use.ssis.data
 
         shape_mem = tuple(
-            iv.size for iv in ssis.variables if iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
+            iv.size for iv in ssis.variables if iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
         )
 
-        reuse_factor_compute = prod(shape_mem)
+        reuse_factor_compute = prod(
+            iv.size for iv in ssis.variables if iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
+        )
 
         reuse_factor_mem = (
             prod(iv.size for iv in ssis.variables if iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse)
@@ -181,13 +183,14 @@ class ObjectFifoManager:
         for step in path:
             if is_shim(step[0]) or is_shim(step[1][0]):
                 name = name_base + "mem"
-                depth = reuse_factor_mem
+                depth = 1
+                repeat_count = reuse_factor_mem
                 shape = shape_mem + memref_type.get_shape()
-                # shape = memref_type.get_shape()
             else:
                 name = name_base + ascii.pop(0)
                 depth = reuse_factor_compute
                 shape = memref_type.get_shape()
+                repeat_count = 1
 
             object_fifo = ObjectFifoOp.from_referenced_type(
                 elemNumber=IntegerAttr(depth, i32),
@@ -196,6 +199,7 @@ class ObjectFifoManager:
                 referenced_type=memref_type.get_element_type(),
                 shape=shape,
                 name=name,
+                repeat_count=repeat_count,
             )
 
             # object fifo should be defined at start of device
@@ -372,7 +376,7 @@ class TransferToRuntimeSequence(RewritePattern):
         # offset is definitely zero for now
         for iter_var in op.ssis.data.variables:
             loop_dimensions = [x.data for x in op.loop_dimensions]
-            if iter_var.relevant:
+            if iter_var.relevant or IterationVariableReuse.MEM_TILE_NO_REUSE in iter_var.reuse:
                 if str(iter_var.dimension) in loop_dimensions:
                     index = loop_dimensions.index(str(iter_var.dimension))
                     stride = prod(memref_type.get_shape()[index + 1 :]) * op.sizes.get_values()[index]
