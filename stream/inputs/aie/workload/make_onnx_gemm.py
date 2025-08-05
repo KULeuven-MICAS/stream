@@ -44,12 +44,12 @@ def make_gemm_mapping_single_col(M, K, N, m, k, n, has_mem_tile: bool = False, n
     name = f"gemm_{M}_{K}_{N}"
     output_file = f"stream/inputs/aie/mapping/{name}_col.yaml"
     # Construct tiling entries as comma-separated strings
-    k_inter_core = min(K // k, nb_compute_cores)
-    k_intra_core = K // k // k_inter_core
+    k_inter_core = min(N // n, nb_compute_cores)
+    k_intra_core = N // n // k_inter_core
     intra_core_tiling = [
-        f"C, {k_intra_core}",
+        f"C, {K // k}",
         f"D, {M // m}",
-        f"K, {N // n}",
+        f"K, {k_intra_core}",
     ]
     inter_core_tiling = [f"K, {k_inter_core}"]
     compute_allocation = (

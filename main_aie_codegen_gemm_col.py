@@ -4,9 +4,6 @@ import re
 
 from stream.api import optimize_allocation_co
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_mapping_single_col, make_gemm_workload
-from stream.utils import CostModelEvaluationLUT
-from stream.visualization.memory_usage import plot_memory_usage
-from stream.visualization.perfetto import convert_scme_to_perfetto_json
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
@@ -34,16 +31,16 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size)
     ######################################################################
 
     ##############PLOTTING###############
-    section_start_percent = (0,)
-    percent_shown = (100,)
+    # section_start_percent = (0,)
+    # percent_shown = (100,)
     #####################################
 
     ################################PATHS################################
-    memory_fig_path = f"outputs/{experiment_id}/memory.png"
-    json_path = f"outputs/{experiment_id}/scme.json"
+    # memory_fig_path = f"outputs/{experiment_id}/memory.png"
+    # json_path = f"outputs/{experiment_id}/scme.json"
     #####################################################################
 
-    scme = optimize_allocation_co(
+    _ = optimize_allocation_co(
         hardware=accelerator,
         workload=workload_path,
         mapping=mapping_path,
@@ -52,20 +49,20 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size)
         experiment_id=experiment_id,
         output_path="outputs",
         skip_if_exists=False,
-        enable_codegen=True,
+        enable_codegen=False,
         trace_size=trace_size,
     )
 
-    #####################CostModelEvaluationLUT LOAD#############################
-    cost_lut_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
-    cost_lut = CostModelEvaluationLUT(cost_lut_path)
-    #############################################################################
+    # #####################CostModelEvaluationLUT LOAD#############################
+    # cost_lut_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
+    # cost_lut = CostModelEvaluationLUT(cost_lut_path)
+    # #############################################################################
 
-    # Save json for perfetto visualization (Visualize at http://ui.perfetto.dev/)
-    convert_scme_to_perfetto_json(scme, cost_lut, json_path=json_path)
+    # # Save json for perfetto visualization (Visualize at http://ui.perfetto.dev/)
+    # convert_scme_to_perfetto_json(scme, cost_lut, json_path=json_path)
 
-    # Plotting memory usage of best SCME
-    plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
+    # # Plotting memory usage of best SCME
+    # plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
 
 
 if __name__ == "__main__":

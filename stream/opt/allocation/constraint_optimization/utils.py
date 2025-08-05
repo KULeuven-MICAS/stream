@@ -62,6 +62,8 @@ def get_latencies(
     for node in nodes:
         possible_allocations[node] = []
         for core in cores:
+            if node.chosen_core_allocation is not None and core.id != node.chosen_core_allocation:
+                continue
             try:
                 equal_node = cost_lut.get_equal_node(node)
                 assert equal_node, f"No equal node for {node} found in CostModelEvaluationLUT"
@@ -122,7 +124,9 @@ def get_energies(
         for core_id, core_name in zip(core_ids, core_names, strict=False):
             core = accelerator.get_core(core_id)
             try:
-                cme = cost_lut.get_cme(node, core)
+                eq_node = cost_lut.get_equal_node(node)
+                assert eq_node, f"No equal node for {node} found in CostModelEvaluationLUT"
+                cme = cost_lut.get_cme(eq_node, core)
                 en = cme.energy_total
             except ValueError:
                 en = impossible_energy
