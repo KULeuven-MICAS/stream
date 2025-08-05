@@ -67,6 +67,8 @@ from stream.workload.steady_state.iteration_space import IterationVariableReuse
 def get_tile(value: str) -> tuple[int, int]:
     if value == "Core(2)":
         return 0, 2
+    elif value == "Core(3)":
+        return 0, 3
     raise RuntimeError(f"Unknown tile value: {value}")
     match = re.match(r"Core\((\d+)\)", value)
     if match:
@@ -114,6 +116,11 @@ class TileOpManager:
         return tile_op
 
 
+class ObjectFifoChain(list[dict[int, ObjectFifoOp]]):
+    def __init__(self, *fifo_maps: dict[int, ObjectFifoOp]):
+        super().__init__(fifo_maps)
+
+
 @dataclass
 class ObjectFifoManager:
     tile_op_manager: TileOpManager
@@ -121,9 +128,9 @@ class ObjectFifoManager:
     device_op: DeviceOp
 
     counter: int = 0
-    channel_to_of: dict[SSAValue, list[ObjectFifoOp]] = field(default_factory=dict)
+    channel_to_of: dict[SSAValue, ObjectFifoChain] = field(default_factory=dict)
 
-    def insert_or_update(self, channel: SSAValue, memref_type: MemRefType[Attribute]) -> Sequence[ObjectFifoOp]:  # noqa: PLR0915
+    def insert_or_update(self, channel: SSAValue, memref_type: MemRefType[Attribute]) -> ObjectFifoChain:  # noqa: PLR0915
         # find previous
         if channel in self.channel_to_of:
             return self.channel_to_of[channel]
@@ -144,8 +151,34 @@ class ObjectFifoManager:
 
         # find source tile:
         # TODO: this needs some fixing for join patterns
-        source = next(get_tile(use.operation) for use in channel.uses if isinstance(use.operation, PushOp))
+        sources = list(get_tile(use.operation) for use in channel.uses if isinstance(use.operation, PushOp))
+        source = sources[0]
         dests = list(get_tile(use.operation) for use in channel.uses if isinstance(use.operation, PullOp))
+        users = [use.operation for use in channel.uses if isinstance(use.operation, PullOp)]
+
+        join_distribute = False
+
+        to_reverse = False
+
+        if len(dests) > 1:
+            # determine wheteher to broadcast / join - distribute
+            join_distribute = users[0].spatial_strides != users[1].spatial_strides
+
+        if len(sources) > 1:
+            # destination can be multiple, but should be the same.
+            assert len(set(dests)) == 1
+            # for the rest, swap source and dests, treat this as a transfer in the other direction
+            source = dests[0]
+            dests = sources
+            users = [use.operation for use in channel.uses if isinstance(use.operation, PushOp)]
+            # always join, no broadcast possible for join
+            join_distribute = True
+            to_reverse = True
+
+        offsets = []
+        if join_distribute:
+            for i in range(len(dests)):
+                offsets.append(i * prod(memref_type.get_shape()))
 
         def is_shim(tile: TileOp) -> bool:
             return tile.row.value.data == 0
@@ -156,7 +189,7 @@ class ObjectFifoManager:
         else:
             path = [(source, dests)]
 
-        self.channel_to_of[channel] = []
+        self.channel_to_of[channel] = ObjectFifoChain()
         name_base = f"of_{self.counter}"
         self.counter += 1
 
@@ -190,7 +223,7 @@ class ObjectFifoManager:
 
         ascii = [x for x in string.ascii_lowercase]
 
-        for step in path:
+        for i, step in enumerate(path):
             if is_shim(step[0]) or is_shim(step[1][0]):
                 name = name_base + "mem"
                 depth = 2
@@ -203,40 +236,72 @@ class ObjectFifoManager:
                 shape = memref_type.get_shape()
                 repeat_count = reuse_factor_mem
 
-            object_fifo = ObjectFifoOp.from_referenced_type(
-                elemNumber=IntegerAttr(depth, i32),
-                producerTile=step[0],
-                consumerTiles=step[1],
-                referenced_type=memref_type.get_element_type(),
-                shape=shape,
-                name=name,
-                repeat_count=repeat_count,
-            )
+            # if the spatial strides are non-zero, multiple object fifos must be created
+            if len(step[1]) > 1 and join_distribute:
+                of_dict: dict[int, ObjectFifoOp] = {}
+                names = []
+                for j, dest in enumerate(step[1]):
+                    name = name_base + ascii.pop(0)
+                    names.append(name)
+                    object_fifo = ObjectFifoOp.from_referenced_type(
+                        elemNumber=IntegerAttr(depth, i32),
+                        producerTile=step[0],
+                        consumerTiles=[dest],
+                        referenced_type=memref_type.get_element_type(),
+                        shape=shape,
+                        name=name,
+                        repeat_count=repeat_count,
+                    )
 
-            if repeat_count == 1:
-                del object_fifo.properties["repeat_count"]
+                    if repeat_count == 1:
+                        del object_fifo.properties["repeat_count"]
 
-            # object fifo should be defined at start of device
-            SymbolTable.insert_or_update(self.device_op, object_fifo)
+                    # object fifo should be defined at start of device
+                    SymbolTable.insert_or_update(self.device_op, object_fifo)
+
+                    of_dict[offsets[j]] = object_fifo
+            else:
+                object_fifo = ObjectFifoOp.from_referenced_type(
+                    elemNumber=IntegerAttr(depth, i32),
+                    producerTile=step[0],
+                    consumerTiles=step[1],
+                    referenced_type=memref_type.get_element_type(),
+                    shape=shape,
+                    name=name,
+                    repeat_count=repeat_count,
+                )
+
+                of_dict = {0: object_fifo}
+
+                if repeat_count == 1:
+                    del object_fifo.properties["repeat_count"]
+
+                # object fifo should be defined at start of device
+                SymbolTable.insert_or_update(self.device_op, object_fifo)
+
+                names = [name]
 
             # link objectfifos
-            if len(self.channel_to_of[channel]) > 0:
-                source_name = self.channel_to_of[channel][-1].sym_name
-                new_link_op = ObjectFifoLinkOp([source_name.data], [name], [], [])
+            if i == 1:
+                source_name = self.channel_to_of[channel][0][0].sym_name
+                if not to_reverse:
+                    new_link_op = ObjectFifoLinkOp([source_name.data], names, [], offsets)
+                else:
+                    new_link_op = ObjectFifoLinkOp([source_name.data], names, offsets, [])
 
                 region_block = self.device_op.region.block
                 assert region_block.last_op
                 region_block.insert_op_after(new_link_op, region_block.last_op)
 
-            self.channel_to_of[channel].append(object_fifo)
+            self.channel_to_of[channel].append(of_dict)
 
         return self.channel_to_of[channel]
 
-    def get_of_chain(self, of: ObjectFifoOp | str) -> list[ObjectFifoOp]:
+    def get_of_chain(self, of: ObjectFifoOp | str) -> ObjectFifoChain:
         if isinstance(of, str):
             of = self.of_from_name(of)
         for chain in self.channel_to_of.values():
-            if of in chain:
+            if of in chain[0].values() or of in chain[1].values():
                 return chain
         raise RuntimeError(f"ObjectFifoOp {of.sym_name.data} not found in channel_to_of mapping")
 
@@ -356,10 +421,14 @@ class TransferToRuntimeSequence(RewritePattern):
         if isinstance(op, PushOp):
             assert isinstance(op.input, OpResult)
             edge = op.input.op
-            of = of_chain[0]
+            of = of_chain[0][0]
         else:
-            edge = next(use.operation for use in op.output.uses)
-            of = of_chain[-1]
+            edge = next((use.operation for use in op.output.uses), None)
+            if edge is None:
+                # TODO: this transfer should not be present anymore
+                rewriter.erase_matched_op()
+                return
+            of = of_chain[0][0]
         assert isinstance(edge, EdgeOp)
 
         of_name = of.sym_name.data
@@ -462,14 +531,21 @@ class TransferToObjectFIFOPattern(RewritePattern):
         assert isinstance(memref_type, MemRefType)
         of_chain = self.object_fifo_manager.insert_or_update(op.channel, memref_type)
 
+        # get spatial offset to fetch from correct object fifo
+        offset = 0
+        for size, spatial_stride in zip(op.sizes.get_values(), op.spatial_strides.get_values(), strict=True):
+            if spatial_stride != 0:
+                offset += int((spatial_stride // size) * prod(op.sizes.get_values()))
+
         # decide whether to consume or produce
         if isinstance(op, PullOp):
             port = ObjectFifoPortEnum.Consume
-            of = of_chain[-1]
+            of = of_chain[-1][offset]
+
             operand = op.output
         else:
             port = ObjectFifoPortEnum.Produce
-            of = of_chain[0]
+            of = of_chain[-1][offset]
             operand = op.input
 
         of_name = of.sym_name.data
@@ -1281,14 +1357,16 @@ class RealizeLayoutCats(RewritePattern):
             of = chain[1]
 
         # get the element_type
-        element_type = cast(MemRefType[Attribute], of.elemType.buffer)
+        element_type = cast(MemRefType[Attribute], of[0].elemType.buffer)
 
         tsl_dest = cast(TiledStridedLayoutAttr, dest_type.layout).data
 
         # create default tsl layout for source:
         strides = [1]
         for size in reversed(dest_type.shape.data[1:]):
-            strides = [size.data * strides[0]] + strides
+            # FIXME: do not fix this to 32 maybe lol
+            # strides = [size.data * strides[0]] + strides
+            strides = [32 * strides[0]] + strides
         tile_bounds = tsl_dest.tile_bounds()
 
         tsl_in = TiledStridedLayout.from_strides(strides, tile_bounds)  # pyright: ignore
@@ -1306,13 +1384,15 @@ class RealizeLayoutCats(RewritePattern):
         bd_layout = BDDimLayoutArrayAttr(
             BDDimLayoutArray([BDDimLayout((size, stride)) for size, stride in zip(sizes, strides, strict=False)])
         )
-        of.dimensionsToStream = bd_layout
 
-        # set of_layout to the memref layout
-        # TODO: improve for join patterns
-        of.elemType = ObjectFIFO([MemRefType(element_type.element_type, element_type.shape, dest_type.layout)])
+        for key in of.keys():
+            of[key].dimensionsToStream = bd_layout
 
-        element_type = cast(MemRefType[Attribute], of.elemType.buffer)
+            # set of_layout to the memref layout
+            # TODO: improve for join patterns
+            of[key].elemType = ObjectFIFO([MemRefType(element_type.element_type, element_type.shape, dest_type.layout)])
+
+        element_type = cast(MemRefType[Attribute], of[0].elemType.buffer)
 
         of_layout = element_type.layout
 
@@ -1399,7 +1479,7 @@ class ConvertStreamToAIEPass(ModulePass):
         runtime_arg_types = []
         for operand_name in order:
             edge = next(edge for edge in edges if edge.tensor.data == operand_name)
-            operand = edge.input if edge.input is not None else edge.output
+            operand = edge.inputs[0] if len(edge.inputs) else edge.output
             assert operand is not None
             runtime_arg_types.append(operand.type)
 
@@ -1411,6 +1491,7 @@ class ConvertStreamToAIEPass(ModulePass):
 
         # Order all transfers based on first use
         # PatternRewriteWalker(PutTransfersBeforeFirstUse(), apply_recursively=False).rewrite_module(op)
+        #
 
         PatternRewriteWalker(
             WrapInCoreOps(

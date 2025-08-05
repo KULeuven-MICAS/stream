@@ -57,17 +57,19 @@ class SteadyStateIterationSpaceAttr(Data[SteadyStateIterationSpace]):
 class EdgeOp(IRDLOperation):
     name = "stream.edge"
 
-    input = opt_operand_def(MemRefType)
+    inputs = var_operand_def(MemRefType)
     output = opt_result_def(MemRefType)
 
     tensor = prop_def(StringAttr)
 
     irdl_options = [AttrSizedOperandSegments()]
 
-    def __init__(self, result_type: MemRefType | None, tensor: str | StringAttr, input: SSAValue | None = None) -> None:
+    def __init__(
+        self, result_type: MemRefType | None, tensor: str | StringAttr, inputs: Sequence[SSAValue] | None = None
+    ) -> None:
         if isinstance(tensor, str):
             tensor = StringAttr(tensor)
-        operands = [input] if input is not None else [[]]
+        operands = [inputs] if inputs is not None else [[]]
         result_types = [result_type] if result_type is not None else [[]]
         super().__init__(
             operands=operands,
@@ -122,6 +124,7 @@ class TransferOp(IRDLOperation):
     offsets = prop_def(DenseArrayBase)
     sizes = prop_def(DenseArrayBase)
     strides = prop_def(DenseArrayBase)
+    spatial_strides = prop_def(DenseArrayBase)
     loop_dimensions = prop_def(ArrayAttr[StringAttr])
 
     source = prop_def(StringAttr)
@@ -139,6 +142,7 @@ class TransferOp(IRDLOperation):
         offsets: DenseArrayBase | Sequence[int],
         sizes: DenseArrayBase | Sequence[int],
         strides: DenseArrayBase | Sequence[int],
+        spatial_strides: DenseArrayBase | Sequence[int],
         loop_dimensions: ArrayAttr[StringAttr] | Sequence[str],
     ) -> None:
         if not isinstance(offsets, DenseArrayBase):
@@ -147,6 +151,8 @@ class TransferOp(IRDLOperation):
             sizes = DenseArrayBase.create_dense_int(i64, sizes)
         if not isinstance(strides, DenseArrayBase):
             strides = DenseArrayBase.create_dense_int(i64, strides)
+        if not isinstance(spatial_strides, DenseArrayBase):
+            spatial_strides = DenseArrayBase.create_dense_int(i64, spatial_strides)
         if not isinstance(loop_dimensions, ArrayAttr):
             loop_dimensions = ArrayAttr([StringAttr(dim) for dim in loop_dimensions])
         super().__init__(
@@ -160,6 +166,7 @@ class TransferOp(IRDLOperation):
                 "offsets": offsets,
                 "sizes": sizes,
                 "strides": strides,
+                "spatial_strides": spatial_strides,
                 "loop_dimensions": loop_dimensions,
             },
         )
@@ -189,6 +196,7 @@ class PushOp(IRDLOperation):
     offsets = prop_def(DenseArrayBase)
     sizes = prop_def(DenseArrayBase)
     strides = prop_def(DenseArrayBase)
+    spatial_strides = prop_def(DenseArrayBase)
     loop_dimensions = prop_def(ArrayAttr[StringAttr])
 
     ssis = prop_def(SteadyStateIterationSpaceAttr)
@@ -201,6 +209,7 @@ class PushOp(IRDLOperation):
         offsets: DenseArrayBase | Sequence[int],
         sizes: DenseArrayBase | Sequence[int],
         strides: DenseArrayBase | Sequence[int],
+        spatial_strides: DenseArrayBase | Sequence[int],
         loop_dimensions: ArrayAttr[StringAttr] | Sequence[str],
     ) -> None:
         if not isinstance(offsets, DenseArrayBase):
@@ -209,6 +218,8 @@ class PushOp(IRDLOperation):
             sizes = DenseArrayBase.create_dense_int(i64, sizes)
         if not isinstance(strides, DenseArrayBase):
             strides = DenseArrayBase.create_dense_int(i64, strides)
+        if not isinstance(spatial_strides, DenseArrayBase):
+            spatial_strides = DenseArrayBase.create_dense_int(i64, spatial_strides)
         if not isinstance(loop_dimensions, ArrayAttr):
             loop_dimensions = ArrayAttr([StringAttr(dim) for dim in loop_dimensions])
         super().__init__(
@@ -221,6 +232,7 @@ class PushOp(IRDLOperation):
                 "offsets": offsets,
                 "sizes": sizes,
                 "strides": strides,
+                "spatial_strides": spatial_strides,
                 "loop_dimensions": loop_dimensions,
             },
         )
@@ -236,6 +248,7 @@ class PullOp(IRDLOperation):
     offsets = prop_def(DenseArrayBase)
     sizes = prop_def(DenseArrayBase)
     strides = prop_def(DenseArrayBase)
+    spatial_strides = prop_def(DenseArrayBase)
     loop_dimensions = prop_def(ArrayAttr[StringAttr])
 
     ssis = prop_def(SteadyStateIterationSpaceAttr)
@@ -248,6 +261,7 @@ class PullOp(IRDLOperation):
         offsets: DenseArrayBase | Sequence[int],
         sizes: DenseArrayBase | Sequence[int],
         strides: DenseArrayBase | Sequence[int],
+        spatial_strides: DenseArrayBase | Sequence[int],
         loop_dimensions: ArrayAttr[StringAttr] | Sequence[str],
     ) -> None:
         if not isinstance(offsets, DenseArrayBase):
@@ -256,6 +270,8 @@ class PullOp(IRDLOperation):
             sizes = DenseArrayBase.create_dense_int(i64, sizes)
         if not isinstance(strides, DenseArrayBase):
             strides = DenseArrayBase.create_dense_int(i64, strides)
+        if not isinstance(spatial_strides, DenseArrayBase):
+            spatial_strides = DenseArrayBase.create_dense_int(i64, spatial_strides)
         if not isinstance(loop_dimensions, ArrayAttr):
             loop_dimensions = ArrayAttr([StringAttr(dim) for dim in loop_dimensions])
         super().__init__(
@@ -266,6 +282,7 @@ class PullOp(IRDLOperation):
                 "offsets": offsets,
                 "sizes": sizes,
                 "strides": strides,
+                "spatial_strides": spatial_strides,
                 "loop_dimensions": loop_dimensions,
             },
         )

@@ -8,7 +8,6 @@ from xdsl.printer import Printer
 from zigzag.utils import DiGraphWrapper
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, Stream, TransferOp
-from stream.compiler.transforms.aie_add_tracing_script import AIEAddTracingScript
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
 from stream.compiler.transforms.stream_split_transfers import StreamSplitTransfersPass
@@ -66,10 +65,12 @@ class AIECodeGenerationStage(Stage):
             edge_op = EdgeOp(memref_type, edge.node_name)
         else:
             # find transfer:
-            transfer = next(workload.predecessors(edge))
-            assert isinstance(transfer, SteadyStateTransfer)
-            transfer_op = transfer_ops[transfer]
-            edge_op = EdgeOp(None, edge.node_name, transfer_op.results[0])
+            transfer_results = []
+            for transfer in workload.predecessors(edge):
+                assert isinstance(transfer, SteadyStateTransfer)
+                transfer_op = transfer_ops[transfer]
+                transfer_results.append(transfer_op.results[0])
+            edge_op = EdgeOp(None, edge.node_name, transfer_results)
         return edge_op
 
     def create_transfer_op(
@@ -113,6 +114,17 @@ class AIECodeGenerationStage(Stage):
         offsets = [x[0] for x in tensor.loop_ranges]
         sizes = [x[1] - x[0] for x in tensor.loop_ranges]
         strides = [1 for x in tensor.loop_ranges]
+
+        # determine spatial strides
+        spatial_strides = []
+        if len(transfer.dsts) > 1:
+            for dim in tensor.loop_dimensions:
+                spatial_strides.append(
+                    transfer.dsts[1].loop_ranges_per_dim[dim][0] - transfer.dsts[0].loop_ranges_per_dim[dim][0]
+                )
+        else:
+            spatial_strides = [0 for x in tensor.loop_ranges]
+
         op = TransferOp(
             source_val.results[0],
             [dest_type],
@@ -123,6 +135,7 @@ class AIECodeGenerationStage(Stage):
             offsets,
             sizes,
             strides,
+            spatial_strides,
             [str(dim) for dim in tensor.loop_dimensions],
         )
 
@@ -202,6 +215,7 @@ class AIECodeGenerationStage(Stage):
 
         module = self.generate_steady_state_workload(workload)
 
+        # SetNoReusePass().apply(self.context, module)
         # Split transfers in push and pull
         StreamSplitTransfersPass().apply(self.context, module)
 
@@ -212,7 +226,7 @@ class AIECodeGenerationStage(Stage):
         ClearMemorySpace().apply(self.context, module)
 
         # Optionally, Add Tracing Script
-        AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
+        # AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
 
         # print output to codegen path
         file = open(self.output_path, "w")
