@@ -206,28 +206,34 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
             if not edge_seen:
                 dot.add_edge(pydot.Edge(upper, lower, style="invis"))
 
-        # Customize node appearance
-        for node in self.nodes():
-            n = dot.get_node(str(node))[0]
-            n.set_label(f"{node.node_name}")
-            n.set_shape("box")
-            n.set_style("filled")
-            n.set_fillcolor(
-                "#a2d5f2"
-                if isinstance(node, SteadyStateComputation)
-                else (
-                    "#ffcb9a"
-                    if isinstance(node, SteadyStateTransfer)
-                    else (
-                        "#eaff76e1"
-                        if isinstance(node, SteadyStateRollingBuffer)
-                        else "#c2f0c2"
-                        if isinstance(node, SteadyStateTensor)
-                        else "#eeeeee"
-                    )
-                )
-            )
+        self._customize_node_appearances(dot)
 
         # Save to file
         dot.write_png(filepath)
         print(f"Graph saved to {filepath}")
+
+    def _customize_node_appearances(self, dot):
+        for node in self.nodes():
+            n = dot.get_node(str(node))[0]
+            if isinstance(node, SteadyStateComputation):
+                n.set_shape("ellipse")
+                n.set_label(f"{node.node_name}")
+                n.set_style("filled")
+                n.set_fillcolor("#60bcf0")
+            elif isinstance(node, SteadyStateRollingBuffer):
+                n.set_shape("box")
+                n.set_label(f"{node.node_name}\n{node.loop_ranges_per_dim}")
+                n.set_style("filled")
+                n.set_fillcolor("#eaff76e1")
+            elif isinstance(node, SteadyStateTensor):
+                n.set_shape("box")
+                n.set_label(f"{node.node_name}\n{node.loop_ranges_per_dim}")
+                n.set_style("filled")
+                n.set_fillcolor("#c2f0c2")
+            elif isinstance(node, SteadyStateTransfer):
+                n.set_shape("box")
+                n.set_label(f"{node.node_name}")
+                n.set_style("filled")
+                n.set_fillcolor("#ffcb9a")
+            else:
+                raise ValueError(f"Unknown node type: {type(node)}")
