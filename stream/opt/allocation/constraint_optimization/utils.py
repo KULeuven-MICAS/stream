@@ -238,7 +238,7 @@ def get_partitioned_nodes(
         new_node = SteadyStateComputation(
             id=node.id,
             sub_id=node.sub_id,
-            node_name=node.name,
+            node_name=f"{node.name}.{node.sub_id}",
             node_attr=node.extract_node_attr(),
             mapping_attr=mapping_attr,
             operand_tensor_reshape=node.operand_tensor_reshape,
@@ -295,7 +295,7 @@ def get_partitioned_nodes(
         partitioned_node = SteadyStateComputation(
             id=node.id,
             sub_id=node.sub_id,
-            node_name=node.name + f".part{i}",
+            node_name=f"{node.name}.{node.sub_id}.part{i}",
             node_attr=node_attr,
             mapping_attr=inter_core_mapping_attr,
             operand_tensor_reshape=node.operand_tensor_reshape,

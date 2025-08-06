@@ -44,6 +44,7 @@ class SteadyStateScheduler:
         self.iterations = iterations
         self.current_node_id = 0
         self.partitioned_nodes: dict[ComputationNode, list[SteadyStateComputation]] = {}
+        self.constant_tensors: dict[SubviewTensor, SteadyStateTensor] = {}
 
         # Steady state workload that will be set after running the scheduler
         self.steady_state_workload: SteadyStateWorkload | None = None
@@ -144,7 +145,7 @@ class SteadyStateScheduler:
                 for n in allocation.nodes
                 if isinstance(n, SteadyStateComputation) and n.id == node.id and n.sub_id == node.sub_id
             ]
-            core_allocations = [node.chosen_core_allocation for node in sscns]
+            resource_allocations = [node.chosen_resource_allocation for node in sscns]
             self.partitioned_nodes[node] = sscns
             for sscn in sscns:
                 steady_state_workload.add(sscn)
@@ -155,7 +156,7 @@ class SteadyStateScheduler:
                     # For now we assume the new node will generate original divided by number of core_allocation bits
                     if "bits" in attrs:
                         attrs = attrs.copy()
-                        attrs["bits"] = attrs["bits"] / len(core_allocations)
+                        attrs["bits"] = attrs["bits"] / len(resource_allocations)
                     # Add the edge from new_node to destination node
                     dst_sscns = self.partitioned_nodes[dst]
                     for dst_sscn in dst_sscns:
@@ -173,7 +174,6 @@ class SteadyStateScheduler:
         """
         assert self.accelerator.offchip_core_id is not None, "Off-chip core ID must be set in the accelerator."
         offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
-        seen_tensors: set[SubviewTensor] = set()
         for node in subgraph.node_list:
             original_node = next(n for n in self.original_workload.node_list if n.id == node.id)
             loop_relevancy_info = original_node.loop_relevancy_info
@@ -189,11 +189,8 @@ class SteadyStateScheduler:
                     tensor = original_node.operand_tensors[input_op]
                     tensor_precision = original_node.operand_precision[input_op]
                     tensor_inputs = tensor.get_inputs()
-                    if tensor not in seen_tensors:
-                        seen_tensors.add(tensor)
-                        possible_resource_allocation = self.get_constant_tensor_resource_allocation(
-                            self.partitioned_nodes[node], offchip_core
-                        )
+                    if tensor not in self.constant_tensors:
+                        possible_resource_allocation = self.get_constant_tensor_resource_allocation(offchip_core)
                         full_shape = [ub - lb for lb, ub in tensor.loop_ranges]
                         slices_per_full = ssis.slices_per_full
                         constant_node = SteadyStateTensor(
@@ -208,10 +205,14 @@ class SteadyStateScheduler:
                             full_shape=full_shape,
                             slices_per_full=slices_per_full,
                         )
+                        self.constant_tensors[tensor] = constant_node
                         steady_state_workload.add(constant_node)
                         self.current_node_id += 1
-                        for new_node in self.partitioned_nodes[node]:
-                            steady_state_workload.add_edge(constant_node, new_node)
+                    else:
+                        constant_node = self.constant_tensors[tensor]
+                    # Add edges from the constant tensor to the partitioned nodes
+                    for new_node in self.partitioned_nodes[node]:
+                        steady_state_workload.add_edge(constant_node, new_node)
 
             # Add the constant outputs, i.e. outputs of the last sink nodes of the stack
             out_edges = get_real_out_edges(node, self.workload)
@@ -222,16 +223,13 @@ class SteadyStateScheduler:
                 output_tensor_precision = original_node.operand_precision[output_operand]
                 output_tensor_inputs = output_tensor.get_inputs()
                 loop_relevancy_info = original_node.loop_relevancy_info
-                if output_tensor not in seen_tensors:
-                    seen_tensors.add(output_tensor)
+                if output_tensor not in self.constant_tensors:
                     ssis = SteadyStateIterationSpace.from_loop_info(
                         loop_relevancy=loop_relevancy_info,
                         intra_core_tiling=[],  # make tensor for entire layer
                         operand=output_operand,
                     )
-                    possible_resource_allocation = self.get_constant_tensor_resource_allocation(
-                        self.partitioned_nodes[node], offchip_core
-                    )
+                    possible_resource_allocation = self.get_constant_tensor_resource_allocation(offchip_core)
                     full_shape = [ub - lb for lb, ub in output_tensor.loop_ranges]
                     slices_per_full = ssis.slices_per_full
                     constant_node = SteadyStateTensor(
@@ -247,34 +245,22 @@ class SteadyStateScheduler:
                         slices_per_full=slices_per_full,
                     )
                     steady_state_workload.add(constant_node)
-                    for new_node in self.partitioned_nodes[node]:
-                        steady_state_workload.add_edge(new_node, constant_node)
+                    self.current_node_id += 1
+                else:
+                    constant_node = self.constant_tensors[output_tensor]
+                # Add edges from the constant tensor to the partitioned nodes
+                for new_node in self.partitioned_nodes[node]:
+                    steady_state_workload.add_edge(new_node, constant_node)
         return steady_state_workload
 
-    def get_constant_tensor_resource_allocation(
-        self, partitioned_nodes: list[SteadyStateComputation], offchip_core: Core
-    ) -> list[Core]:
+    def get_constant_tensor_resource_allocation(self, offchip_core: Core) -> list[Core]:
         """
         Get the resource allocation for the constant tensor.
         The constant tensor is allocated on the off-chip core, and optionally on the compute cores.
         """
         # Initialize with offchip memory core
         possible_resource_allocation = [offchip_core]
-        if self.allow_constant_tensors_on_mem_core:
-            # If we allow constant tensors on memory cores, add them
-            other_mem_cores = [
-                core for core in self.accelerator.core_list if core != offchip_core and core.type == "memory"
-            ]
-            possible_resource_allocation += other_mem_cores
-        if self.allow_constant_tensors_on_compute_core:
-            # If we allow constant tensors on compute cores, add them
-            compute_allocations: list[Core] = [
-                n.chosen_resource_allocation for n in partitioned_nodes if n.chosen_resource_allocation is not None
-            ]
-            assert len(compute_allocations) == len(partitioned_nodes), (
-                f"Not all partitioned nodes have a chosen resource allocation. {partitioned_nodes}"
-            )
-            possible_resource_allocation += compute_allocations
+        # Add other cores if you want constant tensors to be allocated on memory/compute cores directly
         return possible_resource_allocation
 
     def add_transfer_nodes(self, steady_state_workload: SteadyStateWorkload) -> SteadyStateWorkload:

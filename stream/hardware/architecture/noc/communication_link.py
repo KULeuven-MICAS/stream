@@ -68,7 +68,7 @@ class CommunicationLink:
         self.previously_seen_tensors: dict[SubviewTensor, list[CommunicationLinkEvent]] = {}
 
     def __str__(self) -> str:
-        return f"CommunicationLink({self.sender}, {self.receiver}, bw={self.bandwidth})"
+        return f"CL({self.sender}, {self.receiver}, bw={self.bandwidth})"
 
     def __repr__(self) -> str:
         return str(self)

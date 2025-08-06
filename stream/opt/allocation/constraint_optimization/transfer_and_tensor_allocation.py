@@ -856,8 +856,10 @@ class TransferAndTensorAllocator:
         ssw_upd = SteadyStateWorkload()
         for edge in self.ssw.edges(data=True):
             src, dst, data = edge
-            src = next(n for n in self.ssw.node_list if n is src)
-            dst = next(n for n in self.ssw.node_list if n is dst)
+            assert src in self.ssw.node_list, f"Source {src} not found in ssw nodes."
+            assert dst in self.ssw.node_list, f"Destination {dst} not found in ssw nodes."
+            src = self.ssw.node_list[self.ssw.node_list.index(src)]
+            dst = self.ssw.node_list[self.ssw.node_list.index(dst)]
             ssw_upd.add_edge(src, dst, **data)
         return ssw_upd
 
