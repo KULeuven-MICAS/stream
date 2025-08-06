@@ -249,6 +249,7 @@ def get_partitioned_nodes(
             possible_resource_allocation=possible_resource_allocation,
         )
         new_node.set_runtime(runtime)
+        new_node.update_loop_ranges(node.loop_ranges)
         return [
             new_node,
         ]
