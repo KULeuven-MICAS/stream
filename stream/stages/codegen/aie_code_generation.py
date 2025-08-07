@@ -4,6 +4,7 @@ from snaxc.dialects.tsl import TSL
 from xdsl.context import MLContext
 from xdsl.dialects.builtin import MemRefType, ModuleOp
 from xdsl.ir import Operation
+from xdsl.irdl import Operand
 from xdsl.printer import Printer
 from zigzag.utils import DiGraphWrapper
 
@@ -123,11 +124,17 @@ class AIECodeGenerationStage(Stage):
                     transfer.dsts[1].loop_ranges_per_dim[dim][0] - transfer.dsts[0].loop_ranges_per_dim[dim][0]
                 )
         else:
-            spatial_strides = [0 for x in tensor.loop_ranges]
+            for dim in tensor.loop_dimensions:
+                spatial_strides.append(transfer.src.loop_ranges_per_dim[dim][0])
+
+        if not any(spatial_strides):
+            result_types = [dest_type]
+        else:
+            result_types = [dest_type] * len(transfer.dsts)
 
         op = TransferOp(
             source_val.results[0],
-            [dest_type],
+            result_types,
             "source_todo",
             "dest_todo",
             "tensor_todo",
@@ -150,10 +157,16 @@ class AIECodeGenerationStage(Stage):
         # get inputs
         inputs = list(workload.predecessors(compute))
         transfers: list[TransferOp] = []
+        operands: list[Operand] = []
         for input in inputs:
             transfer = next(workload.predecessors(input))
             assert isinstance(transfer, SteadyStateTransfer)
-            transfers.append(transfer_ops[transfer])
+            transfers.append(transfer_op := transfer_ops[transfer])
+            if len(transfer_op.results) == 1:
+                operands.append(transfer_op.results[0])
+            else:
+                index = transfer.dsts.index(input)
+                operands.append(transfer_op.results[index])
 
         # get output type:
         output_type = next(
@@ -167,7 +180,7 @@ class AIECodeGenerationStage(Stage):
 
         # create computation node op with the needed information
         op = ComputationNodeOp(
-            [transfer.results[0] for transfer in transfers],
+            operands,
             None,
             kernel=compute.kernel.name,
             core_allocation=str(compute.chosen_resource_allocation),
@@ -218,6 +231,8 @@ class AIECodeGenerationStage(Stage):
         # SetNoReusePass().apply(self.context, module)
         # Split transfers in push and pull
         StreamSplitTransfersPass().apply(self.context, module)
+
+        breakpoint()
 
         # Convert to AIE
         ConvertStreamToAIEPass().apply(self.context, module)

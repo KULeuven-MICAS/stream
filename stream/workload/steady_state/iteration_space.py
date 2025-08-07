@@ -159,6 +159,45 @@ class SteadyStateIterationSpace:
         """Total elements/bits in *one* slice (product of *all* loop sizes)."""
         return prod(v.size for v in self.variables) if self.variables else 1
 
+    def shape_mem(self) -> tuple[int, ...]:
+        """
+        Returns the shape of the relevant iteration space kept local in a memtile.
+        """
+        return tuple(
+            iv.size for iv in self.variables if iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
+        )
+
+    def reuse_factor_compute(self) -> int:
+        """
+        Returns the number of time a tensor is reused in a compute tile.
+        """
+        return prod(
+            iv.size
+            for iv in self.variables
+            if not iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
+        )
+
+    def nb_local_tensors_compute(self) -> int:
+        """
+        Returns the number of tensors that are kept local in a compute tile.
+        """
+        return prod(
+            iv.size for iv in self.variables if iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
+        )
+
+    def reuse_factor_mem(self) -> int:
+        """
+        Returns the number of time a tensor is reused in a mem tile.
+        """
+        return (
+            prod(
+                iv.size
+                for iv in self.variables
+                if not iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
+            )
+            // self.reuse_factor_compute()
+        )
+
     # ..................................................................... #
     # ── Iteration / pretty printing                                         #
     # ..................................................................... #

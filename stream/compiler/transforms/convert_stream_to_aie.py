@@ -1,10 +1,10 @@
 import re
 import string
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from math import prod
-from typing import cast
+from typing import Self, cast
 
 from snaxc.dialects.snax import LayoutCast
 from snaxc.dialects.tsl import TiledStridedLayoutAttr
@@ -59,7 +59,7 @@ from xdsl_aie.dialects.aiex import (
     RuntimeSequenceOp,
 )
 
-from stream.compiler.dialects.stream import Channel, ChannelOp, ComputationNodeOp, EdgeOp, PullOp, PushOp, TransferOp
+from stream.compiler.dialects.stream import ChannelOp, ComputationNodeOp, EdgeOp, PullOp, PushOp, TransferOp
 from stream.compiler.transforms.iteration_space_to_for import iteration_space_to_for
 from stream.workload.steady_state.iteration_space import IterationVariableReuse
 
@@ -115,10 +115,283 @@ class TileOpManager:
         self.tile_ops[(x, y)] = tile_op
         return tile_op
 
+    def get_tile(self, operation: Operation) -> TileOp:
+        parent = operation
+        while True:
+            if isinstance(parent, CoreOp):
+                assert isinstance(parent.tile, OpResult) and isinstance(parent.tile.op, TileOp)
+                return parent.tile.op
+            if isinstance(parent, RuntimeSequenceOp):
+                return self.insert_or_update(0, 0)
+            parent = parent.parent_op()
+            if parent is None:
+                raise RuntimeError()
 
-class ObjectFifoChain(list[dict[int, ObjectFifoOp]]):
-    def __init__(self, *fifo_maps: dict[int, ObjectFifoOp]):
-        super().__init__(fifo_maps)
+
+def is_shim(tile: TileOp) -> bool:
+    return tile.row.value.data == 0
+
+
+@dataclass
+class SortPullPushOp:
+    op: PullOp | PushOp
+
+    def __init__(self, op: PullOp | PushOp, tile_op_manager: TileOpManager):
+        self.op = op
+        self.tile = tile_op_manager.get_tile(op)
+
+    def __lt__(self, other: "SortPullPushOp") -> bool:
+        # Compare reversed spatial strides first
+        self_strides = list(reversed(self.op.spatial_strides.get_values()))
+        other_strides = list(reversed(other.op.spatial_strides.get_values()))
+
+        if self_strides != other_strides:
+            return self_strides < other_strides
+
+        # Then compare tile indices: first by row, then by column
+        self_col, self_row = self.tile.col.value.data, self.tile.row.value.data
+        other_col, other_row = other.tile.col.value.data, other.tile.row.value.data
+
+        return (self_row, self_col) < (other_row, other_col)
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, SortPullPushOp):
+            return False
+        return (
+            list(reversed(self.op.spatial_strides.get_values()))
+            == list(reversed(other.op.spatial_strides.get_values()))
+            and self.tile == other.tile
+        )
+
+
+@dataclass
+class ObjectFifoHop:
+    fifos: list[ObjectFifoOp]
+
+    @property
+    def fifo(self) -> ObjectFifoOp:
+        assert len(self.fifos) == 1, "More than one fifo in this hop"
+        return self.fifos[0]
+
+    @property
+    def start(self) -> Iterable[TileOp]:
+        for fifo in self.fifos:
+            producer = fifo.producerTile
+            assert isinstance(producer, OpResult)
+            assert isinstance(producer.op, TileOp)
+            yield producer.op
+
+    @property
+    def end(self) -> Iterable[TileOp]:
+        for fifo in self.fifos:
+            for consumer in fifo.consumerTiles:
+                assert isinstance(consumer, OpResult)
+                assert isinstance(consumer.op, TileOp)
+                yield consumer.op
+
+    @classmethod
+    def to_memtile(
+        cls, producers: Sequence[PushOp], memtile: TileOp, tile_op_manager: TileOpManager, name_base: str
+    ) -> Self:
+        # when coming from shim, send to custom handler for memtile reuse
+        if is_shim(tile_op_manager.get_tile(producers[0])):
+            return cls.shim_to_mem(producers[0], memtile, tile_op_manager, name_base)
+        else:
+            return cls.compute_to_mem(producers, memtile, tile_op_manager, name_base)
+
+    @classmethod
+    def from_memtile(
+        cls, consumers: Sequence[PullOp], memtile: TileOp, tile_op_manager: TileOpManager, name_base: str
+    ) -> Self:
+        if is_shim(tile_op_manager.get_tile(consumers[0])):
+            return cls.mem_to_shim(consumers[0], memtile, tile_op_manager, name_base)
+        else:
+            return cls.mem_to_compute(consumers, memtile, tile_op_manager, name_base)
+
+    @classmethod
+    def compute_to_mem(
+        cls, producers: Sequence[PushOp], memtile: TileOp, tile_op_manager: TileOpManager, name_base: str
+    ) -> Self:
+        assert isinstance(memref_type := producers[0].input.type, MemRefType)
+        if len(producers) > 1:
+            of_type = "join"
+        else:
+            of_type = "unicast"
+        producers = sorted(producers, key=lambda op: SortPullPushOp(op, tile_op_manager))
+        producer_tiles = [tile_op_manager.get_tile(producer) for producer in producers]
+        object_fifos: list[ObjectFifoOp] = []
+        for i, of_producer in enumerate(producer_tiles):
+            if len(producers) > 1:
+                of_name = name_base + "_" + of_type + "_" + string.ascii_lowercase[i]
+            else:
+                of_name = name_base + "_" + of_type
+            object_fifo = ObjectFifoOp.from_referenced_type(
+                elemNumber=IntegerAttr(producers[0].ssis.data.nb_local_tensors_compute(), i32),
+                producerTile=of_producer,
+                consumerTiles=[memtile],
+                referenced_type=memref_type.get_element_type(),
+                shape=memref_type.get_shape(),
+                name=of_name,
+                repeat_count=1,
+            )
+            del object_fifo.properties["repeat_count"]
+            object_fifos.append(object_fifo)
+        return cls(object_fifos)
+
+    @classmethod
+    def mem_to_compute(
+        cls, consumers: Sequence[PullOp], memtile: TileOp, tile_op_manager: TileOpManager, name_base: str
+    ) -> Self:
+        assert isinstance(memref_type := consumers[0].output.type, MemRefType)
+        distribute = False
+        if len(consumers) > 1:
+            # determine whether to broadcast / distribute
+            distribute = consumers[0].spatial_strides != consumers[1].spatial_strides
+            if distribute:
+                of_type = "distribute"
+            else:
+                of_type = "broadcast"
+        else:
+            of_type = "unicast"
+        consumers = sorted(consumers, key=lambda op: SortPullPushOp(op, tile_op_manager))
+        consumer_tiles = [tile_op_manager.get_tile(consumer) for consumer in consumers]
+        if distribute:
+            fifos = [(memtile, [tile]) for tile in consumer_tiles]
+        else:
+            fifos = [(memtile, consumer_tiles)]
+        object_fifos: list[ObjectFifoOp] = []
+        for i, (of_producer, of_consumers) in enumerate(fifos):
+            if distribute:
+                of_name = name_base + "_" + of_type + "_" + string.ascii_lowercase[i]
+            else:
+                of_name = name_base + "_" + of_type
+            object_fifo = ObjectFifoOp.from_referenced_type(
+                elemNumber=IntegerAttr(consumers[0].ssis.data.nb_local_tensors_compute(), i32),
+                producerTile=of_producer,
+                consumerTiles=of_consumers,
+                referenced_type=memref_type.get_element_type(),
+                shape=memref_type.get_shape(),
+                name=of_name,
+                repeat_count=1,
+            )
+            del object_fifo.properties["repeat_count"]
+            object_fifos.append(object_fifo)
+        return cls(object_fifos)
+
+    @classmethod
+    def shim_to_mem(cls, producer: PushOp, memtile: TileOp, tile_op_manager: TileOpManager, name_base: str) -> Self:
+        assert isinstance(memref_type := producer.input.type, MemRefType)
+        object_fifo = ObjectFifoOp.from_referenced_type(
+            elemNumber=IntegerAttr(1, i32),
+            producerTile=tile_op_manager.get_tile(producer),
+            consumerTiles=[memtile],
+            referenced_type=memref_type.get_element_type(),
+            shape=producer.ssis.data.shape_mem() + memref_type.get_shape(),
+            name=name_base + "mem",
+            repeat_count=producer.ssis.data.reuse_factor_mem(),
+        )
+
+        if object_fifo.repeat_count is not None and object_fifo.repeat_count.value.data == 1:
+            del object_fifo.properties["repeat_count"]
+        return cls([object_fifo])
+
+    @classmethod
+    def mem_to_shim(cls, consumer: PullOp, memtile: TileOp, tile_op_manager: TileOpManager, name_base: str) -> Self:
+        assert isinstance(memref_type := consumer.output.type, MemRefType)
+        object_fifo = ObjectFifoOp.from_referenced_type(
+            elemNumber=IntegerAttr(1, i32),
+            producerTile=memtile,
+            consumerTiles=[tile_op_manager.get_tile(consumer)],
+            referenced_type=memref_type.get_element_type(),
+            shape=memref_type.get_shape(),
+            name=name_base + "mem",
+        )
+        del object_fifo.properties["repeat_count"]
+        return cls([object_fifo])
+
+
+@dataclass
+class ObjectFifoChain:
+    hops: list[ObjectFifoHop]
+    links: list[ObjectFifoLinkOp]
+
+    @property
+    def start(self) -> Iterable[TileOp]:
+        return self.hops[0].start
+
+    @property
+    def end(self) -> Iterable[TileOp]:
+        return self.hops[-1].end
+
+    @classmethod
+    def from_channel(
+        cls, channel: SSAValue, memref_type: MemRefType[Attribute], tile_op_manager: TileOpManager, name_base: str
+    ):
+        # gather consumers / producers
+        producers = list(use.operation for use in channel.uses if isinstance(use.operation, PushOp))
+        producer_tiles = [tile_op_manager.get_tile(op) for op in producers]
+        consumers = list(use.operation for use in channel.uses if isinstance(use.operation, PullOp))
+        consumer_tiles = [tile_op_manager.get_tile(op) for op in consumers]
+
+        # determine hops
+        hops: Sequence[ObjectFifoHop]
+        if is_shim(consumer_tiles[0]) or is_shim(producer_tiles[0]):
+            # pass through the memtile
+            memtile = tile_op_manager.insert_or_update(0, 1)
+            hops = [
+                ObjectFifoHop.to_memtile(producers, memtile, tile_op_manager, name_base),
+                ObjectFifoHop.from_memtile(consumers, memtile, tile_op_manager, name_base),
+            ]
+        else:
+            raise NotImplementedError()
+
+        # generate links for every hop
+        links: Sequence[ObjectFifoLinkOp] = []
+        for i in range(len(hops) - 1):
+            link = cls.get_link(hops[i], hops[i + 1])
+            links.append(link)
+
+        return cls(hops, links)
+
+    @staticmethod
+    def get_link(hop_in: ObjectFifoHop, hop_out: ObjectFifoHop) -> ObjectFifoLinkOp:
+        if len(hop_in.fifos) > 1:
+            # determine src offsets
+            assert isinstance(memref_type := hop_in.fifos[0].elemType.buffer, MemRefType)
+            offset = prod(memref_type.get_shape())
+            src_offsets = [i * offset for i in range(len(hop_in.fifos))]
+        else:
+            src_offsets = []
+        if len(hop_out.fifos) > 1:
+            assert isinstance(memref_type := hop_out.fifos[0].elemType.buffer, MemRefType)
+            offset = prod(memref_type.get_shape())
+            dst_offsets = [i * offset for i in range(len(hop_out.fifos))]
+        else:
+            dst_offsets = []
+        return ObjectFifoLinkOp(
+            [fifo.sym_name.data for fifo in hop_in.fifos],
+            [fifo.sym_name.data for fifo in hop_out.fifos],
+            src_offsets,
+            dst_offsets,
+        )
+
+    def get_of(self, op: PullOp | PushOp, tile_op_manager: TileOpManager):
+        """
+        Get the correct of in this chain for the given operation
+        """
+        tile = tile_op_manager.get_tile(op)
+        for hop in self.hops:
+            for fifo in hop.fifos:
+                if isinstance(op, PullOp):
+                    if tile.result in fifo.consumerTiles:
+                        return fifo
+                if isinstance(op, PushOp):
+                    if tile.result == fifo.producerTile:
+                        return fifo
+        raise RuntimeError("Fifo not found in chain")
+
+    def __contains__(self, target: ObjectFifoOp) -> bool:
+        return any(target in hop.fifos for hop in self.hops)
 
 
 @dataclass
@@ -135,173 +408,26 @@ class ObjectFifoManager:
         if channel in self.channel_to_of:
             return self.channel_to_of[channel]
 
-        assert isinstance(channel.type, Channel)
-
-        def get_tile(use: PushOp | PullOp) -> TileOp:
-            parent = use
-            while True:
-                if isinstance(parent, CoreOp):
-                    assert isinstance(parent.tile, OpResult) and isinstance(parent.tile.op, TileOp)
-                    return parent.tile.op
-                if isinstance(parent, RuntimeSequenceOp):
-                    return self.tile_op_manager.insert_or_update(0, 0)
-                parent = parent.parent_op()
-                if parent is None:
-                    raise RuntimeError()
-
-        # find source tile:
-        # TODO: this needs some fixing for join patterns
-        sources = list(get_tile(use.operation) for use in channel.uses if isinstance(use.operation, PushOp))
-        source = sources[0]
-        dests = list(get_tile(use.operation) for use in channel.uses if isinstance(use.operation, PullOp))
-        users = [use.operation for use in channel.uses if isinstance(use.operation, PullOp)]
-
-        join_distribute = False
-
-        to_reverse = False
-
-        if len(dests) > 1:
-            # determine wheteher to broadcast / join - distribute
-            join_distribute = users[0].spatial_strides != users[1].spatial_strides
-
-        if len(sources) > 1:
-            # destination can be multiple, but should be the same.
-            assert len(set(dests)) == 1
-            # for the rest, swap source and dests, treat this as a transfer in the other direction
-            source = dests[0]
-            dests = sources
-            users = [use.operation for use in channel.uses if isinstance(use.operation, PushOp)]
-            # always join, no broadcast possible for join
-            join_distribute = True
-            to_reverse = True
-
-        offsets = []
-        if join_distribute:
-            for i in range(len(dests)):
-                offsets.append(i * prod(memref_type.get_shape()))
-
-        def is_shim(tile: TileOp) -> bool:
-            return tile.row.value.data == 0
-
-        memtile = self.tile_op_manager.insert_or_update(0, 1)
-        if is_shim(source) or is_shim(dests[0]):
-            path = [(source, [memtile]), (memtile, dests)]
-        else:
-            path = [(source, dests)]
-
-        self.channel_to_of[channel] = ObjectFifoChain()
-        name_base = f"of_{self.counter}"
+        of_chain = ObjectFifoChain.from_channel(channel, memref_type, self.tile_op_manager, f"of_{self.counter}")
         self.counter += 1
+        self.channel_to_of[channel] = of_chain
 
-        # get the reuse factors
-        use = next(use.operation for use in channel.uses)
-        assert isinstance(use, PushOp | PullOp)
-        ssis = use.ssis.data
+        # insert fifo ops
+        for hop in of_chain.hops:
+            for fifo in hop.fifos:
+                SymbolTable.insert_or_update(self.device_op, fifo)
 
-        shape_mem = tuple(
-            iv.size for iv in ssis.variables if iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
-        )
+        # insert link ops
+        for link in of_chain.links:
+            self.device_op.region.block.add_op(link)
 
-        # reuse: product of the irrelevant loops that are kept local
-        reuse_factor_compute = prod(
-            iv.size
-            for iv in ssis.variables
-            if not iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
-        )
-        uses_compute = prod(
-            iv.size for iv in ssis.variables if iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
-        )
-
-        reuse_factor_mem = (
-            prod(
-                iv.size
-                for iv in ssis.variables
-                if not iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
-            )
-            // reuse_factor_compute
-        )
-
-        ascii = [x for x in string.ascii_lowercase]
-
-        for i, step in enumerate(path):
-            if is_shim(step[0]) or is_shim(step[1][0]):
-                name = name_base + "mem"
-                depth = 2
-                repeat_count = 1
-                shape = shape_mem + memref_type.get_shape()
-            else:
-                name = name_base + ascii.pop(0)
-                # use min of 2 in compute for double buffering
-                depth = max(2, uses_compute)
-                shape = memref_type.get_shape()
-                repeat_count = reuse_factor_mem
-
-            # if the spatial strides are non-zero, multiple object fifos must be created
-            if len(step[1]) > 1 and join_distribute:
-                of_dict: dict[int, ObjectFifoOp] = {}
-                names = []
-                for j, dest in enumerate(step[1]):
-                    name = name_base + ascii.pop(0)
-                    names.append(name)
-                    object_fifo = ObjectFifoOp.from_referenced_type(
-                        elemNumber=IntegerAttr(depth, i32),
-                        producerTile=step[0],
-                        consumerTiles=[dest],
-                        referenced_type=memref_type.get_element_type(),
-                        shape=shape,
-                        name=name,
-                        repeat_count=repeat_count,
-                    )
-
-                    if repeat_count == 1:
-                        del object_fifo.properties["repeat_count"]
-
-                    # object fifo should be defined at start of device
-                    SymbolTable.insert_or_update(self.device_op, object_fifo)
-
-                    of_dict[offsets[j]] = object_fifo
-            else:
-                object_fifo = ObjectFifoOp.from_referenced_type(
-                    elemNumber=IntegerAttr(depth, i32),
-                    producerTile=step[0],
-                    consumerTiles=step[1],
-                    referenced_type=memref_type.get_element_type(),
-                    shape=shape,
-                    name=name,
-                    repeat_count=repeat_count,
-                )
-
-                of_dict = {0: object_fifo}
-
-                if repeat_count == 1:
-                    del object_fifo.properties["repeat_count"]
-
-                # object fifo should be defined at start of device
-                SymbolTable.insert_or_update(self.device_op, object_fifo)
-
-                names = [name]
-
-            # link objectfifos
-            if i == 1:
-                source_name = self.channel_to_of[channel][0][0].sym_name
-                if not to_reverse:
-                    new_link_op = ObjectFifoLinkOp([source_name.data], names, [], offsets)
-                else:
-                    new_link_op = ObjectFifoLinkOp([source_name.data], names, offsets, [])
-
-                region_block = self.device_op.region.block
-                assert region_block.last_op
-                region_block.insert_op_after(new_link_op, region_block.last_op)
-
-            self.channel_to_of[channel].append(of_dict)
-
-        return self.channel_to_of[channel]
+        return of_chain
 
     def get_of_chain(self, of: ObjectFifoOp | str) -> ObjectFifoChain:
         if isinstance(of, str):
             of = self.of_from_name(of)
         for chain in self.channel_to_of.values():
-            if of in chain[0].values() or of in chain[1].values():
+            if of in chain:
                 return chain
         raise RuntimeError(f"ObjectFifoOp {of.sym_name.data} not found in channel_to_of mapping")
 
@@ -421,14 +547,14 @@ class TransferToRuntimeSequence(RewritePattern):
         if isinstance(op, PushOp):
             assert isinstance(op.input, OpResult)
             edge = op.input.op
-            of = of_chain[0][0]
+            of = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
         else:
             edge = next((use.operation for use in op.output.uses), None)
             if edge is None:
                 # TODO: this transfer should not be present anymore
                 rewriter.erase_matched_op()
                 return
-            of = of_chain[0][0]
+            of = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
         assert isinstance(edge, EdgeOp)
 
         of_name = of.sym_name.data
@@ -540,12 +666,12 @@ class TransferToObjectFIFOPattern(RewritePattern):
         # decide whether to consume or produce
         if isinstance(op, PullOp):
             port = ObjectFifoPortEnum.Consume
-            of = of_chain[-1][offset]
+            of = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
 
             operand = op.output
         else:
             port = ObjectFifoPortEnum.Produce
-            of = of_chain[-1][offset]
+            of = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
             operand = op.input
 
         of_name = of.sym_name.data
@@ -1349,24 +1475,18 @@ class RealizeLayoutCats(RewritePattern):
         # get the chain:
         chain = self.of_manager.get_of_chain(of_acquire.objFifo_name.root_reference.data)
 
-        if port == ObjectFifoPortEnum.Consume:
-            # for consume, take objectfifo (mem -> compute)
-            of = chain[1]
-        else:
-            # (mem -> shim)
-            of = chain[1]
+        # get the hop starting from a memtile:
+        hop = chain.hops[1]
 
         # get the element_type
-        element_type = cast(MemRefType[Attribute], of[0].elemType.buffer)
+        element_type = cast(MemRefType[Attribute], hop.fifos[0].elemType.buffer)
 
         tsl_dest = cast(TiledStridedLayoutAttr, dest_type.layout).data
 
         # create default tsl layout for source:
         strides = [1]
         for size in reversed(dest_type.shape.data[1:]):
-            # FIXME: do not fix this to 32 maybe lol
-            # strides = [size.data * strides[0]] + strides
-            strides = [32 * strides[0]] + strides
+            strides = [size.data * strides[0]] + strides
         tile_bounds = tsl_dest.tile_bounds()
 
         tsl_in = TiledStridedLayout.from_strides(strides, tile_bounds)  # pyright: ignore
@@ -1385,14 +1505,10 @@ class RealizeLayoutCats(RewritePattern):
             BDDimLayoutArray([BDDimLayout((size, stride)) for size, stride in zip(sizes, strides, strict=False)])
         )
 
-        for key in of.keys():
-            of[key].dimensionsToStream = bd_layout
+        for fifo in hop.fifos:
+            fifo.elemType = ObjectFIFO([MemRefType(element_type.element_type, element_type.shape, dest_type.layout)])
 
-            # set of_layout to the memref layout
-            # TODO: improve for join patterns
-            of[key].elemType = ObjectFIFO([MemRefType(element_type.element_type, element_type.shape, dest_type.layout)])
-
-        element_type = cast(MemRefType[Attribute], of[0].elemType.buffer)
+        element_type = cast(MemRefType[Attribute], hop.fifos[0].elemType.buffer)
 
         of_layout = element_type.layout
 
