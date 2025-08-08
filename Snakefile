@@ -25,11 +25,3 @@ def all_targets():
 rule all:
     input:
         all_targets()
-
-rule print_zipped_combos:
-    run:
-        for prof in PROFILES:
-            p = GEMM[prof]
-            targets = profile_targets(prof)
-            print(f"[{prof}]")
-            print("\n".join(targets))

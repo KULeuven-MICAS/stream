@@ -1,22 +1,22 @@
 import argparse
 import logging as _logging
-import os
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping_single_core
+from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping_single_col
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
+_logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
 def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
     workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
-    accelerator = "stream/inputs/aie/hardware/single_core.yaml"
-    mapping_path = make_gemm_mapping_single_core(M, K, N, m, k, n, has_mem_tile=False)
+    accelerator = "stream/inputs/aie/hardware/single_col.yaml"
+    mapping_path = make_gemm_mapping_single_col(M, K, N, m, k, n, has_mem_tile=True, nb_compute_cores=4)
     # mode = "lbl"
     # layer_stacks = [(0,),]
     mode = "fused"
@@ -31,24 +31,12 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size)
     experiment_id = f"{hw_name}-{wl_name}-{mode}-constraint-optimization"
     ######################################################################
 
-    ################################LOGGING###############################
-    log_path = f"outputs/{experiment_id}/stream.log"
-    # Ensure the output directory exists
-    os.makedirs(os.path.dirname(log_path), exist_ok=True)
-    # Get root logger and remove any existing handlers
-    logger = _logging.getLogger()
-    logger.setLevel(_logging_level)  # or use _logging_level if you define one
-    # Remove all existing handlers (e.g., ones added by Snakemake or libraries)
-    for handler in logger.handlers[:]:
-        logger.removeHandler(handler)
-    # Create a file handler explicitly
-    file_handler = _logging.FileHandler(log_path)
-    file_handler.setFormatter(_logging.Formatter(_logging_format))
-    logger.addHandler(file_handler)
-    logger.info(f"Running AIE code generation for Gemm with M={M}, N={N}, K={K}")
-    ######################################################################
+    ##############PLOTTING###############
+    # section_start_percent = (0,)
+    # percent_shown = (100,)
+    #####################################
 
-    ################################PLOTS################################
+    ################################PATHS################################
     # memory_fig_path = f"outputs/{experiment_id}/memory.png"
     # json_path = f"outputs/{experiment_id}/scme.json"
     #####################################################################
@@ -81,8 +69,8 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size)
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run AIE code generation for Gemm")
     parser.add_argument("--M", type=int, required=True, help="M parameter for the model")
-    parser.add_argument("--K", type=int, required=True, help="K parameter for the model")
     parser.add_argument("--N", type=int, required=True, help="N parameter for the model")
+    parser.add_argument("--K", type=int, required=True, help="K parameter for the model")
     parser.add_argument("--m", type=int, default=32, help="m parameter for the model (default: 32)")
     parser.add_argument("--k", type=int, default=32, help="k parameter for the model (default: 32)")
     parser.add_argument("--n", type=int, default=32, help="n parameter for the model (default: 32)")

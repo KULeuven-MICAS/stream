@@ -1,20 +1,22 @@
 gemm:
   single_core:
-    stream_hw_id: single_core_with_mem_tile
+    stream_hw_id: single_core
+    stream_main_file: "main_gemm_single_core.py"
     trace_size: 1048576
     m: 32
     k: 32
     n: 32
-    Ms: [32, 64, 128]
-    Ks: [32, 64, 128]
-    Ns: [32, 64, 128]
+    Ms: [64, 128]
+    Ks: [64, 128]
+    Ns: [64, 128]
 
   single_col:
     stream_hw_id: single_col
+    stream_main_file: "main_gemm_single_col.py"
     trace_size: 1048576
     m: 32
     k: 32
     n: 32
-    Ms: [32, 64, 128]
-    Ks: [32, 64, 128]
-    Ns: [32, 64, 128]
+    Ms: [64, 128]
+    Ks: [64, 128]
+    Ns: [64, 128]

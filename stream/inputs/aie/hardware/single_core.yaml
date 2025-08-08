@@ -1,14 +1,20 @@
 name: single_core
 cores:
   0: shim_dma.yaml
-  1: aie_tile.yaml
+  1: mem_tile_256KB.yaml
+  2: aie_tile.yaml
 core_coordinates:
   0: [0, 0]
-  1: [0, 2]
+  1: [0, 1]
+  2: [0, 2]
 offchip_core_id: 0
 core_connectivity:
-  # ───── Connect shim_dma to aie_tile ─────
+  # ───── Connect shim_dma to mem_tile ─────
   - type: link
     cores: [0, 1]
+    bandwidth: 64
+  # ───── Connect mem_tile to aie_tile ─────
+  - type: link
+    cores: [1, 2]
     bandwidth: 64
 unit_energy_cost: 0

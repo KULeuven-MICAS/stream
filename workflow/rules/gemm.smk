@@ -1,15 +1,17 @@
 # Build a lookup so rules can fetch per-profile trace_size based on {stream_hw_id}
 GEMM = config["gemm"]
 TRACE_SIZE = { v["stream_hw_id"]: v["trace_size"] for v in GEMM.values() }
+STREAM_MAIN_FILE = {v["stream_hw_id"]: v["stream_main_file"] for v in GEMM.values()}
 
 rule run_stream_aie_to_generate_mlir_output:
     output:
         "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-fused-constraint-optimization/output.mlir"
     params:
-        trace_size = lambda wc: TRACE_SIZE[wc.stream_hw_id]
+        trace_size = lambda wc: TRACE_SIZE[wc.stream_hw_id],
+        stream_main_file = lambda wc: STREAM_MAIN_FILE[wc.stream_hw_id]
     shell:
         """
-        python3 main_aie_codegen_gemm_mem_tile.py \
+        python3 {params.stream_main_file} \
             --M {wildcards.M} --K {wildcards.K} --N {wildcards.N} \
             --trace_size {params.trace_size} | tee {output}.log
         """
