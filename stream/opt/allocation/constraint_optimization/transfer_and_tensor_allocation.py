@@ -141,20 +141,24 @@ class TransferAndTensorAllocator:
         """
         Ensure that all transfers have the same steady-state iteration space dimensions and sizes (SSIS).
         """
-        ssis_dims_sizes = [
-            (iter_var.dimension, iter_var.size) for iter_var in self.transfer_nodes[0].steady_state_iteration_space
-        ]
+        first_transfer_ssis = self.transfer_nodes[0].steady_state_iteration_space
+        first_transfer_ssis_dims = first_transfer_ssis.get_temporal_dimensions()
+        first_transfer_ssis_sizes = first_transfer_ssis.get_temporal_sizes()
         for tr in self.transfer_nodes:
-            dims_sizes = [(iter_var.dimension, iter_var.size) for iter_var in tr.steady_state_iteration_space]
-            if dims_sizes != ssis_dims_sizes:
+            transfer_ssis = tr.steady_state_iteration_space
+            transfer_ssis_dims = transfer_ssis.get_temporal_dimensions()
+            transfer_ssis_sizes = transfer_ssis.get_temporal_sizes()
+            if not (
+                transfer_ssis_dims == first_transfer_ssis_dims and transfer_ssis_sizes == first_transfer_ssis_sizes
+            ):
                 raise ValueError(
-                    f"Transfer {tr.node_name} has a different SSIS than the first transfer {self.transfer_nodes[0]}: "
-                    f"{ssis_dims_sizes} != {ssis_dims_sizes}"
+                    f"Transfer {tr.node_name} has different SSIS dims and sizes than the first transfer {self.transfer_nodes[0]}: "
+                    f"{transfer_ssis_dims}, {transfer_ssis_sizes} != {first_transfer_ssis_dims}, {first_transfer_ssis_sizes}"
                 )
 
     def _init_transfer_fire_helpers(self) -> None:
         for tr in self.transfer_nodes:  # only the movable tensors
-            ssis = tr.steady_state_iteration_space  # e.g. [Nk, Nk-1, …, N0]
+            ssis = tr.steady_state_iteration_space.get_temporal_variables()  # e.g. [Nk, Nk-1, …, N0]
             sizes = [iter_var.size for iter_var in ssis]
             relevancies = [iter_var.relevant for iter_var in ssis]
             reuses = [iter_var.reuse for iter_var in ssis]
@@ -251,7 +255,7 @@ class TransferAndTensorAllocator:
     def __create_compute_core_reuse_vars(self):
         self.z_stopC: dict[tuple[SteadyStateTransfer, int], gp.Var] = {}
         for tr in self.transfer_nodes:
-            sizes = [iter_var.size for iter_var in tr.steady_state_iteration_space]
+            sizes = tr.steady_state_iteration_space.get_temporal_sizes()
             for stop in range(-1, len(sizes)):  # -1 .. K-1
                 v = self.model.addVar(vtype=GRB.BINARY, name=f"zStopC_{tr.node_name}_L{stop}")
                 self.z_stopC[(tr, stop)] = v
@@ -262,7 +266,7 @@ class TransferAndTensorAllocator:
             )
             if tr not in self.transfer_nodes_to_optimize_firings_for:
                 # Get the stop value by looking at the reuses of the ssis
-                reuses = [iter_var.reuse for iter_var in tr.steady_state_iteration_space]
+                reuses = tr.steady_state_iteration_space.get_temporal_resues()
                 # Find the index of the last 'REUSE' in the reuses
                 stop = -2
                 for i in range(len(reuses) - 1, -1, -1):
@@ -280,7 +284,7 @@ class TransferAndTensorAllocator:
         self.z_stopM: dict[tuple[SteadyStateTransfer, int], gp.Var] = {}
 
         for tr in self.transfer_nodes:
-            sizes = [iv.size for iv in tr.steady_state_iteration_space]
+            sizes = tr.steady_state_iteration_space.get_temporal_sizes()
             for stop in range(-1, len(sizes)):
                 v = self.model.addVar(vtype=GRB.BINARY, name=f"zStopM_{tr.node_name}_L{stop}")
                 self.z_stopM[(tr, stop)] = v
@@ -361,7 +365,7 @@ class TransferAndTensorAllocator:
                 fires_c
                 == quicksum(
                     self.reuse_levels[(tr, s)][0] * self.z_stopC[(tr, s)]
-                    for s in range(-1, len(tr.steady_state_iteration_space))
+                    for s in range(-1, len(tr.steady_state_iteration_space.get_temporal_variables()))
                 ),
                 name=f"firesC_def_{tr.node_name}",
             )
@@ -369,7 +373,7 @@ class TransferAndTensorAllocator:
                 fires_m
                 == quicksum(
                     self.reuse_levels[(tr, s)][0] * self.z_stopM[(tr, s)]
-                    for s in range(-1, len(tr.steady_state_iteration_space))
+                    for s in range(-1, len(tr.steady_state_iteration_space.get_temporal_variables()))
                 ),
                 name=f"firesM_def_{tr.node_name}",
             )
@@ -513,7 +517,7 @@ class TransferAndTensorAllocator:
                 assert t in self.tensor_fixed, "Post transfer tensors must be fixed (for now)."
                 c = self.resource_of[t]
                 assert isinstance(c, Core), f"Expected {c} to be a Core, got {type(c)}"
-                for stop in range(-1, len(tr.steady_state_iteration_space)):
+                for stop in range(-1, len(tr.steady_state_iteration_space.get_temporal_variables())):
                     _, size_factor = self.reuse_levels[(tr, stop)]
                     self.core_load[c] += size_factor * self.z_stopC[(tr, stop)]
 
@@ -521,7 +525,7 @@ class TransferAndTensorAllocator:
         for tr in self.transfer_nodes:
             if not self._is_const_io(tr):
                 continue
-            for stop in range(-1, len(tr.steady_state_iteration_space)):
+            for stop in range(-1, len(tr.steady_state_iteration_space.get_temporal_variables())):
                 _, mem_need = self.reuse_levels[(tr, stop)]
                 for mc in self.mem_cores:
                     self.core_load[mc] += mem_need * self.m_store[(tr, mc)] * self.z_stopM[(tr, stop)]
@@ -542,7 +546,7 @@ class TransferAndTensorAllocator:
             resources = {self.resource_of[t] for t in preds_and_succs if isinstance(t, SteadyStateTensor)}
             for c in resources:
                 assert isinstance(c, Core), f"Expected {c} to be a Core, got {type(c)}"
-                for stop in range(-1, len(tr.steady_state_iteration_space)):
+                for stop in range(-1, len(tr.steady_state_iteration_space.get_temporal_variables())):
                     tiles_needed = self.tiles_needed_levels[(tr, stop)]
                     self.object_fifo_depth[c] += tiles_needed * self.z_stopC[(tr, stop)]
         for c, expr in self.object_fifo_depth.items():
@@ -771,7 +775,7 @@ class TransferAndTensorAllocator:
         compute_tile_reuse_levels: dict[SteadyStateTransfer, int] = {}
         mem_tile_reuse_levels: dict[SteadyStateTransfer, int] = {}
         for tr in self.transfer_nodes:
-            for stop in range(-1, len(tr.steady_state_iteration_space)):
+            for stop in range(-1, len(tr.steady_state_iteration_space.get_temporal_variables())):
                 if self.z_stopC[(tr, stop)].X > self.VAR_THRESHOLD:
                     compute_tile_reuse_levels[tr] = stop
                 if self.z_stopM[(tr, stop)].X > self.VAR_THRESHOLD:
@@ -780,25 +784,25 @@ class TransferAndTensorAllocator:
         for tr in self.transfer_nodes:
             stop = compute_tile_reuse_levels[tr]
             # Set all iteration variables to REUSE flag
-            for i, iter_var in enumerate(tr.steady_state_iteration_space):
+            for i, iter_var in enumerate(tr.steady_state_iteration_space.get_temporal_variables()):
                 if i <= stop:
                     flag = IterationVariableReuse.COMPUTE_TILE_REUSE
                 else:
                     flag = IterationVariableReuse.COMPUTE_TILE_NO_REUSE
                 iter_var.reuse = flag
-            for i, iter_var in enumerate(tr.steady_state_iteration_space):
+            for i, iter_var in enumerate(tr.steady_state_iteration_space.get_temporal_variables()):
                 if i <= mem_tile_reuse_levels[tr]:
                     flag = IterationVariableReuse.MEM_TILE_REUSE
                 else:
                     flag = IterationVariableReuse.MEM_TILE_NO_REUSE
                 iter_var.reuse |= flag  # append the memory reuse flag
-        # Print the updated reuse levels for debugging
-        for tr in self.transfer_nodes:
-            compute_stop = compute_tile_reuse_levels.get(tr, -1)
-            mem_stop = mem_tile_reuse_levels.get(tr, -1)
-            print(f"Transfer {tr.node_name}: Compute Stop = {compute_stop}, Mem Stop = {mem_stop}")
-            for i, iter_var in enumerate(tr.steady_state_iteration_space):
-                print(f"  Iter {i}: Reuse = {iter_var.reuse.name}, Size = {iter_var.size}")
+        # # Print the updated reuse levels for debugging
+        # for tr in self.transfer_nodes:
+        #     compute_stop = compute_tile_reuse_levels.get(tr, -1)
+        #     mem_stop = mem_tile_reuse_levels.get(tr, -1)
+        #     print(f"Transfer {tr.node_name}: Compute Stop = {compute_stop}, Mem Stop = {mem_stop}")
+        #     for i, iter_var in enumerate(tr.steady_state_iteration_space.get_temporal_variables()):
+        #         print(f"  Iter {i}: Reuse = {iter_var.reuse.name}, Size = {iter_var.size}")
 
     def get_transfer_routing(
         self,
@@ -869,7 +873,7 @@ class TransferAndTensorAllocator:
             assert self.firesC[tr].X >= self.firesM[tr].X - 1e-6
         # chosen stopM ≥ stopC
         for tr in self.transfer_nodes:
-            stop_max = len(tr.steady_state_iteration_space)
+            stop_max = len(tr.steady_state_iteration_space.get_temporal_variables())
             stopC = next(s for s in range(-1, stop_max) if self.z_stopC[(tr, s)].X > self.VAR_THRESHOLD)
             stopM = next(s for s in range(-1, stop_max) if self.z_stopM[(tr, s)].X > self.VAR_THRESHOLD)
             assert stopM >= stopC

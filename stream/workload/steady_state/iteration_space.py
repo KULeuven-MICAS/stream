@@ -10,6 +10,8 @@ from math import prod
 from zigzag.datatypes import LayerDim, LayerOperand
 from zigzag.workload.layer_node import LoopRelevancyInfo
 
+from stream.workload.mapping import TILING_T
+
 
 class IterationVariableReuse(Flag):
     NOT_SET = auto()  # default value is not set
@@ -38,19 +40,20 @@ class IterationVariable:
         every **outer** loop is marked relevant as well.
     """
 
-    def __init__(self, dimension: LayerDim, size: int, relevant: bool) -> None:
+    def __init__(self, dimension: LayerDim, size: int, relevant: bool, spatial: bool = False) -> None:
         self.dimension: LayerDim = dimension
         self.size: int = int(size)
         self.relevant: bool = bool(relevant)
         self._reuse: IterationVariableReuse = IterationVariableReuse.NOT_SET
+        self.spatial: bool = bool(spatial)
 
     # ---------- nice aliases ------------------------------------------------
     def __iter__(self):
-        yield from (self.dimension, self.size, self.relevant, self.reuse)
+        yield from (self.dimension, self.size, self.relevant, self.reuse, self.spatial)
 
     def __repr__(self):
         tag = "R" if self.relevant else "IR"
-        return f"IterVar({self.dimension.name},{self.size},{tag},{self.reuse})"
+        return f"IterVar({self.dimension.name},{self.size},{tag},{self.reuse},spatial={self.spatial})"
 
     def __eq__(self, other):
         if not isinstance(other, IterationVariable):
@@ -60,10 +63,11 @@ class IterationVariable:
             and self.size == other.size
             and self.relevant == other.relevant
             and self.reuse == other.reuse
+            and self.spatial == other.spatial
         )
 
     def __hash__(self):
-        return hash((self.dimension, self.size, self.relevant, self.reuse))
+        return hash((self.dimension, self.size, self.relevant, self.reuse, self.spatial))
 
     # Getter and setter for reuse attribute
     @property
@@ -111,6 +115,7 @@ class SteadyStateIterationSpace:
         loop_relevancy: LoopRelevancyInfo,
         intra_core_tiling: Iterable[tuple[LayerDim, int]],
         operand: LayerOperand,
+        inter_core_tiling: TILING_T = [],
     ) -> SteadyStateIterationSpace:
         """
         Build the SSIS for **one operand** of a computation node.
@@ -126,14 +131,23 @@ class SteadyStateIterationSpace:
             Ordered (innermost→outermost) tiling definition: `(dimension, size)`.
         operand : LayerOperand
             Which operand we are analysing (needed for relevancy lookup).
+        inter_core_tiling : Iterable[tuple[LayerDim, int]], optional
+            Ordered (innermost→outermost) tiling definition for inter-core tiling.
+            Defaults to empty iterable. Is used for transfer nodes as innermost iteration variable.
         """
         # collect all R  +  PR descendants
         relevant_dims = set(loop_relevancy.get_r_or_pr_layer_dims(operand))
-        # add PR grandchildren
+        # add PR loops
         for dim in list(relevant_dims):
             relevant_dims.update(loop_relevancy.pr_dims[operand].get(dim, []))
 
+        # Spatial inter_core_tiling loop variables
         variables: list[IterationVariable] = []
+        for dim, size in inter_core_tiling:
+            is_rel = dim in relevant_dims
+            variables.append(IterationVariable(dim, size, is_rel, spatial=True))
+
+        # Temporal intra_core_tiling loop variables
         for dim, size in intra_core_tiling:
             is_rel = dim in relevant_dims
             variables.append(IterationVariable(dim, size, is_rel))
@@ -197,6 +211,30 @@ class SteadyStateIterationSpace:
             )
             // self.reuse_factor_compute()
         )
+
+    def get_temporal_variables(self) -> list[IterationVariable]:
+        """
+        Returns the list of temporal iteration variables (i.e. those that are not spatial).
+        """
+        return [iv for iv in self.variables if not iv.spatial]
+
+    def get_temporal_dimensions(self) -> list[LayerDim]:
+        """
+        Returns the list of temporal loop dimensions (i.e. those that are not spatial).
+        """
+        return [iv.dimension for iv in self.get_temporal_variables()]
+
+    def get_temporal_sizes(self) -> list[int]:
+        """
+        Returns the list of sizes of temporal iteration variables.
+        """
+        return [iv.size for iv in self.get_temporal_variables()]
+
+    def get_temporal_resues(self) -> list[IterationVariableReuse]:
+        """
+        Returns the list of reuses of temporal iteration variables.
+        """
+        return [iv.reuse for iv in self.get_temporal_variables()]
 
     # ..................................................................... #
     # ── Iteration / pretty printing                                         #

@@ -289,6 +289,7 @@ class SteadyStateScheduler:
                 loop_relevancy=loop_relevancy_info,
                 intra_core_tiling=intra_core_tiling,
                 operand=tensor.operand,
+                inter_core_tiling=tensor.origin.inter_core_tiling,
             )
             # Get the post transfer tensor node(s)
             post_transfer_tensor_nodes = self.get_post_transfer_tensor_nodes(
