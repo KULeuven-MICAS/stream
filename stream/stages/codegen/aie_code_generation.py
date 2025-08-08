@@ -119,10 +119,11 @@ class AIECodeGenerationStage(Stage):
 
         # determine spatial strides
         spatial_strides = []
-        if len(transfer.dsts) > 1:
+        sorted_transfers = sorted(transfer.dsts, key=lambda x: x.loop_ranges)
+        if len(sorted_transfers) > 1:
             for dim in tensor.loop_dimensions:
                 spatial_strides.append(
-                    transfer.dsts[1].loop_ranges_per_dim[dim][0] - transfer.dsts[0].loop_ranges_per_dim[dim][0]
+                    sorted_transfers[1].loop_ranges_per_dim[dim][0] - sorted_transfers[0].loop_ranges_per_dim[dim][0]
                 )
         else:
             for dim in tensor.loop_dimensions:
@@ -166,7 +167,9 @@ class AIECodeGenerationStage(Stage):
             if len(transfer_op.results) == 1:
                 operands.append(transfer_op.results[0])
             else:
-                index = transfer.dsts.index(input)
+                sorted_transfers = sorted(transfer.dsts, key=lambda x: x.loop_ranges)
+                assert isinstance(input, SteadyStateTensor)
+                index = sorted_transfers.index(input)
                 operands.append(transfer_op.results[index])
 
         # get output type:
