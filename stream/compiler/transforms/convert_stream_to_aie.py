@@ -1583,6 +1583,22 @@ class WrapInCoreOps(RewritePattern):
         rewriter.insert_op(op, insert_point)
 
 
+@dataclass
+class InfinteLoopCol(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: CoreOp, rewriter: PatternRewriter):
+        aie_end = op.region.block.last_op
+        assert isinstance(aie_end, EndOp)
+        aie_end.detach()
+        start = ConstantOp.from_int_and_width(0, i32)
+        step = ConstantOp.from_int_and_width(1, i32)
+        end = ConstantOp.from_int_and_width(0xFFFF_FFFF, i32)
+        body = rewriter.move_region_contents_to_new_regions(op.region)
+        body.block.insert_arg(IndexType(), 0)  # add index argument
+        for_op = ForOp(start, end, step, [], body)
+        op.region.add_block(Block([start, step, end, for_op, aie_end]))
+
+
 class ConvertStreamToAIEPass(ModulePass):
     name = "convert-stream-to-aie"
 
@@ -1665,6 +1681,8 @@ class ConvertStreamToAIEPass(ModulePass):
         # handle layouts
         PatternRewriteWalker(SetKernelLayouts()).rewrite_module(op)
         PatternRewriteWalker(RealizeLayoutCats(object_fifo_manager)).rewrite_module(op)
+
+        PatternRewriteWalker(InfinteLoopCol(), apply_recursively=False).rewrite_module(op)
 
         ## cleanup
         PatternRewriteWalker(EraseEdges()).rewrite_module(op)
