@@ -178,7 +178,9 @@ class SteadyStateIterationSpace:
         Returns the shape of the relevant iteration space kept local in a memtile.
         """
         return tuple(
-            iv.size for iv in self.variables if iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
+            iv.size
+            for iv in self.variables
+            if iv.relevant or iv.spatial and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
         )
 
     def reuse_factor_compute(self) -> int:

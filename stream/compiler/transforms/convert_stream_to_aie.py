@@ -69,6 +69,10 @@ def get_tile(value: str) -> tuple[int, int]:
         return 0, 2
     elif value == "Core(3)":
         return 0, 3
+    elif value == "Core(4)":
+        return 0, 4
+    elif value == "Core(5)":
+        return 0, 5
     raise RuntimeError(f"Unknown tile value: {value}")
     match = re.match(r"Core\((\d+)\)", value)
     if match:
