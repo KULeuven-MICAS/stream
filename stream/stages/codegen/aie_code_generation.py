@@ -233,8 +233,6 @@ class AIECodeGenerationStage(Stage):
         # Split transfers in push and pull
         StreamSplitTransfersPass().apply(self.context, module)
 
-        breakpoint()
-
         # Convert to AIE
         ConvertStreamToAIEPass().apply(self.context, module)
 
