@@ -1590,9 +1590,9 @@ class InfinteLoopCol(RewritePattern):
         aie_end = op.region.block.last_op
         assert isinstance(aie_end, EndOp)
         aie_end.detach()
-        start = ConstantOp.from_int_and_width(0, i32)
-        step = ConstantOp.from_int_and_width(1, i32)
-        end = ConstantOp.from_int_and_width(0xFFFF_FFFF, i32)
+        start = ConstantOp.from_int_and_width(0, IndexType())
+        step = ConstantOp.from_int_and_width(1, IndexType())
+        end = ConstantOp.from_int_and_width(0xFFFF_FFFF, IndexType())
         body = rewriter.move_region_contents_to_new_regions(op.region)
         body.block.insert_arg(IndexType(), 0)  # add index argument
         for_op = ForOp(start, end, step, [], body)
