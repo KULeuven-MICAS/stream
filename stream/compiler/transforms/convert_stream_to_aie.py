@@ -1512,6 +1512,7 @@ class RealizeLayoutCats(RewritePattern):
 
         for fifo in hop.fifos:
             fifo.elemType = ObjectFIFO([MemRefType(element_type.element_type, element_type.shape, dest_type.layout)])
+            fifo.dimensionsToStream = bd_layout
 
         element_type = cast(MemRefType[Attribute], hop.fifos[0].elemType.buffer)
 
