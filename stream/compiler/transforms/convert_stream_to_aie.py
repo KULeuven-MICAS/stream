@@ -286,7 +286,7 @@ class ObjectFifoHop:
             producerTile=tile_op_manager.get_tile(producer),
             consumerTiles=[memtile],
             referenced_type=memref_type.get_element_type(),
-            shape=producer.ssis.data.shape_mem() + memref_type.get_shape(),
+            shape=producer.ssis.data.shape_mem()[::-1] + cast(tuple[int, ...], producer.sizes.get_values()),
             name=name_base + "mem",
             repeat_count=producer.ssis.data.reuse_factor_mem(),
         )
@@ -303,7 +303,7 @@ class ObjectFifoHop:
             producerTile=memtile,
             consumerTiles=[tile_op_manager.get_tile(consumer)],
             referenced_type=memref_type.get_element_type(),
-            shape=memref_type.get_shape(),
+            shape=consumer.ssis.data.shape_mem()[::-1] + cast(tuple[int, ...], consumer.sizes.get_values()),
             name=name_base + "mem",
         )
         del object_fifo.properties["repeat_count"]
