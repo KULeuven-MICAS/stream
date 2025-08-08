@@ -34,8 +34,8 @@ def iteration_space_to_for(block: Block, rewriter: Rewriter):  # noqa: PLR0912, 
     op = next(ops_iter, None)
     assert op is not None
     # get reversed list of iteration variables, from outermost to innermost
-    ssis = op.ssis.data.variables[::-1]
-    ssis_op = op.ssis.data.variables[::-1]
+    ssis = op.ssis.data.get_temporal_variables()[::-1]
+    ssis_op = op.ssis.data.get_temporal_variables()[::-1]
     for_op = None
     for i, iter_var in enumerate(ssis):
         # if not any of the following ops are relevant
@@ -45,7 +45,7 @@ def iteration_space_to_for(block: Block, rewriter: Rewriter):  # noqa: PLR0912, 
             insertion_point = InsertPoint.after(op)
             op = next(ops_iter, None)
             if op is not None:
-                ssis_op = op.ssis.data.variables[::-1]
+                ssis_op = op.ssis.data.get_temporal_variables()[::-1]
         # create for loop
         ub = ConstantOp.from_int_and_width(iter_var.size, IndexType())
         for_op = ForOp(lb, ub, step, [], Block([yield_op := YieldOp()], arg_types=[IndexType()]))
@@ -57,8 +57,8 @@ def iteration_space_to_for(block: Block, rewriter: Rewriter):  # noqa: PLR0912, 
     # now, a non reversed version of the ssis:
     if op is None:
         return
-    ssis = op.ssis.data.variables
-    ssis_op = op.ssis.data.variables
+    ssis = op.ssis.data.get_temporal_variables()
+    ssis_op = op.ssis.data.get_temporal_variables()
     for i, _ in enumerate(ssis):
         while op is not None and ssis_op[i].relevant:
             op.detach()
@@ -66,7 +66,7 @@ def iteration_space_to_for(block: Block, rewriter: Rewriter):  # noqa: PLR0912, 
             insertion_point = InsertPoint.after(op)
             op = next(ops_iter, None)
             if op is not None:
-                ssis_op = op.ssis.data.variables
+                ssis_op = op.ssis.data.get_temporal_variables()
                 if len(ssis_op) == 0:
                     ssis_op = ssis
         # move up

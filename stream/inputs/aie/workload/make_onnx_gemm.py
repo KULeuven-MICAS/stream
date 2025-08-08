@@ -47,8 +47,8 @@ def make_gemm_mapping_single_col(M, K, N, m, k, n, has_mem_tile: bool = False, n
     k_inter_core = min(N // n, nb_compute_cores)
     k_intra_core = N // n // k_inter_core
     intra_core_tiling = [
-        f"K, {k_intra_core}",
         f"C, {K // k}",
+        f"K, {k_intra_core}",
         f"D, {M // m}",
     ]
     inter_core_tiling = [f"K, {k_inter_core}"]

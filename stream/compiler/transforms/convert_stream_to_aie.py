@@ -585,7 +585,7 @@ class TransferToRuntimeSequence(RewritePattern):
         # offset is definitely zero for now
         for iter_var in op.ssis.data.variables:
             loop_dimensions = [x.data for x in op.loop_dimensions]
-            if iter_var.relevant or IterationVariableReuse.MEM_TILE_NO_REUSE in iter_var.reuse:
+            if (iter_var.relevant or IterationVariableReuse.MEM_TILE_NO_REUSE in iter_var.reuse) and iter_var.size > 1:
                 if str(iter_var.dimension) in loop_dimensions:
                     index = loop_dimensions.index(str(iter_var.dimension))
                     stride = prod(memref_type.get_shape()[index + 1 :]) * op.sizes.get_values()[index]
@@ -678,15 +678,20 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
         assert isinstance(memref_type := operand.type, MemRefType)
 
-        first_relevant_iter = next(iv for iv in op.ssis.data.variables if iv.relevant)
-        first_relevant_index = op.ssis.data.variables.index(first_relevant_iter)
+        first_relevant_iter = next(iv for iv in op.ssis.data.get_temporal_variables() if iv.relevant)
+        first_relevant_index = op.ssis.data.get_temporal_variables().index(first_relevant_iter)
 
         last_reuse = next(
-            (iv for iv in op.ssis.data.variables[::-1] if IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse), None
+            (
+                iv
+                for iv in op.ssis.data.get_temporal_variables()[::-1]
+                if IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
+            ),
+            None,
         )
         if last_reuse:
-            last_reuse_index = op.ssis.data.variables.index(last_reuse)
-            reuse_iters = op.ssis.data.variables[first_relevant_index : last_reuse_index + 1]
+            last_reuse_index = op.ssis.data.get_temporal_variables().index(last_reuse)
+            reuse_iters = op.ssis.data.get_temporal_variables()[first_relevant_index : last_reuse_index + 1]
         else:
             reuse_iters = []
 

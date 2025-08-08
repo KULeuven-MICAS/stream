@@ -31,8 +31,8 @@ class SplitTransferPattern(RewritePattern):
             op.input, channel, op.ssis.data, op.offsets, op.sizes, op.strides, op.spatial_strides, op.loop_dimensions
         )
         ops_to_add.append(push)
-        for result in op.results:
-            for i, use in enumerate(list(result.uses)):
+        for i, result in enumerate(op.results):
+            for use in list(result.uses):
                 if isinstance(edge := use.operation, EdgeOp):
                     for input in edge.inputs:
                         assert isinstance(input, OpResult)
