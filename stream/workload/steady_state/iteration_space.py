@@ -177,10 +177,15 @@ class SteadyStateIterationSpace:
         """
         Returns the shape of the relevant iteration space kept local in a memtile.
         """
+        for iv in self.variables:
+            # FIXME: how to do reuse with join / distribute?
+            if iv.relevant and iv.spatial:
+                assert self.reuse_factor_mem() == 1, "Reuse not yet possible with join/distribute"
+                return tuple(iv.size for iv in self.variables if iv.relevant and iv.spatial)
         return tuple(
             iv.size
             for iv in self.variables
-            if iv.relevant or iv.spatial and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
+            if iv.relevant and (IterationVariableReuse.MEM_TILE_REUSE in iv.reuse or iv.spatial)
         )
 
     def reuse_factor_compute(self) -> int:
