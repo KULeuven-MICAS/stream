@@ -4,7 +4,8 @@ import os
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_mapping_single_core, make_gemm_workload
+from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping_single_core
+from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
