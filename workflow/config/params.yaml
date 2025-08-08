@@ -1,16 +1,20 @@
 gemm:
-  defaults:
-    m: 32
-    n: 32
-    k: 32
-    stream_hw_identifier: single_core_with_mem_tile
-    mlir_aie_dir: /path/to/mlir-aie
-    use_stream_output: true
+  single_core:
+    stream_hw_id: single_core_with_mem_tile
     trace_size: 1048576
+    m: 32
+    k: 32
+    n: 32
+    Ms: [32, 64, 128]
+    Ks: [32, 64, 128]
+    Ns: [32, 64, 128]
 
-  shapes:
-    # - { M: 32, K: 32, N: 32 }
-    # - { M: 64, K: 64, N: 64 }
-    # - { M: 128, K: 128, N: 128 }
-    - { M: 256, K: 256, N: 256 }
-    # - { M: 512, K: 512, N: 512 }
+  single_col:
+    stream_hw_id: single_col
+    trace_size: 1048576
+    m: 32
+    k: 32
+    n: 32
+    Ms: [32, 64, 128]
+    Ks: [32, 64, 128]
+    Ns: [32, 64, 128]
