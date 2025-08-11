@@ -89,7 +89,6 @@ class SteadyStateScheduler:
         # tla.summary()
         # tla.visualize()
         self.steady_state_workload = ssw_upd
-        tsa_upd.to_perfetto("steady_state_workload_single_tile.json")
         return self
 
     def prepare_graph(self, allocation: "TimeSlotAllocation") -> SteadyStateWorkload:
