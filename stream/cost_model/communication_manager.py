@@ -342,7 +342,6 @@ class CommunicationManager:
             result = self._get_best_shared_prefix_path(req.source, req.destinations, weight="mc_cost")
             required_links = compute_required_links(result.full_paths)
             update_mc_costs(required_links)
-            print(req, result.full_paths)
             active_links.update(required_links)
             planned.append(required_links)
             requests_order.append(req)

@@ -79,10 +79,15 @@ class TransferAndTensorAllocator:
         # ------------------------------------------------------------------------------
         # memory cores that may act as on‑chip caches (exclude the DRAM/off‑chip id)
         # ------------------------------------------------------------------------------
+        self.MAX_NB_COLS_TO_USE = 2
         self.mem_cores: list[Core] = [
             c
             for c in self.accelerator.core_list
-            if isinstance(c, Core) and c.id != self.offchip_core_id and c.type == "memory"
+            if isinstance(c, Core)
+            and c.id != self.offchip_core_id
+            and c.type == "memory"
+            and c.col_id is not None
+            and c.col_id < self.MAX_NB_COLS_TO_USE
         ]
 
         # --------------- optimisation model ---------------------- #
@@ -191,6 +196,12 @@ class TransferAndTensorAllocator:
         dst_t = next(iter(self.ssw.successors(tr)), None)
         return src_t and TensorFlag.CONSTANT in src_t.tensor_flag or dst_t and TensorFlag.CONSTANT in dst_t.tensor_flag
 
+    def _any_path_through_mc(self, tr: SteadyStateTransfer, mc: Core) -> bool:
+        for path in tr.possible_resource_allocation:
+            if any(mc.id == link.receiver.id for link in path):
+                return True
+        return False
+
     # ------------------------------------------------------------
     # bandwidth of the FIRST link on a DRAM → mem‑core path
     # ------------------------------------------------------------
@@ -201,10 +212,10 @@ class TransferAndTensorAllocator:
     ) -> int:
         """
         Return the maximum bandwidth of the first link among all paths that
-        start at the off‑chip core and end at the given memory core *mc*.
+        start at the off-chip core and end at the given memory core *mc*.
 
         Raises:
-            ValueError – if no such path exists in tr.possible_resource_allocation.
+            ValueError - if no such path exists in tr.possible_resource_allocation.
         """
         best_bw: int | None = None
         for path in tr.possible_resource_allocation:  # list[list[Link]]
@@ -706,12 +717,14 @@ class TransferAndTensorAllocator:
             for tr in self.transfer_nodes
             if self._is_const_io(tr)
             for mc in self.mem_cores
+            if self._any_path_through_mc(tr, mc)
         }
         transfer_cost += quicksum(
             lat_dram_mem[(tr, mc)] * self.firesM[tr] * self.m_store[(tr, mc)]
             for tr in self.transfer_nodes
             if self._is_const_io(tr)
             for mc in self.mem_cores
+            if self._any_path_through_mc(tr, mc)
         )
 
         # ------------------------------------------------------------------
@@ -838,8 +851,6 @@ class TransferAndTensorAllocator:
         for tr, core in chosen_memory_cores.items():
             assert isinstance(core, Core), f"Expected {core} to be a Core, got {type(core)}"
             tr.chosen_memory_core = core
-            # Update the transfer's memory core allocation
-            tr.memory_core_allocation = core
 
     def get_tensor_allocations(
         self,
