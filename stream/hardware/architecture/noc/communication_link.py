@@ -83,6 +83,18 @@ class CommunicationLink:
             other.bandwidth,
         )
 
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, CommunicationLink):
+            return NotImplemented
+        sender_self_id = self.sender.id
+        sender_other_id = other.sender.id
+        if sender_self_id != sender_other_id:
+            return sender_self_id < sender_other_id
+
+        receiver_self_id = self.receiver.id
+        receiver_other_id = other.receiver.id
+        return receiver_self_id < receiver_other_id
+
     def get_name_for_schedule_plot(self) -> str:
         if self.bidirectional:
             return f"{self.sender} <-> {self.receiver}"

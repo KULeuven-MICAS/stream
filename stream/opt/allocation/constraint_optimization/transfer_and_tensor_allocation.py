@@ -152,8 +152,9 @@ class TransferAndTensorAllocator:
                 transfer_ssis_dims == first_transfer_ssis_dims and transfer_ssis_sizes == first_transfer_ssis_sizes
             ):
                 raise ValueError(
-                    f"Transfer {tr.node_name} has different SSIS dims and sizes than the first transfer {self.transfer_nodes[0]}: "
-                    f"{transfer_ssis_dims}, {transfer_ssis_sizes} != {first_transfer_ssis_dims}, {first_transfer_ssis_sizes}"
+                    f"Transfer {tr.node_name} has different SSIS dims and sizes than the {self.transfer_nodes[0]}: "
+                    f"{transfer_ssis_dims}, {transfer_ssis_sizes} != "
+                    f"{first_transfer_ssis_dims}, {first_transfer_ssis_sizes}"
                 )
 
     def _init_transfer_fire_helpers(self) -> None:

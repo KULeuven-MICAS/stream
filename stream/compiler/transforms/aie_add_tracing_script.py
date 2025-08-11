@@ -32,7 +32,7 @@ class AIEAddTracingScript(ModulePass):
                         shim_tile = tile_op
                     case (0, 1):
                         pass
-                    case default:
+                    case _:
                         compute_tiles[tile_idx] = tile_op
         assert shim_tile is not None
 
@@ -42,7 +42,7 @@ class AIEAddTracingScript(ModulePass):
             def device_body():
                 shim_tile_aie = tile(0, 0)
                 tiles_to_trace = []
-                for tile_idx, compute_tile in compute_tiles.items():
+                for tile_idx in compute_tiles:
                     tile_aie = tile(*tile_idx)
                     tiles_to_trace.append(tile_aie)
                 trace_utils.configure_packet_tracing_flow(tiles_to_trace, shim_tile_aie)
@@ -86,7 +86,7 @@ class AIEAddTracingScript(ModulePass):
             def device_body():
                 shim_tile_aie = tile(0, 0)
                 tiles_to_trace = []
-                for tile_idx, compute_tile in compute_tiles.items():
+                for tile_idx in compute_tiles:
                     tile_aie = tile(*tile_idx)
                     tiles_to_trace.append(tile_aie)
 

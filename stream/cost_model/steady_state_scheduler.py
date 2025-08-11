@@ -1,11 +1,11 @@
-from typing import Any
+from collections import defaultdict
 
 import networkx as nx
 
 # if TYPE_CHECKING:
+from stream.cost_model.communication_manager import MulticastRequest
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import TimeSlotAllocation
 from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
 from stream.utils import CostModelEvaluationLUT
@@ -269,18 +269,12 @@ class SteadyStateScheduler:
         """
         for tensor in steady_state_workload.tensor_nodes:
             out_edges = list(steady_state_workload.out_edges(tensor, data=True))
-            successors = [i for _, i, _ in out_edges]
-            assert all(isinstance(s, (SteadyStateTensor | SteadyStateComputation)) for s in successors), (
+            all_successors = [i for _, i, _ in out_edges]
+            assert all(isinstance(s, (SteadyStateTensor | SteadyStateComputation)) for s in all_successors), (
                 "All successors of a tensor node should be either SteadyStateTensor or SteadyStateComputation nodes."
             )
-            if not successors:
+            if not all_successors:
                 continue
-            if len(successors) > 1:
-                transfer_type = TransferType.BROADCAST
-            elif isinstance(successors[0], SteadyStateTensor) and TensorFlag.CONSTANT in successors[0].tensor_flag:
-                transfer_type = TransferType.JOIN
-            else:
-                transfer_type = TransferType.UNICAST
             # Get correct steady state iteration space for the intra core tilling
             loop_relevancy_info = tensor.origin.loop_relevancy_info
             intra_core_tiling = tensor.origin.intra_core_tiling
@@ -291,63 +285,88 @@ class SteadyStateScheduler:
                 inter_core_tiling=tensor.origin.inter_core_tiling,
             )
             # Get the post transfer tensor node(s)
-            post_transfer_tensor_nodes = self.get_post_transfer_tensor_nodes(
-                out_edges=out_edges,
-                pre_transfer_tensor=tensor,
+            grouped_post_transfer_tensor_nodes, grouped_successors = (
+                self.get_grouped_post_transfer_tensor_nodes_and_successors(
+                    all_successors,
+                    pre_transfer_tensor=tensor,
+                )
             )
-            post_transfer_tensor_node_names = [ptn.node_name for ptn in post_transfer_tensor_nodes]
-            post_transfer_tensor_node_sizes = [ptn.size for ptn in post_transfer_tensor_nodes]
-            if transfer_type == TransferType.BROADCAST:
-                size = max(post_transfer_tensor_node_sizes)  # assume all the same
-            elif transfer_type == TransferType.JOIN:
-                size = tensor.size  # size of the pre-transfer tensor (can be smaller part of constant output)
-            elif transfer_type == TransferType.UNICAST:
-                size = sum(post_transfer_tensor_node_sizes)
-            else:
-                raise ValueError(f"Unknown transfer type: {transfer_type}")
-            # Insert a transfer node after the node and connect it to all the successors
-            possible_resource_allocation = self.get_transfer_paths(tensor, successors)
-            transfer_node = SteadyStateTransfer(
-                transfer_type=transfer_type,
-                id=tensor.id,
-                node_name=f"Transfer({tensor.node_name} -> {post_transfer_tensor_node_names})",
-                src=tensor,
-                dsts=post_transfer_tensor_nodes,  # type: ignore
-                size=size,
-                tensor=tensor,
-                possible_resource_allocation=possible_resource_allocation,  # type: ignore
-                steady_state_iteration_space=ssis,
-            )
-            steady_state_workload.add(transfer_node)
-            # Add edge from the original node to the transfer node
-            steady_state_workload.add_edge(tensor, transfer_node)
-            out_edges_data = [data for _, _, data in out_edges]
-            for ptn, succ, data in zip(post_transfer_tensor_nodes, successors, out_edges_data, strict=True):
-                if ptn not in steady_state_workload:  # happens for the constant tensors that were already in the graph
-                    # Add the post transfer tensor node to the steady state workload
-                    steady_state_workload.add(ptn)
-                attrs = data.copy()
-                # Remove original edge between node and successor
-                steady_state_workload.remove_edge(tensor, succ)
-                # Add edge from transfer node to post transfer tensor node
-                steady_state_workload.add_edge(transfer_node, ptn, **attrs)
-                if ptn is not succ:
-                    # Add edge from post transfer node to successor
-                    steady_state_workload.add_edge(ptn, succ, **attrs)
+            for post_transfer_tensor_nodes, successors in zip(
+                grouped_post_transfer_tensor_nodes.values(), grouped_successors.values(), strict=False
+            ):
+                transfer_type = self.get_transfer_type(post_transfer_tensor_nodes)
+                post_transfer_tensor_node_names = [ptn.node_name for ptn in post_transfer_tensor_nodes]
+                post_transfer_tensor_node_sizes = [ptn.size for ptn in post_transfer_tensor_nodes]
+                if transfer_type == TransferType.BROADCAST:
+                    size = max(post_transfer_tensor_node_sizes)  # assume all the same
+                elif transfer_type == TransferType.JOIN:
+                    size = tensor.size  # size of the pre-transfer tensor (can be smaller part of constant output)
+                elif transfer_type == TransferType.UNICAST:
+                    size = sum(post_transfer_tensor_node_sizes)
+                else:
+                    raise ValueError(f"Unknown transfer type: {transfer_type}")
+                # Insert a transfer node after the node and connect it to all the successors
+                transfer_node = SteadyStateTransfer(
+                    transfer_type=transfer_type,
+                    id=tensor.id,
+                    node_name=f"Transfer({tensor.node_name} -> {post_transfer_tensor_node_names})",
+                    src=tensor,
+                    dsts=post_transfer_tensor_nodes,  # type: ignore
+                    size=size,
+                    tensor=tensor,
+                    possible_resource_allocation=tuple(),  # will be set later by 'set_transfer_paths'
+                    steady_state_iteration_space=ssis,
+                )
+                steady_state_workload.add(transfer_node)
+                # Add edge from the original node to the transfer node
+                steady_state_workload.add_edge(tensor, transfer_node)
+                for ptn, succ in zip(post_transfer_tensor_nodes, successors, strict=True):
+                    if (
+                        ptn not in steady_state_workload
+                    ):  # happens for the constant tensors that were already in the graph
+                        # Add the post transfer tensor node to the steady state workload
+                        steady_state_workload.add(ptn)
+                    # Remove original edge between node and successor
+                    steady_state_workload.remove_edge(tensor, succ)
+                    # Add edge from transfer node to post transfer tensor node
+                    steady_state_workload.add_edge(transfer_node, ptn)
+                    if ptn is not succ:
+                        # Add edge from post transfer node to successor
+                        steady_state_workload.add_edge(ptn, succ)
+        # Calculate the optimal paths for the transfer nodes and set the possible_resource_allocation
+        self.set_transfer_paths(steady_state_workload)
         return steady_state_workload
 
-    def get_post_transfer_tensor_nodes(
+    def get_transfer_type(self, post_transfer_tensor_nodes: list[SteadyStateTensor]) -> TransferType:
+        """
+        Determine the transfer type based on the post transfer tensor nodes.
+        """
+        if len(post_transfer_tensor_nodes) > 1:
+            return TransferType.BROADCAST
+        pttn = post_transfer_tensor_nodes[0]
+        if isinstance(pttn, SteadyStateTensor) and TensorFlag.CONSTANT in pttn.tensor_flag:
+            return TransferType.JOIN
+        else:
+            return TransferType.UNICAST
+
+    def get_grouped_post_transfer_tensor_nodes_and_successors(
         self,
-        out_edges: list[tuple[SteadyStateNode, SteadyStateNode, dict[str, Any]]],
+        successors: list[SteadyStateNode],
         pre_transfer_tensor: SteadyStateTensor,
-    ) -> list[SteadyStateTensor]:
-        post_transfer_tensor_nodes: list[SteadyStateTensor] = []
-        for i, (_, successor, _) in enumerate(out_edges):
+    ) -> tuple[
+        dict[tuple[tuple[int, int], ...], list[SteadyStateTensor]],
+        dict[tuple[tuple[int, int], ...], list[SteadyStateNode]],
+    ]:
+        post_transfer_tensor_nodes: dict[tuple[tuple[int, int], ...], list[SteadyStateTensor]] = defaultdict(list)
+        grouped_successors: dict[tuple[tuple[int, int], ...], list[SteadyStateNode]] = defaultdict(list)
+        for i, successor in enumerate(successors):
             # Create the tensor node that comes after the transfer node we just created
             if isinstance(successor, SteadyStateTensor):
                 # If the successor is a tensor node, we check that it is a sink node output
                 assert TensorFlag.CONSTANT in successor.tensor_flag and TensorFlag.OUTPUT in successor.tensor_flag
-                post_transfer_tensor_nodes.append(successor)
+                assert len(successors) == 1, "There should only be one final output tensor node."
+                post_transfer_tensor_nodes[pre_transfer_tensor.loop_ranges] = [successor]
+                grouped_successors[pre_transfer_tensor.loop_ranges].append(successor)
             else:
                 # Else, it's a SteadyStateComputation and we create a new tensor node for it as post transfer tensor
                 assert isinstance(successor, SteadyStateComputation), "Successor should be SteadyStateComputation."
@@ -377,8 +396,36 @@ class SteadyStateScheduler:
                     full_shape=full_shape,
                     slices_per_full=slices_per_full,
                 )
-                post_transfer_tensor_nodes.append(post_transfer_tensor_node)
-        return post_transfer_tensor_nodes
+                post_transfer_tensor_nodes[post_transfer_tensor_node.loop_ranges].append(post_transfer_tensor_node)
+                grouped_successors[post_transfer_tensor_node.loop_ranges].append(successor)
+        return post_transfer_tensor_nodes, grouped_successors
+
+    def set_transfer_paths(self, steady_state_workload: SteadyStateWorkload) -> None:
+        requests = []
+        for transfer_node in steady_state_workload.transfer_nodes:
+            source_alloc = transfer_node.src.chosen_resource_allocation
+            assert source_alloc is not None, (
+                f"Source tensor {transfer_node.src.node_name} has no chosen resource allocation."
+            )
+            dst_allocs = tuple(dst.chosen_resource_allocation for dst in transfer_node.dsts)
+            assert all(alloc is not None for alloc in dst_allocs), (
+                f"Destination tensors {[dst.node_name for dst in transfer_node.dsts]} need chosen resource allocation."
+            )
+            # Create a multicast request for the transfer node
+            request = MulticastRequest(
+                source=source_alloc,
+                destinations=dst_allocs,
+            )
+            requests.append(request)
+        # Send all multicast requests
+        all_paths = self.accelerator.communication_manager.plan_multicast_sequence(requests)
+        # Set the paths for each transfer node
+        for transfer_node, request in zip(steady_state_workload.transfer_nodes, requests, strict=True):
+            path = all_paths.get(request, None)
+            if not path:
+                raise ValueError(f"No paths found for transfer node {transfer_node.node_name}.")
+            # Set the possible resouce allocation for the transfer node (this also sets the chosen resource allocation)
+            transfer_node.set_possible_resource_allocation((path,))
 
     def add_this_iteration_nonconstant_tensor_nodes(
         self, steady_state_workload: SteadyStateWorkload
@@ -507,71 +554,6 @@ class SteadyStateScheduler:
                     # Remove the original tensor node. This also removes edges to/from it.
                     steady_state_workload.remove_node(tensor)  # type: ignore
         return steady_state_workload
-
-    def get_transfer_paths(
-        self, predecessor: SteadyStateTensor, successors: list[SteadyStateNode]
-    ) -> tuple[tuple[CommunicationLink, ...], ...]:
-        """
-        Get the possible resource allocations for the transfer node based on the predecessor and successors.
-        The possible allocations are all the paths that can be taken from the predecessor to each successor.
-        If there's no overlap between paths from predecessor to each successor, the first path for each is combined.
-        """
-        all_common_paths: set[tuple[CommunicationLink, ...]] = set()
-        for pred_alloc in predecessor.possible_resource_allocation:
-            assert pred_alloc is not None, f"Predecessor {predecessor.node_name} has no chosen resource allocation."
-            paths_per_successor: dict[SteadyStateNode, set[tuple[CommunicationLink]]] = {}
-            for successor in successors:
-                all_succ_paths = set()
-                succ_allocs = (
-                    [
-                        successor.chosen_resource_allocation,
-                    ]
-                    if successor.chosen_resource_allocation
-                    else successor.possible_resource_allocation
-                )
-                assert succ_allocs is not None, f"{successor.node_name} has no chosen or possible allocation."
-                for succ_alloc in succ_allocs:
-                    if isinstance(successor, SteadyStateTensor):
-                        # If the successor is a tensor node, we check that it is a sink node output
-                        assert (
-                            TensorFlag.CONSTANT in successor.tensor_flag and TensorFlag.OUTPUT in successor.tensor_flag
-                        )
-                    assert isinstance(succ_alloc, Core), (
-                        f"Successor {successor.node_name} allocation {succ_alloc} is not a Core."
-                    )
-                    # Get the paths from the predecessor to the successor
-                    paths = self.accelerator.communication_manager.get_all_links_for_pair(pred_alloc, succ_alloc)
-                    all_succ_paths.update(paths)
-                    if not paths:
-                        raise ValueError(
-                            f"No communication paths found from {predecessor.node_name} to {successor.node_name}."
-                        )
-                paths_per_successor[successor] = all_succ_paths
-            # Find all overlapping paths for all successors
-            # Flatten all paths into a set of unique paths (as tuples for hashability)
-            all_paths = set(tuple(path) for paths in paths_per_successor.values() for path in paths)
-            # Find intersection: paths that are supersets of a path present in every successor's path list
-            common_paths = [
-                tuple(path)
-                for path in all_paths
-                if all(any(all(y in list(path) for y in z) for z in paths) for paths in paths_per_successor.values())
-            ]
-            if not common_paths:
-                succ_allocs = [succ.chosen_resource_allocation for succ in successors]
-                raise ValueError(f"No common paths found for preds alloc {pred_alloc} and succs allocs {succ_allocs}.")
-            # # If there are no common paths, we take the first path for each successor and join them into a single path
-            # if not common_paths:
-            #     unique_links: list[CommunicationLink] = []
-            #     seen_links: set[CommunicationLink] = set()
-            #     for paths in paths_per_successor.values():
-            #         if paths:
-            #             for link in paths[0]:
-            #                 if link not in seen_links:
-            #                     unique_links.append(link)
-            #                     seen_links.add(link)
-            #     common_paths = [unique_links]
-            all_common_paths.update(common_paths)
-        return tuple(all_common_paths)
 
     def check_steady_state_workload_allocations(self, steady_state_workload: SteadyStateWorkload) -> None:
         """

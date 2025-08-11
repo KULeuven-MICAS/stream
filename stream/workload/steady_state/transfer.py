@@ -27,7 +27,7 @@ class SteadyStateTransfer(SteadyStateNode):
         dsts: tuple[SteadyStateTensor, ...],
         size: int,  # in bits
         tensor: SteadyStateTensor,
-        possible_resource_allocation: tuple[tuple[CommunicationLink]],
+        possible_resource_allocation: tuple[tuple[CommunicationLink, ...], ...],
         steady_state_iteration_space: SteadyStateIterationSpace,
     ):
         super().__init__(
@@ -42,11 +42,18 @@ class SteadyStateTransfer(SteadyStateNode):
         self.tensor = tensor
         self.size = size
         self.transfer_type = transfer_type
-        self.possible_resource_allocation: tuple[tuple[CommunicationLink]]
-        self.chosen_resource_allocation: tuple[CommunicationLink] | None = (
-            None if len(possible_resource_allocation) > 1 else possible_resource_allocation[0]
-        )
+        if self.possible_resource_allocation:
+            assert len(self.possible_resource_allocation) > 0, "Possible resource allocation must not be empty."
+            self.possible_resource_allocation: tuple[tuple[CommunicationLink, ...], ...] = possible_resource_allocation
+            self.chosen_resource_allocation: tuple[CommunicationLink, ...] | None = (
+                possible_resource_allocation[0] if len(possible_resource_allocation) == 1 else None
+            )
         self.chosen_memory_core: Core | None = None
+
+    def set_possible_resource_allocation(self, allocation: tuple[tuple[CommunicationLink, ...], ...]) -> None:
+        assert len(allocation) > 0, "Allocation must not be empty."
+        self.possible_resource_allocation = allocation
+        self.chosen_resource_allocation = None if len(allocation) > 1 else allocation[0]
 
     def __str__(self):
         return f"Transfer({self.src} -> {self.dsts})"

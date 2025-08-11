@@ -1,6 +1,8 @@
 import itertools
+from collections.abc import Sequence
+from dataclasses import dataclass
 from math import ceil, floor
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import networkx as nx
 from zigzag.datatypes import Constants, MemoryOperand
@@ -95,12 +97,29 @@ class CommunicationLinkEvent:
         """
         Returns the operand associated with the tensor for this event.
         """
-        return self.tensors.layer_operand
+        return [t.layer_operand for t in self.tensors]
 
     def get_origin(self):
         origins = [tensor.cn_source for tensor in self.tensors]
         assert all([origin == origins[0] for origin in origins])
         return origins[0]
+
+
+@dataclass(frozen=True, slots=True)
+class SharedPrefixPath:
+    source: "Core"
+    targets: tuple["Core", ...]
+    meeting: "Core"
+    prefix: list["Core"]
+    branches: dict["Core", list["Core"]]
+    full_paths: dict["Core", list["Core"]]
+    total_cost: float
+    overlap_edges: int
+
+
+class MulticastRequest(NamedTuple):
+    source: "Core"
+    destinations: tuple["Core", ...]
 
 
 class CommunicationManager:
@@ -161,6 +180,179 @@ class CommunicationManager:
     def get_all_links(self):
         """Return all unique CommunicationLinks."""
         return list(set(d["cl"] for _, _, d in self.accelerator.cores.edges(data=True)))
+
+    def _get_best_shared_prefix_path(
+        self,
+        source: "Core",
+        targets: Sequence["Core"],
+        weight: str | None = None,
+    ) -> SharedPrefixPath:
+        """
+        Compute routes from one source to multiple targets that are jointly short
+        and share as much prefix as possible.
+
+        The method finds a meeting node m that minimizes:
+            d(source, m) + sum_i d(m, targets[i])
+        The shared prefix for all routes is the path source -> m.
+
+        Args:
+            source: Start core.
+            targets: Destination cores (non-empty).
+            weight: Optional edge attribute name to use as a weight. If None, treats all edges equally.
+
+        Returns:
+            SharedPrefixResult with the chosen meeting node, shared prefix, per-target branches,
+            full paths per target, total cost, and overlap size.
+
+        Raises:
+            ValueError: If targets is empty.
+            networkx.NetworkXNoPath: If no node connects source to all targets.
+        """
+        if not targets:
+            raise ValueError("targets must be a non-empty sequence")
+
+        G = self.accelerator.cores
+
+        dist_from_source = nx.single_source_dijkstra_path_length(G, source, weight=weight)
+
+        if G.is_directed():
+            Grev = G.reverse(copy=False)
+        else:
+            Grev = G
+
+        dist_to_targets: dict[Core, dict[Core, float]] = {
+            t: nx.single_source_dijkstra_path_length(Grev, t, weight=weight) for t in targets
+        }
+
+        best_key: tuple[float, float] | None = None  # (total_cost, -dist_from_source[m]) for tie-breaking
+        best_m: Core | None = None
+
+        for m in G.nodes():
+            if m not in dist_from_source:
+                continue
+            try:
+                total_cost = dist_from_source[m] + sum(dist_to_targets[t][m] for t in targets)
+            except KeyError:
+                continue
+            key = (total_cost, -float(dist_from_source[m]))
+            if best_key is None or key < best_key:
+                best_key = key
+                best_m = m
+
+        if best_m is None:
+            raise nx.NetworkXNoPath("No meeting node connects source to all targets.")
+
+        prefix = nx.shortest_path(G, source, best_m, weight=weight)
+
+        branches: dict[Core, list[Core]] = {}
+        full_paths: dict[Core, list[Core]] = {}
+        for t in targets:
+            branch = nx.shortest_path(G, best_m, t, weight=weight)
+            branches[t] = branch
+            full_paths[t] = prefix[:-1] + branch
+
+        total_cost = dist_from_source[best_m] + sum(dist_to_targets[t][best_m] for t in targets)
+        overlap_edges = max(0, len(prefix) - 1)
+
+        return SharedPrefixPath(
+            source=source,
+            targets=tuple(targets),
+            meeting=best_m,
+            prefix=prefix,
+            branches=branches,
+            full_paths=full_paths,
+            total_cost=total_cost,
+            overlap_edges=overlap_edges,
+        )
+
+    def compute_multicast_links(
+        self,
+        source: "Core",
+        targets: Sequence["Core"],
+        weight: str | None = None,
+    ) -> tuple["CommunicationLink", ...]:
+        best_shared_prefix_path = self._get_best_shared_prefix_path(source, targets, weight=weight)
+        G = self.accelerator.cores
+        required_links: set[CommunicationLink] = set()
+        for path in best_shared_prefix_path.full_paths.values():
+            for u, v in zip(path, path[1:], strict=False):
+                required_links.add(G.edges[(u, v)]["cl"])
+        return tuple(sorted(required_links))
+
+    def plan_multicast_sequence(
+        self,
+        requests: Sequence[MulticastRequest],
+        *,
+        initial_mc_cost: float = 1.0,
+        reuse_penalty: float = 1.0,
+        nb_cols_to_use: int = 2,
+        infinite_cost: float = float("inf"),
+    ) -> dict[MulticastRequest, tuple["CommunicationLink", ...]]:
+        """
+        Plan a sequence of multicast transfers to minimize the number of *new* CommunicationLinks
+        activated across all transfers, encouraging reuse of links selected earlier.
+
+        The planner proceeds greedily. At each step, among the remaining requests, it selects the one
+        that introduces the fewest new links given the current active set (ties broken by lower total cost).
+        For each selection, edge costs are reweighted to prefer already active links via `reuse_factor`
+        and to penalize new links via `new_link_penalty`.
+
+        Args:
+            requests: Sequence of (source, targets) groups to multicast.
+            initial_mc_cost: Initial weight for multicast cost of each edge.
+            reuse_penalty: Multiplicative factor (>= 1.0 recommended) applied to the base cost for used links.
+
+        Returns:
+            A list of (result, required_links) per request in the planned execution order.
+        """
+        if not requests:
+            return {}
+
+        G = self.accelerator.cores
+        active_links: set[CommunicationLink] = set()
+        remaining: list[MulticastRequest] = list(requests)
+        planned: list[set[CommunicationLink]] = []
+        requests_order: list[MulticastRequest] = []
+
+        def init_mc_costs() -> None:
+            for _, _, d in G.edges(data=True):
+                cl = d.get("cl")
+                if cl.sender.col_id + 1 > nb_cols_to_use or cl.receiver.col_id + 1 > nb_cols_to_use:
+                    d["mc_cost"] = infinite_cost
+                else:
+                    d["mc_cost"] = initial_mc_cost
+
+        def update_mc_costs(links_used) -> None:
+            for _, _, d in G.edges(data=True):
+                link_used = d.get("cl") in links_used
+                if not link_used:
+                    continue
+                d["mc_cost"] += reuse_penalty
+
+        def compute_required_links(paths: dict["Core", list["Core"]]) -> set["CommunicationLink"]:
+            links: set[CommunicationLink] = set()
+            for path in paths.values():
+                for u, v in zip(path, path[1:], strict=False):
+                    links.add(G.edges[(u, v)]["cl"])
+            return links
+
+        init_mc_costs()
+        while remaining:
+            req = remaining.pop(0)
+            result = self._get_best_shared_prefix_path(req.source, req.destinations, weight="mc_cost")
+            required_links = compute_required_links(result.full_paths)
+            update_mc_costs(required_links)
+            print(req, result.full_paths)
+            active_links.update(required_links)
+            planned.append(required_links)
+            requests_order.append(req)
+
+        planned_sorted: dict[MulticastRequest, tuple[CommunicationLink, ...]] = {}
+        # Sort the different required_links in planned
+        for req, links in zip(requests_order, planned, strict=False):
+            planned_sorted[req] = tuple(sorted(links))
+
+        return planned_sorted
 
     def transfer_tensor(
         self,

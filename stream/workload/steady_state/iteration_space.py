@@ -115,7 +115,7 @@ class SteadyStateIterationSpace:
         loop_relevancy: LoopRelevancyInfo,
         intra_core_tiling: Iterable[tuple[LayerDim, int]],
         operand: LayerOperand,
-        inter_core_tiling: TILING_T = [],
+        inter_core_tiling: TILING_T | None = None,
     ) -> SteadyStateIterationSpace:
         """
         Build the SSIS for **one operand** of a computation node.
@@ -135,6 +135,8 @@ class SteadyStateIterationSpace:
             Ordered (innermost→outermost) tiling definition for inter-core tiling.
             Defaults to empty iterable. Is used for transfer nodes as innermost iteration variable.
         """
+        if inter_core_tiling is None:
+            inter_core_tiling = []
         # collect all R  +  PR descendants
         relevant_dims = set(loop_relevancy.get_r_or_pr_layer_dims(operand))
         # add PR loops
