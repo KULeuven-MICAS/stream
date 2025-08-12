@@ -65,7 +65,11 @@ from stream.workload.steady_state.iteration_space import IterationVariableReuse
 
 
 def get_tile(value: str) -> tuple[int, int]:
-    if value == "Core(2)":
+    if value == "Core(0)":
+        return 0, 0
+    elif value == "Core(1)":
+        return 0, 1
+    elif value == "Core(2)":
         return 0, 2
     elif value == "Core(3)":
         return 0, 3
@@ -73,6 +77,14 @@ def get_tile(value: str) -> tuple[int, int]:
         return 0, 4
     elif value == "Core(5)":
         return 0, 5
+    elif value == "Core(6)":
+        return 1, 0
+    elif value == "Core(7)":
+        return 1, 1
+    elif value == "Core(8)":
+        return 1, 2
+    elif value == "Core(9)":
+        return 1, 3
     raise RuntimeError(f"Unknown tile value: {value}")
     match = re.match(r"Core\((\d+)\)", value)
     if match:
@@ -341,7 +353,7 @@ class ObjectFifoChain:
         hops: Sequence[ObjectFifoHop]
         if is_shim(consumer_tiles[0]) or is_shim(producer_tiles[0]):
             # pass through the memtile
-            memtile = tile_op_manager.insert_or_update(0, 1)
+            memtile = tile_op_manager.insert_or_update(*get_tile(producers[0].memtile.data))
             hops = [
                 ObjectFifoHop.to_memtile(producers, memtile, tile_op_manager, name_base),
                 ObjectFifoHop.from_memtile(consumers, memtile, tile_op_manager, name_base),
@@ -571,14 +583,17 @@ class TransferToRuntimeSequence(RewritePattern):
         # offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
         sizes = cast(tuple[int, ...], op.sizes.get_values()[-4:])
         strides = cast(tuple[int, ...], op.strides.get_values()[-4:])
+        offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
         assert isinstance(arg.type, MemRefType)
         shapes = tuple(x.data for x in arg.type.shape)[-4:]
 
         # assume default layout here:
         static_strides = []
         current_stride = 1
-        for shape, stride in zip(reversed(shapes), reversed(strides), strict=False):
+        total_offset = 0
+        for shape, stride, offset in zip(reversed(shapes), reversed(strides), reversed(offsets), strict=False):
             static_strides.insert(0, current_stride)
+            total_offset += current_stride * offset
             current_stride *= shape * stride
 
         static_sizes = list(sizes)
@@ -587,9 +602,15 @@ class TransferToRuntimeSequence(RewritePattern):
 
         # add the repeating pattern
         # offset is definitely zero for now
+        breakpoint()
         for iter_var in op.ssis.data.variables:
             loop_dimensions = [x.data for x in op.loop_dimensions]
             if (iter_var.relevant or IterationVariableReuse.MEM_TILE_NO_REUSE in iter_var.reuse) and iter_var.size > 1:
+                # sptial dims must only emit extra sizes and strides if they are used as spatial strides
+                if iter_var.spatial:
+                    index = loop_dimensions.index(str(iter_var.dimension))
+                    if op.spatial_strides.get_values()[index] == 0:
+                        continue
                 if str(iter_var.dimension) in loop_dimensions:
                     index = loop_dimensions.index(str(iter_var.dimension))
                     stride = prod(memref_type.get_shape()[index + 1 :]) * op.sizes.get_values()[index]
@@ -619,8 +640,9 @@ class TransferToRuntimeSequence(RewritePattern):
         ids = {"Op0.I_in": 0, "Op0.W_in": 1, "Op0.O_out": 2}
 
         for i in range(software_size):
-            offset = i * software_stride
-            static_offsets = (0, 0, 0, offset)
+            software_offset = i * software_stride
+            total_offset += software_offset
+            static_offsets = (0, 0, 0, total_offset)
             # Insert DMA
             memcpy = DmaMemcpyNdOp(
                 arg,
@@ -633,8 +655,8 @@ class TransferToRuntimeSequence(RewritePattern):
             )
             rewriter.insert_op(memcpy, InsertPoint.before(op))
 
-        rewriter.erase_op(edge, safe_erase=False)
-        rewriter.erase_matched_op()
+        # remove output from edge op operands
+        rewriter.erase_matched_op(safe_erase=False)
 
 
 @dataclass
@@ -1540,17 +1562,18 @@ class WrapInCoreOps(RewritePattern):
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: Operation, rewriter: PatternRewriter):  # noqa: PLR0912
+        shim = (0, 0)
         if isinstance(op, ComputationNodeOp):
-            core = get_tile(op.core_allocation.data)[1]
+            core = get_tile(op.core_allocation.data)
         elif isinstance(op, EdgeOp):
-            core = 0
+            core = shim
         elif isinstance(op, PushOp):
             # what am i pushing?
             assert isinstance(op.input, OpResult)
             if isinstance(op.input.op, EdgeOp):
-                core = 0
+                core = shim
             elif isinstance(op.input.op, ComputationNodeOp):
-                core = get_tile(op.input.op.core_allocation.data)[1]
+                core = get_tile(op.input.op.core_allocation.data)
             else:
                 raise NotImplementedError()
         elif isinstance(op, PullOp):
@@ -1558,21 +1581,21 @@ class WrapInCoreOps(RewritePattern):
             assert len(op.output.uses) == 1
             use = next(iter(op.output.uses))
             if isinstance(use.operation, EdgeOp):
-                core = 0
+                core = shim
             elif isinstance(use.operation, ComputationNodeOp):
-                core = get_tile(use.operation.core_allocation.data)[1]
+                core = get_tile(use.operation.core_allocation.data)
             else:
                 raise NotImplementedError()
         else:
             return
 
         # create core op if it doesn't exist yet
-        if (0, core) not in self.core_ops:
-            core_op = CoreOp(None, self.tile_op_manager.insert_or_update(0, core), Region(Block([EndOp()])))
+        if core not in self.core_ops:
+            core_op = CoreOp(None, self.tile_op_manager.insert_or_update(*core), Region(Block([EndOp()])))
             rewriter.insert_op(core_op, InsertPoint.at_end(self.tile_op_manager.device_op.region.block))
-            self.core_ops[(0, core)] = core_op
+            self.core_ops[core] = core_op
         else:
-            core_op = self.core_ops[(0, core)]
+            core_op = self.core_ops[core]
 
         op.detach()
         if isinstance(core_op, CoreOp):
@@ -1608,7 +1631,7 @@ class ConvertStreamToAIEPass(ModulePass):
 
         rewriter = Rewriter()
         device_op = DeviceOp(
-            IntegerAttr.from_int_and_width(AIEDeviceEnum.npu1_1col.get_int(), 32),
+            IntegerAttr.from_int_and_width(AIEDeviceEnum.npu1.get_int(), 32),
             rewriter.move_region_contents_to_new_regions(op.body),
         )
         op.body.add_block(Block([device_op]))
@@ -1661,6 +1684,8 @@ class ConvertStreamToAIEPass(ModulePass):
             TransferToRuntimeSequence(object_fifo_manager),
             apply_recursively=False,
         ).rewrite_module(op)
+
+        breakpoint()
 
         # insert dma wait statements for bd collisions
         PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)

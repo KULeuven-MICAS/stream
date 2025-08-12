@@ -27,27 +27,37 @@ class SplitTransferPattern(RewritePattern):
         else:
             channel = ChannelOp()
             ops_to_add.append(channel)
-        push = PushOp(
-            op.input, channel, op.ssis.data, op.offsets, op.sizes, op.strides, op.spatial_strides, op.loop_dimensions
-        )
-        ops_to_add.append(push)
+        for input in op.inputs:
+            push = PushOp(
+                input,
+                channel,
+                op.ssis.data,
+                op.offsets,
+                op.sizes,
+                op.strides,
+                op.spatial_strides,
+                op.loop_dimensions,
+                op.memtile,
+            )
+            ops_to_add.append(push)
         for i, result in enumerate(op.results):
             for use in list(result.uses):
                 if isinstance(edge := use.operation, EdgeOp):
                     for input in edge.inputs:
                         assert isinstance(input, OpResult)
-                        if isinstance(input.op, TransferOp):
+                        if isinstance(input.op, TransferOp) and input.op.memtile == op.memtile:
                             self.channel_map[input.op] = channel
                 ops_to_add.append(
                     pull := PullOp(
-                        op.output[0].type,
+                        op.outputs[0].type,
                         channel,
                         op.ssis.data,
                         op.offsets,
                         op.sizes,
                         op.strides,
-                        [int(x * i) for x in op.spatial_strides.iter_values()],
+                        op.spatial_strides,
                         op.loop_dimensions,
+                        op.memtile,
                     )
                 )
                 use.operation.operands[use.index] = pull.results[0]
