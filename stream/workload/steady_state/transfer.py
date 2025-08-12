@@ -23,7 +23,7 @@ class SteadyStateTransfer(SteadyStateNode):
         id: int,
         node_name: str,
         transfer_type: TransferType,
-        src: SteadyStateTensor,
+        srcs: tuple[SteadyStateTensor, ...],
         dsts: tuple[SteadyStateTensor, ...],
         size: int,  # in bits
         tensor: SteadyStateTensor,
@@ -37,7 +37,7 @@ class SteadyStateTransfer(SteadyStateNode):
             possible_resource_allocation=possible_resource_allocation,
             steady_state_iteration_space=steady_state_iteration_space,
         )
-        self.src = src
+        self.srcs = srcs
         self.dsts = dsts
         self.tensor = tensor
         self.size = size
@@ -56,11 +56,11 @@ class SteadyStateTransfer(SteadyStateNode):
         self.chosen_resource_allocation = None if len(allocation) > 1 else allocation[0]
 
     def __str__(self):
-        return f"Transfer({self.src} -> {self.dsts})"
+        return f"Transfer({self.srcs} -> {self.dsts})"
 
     def __repr__(self):
         return str(self)
 
     @property
     def plot_name(self):
-        return f"Transfer({self.src})"
+        return f"Transfer({self.srcs})"

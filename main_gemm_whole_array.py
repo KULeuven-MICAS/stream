@@ -50,7 +50,7 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size)
         experiment_id=experiment_id,
         output_path="outputs",
         skip_if_exists=False,
-        enable_codegen=True,
+        enable_codegen=False,
         trace_size=trace_size,
     )
 

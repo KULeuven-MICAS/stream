@@ -268,95 +268,171 @@ class SteadyStateScheduler:
         The transfer nodes are nodes that transfer data between cores or between off-chip and on-chip memory.
         """
         for tensor in steady_state_workload.tensor_nodes:
-            out_edges = list(steady_state_workload.out_edges(tensor, data=True))
-            all_successors = [i for _, i, _ in out_edges]
-            assert all(isinstance(s, (SteadyStateTensor | SteadyStateComputation)) for s in all_successors), (
-                "All successors of a tensor node should be either SteadyStateTensor or SteadyStateComputation nodes."
-            )
-            if not all_successors:
-                continue
-            # Get correct steady state iteration space for the intra core tilling
-            loop_relevancy_info = tensor.origin.loop_relevancy_info
-            intra_core_tiling = tensor.origin.intra_core_tiling
-            ssis = SteadyStateIterationSpace.from_loop_info(
-                loop_relevancy=loop_relevancy_info,
-                intra_core_tiling=intra_core_tiling,
-                operand=tensor.operand,
-                inter_core_tiling=tensor.origin.inter_core_tiling,
-            )
-            # Get the post transfer tensor node(s)
-            grouped_post_transfer_tensor_nodes, grouped_successors = (
-                self.get_grouped_post_transfer_tensor_nodes_and_successors(
-                    all_successors,
-                    pre_transfer_tensor=tensor,
-                )
-            )
-            for post_transfer_tensor_nodes, successors in zip(
-                grouped_post_transfer_tensor_nodes.values(), grouped_successors.values(), strict=False
-            ):
-                transfer_type = self.get_transfer_type(post_transfer_tensor_nodes)
-                post_transfer_tensor_node_names = [ptn.node_name for ptn in post_transfer_tensor_nodes]
-                post_transfer_tensor_node_sizes = [ptn.size for ptn in post_transfer_tensor_nodes]
-                if transfer_type == TransferType.BROADCAST:
-                    size = max(post_transfer_tensor_node_sizes)  # assume all the same
-                elif transfer_type == TransferType.JOIN:
-                    size = tensor.size  # size of the pre-transfer tensor (can be smaller part of constant output)
-                elif transfer_type == TransferType.UNICAST:
-                    size = sum(post_transfer_tensor_node_sizes)
-                else:
-                    raise ValueError(f"Unknown transfer type: {transfer_type}")
-                # Insert a transfer node after the node and connect it to all the successors
-                transfer_node = SteadyStateTransfer(
-                    transfer_type=transfer_type,
-                    id=tensor.id,
-                    node_name=f"Transfer({tensor.node_name} -> {post_transfer_tensor_node_names})",
-                    src=tensor,
-                    dsts=post_transfer_tensor_nodes,  # type: ignore
-                    size=size,
-                    tensor=tensor,
-                    possible_resource_allocation=tuple(),  # will be set later by 'set_transfer_paths'
-                    steady_state_iteration_space=ssis,
-                )
-                steady_state_workload.add(transfer_node)
-                # Add edge from the original node to the transfer node
-                steady_state_workload.add_edge(tensor, transfer_node)
-                for ptn, succ in zip(post_transfer_tensor_nodes, successors, strict=True):
-                    if (
-                        ptn not in steady_state_workload
-                    ):  # happens for the constant tensors that were already in the graph
-                        # Add the post transfer tensor node to the steady state workload
-                        steady_state_workload.add(ptn)
-                    # Remove original edge between node and successor
-                    steady_state_workload.remove_edge(tensor, succ)
-                    # Add edge from transfer node to post transfer tensor node
-                    steady_state_workload.add_edge(transfer_node, ptn)
-                    if ptn is not succ:
-                        # Add edge from post transfer node to successor
-                        steady_state_workload.add_edge(ptn, succ)
+            if self.is_constant_input_tensor(tensor):
+                self.add_transfers_and_post_transfer_tensor_nodes_for_constant_input(tensor, steady_state_workload)
+            elif self.is_constant_output_tensor(tensor):
+                self.add_transfers_and_pre_transfer_tensor_nodes_for_constant_output(tensor, steady_state_workload)
+            else:
+                raise NotImplementedError("This is to be implemented for non-constant tensors between layers.")
         # Calculate the optimal paths for the transfer nodes and set the possible_resource_allocation
         self.set_transfer_paths(steady_state_workload)
         return steady_state_workload
 
-    def get_transfer_type(self, post_transfer_tensor_nodes: list[SteadyStateTensor]) -> TransferType:
+    def is_constant_input_tensor(self, tensor: SteadyStateTensor) -> bool:
+        return (TensorFlag.INPUT | TensorFlag.CONSTANT) in tensor.tensor_flag
+
+    def is_constant_output_tensor(self, tensor: SteadyStateTensor) -> bool:
+        return (TensorFlag.OUTPUT | TensorFlag.CONSTANT) in tensor.tensor_flag
+
+    def add_transfers_and_post_transfer_tensor_nodes_for_constant_input(
+        self, tensor: SteadyStateTensor, ssw: SteadyStateWorkload
+    ):
+        out_edges = list(ssw.out_edges(tensor, data=True))
+        all_successors = [i for _, i, _ in out_edges]
+        assert all(isinstance(s, (SteadyStateTensor | SteadyStateComputation)) for s in all_successors), (
+            "All successors of a tensor node should be either SteadyStateTensor or SteadyStateComputation nodes."
+        )
+        if not all_successors:
+            raise ValueError(f"No valid successors found for constant input {tensor}.")
+        # Get correct steady state iteration space for the intra core tilling
+        loop_relevancy_info = tensor.origin.loop_relevancy_info
+        intra_core_tiling = tensor.origin.intra_core_tiling
+        ssis = SteadyStateIterationSpace.from_loop_info(
+            loop_relevancy=loop_relevancy_info,
+            intra_core_tiling=intra_core_tiling,
+            operand=tensor.operand,
+            inter_core_tiling=tensor.origin.inter_core_tiling,
+        )
+        # Get the post transfer tensor node(s)
+        grouped_post_transfer_tensor_nodes, grouped_successors = (
+            self.get_grouped_post_transfer_tensor_nodes_and_successors(
+                all_successors,
+                pre_transfer_tensor=tensor,
+            )
+        )
+        for post_transfer_tensor_nodes, successors in zip(
+            grouped_post_transfer_tensor_nodes.values(), grouped_successors.values(), strict=False
+        ):
+            transfer_type, size = self.get_transfer_type_and_size_for_input(post_transfer_tensor_nodes)
+            post_transfer_tensor_node_names = [ptn.node_name for ptn in post_transfer_tensor_nodes]
+            # Insert a transfer node after the node and connect it to all the successors
+            transfer_node = SteadyStateTransfer(
+                transfer_type=transfer_type,
+                id=tensor.id,
+                node_name=f"Transfer({tensor.node_name} -> {post_transfer_tensor_node_names})",
+                srcs=(tensor,),
+                dsts=post_transfer_tensor_nodes,  # type: ignore
+                size=size,
+                tensor=tensor,
+                possible_resource_allocation=tuple(),  # will be set later by 'set_transfer_paths'
+                steady_state_iteration_space=ssis,
+            )
+            ssw.add(transfer_node)
+            # Add edge from the original node to the transfer node
+            ssw.add_edge(tensor, transfer_node)
+            for ptn, succ in zip(post_transfer_tensor_nodes, successors, strict=True):
+                if ptn not in ssw:  # happens for the constant tensors that were already in the graph
+                    # Add the post transfer tensor node to the steady state workload
+                    ssw.add(ptn)
+                # Remove original edge between node and successor
+                ssw.remove_edge(tensor, succ)
+                # Add edge from transfer node to post transfer tensor node
+                ssw.add_edge(transfer_node, ptn)
+                # Add edge from post transfer node to successor
+                ssw.add_edge(ptn, succ)
+
+    def add_transfers_and_pre_transfer_tensor_nodes_for_constant_output(
+        self, tensor: SteadyStateTensor, ssw: SteadyStateWorkload
+    ):
+        in_edges = list(ssw.in_edges(tensor, data=True))
+        all_predecessors = [i for i, _, _ in in_edges]
+        assert all(isinstance(s, (SteadyStateTensor | SteadyStateComputation)) for s in all_predecessors), (
+            "All predecessors of a tensor node should be either SteadyStateTensor or SteadyStateComputation nodes."
+        )
+        if not all_predecessors:
+            raise ValueError(f"No valid predecessors found for constant output {tensor}.")
+        # Get correct steady state iteration space for the intra core tilling
+        loop_relevancy_info = tensor.origin.loop_relevancy_info
+        intra_core_tiling = tensor.origin.intra_core_tiling
+        ssis = SteadyStateIterationSpace.from_loop_info(
+            loop_relevancy=loop_relevancy_info,
+            intra_core_tiling=intra_core_tiling,
+            operand=tensor.operand,
+            inter_core_tiling=tensor.origin.inter_core_tiling,
+        )
+        # Get the post transfer tensor node(s)
+        grouped_pre_transfer_tensor_nodes, grouped_predecessors = (
+            self.get_grouped_pre_transfer_tensor_nodes_and_predecessors(
+                all_predecessors,
+                post_transfer_tensor=tensor,
+            )
+        )
+        for pre_transfer_tensor_nodes, predecessors in zip(
+            grouped_pre_transfer_tensor_nodes.values(), grouped_predecessors.values(), strict=False
+        ):
+            transfer_type, size = self.get_transfer_type_and_size_for_output(pre_transfer_tensor_nodes)
+            pre_transfer_tensor_node_names = [ptn.node_name for ptn in pre_transfer_tensor_nodes]
+            # Insert a transfer node after the node and connect it to all the successors
+            transfer_node = SteadyStateTransfer(
+                transfer_type=transfer_type,
+                id=tensor.id,
+                node_name=f"Transfer({pre_transfer_tensor_node_names} -> {tensor.node_name})",
+                srcs=pre_transfer_tensor_nodes,
+                dsts=(tensor,),  # type: ignore
+                size=size,
+                tensor=tensor,
+                possible_resource_allocation=tuple(),  # will be set later by 'set_transfer_paths'
+                steady_state_iteration_space=ssis,
+            )
+            ssw.add(transfer_node)
+            # Add edge from transfer node to output tensor node
+            ssw.add_edge(transfer_node, tensor)
+            for ptn, pred in zip(pre_transfer_tensor_nodes, predecessors, strict=True):
+                if ptn not in ssw:  # happens for the constant tensors that were already in the graph
+                    # Add the post transfer tensor node to the steady state workload
+                    ssw.add(ptn)
+                # Remove original edge between predecessor and output tensor
+                ssw.remove_edge(pred, tensor)
+                # Add edge from predecessor to pre transfer tensor nodes
+                ssw.add_edge(pred, ptn)
+                # Add edge from pre transfer tensor node to transfer node
+                ssw.add_edge(ptn, transfer_node)
+
+    def get_transfer_type_and_size_for_input(
+        self, post_transfer_tensor_nodes: tuple[SteadyStateTensor, ...]
+    ) -> tuple[TransferType, int]:
         """
         Determine the transfer type based on the post transfer tensor nodes.
+        This assumes that the post transfer tensor nodes are all the slice if more than one (broadcast)
         """
+        size = max(ptn.size for ptn in post_transfer_tensor_nodes)
         if len(post_transfer_tensor_nodes) > 1:
-            return TransferType.BROADCAST
-        pttn = post_transfer_tensor_nodes[0]
-        if isinstance(pttn, SteadyStateTensor) and TensorFlag.CONSTANT in pttn.tensor_flag:
-            return TransferType.JOIN
+            return TransferType.BROADCAST, size
         else:
-            return TransferType.UNICAST
+            return TransferType.UNICAST, size
+
+    def get_transfer_type_and_size_for_output(
+        self, pre_transfer_tensor_nodes: tuple[SteadyStateTensor, ...]
+    ) -> tuple[TransferType, int]:
+        """
+        Determine the transfer type and size based on the pre transfer tensor nodes.
+        This assumes that the pre transfer tensor nodes are all mapped to the same column and different.
+        """
+        size = sum(ptn.size for ptn in pre_transfer_tensor_nodes)
+        if len(pre_transfer_tensor_nodes) > 1:
+            return TransferType.JOIN, size
+        else:
+            return TransferType.UNICAST, size
 
     def get_grouped_post_transfer_tensor_nodes_and_successors(
         self,
         successors: list[SteadyStateNode],
         pre_transfer_tensor: SteadyStateTensor,
     ) -> tuple[
-        dict[tuple[tuple[int, int], ...], list[SteadyStateTensor]],
-        dict[tuple[tuple[int, int], ...], list[SteadyStateNode]],
+        dict[tuple[tuple[int, int], ...], tuple[SteadyStateTensor, ...]],
+        dict[tuple[tuple[int, int], ...], tuple[SteadyStateNode, ...]],
     ]:
+        "Grouped by loop ranges to get one joint transfer per broadcastable input."
         post_transfer_tensor_nodes: dict[tuple[tuple[int, int], ...], list[SteadyStateTensor]] = defaultdict(list)
         grouped_successors: dict[tuple[tuple[int, int], ...], list[SteadyStateNode]] = defaultdict(list)
         for i, successor in enumerate(successors):
@@ -398,23 +474,69 @@ class SteadyStateScheduler:
                 )
                 post_transfer_tensor_nodes[post_transfer_tensor_node.loop_ranges].append(post_transfer_tensor_node)
                 grouped_successors[post_transfer_tensor_node.loop_ranges].append(successor)
-        return post_transfer_tensor_nodes, grouped_successors
+        post_transfer_tensor_nodes_tuple = {k: tuple(v) for k, v in post_transfer_tensor_nodes.items()}
+        grouped_successors_tuple = {k: tuple(v) for k, v in grouped_successors.items()}
+        return post_transfer_tensor_nodes_tuple, grouped_successors_tuple
+
+    def get_grouped_pre_transfer_tensor_nodes_and_predecessors(
+        self,
+        predecessors: list[SteadyStateNode],
+        post_transfer_tensor: SteadyStateTensor,
+    ) -> tuple[
+        dict[int, tuple[SteadyStateTensor, ...]],
+        dict[int, tuple[SteadyStateNode, ...]],
+    ]:
+        """Grouped by the predecessor's col id to get one joint transfer per outputs mapped to the same column."""
+        pre_transfer_tensor_nodes: dict[int, list[SteadyStateTensor]] = defaultdict(list)
+        grouped_predecessors: dict[int, list[SteadyStateNode]] = defaultdict(list)
+        for i, predecessor in enumerate(predecessors):
+            assert isinstance(predecessor, SteadyStateComputation), "Predecessor should be SteadyStateComputation."
+            loop_relevancy_info = post_transfer_tensor.origin.loop_relevancy_info
+            intra_core_tiling = post_transfer_tensor.origin.intra_core_tiling
+            output_operand = post_transfer_tensor.operand
+            ssis = SteadyStateIterationSpace.from_loop_info(
+                loop_relevancy=loop_relevancy_info,
+                intra_core_tiling=intra_core_tiling,
+                operand=output_operand,
+            )
+            pre_transfer_node_name = f"{post_transfer_tensor.node_name}{'*' * (i + 1)}"
+            full_shape = post_transfer_tensor.full_shape
+            slices_per_full = ssis.slices_per_full
+            output_tensor = predecessor.operand_tensors[output_operand]
+            output_tensor_precision = predecessor.operand_precision[output_operand]
+            output_subviewtensor_inputs = output_tensor.get_inputs()
+            pre_transfer_tensor_node = SteadyStateTensor(
+                type=post_transfer_tensor.tensor_flag,
+                id=post_transfer_tensor.id,
+                node_name=pre_transfer_node_name,
+                size=output_tensor.size * output_tensor_precision,
+                operand=post_transfer_tensor.operand,
+                steady_state_iteration_space=ssis,
+                possible_resource_allocation=predecessor.possible_resource_allocation,  # type: ignore
+                subviewtensor_inputs=output_subviewtensor_inputs,
+                full_shape=full_shape,
+                slices_per_full=slices_per_full,
+            )
+            assert predecessor.chosen_resource_allocation is not None, (
+                "Expected predecessor to have chosen resource allocation."
+            )
+            col_id = predecessor.chosen_resource_allocation.col_id
+            assert col_id is not None
+            pre_transfer_tensor_nodes[col_id].append(pre_transfer_tensor_node)
+            grouped_predecessors[col_id].append(predecessor)
+        pre_transfer_tensor_nodes_tuple = {k: tuple(v) for k, v in pre_transfer_tensor_nodes.items()}
+        grouped_predecessors_tuple = {k: tuple(v) for k, v in grouped_predecessors.items()}
+        return pre_transfer_tensor_nodes_tuple, grouped_predecessors_tuple
 
     def set_transfer_paths(self, steady_state_workload: SteadyStateWorkload) -> None:
         requests = []
         for transfer_node in steady_state_workload.transfer_nodes:
-            source_alloc = transfer_node.src.chosen_resource_allocation
-            assert source_alloc is not None, (
-                f"Source tensor {transfer_node.src.node_name} has no chosen resource allocation."
-            )
-            dst_allocs = tuple(dst.chosen_resource_allocation for dst in transfer_node.dsts)
-            assert all(alloc is not None for alloc in dst_allocs), (
-                f"Destination tensors {[dst.node_name for dst in transfer_node.dsts]} need chosen resource allocation."
-            )
+            src_allocs = tuple([src.chosen_resource_allocation for src in transfer_node.srcs])
+            dst_allocs = tuple([dst.chosen_resource_allocation for dst in transfer_node.dsts])
             # Create a multicast request for the transfer node
             request = MulticastRequest(
-                source=source_alloc,
-                destinations=dst_allocs,
+                sources=src_allocs,  # type: ignore
+                destinations=dst_allocs,  # type: ignore
             )
             requests.append(request)
         # Send all multicast requests
@@ -445,6 +567,7 @@ class SteadyStateScheduler:
                 if isinstance(successor, SteadyStateTensor):
                     # If the successor is a tensor node, we check that it is a sink node output
                     assert TensorFlag.CONSTANT in successor.tensor_flag and TensorFlag.OUTPUT in successor.tensor_flag
+                    continue  # This is handled in add_transfer_nodes
                 if isinstance(node, SteadyStateComputation):
                     output_tensor = node.operand_tensors[node.output_operand]
                     output_tensor_precision = node.operand_precision[node.output_operand]

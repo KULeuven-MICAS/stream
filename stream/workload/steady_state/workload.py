@@ -1,7 +1,6 @@
 from typing import Any
 
 import networkx as nx
-import pydot
 from networkx.drawing.nx_pydot import to_pydot  # type: ignore
 from zigzag.utils import DiGraphWrapper
 
@@ -154,86 +153,59 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
     def visualize_to_file(self, filepath: str = "workload_graph.png"):
         """Visualize the graph using Graphviz and save it to an image file.
 
-        Nodes are laid out left to right by topological generation,
-        and vertically grouped by chosen_resource_allocation (stacked top-to-bottom).
+        Nodes are laid out horizontally by topological generation,
+        and vertically stacked to avoid overlap. The resource is displayed
+        below each node in a clean and readable way.
         """
         dot = to_pydot(self)
 
-        # Set global graph layout left to right within clusters, vertical between clusters
+        # Set global graph layout left to right
         dot.set_rankdir("LR")
         dot.set_concentrate(True)
 
-        # Group nodes by resource (vertical stacking of clusters)
-        resource_to_nodes = {}
-        for node in self.nodes():
-            resource = getattr(node, "chosen_resource_allocation", -1)
-            resource_to_nodes.setdefault(resource, []).append(node)
+        # Determine node positions based on topological generations
+        generation_to_nodes = {}
+        for gen_idx, generation in enumerate(nx.topological_generations(self)):
+            generation_to_nodes[gen_idx] = list(generation)
 
-        # Sort clusters by resource id (top to bottom)
-        sorted_resources = sorted(resource_to_nodes.keys(), key=lambda r: r.id if hasattr(r, "id") else -1)
-
-        cluster_heads = []
-
-        for resource in sorted_resources:
-            nodes = resource_to_nodes[resource]
-
-            subgraph = pydot.Cluster(
-                graph_name=f"resource_{resource}",
-                label=f"Resource {getattr(resource, 'id', resource)}",
-                style="dashed",
-                # No rank="same" so that global rankdir=LR applies inside the cluster
-            )
-
-            for node in nodes:
+        # Assign nodes to horizontal positions based on their generation
+        for gen_idx, nodes in generation_to_nodes.items():
+            for idx, node in enumerate(nodes):
                 n = dot.get_node(str(node))[0]
-                subgraph.add_node(n)
+                n.set_pos(f"{gen_idx},{-idx}!")  # Horizontal by generation, vertical by index
 
-            dot.add_subgraph(subgraph)
-
-            if nodes:
-                cluster_heads.append(str(nodes[0]))  # Use first node in cluster for invisible edge anchor
-
-        # Add invisible edges between cluster heads to stack clusters vertically
-        for i in range(len(cluster_heads) - 1):
-            upper = cluster_heads[i]
-            lower = cluster_heads[i + 1]
-            edge_seen = False
-            for e in dot.get_edges():
-                src, dst = e.obj_dict["points"]
-                if src == upper and dst == lower:
-                    edge_seen = True
-                    break  # edge already exists
-            if not edge_seen:
-                dot.add_edge(pydot.Edge(upper, lower, style="invis"))
-
-        self._customize_node_appearances(dot)
-
-        # Save to file
-        dot.write_png(filepath)
-        print(f"Graph saved to {filepath}")
-
-    def _customize_node_appearances(self, dot):
+        # Customize node appearances and add resource labels
         for node in self.nodes():
             n = dot.get_node(str(node))[0]
             if isinstance(node, SteadyStateComputation):
                 n.set_shape("ellipse")
-                n.set_label(f"{node.node_name}")
+                n.set_label(f"{node.node_name}\nResource: {getattr(node, 'chosen_resource_allocation', 'None')}")
                 n.set_style("filled")
                 n.set_fillcolor("#60bcf0")
             elif isinstance(node, SteadyStateRollingBuffer):
                 n.set_shape("box")
-                n.set_label(f"{node.node_name}\n{node.loop_ranges_per_dim}")
+                n.set_label(
+                    f"{node.node_name}\n{node.loop_ranges_per_dim}\n"
+                    f"Resource: {getattr(node, 'chosen_resource_allocation', 'None')}"
+                )
                 n.set_style("filled")
                 n.set_fillcolor("#eaff76e1")
             elif isinstance(node, SteadyStateTensor):
                 n.set_shape("box")
-                n.set_label(f"{node.node_name}\n{node.loop_ranges_per_dim}")
+                n.set_label(
+                    f"{node.node_name}\n{node.loop_ranges_per_dim}\n"
+                    f"Resource: {getattr(node, 'chosen_resource_allocation', 'None')}"
+                )
                 n.set_style("filled")
                 n.set_fillcolor("#c2f0c2")
             elif isinstance(node, SteadyStateTransfer):
                 n.set_shape("box")
-                n.set_label(f"{node.node_name}")
+                n.set_label(f"{node.node_name}\nResource: {getattr(node, 'chosen_resource_allocation', 'None')}")
                 n.set_style("filled")
                 n.set_fillcolor("#ffcb9a")
             else:
                 raise ValueError(f"Unknown node type: {type(node)}")
+
+        # Save to file
+        dot.write_png(filepath)
+        print(f"Graph saved to {filepath}")
