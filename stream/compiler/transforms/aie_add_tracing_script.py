@@ -30,8 +30,6 @@ class AIEAddTracingScript(ModulePass):
                 match tile_idx := (tile_op.col.value.data, tile_op.row.value.data):
                     case (0, 0):
                         shim_tile = tile_op
-                    case (0, 1):
-                        pass
                     case _:
                         compute_tiles[tile_idx] = tile_op
         assert shim_tile is not None
