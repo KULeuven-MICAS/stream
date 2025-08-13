@@ -11,12 +11,12 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
-def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size):  # noqa: N803, PLR0913
+def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_cols_to_use):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
     workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
     accelerator = "stream/inputs/aie/hardware/whole_array.yaml"
-    mapping_path = make_gemm_mapping_whole_array(M, K, N, m, k, n, nb_rows_to_use=2, nb_cols_to_use=2)
+    mapping_path = make_gemm_mapping_whole_array(M, K, N, m, k, n, nb_rows_to_use=2, nb_cols_to_use=nb_cols_to_use)
     # mode = "lbl"
     # layer_stacks = [(0,),]
     mode = "fused"
@@ -77,8 +77,18 @@ if __name__ == "__main__":
     parser.add_argument("--in_dtype", type=str, default="i16", help="Input data type (default: i16)")
     parser.add_argument("--out_dtype", type=str, default="i32", help="Output data type (default: i32)")
     parser.add_argument("--trace_size", type=int, default=1048576, help="Size of the trace buffer (default: 1048576)")
+    parser.add_argument("--nb_cols", type=int, default=4, help="Number of AIE columns to use (default: 4)")
     args = parser.parse_args()
 
     run_main_aie_codegen_gemm(
-        args.M, args.K, args.N, args.m, args.k, args.n, args.in_dtype, args.out_dtype, args.trace_size
+        args.M,
+        args.K,
+        args.N,
+        args.m,
+        args.k,
+        args.n,
+        args.in_dtype,
+        args.out_dtype,
+        args.trace_size,
+        args.nb_cols,
     )
