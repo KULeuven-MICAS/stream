@@ -605,7 +605,6 @@ class TransferToRuntimeSequence(RewritePattern):
 
         # add the repeating pattern
         # offset is definitely zero for now
-        breakpoint()
         for iter_var in op.ssis.data.variables:
             loop_dimensions = [x.data for x in op.loop_dimensions]
             if (iter_var.relevant or IterationVariableReuse.MEM_TILE_NO_REUSE in iter_var.reuse) and iter_var.size > 1:
@@ -1687,8 +1686,6 @@ class ConvertStreamToAIEPass(ModulePass):
             TransferToRuntimeSequence(object_fifo_manager),
             apply_recursively=False,
         ).rewrite_module(op)
-
-        breakpoint()
 
         # insert dma wait statements for bd collisions
         PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)
