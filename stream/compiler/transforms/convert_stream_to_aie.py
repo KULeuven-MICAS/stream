@@ -138,6 +138,9 @@ class TileOpManager:
                 assert isinstance(parent.tile, OpResult) and isinstance(parent.tile.op, TileOp)
                 return parent.tile.op
             if isinstance(parent, RuntimeSequenceOp):
+                if isinstance(operation, PushOp | PullOp):
+                    memtile_idx = get_tile(operation.memtile.data)
+                    return self.insert_or_update(memtile_idx[0], 0)
                 return self.insert_or_update(0, 0)
             parent = parent.parent_op()
             if parent is None:
