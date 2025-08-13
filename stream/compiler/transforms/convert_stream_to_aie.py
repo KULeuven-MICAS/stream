@@ -675,8 +675,7 @@ class TransferToRuntimeSequence(RewritePattern):
         static_sizes = (1,) * (4 - len(static_sizes)) + tuple(static_sizes)
         static_strides = (0,) * (4 - len(static_strides)) + tuple(static_strides)
 
-        ids = {"Op0.I_in": 0, "Op0.W_in": 1, "Op0.O_out": 2}
-
+        id = int(of_name[3])
         for i in range(software_size):
             software_offset = i * software_stride
             total_offset += software_offset
@@ -688,7 +687,7 @@ class TransferToRuntimeSequence(RewritePattern):
                 static_sizes=static_sizes,
                 static_strides=static_strides,
                 metadata=of_name,
-                id=ids[edge.tensor.data],
+                id=id,
                 issue_token=True,
             )
             rewriter.insert_op(memcpy, InsertPoint.before(op))
