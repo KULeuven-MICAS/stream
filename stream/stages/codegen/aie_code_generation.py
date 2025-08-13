@@ -114,18 +114,21 @@ class AIECodeGenerationStage(Stage):
                 source_val = compute_ops[source_source]
             source_vals.append(source_val)
 
-        # determine spatial strides
-        spatial_strides = []
         if isinstance(source_vals[0], EdgeOp):
-            sorted_transfers = sorted(transfer.srcs, key=lambda x: x.loop_ranges)
-            tensor = sorted_transfers[0]
+            tensor = sorted(transfer.dsts, key=lambda x: x.loop_ranges)[0]
         else:
-            sorted_transfers = sorted(transfer.dsts, key=lambda x: x.loop_ranges)
-            tensor = sorted_transfers[0]
+            tensor = sorted(transfer.srcs, key=lambda x: x.loop_ranges)[0]
 
         offsets = [x[0] for x in tensor.loop_ranges]
         sizes = [x[1] - x[0] for x in tensor.loop_ranges]
         strides = [1 for x in tensor.loop_ranges]
+
+        # determine spatial strides
+        spatial_strides = []
+        if len(source_vals) > 1:
+            sorted_transfers = sorted(transfer.srcs, key=lambda x: x.loop_ranges)
+        else:
+            sorted_transfers = sorted(transfer.dsts, key=lambda x: x.loop_ranges)
         if len(sorted_transfers) > 1:
             for dim in tensor.loop_dimensions:
                 spatial_strides.append(
