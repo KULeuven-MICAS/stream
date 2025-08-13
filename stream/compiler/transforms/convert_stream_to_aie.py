@@ -58,6 +58,7 @@ from xdsl_aie.dialects.aiex import (
     DmaWaitOp,
     RuntimeSequenceOp,
 )
+from zigzag.datatypes import LayerDim
 
 from stream.compiler.dialects.stream import ChannelOp, ComputationNodeOp, EdgeOp, PullOp, PushOp, TransferOp
 from stream.compiler.transforms.iteration_space_to_for import iteration_space_to_for
@@ -276,7 +277,6 @@ class ObjectFifoHop:
                 referenced_type=memref_type.get_element_type(),
                 shape=memref_type.get_shape(),
                 name=of_name,
-                repeat_count=1,
             )
             del object_fifo.properties["repeat_count"]
             object_fifos.append(object_fifo)
@@ -316,24 +316,35 @@ class ObjectFifoHop:
                 referenced_type=memref_type.get_element_type(),
                 shape=memref_type.get_shape(),
                 name=of_name,
-                repeat_count=1,
+                repeat_count=consumers[0].ssis.data.reuse_factor_mem(),
             )
-            del object_fifo.properties["repeat_count"]
+            assert isinstance(object_fifo.repeat_count, IntegerAttr)
+            if object_fifo.repeat_count.value.data == 1:
+                del object_fifo.properties["repeat_count"]
             object_fifos.append(object_fifo)
         return cls(object_fifos)
 
     @classmethod
     def shim_to_mem(cls, producer: PushOp, memtile: TileOp, tile_op_manager: TileOpManager, name_base: str) -> Self:
         assert isinstance(memref_type := producer.input.type, MemRefType)
+        spatial_relevant = [
+            LayerDim(loop_dim.data)
+            for loop_dim, spatial_stride in zip(
+                producer.loop_dimensions, producer.spatial_strides.get_values(), strict=True
+            )
+            if spatial_stride != 0
+        ]
         object_fifo = ObjectFifoOp.from_referenced_type(
             elemNumber=IntegerAttr(1, i32),
             producerTile=tile_op_manager.get_tile(producer),
             consumerTiles=[memtile],
             referenced_type=memref_type.get_element_type(),
-            shape=producer.ssis.data.shape_mem()[::-1] + cast(tuple[int, ...], producer.sizes.get_values()),
+            shape=producer.ssis.data.shape_mem(spatial_relevant)[::-1]
+            + cast(tuple[int, ...], producer.sizes.get_values()),
             name=name_base + "mem",
-            repeat_count=producer.ssis.data.reuse_factor_mem(),
+            repeat_count=1,
         )
+        del object_fifo.properties["repeat_count"]
 
         if object_fifo.repeat_count is not None and object_fifo.repeat_count.value.data == 1:
             del object_fifo.properties["repeat_count"]
@@ -347,7 +358,7 @@ class ObjectFifoHop:
             producerTile=memtile,
             consumerTiles=[tile_op_manager.get_tile(consumer)],
             referenced_type=memref_type.get_element_type(),
-            shape=consumer.ssis.data.shape_mem()[::-1] + cast(tuple[int, ...], consumer.sizes.get_values()),
+            shape=consumer.ssis.data.shape_mem([])[::-1] + cast(tuple[int, ...], consumer.sizes.get_values()),
             name=name_base + "mem",
         )
         del object_fifo.properties["repeat_count"]

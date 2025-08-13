@@ -6,6 +6,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from enum import Flag, auto
 from math import prod
+from typing import Sequence
 
 from zigzag.datatypes import LayerDim, LayerOperand
 from zigzag.workload.layer_node import LoopRelevancyInfo
@@ -175,20 +176,15 @@ class SteadyStateIterationSpace:
         """Total elements/bits in *one* slice (product of *all* loop sizes)."""
         return prod(v.size for v in self.variables) if self.variables else 1
 
-    def shape_mem(self) -> tuple[int, ...]:
+    def shape_mem(self, spatial_relevant: Sequence[LayerDim]) -> tuple[int, ...]:
         """
         Returns the shape of the relevant iteration space kept local in a memtile.
         """
-        for iv in self.variables:
-            # FIXME: how to do reuse with join / distribute?
-            if iv.relevant and iv.spatial:
-                assert self.reuse_factor_mem() == 1, "Reuse not yet possible with join/distribute"
-                return tuple(iv.size for iv in self.variables if iv.relevant and iv.spatial)
-        return tuple(
-            iv.size
-            for iv in self.variables
-            if iv.relevant and (IterationVariableReuse.MEM_TILE_REUSE in iv.reuse or iv.spatial)
-        )
+        spatial_shape = prod(iv.size for iv in self.variables if iv.spatial and iv.dimension in spatial_relevant)
+        spatial_shape = (spatial_shape,) if spatial_shape > 1 else ()
+        reuse_shape = self.reuse_factor_mem()
+        reuse_shape = (reuse_shape,) if reuse_shape > 1 else ()
+        return reuse_shape + spatial_shape
 
     def reuse_factor_compute(self) -> int:
         """
