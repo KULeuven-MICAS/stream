@@ -48,6 +48,7 @@ class TransferAndTensorAllocator:
         iterations: int = 1,
         big_m: int | None = None,
         gurobi_verbosity: int = 1,
+        nb_cols_to_use: int = 4,
     ):
         self.ssw = ssw
         self.tsa = tsa
@@ -79,7 +80,7 @@ class TransferAndTensorAllocator:
         # ------------------------------------------------------------------------------
         # memory cores that may act as on‑chip caches (exclude the DRAM/off‑chip id)
         # ------------------------------------------------------------------------------
-        self.MAX_NB_COLS_TO_USE = 2
+        self.MAX_NB_COLS_TO_USE = nb_cols_to_use
         self.mem_cores: list[Core] = [
             c
             for c in self.accelerator.core_list

@@ -30,6 +30,7 @@ class SteadyStateScheduler:
         original_workload: "ComputationNodeWorkload",
         cost_lut: CostModelEvaluationLUT,
         iterations: int,
+        nb_cols_to_use: int = 4,
     ):
         """
         Initialize the SteadyStateScheduler with the allocation and accelerator.
@@ -57,6 +58,8 @@ class SteadyStateScheduler:
         self.allow_constant_tensors_on_mem_core = False
         self.allow_constant_tensors_on_compute_core = False
 
+        self.nb_cols_to_use = nb_cols_to_use
+
     def run(self, allocation: "TimeSlotAllocation"):
         """
         Run the steady state scheduler on the given allocation.
@@ -72,7 +75,9 @@ class SteadyStateScheduler:
         # Convert to TimeSlotAllocation with fixed timeslots for all nodes
         tsa = ssw.to_timeslotallocation()
         # At this point, the only nodes without an allocation are the transfer nodes
-        tta = TransferAndTensorAllocator(ssw, tsa, accelerator=self.accelerator, iterations=self.iterations)
+        tta = TransferAndTensorAllocator(
+            ssw, tsa, accelerator=self.accelerator, iterations=self.iterations, nb_cols_to_use=self.nb_cols_to_use
+        )
         tsa_upd, ssw_upd, total_latency_solver = tta.solve()
         print(tsa_upd)
         offchip_core_id = self.accelerator.offchip_core_id
@@ -540,7 +545,9 @@ class SteadyStateScheduler:
             )
             requests.append(request)
         # Send all multicast requests
-        all_paths = self.accelerator.communication_manager.plan_multicast_sequence(requests)
+        all_paths = self.accelerator.communication_manager.plan_multicast_sequence(
+            requests, nb_cols_to_use=self.nb_cols_to_use
+        )
         # Set the paths for each transfer node
         for transfer_node, request in zip(steady_state_workload.transfer_nodes, requests, strict=True):
             path = all_paths.get(request, None)

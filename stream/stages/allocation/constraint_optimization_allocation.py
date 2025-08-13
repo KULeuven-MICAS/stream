@@ -83,6 +83,9 @@ class ConstraintOptimizationAllocationStage(Stage):
         # Which CME attribute to use for the node latencies
         self.latency_attr = kwargs.get("latency_attr", "latency_total1")
 
+        # Number of AIE columns to use in the allocation
+        self.nb_cols_to_use = kwargs.get("nb_cols_to_use", 4)
+
         # Attributes that will be assigned throughout the stage
         self.ss_to_computes: dict[STACK_T, set[ComputationNode]] = {}
         self.hashes_per_sink_node_group: dict[STACK_T, dict[tuple[ComputationNode, ...], int]] = {}
@@ -118,7 +121,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             stack_subgraph = self.workload.get_subgraph([n for n in self.workload.node_list if n.id in stack])
             iterations = self.ss_iterations_per_stack[stack]
             scheduler = SteadyStateScheduler(
-                stack_subgraph, self.accelerator, self.original_workload, self.cost_lut, iterations
+                stack_subgraph, self.accelerator, self.original_workload, self.cost_lut, iterations, self.nb_cols_to_use
             )
             schedule = scheduler.run(optimal_allocation)
         return schedule
