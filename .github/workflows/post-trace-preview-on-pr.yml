@@ -4,6 +4,12 @@ on:
   pull_request:
     types: [opened, synchronize, reopened]
 
+permissions:
+  contents: read
+  actions: read
+  issues: write
+  pull-requests: write
+
 jobs:
   wait-and-comment:
     runs-on: ubuntu-latest
@@ -12,7 +18,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install GitHub CLI
+      - name: Install GitHub CLI and tools
         run: |
           sudo apt-get update
           sudo apt-get install -y gh jq unzip
@@ -20,23 +26,25 @@ jobs:
       - name: Get PR metadata
         id: prmeta
         run: |
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          HEAD_BRANCH=${{ github.event.pull_request.head.ref }}
-          echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-          echo "head_branch=$HEAD_BRANCH" >> $GITHUB_OUTPUT
+          echo "pr_number=${{ github.event.pull_request.number }}" >> "$GITHUB_OUTPUT"
+          echo "head_branch=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
 
-      - name: Poll for artifact (max 10 minutes)
-        id: wait-artifact
+      - name: Poll for 'outputs' artifact (max 10 minutes)
+        id: wait_artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ steps.prmeta.outputs.head_sha }}
         run: |
-          echo "Looking for 'outputs' artifact on latest successful workflow run for PR #${{ steps.prmeta.outputs.pr_number }} (branch: ${{ steps.prmeta.outputs.head_branch }})"
+          echo "Looking for 'outputs' artifact on latest successful workflow run for PR #${{ steps.prmeta.outputs.pr_number }} (branch: ${{ steps.prmeta.outputs.head_branch }}, sha: $HEAD_SHA)"
 
           for i in {1..10}; do
-            echo "⏳ Attempt $i of 10..."
+            echo "Attempt $i of 10..."
 
-            RUNS=$(gh api repos/singagan/stream_aie/actions/runs \
-              -H "Accept: application/vnd.github+json" \
+            RUNS=$(gh api repos/$REPO/actions/runs \
               --paginate \
-              --jq '.workflow_runs[] | select(.head_sha == "${{ github.event.pull_request.head.sha }}" and .event == "pull_request" and .conclusion == "success") | {id: .id, artifacts_url: .artifacts_url}')
+              --jq '.workflow_runs[] | select(.head_sha == env.HEAD_SHA and .event == "pull_request" and .conclusion == "success") | {id, artifacts_url}')
 
             if [[ -z "$RUNS" ]]; then
               echo "No matching successful runs yet. Sleeping 60s..."
@@ -44,20 +52,21 @@ jobs:
               continue
             fi
 
-            for row in $(echo "$RUNS" | jq -c '.'); do
-              RUN_ID=$(echo "$row" | jq -r '.id')
-              ARTIFACTS_URL=$(echo "$row" | jq -r '.artifacts_url')
+            # Iterate matching runs and look for the 'outputs' artifact
+            while IFS= read -r row; do
+              RUN_ID=$(jq -r '.id' <<<"$row")
+              ARTIFACTS_URL=$(jq -r '.artifacts_url' <<<"$row")
 
               ARTIFACT_ID=$(gh api "$ARTIFACTS_URL" \
-                -H "Accept: application/vnd.github+json" \
                 --jq '.artifacts[] | select(.name == "outputs") | .id' || true)
 
               if [[ -n "$ARTIFACT_ID" ]]; then
                 echo "✅ Found artifact ID: $ARTIFACT_ID from run $RUN_ID"
-                echo "artifact_id=$ARTIFACT_ID" >> $GITHUB_ENV
+                echo "artifact_id=$ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+                echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
                 exit 0
               fi
-            done
+            done < <(jq -c <<<"$RUNS")
 
             echo "Still no artifact. Sleeping 60s..."
             sleep 60
@@ -65,43 +74,49 @@ jobs:
 
           echo "❌ Timed out waiting for 'outputs' artifact."
           exit 1
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download and extract artifact
-        run: |
-          echo "Downloading artifact.zip..."
-          gh api /repos/singagan/stream_aie/actions/artifacts/$artifact_id/zip \
-            -H "Accept: application/vnd.github+json" > artifact.zip
-          mkdir artifact_contents
-          unzip -q artifact.zip -d artifact_contents
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          ARTIFACT_ID: ${{ steps.wait_artifact.outputs.artifact_id }}
+        run: |
+          echo "Downloading artifact.zip for artifact $ARTIFACT_ID..."
+          gh api /repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip > artifact.zip
+          mkdir -p artifact_contents
+          unzip -q artifact.zip -d artifact_contents
 
       - name: Comment on PR with image previews
         uses: actions/github-script@v7
         with:
-          github-token: ${{ secrets.COMMENT_PAT }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             const fs = require('fs');
             const path = require('path');
 
             const basePath = 'artifact_contents';
+            if (!fs.existsSync(basePath)) {
+              core.setFailed(`Artifact folder '${basePath}' not found`);
+            }
+
             const folders = fs.readdirSync(basePath).filter(f =>
               fs.statSync(path.join(basePath, f)).isDirectory()
             );
 
-            let body = `## 🔍 Efficiency Trace Preview\n`;
+            const marker = "## 🔍 Efficiency Trace Preview";
+            let body = `${marker}\n`;
             body += `This comment shows \`trace_efficiency_mm.png\` previews from the latest CI artifact.\n\n`;
 
             for (const folder of folders.sort()) {
               const imgPath = path.join(basePath, folder, 'trace_efficiency_mm.png');
+              body += `### ${folder}\n`;
               if (fs.existsSync(imgPath)) {
+                const stats = fs.statSync(imgPath);
+                // Optional: skip very large images to avoid comment size limits (~65k chars)
+                // if (stats.size > 300000) { body += `_Image too large to inline (${stats.size} bytes)._\\n\\n`; continue; }
                 const imgData = fs.readFileSync(imgPath).toString('base64');
-                body += `### ${folder}\n`;
                 body += `![${folder}](data:image/png;base64,${imgData})\n\n`;
               } else {
-                body += `### ${folder}\n`;
                 body += `_No trace_efficiency_mm.png found._\n\n`;
               }
             }
@@ -113,9 +128,8 @@ jobs:
               issue_number: prNumber,
             });
 
-            const marker = "## 🔍 Efficiency Trace Preview";
             const botComment = comments.find(c =>
-              c.user.type === 'Bot' && c.body.includes(marker)
+              c.user.type === 'Bot' && c.body && c.body.includes(marker)
             );
 
             if (botComment) {
