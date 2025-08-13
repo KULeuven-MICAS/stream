@@ -201,7 +201,7 @@ class CommunicationManager:
         sources: Sequence["Core"],
         targets: Sequence["Core"],
         *,
-        weight: str | None = None,
+        weight: str = "None",
         k_per_leg: int = 2,
         max_meetings: int = 5,
         max_plans: int = 10,
@@ -248,10 +248,12 @@ class CommunicationManager:
 
         # Distances for meeting-node scoring
         dist_from_sources: dict[Core, dict[Core, float]] = {
-            s: nx.single_source_dijkstra_path_length(G, s, weight=weight) for s in sources
+            s: nx.single_source_dijkstra_path_length(G, s, weight=weight)
+            for s in sources  # type: ignore
         }
         dist_to_targets: dict[Core, dict[Core, float]] = {
-            t: nx.single_source_dijkstra_path_length(Grev, t, weight=weight) for t in targets
+            t: nx.single_source_dijkstra_path_length(Grev, t, weight=weight)
+            for t in targets  # type: ignore
         }
 
         # Rank meeting nodes by total Steiner-like cost; tie-break by longer shared segment on the relevant side
@@ -272,7 +274,7 @@ class CommunicationManager:
         if not ranked:
             raise nx.NetworkXNoPath("no meeting node connects all sources to all targets")
 
-        ranked.sort()
+        ranked.sort(key=lambda x: (x[0], x[1]))
         candidate_ms = [m for _, _, m in islice(ranked, max_meetings)]
 
         plans: list[MulticastPathPlan] = []
@@ -281,7 +283,7 @@ class CommunicationManager:
         for m in candidate_ms:
             if len(sources) == 1:
                 s0 = sources[0]
-                s_paths = list(islice(nx.shortest_simple_paths(G, s0, m, weight=weight), k_per_leg))
+                s_paths = list(islice(nx.shortest_simple_paths(G, s0, m, weight=weight), k_per_leg))  # type: ignore
                 if not s_paths:
                     continue
                 t_paths: dict[Core, list[list[Core]]] = {}
@@ -418,11 +420,13 @@ class CommunicationManager:
 
         # Distances from each source to all nodes
         dist_from_sources: dict[Core, dict[Core, float]] = {
-            s: nx.single_source_dijkstra_path_length(G, s, weight=weight) for s in sources
+            s: nx.single_source_dijkstra_path_length(G, s, weight=weight)
+            for s in sources  # type: ignore
         }
         # Distances from all nodes to each target (via reverse graph)
         dist_to_targets: dict[Core, dict[Core, float]] = {
-            t: nx.single_source_dijkstra_path_length(Grev, t, weight=weight) for t in targets
+            t: nx.single_source_dijkstra_path_length(Grev, t, weight=weight)
+            for t in targets  # type: ignore
         }
 
         # Choose meeting node m
@@ -454,8 +458,8 @@ class CommunicationManager:
             raise nx.NetworkXNoPath("No meeting node connects all sources to all targets.")
 
         # Reconstruct segments
-        paths_from_sources: dict[Core, list[Core]] = {s: nx.shortest_path(G, s, best_m, weight=weight) for s in sources}
-        paths_to_targets: dict[Core, list[Core]] = {t: nx.shortest_path(G, best_m, t, weight=weight) for t in targets}
+        paths_from_sources: dict[Core, list[Core]] = {s: nx.shortest_path(G, s, best_m, weight=weight) for s in sources}  # type: ignore
+        paths_to_targets: dict[Core, list[Core]] = {t: nx.shortest_path(G, best_m, t, weight=weight) for t in targets}  # type: ignore
 
         # Build full paths. Keys are the "leaf endpoints":
         # - one-to-many: keys are targets
@@ -566,14 +570,14 @@ class CommunicationManager:
         init_mc_costs()
         planned: dict[MulticastRequest, tuple[CommunicationLink, ...]] = {}
         for request in requests:
-            # # TEST new function
-            # multicast_plans = self.enumerate_multicast_plans(request.sources, request.destinations)
-            # for multicast_plan in multicast_plans:
-            #     links_used = self.get_links_for_multicast_plan(multicast_plan)
-            #     print(multicast_plan)
-            #     print(links_used)
-            #     print()
-            # refresh_mc_costs_from_usage()
+            # TEST new function
+            multicast_plans = self.enumerate_multicast_plans(request.sources, request.destinations)
+            for multicast_plan in multicast_plans:
+                links_used = self.get_links_for_multicast_plan(multicast_plan)
+                print(multicast_plan)
+                print(links_used)
+                print()
+            refresh_mc_costs_from_usage()
             result = self._get_best_shared_prefix_path(request.sources, request.destinations, weight="mc_cost")
             links_used = required_links(result.full_paths)
             # Update usage counts using ONLY links used by THIS request (undirected)
