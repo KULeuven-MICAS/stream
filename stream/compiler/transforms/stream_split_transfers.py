@@ -40,7 +40,7 @@ class SplitTransferPattern(RewritePattern):
                 op.memtile,
             )
             ops_to_add.append(push)
-        for i, result in enumerate(op.results):
+        for result in op.results:
             for use in list(result.uses):
                 if isinstance(edge := use.operation, EdgeOp):
                     for input in edge.inputs:

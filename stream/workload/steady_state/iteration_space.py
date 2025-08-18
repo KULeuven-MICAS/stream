@@ -3,10 +3,9 @@
 # --------------------------------------------------------------------------- #
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from enum import Flag, auto
 from math import prod
-from typing import Sequence
 
 from zigzag.datatypes import LayerDim, LayerOperand
 from zigzag.workload.layer_node import LoopRelevancyInfo

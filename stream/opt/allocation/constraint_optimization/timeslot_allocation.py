@@ -21,13 +21,14 @@ Resource = Core | tuple[CommunicationLink] | CommunicationLink | None
 
 
 def _resource_key(res: Resource) -> str:
+    MAX_LENGTH = 255
     if isinstance(res, Core):  # unchanged
         return f"Core {res.id}"
     if isinstance(res, CommunicationLink):
         return str(res)
     if isinstance(res, tuple):  # pretty-print full paths
         path_str = "Path[" + "→".join(_resource_key(link) for link in res) + "]"
-        return path_str[:200] + "..." if len(path_str) > 255 else path_str
+        return path_str[: MAX_LENGTH - 55] + "..." if len(path_str) > MAX_LENGTH else path_str
     return str(res)
 
 

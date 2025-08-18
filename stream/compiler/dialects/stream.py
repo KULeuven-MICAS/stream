@@ -207,7 +207,7 @@ class PushOp(IRDLOperation):
 
     ssis = prop_def(SteadyStateIterationSpaceAttr)
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         input: SSAValue | Operation,
         channel: SSAValue | Operation,
@@ -264,7 +264,7 @@ class PullOp(IRDLOperation):
 
     ssis = prop_def(SteadyStateIterationSpaceAttr)
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         result_type: Attribute,
         channel: SSAValue | Operation,

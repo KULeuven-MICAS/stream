@@ -65,7 +65,7 @@ from stream.compiler.transforms.iteration_space_to_for import iteration_space_to
 from stream.workload.steady_state.iteration_space import IterationVariableReuse
 
 
-def get_tile(value: str) -> tuple[int, int]:
+def get_tile(value: str) -> tuple[int, int]:  # noqa: PLR0911, PLR0912
     if value == "Core(0)":
         return 0, 0
     elif value == "Core(1)":
@@ -178,7 +178,7 @@ def is_shim(tile: TileOp) -> bool:
 
 
 @dataclass
-class SortPullPushOp:
+class SortPullPushOp:  # noqa: PLW1641 for no hash
     op: PullOp | PushOp
 
     def __init__(self, op: PullOp | PushOp, tile_op_manager: TileOpManager):

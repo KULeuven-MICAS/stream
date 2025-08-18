@@ -497,7 +497,7 @@ class CommunicationManager:
             overlap_edges=overlap_edges,
         )
 
-    def _get_best_shared_prefix_path_v2(  # noqa: PLR0912
+    def _get_best_shared_prefix_path_v2(  # noqa: PLR0912, PLR0915
         self,
         sources: Sequence["Core"],
         targets: Sequence["Core"],
@@ -690,7 +690,7 @@ class CommunicationManager:
 
         init_mc_costs()
         planned: dict[MulticastRequest, tuple[CommunicationLink, ...]] = {}
-        for i, request in enumerate(requests):
+        for request in requests:
             # # TEST new function
             # multicast_plans = self.enumerate_multicast_plans(request.sources, request.destinations)
             # multicast_plan = multicast_plans[0]

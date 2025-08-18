@@ -77,7 +77,7 @@ class AIECodeGenerationStage(Stage):
             edge_op = EdgeOp(None, edge.node_name, transfer_results)
         return edge_op
 
-    def create_transfer_op(
+    def create_transfer_op(  # noqa: PLR0912
         self,
         workload: DiGraphWrapper[SteadyStateNode],
         transfer: SteadyStateTransfer,
