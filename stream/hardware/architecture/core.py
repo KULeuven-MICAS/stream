@@ -49,7 +49,7 @@ class Core(ZigZagCore):
         Get the maximum object FIFO depth for the core.
         """
         if self.type == "compute":
-            return 16
+            return 8
         elif self.type == "memory":
-            return 48
+            return 24
         return 0

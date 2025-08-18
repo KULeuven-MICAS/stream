@@ -2,8 +2,10 @@ configfile: "workflow/config/params.yaml"
 include: "workflow/rules/gemm.smk"
 
 GEMM = config["gemm"]
-# PROFILES = list(GEMM.keys())
-PROFILES = ["whole_array"]
+PROFILES = ["single_core",]
+# PROFILES = ["single_core", "single_col"]
+# PROFILES = ["single_core", "single_col", "whole_array"]
+
 
 # helper: build targets for one profile with zipped M,K,N
 def profile_targets(profile):
