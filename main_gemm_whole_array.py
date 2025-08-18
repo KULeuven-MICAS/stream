@@ -77,7 +77,7 @@ if __name__ == "__main__":
     parser.add_argument("--in_dtype", type=str, default="i16", help="Input data type (default: i16)")
     parser.add_argument("--out_dtype", type=str, default="i32", help="Output data type (default: i32)")
     parser.add_argument("--trace_size", type=int, default=1048576, help="Size of the trace buffer (default: 1048576)")
-    parser.add_argument("--nb_cols", type=int, default=4, help="Number of AIE columns to use (default: 4)")
+    parser.add_argument("--nb_cols", type=int, default=2, help="Number of AIE columns to use (default: 2)")
     args = parser.parse_args()
 
     run_main_aie_codegen_gemm(

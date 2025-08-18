@@ -259,6 +259,8 @@ class CommunicationManager:
         # Rank meeting nodes by total Steiner-like cost; tie-break by longer shared segment on the relevant side
         ranked: list[tuple[float, float, Core]] = []
         for m in G.nodes():
+            if not (m.type == "memory" and m.id != self.accelerator.offchip_core_id):
+                continue  # force meeting point in mem tile
             try:
                 c_s = sum(dist_from_sources[s][m] for s in sources)
                 c_t = sum(dist_to_targets[t][m] for t in targets)
@@ -434,6 +436,8 @@ class CommunicationManager:
         best_m: Core | None = None
 
         for m in G.nodes():
+            # if not (m.type == "memory" and m.id != self.accelerator.offchip_core_id):
+            #     continue
             try:
                 cost_sources = sum(dist_from_sources[s][m] for s in sources)
                 cost_targets = sum(dist_to_targets[t][m] for t in targets)
@@ -493,6 +497,123 @@ class CommunicationManager:
             overlap_edges=overlap_edges,
         )
 
+    def _get_best_shared_prefix_path_v2(  # noqa: PLR0912
+        self,
+        sources: Sequence["Core"],
+        targets: Sequence["Core"],
+        weight: str | None = None,
+    ) -> "SharedPrefixPath":
+        """
+        Return the plan that uses the *fewest unique CommunicationLinks* (edge attribute 'cl')
+        to connect the given sources and targets via a single meeting node.
+
+        Supports exactly one of:
+        - one source, multiple targets (multicast): maximize shared prefix implicitly
+        - multiple sources, one target (join):     maximize shared tail implicitly
+
+        Primary objective: minimize |union of CommunicationLinks across all full paths|.
+        Tie-breakers: (1) smaller total weighted distance sum, (2) longer shared prefix/tail.
+
+        Raises:
+            ValueError: if unsupported many-to-many case or empty inputs.
+            networkx.NetworkXNoPath: if no meeting node connects all endpoints.
+        """
+        if not sources:
+            raise ValueError("sources must be a non-empty sequence")
+        if not targets:
+            raise ValueError("targets must be a non-empty sequence")
+        if len(sources) > 1 and len(targets) > 1:
+            raise ValueError("This method supports either one-to-many or many-to-one, not many-to-many.")
+
+        G = self.accelerator.cores
+        Grev = G.reverse(copy=False) if G.is_directed() else G
+
+        # Precompute reachability/shortest-path lengths for fast feasibility checks + tie-breaker
+        dist_from_sources: dict[Core, dict[Core, float]] = {
+            s: nx.single_source_dijkstra_path_length(G, s, weight=weight) for s in sources
+        }
+        dist_to_targets: dict[Core, dict[Core, float]] = {
+            t: nx.single_source_dijkstra_path_length(Grev, t, weight=weight) for t in targets
+        }
+
+        best_key: tuple[int, float, float] | None = None  # (num_links, total_cost, tie_sign)
+        best_m: Core | None = None
+        best_paths_from_sources: dict[Core, list[Core]] = {}
+        best_paths_to_targets: dict[Core, list[Core]] = {}
+        best_full_paths: dict[Core, list[Core]] = {}
+        best_overlap_edges: int = 0
+
+        for m in G.nodes():
+            # Keep your original meeting-node constraint
+            if not (
+                getattr(m, "type", None) == "memory" and getattr(m, "id", None) != self.accelerator.offchip_core_id
+            ):
+                continue
+
+            # Feasibility: each source must reach m, and m must reach each target
+            try:
+                cost_sources = sum(dist_from_sources[s][m] for s in sources)
+                cost_targets = sum(dist_to_targets[t][m] for t in targets)
+            except KeyError:
+                continue
+
+            # Build shortest paths for this meeting node
+            paths_from_sources: dict[Core, list[Core]] = {s: nx.shortest_path(G, s, m, weight=weight) for s in sources}
+            paths_to_targets: dict[Core, list[Core]] = {t: nx.shortest_path(G, m, t, weight=weight) for t in targets}
+
+            # Stitch full paths and compute link union
+            full_paths: dict[Core, list[Core]] = {}
+            if len(sources) == 1:  # one-to-many
+                s0 = sources[0]
+                prefix = paths_from_sources[s0]
+                for t, m_to_t in paths_to_targets.items():
+                    full_paths[t] = prefix[:-1] + m_to_t
+                overlap_edges = max(0, len(prefix) - 1)
+            else:  # many-to-one
+                t0 = targets[0]
+                tail = paths_to_targets[t0]
+                for s, s_to_m in paths_from_sources.items():
+                    full_paths[s] = s_to_m[:-1] + tail
+                overlap_edges = max(0, len(tail) - 1)
+
+            # Count unique CommunicationLinks used by the union of all paths
+            links_used: set[CommunicationLink] = set()
+            for path in full_paths.values():
+                for u, v in zip(path, path[1:], strict=False):
+                    links_used.add(G.edges[(u, v)]["cl"])
+            num_links = len(links_used)
+
+            # Tie-breakers
+            total_cost = float(cost_sources + cost_targets)
+            tie_sign = (
+                -float(dist_from_sources[sources[0]][m])
+                if len(sources) == 1
+                else -float(dist_to_targets[targets[0]][m])
+            )
+
+            key = (num_links, total_cost, tie_sign)
+            if best_key is None or key < best_key:
+                best_key = key
+                best_m = m
+                best_paths_from_sources = paths_from_sources
+                best_paths_to_targets = paths_to_targets
+                best_full_paths = full_paths
+                best_overlap_edges = overlap_edges
+
+        if best_m is None:
+            raise nx.NetworkXNoPath("No meeting node connects all sources to all targets.")
+
+        return SharedPrefixPath(
+            sources=tuple(sources),
+            targets=tuple(targets),
+            meeting=best_m,
+            paths_from_sources=best_paths_from_sources,
+            paths_to_targets=best_paths_to_targets,
+            full_paths=best_full_paths,
+            total_cost=best_key[1] if best_key else 0.0,  # type: ignore[index]
+            overlap_edges=best_overlap_edges,
+        )
+
     def compute_multicast_links(
         self,
         sources: Sequence["Core"],
@@ -513,7 +634,7 @@ class CommunicationManager:
         *,
         initial_mc_cost: float = 1.0,
         reuse_penalty: float = 10.0,
-        nb_cols_to_use: int = 2,
+        nb_cols_to_use: int = 4,
         infinite_cost: float = float("inf"),
     ) -> dict["MulticastRequest", tuple["CommunicationLink", ...]]:
         """
@@ -569,14 +690,15 @@ class CommunicationManager:
 
         init_mc_costs()
         planned: dict[MulticastRequest, tuple[CommunicationLink, ...]] = {}
-        for request in requests:
-            # TEST new function
-            multicast_plans = self.enumerate_multicast_plans(request.sources, request.destinations)
-            for multicast_plan in multicast_plans:
-                links_used = self.get_links_for_multicast_plan(multicast_plan)
-                print(multicast_plan)
-                print(links_used)
-                print()
+        for i, request in enumerate(requests):
+            # # TEST new function
+            # multicast_plans = self.enumerate_multicast_plans(request.sources, request.destinations)
+            # multicast_plan = multicast_plans[0]
+            # links_used = self.get_links_for_multicast_plan(multicast_plan)
+            # print(request)
+            # print(multicast_plan)
+            # print(links_used)
+            # print()
             refresh_mc_costs_from_usage()
             result = self._get_best_shared_prefix_path(request.sources, request.destinations, weight="mc_cost")
             links_used = required_links(result.full_paths)

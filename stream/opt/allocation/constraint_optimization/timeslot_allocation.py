@@ -26,7 +26,8 @@ def _resource_key(res: Resource) -> str:
     if isinstance(res, CommunicationLink):
         return str(res)
     if isinstance(res, tuple):  # pretty-print full paths
-        return "Path[" + "→".join(_resource_key(link) for link in res) + "]"
+        path_str = "Path[" + "→".join(_resource_key(link) for link in res) + "]"
+        return path_str[:200] + "..." if len(path_str) > 255 else path_str
     return str(res)
 
 

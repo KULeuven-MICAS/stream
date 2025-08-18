@@ -20,3 +20,14 @@ gemm:
     Ms: [64, 128]
     Ks: [64, 128]
     Ns: [64, 128]
+
+  whole_array:
+    stream_hw_id: whole_array
+    stream_main_file: "main_gemm_whole_array.py"
+    trace_size: 1048576
+    m: 32
+    k: 32
+    n: 32
+    Ms: [64,]
+    Ks: [64, 128]
+    Ns: [64,]
