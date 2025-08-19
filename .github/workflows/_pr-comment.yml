@@ -1,0 +1,19 @@
+name: _pr-comment
+on:
+  workflow_call:
+    inputs:
+      body:
+        type: string
+        required: true
+
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: peter-evans/create-or-update-comment@v4
+        with:
+          token: ${{ github.token }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body: ${{ inputs.body }}
+          edit-mode: replace
+          comment-tag: gemm-results

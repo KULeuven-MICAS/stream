@@ -1,0 +1,24 @@
+name: AIE Deployment Gemm 2
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write   # lets us comment on PRs
+
+jobs:
+  run:
+    uses: ./.github/workflows/_gemm-run.yml
+    secrets: inherit              # pass CI_TOKEN/GITHUB_TOKEN if needed
+    with:
+      snakemake_args: "-j 1 --forceall --keep-going"
+
+  comment:
+    needs: run
+    if: ${{ github.event_name == 'pull_request' }}
+    uses: ./.github/workflows/_pr-comment.yml
+    with:
+      body: ${{ needs.run.outputs.summary_md }}
+    secrets: inherit
