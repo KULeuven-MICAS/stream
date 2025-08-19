@@ -113,7 +113,7 @@ jobs:
 
           # Expose the whole markdown as a step output
           {
-            echo "summary_md<<'EOF'"
+            echo "summary_md<<EOF"
             cat "$SUMMARY_FILE"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
