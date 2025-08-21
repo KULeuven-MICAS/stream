@@ -172,9 +172,9 @@ def infer_hwid(output_base):
     return None
 
 
-def write_details_markdown(output_base, hwid, M, N, K, tile_rows):
+def write_details_markdown(output_base, hwid, M, N, K, tile_rows):  # noqa: N803
     """
-    Write outputs/<run-dir>/details.md containing a single <details> block with a tile table.
+    Write {output_base}/details.md containing a single <details> block with a tile table.
     Rows are sorted by macs_per_cycle_system descending for quick glance.
     """
     if not tile_rows:
@@ -187,14 +187,14 @@ def write_details_markdown(output_base, hwid, M, N, K, tile_rows):
     with open(details_path, "w") as f:
         title_hwid = hwid or "?"
         f.write("### Details for Successful Runs\n\n")
+        f.write(f"<details><summary><strong>[{title_hwid}] M={M} K={K} N={N}</strong></summary>\n\n")
         f.write(
-            f"<details><summary><strong>[{title_hwid}] M={M} K={K} N={N}</strong> — {len(tile_rows)} tiles</summary>\n\n"
+            "| Tile | Kernels | Total cycles | Avg cycles per kernel | MACs/cycle (kernel) |"
+            " Peak eff. kernel % | MACs/cycle (system) | Peak eff. system % |\n"
         )
         f.write(
-            "| Tile | Kernels | Total cycles | Avg cycles per kernel | MACs/cycle (kernel) | Peak eff. kernel % | MACs/cycle (system) | Peak eff. system % |\n"
-        )
-        f.write(
-            "|------|---------|--------------|-----------------------|----------------------|--------------------|---------------------|--------------------|\n"
+            "|------|---------|--------------|-----------------------|---------------------|"
+            "--------------------|---------------------|--------------------|\n"
         )
         for tile_name, nk, tcy, acy, mpck, peffk, mpcs, peffs in tile_rows:
             f.write(
