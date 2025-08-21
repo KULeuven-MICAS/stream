@@ -1,4 +1,5 @@
 name: _pr-comment
+
 on:
   workflow_call:
     inputs:
@@ -6,14 +7,36 @@ on:
         type: string
         required: true
 
+permissions:
+  contents: read
+  pull-requests: write   # needed to create/update PR comments
+
 jobs:
   comment:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: peter-evans/create-or-update-comment@v4
+      # Optional guard: ensures this is only used from a PR context
+      - name: Ensure PR context
+        if: ${{ !github.event.pull_request }}
+        run: |
+          echo "This workflow must be called from a pull_request context." >&2
+          exit 1
+
+      - name: Find existing bot comment
+        id: fc
+        uses: peter-evans/find-comment@v3
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          # Use a stable marker that will always be in your summary body:
+          body-includes: '## GEMM Deployment Summary'
+
+      - name: Create or update PR comment
+        uses: peter-evans/create-or-update-comment@v4
         with:
           token: ${{ github.token }}
           issue-number: ${{ github.event.pull_request.number }}
+          comment-id: ${{ steps.fc.outputs.comment-id }}  # empty -> create, else update
           body: ${{ inputs.body }}
           edit-mode: replace
-          comment-tag: gemm-results
