@@ -1,10 +1,7 @@
 name: MkDocs CI/CD
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - 'docs/**'
+  # Only after merges to main (or manual run)
   push:
     branches: [main]
     paths:
@@ -35,6 +32,28 @@ jobs:
         run: |
           cd docs
           pip install -r requirements.txt
+
+      # Prevent --strict failures if the ingest hasn't created these yet
+      - name: Ensure CI report placeholders (docs_dir: source)
+        run: |
+          set -euo pipefail
+          mkdir -p docs/source/ci/runs
+          if [ ! -f docs/source/ci/latest.md ]; then
+            cat > docs/source/ci/latest.md <<'MD'
+# CI Reports
+
+_No CI report ingested yet. This page will update automatically after the AIE workflow succeeds on `main`._
+MD
+          fi
+          if [ ! -f docs/source/ci/index.md ]; then
+            cat > docs/source/ci/index.md <<'MD'
+# CI Reports
+
+- [Latest](latest.md)
+
+_No historical runs yet._
+MD
+          fi
 
       - name: Build docs
         run: |
