@@ -7,7 +7,7 @@ gemm:
     k: 32
     n: 32
     Ms: [64,]
-    Ks: [64,]
+    Ks: [64, 128]
     Ns: [64,]
 
   single_col:
