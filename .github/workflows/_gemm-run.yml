@@ -117,6 +117,27 @@ jobs:
           echo >> "$SUMMARY_FILE"
           echo "**Totals:** ✅ \`$ok\`  •  ❌ \`$fail\`  •  All: \`$total\`" >> "$SUMMARY_FILE"
 
+          # --- Append per-run details produced by your postprocessing script ---
+          # Each successful run directory should contain outputs/<run-dir>/traces/details.md.
+          shopt -s nullglob
+          appended=0
+          for d in outputs/*; do
+            [ -d "$d" ] || continue
+            if [[ -f "$d/status.ok" ]] && grep -q success "$d/status.ok"; then
+              details_file="$d/traces/details.md"
+              if [[ -f "$details_file" ]]; then
+                echo >> "$SUMMARY_FILE"
+                cat "$details_file" >> "$SUMMARY_FILE"
+                appended=$((appended+1))
+              fi
+            fi
+          done
+          if [[ $appended -eq 0 ]]; then
+            echo >> "$SUMMARY_FILE"
+            echo "_No detailed traces found to display (no traces/details.md files present in successful runs)._ " >> "$SUMMARY_FILE"
+          fi
+          # --- end append ---
+
           # Expose the whole markdown as a step output
           {
             echo "summary_md<<EOF"
