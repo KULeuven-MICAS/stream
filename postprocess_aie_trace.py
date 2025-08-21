@@ -29,7 +29,8 @@ def parse_perfetto_trace(file_path):
                     events["INSTR_EVENT_1"].append(events["INSTR_EVENT_0"][-1] + last_difference)
                 else:
                     raise ValueError(
-                        f"Mismatched INSTR_EVENT_0 ({len(events['INSTR_EVENT_0'])}) and INSTR_EVENT_1 ({len(events['INSTR_EVENT_1'])}) for PID {pid}"
+                        f"Mismatched INSTR_EVENT_0 ({len(events['INSTR_EVENT_0'])}) and "
+                        f"INSTR_EVENT_1 ({len(events['INSTR_EVENT_1'])}) for PID {pid}"
                     )
 
     return traces
@@ -40,7 +41,8 @@ def calculate_time_differences(traces):
     for pid, events in traces.items():
         if len(events["INSTR_EVENT_0"]) != len(events["INSTR_EVENT_1"]):
             raise ValueError(
-                f"Mismatched INSTR_EVENT_0 ({len(events['INSTR_EVENT_0'])}) and INSTR_EVENT_1 ({len(events['INSTR_EVENT_1'])}) for PID {pid}"
+                f"Mismatched INSTR_EVENT_0 ({len(events['INSTR_EVENT_0'])}) and "
+                f"INSTR_EVENT_1 ({len(events['INSTR_EVENT_1'])}) for PID {pid}"
             )
 
         time_differences = [
@@ -72,7 +74,7 @@ def save_report(report_path, report_data):
         json.dump(report_data, report_file, indent=4)
 
 
-def process_core_trace(pid, trace, M, N, K, m, n, k, output_base):
+def process_core_trace(pid, trace, M, N, K, m, n, k, output_base):  # noqa: PLR0913, N803
     time_differences = [end - start for start, end in zip(trace["INSTR_EVENT_0"], trace["INSTR_EVENT_1"], strict=False)]
     total_difference = trace["INSTR_EVENT_1"][-1] - trace["INSTR_EVENT_0"][0]
     num_kernels_this_core = len(time_differences)
