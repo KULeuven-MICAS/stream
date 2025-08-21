@@ -1,4 +1,4 @@
-name: AIE Deployment Gemm 2
+name: AIE Deployment Gemm
 on:
   push:
     branches: [main]

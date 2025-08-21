@@ -63,8 +63,8 @@ jobs:
           mkdir -p outputs || true
 
           # Timestamps
-          DEN_TS="$(TZ='America/Denver' date '+%Y-%m-%d %H:%M:%S %Z (America/Denver)')"
-          BRU_TS="$(TZ='Europe/Brussels' date '+%Y-%m-%d %H:%M:%S %Z (Europe/Brussels)')"
+          DEN_TS="$(TZ='America/Denver' date '+%Y-%m-%d %H:%M:%S %Z')"
+          BRU_TS="$(TZ='Europe/Brussels' date '+%Y-%m-%d %H:%M:%S %Z')"
 
           total=0; ok=0; fail=0
           {
