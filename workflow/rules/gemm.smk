@@ -46,18 +46,24 @@ rule run_trace:
         ) > {log} 2>&1
         """
 
-rule postprocess_trace:
+rule copy_trace_output:
     input:
         rules.run_trace.output
     output:
-        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-fused-constraint-optimization/trace_efficiency_mm.json",
-        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-fused-constraint-optimization/trace_efficiency_mm.png"
+        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-fused-constraint-optimization/traces/trace_mm_{M}_{K}_{N}.json"
+    shell:
+        "mkdir -p $(dirname {output}) && cp {input} {output}"
+
+rule postprocess_trace:
+    input:
+        rules.copy_trace_output.output
+    output:
+        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-fused-constraint-optimization/traces/tile2,1_report.json",
     shell:
         """
         python3 postprocess_aie_trace.py \
-            --input {input[0]} \
-            --output {output[0]} \
-            --fig {output[1]} \
+            --input {input} \
+            --output $(dirname {output}) \
             --M {wildcards.M} --K {wildcards.K} --N {wildcards.N} \
             --m 32 --k 32 --n 32
         """
