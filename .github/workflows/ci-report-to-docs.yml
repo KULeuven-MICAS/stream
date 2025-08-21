@@ -1,0 +1,93 @@
+name: CI → Docs (ingest AIE report)
+
+on:
+  workflow_run:
+    workflows: ["AIE Deployment Gemm"]   # must match your CI workflow name
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: write      # we commit docs/
+  actions: read        # download artifacts from the triggering run
+
+concurrency:
+  group: ci-report-docs
+  cancel-in-progress: false
+
+env:
+  MKDOCS_ROOT: docs
+  MKDOCS_CONTENT_SUBDIR: source   # because docs_dir: source
+
+jobs:
+  update-docs:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository (main)
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download gemm-summary artifact from the triggering run
+        uses: dawidd6/action-download-artifact@v6
+        with:
+          run_id: ${{ github.event.workflow_run.id }}
+          name: gemm-summary
+          path: _ci_artifacts
+          if_no_artifact_found: error
+
+      - name: Prepare CI docs
+        run: |
+          set -euo pipefail
+          CONTENT_DIR="${MKDOCS_ROOT}/${MKDOCS_CONTENT_SUBDIR}/ci"
+          RUNS_DIR="$CONTENT_DIR/runs"
+          mkdir -p "$RUNS_DIR"
+
+          # latest report (required)
+          cp _ci_artifacts/gemm_summary.md "$CONTENT_DIR/latest.md"
+
+          # optional machine-readable summary if your CI uploads it
+          if [ -f _ci_artifacts/gemm_summary.json ]; then
+            cp _ci_artifacts/gemm_summary.json "$CONTENT_DIR/latest.json"
+          fi
+
+          # make a per-run page keyed by short SHA for a history trail
+          short_sha="${{ github.event.workflow_run.head_sha }}"
+          short_sha="${short_sha:0:7}"
+          run_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.event.workflow_run.id }}"
+          denver="$(TZ='America/Denver' date '+%Y-%m-%d %H:%M:%S %Z')"
+          brussels="$(TZ='Europe/Brussels' date '+%Y-%m-%d %H:%M:%S %Z')"
+
+          {
+            echo "# CI run ${short_sha}"
+            echo
+            echo "- Run: [link](${run_url})"
+            echo "- Time: Denver \`${denver}\` • Brussels \`${brussels}\`"
+            echo
+            echo "---"
+            echo
+            cat _ci_artifacts/gemm_summary.md
+          } > "$RUNS_DIR/${short_sha}.md"
+
+          # lightweight index linking to Latest + recent runs
+          {
+            echo "# CI Reports"
+            echo
+            echo "- [Latest](latest.md)"
+            echo
+            echo "## Recent runs"
+            ls -1t "$RUNS_DIR"/*.md 2>/dev/null | head -n 30 | while read -r f; do
+              base="$(basename "$f" .md)"
+              echo "- [${base}](runs/${base}.md)"
+            done
+          } > "$CONTENT_DIR/index.md"
+
+      - name: Commit CI docs
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "${MKDOCS_ROOT}/${MKDOCS_CONTENT_SUBDIR}/ci"
+          git commit -m "docs(ci): update CI report for run ${{ github.event.workflow_run.id }}" || exit 0
+          git push

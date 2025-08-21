@@ -2,13 +2,21 @@ name: MkDocs CI/CD
 
 on:
   pull_request:
-    branches: [master]
+    branches: [main]
+    paths:
+      - 'docs/**'
   push:
-    branches: [master]
+    branches: [main]
+    paths:
+      - 'docs/**'
   workflow_dispatch:
 
 permissions:
-  contents: write  # needed for deployment
+  contents: write  # needed for gh-pages deployment
+
+concurrency:
+  group: mkdocs-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build-docs:
@@ -16,10 +24,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
@@ -31,19 +39,20 @@ jobs:
       - name: Build docs
         run: |
           cd docs
+          # mkdocs.yml has: docs_dir: source
           mkdocs build --config-file mkdocs.yml --strict
 
   deploy:
     name: Deploy to GitHub Pages
     needs: build-docs
-    if: github.ref == 'refs/heads/master'
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
