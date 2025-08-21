@@ -62,6 +62,10 @@ jobs:
           SUMMARY_FILE="gemm_summary.md"
           mkdir -p outputs || true
 
+          # Timestamps
+          DEN_TS="$(TZ='America/Denver' date '+%Y-%m-%d %H:%M:%S %Z (America/Denver)')"
+          BRU_TS="$(TZ='Europe/Brussels' date '+%Y-%m-%d %H:%M:%S %Z (Europe/Brussels)')"
+
           total=0; ok=0; fail=0
           {
             echo "## GEMM Deployment Summary"
@@ -69,6 +73,8 @@ jobs:
             echo "- Workflow: \`${{ github.workflow }}\`"
             echo "- Commit: \`${{ github.sha }}\`"
             echo "- Runner: \`${{ runner.name }}\`"
+            echo "- Run time: Denver \`${DEN_TS}\` • Brussels \`${BRU_TS}\`"
+            echo "- Run: [#${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) attempt ${{ github.run_attempt }}"
             echo
             echo "| HW | M | K | N | Status | Note |"
             echo "|---|---|---|---|--------|------|"
