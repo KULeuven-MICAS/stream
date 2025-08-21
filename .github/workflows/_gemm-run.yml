@@ -74,7 +74,7 @@ jobs:
             echo "- Commit: \`${{ github.sha }}\`"
             echo "- Runner: \`${{ runner.name }}\`"
             echo "- Run time: Denver \`${DEN_TS}\` • Brussels \`${BRU_TS}\`"
-            echo "- Run: [#${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) attempt ${{ github.run_attempt }}"
+            echo "- Run: [#${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}); Attempt ${{ github.run_attempt }}"
             echo
             echo "| HW | M | K | N | Status | Note |"
             echo "|---|---|---|---|--------|------|"
