@@ -148,6 +148,15 @@ jobs:
           # Also publish to the job summary UI
           cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Upload summary artifact (for workflow_run / docs ingest)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemm-summary
+          path: gemm_summary.md
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload outputs artifact
         if: always()
         uses: actions/upload-artifact@v4
