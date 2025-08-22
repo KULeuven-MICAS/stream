@@ -1,26 +1,26 @@
 name: MkDocs CI/CD
 
 on:
-  # Only after merges to main (or manual run)
+  # Trigger only when docs/ changes land on main (e.g., after your ingest workflow commits)
   push:
     branches: [main]
     paths:
       - 'docs/**'
+  # Optional manual trigger
   workflow_dispatch:
 
 permissions:
-  contents: write  # needed for gh-pages deployment
+  contents: write  # required by peaceiris/actions-gh-pages to push to gh-pages
 
 concurrency:
   group: mkdocs-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build-docs:
-    name: Build MkDocs Documentation
+  build-and-deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -28,65 +28,24 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install dependencies
+      - name: Install MkDocs dependencies
         run: |
           cd docs
           pip install -r requirements.txt
 
-      # Prevent --strict failures if the ingest hasn't created these yet
-      - name: Ensure CI report placeholders
-        run: |
-          set -euo pipefail
-          mkdir -p docs/source/ci/runs
-          if [ ! -f docs/source/ci/latest.md ]; then
-            cat > docs/source/ci/latest.md <<'MD'
-# CI Reports
-
-_No CI report ingested yet. This page will update automatically after the AIE workflow succeeds on `main`._
-MD
-          fi
-          if [ ! -f docs/source/ci/index.md ]; then
-            cat > docs/source/ci/index.md <<'MD'
-# CI Reports
-
-- [Latest](latest.md)
-
-_No historical runs yet._
-MD
-          fi
-
-      - name: Build docs
-        run: |
-          cd docs
-          # mkdocs.yml has: docs_dir: source
-          mkdocs build --config-file mkdocs.yml --strict
-
-  deploy:
-    name: Deploy to GitHub Pages
-    needs: build-docs
-    if: github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-
-      - name: Install dependencies
-        run: |
-          cd docs
-          pip install -r requirements.txt
-
-      - name: Build docs
+      - name: Build MkDocs site (docs_dir: source)
         run: |
           cd docs
           mkdocs build --config-file mkdocs.yml --strict
+          # Output is at docs/site by default
 
-      - name: Deploy to GitHub Pages 🚀
+      - name: Deploy to GitHub Pages (gh-pages)
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: gh-pages
           publish_dir: docs/site
+          # Optional knobs:
+          # user_name: github-actions[bot]
+          # user_email: 41898282+github-actions[bot]@users.noreply.github.com
+          # commit_message: "docs: publish site"
