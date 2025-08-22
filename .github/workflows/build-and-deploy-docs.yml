@@ -33,7 +33,7 @@ jobs:
           cd docs
           pip install -r requirements.txt
 
-      - name: Build MkDocs site (docs_dir: source)
+      - name: Build MkDocs site
         run: |
           cd docs
           mkdocs build --config-file mkdocs.yml --strict
