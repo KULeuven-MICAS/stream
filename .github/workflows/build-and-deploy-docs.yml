@@ -34,7 +34,7 @@ jobs:
           pip install -r requirements.txt
 
       # Prevent --strict failures if the ingest hasn't created these yet
-      - name: Ensure CI report placeholders (docs_dir: source)
+      - name: Ensure CI report placeholders
         run: |
           set -euo pipefail
           mkdir -p docs/source/ci/runs
