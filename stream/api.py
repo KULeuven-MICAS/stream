@@ -10,7 +10,6 @@ from zigzag.utils import pickle_load, pickle_save
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
-from stream.stages.codegen.aie_code_generation import AIECodeGenerationStage
 from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
 from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
 from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
@@ -138,6 +137,7 @@ def optimize_allocation_co(  # noqa: PLR0913
     temporal_mapping_type: str = "uneven",
     enable_codegen: bool = False,
     trace_size: int = 1048576,
+    nb_cols_to_use: int = 4,
 ) -> StreamCostModelEvaluation:
     _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
     _sanity_check_gurobi_license()
@@ -184,6 +184,8 @@ def optimize_allocation_co(  # noqa: PLR0913
 
         # optionally add code generation stage
         if enable_codegen:
+            from stream.stages.codegen.aie_code_generation import AIECodeGenerationStage  # noqa: PLC0415
+
             stages = [AIECodeGenerationStage] + stages
 
         mainstage = MainStage(
@@ -204,6 +206,7 @@ def optimize_allocation_co(  # noqa: PLR0913
             latency_attr="ideal_temporal_cycle",
             codegen_path=codegen_path,
             trace_size=trace_size,
+            nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
         )
         # Launch the MainStage
         answers = mainstage.run()

@@ -9,6 +9,6 @@ cerberus
 pre-commit
 gurobipy
 pydot
-xdsl-aie @ git+https://github.com/xdslproject/xdsl-aie.git@5028e06709424997088d7161a4ac00f90b15f48b
+xdsl-aie @ git+https://github.com/xdslproject/xdsl-aie.git@1c36c352c8c4c698cf5957012fbb55e8154b6211
 snax-mlir @ git+https://github.com/kuleuven-micas/snax-mlir.git@1c01c5d100df128c9fa01d3336ebea98e19b20cf
 snakemake

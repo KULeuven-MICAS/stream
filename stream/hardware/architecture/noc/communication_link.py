@@ -68,7 +68,7 @@ class CommunicationLink:
         self.previously_seen_tensors: dict[SubviewTensor, list[CommunicationLinkEvent]] = {}
 
     def __str__(self) -> str:
-        return f"CommunicationLink({self.sender}, {self.receiver}, bw={self.bandwidth})"
+        return f"CL({self.sender}, {self.receiver}, bw={self.bandwidth})"
 
     def __repr__(self) -> str:
         return str(self)
@@ -82,6 +82,18 @@ class CommunicationLink:
             other.receiver,
             other.bandwidth,
         )
+
+    def __lt__(self, other: object) -> bool:
+        if not isinstance(other, CommunicationLink):
+            return NotImplemented
+        sender_self_id = self.sender.id
+        sender_other_id = other.sender.id
+        if sender_self_id != sender_other_id:
+            return sender_self_id < sender_other_id
+
+        receiver_self_id = self.receiver.id
+        receiver_other_id = other.receiver.id
+        return receiver_self_id < receiver_other_id
 
     def get_name_for_schedule_plot(self) -> str:
         if self.bidirectional:

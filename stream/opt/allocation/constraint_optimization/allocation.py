@@ -44,7 +44,7 @@ EnergyDict = dict[tuple[int, str], float]
 WeightDict = dict[int, int]
 DepDict = dict[tuple[int, int], int]
 CapDict = dict[str, float]
-GroupDict = dict[int, list[int]]
+GroupDict = dict[tuple[int, int], list[int]]  # key = (node.id, node.group)
 SplitDict = dict[int, dict[str, dict[int, int]]]
 
 
@@ -211,7 +211,8 @@ class ComputeAllocator:
     def _group_nodes(nodes, ids: dict) -> GroupDict:
         groups: GroupDict = {}
         for n in nodes:
-            groups.setdefault(n.id, []).append(ids[n])
+            key = (n.id, n.group)
+            groups.setdefault(key, []).append(ids[n])
         return groups
 
     @staticmethod
@@ -308,10 +309,14 @@ class ComputeAllocator:
         m = self.model
         m.addConstrs(self.core_asgn.sum("*", n) == self.k_splits[n] for n in self.node_ids)
         for n in self.node_ids:
-            m.addConstrs(
-                self.core_asgn[c, n] <= gp.quicksum(splits[n][c][k] * self.k_vec[n, k] for k in self.p_vals)
-                for c in self.cores
-            )
+            for c in self.cores:
+                if any(splits[n][c][p] > 0 for p in self.p_vals):
+                    m.addConstr(
+                        self.core_asgn[c, n] <= gp.quicksum(splits[n][c][k] * self.k_vec[n, k] for k in self.p_vals)
+                    )
+                else:
+                    # Explicitly zero the assignment
+                    m.addConstr(self.core_asgn[c, n] == 0)
 
     def _add_slot_assignment_constraints(self) -> None:
         assert self.model and self.slot_asgn and self.asgn and self.core_asgn and self.k_splits

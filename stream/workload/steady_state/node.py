@@ -14,7 +14,7 @@ class SteadyStateNode(ABC):  # noqa: B024
         node_name: str,
         type: str,
         steady_state_iteration_space: SteadyStateIterationSpace,
-        possible_resource_allocation: None | list[Core] | tuple[tuple[CommunicationLink]],
+        possible_resource_allocation: None | list[Core] | tuple[tuple[CommunicationLink, ...], ...],
         onchip_energy: float | None = None,
         offchip_energy: float | None = None,
         runtime: float | None = None,

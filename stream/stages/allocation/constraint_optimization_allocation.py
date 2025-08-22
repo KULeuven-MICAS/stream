@@ -83,11 +83,14 @@ class ConstraintOptimizationAllocationStage(Stage):
         # Which CME attribute to use for the node latencies
         self.latency_attr = kwargs.get("latency_attr", "latency_total1")
 
+        # Number of AIE columns to use in the allocation
+        self.nb_cols_to_use = kwargs.get("nb_cols_to_use", 4)
+
         # Attributes that will be assigned throughout the stage
         self.ss_to_computes: dict[STACK_T, set[ComputationNode]] = {}
-        self.hashes_per_sink_node: dict[STACK_T, dict[ComputationNode, int]] = {}
+        self.hashes_per_sink_node_group: dict[STACK_T, dict[tuple[ComputationNode, ...], int]] = {}
         self.steady_state_hashes: dict[STACK_T, int] = {}
-        self.compute_per_sink_node: dict[STACK_T, dict[ComputationNode, set[ComputationNode]]] = {}
+        self.compute_per_sink_node_group: dict[STACK_T, dict[tuple[ComputationNode, ...], set[ComputationNode]]] = {}
         self.ss_iterations_per_stack: dict[STACK_T, int] = {}
         self.optimal_allocation_per_stack: dict[STACK_T, TimeSlotAllocation] = {}
         self.nb_macs_per_stack: dict[STACK_T, int] = {}
@@ -118,7 +121,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             stack_subgraph = self.workload.get_subgraph([n for n in self.workload.node_list if n.id in stack])
             iterations = self.ss_iterations_per_stack[stack]
             scheduler = SteadyStateScheduler(
-                stack_subgraph, self.accelerator, self.original_workload, self.cost_lut, iterations
+                stack_subgraph, self.accelerator, self.original_workload, self.cost_lut, iterations, self.nb_cols_to_use
             )
             schedule = scheduler.run(optimal_allocation)
         return schedule
@@ -152,7 +155,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         steady_state_hash = self.steady_state_hashes[stack]
         # Add all sink nodes that are part of the warmup (before steady state starts)
         warmup_sink_nodes = []
-        for sink_node, memoization_hash in self.hashes_per_sink_node[stack].items():
+        for sink_node, memoization_hash in self.hashes_per_sink_node_group[stack].items():
             if memoization_hash != steady_state_hash:
                 warmup_sink_nodes.append(sink_node)
             else:
@@ -185,7 +188,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         steady_state_hash = self.steady_state_hashes[stack]
         in_ss = False
         steady_state_sink_nodes = []
-        for sink_node, memoization_hash in self.hashes_per_sink_node[stack].items():
+        for sink_node, memoization_hash in self.hashes_per_sink_node_group[stack].items():
             if memoization_hash != steady_state_hash:
                 if not in_ss:
                     # We are still in the warmup phase
@@ -226,7 +229,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         # Add all sink nodes that are part of the cooldown (after steady state starts)
         cooldown_sink_nodes = []
         seen_ss = False
-        for sink_node, memoization_hash in self.hashes_per_sink_node[stack].items():
+        for sink_node, memoization_hash in self.hashes_per_sink_node_group[stack].items():
             if memoization_hash != steady_state_hash and seen_ss:
                 cooldown_sink_nodes.append(sink_node)
             else:
@@ -325,12 +328,12 @@ class ConstraintOptimizationAllocationStage(Stage):
                 continue
 
             sg = self.workload.get_subgraph(nodes)
-            sink_nodes = self._get_sorted_sink_nodes(sg)
-            self._process_stack_sink_nodes(stack, sink_nodes, sg)
+            grouped_sink_nodes = self._get_sink_node_groups(sg)
+            self._process_stack_sink_nodes(stack, grouped_sink_nodes, sg)
 
         self._log_steady_state_statistics()
 
-    def _get_sorted_sink_nodes(self, sg: ComputationNodeWorkload) -> list[ComputationNode]:
+    def _get_sink_node_groups(self, sg: ComputationNodeWorkload) -> list[tuple[ComputationNode, ...]]:
         sink_nodes = sorted(
             n
             for n in sg.nodes()
@@ -338,12 +341,34 @@ class ConstraintOptimizationAllocationStage(Stage):
         )
         sink_layer_ids = sorted(set(n.id for n in sink_nodes))
         assert len(sink_layer_ids) == 1, "Expected only one sink layer per layer stack. Update your layer stacks."
-        return sorted(sink_nodes)
+        grouped_sink_nodes = self._group_sink_nodes_across_group_ids(sink_nodes)
+        return grouped_sink_nodes
+
+    def _group_sink_nodes_across_group_ids(
+        self, sink_nodes: list[ComputationNode]
+    ) -> list[tuple[ComputationNode, ...]]:
+        """
+        Group sink nodes across group ids (parts that will be put on different cores).
+        This is used to ensure that the steady state computation contains all nodes across cores.
+        """
+        group_ids = sorted(set(n.group for n in sink_nodes))
+        _, rem = divmod(len(sink_nodes), len(group_ids))
+        # Check that the number of sink nodes is divisible by the number of group ids
+        assert rem == 0, "Number of sink nodes is not divisible by number of group ids."
+        chunks = [tuple(sink_nodes[i : i + len(group_ids)]) for i in range(0, len(sink_nodes), len(group_ids))]
+        # Check that all chunks have the same group ids
+        for chunk in chunks:
+            group_ids_in_chunk = sorted(set(n.group for n in chunk))
+            assert group_ids_in_chunk == group_ids, (
+                f"Expected all chunks to have the same group ids {group_ids}, "
+                f"but got {group_ids_in_chunk} in chunk {chunk}."
+            )
+        return chunks
 
     def _process_stack_sink_nodes(
         self,
         stack: STACK_T,
-        sink_nodes: list[ComputationNode],
+        grouped_sink_nodes: list[tuple[ComputationNode, ...]],
         sg: ComputationNodeWorkload,
     ) -> None:
         computed: set[ComputationNode] = set()
@@ -351,18 +376,20 @@ class ConstraintOptimizationAllocationStage(Stage):
         memoization_hashes: dict[int, frozenset[tuple[int, int]]] = {}
         to_compute_counts: dict[int, int] = {}
         state_ids: dict[int, list[int]] = {}
-        to_compute_unique: dict[ComputationNode, set[ComputationNode]] = {}
-        hashes_per_sink_pair: dict[ComputationNode, int] = {}
+        to_compute_unique: dict[tuple[ComputationNode, ...], set[ComputationNode]] = {}
+        hashes_per_sink_pair: dict[tuple[ComputationNode, ...], int] = {}
 
-        for sink_node in sink_nodes:
-            needed_compute = nx.ancestors(sg, sink_node) | {sink_node}  # type: ignore
+        for sink_nodes in grouped_sink_nodes:
+            needed_compute = set()
+            for sink_node in sink_nodes:
+                needed_compute |= nx.ancestors(sg, sink_node) | {sink_node}  # type: ignore
             to_compute: set[ComputationNode] = needed_compute - computed  # type: ignore
-            to_compute_unique[sink_node] = to_compute
+            to_compute_unique[sink_nodes] = to_compute
             to_compute_ids = [n.id for n in to_compute]
             to_compute_per_layer = {id: to_compute_ids.count(id) for id in stack}
             to_compute_set = frozenset(sorted(to_compute_per_layer.items()))
             memoization_hash = hash(to_compute_set)
-            hashes_per_sink_pair[sink_node] = memoization_hash
+            hashes_per_sink_pair[sink_nodes] = memoization_hash
             if memoization_hash in memoization_hashes:
                 to_compute_counts[memoization_hash] += 1
             else:
@@ -385,8 +412,8 @@ class ConstraintOptimizationAllocationStage(Stage):
         stack: STACK_T,
         to_compute_sets: dict[int, set[ComputationNode]],
         to_compute_counts: dict[int, int],
-        to_compute_unique: dict[ComputationNode, set[ComputationNode]],
-        hashes_per_sink_pair: dict[ComputationNode, int],
+        to_compute_unique: dict[tuple[ComputationNode, ...], set[ComputationNode]],
+        hashes_per_sink_pair: dict[tuple[ComputationNode, ...], int],
     ) -> None:
         scaled_counts: dict[int, int] = {}
         total_nb_macs = 0
@@ -400,18 +427,18 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.nb_macs_per_stack[stack] = total_nb_macs
         self.nb_macs_in_ss_per_stack[stack] = max_count
         max_memoization_hash = next(k for k, v in scaled_counts.items() if v == max_count)
-        steady_state_pair = next(k for k, v in hashes_per_sink_pair.items() if v == max_memoization_hash)
+        max_sink_node_group = next(k for k, v in hashes_per_sink_pair.items() if v == max_memoization_hash)
 
-        compute_for_ss = to_compute_unique[steady_state_pair]
+        compute_for_ss = to_compute_unique[max_sink_node_group]
         self.ss_to_computes[stack] = compute_for_ss
         to_compute_ids_ss = [n.id for n in compute_for_ss]
         to_compute_per_layer_ss = {id: to_compute_ids_ss.count(id) for id in stack}
         memoization_hash_ss = hash(frozenset(sorted(to_compute_per_layer_ss.items())))
         self.ss_iterations_per_stack[stack] = to_compute_counts[memoization_hash_ss]
 
-        self.hashes_per_sink_node[stack] = hashes_per_sink_pair
+        self.hashes_per_sink_node_group[stack] = hashes_per_sink_pair
         self.steady_state_hashes[stack] = memoization_hash_ss
-        self.compute_per_sink_node[stack] = to_compute_unique
+        self.compute_per_sink_node_group[stack] = to_compute_unique
 
     def _log_steady_state_statistics(self) -> None:
         nb_steady_state_nodes = sum(len(v) for v in self.ss_to_computes.values())

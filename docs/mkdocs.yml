@@ -74,4 +74,6 @@ nav:
   - Future Plans: future.md
   - Contributing: contribute.md
   - Publications: publications.md
-  - AIE Traces: efficiency-traces.md
+  - CI:
+    - Latest: ci/latest.md
+    - Reports index: ci/index.md

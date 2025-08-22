@@ -4,7 +4,8 @@ import os
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_mapping_single_core, make_gemm_workload
+from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping_single_core
+from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
@@ -15,7 +16,7 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size)
     # CREATE THE CONV ONNX MODEL
     workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
     accelerator = "stream/inputs/aie/hardware/single_core.yaml"
-    mapping_path = make_gemm_mapping_single_core(M, K, N, m, k, n, has_mem_tile=False)
+    mapping_path = make_gemm_mapping_single_core(M, K, N, m, k, n, has_mem_tile=True)
     # mode = "lbl"
     # layer_stacks = [(0,),]
     mode = "fused"

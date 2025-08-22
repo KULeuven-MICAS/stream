@@ -1,0 +1,169 @@
+name: whole_array
+cores:
+  0: shim_dma.yaml
+  1: mem_tile_256KB.yaml
+  2: aie_tile.yaml
+  3: aie_tile.yaml
+  4: aie_tile.yaml
+  5: aie_tile.yaml
+  6: shim_dma.yaml
+  7: mem_tile_256KB.yaml
+  8: aie_tile.yaml
+  9: aie_tile.yaml
+  10: aie_tile.yaml
+  11: aie_tile.yaml
+  12: shim_dma.yaml
+  13: mem_tile_256KB.yaml
+  14: aie_tile.yaml
+  15: aie_tile.yaml
+  16: aie_tile.yaml
+  17: aie_tile.yaml
+  18: shim_dma.yaml
+  19: mem_tile_256KB.yaml
+  20: aie_tile.yaml
+  21: aie_tile.yaml
+  22: aie_tile.yaml
+  23: aie_tile.yaml
+core_coordinates:
+# code id: [col, row]
+  0: [0, 0]
+  1: [0, 1]
+  2: [0, 2]
+  3: [0, 3]
+  4: [0, 4]
+  5: [0, 5]
+  7: [1, 1]
+  8: [1, 2]
+  9: [1, 3]
+  10: [1, 4]
+  11: [1, 5]
+  13: [2, 1]
+  14: [2, 2]
+  15: [2, 3]
+  16: [2, 4]
+  17: [2, 5]
+  19: [3, 1]
+  20: [3, 2]
+  21: [3, 3]
+  22: [3, 4]
+  23: [3, 5]
+offchip_core_id: 0
+core_connectivity:
+  # ───── Connect shim_dma to mem_tile (Column 0) ─────
+  - type: link
+    cores: [0, 1]
+    bandwidth: 64
+  # ───── Connect mem_tile to aie_tile (Column 0) ─────
+  - type: link
+    cores: [1, 2]
+    bandwidth: 64
+  # ───── Connect aie_tile to aie_tile (Column 0) ─────
+  - type: link
+    cores: [2, 3]
+    bandwidth: 64
+  - type: link
+    cores: [3, 4]
+    bandwidth: 64
+  - type: link
+    cores: [4, 5]
+    bandwidth: 64
+
+  # ───── Connect shim_dma to mem_tile (Column 1) ─────
+  - type: link
+    cores: [0, 7]
+    bandwidth: 64
+  # ───── Connect mem_tile to aie_tile (Column 1) ─────
+  - type: link
+    cores: [7, 8]
+    bandwidth: 64
+  # ───── Connect aie_tile to aie_tile (Column 1) ─────
+  - type: link
+    cores: [8, 9]
+    bandwidth: 64
+  - type: link
+    cores: [9, 10]
+    bandwidth: 64
+  - type: link
+    cores: [10, 11]
+    bandwidth: 64
+
+  # ───── Connect shim_dma to mem_tile (Column 2) ─────
+  - type: link
+    cores: [0, 13]
+    bandwidth: 64
+  # ───── Connect mem_tile to aie_tile (Column 2) ─────
+  - type: link
+    cores: [13, 14]
+    bandwidth: 64
+  # ───── Connect aie_tile to aie_tile (Column 2) ─────
+  - type: link
+    cores: [14, 15]
+    bandwidth: 64
+  - type: link
+    cores: [15, 16]
+    bandwidth: 64
+  - type: link
+    cores: [16, 17]
+    bandwidth: 64
+
+  # ───── Connect shim_dma to mem_tile (Column 3) ─────
+  - type: link
+    cores: [0, 19]
+    bandwidth: 64
+  # ───── Connect mem_tile to aie_tile (Column 3) ─────
+  - type: link
+    cores: [19, 20]
+    bandwidth: 64
+  # ───── Connect aie_tile to aie_tile (Column 3) ─────
+  - type: link
+    cores: [20, 21]
+    bandwidth: 64
+  - type: link
+    cores: [21, 22]
+    bandwidth: 64
+  - type: link
+    cores: [22, 23]
+    bandwidth: 64
+
+  # ───── Connect adjacent aie_tiles across columns (West-East) ─────
+  # Row 2
+  - type: link
+    cores: [2, 8]
+    bandwidth: 64
+  - type: link
+    cores: [8, 14]
+    bandwidth: 64
+  - type: link
+    cores: [14, 20]
+    bandwidth: 64
+  # Row 3
+  - type: link
+    cores: [3, 9]
+    bandwidth: 64
+  - type: link
+    cores: [9, 15]
+    bandwidth: 64
+  - type: link
+    cores: [15, 21]
+    bandwidth: 64
+  # Row 4
+  - type: link
+    cores: [4, 10]
+    bandwidth: 64
+  - type: link
+    cores: [10, 16]
+    bandwidth: 64
+  - type: link
+    cores: [16, 22]
+    bandwidth: 64
+  # Row 5
+  - type: link
+    cores: [5, 11]
+    bandwidth: 64
+  - type: link
+    cores: [11, 17]
+    bandwidth: 64
+  - type: link
+    cores: [17, 23]
+    bandwidth: 64
+

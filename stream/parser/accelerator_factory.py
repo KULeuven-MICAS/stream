@@ -64,8 +64,8 @@ class AcceleratorFactory:
         core.utilization = core_data.get("utilization", 100)
         core.type = core_data.get("type", "compute")
         if coordinates:
-            core.row_id = coordinates[0]
-            core.col_id = coordinates[1]
+            core.col_id = coordinates[0]
+            core.row_id = coordinates[1]
         return core
 
     def get_shared_mem_group_id(self, core_id: int):

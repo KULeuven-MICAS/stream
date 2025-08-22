@@ -23,24 +23,26 @@ class AIEAddTracingScript(ModulePass):
         # 1: Get packet flow
         # find shim tile and compute tile:
         shim_tile = None
-        compute_tile2 = None
+        # compute_tile2 = None
+        compute_tiles: dict[tuple[int, int], TileOp] = {}
         for tile_op in op.walk():
             if isinstance(tile_op, TileOp):
-                match (tile_op.col.value.data, tile_op.row.value.data):
+                match tile_idx := (tile_op.col.value.data, tile_op.row.value.data):
                     case (0, 0):
                         shim_tile = tile_op
-                    case (0, 2):
-                        compute_tile2 = tile_op
+                    case _:
+                        compute_tiles[tile_idx] = tile_op
         assert shim_tile is not None
-        assert compute_tile2 is not None
 
         with mlir_mod_ctx() as aie_ctx:
 
             @device(AIEDevice.npu2)
             def device_body():
                 shim_tile_aie = tile(0, 0)
-                compute_tile2_aie = tile(0, 2)
-                tiles_to_trace = [compute_tile2_aie]
+                tiles_to_trace = []
+                for tile_idx in compute_tiles:
+                    tile_aie = tile(*tile_idx)
+                    tiles_to_trace.append(tile_aie)
                 trace_utils.configure_packet_tracing_flow(tiles_to_trace, shim_tile_aie)
 
         packet_flow_str = aie_ctx.module.body.operations[0].get_asm(print_generic_op_form=True)
@@ -48,16 +50,31 @@ class AIEAddTracingScript(ModulePass):
         # modify to fit into our own IR:
         parser = Parser(Context(allow_unregistered=True), packet_flow_str)
         module = parser.parse_module()
-        packet_flow_op = module.body.block.first_op.regions[0].block.last_op.prev_op  # pyright: ignore
-        assert isinstance(packet_flow_op, Operation)
-        packet_flow_op.detach()
-        packet_flow_op.regions[0].block.first_op.operands[0] = compute_tile2.result
-        packet_flow_op.regions[0].block.first_op.next_op.operands[0] = shim_tile.result
+
+        packet_flow_ops: list[Operation] = [
+            op for op in module.body.block.first_op.regions[0].block.ops if op.op_name.data == "aie.packet_flow"
+        ]
+        for packet_flow_op, compute_tile in zip(packet_flow_ops, compute_tiles.values(), strict=True):
+            packet_flow_op.detach()
+            packet_flow_op.regions[0].block.first_op.operands[0] = compute_tile.result
+            packet_flow_op.regions[0].block.first_op.next_op.operands[0] = shim_tile.result
+        # for op in module.body.block.first_op.regions[0].block.ops:
+        #     if op.op_name.data in ("aie.tile", "aie.end"):
+        #         continue
+        #     op.detach()
+        #     op.regions[0].block.first_op.operands[0] = compute_tile2.result
+        #     op.regions[0].block.first_op.next_op.operands[0] = shim_tile.result
+        #     packet_flow_ops.append(op)
+        # packet_flow_op = module.body.block.first_op.regions[0].block.last_op.prev_op  # pyright: ignore
+        # assert isinstance(packet_flow_op, Operation)
+        # packet_flow_op.detach()
+        # packet_flow_op.regions[0].block.first_op.operands[0] = compute_tile2.result
+        # packet_flow_op.regions[0].block.first_op.next_op.operands[0] = shim_tile.result
 
         # insert into device body:
         for device_op in op.walk():
             if isinstance(device_op, DeviceOp):
-                rewriter.insert_op(packet_flow_op, InsertPoint.at_end(device_op.region.block))
+                rewriter.insert_op(packet_flow_ops, InsertPoint.at_end(device_op.region.block))
 
         # 2: Runtime sequence thingies
         #
@@ -66,9 +83,10 @@ class AIEAddTracingScript(ModulePass):
             @device(AIEDevice.npu2)
             def device_body():
                 shim_tile_aie = tile(0, 0)
-                compute_tile2_aie = tile(0, 2)
-
-                tiles_to_trace = [compute_tile2_aie]
+                tiles_to_trace = []
+                for tile_idx in compute_tiles:
+                    tile_aie = tile(*tile_idx)
+                    tiles_to_trace.append(tile_aie)
 
                 trace_utils.configure_packet_tracing_aie2(
                     tiles_to_trace=tiles_to_trace,

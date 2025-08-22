@@ -125,11 +125,19 @@ def return_tiling_type(tiling: TILING_T | TILING_WILDCARD_T) -> TILING_T:
 def get_inter_core_tiling_size(node: "ComputationNode") -> int:
     inter_core_tiling = node.inter_core_tiling
     if inter_core_tiling and not contains_wildcard(inter_core_tiling):
-        assert len(inter_core_tiling) == 1, "Only one inter_core_tiling entry is supported."
-        inter_core_tiling_size = inter_core_tiling[0][1]
-        if inter_core_tiling_size == "all":
-            inter_core_tiling_size = node.layer_dim_sizes[inter_core_tiling[0][0]]
-        return inter_core_tiling_size  # type: ignore
+        total_tiling_size = 1
+        for tiling_dim, tiling_size in inter_core_tiling:
+            if tiling_size == "all":
+                # If the inter_core_tiling is 'all', we assume it means all cores in the layer
+                # and return the size of the layer dimension.
+                assert node.layer_dim_sizes, "Layer dimension sizes must be defined for 'all' inter_core_tiling."
+                assert isinstance(node.layer_dim_sizes, dict), "Layer dimension sizes must be a dictionary."
+                tiling_size_updated = node.layer_dim_sizes[tiling_dim]
+            else:
+                tiling_size_updated = tiling_size
+            assert isinstance(tiling_size_updated, int), f"Tiling size must be an integer, got {tiling_size}."
+            total_tiling_size *= tiling_size_updated
+        return total_tiling_size
     return 1
 
 

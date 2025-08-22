@@ -1,4 +1,4 @@
-name: single_col_with_mem_tile
+name: single_col
 cores:
   0: shim_dma.yaml
   1: mem_tile_256KB.yaml

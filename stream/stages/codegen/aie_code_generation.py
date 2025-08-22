@@ -1,9 +1,11 @@
+from collections.abc import Sequence
 from typing import Any
 
 from snaxc.dialects.tsl import TSL
 from xdsl.context import MLContext
 from xdsl.dialects.builtin import MemRefType, ModuleOp
-from xdsl.ir import Operation
+from xdsl.ir import Operation, SSAValue
+from xdsl.irdl import Operand
 from xdsl.printer import Printer
 from zigzag.utils import DiGraphWrapper
 
@@ -66,13 +68,16 @@ class AIECodeGenerationStage(Stage):
             edge_op = EdgeOp(memref_type, edge.node_name)
         else:
             # find transfer:
-            transfer = next(workload.predecessors(edge))
-            assert isinstance(transfer, SteadyStateTransfer)
-            transfer_op = transfer_ops[transfer]
-            edge_op = EdgeOp(None, edge.node_name, transfer_op.results[0])
+            transfer_results = []
+            for transfer in workload.predecessors(edge):
+                assert isinstance(transfer, SteadyStateTransfer)
+                print("\t", transfer, transfer.chosen_memory_core)
+                transfer_op = transfer_ops[transfer]
+                transfer_results.append(transfer_op.results[0])
+            edge_op = EdgeOp(None, edge.node_name, transfer_results)
         return edge_op
 
-    def create_transfer_op(
+    def create_transfer_op(  # noqa: PLR0912
         self,
         workload: DiGraphWrapper[SteadyStateNode],
         transfer: SteadyStateTransfer,
@@ -83,7 +88,7 @@ class AIECodeGenerationStage(Stage):
         Create a TransferOp for a given SteadyStateTransfer.
         """
         # Get source and dest and convert to string for TransferOp creation which uses string
-        source = transfer.src
+        source = transfer.srcs[0]
         dest = transfer.dsts[0]
 
         if isinstance(dest, SteadyStateComputation):
@@ -98,24 +103,49 @@ class AIECodeGenerationStage(Stage):
         assert isinstance(dest_type, MemRefType)
         dest_type = MemRefType(dest_type.element_type, dest_type.shape)
 
-        if source in edge_ops:
-            source_val = edge_ops[source]
-        else:
-            # find source op
-            source = next(workload.predecessors(source))
-            assert isinstance(source, SteadyStateComputation)
-            source_val = compute_ops[source]
+        source_vals: Sequence[SSAValue | Operation] = []
+        for source in transfer.srcs:
+            if source in edge_ops:
+                source_val = edge_ops[source]
+            else:
+                # find source op
+                source_source = next(workload.predecessors(source))
+                assert isinstance(source_source, SteadyStateComputation)
+                source_val = compute_ops[source_source]
+            source_vals.append(source_val)
 
-        if isinstance(source_val, EdgeOp):
-            tensor = transfer.dsts[0]
+        if isinstance(source_vals[0], EdgeOp):
+            tensor = sorted(transfer.dsts, key=lambda x: x.loop_ranges)[0]
         else:
-            tensor = transfer.src
+            tensor = sorted(transfer.srcs, key=lambda x: x.loop_ranges)[0]
+
         offsets = [x[0] for x in tensor.loop_ranges]
         sizes = [x[1] - x[0] for x in tensor.loop_ranges]
         strides = [1 for x in tensor.loop_ranges]
+
+        # determine spatial strides
+        spatial_strides = []
+        if len(source_vals) > 1:
+            sorted_transfers = sorted(transfer.srcs, key=lambda x: x.loop_ranges)
+        else:
+            sorted_transfers = sorted(transfer.dsts, key=lambda x: x.loop_ranges)
+        if len(sorted_transfers) > 1:
+            for dim in tensor.loop_dimensions:
+                spatial_strides.append(
+                    sorted_transfers[1].loop_ranges_per_dim[dim][0] - sorted_transfers[0].loop_ranges_per_dim[dim][0]
+                )
+        else:
+            for dim in tensor.loop_dimensions:
+                spatial_strides.append(transfer.srcs[0].loop_ranges_per_dim[dim][0])
+
+        if not any(spatial_strides):
+            result_types = [dest_type]
+        else:
+            result_types = [dest_type] * len(transfer.dsts)
+
         op = TransferOp(
-            source_val.results[0],
-            [dest_type],
+            source_vals,
+            result_types,
             "source_todo",
             "dest_todo",
             "tensor_todo",
@@ -123,7 +153,9 @@ class AIECodeGenerationStage(Stage):
             offsets,
             sizes,
             strides,
+            spatial_strides,
             [str(dim) for dim in tensor.loop_dimensions],
+            str(transfer.chosen_memory_core),
         )
 
         return op
@@ -137,10 +169,18 @@ class AIECodeGenerationStage(Stage):
         # get inputs
         inputs = list(workload.predecessors(compute))
         transfers: list[TransferOp] = []
+        operands: list[Operand] = []
         for input in inputs:
             transfer = next(workload.predecessors(input))
             assert isinstance(transfer, SteadyStateTransfer)
-            transfers.append(transfer_ops[transfer])
+            transfers.append(transfer_op := transfer_ops[transfer])
+            if len(transfer_op.results) == 1:
+                operands.append(transfer_op.results[0])
+            else:
+                sorted_transfers = sorted(transfer.dsts, key=lambda x: x.loop_ranges)
+                assert isinstance(input, SteadyStateTensor)
+                index = sorted_transfers.index(input)
+                operands.append(transfer_op.results[index])
 
         # get output type:
         output_type = next(
@@ -154,7 +194,7 @@ class AIECodeGenerationStage(Stage):
 
         # create computation node op with the needed information
         op = ComputationNodeOp(
-            [transfer.results[0] for transfer in transfers],
+            operands,
             None,
             kernel=compute.kernel.name,
             core_allocation=str(compute.chosen_resource_allocation),
@@ -202,6 +242,7 @@ class AIECodeGenerationStage(Stage):
 
         module = self.generate_steady_state_workload(workload)
 
+        # SetNoReusePass().apply(self.context, module)
         # Split transfers in push and pull
         StreamSplitTransfersPass().apply(self.context, module)
 

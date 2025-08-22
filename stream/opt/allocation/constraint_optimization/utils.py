@@ -62,6 +62,8 @@ def get_latencies(
     for node in nodes:
         possible_allocations[node] = []
         for core in cores:
+            if node.chosen_core_allocation is not None and core.id != node.chosen_core_allocation:
+                continue
             try:
                 equal_node = cost_lut.get_equal_node(node)
                 assert equal_node, f"No equal node for {node} found in CostModelEvaluationLUT"
@@ -122,7 +124,9 @@ def get_energies(
         for core_id, core_name in zip(core_ids, core_names, strict=False):
             core = accelerator.get_core(core_id)
             try:
-                cme = cost_lut.get_cme(node, core)
+                eq_node = cost_lut.get_equal_node(node)
+                assert eq_node, f"No equal node for {node} found in CostModelEvaluationLUT"
+                cme = cost_lut.get_cme(eq_node, core)
                 en = cme.energy_total
             except ValueError:
                 en = impossible_energy
@@ -234,7 +238,7 @@ def get_partitioned_nodes(
         new_node = SteadyStateComputation(
             id=node.id,
             sub_id=node.sub_id,
-            node_name=node.name,
+            node_name=f"{node.name}.{node.sub_id}",
             node_attr=node.extract_node_attr(),
             mapping_attr=mapping_attr,
             operand_tensor_reshape=node.operand_tensor_reshape,
@@ -245,6 +249,7 @@ def get_partitioned_nodes(
             possible_resource_allocation=possible_resource_allocation,
         )
         new_node.set_runtime(runtime)
+        new_node.update_loop_ranges(node.loop_ranges)
         return [
             new_node,
         ]
@@ -291,7 +296,7 @@ def get_partitioned_nodes(
         partitioned_node = SteadyStateComputation(
             id=node.id,
             sub_id=node.sub_id,
-            node_name=node.name + f".part{i}",
+            node_name=f"{node.name}.{node.sub_id}.part{i}",
             node_attr=node_attr,
             mapping_attr=inter_core_mapping_attr,
             operand_tensor_reshape=node.operand_tensor_reshape,

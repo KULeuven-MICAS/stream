@@ -9,8 +9,8 @@ class Core(ZigZagCore):
         super().__init__(**args)
         self.type = "compute"  # default type for a core
         self.utilization = 100
-        self.row_id = None
-        self.col_id = None
+        self.row_id: int | None = None
+        self.col_id: int | None = None
 
     def __eq__(self, other: object) -> bool:
         return (
@@ -49,7 +49,7 @@ class Core(ZigZagCore):
         Get the maximum object FIFO depth for the core.
         """
         if self.type == "compute":
-            return 16
+            return 8
         elif self.type == "memory":
-            return 48
+            return 24
         return 0
