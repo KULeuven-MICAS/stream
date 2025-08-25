@@ -641,7 +641,7 @@ class TransferToRuntimeSequence(RewritePattern):
         for shape, stride, offset in zip(reversed(shapes), reversed(strides), reversed(offsets), strict=False):
             static_strides.insert(0, current_stride)
             total_offset += current_stride * offset
-            current_stride *= shape * stride
+            current_stride *= shape * 1
 
         static_sizes = list(sizes)
 
