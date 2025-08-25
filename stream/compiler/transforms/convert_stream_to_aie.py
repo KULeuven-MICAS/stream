@@ -353,12 +353,20 @@ class ObjectFifoHop:
     @classmethod
     def mem_to_shim(cls, consumer: PullOp, memtile: TileOp, tile_op_manager: TileOpManager, name_base: str) -> Self:
         assert isinstance(memref_type := consumer.output.type, MemRefType)
+        spatial_relevant = [
+            LayerDim(loop_dim.data)
+            for loop_dim, spatial_stride in zip(
+                consumer.loop_dimensions, consumer.spatial_strides.get_values(), strict=True
+            )
+            if spatial_stride != 0
+        ]
         object_fifo = ObjectFifoOp.from_referenced_type(
             elemNumber=(1, 1),
             producerTile=memtile,
             consumerTiles=[tile_op_manager.get_tile(consumer)],
             referenced_type=memref_type.get_element_type(),
-            shape=consumer.ssis.data.shape_mem([])[::-1] + cast(tuple[int, ...], consumer.sizes.get_values()),
+            shape=consumer.ssis.data.shape_mem(spatial_relevant)[::-1]
+            + cast(tuple[int, ...], consumer.sizes.get_values()),
             name=name_base + "mem",
         )
         del object_fifo.properties["repeat_count"]
