@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import cast
 
 from xdsl.context import Context
 from xdsl.dialects.builtin import ModuleOp
@@ -40,19 +41,21 @@ class SplitTransferPattern(RewritePattern):
                 op.memtile,
             )
             ops_to_add.append(push)
-        for result in op.results:
+        for i, result in enumerate(op.results):
             for use in list(result.uses):
                 if isinstance(edge := use.operation, EdgeOp):
                     for input in edge.inputs:
                         assert isinstance(input, OpResult)
                         if isinstance(input.op, TransferOp) and input.op.memtile == op.memtile:
                             self.channel_map[input.op] = channel
+                offsets = list(cast(tuple[int, ...], op.offsets.get_values()))
+                offsets[-1] += i * int(op.spatial_strides.get_values()[-1])
                 ops_to_add.append(
                     pull := PullOp(
                         op.outputs[0].type,
                         channel,
                         op.ssis.data,
-                        op.offsets,
+                        offsets,
                         op.sizes,
                         op.strides,
                         op.spatial_strides,

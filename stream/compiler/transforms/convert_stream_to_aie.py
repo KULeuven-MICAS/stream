@@ -290,7 +290,7 @@ class ObjectFifoHop:
         distribute = False
         if len(consumers) > 1:
             # determine whether to broadcast / distribute
-            distribute = consumers[0].spatial_strides != consumers[1].spatial_strides
+            distribute = consumers[0].offsets != consumers[1].offsets
             if distribute:
                 of_type = "distribute"
             else:
