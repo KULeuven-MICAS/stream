@@ -629,7 +629,6 @@ class TransferToRuntimeSequence(RewritePattern):
 
         # offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
         sizes = cast(tuple[int, ...], op.sizes.get_values()[-4:])
-        strides = cast(tuple[int, ...], op.strides.get_values()[-4:])
         offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
         assert isinstance(arg.type, MemRefType)
         shapes = tuple(x.data for x in arg.type.shape)[-4:]
@@ -638,10 +637,10 @@ class TransferToRuntimeSequence(RewritePattern):
         static_strides = []
         current_stride = 1
         total_offset = 0
-        for shape, stride, offset in zip(reversed(shapes), reversed(strides), reversed(offsets), strict=False):
+        for shape, offset in zip(reversed(shapes), reversed(offsets), strict=False):
             static_strides.insert(0, current_stride)
             total_offset += current_stride * offset
-            current_stride *= shape * 1
+            current_stride *= shape
 
         static_sizes = list(sizes)
 
