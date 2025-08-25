@@ -181,9 +181,9 @@ class SteadyStateIterationSpace:
         """
         spatial_shape = prod(iv.size for iv in self.variables if iv.spatial and iv.dimension in spatial_relevant)
         spatial_shape = (spatial_shape,) if spatial_shape > 1 else ()
-        reuse_shape = self.reuse_factor_mem()
-        reuse_shape = (reuse_shape,) if reuse_shape > 1 else ()
-        return reuse_shape + spatial_shape
+        temporal_shape = self.nb_local_tensors_mem()
+        temporal_shape = (temporal_shape,) if temporal_shape > 1 else ()
+        return temporal_shape + spatial_shape
 
     def reuse_factor_compute(self) -> int:
         """
@@ -203,6 +203,16 @@ class SteadyStateIterationSpace:
             iv.size
             for iv in self.get_temporal_variables()
             if iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
+        )
+
+    def nb_local_tensors_mem(self) -> int:
+        """
+        Returns the number of tensors that are kept local in a mem tile.
+        """
+        return prod(
+            iv.size
+            for iv in self.get_temporal_variables()
+            if iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
         )
 
     def reuse_factor_mem(self) -> int:
