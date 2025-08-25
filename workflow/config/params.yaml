@@ -28,6 +28,6 @@ gemm:
     m: 32
     k: 32
     n: 32
-    Ms: [128,] # 64 doesn't work in whole_array.py in mlir-aie
-    Ks: [64,]
-    Ns: [64,]
+    Ms: [64, 128,]
+    Ks: [64, 128]
+    Ns: [64, 128]
