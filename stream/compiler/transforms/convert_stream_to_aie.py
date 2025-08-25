@@ -271,7 +271,7 @@ class ObjectFifoHop:
             else:
                 of_name = name_base + "_" + of_type
             object_fifo = ObjectFifoOp.from_referenced_type(
-                elemNumber=IntegerAttr(producers[0].ssis.data.nb_local_tensors_compute(), i32),
+                elemNumber=(producers[0].ssis.data.nb_local_tensors_compute(),) * 2,
                 producerTile=of_producer,
                 consumerTiles=[memtile],
                 referenced_type=memref_type.get_element_type(),
@@ -310,7 +310,7 @@ class ObjectFifoHop:
             else:
                 of_name = name_base + "_" + of_type
             object_fifo = ObjectFifoOp.from_referenced_type(
-                elemNumber=IntegerAttr(consumers[0].ssis.data.nb_local_tensors_compute(), i32),
+                elemNumber=(consumers[0].ssis.data.nb_local_tensors_compute(),) * (1 + len(of_consumers)),
                 producerTile=of_producer,
                 consumerTiles=of_consumers,
                 referenced_type=memref_type.get_element_type(),
@@ -335,7 +335,7 @@ class ObjectFifoHop:
             if spatial_stride != 0
         ]
         object_fifo = ObjectFifoOp.from_referenced_type(
-            elemNumber=IntegerAttr(1, i32),
+            elemNumber=(1, 1),
             producerTile=tile_op_manager.get_tile(producer),
             consumerTiles=[memtile],
             referenced_type=memref_type.get_element_type(),
@@ -354,7 +354,7 @@ class ObjectFifoHop:
     def mem_to_shim(cls, consumer: PullOp, memtile: TileOp, tile_op_manager: TileOpManager, name_base: str) -> Self:
         assert isinstance(memref_type := consumer.output.type, MemRefType)
         object_fifo = ObjectFifoOp.from_referenced_type(
-            elemNumber=IntegerAttr(1, i32),
+            elemNumber=(1, 1),
             producerTile=memtile,
             consumerTiles=[tile_op_manager.get_tile(consumer)],
             referenced_type=memref_type.get_element_type(),
