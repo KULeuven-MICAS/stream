@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from math import prod
 from typing import Any
 
 from snaxc.dialects.tsl import TSL
@@ -121,7 +122,14 @@ class AIECodeGenerationStage(Stage):
 
         offsets = [x[0] for x in tensor.loop_ranges]
         sizes = [x[1] - x[0] for x in tensor.loop_ranges]
-        strides = [1 for x in tensor.loop_ranges]
+        strides = []
+        for loop_dim in tensor.loop_dimensions:
+            stride = prod(
+                iv.size
+                for iv in transfer.steady_state_iteration_space.variables
+                if iv.spatial and iv.dimension == loop_dim
+            )
+            strides.append(stride)
 
         # determine spatial strides
         spatial_strides = []

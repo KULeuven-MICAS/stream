@@ -52,6 +52,7 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
         skip_if_exists=False,
         enable_codegen=True,
         trace_size=trace_size,
+        nb_cols_to_use=nb_cols_to_use,
     )
 
     # #####################CostModelEvaluationLUT LOAD#############################

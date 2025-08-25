@@ -11,6 +11,7 @@ class TransferType(Enum):
     """Enumeration for different types of data transfer operations."""
 
     UNICAST = "unicast"
+    DISTRIBUTE = "distribute"
     BROADCAST = "broadcast"
     JOIN = "join"
 

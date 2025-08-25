@@ -290,7 +290,7 @@ class ObjectFifoHop:
         distribute = False
         if len(consumers) > 1:
             # determine whether to broadcast / distribute
-            distribute = consumers[0].spatial_strides != consumers[1].spatial_strides
+            distribute = consumers[0].offsets != consumers[1].offsets
             if distribute:
                 of_type = "distribute"
             else:
@@ -353,12 +353,20 @@ class ObjectFifoHop:
     @classmethod
     def mem_to_shim(cls, consumer: PullOp, memtile: TileOp, tile_op_manager: TileOpManager, name_base: str) -> Self:
         assert isinstance(memref_type := consumer.output.type, MemRefType)
+        spatial_relevant = [
+            LayerDim(loop_dim.data)
+            for loop_dim, spatial_stride in zip(
+                consumer.loop_dimensions, consumer.spatial_strides.get_values(), strict=True
+            )
+            if spatial_stride != 0
+        ]
         object_fifo = ObjectFifoOp.from_referenced_type(
             elemNumber=(1, 1),
             producerTile=memtile,
             consumerTiles=[tile_op_manager.get_tile(consumer)],
             referenced_type=memref_type.get_element_type(),
-            shape=consumer.ssis.data.shape_mem([])[::-1] + cast(tuple[int, ...], consumer.sizes.get_values()),
+            shape=consumer.ssis.data.shape_mem(spatial_relevant)[::-1]
+            + cast(tuple[int, ...], consumer.sizes.get_values()),
             name=name_base + "mem",
         )
         del object_fifo.properties["repeat_count"]
@@ -621,7 +629,6 @@ class TransferToRuntimeSequence(RewritePattern):
 
         # offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
         sizes = cast(tuple[int, ...], op.sizes.get_values()[-4:])
-        strides = cast(tuple[int, ...], op.strides.get_values()[-4:])
         offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
         assert isinstance(arg.type, MemRefType)
         shapes = tuple(x.data for x in arg.type.shape)[-4:]
@@ -630,10 +637,10 @@ class TransferToRuntimeSequence(RewritePattern):
         static_strides = []
         current_stride = 1
         total_offset = 0
-        for shape, stride, offset in zip(reversed(shapes), reversed(strides), reversed(offsets), strict=False):
+        for shape, offset in zip(reversed(shapes), reversed(offsets), strict=False):
             static_strides.insert(0, current_stride)
             total_offset += current_stride * offset
-            current_stride *= shape * stride
+            current_stride *= shape
 
         static_sizes = list(sizes)
 
@@ -651,7 +658,8 @@ class TransferToRuntimeSequence(RewritePattern):
                         continue
                 if str(iter_var.dimension) in loop_dimensions:
                     index = loop_dimensions.index(str(iter_var.dimension))
-                    stride = prod(memref_type.get_shape()[index + 1 :]) * op.sizes.get_values()[index]
+                    temporal_stride = op.strides.get_values()[index] if not iter_var.spatial else 1
+                    stride = prod(memref_type.get_shape()[index + 1 :]) * op.sizes.get_values()[index] * temporal_stride
                     # stride = prod(op.sizes.get_values()[index:])
                     assert isinstance(stride, int)
                 else:
