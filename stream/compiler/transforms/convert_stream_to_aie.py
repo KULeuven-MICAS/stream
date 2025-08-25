@@ -62,7 +62,7 @@ from zigzag.datatypes import LayerDim
 
 from stream.compiler.dialects.stream import ChannelOp, ComputationNodeOp, EdgeOp, PullOp, PushOp, TransferOp
 from stream.compiler.transforms.iteration_space_to_for import iteration_space_to_for
-from stream.workload.steady_state.iteration_space import IterationVariableReuse
+from stream.workload.steady_state.iteration_space import ComputeTileReuse, MemTileReuse
 
 
 def get_tile(value: str) -> tuple[int, int]:  # noqa: PLR0911, PLR0912
@@ -650,7 +650,7 @@ class TransferToRuntimeSequence(RewritePattern):
         # offset is definitely zero for now
         for iter_var in op.ssis.data.variables:
             loop_dimensions = [x.data for x in op.loop_dimensions]
-            if (iter_var.relevant or IterationVariableReuse.MEM_TILE_NO_REUSE in iter_var.reuse) and iter_var.size > 1:
+            if (iter_var.relevant or MemTileReuse.NO_REUSE in iter_var.mem_tile_reuse) and iter_var.size > 1:
                 # sptial dims must only emit extra sizes and strides if they are used as spatial strides
                 if iter_var.spatial:
                     index = loop_dimensions.index(str(iter_var.dimension))
@@ -756,7 +756,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
             (
                 iv
                 for iv in op.ssis.data.get_temporal_variables()[::-1]
-                if IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
+                if ComputeTileReuse.REUSE in iv.compute_tile_reuse
             ),
             None,
         )
