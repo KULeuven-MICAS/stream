@@ -659,7 +659,8 @@ class TransferToRuntimeSequence(RewritePattern):
                         continue
                 if str(iter_var.dimension) in loop_dimensions:
                     index = loop_dimensions.index(str(iter_var.dimension))
-                    stride = prod(memref_type.get_shape()[index + 1 :]) * op.sizes.get_values()[index]
+                    temporal_stride = op.strides.get_values()[index] if not iter_var.spatial else 1
+                    stride = prod(memref_type.get_shape()[index + 1 :]) * op.sizes.get_values()[index] * temporal_stride
                     # stride = prod(op.sizes.get_values()[index:])
                     assert isinstance(stride, int)
                 else:
