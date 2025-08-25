@@ -4,9 +4,9 @@ include: "workflow/rules/gemm.smk"
 GEMM = config["gemm"]
 # PROFILES = ["single_core",]
 # PROFILES = ["single_col",]
-PROFILES = ["whole_array",]
+# PROFILES = ["whole_array",]
 # PROFILES = ["single_core", "single_col"]
-# PROFILES = ["single_core", "single_col", "whole_array"]
+PROFILES = ["single_core", "single_col", "whole_array"]
 # PROFILES = ["single_core", "whole_array"]
 
 
