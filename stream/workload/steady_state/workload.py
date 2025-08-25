@@ -203,7 +203,7 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
                 n.set_label(
                     f"{node.node_name}\n"
                     f"Resource: {getattr(node, 'chosen_resource_allocation', 'None')}\n"
-                    f"Type: {node.transfer_type.value}"
+                    f"Type: {node.transfer_type.value.capitalize()}"
                 )
                 n.set_style("filled")
                 n.set_fillcolor("#ffcb9a")
