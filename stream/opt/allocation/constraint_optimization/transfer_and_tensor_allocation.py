@@ -708,7 +708,7 @@ class TransferAndTensorAllocator:
         # ------------------------------------------------------------------
         # EXTRA) transfer fires (across all transfers and steady-state iterations)
         # ------------------------------------------------------------------
-        transfer_cost = quicksum(
+        self.total_transfer_cost = quicksum(
             self._transfer_latency(tr, p) * self.y_path[(tr, p)] * self.firesC[tr] for (tr, p) in self.y_path
         )
 
@@ -720,7 +720,7 @@ class TransferAndTensorAllocator:
             for mc in self.mem_cores
             if self._any_path_through_mc(tr, mc)
         }
-        transfer_cost += quicksum(
+        self.total_transfer_cost += quicksum(
             lat_dram_mem[(tr, mc)] * self.firesM[tr] * self.m_store[(tr, mc)]
             for tr in self.transfer_nodes
             if self._is_const_io(tr)
@@ -729,14 +729,30 @@ class TransferAndTensorAllocator:
         )
 
         # ------------------------------------------------------------------
+        # EXTRA) max mem core usage across all memory cores (for constant IO transfers)
+        # ------------------------------------------------------------------
+        self.mem_core_usage_per_core: dict[Core, gp.Var] = {}
+        for mc in self.mem_cores:
+            usage = self.model.addVar(vtype=GRB.INTEGER, name=f"memCoreUsage_{_resource_key(mc)}")
+            self.model.addConstr(
+                usage == quicksum(self.m_store[(tr, mc)] for tr in self.transfer_nodes if self._is_const_io(tr)),
+                name=f"memCoreUsageConstr_{_resource_key(mc)}",
+            )
+            self.mem_core_usage_per_core[mc] = usage
+
+        self.min_mem_core_usage = self.model.addVar(vtype=GRB.INTEGER, name="minMemCoreUsage")
+        for i, usage in enumerate(self.mem_core_usage_per_core.values()):
+            self.model.addConstr(self.min_mem_core_usage <= usage, name=f"minMemCoreUsage_le_{i}")
+
+        # ------------------------------------------------------------------
         # 4) total latency + objective
         # ------------------------------------------------------------------
-        total_lat = self.model.addVar(vtype=GRB.INTEGER, name="total_latency")
-        self.total_latency = total_lat
+        self.total_lat = self.model.addVar(vtype=GRB.INTEGER, name="total_latency")
+        self.total_latency = self.total_lat
         self.model.addConstr(
-            total_lat == self.iterations * quicksum(self.slot_latency.values()) - (self.iterations - 1) * overlap
+            self.total_lat == self.iterations * quicksum(self.slot_latency.values()) - (self.iterations - 1) * overlap
         )
-        obj_func = total_lat + transfer_cost
+        obj_func = self.total_lat + self.total_transfer_cost - self.min_mem_core_usage
         self.model.setObjective(obj_func, GRB.MINIMIZE)
 
     # ------------------------------------------------------------------ #

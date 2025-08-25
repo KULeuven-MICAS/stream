@@ -556,7 +556,6 @@ class SteadyStateScheduler:
         return pre_transfer_tensor_nodes_tuple, grouped_predecessors_tuple
 
     def set_transfer_paths(self, steady_state_workload: SteadyStateWorkload) -> None:
-        requests = []
         for transfer_node in steady_state_workload.transfer_nodes:
             src_allocs = tuple([src.chosen_resource_allocation for src in transfer_node.srcs])
             dst_allocs = tuple([dst.chosen_resource_allocation for dst in transfer_node.dsts])
@@ -565,18 +564,16 @@ class SteadyStateScheduler:
                 sources=src_allocs,  # type: ignore
                 destinations=dst_allocs,  # type: ignore
             )
-            requests.append(request)
-        # Send all multicast requests
-        all_paths = self.accelerator.communication_manager.plan_multicast_sequence(
-            requests, nb_cols_to_use=self.nb_cols_to_use
-        )
-        # Set the paths for each transfer node
-        for transfer_node, request in zip(steady_state_workload.transfer_nodes, requests, strict=True):
-            path = all_paths.get(request, None)
-            if not path:
-                raise ValueError(f"No paths found for transfer node {transfer_node.node_name}.")
+            multicast_plans = self.accelerator.communication_manager.enumerate_multicast_plans(
+                request.sources, request.destinations, max_meetings=self.nb_cols_to_use
+            )
+            possible_paths = []
+            for multicast_plan in multicast_plans:
+                links_used = self.accelerator.communication_manager.get_links_for_multicast_plan(multicast_plan)
+                possible_paths.append(links_used)
             # Set the possible resouce allocation for the transfer node (this also sets the chosen resource allocation)
-            transfer_node.set_possible_resource_allocation((path,))
+            transfer_node.set_possible_resource_allocation(tuple(possible_paths))
+            pass
 
     def add_this_iteration_nonconstant_tensor_nodes(
         self, steady_state_workload: SteadyStateWorkload
