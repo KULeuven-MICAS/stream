@@ -1,19 +1,17 @@
 - name: Gemm
   core_allocation: &id001
-  - 1
+  - 2
   intra_core_tiling: &id002
   - C, 4
   - D, 2
   - K, 4
   inter_core_tiling: &id003
   - K, 1
-  kernel:
+  kernel: &id004
     name: mm_32x32x32
     utilization: 61.8
 - name: default
   core_allocation: *id001
   intra_core_tiling: *id002
   inter_core_tiling: *id003
-  kernel:
-    name: mm_32x32x32
-    utilization: 61.8
+  kernel: *id004

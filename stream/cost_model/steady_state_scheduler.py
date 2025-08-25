@@ -410,10 +410,19 @@ class SteadyStateScheduler:
         Determine the transfer type based on the post transfer tensor nodes.
         This assumes that the post transfer tensor nodes are all the slice if more than one (broadcast)
         """
-        size = max(ptn.size for ptn in post_transfer_tensor_nodes)
         if len(post_transfer_tensor_nodes) > 1:
-            return TransferType.BROADCAST, size
+            loop_ranges = [ptn.loop_ranges for ptn in post_transfer_tensor_nodes]
+            if all(lr == loop_ranges[0] for lr in loop_ranges):
+                # All loop ranges are the same, this means we are broadcasting the same data to multiple cores
+                size = max(ptn.size for ptn in post_transfer_tensor_nodes)
+                return TransferType.BROADCAST, size
+            else:
+                # Different loop ranges, this means we are joining different data from multiple cores
+                size = sum(ptn.size for ptn in post_transfer_tensor_nodes)
+                return TransferType.DISTRIBUTE, size
         else:
+            assert len(post_transfer_tensor_nodes) == 1
+            size = post_transfer_tensor_nodes[0].size
             return TransferType.UNICAST, size
 
     def get_transfer_type_and_size_for_output(
@@ -440,6 +449,15 @@ class SteadyStateScheduler:
         "Grouped by loop ranges to get one joint transfer per broadcastable input."
         post_transfer_tensor_nodes: dict[tuple[tuple[int, int], ...], list[SteadyStateTensor]] = defaultdict(list)
         grouped_successors: dict[tuple[tuple[int, int], ...], list[SteadyStateNode]] = defaultdict(list)
+        # Extra check that groups all successors and post transfers in one in case all successors are on the same col id
+        first_succ_col_id = next(iter(successors)).chosen_resource_allocation.col_id if successors else None
+        if first_succ_col_id is not None and all(
+            isinstance(s, SteadyStateComputation) and s.chosen_resource_allocation.col_id == first_succ_col_id
+            for s in successors
+        ):
+            all_to_same = True
+        else:
+            all_to_same = False
         for i, successor in enumerate(successors):
             # Create the tensor node that comes after the transfer node we just created
             if isinstance(successor, SteadyStateTensor):
@@ -477,8 +495,12 @@ class SteadyStateScheduler:
                     full_shape=full_shape,
                     slices_per_full=slices_per_full,
                 )
-                post_transfer_tensor_nodes[post_transfer_tensor_node.loop_ranges].append(post_transfer_tensor_node)
-                grouped_successors[post_transfer_tensor_node.loop_ranges].append(successor)
+                if all_to_same:
+                    key = pre_transfer_tensor.loop_ranges
+                else:
+                    key = post_transfer_tensor_node.loop_ranges
+                post_transfer_tensor_nodes[key].append(post_transfer_tensor_node)
+                grouped_successors[key].append(successor)
         post_transfer_tensor_nodes_tuple = {k: tuple(v) for k, v in post_transfer_tensor_nodes.items()}
         grouped_successors_tuple = {k: tuple(v) for k, v in grouped_successors.items()}
         return post_transfer_tensor_nodes_tuple, grouped_successors_tuple
