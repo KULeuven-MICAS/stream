@@ -30,18 +30,19 @@ def summarize_log(log_path: Path) -> str:
     return resp.choices[0].message.content.strip()
 
 
-def main():
+def main(max_chars: int = 4000):
     root = Path("outputs")
     for d in root.glob("*"):
         log = d / "run_trace.log"
         if log.exists():
             summary = summarize_log(log)
             (d / "error_summary.txt").write_text(summary + "\n")
-            trace_md = (
-                f"<details><summary>Show run_trace.log</summary>\n\n"
-                f"```text\n{log.read_text(errors='ignore')}\n```\n\n"
-                f"</details>\n"
-            )
+
+            text = log.read_text(errors="ignore")
+            if len(text) > max_chars:
+                text = text[-max_chars:]
+
+            trace_md = f"<details><summary>Show run_trace.log</summary>\n\n```text\n{text}\n```\n\n</details>\n"
             (d / "error_trace.md").write_text(trace_md)
 
 
