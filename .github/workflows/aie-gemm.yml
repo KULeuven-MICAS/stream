@@ -11,14 +11,24 @@ permissions:
 jobs:
   run:
     uses: ./.github/workflows/_gemm-run.yml
-    secrets: inherit              # pass CI_TOKEN/GITHUB_TOKEN if needed
+    secrets: inherit
     with:
       snakemake_args: "-j 1 --forceall --keep-going"
 
-  comment:
+  summarize_errors:
     needs: run
+    uses: ./.github/workflows/_summarize-errors.yml
+    secrets: inherit
+
+  summarize_results:
+    needs: summarize_errors
+    uses: ./.github/workflows/_summarize-results.yml
+    secrets: inherit
+
+  comment:
+    needs: summarize_results
     if: ${{ github.event_name == 'pull_request' }}
     uses: ./.github/workflows/_pr-comment.yml
     with:
-      body: ${{ needs.run.outputs.summary_md }}
+      body: ${{ needs.summarize_results.outputs.summary_md }}
     secrets: inherit

@@ -1,27 +1,23 @@
-name: _gemm-run
+name: summarize-errors
 on:
   workflow_call:
-    inputs:
-      snakemake_args:
-        type: string
-        required: false
-        default: "-j 1 --forceall --keep-going"
     secrets:
-      CI_TOKEN:
-        required: false
       OPENAI_API_KEY:
         required: false
 
 jobs:
-  run:
+  summarize_errors:
     runs-on: [self-hosted, linux]
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download outputs
+        uses: actions/download-artifact@v4
         with:
-          submodules: recursive
-          token: ${{ secrets.CI_TOKEN || github.token }}
+          name: outputs-raw
+          path: outputs
 
       - name: Cache Python virtualenv
         uses: actions/cache@v4
@@ -36,23 +32,18 @@ jobs:
           source .venv/bin/activate
           pip install --upgrade pip
           pip install -r requirements.txt
-          bash setup_mlir_aie_requirements.sh
 
-      - name: Run Snakemake
-        shell: bash -l {0}
-        continue-on-error: true
+      - name: Summarize failed runs with OpenAI
+        if: always()
         env:
-          ARGS: ${{ inputs.snakemake_args }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          source .venv/bin/activate
-          source setup_mlir_aie_path.sh
-          source setup_mlir_aie_pythonpath.sh
-          snakemake $ARGS || true
+          python3 .github/scripts/summarize_errors_openai.py
 
-      - name: Upload outputs artifact
+      - name: Upload outputs with summaries
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: outputs-raw
+          name: outputs-errors
           path: outputs/*
           retention-days: 30

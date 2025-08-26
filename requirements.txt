@@ -12,3 +12,4 @@ pydot
 xdsl-aie @ git+https://github.com/xdslproject/xdsl-aie.git@14eabedbebaf8c138e2468fbd3115598376d5cec
 snax-mlir @ git+https://github.com/kuleuven-micas/snax-mlir.git@1c01c5d100df128c9fa01d3336ebea98e19b20cf
 snakemake
+openai
