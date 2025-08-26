@@ -87,7 +87,7 @@ jobs:
           echo >> "$SUMMARY_FILE"
           echo "**Totals:** ✅ \`$ok\`  •  ❌ \`$fail\`  •  All: \`$total\`" >> "$SUMMARY_FILE"
 
-          # Append successful run details (unchanged)
+          # Append successful run details
           shopt -s nullglob
           appended=0
           for d in outputs/*; do
@@ -106,33 +106,47 @@ jobs:
             echo "_No detailed traces found to display (no traces/details.md files present in successful runs)._ " >> "$SUMMARY_FILE"
           fi
 
-          # Append failed run traces (error_trace.md), one after another
-          echo >> "$SUMMARY_FILE"
-          echo "## Failure Traces" >> "$SUMMARY_FILE"
-          appended_fail=0
-          for d in outputs/*; do
-            [ -d "$d" ] || continue
-            if [[ ! -f "$d/status.ok" ]] || ! grep -q success "$d/status.ok"; then
-              trace_file="$d/error_trace.md"
-              if [[ -f "$trace_file" ]]; then
-                echo >> "$SUMMARY_FILE"
-                cat "$trace_file" >> "$SUMMARY_FILE"
-                appended_fail=$((appended_fail+1))
-              fi
-            fi
-          done
-          if [[ $appended_fail -eq 0 ]]; then
-            echo >> "$SUMMARY_FILE"
-            echo "_No failed run traces found to display (no error_trace.md files present)._ " >> "$SUMMARY_FILE"
-          fi
-
           {
             echo "summary_md<<EOF"
             cat "$SUMMARY_FILE"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+          # Show the main summary on the Actions summary page
           cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Build failure traces markdown (separate file)
+        if: always()
+        shell: bash -l {0}
+        run: |
+          set -uo pipefail
+          FAIL_FILE="gemm_failures.md"
+          echo "## Failure Traces" > "$FAIL_FILE"
+
+          shopt -s nullglob
+          appended_fail=0
+          for d in outputs/*; do
+            [ -d "$d" ] || continue
+            if [[ ! -f "$d/status.ok" ]] || ! grep -q success "$d/status.ok"; then
+              trace_file="$d/error_trace.md"
+              if [[ -f "$trace_file" ]]; then
+                echo >> "$FAIL_FILE"
+                cat "$trace_file" >> "$FAIL_FILE"
+                appended_fail=$((appended_fail+1))
+              fi
+            fi
+          done
+
+          if [[ $appended_fail -eq 0 ]]; then
+            echo >> "$FAIL_FILE"
+            echo "_No failed run traces found to display (no error_trace.md files present)._ " >> "$FAIL_FILE"
+          fi
+
+          # Also show this separate failures doc on the Actions summary page
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Failure Traces (separate document)" >> "$GITHUB_STEP_SUMMARY"
+          echo "_See detailed collapsed logs below. This section is not posted to PR comments._" >> "$GITHUB_STEP_SUMMARY"
+          cat "$FAIL_FILE" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload summary artifact
         if: always()
@@ -140,5 +154,14 @@ jobs:
         with:
           name: gemm-summary
           path: gemm_summary.md
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload failures artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gemm-failures
+          path: gemm_failures.md
           if-no-files-found: error
           retention-days: 7
