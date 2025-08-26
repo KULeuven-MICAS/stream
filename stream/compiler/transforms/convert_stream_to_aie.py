@@ -686,8 +686,7 @@ class TransferToRuntimeSequence(RewritePattern):
         id = int(of_name[3])
         for i in range(software_size):
             software_offset = i * software_stride
-            total_offset += software_offset
-            static_offsets = (0, 0, 0, total_offset)
+            static_offsets = (0, 0, 0, total_offset + software_offset)
             # Insert DMA
             memcpy = DmaMemcpyNdOp(
                 arg,
