@@ -13,6 +13,7 @@ rule run_stream_aie_to_generate_mlir_output:
         """
         python3 {params.stream_main_file} \
             --M {wildcards.M} --K {wildcards.K} --N {wildcards.N} \
+            --rows {wildcards.nb_rows} --cols {wildcards.nb_cols} \
             --trace_size {params.trace_size} | tee {output}.log
         """
 

@@ -33,7 +33,7 @@ gemm:
     k: 32
     n: 32
     nb_rows: 2
-    nb_cols: 2
+    nb_cols: 4
     Ms: [64,]
     Ks: [64,]
-    Ns: [64,]
+    Ns: [128,]
