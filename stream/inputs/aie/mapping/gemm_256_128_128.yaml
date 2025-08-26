@@ -3,8 +3,8 @@
   - 2
   intra_core_tiling: &id002
   - C, 4
-  - D, 4
-  - K, 2
+  - D, 8
+  - K, 4
   inter_core_tiling: &id003
   - K, 1
   kernel: &id004
