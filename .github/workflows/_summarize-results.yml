@@ -19,7 +19,7 @@ jobs:
       - name: Download outputs
         uses: actions/download-artifact@v4
         with:
-          name: outputs
+          name: outputs-errors
           path: outputs
 
       - name: Summarize GEMM results (success & failure)

@@ -16,15 +16,22 @@ jobs:
       - name: Download outputs
         uses: actions/download-artifact@v4
         with:
-          name: outputs
+          name: outputs-raw
           path: outputs
+
+      - name: Cache Python virtualenv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
 
       - name: Setup Python env
         shell: bash -l {0}
         run: |
+          if [ ! -d ".venv" ]; then python3 -m venv .venv; fi
           source .venv/bin/activate
           pip install --upgrade pip
-          pip install openai
+          pip install -r requirements.txt
 
       - name: Summarize failed runs with OpenAI
         if: always()
@@ -37,6 +44,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: outputs
+          name: outputs-errors
           path: outputs/*
           retention-days: 30
