@@ -16,7 +16,7 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
     _resource_key,
 )
 from stream.workload.steady_state.computation import SteadyStateComputation
-from stream.workload.steady_state.iteration_space import IterationVariableReuse
+from stream.workload.steady_state.iteration_space import ComputeTileReuse, MemTileReuse
 from stream.workload.steady_state.node import SteadyStateNode
 from stream.workload.steady_state.tensor import SteadyStateTensor, TensorFlag
 from stream.workload.steady_state.transfer import SteadyStateTransfer
@@ -168,10 +168,10 @@ class TransferAndTensorAllocator:
             ssis = tr.steady_state_iteration_space.get_temporal_variables()  # e.g. [Nk, Nk-1, …, N0]
             sizes = [iter_var.size for iter_var in ssis]
             relevancies = [iter_var.relevant for iter_var in ssis]
-            reuses = [iter_var.reuse for iter_var in ssis]
+            reuses = [iter_var.compute_tile_reuse for iter_var in ssis]
 
-            # Check that all reuses are NOT_SET, else continue
-            if any(r != IterationVariableReuse.NOT_SET for r in reuses):
+            # Check that all compute reuses are NOT_SET, else continue
+            if any(r != ComputeTileReuse.NOT_SET for r in reuses):
                 continue
             self.transfer_nodes_to_optimize_firings_for.append(tr)
 
@@ -279,11 +279,11 @@ class TransferAndTensorAllocator:
             )
             if tr not in self.transfer_nodes_to_optimize_firings_for:
                 # Get the stop value by looking at the reuses of the ssis
-                reuses = tr.steady_state_iteration_space.get_temporal_resues()
+                reuses = tr.steady_state_iteration_space.get_temporal_compute_tile_reuses()
                 # Find the index of the last 'REUSE' in the reuses
                 stop = -2
                 for i in range(len(reuses) - 1, -1, -1):
-                    if reuses[i] == IterationVariableReuse.COMPUTE_TILE_REUSE:
+                    if reuses[i] == ComputeTileReuse.REUSE:
                         stop = i
                         break
                 assert stop >= -1, f"Something went wrong for Transfer {tr.node_name} REUSE indexing: {reuses}"
@@ -305,6 +305,14 @@ class TransferAndTensorAllocator:
                 quicksum(self.z_stopM[(tr, s)] for s in range(-1, len(sizes))) == 1,
                 name=f"cacheChooseStopM_{tr.node_name}",
             )
+            # If any of the reuses is already set to NO_REUSE, enforce these levels to 0
+            mem_tile_reuses = tr.steady_state_iteration_space.get_temporal_mem_tile_reuses()
+            for i, r in enumerate(mem_tile_reuses):
+                if r == MemTileReuse.NO_REUSE:
+                    self.model.addConstr(
+                        self.z_stopM[(tr, i)] == 0,
+                        name=f"zStopM_NoReuse_{tr.node_name}_L{i}",
+                    )
 
             # stopM ≥ stopC (every cached loop for Compute must also be cached in the MemC)
             for s in range(-1, len(sizes)):
@@ -817,16 +825,16 @@ class TransferAndTensorAllocator:
             # Set all iteration variables to REUSE flag
             for i, iter_var in enumerate(tr.steady_state_iteration_space.get_temporal_variables()):
                 if i <= stop:
-                    flag = IterationVariableReuse.COMPUTE_TILE_REUSE
+                    flag = ComputeTileReuse.REUSE
                 else:
-                    flag = IterationVariableReuse.COMPUTE_TILE_NO_REUSE
-                iter_var.reuse = flag
+                    flag = ComputeTileReuse.NO_REUSE
+                iter_var.compute_tile_reuse = flag
             for i, iter_var in enumerate(tr.steady_state_iteration_space.get_temporal_variables()):
                 if i <= mem_tile_reuse_levels[tr]:
-                    flag = IterationVariableReuse.MEM_TILE_REUSE
+                    flag = MemTileReuse.REUSE
                 else:
-                    flag = IterationVariableReuse.MEM_TILE_NO_REUSE
-                iter_var.reuse |= flag  # append the memory reuse flag
+                    flag = MemTileReuse.NO_REUSE
+                iter_var.mem_tile_reuse |= flag  # append the memory reuse flag
         # # Print the updated reuse levels for debugging
         # for tr in self.transfer_nodes:
         #     compute_stop = compute_tile_reuse_levels.get(tr, -1)

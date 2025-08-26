@@ -1,7 +1,7 @@
 site_name: Stream
-site_url: https://kuleuven-micas.github.io/stream/
-repo_url: https://github.com/KULeuven-MICAS/stream
-repo_name: KULeuven-MICAS/stream
+site_url: https://kuleuven-micas.github.io/stream_aie/
+repo_url: https://github.com/KULeuven-MICAS/stream_aie
+repo_name: KULeuven-MICAS/stream_aie
 docs_dir: source
 site_dir: site
 edit_uri: edit/main/docs/
@@ -11,7 +11,7 @@ theme:
   palette:
     - media: "(prefers-color-scheme: dark)"
       scheme: slate
-      primary: deep purple
+      primary: indigo
       accent: lime
   features:
     - navigation.sections
@@ -32,12 +32,13 @@ theme:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/KULeuven-MICAS/stream
+      link: https://github.com/KULeuven-MICAS/stream_aie
       name: GitHub
   version:
     provider: mike  # optional if you plan to version docs later
 
 markdown_extensions:
+  - tables
   - admonition
   - codehilite
   - toc:

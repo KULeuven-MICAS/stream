@@ -14,12 +14,16 @@ from zigzag.workload.layer_node import LoopRelevancyInfo
 from stream.workload.mapping import TILING_T
 
 
-class IterationVariableReuse(Flag):
-    NOT_SET = auto()  # default value is not set
-    MEM_TILE_REUSE = auto()
-    MEM_TILE_NO_REUSE = auto()
-    COMPUTE_TILE_REUSE = auto()
-    COMPUTE_TILE_NO_REUSE = auto()
+class ComputeTileReuse(Flag):
+    NOT_SET = auto()
+    REUSE = auto()
+    NO_REUSE = auto()
+
+
+class MemTileReuse(Flag):
+    NOT_SET = auto()
+    REUSE = auto()
+    NO_REUSE = auto()
 
 
 # --------------------------------------------------------------------------- #
@@ -45,16 +49,17 @@ class IterationVariable:
         self.dimension: LayerDim = dimension
         self.size: int = int(size)
         self.relevant: bool = bool(relevant)
-        self._reuse: IterationVariableReuse = IterationVariableReuse.NOT_SET
+        self._compute_tile_reuse: ComputeTileReuse = ComputeTileReuse.NOT_SET
+        self._mem_tile_reuse: MemTileReuse = MemTileReuse.NOT_SET
         self.spatial: bool = bool(spatial)
 
     # ---------- nice aliases ------------------------------------------------
     def __iter__(self):
-        yield from (self.dimension, self.size, self.relevant, self.reuse, self.spatial)
+        yield from (self.dimension, self.size, self.relevant, self.compute_tile_reuse, self.spatial)
 
     def __repr__(self):
         tag = "R" if self.relevant else "IR"
-        return f"IterVar({self.dimension.name},{self.size},{tag},{self.reuse},spatial={self.spatial})"
+        return f"IterVar({self.dimension.name},{self.size},{tag},{self.compute_tile_reuse},spatial={self.spatial})"
 
     def __eq__(self, other):
         if not isinstance(other, IterationVariable):
@@ -63,23 +68,34 @@ class IterationVariable:
             self.dimension == other.dimension
             and self.size == other.size
             and self.relevant == other.relevant
-            and self.reuse == other.reuse
+            and self.compute_tile_reuse == other.compute_tile_reuse
+            and self.mem_tile_reuse == other.mem_tile_reuse
             and self.spatial == other.spatial
         )
 
     def __hash__(self):
-        return hash((self.dimension, self.size, self.relevant, self.reuse, self.spatial))
+        return hash((self.dimension, self.size, self.relevant, self.compute_tile_reuse, self.spatial))
 
-    # Getter and setter for reuse attribute
+    # Getter and setter for compute and mem tile reuse attribute
     @property
-    def reuse(self) -> IterationVariableReuse:
-        return self._reuse
+    def compute_tile_reuse(self) -> ComputeTileReuse:
+        return self._compute_tile_reuse
 
-    @reuse.setter
-    def reuse(self, value: IterationVariableReuse) -> None:
-        if not isinstance(value, IterationVariableReuse):
-            raise ValueError(f"Expected IterationVariableReuse, got {type(value)}")
-        self._reuse = value
+    @compute_tile_reuse.setter
+    def compute_tile_reuse(self, value: ComputeTileReuse) -> None:
+        if not isinstance(value, ComputeTileReuse):
+            raise ValueError(f"Expected ComputeTileReuse, got {type(value)}")
+        self._compute_tile_reuse = value
+
+    @property
+    def mem_tile_reuse(self) -> MemTileReuse:
+        return self._mem_tile_reuse
+
+    @mem_tile_reuse.setter
+    def mem_tile_reuse(self, value: MemTileReuse) -> None:
+        if not isinstance(value, MemTileReuse):
+            raise ValueError(f"Expected MemTileReuse, got {type(value)}")
+        self._mem_tile_reuse = value
 
 
 # --------------------------------------------------------------------------- #
@@ -151,9 +167,16 @@ class SteadyStateIterationSpace:
             variables.append(IterationVariable(dim, size, is_rel, spatial=True))
 
         # Temporal intra_core_tiling loop variables
+        seen_ir = False
         for dim, size in intra_core_tiling:
             is_rel = dim in relevant_dims
-            variables.append(IterationVariable(dim, size, is_rel))
+            iter_var = IterationVariable(dim, size, is_rel)
+            if not is_rel:
+                seen_ir = True
+            elif seen_ir and is_rel:
+                # once we have seen an IR loop, subsequent R loops can't have mem reuse
+                iter_var.mem_tile_reuse = MemTileReuse.NO_REUSE
+            variables.append(iter_var)
 
         return cls(variables)
 
@@ -201,7 +224,7 @@ class SteadyStateIterationSpace:
         return prod(
             iv.size
             for iv in self.get_temporal_variables()
-            if not iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
+            if not iv.relevant and ComputeTileReuse.REUSE in iv.compute_tile_reuse
         )
 
     def nb_local_tensors_compute(self) -> int:
@@ -211,7 +234,7 @@ class SteadyStateIterationSpace:
         return prod(
             iv.size
             for iv in self.get_temporal_variables()
-            if iv.relevant and IterationVariableReuse.COMPUTE_TILE_REUSE in iv.reuse
+            if iv.relevant and ComputeTileReuse.REUSE in iv.compute_tile_reuse
         )
 
     def nb_local_tensors_mem(self) -> int:
@@ -219,9 +242,7 @@ class SteadyStateIterationSpace:
         Returns the number of tensors that are kept local in a mem tile.
         """
         return prod(
-            iv.size
-            for iv in self.get_temporal_variables()
-            if iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
+            iv.size for iv in self.get_temporal_variables() if iv.relevant and MemTileReuse.REUSE in iv.mem_tile_reuse
         )
 
     def reuse_factor_mem(self) -> int:
@@ -232,7 +253,7 @@ class SteadyStateIterationSpace:
             prod(
                 iv.size
                 for iv in self.get_temporal_variables()
-                if not iv.relevant and IterationVariableReuse.MEM_TILE_REUSE in iv.reuse
+                if not iv.relevant and MemTileReuse.REUSE in iv.mem_tile_reuse
             )
             // self.reuse_factor_compute()
         )
@@ -255,11 +276,17 @@ class SteadyStateIterationSpace:
         """
         return [iv.size for iv in self.get_temporal_variables()]
 
-    def get_temporal_resues(self) -> list[IterationVariableReuse]:
+    def get_temporal_compute_tile_reuses(self) -> list[ComputeTileReuse]:
         """
         Returns the list of reuses of temporal iteration variables.
         """
-        return [iv.reuse for iv in self.get_temporal_variables()]
+        return [iv.compute_tile_reuse for iv in self.get_temporal_variables()]
+
+    def get_temporal_mem_tile_reuses(self) -> list[MemTileReuse]:
+        """
+        Returns the list of reuses of temporal iteration variables.
+        """
+        return [iv.mem_tile_reuse for iv in self.get_temporal_variables()]
 
     # ..................................................................... #
     # ── Iteration / pretty printing                                         #
