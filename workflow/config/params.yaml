@@ -17,9 +17,9 @@ gemm:
     m: 32
     k: 32
     n: 32
-    Ms: [64, 128, 256]
-    Ks: [64, 128, 256]
-    Ns: [64, 128, 256]
+    Ms: [256]
+    Ks: [256]
+    Ns: [256]
 
   whole_array:
     stream_hw_id: whole_array
