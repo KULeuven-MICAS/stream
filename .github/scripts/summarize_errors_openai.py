@@ -37,6 +37,12 @@ def main():
         if log.exists():
             summary = summarize_log(log)
             (d / "error_summary.txt").write_text(summary + "\n")
+            trace_md = (
+                f"<details><summary>Show run_trace.log</summary>\n\n"
+                f"```text\n{log.read_text(errors='ignore')}\n```\n\n"
+                f"</details>\n"
+            )
+            (d / "error_trace.md").write_text(trace_md)
 
 
 if __name__ == "__main__":
