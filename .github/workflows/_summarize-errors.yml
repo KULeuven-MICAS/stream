@@ -22,14 +22,15 @@ jobs:
       - name: Setup Python env
         shell: bash -l {0}
         run: |
-          source .venv/bin/activate || true
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install openai
 
       - name: Summarize failed runs with OpenAI
         if: always()
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: |
-          source .venv/bin/activate || true
           python3 .github/scripts/summarize_errors_openai.py
 
       - name: Upload outputs with summaries
