@@ -1,0 +1,41 @@
+name: summarize-errors
+on:
+  workflow_call:
+    secrets:
+      OPENAI_API_KEY:
+        required: false
+
+jobs:
+  summarize_errors:
+    runs-on: [self-hosted, linux]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download outputs
+        uses: actions/download-artifact@v4
+        with:
+          name: outputs
+          path: outputs
+
+      - name: Setup Python env
+        shell: bash -l {0}
+        run: |
+          source .venv/bin/activate || true
+
+      - name: Summarize failed runs with OpenAI
+        if: always()
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          source .venv/bin/activate || true
+          python3 .github/scripts/summarize_errors_openai.py
+
+      - name: Upload outputs with summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: outputs
+          path: outputs/*
+          retention-days: 30

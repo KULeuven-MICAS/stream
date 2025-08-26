@@ -7,18 +7,14 @@ on:
         required: false
         default: "-j 1 --forceall --keep-going"
     secrets:
-      CI_TOKEN:            # optional PAT for private submodules, etc.
+      CI_TOKEN:
         required: false
-    outputs:
-      summary_md:
-        description: "Markdown summary of GEMM results"
-        value: ${{ jobs.run.outputs.summary_md }}
+      OPENAI_API_KEY:
+        required: false
 
 jobs:
   run:
     runs-on: [self-hosted, linux]
-    outputs:
-      summary_md: ${{ steps.summarize.outputs.summary_md }}
 
     steps:
       - name: Checkout
@@ -44,7 +40,7 @@ jobs:
 
       - name: Run Snakemake
         shell: bash -l {0}
-        continue-on-error: true   # we’ll summarize regardless
+        continue-on-error: true
         env:
           ARGS: ${{ inputs.snakemake_args }}
         run: |
@@ -52,110 +48,6 @@ jobs:
           source setup_mlir_aie_path.sh
           source setup_mlir_aie_pythonpath.sh
           snakemake $ARGS || true
-
-      - name: Summarize GEMM results (success & failure)
-        id: summarize
-        if: always()
-        shell: bash -l {0}
-        run: |
-          set -uo pipefail
-          SUMMARY_FILE="gemm_summary.md"
-          mkdir -p outputs || true
-
-          # Timestamps
-          DEN_TS="$(TZ='America/Denver' date '+%Y-%m-%d %H:%M:%S %Z')"
-          BRU_TS="$(TZ='Europe/Brussels' date '+%Y-%m-%d %H:%M:%S %Z')"
-
-          total=0; ok=0; fail=0
-          {
-            echo "## GEMM Deployment Summary"
-            echo
-            echo "- Workflow: \`${{ github.workflow }}\`"
-            echo "- Commit: \`${{ github.sha }}\`"
-            echo "- Runner: \`${{ runner.name }}\`"
-            echo "- Run time: Denver \`${DEN_TS}\` • Brussels \`${BRU_TS}\`"
-            echo "- Run: [#${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}); Attempt ${{ github.run_attempt }}"
-            echo
-            echo "| HW | M | K | N | Status | Note |"
-            echo "|---|---|---|---|--------|------|"
-          } > "$SUMMARY_FILE"
-
-          shopt -s nullglob
-          found_dirs=0
-          for dir in outputs/*; do
-            [ -d "$dir" ] || continue
-            found_dirs=1
-            base="$(basename "$dir")"
-            total=$((total+1))
-
-            hwid="?"; M="?"; K="?"; N="?"; note=""
-            if [[ "$base" =~ ^(.+)-gemm_([0-9]+)_([0-9]+)_([0-9]+)-fused-constraint-optimization$ ]]; then
-              hwid="${BASH_REMATCH[1]}"; M="${BASH_REMATCH[2]}"; K="${BASH_REMATCH[3]}"; N="${BASH_REMATCH[4]}"
-            else
-              note="Unrecognized output directory format"
-            fi
-
-            status_file="$dir/status.ok"
-            if [[ -f "$status_file" ]]; then
-              if grep -q "success" "$status_file"; then
-                echo "| $hwid | $M | $K | $N | ✅ success | $note |" >> "$SUMMARY_FILE"
-                ok=$((ok+1))
-              else
-                echo "| $hwid | $M | $K | $N | ❌ failed | status.ok present but not 'success' |" >> "$SUMMARY_FILE"
-                fail=$((fail+1))
-              fi
-            else
-              echo "| $hwid | $M | $K | $N | ❌ failed | missing status.ok |" >> "$SUMMARY_FILE"
-              fail=$((fail+1))
-            fi
-          done
-
-          if [[ $found_dirs -eq 0 ]]; then
-            echo "_No output directories found in \`outputs/*\`. The pipeline likely failed early._" >> "$SUMMARY_FILE"
-          fi
-
-          echo >> "$SUMMARY_FILE"
-          echo "**Totals:** ✅ \`$ok\`  •  ❌ \`$fail\`  •  All: \`$total\`" >> "$SUMMARY_FILE"
-
-          # --- Append per-run details produced by your postprocessing script ---
-          # Each successful run directory should contain outputs/<run-dir>/traces/details.md.
-          shopt -s nullglob
-          appended=0
-          for d in outputs/*; do
-            [ -d "$d" ] || continue
-            if [[ -f "$d/status.ok" ]] && grep -q success "$d/status.ok"; then
-              details_file="$d/traces/details.md"
-              if [[ -f "$details_file" ]]; then
-                echo >> "$SUMMARY_FILE"
-                cat "$details_file" >> "$SUMMARY_FILE"
-                appended=$((appended+1))
-              fi
-            fi
-          done
-          if [[ $appended -eq 0 ]]; then
-            echo >> "$SUMMARY_FILE"
-            echo "_No detailed traces found to display (no traces/details.md files present in successful runs)._ " >> "$SUMMARY_FILE"
-          fi
-          # --- end append ---
-
-          # Expose the whole markdown as a step output
-          {
-            echo "summary_md<<EOF"
-            cat "$SUMMARY_FILE"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
-
-          # Also publish to the job summary UI
-          cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
-
-      - name: Upload summary artifact (for workflow_run / docs ingest)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gemm-summary
-          path: gemm_summary.md
-          if-no-files-found: error
-          retention-days: 7
 
       - name: Upload outputs artifact
         if: always()
