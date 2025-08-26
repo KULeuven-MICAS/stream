@@ -11,12 +11,12 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
-def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_cols_to_use):  # noqa: N803, PLR0913
+def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_rows, nb_cols):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
     workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
     accelerator = "stream/inputs/aie/hardware/whole_array.yaml"
-    mapping_path = make_gemm_mapping_whole_array(M, K, N, m, k, n, nb_rows_to_use=2, nb_cols_to_use=nb_cols_to_use)
+    mapping_path = make_gemm_mapping_whole_array(M, K, N, m, k, n, nb_rows_to_use=nb_rows, nb_cols_to_use=nb_cols)
     # mode = "lbl"
     # layer_stacks = [(0,),]
     mode = "fused"
@@ -28,7 +28,8 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
     wl_name = re.split(r"/|\.", workload_path)[-1]
     if wl_name == "onnx":
         wl_name = re.split(r"/|\.", workload_path)[-2]
-    experiment_id = f"{hw_name}-{wl_name}-{mode}-constraint-optimization"
+    mapping_name = f"{nb_rows}_row_{nb_cols}_col"
+    experiment_id = f"{hw_name}-{wl_name}-{mapping_name}"
     ######################################################################
 
     ##############PLOTTING###############
@@ -52,7 +53,7 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
         skip_if_exists=False,
         enable_codegen=True,
         trace_size=trace_size,
-        nb_cols_to_use=nb_cols_to_use,
+        nb_cols_to_use=nb_cols,
     )
 
     # #####################CostModelEvaluationLUT LOAD#############################
@@ -78,7 +79,8 @@ if __name__ == "__main__":
     parser.add_argument("--in_dtype", type=str, default="i16", help="Input data type (default: i16)")
     parser.add_argument("--out_dtype", type=str, default="i32", help="Output data type (default: i32)")
     parser.add_argument("--trace_size", type=int, default=1048576, help="Size of the trace buffer (default: 1048576)")
-    parser.add_argument("--nb_cols", type=int, default=2, help="Number of AIE columns to use (default: 2)")
+    parser.add_argument("--rows", type=int, default=2, help="Number of AIE rows to use (default: 2)")
+    parser.add_argument("--cols", type=int, default=2, help="Number of AIE columns to use (default: 2)")
     args = parser.parse_args()
 
     run_main_aie_codegen_gemm(
@@ -91,5 +93,6 @@ if __name__ == "__main__":
         args.in_dtype,
         args.out_dtype,
         args.trace_size,
-        args.nb_cols,
+        args.rows,
+        args.cols,
     )
