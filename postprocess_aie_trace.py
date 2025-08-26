@@ -186,7 +186,6 @@ def write_details_markdown(output_base, hwid, M, N, K, tile_rows):  # noqa: N803
     details_path = os.path.join(output_base, "details.md")
     with open(details_path, "w") as f:
         title_hwid = hwid or "?"
-        f.write("### Details for Successful Runs\n\n")
         f.write(f"<details><summary><strong>[{title_hwid}] M={M} K={K} N={N}</strong></summary>\n\n")
         f.write(
             "| Tile | Kernels | Total cycles | Avg cycles per kernel | MACs/cycle (kernel) |"
