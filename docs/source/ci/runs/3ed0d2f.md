@@ -1,3 +1,10 @@
+# CI run 3ed0d2f
+
+- Run: [link](https://github.com/KULeuven-MICAS/stream_aie/actions/runs/17232284253)
+- Time: Denver `2025-08-26 02:40:27 MDT` • Brussels `2025-08-26 10:40:27 CEST`
+
+---
+
 ## GEMM Deployment Summary
 
 - Workflow: `AIE Deployment Gemm`
