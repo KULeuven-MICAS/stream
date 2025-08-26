@@ -32,6 +32,7 @@ rule run_trace:
         rules.copy_stream_mlir_output_to_mlir_aie.output,
     output:
         "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/trace_mm_{M}_{K}_{N}.json"
+    threads: 1
     log:
         "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-fused-constraint-optimization/run_trace.log"
     params:
