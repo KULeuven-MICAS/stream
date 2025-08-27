@@ -202,17 +202,20 @@ class CommunicationManager:
         targets: Sequence["Core"],
         *,
         max_meetings: int = 4,
+        offchip_mem_penalty: float = 1000.0,
     ) -> list[MulticastPathPlan]:
         """
-        Minimal planner:
-        - Meeting points are restricted to memory cores, excluding the offchip core.
-        - For a broadcast (one source, many targets), rank meetings by the *sum of hop counts*
-        from meeting -> each target.
-        - For a join (many sources, one target), rank meetings by the *sum of hop counts*
-        from each source -> meeting.
-        - For each selected meeting, build shortest-hop paths and return one plan per meeting.
+        Minimal planner with weighted distances to avoid offchip hops:
+        - Meeting points are restricted to memory cores, excluding the offchip core, and limited to columns in use.
+        - Distances/paths use weights:
+            * weight = 1 for normal edges
+            * weight = `offchip_mem_penalty` for edges between the offchip core and any memory core
+        This strongly discourages paths that bounce via offchip.
+        - Broadcast (one source, many targets): rank meetings by sum of weighted distances m->targets.
+        - Join (many sources, one target):     rank meetings by sum of weighted distances sources->m.
+        - For each selected meeting, build weighted-shortest paths and return one plan per meeting.
 
-        Returns up to `max_meetings` plans, ordered by the objective above.
+        The original graph is NOT modified.
         """
         if not sources or not targets:
             raise ValueError("sources and targets must be non-empty")
@@ -220,50 +223,64 @@ class CommunicationManager:
             raise ValueError("only one-to-many or many-to-one is supported")
 
         G = self.accelerator.cores
-        Grev = G.reverse(copy=False) if G.is_directed() else G  # to get distances *to* targets
 
-        # Candidate meeting nodes: memory tiles, not offchip of col_ids that are in use
-        if len(sources) > 1:
-            cols_in_use = {s.col_id for s in sources}
-        else:
-            cols_in_use = {t.col_id for t in targets}
+        # Work on a COPY so we don't touch original edge attributes
+        Gw = nx.DiGraph(G) if G.is_directed() else nx.Graph(G)
+
+        offchip_id = self.accelerator.offchip_core_id
+
+        def is_offchip(n: "Core") -> bool:
+            return getattr(n, "id", None) == offchip_id
+
+        def is_memory(n: "Core") -> bool:
+            return getattr(n, "type", None) == "memory"
+
+        # Assign weights on the copy
+        for u, v, d in Gw.edges(data=True):
+            if (is_offchip(u) and is_memory(v)) or (is_offchip(v) and is_memory(u)):
+                d["w"] = float(offchip_mem_penalty)
+            else:
+                d["w"] = 1.0
+
+        Grev = Gw.reverse(copy=False) if Gw.is_directed() else Gw  # for distances *to* targets
+
+        # Candidate meeting nodes: memory tiles, not offchip, and in used columns
+        cols_in_use = {s.col_id for s in sources} if len(sources) > 1 else {t.col_id for t in targets}
         candidates = [
-            m
-            for m in G.nodes()
-            if getattr(m, "type", None) == "memory"
-            and getattr(m, "id", None) != self.accelerator.offchip_core_id
-            and m.col_id in cols_in_use
+            m for m in Gw.nodes() if is_memory(m) and not is_offchip(m) and getattr(m, "col_id", None) in cols_in_use
         ]
         if not candidates:
             raise nx.NetworkXNoPath("no eligible meeting nodes")
 
-        # Precompute unweighted (hop-count) distances
-        dist_from_sources: dict[Core, dict[Core, int]] = {
-            s: nx.single_source_shortest_path_length(G, s) for s in sources
+        # Precompute weighted distances
+        dist_from_sources: dict[Core, dict[Core, float]] = {
+            s: nx.single_source_dijkstra_path_length(Gw, s, weight="w") for s in sources
         }
-        dist_to_targets: dict[Core, dict[Core, int]] = {
-            t: nx.single_source_shortest_path_length(Grev, t) for t in targets
+        dist_to_targets: dict[Core, dict[Core, float]] = {
+            t: nx.single_source_dijkstra_path_length(Grev, t, weight="w") for t in targets
         }
 
-        def objective(m: "Core") -> int:
+        INF = float("inf")
+
+        def objective(m: "Core") -> float:
             if len(sources) == 1:
-                # broadcast: minimize sum hops meeting->targets
-                return sum(dist_to_targets[t].get(m, 10**9) for t in targets)
+                # broadcast: minimize sum weighted distances meeting->targets
+                return sum(dist_to_targets[t].get(m, INF) for t in targets)
             else:
-                # join: minimize sum hops sources->meeting
-                return sum(dist_from_sources[s].get(m, 10**9) for s in sources)
+                # join: minimize sum weighted distances sources->meeting
+                return sum(dist_from_sources[s].get(m, INF) for s in sources)
 
-        # Rank meetings and keep the best few
-        ranked = sorted(((objective(m), m) for m in candidates), key=lambda x: (x[0], x[1].id))
-        top_meetings = [m for _, m in islice(ranked, max_meetings) if objective(m) < 10**9]
+        # Rank meetings and keep the best few (stable tie-break on node id if present)
+        ranked = sorted(((objective(m), m) for m in candidates), key=lambda x: (x[0], getattr(x[1], "id", 0)))
+        top_meetings = [m for score, m in islice(ranked, max_meetings) if score < INF]
         if not top_meetings:
             raise nx.NetworkXNoPath("no meeting node connects all endpoints")
 
         plans: list[MulticastPathPlan] = []
         for m in top_meetings:
-            # Build shortest-hop paths (unweighted)
-            paths_from_sources = {s: nx.shortest_path(G, s, m) for s in sources}
-            paths_to_targets = {t: nx.shortest_path(G, m, t) for t in targets}
+            # Build weighted shortest paths on the COPY
+            paths_from_sources = {s: nx.shortest_path(Gw, s, m, weight="w") for s in sources}
+            paths_to_targets = {t: nx.shortest_path(Gw, m, t, weight="w") for t in targets}
 
             # Stitch full paths keyed by leaf endpoints
             full_paths: dict[Core, list[Core]] = {}
@@ -288,7 +305,7 @@ class CommunicationManager:
                     paths_from_sources=paths_from_sources,
                     paths_to_targets=paths_to_targets,
                     full_paths=full_paths,
-                    total_hops_objective=objective(m),
+                    total_hops_objective=int(objective(m)),  # weighted objective now
                     overlap_edges=overlap_edges,
                 )
             )

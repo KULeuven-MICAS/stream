@@ -45,9 +45,13 @@ jobs:
             echo "- Run time: Denver \`${DEN_TS}\` • Brussels \`${BRU_TS}\`"
             echo "- Run: [#${{ github.run_number }}](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}); Attempt ${{ github.run_attempt }}"
             echo
-            echo "| HW | M | K | N | Status | Note |"
-            echo "|---|---|---|---|--------|------|"
+            echo "| HW | M | K | N | Rows | Cols | Status | Note |"
+            echo "|---|---|---|---|------|------|--------|------|"
           } > "$SUMMARY_FILE"
+
+          # New directory format:
+          #   <hwid>-gemm_<M>_<K>_<N>-<ROWS>_row_<COLS>_col
+          re='^(.+)-gemm_([0-9]+)_([0-9]+)_([0-9]+)-([0-9]+)_row_([0-9]+)_col$'
 
           shopt -s nullglob
           found_dirs=0
@@ -57,16 +61,16 @@ jobs:
             base="$(basename "$dir")"
             total=$((total+1))
 
-            hwid="?"; M="?"; K="?"; N="?"; note=""
-            if [[ "$base" =~ ^(.+)-gemm_([0-9]+)_([0-9]+)_([0-9]+)-fused-constraint-optimization$ ]]; then
-              hwid="${BASH_REMATCH[1]}"; M="${BASH_REMATCH[2]}"; K="${BASH_REMATCH[3]}"; N="${BASH_REMATCH[4]}"
+            hwid="?"; M="?"; K="?"; N="?"; ROWS="?"; COLS="?"; note=""
+            if [[ "$base" =~ $re ]]; then
+              hwid="${BASH_REMATCH[1]}"; M="${BASH_REMATCH[2]}"; K="${BASH_REMATCH[3]}"; N="${BASH_REMATCH[4]}"; ROWS="${BASH_REMATCH[5]}"; COLS="${BASH_REMATCH[6]}"
             else
-              note="Unrecognized output directory format"
+              note="Unrecognized output directory format: $base"
             fi
 
             status_file="$dir/status.ok"
             if [[ -f "$status_file" ]] && grep -q "success" "$status_file"; then
-              echo "| $hwid | $M | $K | $N | ✅ success | $note |" >> "$SUMMARY_FILE"
+              echo "| $hwid | $M | $K | $N | $ROWS | $COLS | 🐬 success | ${note//|/\\|} |" >> "$SUMMARY_FILE"
               ok=$((ok+1))
             else
               msg_file="$dir/error_summary.txt"
@@ -75,7 +79,7 @@ jobs:
               else
                 note="missing status.ok"
               fi
-              echo "| $hwid | $M | $K | $N | ❌ failed | ${note//|/\\|} |" >> "$SUMMARY_FILE"
+              echo "| $hwid | $M | $K | $N | $ROWS | $COLS | ❌ failed | ${note//|/\\|} |" >> "$SUMMARY_FILE"
               fail=$((fail+1))
             fi
           done
@@ -85,34 +89,53 @@ jobs:
           fi
 
           echo >> "$SUMMARY_FILE"
-          echo "**Totals:** ✅ \`$ok\`  •  ❌ \`$fail\`  •  All: \`$total\`" >> "$SUMMARY_FILE"
+          echo "**Totals:** 🐬 \`$ok\`  •  ❌ \`$fail\`  •  All: \`$total\`" >> "$SUMMARY_FILE"
 
-          # Append successful run details
+          # Append successful run details; inject Rows/Cols into the <summary> title
           shopt -s nullglob
           appended=0
           for d in outputs/*; do
             [ -d "$d" ] || continue
-            if [[ -f "$d/status.ok" ]] && grep -q success "$d/status.ok"; then
-              details_file="$d/traces/details.md"
-              if [[ -f "$details_file" ]]; then
-                echo >> "$SUMMARY_FILE"
-                cat "$details_file" >> "$SUMMARY_FILE"
-                appended=$((appended+1))
-              fi
+            status_file="$d/status.ok"
+            [[ -f "$status_file" ]] && grep -q success "$status_file" || continue
+
+            base="$(basename "$d")"
+            hwid="?"; M="?"; K="?"; N="?"; ROWS="?"; COLS="?"
+            if [[ "$base" =~ $re ]]; then
+              hwid="${BASH_REMATCH[1]}"; M="${BASH_REMATCH[2]}"; K="${BASH_REMATCH[3]}"; N="${BASH_REMATCH[4]}"; ROWS="${BASH_REMATCH[5]}"; COLS="${BASH_REMATCH[6]}"
+            fi
+
+            details_file="$d/traces/details.md"
+            if [[ -f "$details_file" ]]; then
+              echo >> "$SUMMARY_FILE"
+              # Insert " R=<ROWS> C=<COLS>" before the closing </strong> in the first <summary> line
+              awk -v R="$ROWS" -v C="$COLS" '
+                BEGIN{added=0}
+                {
+                  if (!added && $0 ~ /<details><summary>.*<\/strong>/) {
+                    sub(/<\/strong>/, " R=" R " C=" C "</strong>")
+                    added=1
+                  }
+                  print
+                }
+              ' "$details_file" >> "$SUMMARY_FILE"
+              appended=$((appended+1))
             fi
           done
+
           if [[ $appended -eq 0 ]]; then
             echo >> "$SUMMARY_FILE"
             echo "_No detailed traces found to display (no traces/details.md files present in successful runs)._ " >> "$SUMMARY_FILE"
           fi
 
+          # Expose as multi-line step output
           {
             echo "summary_md<<EOF"
             cat "$SUMMARY_FILE"
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
-          # Show the main summary on the Actions summary page
+          # Show on the Actions summary page
           cat "$SUMMARY_FILE" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build failure traces markdown (separate file)
@@ -142,7 +165,6 @@ jobs:
             echo "_No failed run traces found to display (no error_trace.md files present)._ " >> "$FAIL_FILE"
           fi
 
-          # Also show this separate failures doc on the Actions summary page
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "## Failure Traces (separate document)" >> "$GITHUB_STEP_SUMMARY"
           echo "_See detailed collapsed logs below. This section is not posted to PR comments._" >> "$GITHUB_STEP_SUMMARY"

@@ -2,26 +2,18 @@
   core_allocation: &id001
   - 2
   - 3
-  - 4
-  - 5
   - 8
   - 9
-  - 10
-  - 11
   - 14
   - 15
-  - 16
-  - 17
   - 20
   - 21
-  - 22
-  - 23
   intra_core_tiling: &id002
-  - C, 2
-  - D, 1
-  - K, 1
-  inter_core_tiling: &id003
+  - C, 8
   - D, 4
+  - K, 2
+  inter_core_tiling: &id003
+  - D, 2
   - K, 4
   kernel: &id004
     name: mm_32x32x32

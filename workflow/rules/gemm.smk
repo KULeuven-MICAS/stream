@@ -5,7 +5,7 @@ STREAM_MAIN_FILE = {v["stream_hw_id"]: v["stream_main_file"] for v in GEMM.value
 
 rule run_stream_aie_to_generate_mlir_output:
     output:
-        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-fused-constraint-optimization/output.mlir"
+        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-{nb_rows}_row_{nb_cols}_col/output.mlir"
     params:
         trace_size = lambda wc: TRACE_SIZE[wc.stream_hw_id],
         stream_main_file = lambda wc: STREAM_MAIN_FILE[wc.stream_hw_id]
@@ -13,6 +13,7 @@ rule run_stream_aie_to_generate_mlir_output:
         """
         python3 {params.stream_main_file} \
             --M {wildcards.M} --K {wildcards.K} --N {wildcards.N} \
+            --rows {wildcards.nb_rows} --cols {wildcards.nb_cols} \
             --trace_size {params.trace_size} | tee {output}.log
         """
 
@@ -20,7 +21,7 @@ rule copy_stream_mlir_output_to_mlir_aie:
     input:
         rules.run_stream_aie_to_generate_mlir_output.output
     output:
-        "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/build/aie_trace_{M}x{K}x{N}_32x32x32.mlir",
+        "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/build/aie_trace_{M}x{K}x{N}_32x32x32_{nb_rows}_row_{nb_cols}_col.mlir",
     shell:
         """
         aie-opt --canonicalize {input[0]} -o {output[0]} && \
@@ -31,9 +32,9 @@ rule run_trace:
     input:
         rules.copy_stream_mlir_output_to_mlir_aie.output,
     output:
-        "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/trace_mm_{M}_{K}_{N}.json"
+        "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/trace_mm_{M}_{K}_{N}_{nb_rows}_row_{nb_cols}_col.json"
     log:
-        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-fused-constraint-optimization/run_trace.log"
+        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-{nb_rows}_row_{nb_cols}_col/run_trace.log"
     params:
         trace_size = lambda wc: TRACE_SIZE[wc.stream_hw_id]
     shell:
@@ -42,7 +43,7 @@ rule run_trace:
             set +u && \
             source mlir-aie/utils/env_setup.sh && \
             cd mlir-aie/programming_examples/basic/matrix_multiplication_stream/{wildcards.stream_hw_id} && \
-            make trace M={wildcards.M} K={wildcards.K} N={wildcards.N} trace_size={params.trace_size}
+            make trace M={wildcards.M} K={wildcards.K} N={wildcards.N} nb_rows={wildcards.nb_rows} nb_cols={wildcards.nb_cols} trace_size={params.trace_size}
         ) > {log} 2>&1
         """
 
@@ -50,7 +51,7 @@ rule copy_trace_output:
     input:
         rules.run_trace.output
     output:
-        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-fused-constraint-optimization/traces/trace_mm_{M}_{K}_{N}.json"
+        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-{nb_rows}_row_{nb_cols}_col/traces/trace_mm_{M}_{K}_{N}.json"
     shell:
         "mkdir -p $(dirname {output}) && cp {input} {output}"
 
@@ -58,7 +59,7 @@ rule postprocess_trace:
     input:
         rules.copy_trace_output.output
     output:
-        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-fused-constraint-optimization/traces/tile2,1_report.json",
+        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-{nb_rows}_row_{nb_cols}_col/traces/tile2,1_report.json",
     shell:
         """
         python3 postprocess_aie_trace.py \
@@ -73,6 +74,6 @@ rule mark_success:
     input:
         rules.postprocess_trace.output[0]
     output:
-        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-fused-constraint-optimization/status.ok"
+        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-{nb_rows}_row_{nb_cols}_col/status.ok"
     shell:
         "echo success > {output}"

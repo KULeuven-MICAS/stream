@@ -135,7 +135,8 @@ class SetFixedAllocationPerformanceStage(Stage):
                             raise ValueError(
                                 f"{node} has a chosen_core_allocation of None, but the inter_core_tiling "
                                 f"{node.inter_core_tiling} does not match the possible_core_allocation length "
-                                f"{len(node.possible_core_allocation)}."
+                                f"{len(node.possible_core_allocation)}. "
+                                f"Make sure the layer is large enough to be tiled across the cores."
                             )
                         continue
                 try:
