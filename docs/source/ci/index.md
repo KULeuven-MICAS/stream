@@ -3,8 +3,9 @@
 - [Latest](latest.md)
 
 ## Recent runs
-- [4f4d66b](runs/4f4d66b.md)
+- [246fbee](runs/246fbee.md)
 - [3ed0d2f](runs/3ed0d2f.md)
+- [4f4d66b](runs/4f4d66b.md)
 - [6fa311f](runs/6fa311f.md)
 - [921a0bd](runs/921a0bd.md)
 - [9d53d7e](runs/9d53d7e.md)
