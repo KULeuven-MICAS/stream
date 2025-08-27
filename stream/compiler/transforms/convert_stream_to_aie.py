@@ -40,8 +40,8 @@ from xdsl_aie.dialects.aie import (
     BDDimLayoutArrayAttr,
     Block,
     CoreOp,
-    DMABDOp,
     DeviceOp,
+    DMABDOp,
     EndOp,
     NextBDOp,
     ObjectFIFO,
@@ -58,7 +58,6 @@ from xdsl_aie.dialects.aie import (
 from xdsl_aie.dialects.aiex import (
     DmaAwaitTaskOp,
     DmaConfigureTaskForOp,
-    DmaConfigureTaskOp,
     DmaMemcpyNdOp,
     DmaStartTaskOp,
     DmaWaitOp,
@@ -689,8 +688,6 @@ class TransferToRuntimeSequence(RewritePattern):
         static_sizes = (1,) * (4 - len(static_sizes)) + tuple(static_sizes)
         static_strides = (0,) * (4 - len(static_strides)) + tuple(static_strides)
 
-        id = int(of_name[3])
-
         all_bds: list[Operation] = []
 
         for i in range(software_size):
@@ -702,18 +699,13 @@ class TransferToRuntimeSequence(RewritePattern):
                 )
             )
 
-            dma_bd = DMABDOp(arg, offset=total_offset + software_offset, dimensions=bd_dimensions)
+            dma_bd = DMABDOp(
+                arg,
+                offset=total_offset + software_offset,
+                len=prod(static_sizes[1:]),
+                dimensions=bd_dimensions,
+            )
             all_bds.append(dma_bd)
-            # Insert DMA
-            # memcpy = DmaMemcpyNdOp(
-            #     arg,
-            #     static_offsets=static_offsets,
-            #     static_sizes=static_sizes,
-            #     static_strides=static_strides,
-            #     metadata=of_name,
-            #     id=id,
-            #     issue_token=True,
-            # )
         bd_blocks: list[Block] = []
 
         # last bd with end op
@@ -727,7 +719,7 @@ class TransferToRuntimeSequence(RewritePattern):
             )
 
         # configure task
-        task = DmaConfigureTaskForOp(of_name, Region(bd_blocks))
+        task = DmaConfigureTaskForOp(of_name, Region(bd_blocks), issue_token=True, repeat=1)
 
         # add start
         start = DmaStartTaskOp(task)
