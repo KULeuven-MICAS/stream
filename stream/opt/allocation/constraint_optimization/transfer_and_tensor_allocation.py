@@ -81,6 +81,7 @@ class TransferAndTensorAllocator:
         # memory cores that may act as on‑chip caches (exclude the DRAM/off‑chip id)
         # ------------------------------------------------------------------------------
         self.MAX_NB_COLS_TO_USE = nb_cols_to_use
+        self.FORCE_DOUBLE_BUFFERING = True
         self.mem_cores: list[Core] = [
             c
             for c in self.accelerator.core_list
@@ -581,6 +582,7 @@ class TransferAndTensorAllocator:
                 assert isinstance(c, Core), f"Expected {c} to be a Core, got {type(c)}"
                 for stop in range(-1, len(tr.steady_state_iteration_space.get_temporal_variables())):
                     tiles_needed = self.tiles_needed_levels[(tr, stop)]
+                    tiles_needed += 1 if self.FORCE_DOUBLE_BUFFERING else 0
                     self.object_fifo_depth[c] += tiles_needed * self.z_stopC[(tr, stop)]
         for c, expr in self.object_fifo_depth.items():
             max_fifo_depth = c.get_max_object_fifo_depth()

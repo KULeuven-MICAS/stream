@@ -217,6 +217,7 @@ class SortPullPushOp:  # noqa: PLW1641 for no hash
 @dataclass
 class ObjectFifoHop:
     fifos: list[ObjectFifoOp]
+    DB_EXTRA: int = 0  # 1 for double buffering, 0 for no DB
 
     @property
     def fifo(self) -> ObjectFifoOp:
@@ -276,7 +277,7 @@ class ObjectFifoHop:
             else:
                 of_name = name_base + "_" + of_type
             object_fifo = ObjectFifoOp.from_referenced_type(
-                elemNumber=(producers[0].ssis.data.nb_local_tensors_compute(),) * 2,
+                elemNumber=(producers[0].ssis.data.nb_local_tensors_compute() + cls.DB_EXTRA,) * 2,
                 producerTile=of_producer,
                 consumerTiles=[memtile],
                 referenced_type=memref_type.get_element_type(),
@@ -315,7 +316,8 @@ class ObjectFifoHop:
             else:
                 of_name = name_base + "_" + of_type
             object_fifo = ObjectFifoOp.from_referenced_type(
-                elemNumber=(consumers[0].ssis.data.nb_local_tensors_compute(),) * (1 + len(of_consumers)),
+                elemNumber=(consumers[0].ssis.data.nb_local_tensors_compute() + cls.DB_EXTRA,)
+                * (1 + len(of_consumers)),
                 producerTile=of_producer,
                 consumerTiles=of_consumers,
                 referenced_type=memref_type.get_element_type(),
@@ -340,7 +342,7 @@ class ObjectFifoHop:
             if spatial_stride != 0
         ]
         object_fifo = ObjectFifoOp.from_referenced_type(
-            elemNumber=(1, 1),
+            elemNumber=(1 + cls.DB_EXTRA, 1 + cls.DB_EXTRA),
             producerTile=tile_op_manager.get_tile(producer),
             consumerTiles=[memtile],
             referenced_type=memref_type.get_element_type(),
@@ -366,7 +368,7 @@ class ObjectFifoHop:
             if spatial_stride != 0
         ]
         object_fifo = ObjectFifoOp.from_referenced_type(
-            elemNumber=(1, 1),
+            elemNumber=(1 + cls.DB_EXTRA, 1 + cls.DB_EXTRA),
             producerTile=memtile,
             consumerTiles=[tile_op_manager.get_tile(consumer)],
             referenced_type=memref_type.get_element_type(),
