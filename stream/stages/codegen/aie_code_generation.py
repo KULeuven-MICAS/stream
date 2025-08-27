@@ -11,7 +11,6 @@ from xdsl.printer import Printer
 from zigzag.utils import DiGraphWrapper
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, Stream, TransferOp
-from stream.compiler.transforms.aie_add_tracing_script import AIEAddTracingScript
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
 from stream.compiler.transforms.stream_split_transfers import StreamSplitTransfersPass
@@ -261,7 +260,7 @@ class AIECodeGenerationStage(Stage):
         ClearMemorySpace().apply(self.context, module)
 
         # Optionally, Add Tracing Script
-        AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
+        # AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
 
         # print output to codegen path
         file = open(self.output_path, "w")
