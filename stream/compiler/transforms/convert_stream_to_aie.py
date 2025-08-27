@@ -56,9 +56,11 @@ from xdsl_aie.dialects.aie import (
     TileOp,
 )
 from xdsl_aie.dialects.aiex import (
+    DmaAwaitTaskOp,
     DmaConfigureTaskForOp,
     DmaConfigureTaskOp,
     DmaMemcpyNdOp,
+    DmaStartTaskOp,
     DmaWaitOp,
     RuntimeSequenceOp,
 )
@@ -727,7 +729,14 @@ class TransferToRuntimeSequence(RewritePattern):
         # configure task
         task = DmaConfigureTaskForOp(of_name, Region(bd_blocks))
 
-        rewriter.insert_op(task, InsertPoint.before(op))
+        # add start
+        start = DmaStartTaskOp(task)
+        rewriter.insert_op([task, start], InsertPoint.before(op))
+
+        # add wait at end of block
+        wait = DmaAwaitTaskOp(task)
+        rewriter.insert_op(wait, InsertPoint.at_end(runtime_sequence.body.block))
+
         # remove output from edge op operands
         rewriter.erase_matched_op(safe_erase=False)
 
