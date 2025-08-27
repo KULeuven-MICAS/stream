@@ -40,6 +40,7 @@ from xdsl_aie.dialects.aie import (
     BDDimLayoutArrayAttr,
     Block,
     CoreOp,
+    DMABDOp,
     DeviceOp,
     EndOp,
     ObjectFIFO,
@@ -54,6 +55,8 @@ from xdsl_aie.dialects.aie import (
     TileOp,
 )
 from xdsl_aie.dialects.aiex import (
+    DmaConfigureTaskForOp,
+    DmaConfigureTaskOp,
     DmaMemcpyNdOp,
     DmaWaitOp,
     RuntimeSequenceOp,
@@ -684,21 +687,36 @@ class TransferToRuntimeSequence(RewritePattern):
         static_strides = (0,) * (4 - len(static_strides)) + tuple(static_strides)
 
         id = int(of_name[3])
+
+        all_bds: list[Operation] = []
+
         for i in range(software_size):
             software_offset = i * software_stride
-            static_offsets = (0, 0, 0, total_offset + software_offset)
-            # Insert DMA
-            memcpy = DmaMemcpyNdOp(
-                arg,
-                static_offsets=static_offsets,
-                static_sizes=static_sizes,
-                static_strides=static_strides,
-                metadata=of_name,
-                id=id,
-                issue_token=True,
+            # static_offsets = (0, 0, 0, total_offset + software_offset)
+            bd_dimensions = BDDimLayoutArrayAttr(
+                BDDimLayoutArray(
+                    [BDDimLayout((size, stride)) for size, stride in zip(static_sizes, static_strides, strict=False)]
+                )
             )
-            rewriter.insert_op(memcpy, InsertPoint.before(op))
 
+            dma_bd = DMABDOp(arg, offset=total_offset + software_offset, dimensions=bd_dimensions)
+            all_bds.append(dma_bd)
+            # Insert DMA
+            # memcpy = DmaMemcpyNdOp(
+            #     arg,
+            #     static_offsets=static_offsets,
+            #     static_sizes=static_sizes,
+            #     static_strides=static_strides,
+            #     metadata=of_name,
+            #     id=id,
+            #     issue_token=True,
+            # )
+        all_bds.append(EndOp())
+
+        # configure task
+        task = DmaConfigureTaskForOp(of_name, Region(Block(all_bds)))
+
+        rewriter.insert_op(task, InsertPoint.before(op))
         # remove output from edge op operands
         rewriter.erase_matched_op(safe_erase=False)
 
