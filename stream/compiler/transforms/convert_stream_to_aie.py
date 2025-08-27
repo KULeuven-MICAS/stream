@@ -719,7 +719,7 @@ class TransferToRuntimeSequence(RewritePattern):
             )
 
         # configure task
-        task = DmaConfigureTaskForOp(of_name, Region(bd_blocks), issue_token=True, repeat=1)
+        task = DmaConfigureTaskForOp(of_name, Region(bd_blocks), issue_token=True, repeat_count=1)
 
         # add start
         start = DmaStartTaskOp(task)
