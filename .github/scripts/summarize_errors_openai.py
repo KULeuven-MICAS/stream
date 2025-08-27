@@ -18,7 +18,8 @@ def summarize_log(log_path: Path) -> str:
             {
                 "role": "system",
                 "content": "You are a CI assistant. "
-                "Summarize the root cause of this log failure in one short sentence (<=50 characters)."
+                "Summarize the root cause of this log failure in one short sentence (<=50 characters). "
+                "If the log includes a PASS! statement, say 'Run passed, potential issue in post-processing'. "
                 "Answer only with the sentence, no other text.",
             },
             {"role": "user", "content": text},
