@@ -490,17 +490,29 @@ class TransferAndTensorAllocator:
     ) -> None:
         """
         For every path:
-            if its FIRST link originates in a memory core, enforce memory core matching:
+            if its FIRST link originates or ends in a memory core, enforce memory core matching:
             y_path ≤ m_store[(tr, memc)]
         """
         for p in paths:
             if not p[1]:
                 continue  # empty path
-            src_core = p[1][0].sender
-            if isinstance(src_core, Core) and src_core in self.mem_cores:
+            first_link_sender = p[1][0].sender
+            first_link_receiver = p[1][0].receiver
+            if first_link_sender in self.mem_cores:
+                assert isinstance(first_link_sender, Core), (
+                    f"Expected {first_link_sender} to be a Core, got {type(first_link_sender)}"
+                )
                 self.model.addConstr(
-                    self.y_path[p] <= self.m_store[(tr, src_core)],
-                    name=f"pathMemMatch_{tr.node_name}_{_resource_key(src_core)}",
+                    self.y_path[p] <= self.m_store[(tr, first_link_sender)],
+                    name=f"pathMemMatchSender_{tr.node_name}_{_resource_key(first_link_sender)}",
+                )
+            if first_link_receiver in self.mem_cores:
+                assert isinstance(first_link_receiver, Core), (
+                    f"Expected {first_link_receiver} to be a Core, got {type(first_link_receiver)}"
+                )
+                self.model.addConstr(
+                    self.y_path[p] <= self.m_store[(tr, first_link_receiver)],
+                    name=f"pathMemMatchReceiver_{tr.node_name}_{_resource_key(first_link_receiver)}",
                 )
 
     # ...................... link contention .................... #
@@ -748,9 +760,11 @@ class TransferAndTensorAllocator:
             )
             self.mem_core_usage_per_core[mc] = usage
 
-        self.min_mem_core_usage = self.model.addVar(vtype=GRB.INTEGER, name="minMemCoreUsage")
+        MAX_MEM_CORE_USAGE = 3
+        self.max_mem_core_usage = self.model.addVar(vtype=GRB.INTEGER, name="maxMemCoreUsage")
         for i, usage in enumerate(self.mem_core_usage_per_core.values()):
-            self.model.addConstr(self.min_mem_core_usage <= usage, name=f"minMemCoreUsage_le_{i}")
+            self.model.addConstr(self.max_mem_core_usage >= usage, name=f"maxMemCoreUsage_le_{i}")
+        self.model.addConstr(self.max_mem_core_usage <= MAX_MEM_CORE_USAGE, name="maxMemCoreUsage_le_3")
 
         # ------------------------------------------------------------------
         # 4) total latency + objective
@@ -760,7 +774,7 @@ class TransferAndTensorAllocator:
         self.model.addConstr(
             self.total_lat == self.iterations * quicksum(self.slot_latency.values()) - (self.iterations - 1) * overlap
         )
-        obj_func = self.total_lat + self.total_transfer_cost - self.min_mem_core_usage
+        obj_func = self.total_lat + self.total_transfer_cost + self.max_mem_core_usage
         self.model.setObjective(obj_func, GRB.MINIMIZE)
 
     # ------------------------------------------------------------------ #
