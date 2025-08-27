@@ -43,6 +43,7 @@ from xdsl_aie.dialects.aie import (
     DMABDOp,
     DeviceOp,
     EndOp,
+    NextBDOp,
     ObjectFIFO,
     ObjectFifoAcquireOp,
     ObjectFifoLinkOp,
@@ -711,10 +712,20 @@ class TransferToRuntimeSequence(RewritePattern):
             #     id=id,
             #     issue_token=True,
             # )
-        all_bds.append(EndOp())
+        bd_blocks: list[Block] = []
+
+        # last bd with end op
+        bd_blocks.append(Block([all_bds[-1], EndOp()]))
+
+        # go in reverse to fix references
+        for bd in reversed(all_bds[:-1]):
+            bd_blocks.insert(
+                0,
+                Block([bd, NextBDOp(bd_blocks[0])]),
+            )
 
         # configure task
-        task = DmaConfigureTaskForOp(of_name, Region(Block(all_bds)))
+        task = DmaConfigureTaskForOp(of_name, Region(bd_blocks))
 
         rewriter.insert_op(task, InsertPoint.before(op))
         # remove output from edge op operands
