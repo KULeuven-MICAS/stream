@@ -3,6 +3,7 @@ import json
 import os
 import re
 from collections import defaultdict
+from statistics import median
 
 import matplotlib.pyplot as plt
 
@@ -11,32 +12,110 @@ CLOCK_FREQUENCY_GHZ = 1.25  # 1.25 GHz (might be slightly off, but close enough 
 PEAK_MACS_PER_CYCLE_PER_CORE = 64  # if data type changes this value may need to be updated
 
 
-def parse_perfetto_trace(file_path):
+def fill_missing_equally_spaced(xs, required_len=None, tol_ratio=0.25):  # noqa: PLR0911, PLR0912
+    """
+    Fill missing integers in a roughly equally-spaced *sorted* list `xs`.
+    Assumes no consecutive misses within the observed list.
+
+    required_len: if provided, after filling inferred gaps, ensure the final
+                  length equals this. If we're exactly one short, assume the
+                  last item was missing and append it using the last difference.
+    tol_ratio: tolerance as a fraction of the nominal step when deciding if a
+               gap matches an integer multiple of the step.
+    """
+    if not xs:
+        # If we must hit a required_len with no data, we can't infer values robustly.
+        return []
+    if len(xs) < 2:  # noqa: PLR2004
+        out = sorted(xs)
+        # If one-off short and we have only one number, we can't infer a last diff;
+        # leave as-is (or the caller can handle).
+        if required_len is not None and len(out) + 1 == required_len:
+            # Best effort: duplicate spacing using step=1
+            out.append(out[-1] + 1)
+        return out
+
+    xs = sorted(xs)
+    diffs = [xs[i + 1] - xs[i] for i in range(len(xs) - 1) if xs[i + 1] > xs[i]]
+    if not diffs:
+        return sorted(dict.fromkeys(xs))
+
+    step_est = median(diffs)
+    step = max(1, int(round(step_est)))  # keep integer spacing
+    tol = max(1, int(round(tol_ratio * step)))
+
+    out = [xs[0]]
+    for a, b in zip(xs, xs[1:], strict=False):
+        if b <= a:
+            if b != out[-1]:
+                out.append(b)
+            continue
+        d = b - a
+        k = int(round(d / step))  # expected number of steps across the gap
+        if k >= 2 and abs(d - k * step) <= tol:  # noqa: PLR2004
+            # Insert k-1 interior points
+            for j in range(1, k):
+                cand = a + j * step
+                if cand > out[-1] and cand < b:
+                    out.append(int(cand))
+            out.append(b)
+        else:
+            out.append(b)
+
+    # De-dup and sort defensively
+    out = sorted(dict.fromkeys(out))
+
+    # Post-check against required_len
+    if required_len is not None:
+        if len(out) == required_len:
+            return out
+        if len(out) + 1 == required_len:
+            # Assume the *last* item is missing; use the last observed difference
+            if len(out) >= 2:  # noqa: PLR2004
+                last_diff = out[-1] - out[-2]
+                # Fallback to nominal step if last_diff is zero (shouldn't happen, but safe)
+                if last_diff == 0:
+                    last_diff = step
+                out.append(out[-1] + last_diff)
+                return out
+            else:
+                # If we somehow have <2 points, fall back to step
+                out.append(out[-1] + step)
+                return out
+        # If the mismatch is larger than one, leave as-is (robust: don't over-infer)
+        # You could raise or log here depending on your needs.
+
+    return out
+
+
+def parse_perfetto_trace(file_path, expected_nb_kernels_per_core):
     with open(file_path) as file:
         data = json.load(file)
 
-    traces = defaultdict(lambda: {"INSTR_EVENT_0": [], "INSTR_EVENT_1": [], "name": None})
+    traces = defaultdict(lambda: {"starts": [], "ends": [], "name": None})
 
     for event in data:
         pid = event.get("pid")
         if event.get("name") == "process_name" and event.get("ph") == "M":
             traces[pid]["name"] = event.get("args", {}).get("name")
         elif event.get("name") == "INSTR_EVENT_0" and event.get("ph") == "B":
-            traces[pid]["INSTR_EVENT_0"].append(event.get("ts"))
+            traces[pid]["starts"].append(event.get("ts"))
         elif event.get("name") == "INSTR_EVENT_1" and event.get("ph") == "E":
-            traces[pid]["INSTR_EVENT_1"].append(event.get("ts"))
+            traces[pid]["ends"].append(event.get("ts"))
 
     for pid, events in traces.items():
-        if events["INSTR_EVENT_0"] and events["INSTR_EVENT_1"]:
-            if len(events["INSTR_EVENT_0"]) != len(events["INSTR_EVENT_1"]):
-                if len(events["INSTR_EVENT_0"]) == len(events["INSTR_EVENT_1"]) + 1:
-                    last_difference = events["INSTR_EVENT_1"][-1] - events["INSTR_EVENT_0"][-2]
-                    events["INSTR_EVENT_1"].append(events["INSTR_EVENT_0"][-1] + last_difference)
-                else:
-                    raise ValueError(
-                        f"Mismatched INSTR_EVENT_0 ({len(events['INSTR_EVENT_0'])}) and "
-                        f"INSTR_EVENT_1 ({len(events['INSTR_EVENT_1'])}) for PID {pid}"
-                    )
+        if events["starts"] and events["ends"]:
+            updated_starts = fill_missing_equally_spaced(events["starts"], required_len=expected_nb_kernels_per_core)
+            updated_ends = fill_missing_equally_spaced(events["ends"], required_len=expected_nb_kernels_per_core)
+            if len(updated_starts) != expected_nb_kernels_per_core or len(updated_ends) != expected_nb_kernels_per_core:
+                print(
+                    f"WARNING: After filling, mismatched starts ({len(updated_starts)}) and ends ({len(updated_ends)}) "
+                    f"for {events['name']}, expected {expected_nb_kernels_per_core} each. Skipping this entry."
+                )
+                traces[pid] = {"starts": [], "ends": [], "name": None}  # Empty this entry
+            else:
+                events["INSTR_EVENT_0"] = updated_starts
+                events["INSTR_EVENT_1"] = updated_ends
 
     return traces
 
@@ -305,11 +384,11 @@ def main():
     # Wall clock time (from run_trace.log)
     wall_clock_time_stats = ["avg", "min", "max"]
     wall_clock_time_us = parse_wall_clock_time_us(output_base, wall_clock_time_stats, M, K, N, nb_rows, nb_cols)
-    for wall_clock_time_stat in wall_clock_time_stats:
-        print(f"{wall_clock_time_stat.capitalize()} Wall clock time = {wall_clock_time_us[wall_clock_time_stat]} us")
 
+    expected_nb_kernels_per_core = (M * N * K) // (m * n * k) // (nb_rows * nb_cols)
+
+    traces = parse_perfetto_trace(input_file, expected_nb_kernels_per_core)
     print("=" * 80)
-    traces = parse_perfetto_trace(input_file)
     # Collect rows for the run-level details.md
     tile_rows = []
     for pid, trace in traces.items():
