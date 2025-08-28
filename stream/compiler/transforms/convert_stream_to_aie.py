@@ -715,7 +715,9 @@ class TransferToRuntimeSequence(RewritePattern):
             )
 
             # configure task
-            task = DmaConfigureTaskForOp(of_name, Region(Block([dma_bd, EndOp()])), issue_token=True)
+            task = DmaConfigureTaskForOp(
+                of_name, Region(Block([dma_bd, EndOp()])), issue_token=False, repeat_count=static_sizes[0] - 1
+            )
 
             task.attributes["iteration_t"] = IntegerAttr.from_index_int_value(iteration_t)
 
@@ -1416,11 +1418,14 @@ class SyncDMAs(RewritePattern):
                 active_tasks[dma.alloc] = (None, dma)
             else:
                 if (wait_for := active_tasks[dma.alloc][0]) is not None:
+                    # issue token if we are going to wait for it
+                    wait_for.issue_token = IntegerAttr.from_int_and_width(1, 1)
                     rewriter.insert_op(DmaAwaitTaskOp(wait_for), InsertPoint.before(dma))
                 active_tasks[dma.alloc] = (active_tasks[dma.alloc][1], dma)
 
         # at the end, wait for all latest tasks
         for _, task in active_tasks.values():
+            task.issue_token = IntegerAttr.from_int_and_width(1, 1)
             rewriter.insert_op(DmaAwaitTaskOp(task), InsertPoint.at_end(op.body.block))
 
 
