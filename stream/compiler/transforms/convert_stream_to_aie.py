@@ -33,6 +33,7 @@ from xdsl.pattern_rewriter import (
     op_type_rewrite_pattern,
 )
 from xdsl.rewriter import InsertPoint, Rewriter
+from xdsl.utils.hints import isa
 from xdsl_aie.dialects.aie import (
     AIEDeviceEnum,
     BDDimLayout,
@@ -43,7 +44,6 @@ from xdsl_aie.dialects.aie import (
     DeviceOp,
     DMABDOp,
     EndOp,
-    NextBDOp,
     ObjectFIFO,
     ObjectFifoAcquireOp,
     ObjectFifoLinkOp,
@@ -651,8 +651,11 @@ class TransferToRuntimeSequence(RewritePattern):
 
         static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
 
+        iteration_strides = [1] * len(static_sizes)
+
         # add the repeating pattern
         # offset is definitely zero for now
+        iteration_stride = 1
         for iter_var in op.ssis.data.variables:
             loop_dimensions = [x.data for x in op.loop_dimensions]
             if (iter_var.relevant or MemTileReuse.NO_REUSE in iter_var.mem_tile_reuse) and iter_var.size > 1:
@@ -660,6 +663,7 @@ class TransferToRuntimeSequence(RewritePattern):
                 if iter_var.spatial:
                     index = loop_dimensions.index(str(iter_var.dimension))
                     if op.spatial_strides.get_values()[index] == 0:
+                        iteration_stride *= iter_var.size
                         continue
                 if str(iter_var.dimension) in loop_dimensions:
                     index = loop_dimensions.index(str(iter_var.dimension))
@@ -672,8 +676,11 @@ class TransferToRuntimeSequence(RewritePattern):
                     stride = 0
                 static_sizes.insert(0, iter_var.size)
                 static_strides.insert(0, stride)
+                iteration_strides.insert(0, iteration_stride)
+            iteration_stride *= iter_var.size
 
         # canonicalize transformation
+        # if i were to re-enable this, make sure iteration strides are also included
         # static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
         MAX_STATIC_SIZE_LEN = 5
         if len(static_sizes) > MAX_STATIC_SIZE_LEN:
@@ -688,10 +695,9 @@ class TransferToRuntimeSequence(RewritePattern):
         static_sizes = (1,) * (4 - len(static_sizes)) + tuple(static_sizes)
         static_strides = (0,) * (4 - len(static_strides)) + tuple(static_strides)
 
-        all_bds: list[Operation] = []
-
         for i in range(software_size):
             software_offset = i * software_stride
+            iteration_t = i * iteration_strides[0]
             # static_offsets = (0, 0, 0, total_offset + software_offset)
             bd_dimensions = BDDimLayoutArrayAttr(
                 BDDimLayoutArray(
@@ -705,29 +711,13 @@ class TransferToRuntimeSequence(RewritePattern):
                 len=prod(static_sizes[1:]),
                 dimensions=bd_dimensions,
             )
-            all_bds.append(dma_bd)
-        bd_blocks: list[Block] = []
 
-        # last bd with end op
-        bd_blocks.append(Block([all_bds[-1], EndOp()]))
+            # configure task
+            task = DmaConfigureTaskForOp(of_name, Region(Block([dma_bd, EndOp()])), issue_token=True)
 
-        # go in reverse to fix references
-        for bd in reversed(all_bds[:-1]):
-            bd_blocks.insert(
-                0,
-                Block([bd, NextBDOp(bd_blocks[0])]),
-            )
+            task.attributes["iteration_t"] = IntegerAttr.from_index_int_value(iteration_t)
 
-        # configure task
-        task = DmaConfigureTaskForOp(of_name, Region(bd_blocks), issue_token=True, repeat_count=1)
-
-        # add start
-        start = DmaStartTaskOp(task)
-        rewriter.insert_op([task, start], InsertPoint.before(op))
-
-        # add wait at end of block
-        wait = DmaAwaitTaskOp(task)
-        rewriter.insert_op(wait, InsertPoint.at_end(runtime_sequence.body.block))
+            rewriter.insert_op([task], InsertPoint.before(op))
 
         # remove output from edge op operands
         rewriter.erase_matched_op(safe_erase=False)
@@ -1395,38 +1385,48 @@ class EraseEdges(RewritePattern):
 
 
 @dataclass
-class ManageSyncs(RewritePattern):
+class OrderDMAs(RewritePattern):
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter):
-        active_ids: set[str] = set()
-
-        for memcpy in op.walk():
-            if not isinstance(memcpy, DmaMemcpyNdOp):
-                continue
-
-            symbol = memcpy.metadata.string_value()
-
-            if symbol in active_ids:
-                rewriter.insert_op(DmaWaitOp(symbol), InsertPoint.before(memcpy))
-
-            active_ids.add(symbol)
-
-        for symbol in active_ids:
-            rewriter.insert_op(DmaWaitOp(symbol), InsertPoint.at_end(op.body.block))
+    def match_and_rewrite(self, op: DmaConfigureTaskForOp, rewriter: PatternRewriter) -> None:
+        if not isinstance(next := op.next_op, DmaConfigureTaskForOp):
+            return
+        if "iteration_t" not in op.attributes or "iteration_t" not in next.attributes:
+            return
+        assert isa(iteration_t := op.attributes["iteration_t"], IntegerAttr[IndexType])
+        assert isa(next_iteration_t := next.attributes["iteration_t"], IntegerAttr[IndexType])
+        if iteration_t.value.data > next_iteration_t.value.data:
+            op.detach()
+            rewriter.insert_op(op, InsertPoint.after(next))
 
 
 @dataclass
-class OptimizeWaits(RewritePattern):
+class SyncDMAs(RewritePattern):
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, runtime: RuntimeSequenceOp, rewriter: PatternRewriter):
-        last_wait = None
-        for op in runtime.walk():
-            if isinstance(op, DmaWaitOp):
-                last_wait = op
-            if last_wait is not None and isinstance(op, DmaMemcpyNdOp) and op.metadata != last_wait.symbol:
-                op.detach()
-                rewriter.insert_op(op, InsertPoint.before(last_wait))
-                return
+    def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter):
+        active_tasks: dict[Attribute, tuple[DmaConfigureTaskForOp | None, DmaConfigureTaskForOp]] = {}
+
+        for dma in op.walk():
+            if not isinstance(dma, DmaConfigureTaskForOp):
+                continue
+
+            # update active tasks list and potentionaly sync on previous one
+            if dma.alloc not in active_tasks:
+                active_tasks[dma.alloc] = (None, dma)
+            else:
+                if (wait_for := active_tasks[dma.alloc][0]) is not None:
+                    rewriter.insert_op(DmaAwaitTaskOp(wait_for), InsertPoint.before(dma))
+                active_tasks[dma.alloc] = (active_tasks[dma.alloc][1], dma)
+
+        # at the end, wait for all latest tasks
+        for _, task in active_tasks.values():
+            rewriter.insert_op(DmaAwaitTaskOp(task), InsertPoint.at_end(op.body.block))
+
+
+@dataclass
+class StartDMAs(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: DmaConfigureTaskForOp, rewriter: PatternRewriter):
+        rewriter.insert_op(DmaStartTaskOp(op), InsertPoint.after(op))
 
 
 @dataclass
@@ -1760,8 +1760,9 @@ class ConvertStreamToAIEPass(ModulePass):
         ).rewrite_module(op)
 
         # insert dma wait statements for bd collisions
-        PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)
-        PatternRewriteWalker(OptimizeWaits()).rewrite_module(op)
+        PatternRewriteWalker(OrderDMAs()).rewrite_module(op)
+        PatternRewriteWalker(SyncDMAs(), apply_recursively=False).rewrite_module(op)
+        PatternRewriteWalker(StartDMAs(), apply_recursively=False).rewrite_module(op)
 
         ## lower computation node ops for known kernels
 
