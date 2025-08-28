@@ -33,6 +33,7 @@ from xdsl.pattern_rewriter import (
     op_type_rewrite_pattern,
 )
 from xdsl.rewriter import InsertPoint, Rewriter
+from xdsl.utils.hints import isa
 from xdsl_aie.dialects.aie import (
     AIEDeviceEnum,
     BDDimLayout,
@@ -41,6 +42,7 @@ from xdsl_aie.dialects.aie import (
     Block,
     CoreOp,
     DeviceOp,
+    DMABDOp,
     EndOp,
     ObjectFIFO,
     ObjectFifoAcquireOp,
@@ -54,7 +56,10 @@ from xdsl_aie.dialects.aie import (
     TileOp,
 )
 from xdsl_aie.dialects.aiex import (
+    DmaAwaitTaskOp,
+    DmaConfigureTaskForOp,
     DmaMemcpyNdOp,
+    DmaStartTaskOp,
     DmaWaitOp,
     RuntimeSequenceOp,
 )
@@ -212,6 +217,7 @@ class SortPullPushOp:  # noqa: PLW1641 for no hash
 @dataclass
 class ObjectFifoHop:
     fifos: list[ObjectFifoOp]
+    DB_EXTRA: int = 0  # 1 for double buffering, 0 for no DB
 
     @property
     def fifo(self) -> ObjectFifoOp:
@@ -271,7 +277,7 @@ class ObjectFifoHop:
             else:
                 of_name = name_base + "_" + of_type
             object_fifo = ObjectFifoOp.from_referenced_type(
-                elemNumber=(producers[0].ssis.data.nb_local_tensors_compute(),) * 2,
+                elemNumber=(producers[0].ssis.data.nb_local_tensors_compute() + cls.DB_EXTRA,) * 2,
                 producerTile=of_producer,
                 consumerTiles=[memtile],
                 referenced_type=memref_type.get_element_type(),
@@ -310,7 +316,8 @@ class ObjectFifoHop:
             else:
                 of_name = name_base + "_" + of_type
             object_fifo = ObjectFifoOp.from_referenced_type(
-                elemNumber=(consumers[0].ssis.data.nb_local_tensors_compute(),) * (1 + len(of_consumers)),
+                elemNumber=(consumers[0].ssis.data.nb_local_tensors_compute() + cls.DB_EXTRA,)
+                * (1 + len(of_consumers)),
                 producerTile=of_producer,
                 consumerTiles=of_consumers,
                 referenced_type=memref_type.get_element_type(),
@@ -335,7 +342,7 @@ class ObjectFifoHop:
             if spatial_stride != 0
         ]
         object_fifo = ObjectFifoOp.from_referenced_type(
-            elemNumber=(1, 1),
+            elemNumber=(1 + cls.DB_EXTRA, 1 + cls.DB_EXTRA),
             producerTile=tile_op_manager.get_tile(producer),
             consumerTiles=[memtile],
             referenced_type=memref_type.get_element_type(),
@@ -361,7 +368,7 @@ class ObjectFifoHop:
             if spatial_stride != 0
         ]
         object_fifo = ObjectFifoOp.from_referenced_type(
-            elemNumber=(1, 1),
+            elemNumber=(1 + cls.DB_EXTRA, 1 + cls.DB_EXTRA),
             producerTile=memtile,
             consumerTiles=[tile_op_manager.get_tile(consumer)],
             referenced_type=memref_type.get_element_type(),
@@ -646,8 +653,11 @@ class TransferToRuntimeSequence(RewritePattern):
 
         static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
 
+        iteration_strides = [1] * len(static_sizes)
+
         # add the repeating pattern
         # offset is definitely zero for now
+        iteration_stride = 1
         for iter_var in op.ssis.data.variables:
             loop_dimensions = [x.data for x in op.loop_dimensions]
             if (iter_var.relevant or MemTileReuse.NO_REUSE in iter_var.mem_tile_reuse) and iter_var.size > 1:
@@ -655,6 +665,7 @@ class TransferToRuntimeSequence(RewritePattern):
                 if iter_var.spatial:
                     index = loop_dimensions.index(str(iter_var.dimension))
                     if op.spatial_strides.get_values()[index] == 0:
+                        iteration_stride *= iter_var.size
                         continue
                 if str(iter_var.dimension) in loop_dimensions:
                     index = loop_dimensions.index(str(iter_var.dimension))
@@ -667,8 +678,11 @@ class TransferToRuntimeSequence(RewritePattern):
                     stride = 0
                 static_sizes.insert(0, iter_var.size)
                 static_strides.insert(0, stride)
+                iteration_strides.insert(0, iteration_stride)
+            iteration_stride *= iter_var.size
 
         # canonicalize transformation
+        # if i were to re-enable this, make sure iteration strides are also included
         # static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
         MAX_STATIC_SIZE_LEN = 5
         if len(static_sizes) > MAX_STATIC_SIZE_LEN:
@@ -683,21 +697,31 @@ class TransferToRuntimeSequence(RewritePattern):
         static_sizes = (1,) * (4 - len(static_sizes)) + tuple(static_sizes)
         static_strides = (0,) * (4 - len(static_strides)) + tuple(static_strides)
 
-        id = int(of_name[3])
         for i in range(software_size):
             software_offset = i * software_stride
-            static_offsets = (0, 0, 0, total_offset + software_offset)
-            # Insert DMA
-            memcpy = DmaMemcpyNdOp(
-                arg,
-                static_offsets=static_offsets,
-                static_sizes=static_sizes,
-                static_strides=static_strides,
-                metadata=of_name,
-                id=id,
-                issue_token=True,
+            iteration_t = i * iteration_strides[0]
+            # static_offsets = (0, 0, 0, total_offset + software_offset)
+            bd_dimensions = BDDimLayoutArrayAttr(
+                BDDimLayoutArray(
+                    [BDDimLayout((size, stride)) for size, stride in zip(static_sizes, static_strides, strict=False)]
+                )
             )
-            rewriter.insert_op(memcpy, InsertPoint.before(op))
+
+            dma_bd = DMABDOp(
+                arg,
+                offset=total_offset + software_offset,
+                len=prod(static_sizes[1:]),
+                dimensions=bd_dimensions,
+            )
+
+            # configure task
+            task = DmaConfigureTaskForOp(
+                of_name, Region(Block([dma_bd, EndOp()])), issue_token=False, repeat_count=static_sizes[0] - 1
+            )
+
+            task.attributes["iteration_t"] = IntegerAttr.from_index_int_value(iteration_t)
+
+            rewriter.insert_op([task], InsertPoint.before(op))
 
         # remove output from edge op operands
         rewriter.erase_matched_op(safe_erase=False)
@@ -1365,38 +1389,51 @@ class EraseEdges(RewritePattern):
 
 
 @dataclass
-class ManageSyncs(RewritePattern):
+class OrderDMAs(RewritePattern):
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter):
-        active_ids: set[str] = set()
-
-        for memcpy in op.walk():
-            if not isinstance(memcpy, DmaMemcpyNdOp):
-                continue
-
-            symbol = memcpy.metadata.string_value()
-
-            if symbol in active_ids:
-                rewriter.insert_op(DmaWaitOp(symbol), InsertPoint.before(memcpy))
-
-            active_ids.add(symbol)
-
-        for symbol in active_ids:
-            rewriter.insert_op(DmaWaitOp(symbol), InsertPoint.at_end(op.body.block))
+    def match_and_rewrite(self, op: DmaConfigureTaskForOp, rewriter: PatternRewriter) -> None:
+        if not isinstance(next := op.next_op, DmaConfigureTaskForOp):
+            return
+        if "iteration_t" not in op.attributes or "iteration_t" not in next.attributes:
+            return
+        assert isa(iteration_t := op.attributes["iteration_t"], IntegerAttr[IndexType])
+        assert isa(next_iteration_t := next.attributes["iteration_t"], IntegerAttr[IndexType])
+        if iteration_t.value.data > next_iteration_t.value.data:
+            op.detach()
+            rewriter.insert_op(op, InsertPoint.after(next))
 
 
 @dataclass
-class OptimizeWaits(RewritePattern):
+class SyncDMAs(RewritePattern):
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, runtime: RuntimeSequenceOp, rewriter: PatternRewriter):
-        last_wait = None
-        for op in runtime.walk():
-            if isinstance(op, DmaWaitOp):
-                last_wait = op
-            if last_wait is not None and isinstance(op, DmaMemcpyNdOp) and op.metadata != last_wait.symbol:
-                op.detach()
-                rewriter.insert_op(op, InsertPoint.before(last_wait))
-                return
+    def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter):
+        active_tasks: dict[Attribute, tuple[DmaConfigureTaskForOp | None, DmaConfigureTaskForOp]] = {}
+
+        for dma in op.walk():
+            if not isinstance(dma, DmaConfigureTaskForOp):
+                continue
+
+            # update active tasks list and potentionaly sync on previous one
+            if dma.alloc not in active_tasks:
+                active_tasks[dma.alloc] = (None, dma)
+            else:
+                if (wait_for := active_tasks[dma.alloc][0]) is not None:
+                    # issue token if we are going to wait for it
+                    wait_for.issue_token = IntegerAttr.from_int_and_width(1, 1)
+                    rewriter.insert_op(DmaAwaitTaskOp(wait_for), InsertPoint.before(dma))
+                active_tasks[dma.alloc] = (active_tasks[dma.alloc][1], dma)
+
+        # at the end, wait for all latest tasks
+        for _, task in active_tasks.values():
+            task.issue_token = IntegerAttr.from_int_and_width(1, 1)
+            rewriter.insert_op(DmaAwaitTaskOp(task), InsertPoint.at_end(op.body.block))
+
+
+@dataclass
+class StartDMAs(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: DmaConfigureTaskForOp, rewriter: PatternRewriter):
+        rewriter.insert_op(DmaStartTaskOp(op), InsertPoint.after(op))
 
 
 @dataclass
@@ -1730,8 +1767,9 @@ class ConvertStreamToAIEPass(ModulePass):
         ).rewrite_module(op)
 
         # insert dma wait statements for bd collisions
-        PatternRewriteWalker(ManageSyncs(), apply_recursively=False).rewrite_module(op)
-        PatternRewriteWalker(OptimizeWaits()).rewrite_module(op)
+        PatternRewriteWalker(OrderDMAs()).rewrite_module(op)
+        PatternRewriteWalker(SyncDMAs(), apply_recursively=False).rewrite_module(op)
+        PatternRewriteWalker(StartDMAs(), apply_recursively=False).rewrite_module(op)
 
         ## lower computation node ops for known kernels
 
