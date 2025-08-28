@@ -163,3 +163,8 @@ docs/make.bat
 
 # snakemake files
 .snakemake
+
+# gemm workload and mapping files
+stream/inputs/aie/workload/gemm_*.onnx
+stream/inputs/aie/mapping/gemm_*.yaml
+stream/inputs/aie/mapping/gemm_*.yml
