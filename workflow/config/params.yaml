@@ -8,9 +8,9 @@ gemm:
     n: 32
     nb_rows: 1
     nb_cols: 1
-    Ms: [64,]
-    Ks: [64,]
-    Ns: [64,]
+    Ms: [64,128,256]
+    Ks: [64,128,256]
+    Ns: [64,128,256]
 
   single_col:
     stream_hw_id: single_col
@@ -21,9 +21,9 @@ gemm:
     n: 32
     nb_rows: 2
     nb_cols: 1
-    Ms: [64,]
-    Ks: [64,]
-    Ns: [64,]
+    Ms: [64,128,256]
+    Ks: [64,128,256]
+    Ns: [64,128,256]
 
   whole_array:
     stream_hw_id: whole_array
@@ -34,6 +34,6 @@ gemm:
     n: 32
     nb_rows: 2
     nb_cols: 4
-    Ms: [64,]
-    Ks: [64,]
-    Ns: [128,]
+    Ms: [64,128,256]
+    Ks: [64,128,256]
+    Ns: [64,128,256]
