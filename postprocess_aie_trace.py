@@ -7,6 +7,8 @@ from collections import defaultdict
 import matplotlib.pyplot as plt
 
 RUN_DIR_PATTERN = re.compile(r"^(.+)-gemm_(\d+)_(\d+)_(\d+)-fused-constraint-optimization$")
+CLOCK_FREQUENCY_GHZ = 1.25  # 1.25 GHz (might be slightly off, but close enough for efficiency calc)
+PEAK_MACS_PER_CYCLE_PER_CORE = 64  # if data type changes this value may need to be updated
 
 
 def parse_perfetto_trace(file_path):
@@ -37,6 +39,72 @@ def parse_perfetto_trace(file_path):
                     )
 
     return traces
+
+
+def parse_wall_clock_time_us(output_base, stats, M, K, N, nb_rows, nb_cols) -> dict[str, int]:  # noqa: N803
+    """
+    Extracts the wall clock time (us) for each requested stat from run_trace.log.
+    stats: list containing "avg", "min", and/or "max" to select which values to extract.
+    Returns a dict mapping stat name to time in us.
+    """
+    # Remove trailing 'traces/' if present in output_base
+    base_dir = output_base
+    if base_dir.endswith("traces") or base_dir.endswith("traces/"):
+        base_dir = os.path.dirname(base_dir.rstrip("/"))
+    log_path = os.path.join(base_dir, "run_trace.log")
+    if not os.path.exists(log_path):
+        raise ValueError(f"run_trace.log not found at {log_path}. Cannot determine wall clock time.")
+
+    stat_map = {
+        "avg": "Avg NPU matmul time:",
+        "min": "Min NPU matmul time:",
+        "max": "Max NPU matmul time:",
+    }
+
+    results = defaultdict(lambda: -1)
+    with open(log_path) as log_file:
+        for line in log_file:
+            for stat in stats:
+                search_str = stat_map.get(stat.lower())
+                if search_str and search_str in line:
+                    match = re.search(r"(\d+)us", line)
+                    if match:
+                        results[stat] = int(match.group(1))
+    # Check for missing stats
+    if len(results) != len(stats):
+        missing = [stat for stat in stats if results[stat] == -1]
+        raise ValueError(f"Wall clock time(s) not found for: {', '.join(missing)} in {log_path}.")
+
+    # Compute the gMACs/s for all stats
+    gmacs_per_sec = defaultdict(lambda: -1.0)
+    for stat in stats:
+        time_us = results[stat]
+        if time_us > 0:
+            gmacs_per_sec[stat] = (M * K * N) / time_us / 1_000.0  # assume time_us in microseconds
+
+    # Compute the wall clock efficiency assuming 64 MACs/cycle and 1.25 GHz clock
+    efficiency = defaultdict(lambda: -1.0)
+    peak_macs_per_cycle = PEAK_MACS_PER_CYCLE_PER_CORE * nb_rows * nb_cols  # 64 MACs/cycle/core * rows * cols
+
+    peak_gmacs_per_sec = peak_macs_per_cycle * CLOCK_FREQUENCY_GHZ
+    for stat in stats:
+        if gmacs_per_sec[stat] > 0:
+            efficiency[stat] = (gmacs_per_sec[stat] / peak_gmacs_per_sec) * 100.0
+
+    # Print the results
+    for stat in stats:
+        print(
+            f"{stat.capitalize()} Wall clock time = {results[stat]} us, "
+            f"{gmacs_per_sec[stat]:.2f} gMACs/s, "
+            f"Efficiency = {efficiency[stat]:.1f} % (assuming 64 MACs/cycle at 1.25 GHz)."
+        )
+
+    # Save it to a json (similar to tile reports)
+    wall_clock_json_path = os.path.join(output_base, "wall_clock_time.json")
+    with open(wall_clock_json_path, "w") as json_file:
+        json.dump(results, json_file, indent=4)
+
+    return results
 
 
 def calculate_time_differences(traces):
@@ -97,7 +165,6 @@ def process_core_trace(pid, trace, M, N, K, m, n, k, output_base):  # noqa: PLR0
     num_kernels_this_core = len(time_differences)
     num_kernels_total = M * N * K // (m * n * k)
     core_parallelism = max(1, num_kernels_total // max(1, num_kernels_this_core))
-    peak_macs_per_cycle = 64  # Assuming 64 MACs/cycle/core
 
     print(f"Processing core_trace for PID: {pid}")
     print(f"Total difference: {total_difference} cycles")
@@ -112,18 +179,22 @@ def process_core_trace(pid, trace, M, N, K, m, n, k, output_base):  # noqa: PLR0
     print(f"MACs per cycle (kernel) = {macs_per_cycle_kernel:.2f}")
 
     # Calculate efficiencies
-    kernel_efficiency = (macs_per_cycle_kernel / peak_macs_per_cycle * 100) if peak_macs_per_cycle else 0.0
-    system_efficiency = (macs_per_cycle_system / peak_macs_per_cycle * 100) if peak_macs_per_cycle else 0.0
+    kernel_efficiency = (
+        (macs_per_cycle_kernel / PEAK_MACS_PER_CYCLE_PER_CORE * 100) if PEAK_MACS_PER_CYCLE_PER_CORE else 0.0
+    )
+    system_efficiency = (
+        (macs_per_cycle_system / PEAK_MACS_PER_CYCLE_PER_CORE * 100) if PEAK_MACS_PER_CYCLE_PER_CORE else 0.0
+    )
     print(
         f"Theoretical peak efficiency (kernel) = "
         f"{kernel_efficiency:.1f} % "
-        f"(assuming {peak_macs_per_cycle} MACs/cycle/core)."
+        f"(assuming {PEAK_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)."
     )
     print(f"MACs/cycle (system) = {macs_per_cycle_system:.2f}")
     print(
         f"Theoretical peak efficiency (system) = "
         f"{system_efficiency:.1f} % "
-        f"(assuming {peak_macs_per_cycle} MACs/cycle/core)."
+        f"(assuming {PEAK_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)."
     )
     print("=" * 80)
 
@@ -172,7 +243,7 @@ def infer_hwid(output_base):
     return None
 
 
-def write_details_markdown(output_base, hwid, M, N, K, tile_rows):  # noqa: N803
+def write_details_markdown(output_base, hwid, M, N, K, tile_rows, wall_clock_time_us):  # noqa: N803
     """
     Write {output_base}/details.md containing a single <details> block with a tile table.
     Rows are sorted by macs_per_cycle_system descending for quick glance.
@@ -187,9 +258,11 @@ def write_details_markdown(output_base, hwid, M, N, K, tile_rows):  # noqa: N803
     with open(details_path, "w") as f:
         title_hwid = hwid or "?"
         f.write(f"<details><summary><strong>[{title_hwid}] M={M} K={K} N={N}</strong></summary>\n\n")
+        for stat in wall_clock_time_us:
+            f.write(f"- {stat.capitalize()} Wall clock time = {wall_clock_time_us[stat]} us\n")
         f.write(
             "| Tile | Kernels | Total cycles | Avg cycles per kernel | MACs/cycle (kernel) |"
-            " Peak eff. kernel % | MACs/cycle (system) | Peak eff. system % |\n"
+            " Eff. kernel % | MACs/cycle (system) | Eff. system % |\n"
         )
         f.write(
             "|------|---------|--------------|-----------------------|---------------------|"
@@ -213,12 +286,15 @@ def main():
     parser.add_argument("--m", type=int, required=True, help="Tile size m.")
     parser.add_argument("--n", type=int, required=True, help="Tile size n.")
     parser.add_argument("--k", type=int, required=True, help="Tile size k.")
+    parser.add_argument("--row", type=int, required=True, help="Number of rows used.")
+    parser.add_argument("--col", type=int, required=True, help="Number of columns used.")
     parser.add_argument("--hwid", type=str, default=None, help="Hardware ID label for the details section (optional).")
     args = parser.parse_args()
 
     M, N, K = args.M, args.N, args.K
     m, n, k = args.m, args.n, args.k
     hwid = args.hwid
+    nb_rows, nb_cols = args.row, args.col
 
     input_file = args.input
     output_base = args.output
@@ -226,17 +302,20 @@ def main():
     if hwid is None:
         hwid = infer_hwid(output_base)
 
+    # Wall clock time (from run_trace.log)
+    wall_clock_time_stats = ["avg", "min", "max"]
+    wall_clock_time_us = parse_wall_clock_time_us(output_base, wall_clock_time_stats, M, K, N, nb_rows, nb_cols)
+    for wall_clock_time_stat in wall_clock_time_stats:
+        print(f"{wall_clock_time_stat.capitalize()} Wall clock time = {wall_clock_time_us[wall_clock_time_stat]} us")
+
     print("=" * 80)
     traces = parse_perfetto_trace(input_file)
-
     # Collect rows for the run-level details.md
     tile_rows = []
-
     for pid, trace in traces.items():
         if trace["name"] is None:
             print(f"Skipping PID {pid} with no name.")
             continue
-
         if "core_trace" in trace["name"]:
             row = process_core_trace(pid, trace, M, N, K, m, n, k, output_base)
             tile_rows.append(row)
@@ -246,7 +325,7 @@ def main():
             print(f"Unknown trace type for PID {pid}: {trace['name']}")
 
     # Write the run-level Markdown details block
-    write_details_markdown(output_base, hwid, M, N, K, tile_rows)
+    write_details_markdown(output_base, hwid, M, N, K, tile_rows, wall_clock_time_us)
 
 
 if __name__ == "__main__":

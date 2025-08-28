@@ -70,6 +70,7 @@ rule postprocess_trace:
             --M {wildcards.M} --K {wildcards.K} --N {wildcards.N} \
             --m 32 --k 32 --n 32 \
             --hwid {wildcards.stream_hw_id} \
+            --row {wildcards.nb_rows} --col {wildcards.nb_cols}
         """
 
 rule mark_success:
