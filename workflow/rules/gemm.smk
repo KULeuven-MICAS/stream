@@ -24,8 +24,10 @@ rule copy_stream_mlir_output_to_mlir_aie:
         "mlir-aie/programming_examples/basic/matrix_multiplication_stream/{stream_hw_id}/build/aie_trace_{M}x{K}x{N}_32x32x32_{nb_rows}_row_{nb_cols}_col.mlir",
     shell:
         """
-        aie-opt --canonicalize {input[0]} -o {output[0]} && \
-        echo 'Canonicalized MLIR copied.'
+        make clean -C mlir-aie/programming_examples/basic/matrix_multiplication_stream/{wildcards.stream_hw_id} && \
+        mkdir -p $(dirname {output}) && \
+        aie-opt --canonicalize {input} -o {output} && \
+        echo '✅ Canonicalized MLIR copied.'
         """
 
 rule run_trace:

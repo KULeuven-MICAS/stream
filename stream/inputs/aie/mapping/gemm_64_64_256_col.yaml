@@ -2,19 +2,12 @@
   core_allocation: &id001
   - 2
   - 3
-  - 8
-  - 9
-  - 14
-  - 15
-  - 20
-  - 21
   intra_core_tiling: &id002
   - C, 2
   - D, 2
-  - K, 1
-  inter_core_tiling: &id003
-  - D, 2
   - K, 4
+  inter_core_tiling: &id003
+  - K, 2
   kernel: &id004
     name: mm_32x32x32
     utilization: 61.8

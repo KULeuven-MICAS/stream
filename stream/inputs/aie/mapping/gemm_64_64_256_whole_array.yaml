@@ -10,8 +10,8 @@
   - 21
   intra_core_tiling: &id002
   - C, 2
-  - D, 2
-  - K, 1
+  - D, 1
+  - K, 2
   inter_core_tiling: &id003
   - D, 2
   - K, 4
