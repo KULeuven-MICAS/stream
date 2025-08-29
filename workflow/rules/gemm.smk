@@ -61,7 +61,7 @@ rule postprocess_wallclock_time:
     input:
         rules.run_trace.output
     output:
-        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-{nb_rows}_row_{nb_cols}_col/traces/wall_clock_time.json",
+        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-{nb_rows}_row_{nb_cols}_col/traces/wall_clock_time.json"
     log:
         "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-{nb_rows}_row_{nb_cols}_col/traces/postprocess_wallclock_time.log"
     shell:
@@ -96,7 +96,8 @@ rule postprocess_trace:
 
 rule mark_success:
     input:
-        rules.postprocess_trace.output[0]
+        rules.postprocess_trace.output[0],
+        rules.postprocess_wallclock_time.output[0]
     output:
         "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-{nb_rows}_row_{nb_cols}_col/status.ok"
     shell:

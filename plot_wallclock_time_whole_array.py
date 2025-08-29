@@ -46,7 +46,7 @@ def read_wallclock_data(
                 with open(file_path) as f:
                     data = json.load(f)
                 x_vals.append(sv)
-                min_wallclock.append(data.get("min"))
+                min_wallclock.append(data.get("min"))  # expected in microseconds
             except Exception as e:
                 print(f"Warning: failed reading {file_path}: {e}")
                 x_vals.append(sv)
@@ -76,7 +76,7 @@ def read_amd_wallclock_data(
             try:
                 with open(amd_file) as f:
                     data = json.load(f)
-                amd_min_wallclock.append(data.get("min"))
+                amd_min_wallclock.append(data.get("min"))  # expected in microseconds
             except Exception as e:
                 print(f"Warning: failed reading {amd_file}: {e}")
                 amd_min_wallclock.append(None)
@@ -93,8 +93,8 @@ def _find_known_indices(y: list[float | None]) -> list[int]:
 def _gap_segments(y: list[float | None]) -> list[tuple[int, int]]:
     known = _find_known_indices(y)
     gaps = []
-    max_gap = 2
-    if len(known) < max_gap:
+    MAX_LEN_KNOWN = 2
+    if len(known) < MAX_LEN_KNOWN:
         return gaps
     for a, b in zip(known[:-1], known[1:], strict=False):
         if b - a > 1:
@@ -133,10 +133,30 @@ def _plot_with_missing(
             ax.scatter(miss_indices, miss_y, marker=marker_miss, color="red", zorder=5, label=None)
 
 
-def plot_wallclock(
+def _compute_gmacs_per_sec_list(
+    sweep_dim: str,
+    sweep_values: list[int],
+    const_val: int,
+    times_us: list[float | None],
+) -> list[float | None]:
+    """GMAC/s = (M*K*N) / (1000 * time_us) because:
+    MAC/s = (M*K*N) / (time_s) = (M*K*N) * 1e6 / time_us; GMAC/s = /1e9 => divide by 1e3."""
+    gmacs = []
+    for sv, t_us in zip(sweep_values, times_us, strict=False):
+        if t_us is None or (isinstance(t_us, float) and np.isnan(t_us)):
+            gmacs.append(None)
+            continue
+        M, K, N = make_dims(sweep_dim, sv, const_val)
+        ops = M * K * N  # MAC count
+        gmacs_val = ops / (1000.0 * float(t_us))
+        gmacs.append(gmacs_val)
+    return gmacs
+
+
+def plot_gmacs(
     x_axis_vals: list[int],
-    min_wallclock: list[float | None],
-    amd_wallclock: list[float | None],
+    stream_times_us: list[float | None],
+    amd_times_us: list[float | None],
     sweep_dim: str,
     const_val: int,
     nb_rows: int,
@@ -149,24 +169,32 @@ def plot_wallclock(
 
     os.makedirs(output_folder, exist_ok=True)
 
+    # Convert times to GMAC/s
+    stream_gmacs = _compute_gmacs_per_sec_list(sweep_dim, x_axis_vals, const_val, stream_times_us)
+    amd_gmacs = _compute_gmacs_per_sec_list(sweep_dim, x_axis_vals, const_val, amd_times_us)
+
     categories = [str(v) for v in x_axis_vals]
     positions = list(range(len(categories)))
 
     fig, ax = plt.subplots(figsize=(9, 6))
 
-    _plot_with_missing(ax, positions, categories, min_wallclock, label="STREAM-AIE (us)", color="blue")
+    _plot_with_missing(ax, positions, categories, stream_gmacs, label="STREAM-AIE", color="blue")
+
     # AMD line (red, no interpolation)
-    y_amd_np = np.array([np.nan if (v is None) else v for v in amd_wallclock], dtype=float)
-    ax.plot(positions, y_amd_np, marker="s", linewidth=2, label="MLIR-AIE (us)", color="red")
+    y_amd_np = np.array([np.nan if (v is None) else v for v in amd_gmacs], dtype=float)
+    ax.plot(positions, y_amd_np, marker="s", linewidth=2, label="MLIR-AIE", color="red")
 
     ax.set_xlabel(f"{sweep_dim.upper()} Dimension")
-    ax.set_ylabel("STREAM-AIE (us)")
-    ax.set_title(f"Min Wall Clock Time vs {sweep_dim.upper()} (other dims = {const_val}) on whole_array")
-    min_wallclock_valid = [v for v in min_wallclock if v is not None]
-    amd_wallclock_valid = [v for v in amd_wallclock if v is not None]
-    all_valid = min_wallclock_valid + amd_wallclock_valid
-    if all_valid:
-        ax.set_ylim(bottom=0, top=1.05 * max(all_valid))
+    ax.set_ylabel("Throughput (GMAC/s)")
+    # Show other dimensions explicitly in the title
+    sweep_dim_upper = sweep_dim.upper()
+    other_dims = [d for d in ["M", "K", "N"] if d != sweep_dim_upper]
+    title_dims = ", ".join([f"{d}={const_val}" for d in other_dims])
+    ax.set_title(f"Throughput vs {sweep_dim_upper} ({title_dims}) on whole_array (4x4)")
+
+    valid_vals = [v for v in stream_gmacs + amd_gmacs if v is not None and not np.isnan(v)]
+    if valid_vals:
+        ax.set_ylim(bottom=0, top=1.05 * max(valid_vals))
 
     ax.set_xticks(positions)
     ax.set_xticklabels(categories)
@@ -174,7 +202,7 @@ def plot_wallclock(
     ax.legend()
     fig.tight_layout()
 
-    out_name = f"whole_array_gemm_wallclock_sweep-{sweep_dim.upper()}_const-{const_val}_{nb_rows}row_{nb_cols}col.png"
+    out_name = f"whole_array_gemm_gmacs_sweep-{sweep_dim.upper()}_const-{const_val}_{nb_rows}row_{nb_cols}col.png"
     output_path = os.path.join(output_folder, out_name)
     fig.savefig(output_path)
     print(f"Figure saved to {output_path}")
@@ -182,7 +210,7 @@ def plot_wallclock(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Plot min wall clock time while sweeping a single dimension (M, K, or N). "
+        description="Plot GMAC/s by sweeping a single dimension (M, K, or N). "
         "Other two dimensions are set to a single constant value. "
         "Missing internal points are interpolated and shown with red crosses and dashed gaps."
     )
@@ -223,12 +251,12 @@ def main():
 
     known_idxs = _find_known_indices(min_wallclock)
     if not known_idxs:
-        print("Warning: min wall clock time has no valid points; nothing to plot.")
+        print("Warning: min wall clock time has no valid points; plotting may be empty.")
 
-    plot_wallclock(
+    plot_gmacs(
         x_axis_vals=x_axis,
-        min_wallclock=min_wallclock,
-        amd_wallclock=amd_wallclock,
+        stream_times_us=min_wallclock,
+        amd_times_us=amd_wallclock,
         sweep_dim=args.sweep_dim,
         const_val=args.const,
         nb_rows=args.row,
