@@ -1,7 +1,6 @@
 import argparse
 import json
 import os
-import re
 from collections import defaultdict
 from collections.abc import Callable
 from statistics import median
@@ -114,72 +113,6 @@ def parse_perfetto_trace(file_path, expected_nb_kernels_per_core):
             events["INSTR_EVENT_1"] = updated_ends
 
     return traces
-
-
-def parse_wall_clock_time_us(output_base, stats, M, K, N, nb_rows, nb_cols) -> dict[str, int]:  # noqa: N803
-    """
-    Extracts the wall clock time (us) for each requested stat from run_trace.log.
-    stats: list containing "avg", "min", and/or "max" to select which values to extract.
-    Returns a dict mapping stat name to time in us.
-    """
-    # Remove trailing 'traces/' if present in output_base
-    base_dir = output_base
-    if base_dir.endswith("traces") or base_dir.endswith("traces/"):
-        base_dir = os.path.dirname(base_dir.rstrip("/"))
-    log_path = os.path.join(base_dir, "run_trace.log")
-    if not os.path.exists(log_path):
-        raise ValueError(f"run_trace.log not found at {log_path}. Cannot determine wall clock time.")
-
-    stat_map = {
-        "avg": "Avg NPU matmul time:",
-        "min": "Min NPU matmul time:",
-        "max": "Max NPU matmul time:",
-    }
-
-    results = defaultdict(lambda: -1)
-    with open(log_path) as log_file:
-        for line in log_file:
-            for stat in stats:
-                search_str = stat_map.get(stat.lower())
-                if search_str and search_str in line:
-                    match = re.search(r"(\d+)us", line)
-                    if match:
-                        results[stat] = int(match.group(1))
-    # Check for missing stats
-    if len(results) != len(stats):
-        missing = [stat for stat in stats if results[stat] == -1]
-        raise ValueError(f"Wall clock time(s) not found for: {', '.join(missing)} in {log_path}.")
-
-    # Compute the gMACs/s for all stats
-    gmacs_per_sec = defaultdict(lambda: -1.0)
-    for stat in stats:
-        time_us = results[stat]
-        if time_us > 0:
-            gmacs_per_sec[stat] = (M * K * N) / time_us / 1_000.0  # assume time_us in microseconds
-
-    # Compute the wall clock efficiency assuming 64 MACs/cycle and 1.25 GHz clock
-    efficiency = defaultdict(lambda: -1.0)
-    peak_macs_per_cycle = PEAK_MACS_PER_CYCLE_PER_CORE * nb_rows * nb_cols  # 64 MACs/cycle/core * rows * cols
-
-    peak_gmacs_per_sec = peak_macs_per_cycle * CLOCK_FREQUENCY_GHZ
-    for stat in stats:
-        if gmacs_per_sec[stat] > 0:
-            efficiency[stat] = (gmacs_per_sec[stat] / peak_gmacs_per_sec) * 100.0
-
-    # Print the results
-    for stat in stats:
-        print(
-            f"{stat.capitalize()} Wall clock time = {results[stat]} us, "
-            f"{gmacs_per_sec[stat]:.2f} gMACs/s, "
-            f"Efficiency = {efficiency[stat]:.1f} % (assuming 64 MACs/cycle at 1.25 GHz)."
-        )
-
-    # Save it to a json (similar to tile reports)
-    wall_clock_json_path = os.path.join(output_base, "wall_clock_time.json")
-    with open(wall_clock_json_path, "w") as json_file:
-        json.dump(results, json_file, indent=4)
-
-    return results
 
 
 def calculate_time_differences(traces):
@@ -355,7 +288,6 @@ def write_details_markdown(
     N: int,  # noqa: N803
     K: int,  # noqa: N803
     report_rows: list[dict],
-    wall_clock_time_us: dict[str, float],
 ) -> None:
     """
     Write {output_base}/details.md containing a single <details> block with a tile table.
@@ -389,18 +321,6 @@ def write_details_markdown(
     details_path = os.path.join(output_base, "details.md")
     with open(details_path, "w") as f:
         f.write(f"<details><summary><strong>[{hwid}] M={M} K={K} N={N}</strong></summary>\n\n")
-
-        # Print wall clock times in a stable, readable order if known keys exist
-        preferred_order = ["min", "avg", "max", "p50", "p90", "p95", "p99", "total"]
-        printed = set()
-        for stat in preferred_order:
-            if stat in wall_clock_time_us:
-                f.write(f"- {stat.capitalize()} Wall clock time = {wall_clock_time_us[stat]} us\n")
-                printed.add(stat)
-        # Any remaining keys (deterministic order)
-        for stat in sorted(k for k in wall_clock_time_us.keys() if k not in printed):
-            f.write(f"- {stat.capitalize()} Wall clock time = {wall_clock_time_us[stat]} us\n")
-        f.write("\n")
 
         # Header
         headers = " | ".join(h for h, _, _ in COLUMNS)
@@ -441,10 +361,6 @@ def main():
     input_file = args.input
     output_base = args.output
 
-    # Wall clock time (from run_trace.log)
-    wall_clock_time_stats = ["avg", "min", "max"]
-    wall_clock_time_us = parse_wall_clock_time_us(output_base, wall_clock_time_stats, M, K, N, nb_rows, nb_cols)
-
     nb_kernels_per_core = (M * N * K) // (m * n * k) // (nb_rows * nb_cols)
 
     traces = parse_perfetto_trace(input_file, nb_kernels_per_core)
@@ -464,7 +380,7 @@ def main():
             print(f"Unknown trace type for PID {pid}: {trace['name']}")
 
     # Write the run-level Markdown details block
-    write_details_markdown(output_base, hwid, M, N, K, tile_rows, wall_clock_time_us)
+    write_details_markdown(output_base, hwid, M, N, K, tile_rows)
 
 
 if __name__ == "__main__":

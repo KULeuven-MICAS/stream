@@ -57,6 +57,23 @@ rule copy_trace_output:
     shell:
         "mkdir -p $(dirname {output}) && cp {input} {output}"
 
+rule postprocess_wallclock_time:
+    input:
+        rules.run_trace.output
+    output:
+        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-{nb_rows}_row_{nb_cols}_col/traces/wall_clock_time.json",
+    log:
+        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-{nb_rows}_row_{nb_cols}_col/traces/postprocess_wallclock_time.log"
+    shell:
+        """
+        (
+            python3 postprocess_wallclock_time.py \
+            --M {wildcards.M} --K {wildcards.K} --N {wildcards.N} \
+            --row {wildcards.nb_rows} --col {wildcards.nb_cols} \
+            --hwid {wildcards.stream_hw_id} 
+        ) > {log} 2>&1
+        """
+
 rule postprocess_trace:
     input:
         rules.copy_trace_output.output
