@@ -11,6 +11,8 @@ from stream.hardware.architecture.noc.communication_link import CommunicationLin
 class AcceleratorFactory:
     """! Converts valid user-provided accelerator data into an `Accelerator` instance"""
 
+    STANDARD_MAX_OBJECT_FIFO_DEPTH = {"compute": 16, "memory": 48}
+
     def __init__(self, data: dict[str, Any]):
         """! Generate an `Accelerator` instance from the validated user-provided data."""
         self.data = data
@@ -20,10 +22,13 @@ class AcceleratorFactory:
         cores: list[Core] = []
         unique_shared_mem_group_ids: set[int] = set()
 
+        # Get the max object fifo depth for the types of cores
+        max_object_fifo_depth = self.data["max_object_fifo_depth"]
+
         for core_id, core_data in self.data["cores"].items():
             shared_mem_group_id = self.get_shared_mem_group_id(core_id)
             coordinates = self.data["core_coordinates"].get(core_id)
-            core = self.create_core(core_data, core_id, shared_mem_group_id, coordinates)
+            core = self.create_core(core_data, core_id, shared_mem_group_id, coordinates, max_object_fifo_depth)
             cores.append(core)
             unique_shared_mem_group_ids.add(shared_mem_group_id)
 
@@ -55,14 +60,17 @@ class AcceleratorFactory:
         core_id: int,
         shared_mem_group_id: int | None = None,
         coordinates: list[int] | None = None,
+        max_object_fifo_depth: dict[str, int] | None = None,
     ) -> Core:
+        if max_object_fifo_depth is None:
+            max_object_fifo_depth = self.STANDARD_MAX_OBJECT_FIFO_DEPTH
         core_factory = ZigZagCoreFactory(core_data)
         core = core_factory.create(core_id, shared_mem_group_id=shared_mem_group_id)
         # Typecast
         core = Core.from_zigzag_core(core)
         core.type = core_data.get("type", "compute")  # Default type is 'compute'
         core.utilization = core_data.get("utilization", 100)
-        core.type = core_data.get("type", "compute")
+        core.max_object_fifo_depth = max_object_fifo_depth[core.type]
         if coordinates:
             core.col_id = coordinates[0]
             core.row_id = coordinates[1]

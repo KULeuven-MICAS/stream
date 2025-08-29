@@ -588,8 +588,7 @@ class TransferAndTensorAllocator:
                     tiles_needed += 1 if self.FORCE_DOUBLE_BUFFERING else 0
                     self.object_fifo_depth[c] += tiles_needed * self.z_stopC[(tr, stop)]
         for c, expr in self.object_fifo_depth.items():
-            max_fifo_depth = c.get_max_object_fifo_depth()
-            self.model.addConstr(expr <= max_fifo_depth, name=f"obj_fifo_depth_{_resource_key(c)}")
+            self.model.addConstr(expr <= c.max_object_fifo_depth, name=f"obj_fifo_depth_{_resource_key(c)}")
 
     # ...................... slot latency ........................ #
     def _slot_latency_constraints(self):
