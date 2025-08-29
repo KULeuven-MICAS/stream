@@ -51,5 +51,5 @@ class Core(ZigZagCore):
         if self.type == "compute":
             return 16
         elif self.type == "memory":
-            return 24
+            return 48
         return 0
