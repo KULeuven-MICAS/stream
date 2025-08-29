@@ -3,11 +3,12 @@ import json
 import os
 import re
 from collections import defaultdict
+from collections.abc import Callable
 from statistics import median
+from typing import TypeAlias
 
 import matplotlib.pyplot as plt
 
-RUN_DIR_PATTERN = re.compile(r"^(.+)-gemm_(\d+)_(\d+)_(\d+)-fused-constraint-optimization$")
 CLOCK_FREQUENCY_GHZ = 1.25  # 1.25 GHz (might be slightly off, but close enough for efficiency calc)
 PEAK_MACS_PER_CYCLE_PER_CORE = 64  # if data type changes this value may need to be updated
 
@@ -23,6 +24,8 @@ def fill_missing_equally_spaced(xs, required_len=None, tol_ratio=0.25):  # noqa:
     tol_ratio: tolerance as a fraction of the nominal step when deciding if a
                gap matches an integer multiple of the step.
     """
+    if len(xs) == required_len:
+        return xs
     if not xs:
         # If we must hit a required_len with no data, we can't infer values robustly.
         return []
@@ -103,19 +106,12 @@ def parse_perfetto_trace(file_path, expected_nb_kernels_per_core):
         elif event.get("name") == "INSTR_EVENT_1" and event.get("ph") == "E":
             traces[pid]["ends"].append(event.get("ts"))
 
-    for pid, events in traces.items():
+    for _, events in traces.items():
         if events["starts"] and events["ends"]:
             updated_starts = fill_missing_equally_spaced(events["starts"], required_len=expected_nb_kernels_per_core)
             updated_ends = fill_missing_equally_spaced(events["ends"], required_len=expected_nb_kernels_per_core)
-            if len(updated_starts) != expected_nb_kernels_per_core or len(updated_ends) != expected_nb_kernels_per_core:
-                print(
-                    f"WARNING: After filling, mismatched starts ({len(updated_starts)}) and ends ({len(updated_ends)}) "
-                    f"for {events['name']}, expected {expected_nb_kernels_per_core} each. Skipping this entry."
-                )
-                traces[pid] = {"starts": [], "ends": [], "name": None}  # Empty this entry
-            else:
-                events["INSTR_EVENT_0"] = updated_starts
-                events["INSTR_EVENT_1"] = updated_ends
+            events["INSTR_EVENT_0"] = updated_starts
+            events["INSTR_EVENT_1"] = updated_ends
 
     return traces
 
@@ -238,120 +234,187 @@ def fmt_float(x, digits=2):
         return str(x)
 
 
-def process_core_trace(pid, trace, M, N, K, m, n, k, output_base):  # noqa: PLR0913, N803
-    time_differences = [end - start for start, end in zip(trace["INSTR_EVENT_0"], trace["INSTR_EVENT_1"], strict=False)]
+def get_valid_report_data(  # noqa: PLR0911, PLR0912, N803
+    pid: int,
+    trace: dict,
+    m: int,
+    n: int,
+    k: int,
+    nb_kernels_per_core: int,
+) -> dict:
+    # Total runtime = very first start to very last end
     total_difference = trace["INSTR_EVENT_1"][-1] - trace["INSTR_EVENT_0"][0]
-    num_kernels_this_core = len(time_differences)
-    num_kernels_total = M * N * K // (m * n * k)
-    core_parallelism = max(1, num_kernels_total // max(1, num_kernels_this_core))
 
     print(f"Processing core_trace for PID: {pid}")
-    print(f"Total difference: {total_difference} cycles")
-    avg_diff = sum(time_differences) / len(time_differences)
-    print(f"Average difference = {avg_diff}")
+    print(f"Total difference (first start → last end): {total_difference} cycles")
 
-    # Calculate the macs/cycle
-    macs_total_this_core = M * N * K // core_parallelism
-    macs_kernel = m * n * k
-    macs_per_cycle_system = macs_total_this_core / total_difference if total_difference else 0.0
-    macs_per_cycle_kernel = macs_kernel / avg_diff if avg_diff else 0.0
-    print(f"MACs per cycle (kernel) = {macs_per_cycle_kernel:.2f}")
+    # Define a uniform "average per-kernel time" based on the total span
+    avg_diff = (total_difference / nb_kernels_per_core) if nb_kernels_per_core else 0.0
+    print(f"Average difference (uniform over kernels) = {avg_diff}")
 
-    # Calculate efficiencies
-    kernel_efficiency = (
-        (macs_per_cycle_kernel / PEAK_MACS_PER_CYCLE_PER_CORE * 100) if PEAK_MACS_PER_CYCLE_PER_CORE else 0.0
-    )
-    system_efficiency = (
-        (macs_per_cycle_system / PEAK_MACS_PER_CYCLE_PER_CORE * 100) if PEAK_MACS_PER_CYCLE_PER_CORE else 0.0
-    )
-    print(
-        f"Theoretical peak efficiency (kernel) = "
-        f"{kernel_efficiency:.1f} % "
-        f"(assuming {PEAK_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)."
-    )
-    print(f"MACs/cycle (system) = {macs_per_cycle_system:.2f}")
-    print(
-        f"Theoretical peak efficiency (system) = "
-        f"{system_efficiency:.1f} % "
-        f"(assuming {PEAK_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core)."
-    )
+    # MACs:
+    # - per-kernel MACs (for reporting only)
+    macs_per_kernel = m * n * k
+    # - total MACs attributable to this core during the whole run
+    macs_total_this_core = macs_per_kernel * nb_kernels_per_core
+
+    # Since we ignore per-kernel variability, both kernel/system MACs-per-cycle
+    # are based on the same total runtime window.
+    macs_per_cycle_system = (macs_total_this_core / total_difference) if total_difference else 0.0
+
+    print(f"MACs per cycle (system) = {macs_per_cycle_system:.2f}")
+
+    # Efficiencies relative to peak
+    efficiency = (macs_per_cycle_system / PEAK_MACS_PER_CYCLE_PER_CORE * 100) if PEAK_MACS_PER_CYCLE_PER_CORE else 0.0
+
+    print(f"Efficiency = {efficiency:.1f} % (assuming {PEAK_MACS_PER_CYCLE_PER_CORE} MACs/cycle/core).")
     print("=" * 80)
 
     # Extract tile name
     tile_name = trace["name"].split(" for ")[-1]
-
+    print(f"Valid data for PID {pid}, tile {tile_name}. Processing...")
     # Save per-tile JSON report
     report_data = {
         "pid": pid,
         "tile_name": tile_name,
-        "num_kernels": num_kernels_this_core,
+        "num_kernels": nb_kernels_per_core,
         "total_kernel_time_cycles": total_difference,
         "average_kernel_time_cycles": avg_diff,
-        "macs_per_cycle_kernel": macs_per_cycle_kernel,
-        "theoretical_peak_efficiency_kernel_percent": kernel_efficiency,
-        "macs_per_cycle_system": macs_per_cycle_system,
-        "theoretical_peak_efficiency_system_percent": system_efficiency,
+        "macs_per_cycle": macs_per_cycle_system,
+        "efficiency_percent": efficiency,
     }
+    return report_data
+
+
+def get_invalid_report_data(pid, tile_name):
+    print(f"WARNING: No valid data for PID {pid}, tile {tile_name}. Saving invalid data (-1).")
+    return {
+        "pid": pid,
+        "tile_name": tile_name,
+        "num_kernels": -1,
+        "total_kernel_time_cycles": -1,
+        "average_kernel_time_cycles": -1,
+        "macs_per_cycle": -1,
+        "efficiency_percent": -1,
+    }
+
+
+def process_core_trace(pid, trace, M, N, K, m, n, k, nb_kernels_per_core, output_base):  # noqa: PLR0913, N803
+    tile_name = trace["name"].split(" for ")[-1]
+    if not trace["starts"] or not trace["ends"]:
+        report_data = get_invalid_report_data(pid, tile_name)
+    else:
+        report_data = get_valid_report_data(pid, trace, m, n, k, nb_kernels_per_core)
+
     os.makedirs(output_base, exist_ok=True)
 
     report_path = os.path.join(output_base, f"{tile_name}_report.json")
     save_report(report_path, report_data)
 
-    fig_path = os.path.join(output_base, f"{tile_name}_plot.png")
-    plot_time_differences(time_differences, fig_path, tile_name, num_kernels_this_core)
-
     # Return a tuple for the run-level details.md generation
-    return (
-        tile_name,
-        num_kernels_this_core,
-        total_difference,
-        avg_diff,
-        macs_per_cycle_kernel,
-        kernel_efficiency,
-        macs_per_cycle_system,
-        system_efficiency,
-    )
+    return report_data
 
 
-def infer_hwid(output_base):
-    base = os.path.basename(os.path.normpath(output_base))
-    m = RUN_DIR_PATTERN.match(base)
-    if m:
-        hwid = m.group(1)
-        return hwid
-    return None
+# Local safe formatters (fall back if global helpers not present)
+def _fmt_int(x):
+    try:
+        return fmt_int(x)  # type: ignore[name-defined]
+    except Exception:
+        return "-" if x is None or x == -1 else f"{int(x):,}"
 
 
-def write_details_markdown(output_base, hwid, M, N, K, tile_rows, wall_clock_time_us):  # noqa: N803
+def _fmt_float(x, digits: int = 3):
+    try:
+        return fmt_float(x)  # type: ignore[name-defined]
+    except Exception:
+        if x is None or x == -1:
+            return "-"
+        try:
+            return f"{float(x):.{digits}f}"
+        except Exception:
+            return "-"
+
+
+# Column specification: (Header, key_in_report_data, formatter)
+# This provides a single source of truth translating dict keys to table columns.
+Column: TypeAlias = tuple[str, str, Callable[[object], str]]
+COLUMNS: list[Column] = [
+    ("Tile", "tile_name", lambda v: str(v) if v not in (None, -1) else "-"),
+    ("Kernels", "num_kernels", _fmt_int),
+    ("Total cycles", "total_kernel_time_cycles", _fmt_int),
+    ("Avg cycles per kernel", "average_kernel_time_cycles", lambda v: _fmt_float(v, 3)),
+    ("MACs/cycle", "macs_per_cycle", lambda v: _fmt_float(v, 3)),
+    ("Efficiency %", "efficiency_percent", lambda v: _fmt_float(v, 2)),
+]
+
+
+def write_details_markdown(
+    output_base: str,
+    hwid: str,
+    M: int,  # noqa: N803
+    N: int,  # noqa: N803
+    K: int,  # noqa: N803
+    report_rows: list[dict],
+    wall_clock_time_us: dict[str, float],
+) -> None:
     """
     Write {output_base}/details.md containing a single <details> block with a tile table.
-    Rows are sorted by macs_per_cycle_system descending for quick glance.
+    Rows are sorted by 'macs_per_cycle_system' descending for quick glance.
+    Expects report_rows as a list of dicts like:
+      {
+        "pid": ...,
+        "tile_name": ...,
+        "num_kernels": ...,
+        "average_kernel_time_cycles": ...,
+        "macs_per_cycle": ...,
+        "efficiency_percent": ...,
+      }
     """
-    if not tile_rows:
+
+    if not report_rows:
         return
 
-    # Sort rows by system MACs/cycle (index 6) high to low
-    tile_rows = sorted(tile_rows, key=lambda r: (r[6] if r[6] is not None else -1e9), reverse=True)
+    # Sort rows by system MACs/cycle high to low; treat None/-1 as very small
+    def _sort_key(d: dict) -> float:
+        v = d.get("macs_per_cycle_system", None)
+        if v is None or v == -1:
+            return -1e9
+        try:
+            return float(v)
+        except Exception:
+            return -1e9
+
+    report_rows = sorted(report_rows, key=_sort_key, reverse=True)
 
     details_path = os.path.join(output_base, "details.md")
     with open(details_path, "w") as f:
-        title_hwid = hwid or "?"
-        f.write(f"<details><summary><strong>[{title_hwid}] M={M} K={K} N={N}</strong></summary>\n\n")
-        for stat in wall_clock_time_us:
+        f.write(f"<details><summary><strong>[{hwid}] M={M} K={K} N={N}</strong></summary>\n\n")
+
+        # Print wall clock times in a stable, readable order if known keys exist
+        preferred_order = ["min", "avg", "max", "p50", "p90", "p95", "p99", "total"]
+        printed = set()
+        for stat in preferred_order:
+            if stat in wall_clock_time_us:
+                f.write(f"- {stat.capitalize()} Wall clock time = {wall_clock_time_us[stat]} us\n")
+                printed.add(stat)
+        # Any remaining keys (deterministic order)
+        for stat in sorted(k for k in wall_clock_time_us.keys() if k not in printed):
             f.write(f"- {stat.capitalize()} Wall clock time = {wall_clock_time_us[stat]} us\n")
-        f.write(
-            "| Tile | Kernels | Total cycles | Avg cycles per kernel | MACs/cycle (kernel) |"
-            " Eff. kernel % | MACs/cycle (system) | Eff. system % |\n"
-        )
-        f.write(
-            "|------|---------|--------------|-----------------------|---------------------|"
-            "--------------------|---------------------|--------------------|\n"
-        )
-        for tile_name, nk, tcy, acy, mpck, peffk, mpcs, peffs in tile_rows:
-            f.write(
-                f"| {tile_name} | {nk} | {fmt_int(tcy)} | {fmt_float(acy)} | "
-                f"{fmt_float(mpck)} | {fmt_float(peffk)} | {fmt_float(mpcs)} | {fmt_float(peffs)} |\n"
-            )
+        f.write("\n")
+
+        # Header
+        headers = " | ".join(h for h, _, _ in COLUMNS)
+        f.write(f"| {headers} |\n")
+        f.write(f"|{'|'.join('-' * len(h) for h, _, _ in COLUMNS)}|\n")
+
+        # Rows
+        for row in report_rows:
+            cells = []
+            for _, key, formatter in COLUMNS:
+                value = row.get(key, None)
+                cells.append(formatter(value))
+            f.write(f"| {' | '.join(cells)} |\n")
+
         f.write("\n</details>\n")
 
 
@@ -367,7 +430,7 @@ def main():
     parser.add_argument("--k", type=int, required=True, help="Tile size k.")
     parser.add_argument("--row", type=int, required=True, help="Number of rows used.")
     parser.add_argument("--col", type=int, required=True, help="Number of columns used.")
-    parser.add_argument("--hwid", type=str, default=None, help="Hardware ID label for the details section (optional).")
+    parser.add_argument("--hwid", type=str, required=True, help="Hardware ID label for the details section (optional).")
     args = parser.parse_args()
 
     M, N, K = args.M, args.N, args.K
@@ -378,16 +441,13 @@ def main():
     input_file = args.input
     output_base = args.output
 
-    if hwid is None:
-        hwid = infer_hwid(output_base)
-
     # Wall clock time (from run_trace.log)
     wall_clock_time_stats = ["avg", "min", "max"]
     wall_clock_time_us = parse_wall_clock_time_us(output_base, wall_clock_time_stats, M, K, N, nb_rows, nb_cols)
 
-    expected_nb_kernels_per_core = (M * N * K) // (m * n * k) // (nb_rows * nb_cols)
+    nb_kernels_per_core = (M * N * K) // (m * n * k) // (nb_rows * nb_cols)
 
-    traces = parse_perfetto_trace(input_file, expected_nb_kernels_per_core)
+    traces = parse_perfetto_trace(input_file, nb_kernels_per_core)
     print("=" * 80)
     # Collect rows for the run-level details.md
     tile_rows = []
@@ -396,7 +456,7 @@ def main():
             print(f"Skipping PID {pid} with no name.")
             continue
         if "core_trace" in trace["name"]:
-            row = process_core_trace(pid, trace, M, N, K, m, n, k, output_base)
+            row = process_core_trace(pid, trace, M, N, K, m, n, k, nb_kernels_per_core, output_base)
             tile_rows.append(row)
         elif "shim_trace" in trace["name"] or "memtile_trace" in trace["name"]:
             print(f"Skipping {trace['name']} for PID {pid}.")

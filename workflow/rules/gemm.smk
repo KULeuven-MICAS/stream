@@ -62,15 +62,19 @@ rule postprocess_trace:
         rules.copy_trace_output.output
     output:
         "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-{nb_rows}_row_{nb_cols}_col/traces/tile2,1_report.json",
+    log:
+        "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-{nb_rows}_row_{nb_cols}_col/traces/postprocess_trace.log"
     shell:
         """
-        python3 postprocess_aie_trace.py \
+        (        
+            python3 postprocess_aie_trace.py \
             --input {input} \
-            --output $(dirname {output}) \
+            --output $(dirname {output[0]}) \
             --M {wildcards.M} --K {wildcards.K} --N {wildcards.N} \
             --m 32 --k 32 --n 32 \
             --hwid {wildcards.stream_hw_id} \
-            --row {wildcards.nb_rows} --col {wildcards.nb_cols}
+            --row {wildcards.nb_rows} --col {wildcards.nb_cols} 
+        ) > {log} 2>&1
         """
 
 rule mark_success:
