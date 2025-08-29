@@ -81,6 +81,7 @@ class TransferAndTensorAllocator:
         # memory cores that may act as on‑chip caches (exclude the DRAM/off‑chip id)
         # ------------------------------------------------------------------------------
         self.MAX_NB_COLS_TO_USE = nb_cols_to_use
+        # self.MAX_NB_COLS_TO_USE = 4  # debug
         self.FORCE_DOUBLE_BUFFERING = True
         self.mem_cores: list[Core] = [
             c
@@ -579,6 +580,8 @@ class TransferAndTensorAllocator:
             preds_and_succs = list(self.ssw.predecessors(tr)) + list(self.ssw.successors(tr))
             resources = {self.resource_of[t] for t in preds_and_succs if isinstance(t, SteadyStateTensor)}
             for c in resources:
+                if c.id == self.offchip_core_id:
+                    continue  # off-chip has no FIFO depth limit
                 assert isinstance(c, Core), f"Expected {c} to be a Core, got {type(c)}"
                 for stop in range(-1, len(tr.steady_state_iteration_space.get_temporal_variables())):
                     tiles_needed = self.tiles_needed_levels[(tr, stop)]
@@ -930,3 +933,37 @@ class TransferAndTensorAllocator:
             stopC = next(s for s in range(-1, stop_max) if self.z_stopC[(tr, s)].X > self.VAR_THRESHOLD)
             stopM = next(s for s in range(-1, stop_max) if self.z_stopM[(tr, s)].X > self.VAR_THRESHOLD)
             assert stopM >= stopC
+
+    def _eval_and_print_linexpr(self, expr, sol=None):
+        """
+        Evaluate and pretty-print a Gurobi linear expression using size()/getVar(i)/getCoeff(i),
+        with each term on its own line.
+
+        Parameters
+        ----------
+        expr : gurobipy.LinExpr
+            The linear expression to evaluate.
+        sol : dict, optional
+            Mapping from variable -> value. If None, use var.X (solution value).
+
+        Returns
+        -------
+        float
+            Evaluated numeric value of the expression.
+        """
+        val = expr.getConstant()
+
+        print("Expression terms:")
+        for i in range(expr.size()):
+            var = expr.getVar(i)
+            coeff = expr.getCoeff(i)
+            x = sol[var] if sol is not None else var.X
+            term_val = coeff * x
+            val += term_val
+            print(f"  {coeff} * {var.VarName} (value={x:.4f}) -> {term_val:.4f}")
+
+        if expr.getConstant() != 0:
+            print(f"  constant {expr.getConstant()}")
+
+        print(f"Total = {val:.4f}")
+        return val
