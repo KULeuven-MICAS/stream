@@ -13,7 +13,7 @@ jobs:
     uses: ./.github/workflows/_gemm-run.yml
     secrets: inherit
     with:
-      snakemake_args: "-j 1 --keep-going"
+      snakemake_args: "-j 1 --forceall --keep-going"
 
   summarize_errors:
     needs: run

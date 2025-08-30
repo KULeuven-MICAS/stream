@@ -5,7 +5,7 @@ on:
       snakemake_args:
         type: string
         required: false
-        default: "-j 1 --keep-going"
+        default: "-j 1 --forceall --keep-going"
     secrets:
       CI_TOKEN:
         required: false
