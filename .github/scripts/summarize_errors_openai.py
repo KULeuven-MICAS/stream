@@ -32,7 +32,7 @@ def summarize_log(log_path: Path) -> str:
     return resp.choices[0].message.content.strip()
 
 
-def main(max_chars: int = 4000):
+def main(max_chars: int = 8000):
     root = Path("outputs")
     for d in root.glob("*"):
         log = d / "run_trace.log"
