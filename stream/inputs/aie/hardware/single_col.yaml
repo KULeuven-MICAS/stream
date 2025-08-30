@@ -36,5 +36,5 @@ core_connectivity:
 unit_energy_cost: 0
 
 max_object_fifo_depth:
-  compute: 6
+  compute: 16
   memory: 48
