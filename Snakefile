@@ -1,5 +1,6 @@
 configfile: "workflow/config/params.yaml"
 include: "workflow/rules/gemm.smk"
+include: "workflow/rules/demo.smk"
 
 GEMM = config["gemm"]
 # PROFILES = ["single_core",]
