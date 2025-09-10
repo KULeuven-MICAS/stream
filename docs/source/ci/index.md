@@ -3,8 +3,7 @@
 - [Latest](latest.md)
 
 ## Recent runs
-- [1fe4f77](runs/1fe4f77.md)
-- [3ed0d2f](runs/3ed0d2f.md)
+- [5c62e31](runs/5c62e31.md)
 - [4f4d66b](runs/4f4d66b.md)
 - [6fa311f](runs/6fa311f.md)
 - [921a0bd](runs/921a0bd.md)
@@ -14,4 +13,6 @@
 - [c51755f](runs/c51755f.md)
 - [df0a03d](runs/df0a03d.md)
 - [feec8bf](runs/feec8bf.md)
+- [1fe4f77](runs/1fe4f77.md)
 - [246fbee](runs/246fbee.md)
+- [3ed0d2f](runs/3ed0d2f.md)
