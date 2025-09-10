@@ -18,7 +18,9 @@ def summarize_log(log_path: Path) -> str:
             {
                 "role": "system",
                 "content": "You are a CI assistant. "
-                "Summarize the root cause of this log failure in one short sentence (<=50 characters)."
+                "Summarize the root cause of this log failure in one short sentence (<=50 characters). "
+                "If the log includes a PASS! statement, say 'Run passed, potential issue in post-processing'. "
+                "Only say it passed if you're absolutely certain that it did. "
                 "Answer only with the sentence, no other text.",
             },
             {"role": "user", "content": text},
@@ -30,7 +32,7 @@ def summarize_log(log_path: Path) -> str:
     return resp.choices[0].message.content.strip()
 
 
-def main(max_chars: int = 4000):
+def main(max_chars: int = 8000):
     root = Path("outputs")
     for d in root.glob("*"):
         log = d / "run_trace.log"

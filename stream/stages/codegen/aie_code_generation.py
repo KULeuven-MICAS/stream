@@ -261,7 +261,8 @@ class AIECodeGenerationStage(Stage):
         ClearMemorySpace().apply(self.context, module)
 
         # Optionally, Add Tracing Script
-        AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
+        if True:
+            AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
 
         # print output to codegen path
         file = open(self.output_path, "w")

@@ -1,32 +1,0 @@
-
-onnx-example:ÿ
-f
-input
-conv1_weightsconv1_output"Conv*
-kernel_shape@@ *
-pads@@@@ *
-strides@@ 
-g
-conv1_output
-conv2_weightsoutput"Conv*
-kernel_shape@@ *
-pads@@@@ *
-strides@@ 	ConvModel*Bconv1_weights*Bconv2_weightsZ!
-input
-
-
-
-à
-àb 
-output
-
-
-
-8
-8j&
-conv1_output
-
-
-
-p
-pB

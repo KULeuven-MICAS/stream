@@ -167,3 +167,6 @@ core_connectivity:
     cores: [17, 23]
     bandwidth: 64
 
+max_object_fifo_depth:
+  compute: 6
+  memory: 48

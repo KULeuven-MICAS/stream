@@ -18,3 +18,7 @@ core_connectivity:
     cores: [1, 2]
     bandwidth: 64
 unit_energy_cost: 0
+
+max_object_fifo_depth:
+  compute: 16
+  memory: 48

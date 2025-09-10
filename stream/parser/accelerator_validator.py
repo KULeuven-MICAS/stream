@@ -92,6 +92,17 @@ class AcceleratorValidator:
             "required": True,
             "valuesrules": {"type": "list", "minlength": 2, "maxlength": 2, "schema": {"type": "integer"}},
         },
+        # ------------------------------------------------------------------ #
+        # Maximum object fifo depth for compute and memory core types        #
+        # ------------------------------------------------------------------ #
+        "max_object_fifo_depth": {
+            "type": "dict",
+            "required": True,
+            "schema": {
+                "compute": {"type": "integer", "min": 0},
+                "memory": {"type": "integer", "min": 0},
+            },
+        },
     }
 
     def __init__(self, data: Any, accelerator_path: str):

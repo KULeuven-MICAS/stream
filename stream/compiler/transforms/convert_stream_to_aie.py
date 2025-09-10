@@ -217,7 +217,7 @@ class SortPullPushOp:  # noqa: PLW1641 for no hash
 @dataclass
 class ObjectFifoHop:
     fifos: list[ObjectFifoOp]
-    DB_EXTRA: int = 0  # 1 for double buffering, 0 for no DB
+    DB_EXTRA: int = 1  # 1 for double buffering, 0 for no DB
 
     @property
     def fifo(self) -> ObjectFifoOp:

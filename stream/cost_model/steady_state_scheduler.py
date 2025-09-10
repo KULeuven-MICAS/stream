@@ -277,14 +277,17 @@ class SteadyStateScheduler:
                 self.add_transfers_and_post_transfer_tensor_nodes_for_constant_input(tensor, steady_state_workload)
             elif self.is_constant_output_tensor(tensor):
                 self.add_transfers_and_pre_transfer_tensor_nodes_for_constant_output(tensor, steady_state_workload)
-            else:
-                raise NotImplementedError("This is to be implemented for non-constant tensors between layers.")
+            elif self.is_nonconstant_output_tensor(tensor):
+                self.add_transfers_and_post_transfer_tensor_nodes_for_nonconstant_output(tensor, steady_state_workload)
         # Calculate the optimal paths for the transfer nodes and set the possible_resource_allocation
         self.set_transfer_paths(steady_state_workload)
         return steady_state_workload
 
     def is_constant_input_tensor(self, tensor: SteadyStateTensor) -> bool:
         return (TensorFlag.INPUT | TensorFlag.CONSTANT) in tensor.tensor_flag
+
+    def is_nonconstant_output_tensor(self, tensor: SteadyStateTensor) -> bool:
+        return (TensorFlag.OUTPUT | TensorFlag.NONCONSTANT) in tensor.tensor_flag
 
     def is_constant_output_tensor(self, tensor: SteadyStateTensor) -> bool:
         return (TensorFlag.OUTPUT | TensorFlag.CONSTANT) in tensor.tensor_flag
@@ -402,6 +405,75 @@ class SteadyStateScheduler:
                 ssw.add_edge(pred, ptn)
                 # Add edge from pre transfer tensor node to transfer node
                 ssw.add_edge(ptn, transfer_node)
+
+    def add_transfers_and_post_transfer_tensor_nodes_for_nonconstant_output(
+        self, tensor: SteadyStateTensor, ssw: SteadyStateWorkload
+    ):
+        out_edges = list(ssw.out_edges(tensor, data=True))
+        if len(out_edges) != 1:
+            raise NotImplementedError(f"edge data propagation not implemented for multiple outputs yet: {out_edges}")
+        edge_data = out_edges[0][2]
+        successor = out_edges[0][1]
+        assert "operand" in edge_data
+        operand = edge_data["operand"]
+        # Get the number of tensors that will need to be buffered for this successor CN
+        num_tensors = self.calculate_operand_in_degree(successor, operand)
+        edge_data["num_tensors"] = num_tensors
+        all_successors = [i for _, i, _ in out_edges]
+        assert all(isinstance(s, (SteadyStateTensor | SteadyStateComputation)) for s in all_successors), (
+            "All successors of a tensor node should be either SteadyStateTensor or SteadyStateComputation nodes."
+        )
+        if not all_successors:
+            raise ValueError(f"No valid successors found for constant input {tensor}.")
+        # Get correct steady state iteration space for the intra core tilling
+        loop_relevancy_info = tensor.origin.loop_relevancy_info
+        intra_core_tiling = tensor.origin.intra_core_tiling
+        ssis = SteadyStateIterationSpace.from_loop_info(
+            loop_relevancy=loop_relevancy_info,
+            intra_core_tiling=intra_core_tiling,
+            operand=tensor.operand,
+            inter_core_tiling=tensor.origin.inter_core_tiling,
+        )
+        # Get the post transfer tensor node(s)
+        grouped_post_transfer_tensor_nodes, grouped_successors = (
+            self.get_grouped_post_transfer_tensor_nodes_and_successors(
+                all_successors,
+                pre_transfer_tensor=tensor,
+            )
+        )
+        for post_transfer_tensor_nodes, successors in zip(
+            grouped_post_transfer_tensor_nodes.values(), grouped_successors.values(), strict=False
+        ):
+            transfer_type, size = self.get_transfer_type_and_size_for_input(post_transfer_tensor_nodes)
+            post_transfer_tensor_node_names = [ptn.node_name for ptn in post_transfer_tensor_nodes]
+            # Insert a transfer node after the node and connect it to all the successors
+            transfer_node = SteadyStateTransfer(
+                transfer_type=transfer_type,
+                id=tensor.id,
+                node_name=f"Transfer({tensor.node_name} -> {post_transfer_tensor_node_names})",
+                srcs=(tensor,),
+                dsts=post_transfer_tensor_nodes,  # type: ignore
+                size=size,
+                tensor=tensor,
+                possible_resource_allocation=tuple(),  # will be set later by 'set_transfer_paths'
+                steady_state_iteration_space=ssis,
+            )
+            ssw.add(transfer_node)
+            # Add edge from the original node to the transfer node
+            ssw.add_edge(tensor, transfer_node, **edge_data)
+            for ptn, succ in zip(post_transfer_tensor_nodes, successors, strict=True):
+                if ptn not in ssw:  # happens for the constant tensors that were already in the graph
+                    # Add the post transfer tensor node to the steady state workload
+                    ssw.add(ptn)
+                # Remove original edge between node and successor
+                ssw.remove_edge(tensor, succ)
+                # Add edge from transfer node to post transfer tensor node
+                ssw.add_edge(
+                    transfer_node,
+                    ptn,
+                )
+                # Add edge from post transfer node to successor
+                ssw.add_edge(ptn, succ, **edge_data)
 
     def get_transfer_type_and_size_for_input(
         self, post_transfer_tensor_nodes: tuple[SteadyStateTensor, ...]
@@ -657,29 +729,21 @@ class SteadyStateScheduler:
         This is used to represent multiple logically consecutive versions of a single tensor across steady-state iters.
         """
         # Go through each tensor in the steady state workload and check to convert it to a rolling buffer tensor
-        for tensor in steady_state_workload.tensor_nodes:
+        for tensor in reversed(steady_state_workload.tensor_nodes):
             # If the tensor is already a rolling buffer tensor, skip it
             if isinstance(tensor, SteadyStateRollingBuffer) or TensorFlag.CONSTANT in tensor.tensor_flag:
                 continue
             # Check if there's a successor that is a computation node, and get the input operand associated with edge
             for _, successor, data in list(steady_state_workload.out_edges(tensor, data=True)):
-                if isinstance(successor, SteadyStateComputation):
-                    assert "operand" in data, (
-                        f"Expected operand in edge data between {tensor.node_name} and {successor.node_name}."
+                if isinstance(
+                    successor,
+                    SteadyStateComputation,
+                ) or isinstance(successor, SteadyStateTransfer):
+                    assert "num_tensors" in data, (
+                        f"Expected 'num_tensors' in edge data between {tensor.node_name} and {successor.node_name}."
                     )
-                    operand = data["operand"]
-                    # Find the equivalent computation node in the entire workload that contains all steady state iters
-                    eq_node = next(
-                        n for n in self.workload.node_list if n.id == successor.id and n.sub_id == successor.sub_id
-                    )
-                    # Get the number of in edges of this equivalent node that have the same operand
-                    # TODO: If there are multiple successors, the total rolling buffer size is calculated.
-                    in_edges = get_real_in_edges(eq_node, self.workload)
-                    num_tensors = sum(1 for _, _, data in in_edges if "operand" in data and data["operand"] == operand)
-                    if num_tensors != len(in_edges):
-                        raise NotImplementedError(
-                            f"Expected all in edges of {eq_node} to have the same operand {operand}, but got {in_edges}"
-                        )
+                    # Grab the number of tensors to be cached from the edge data
+                    num_tensors = data["num_tensors"]
                     # TODO: The rolling buffer should only be created once, not for each successor!
                     # # Create a rolling buffer tensor to replace the current tensor
                     ssrb = SteadyStateRollingBuffer(
@@ -703,6 +767,19 @@ class SteadyStateScheduler:
                     # Remove the original tensor node. This also removes edges to/from it.
                     steady_state_workload.remove_node(tensor)  # type: ignore
         return steady_state_workload
+
+    def calculate_operand_in_degree(self, successor, operand):
+        eq_node = next(n for n in self.workload.node_list if n.id == successor.id and n.sub_id == successor.sub_id)
+        # Get the number of in edges of this equivalent node that have the same operand
+        # TODO: If there are multiple successors, the total rolling buffer size is calculated.
+        in_edges = get_real_in_edges(eq_node, self.workload)
+        num_tensors = sum(1 for _, _, data in in_edges if "operand" in data and data["operand"] == operand)
+        if num_tensors != len(in_edges):
+            raise NotImplementedError(
+                f"Expected all in edges of {eq_node} to have the same operand {operand}, but got {in_edges}"
+            )
+
+        return num_tensors
 
     def check_steady_state_workload_allocations(self, steady_state_workload: SteadyStateWorkload) -> None:
         """

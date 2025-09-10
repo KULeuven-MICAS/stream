@@ -25,6 +25,7 @@ class SteadyStateRollingBuffer(SteadyStateTensor):
             operand=operand,
             steady_state_iteration_space=steady_state_iteration_space,
             possible_resource_allocation=possible_resource_allocation,
+            subviewtensor_inputs=base_tensor.get_inputs(),
         )
         self._base_tensor = base_tensor
         self._num_tensors = num_tensors
