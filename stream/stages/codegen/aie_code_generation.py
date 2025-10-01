@@ -8,6 +8,7 @@ from xdsl.dialects.builtin import MemRefType, ModuleOp
 from xdsl.ir import Operation, SSAValue
 from xdsl.irdl import Operand
 from xdsl.printer import Printer
+from xdsl_aie.dialects.aie import AIEDeviceEnum
 from zigzag.utils import DiGraphWrapper
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, Stream, TransferOp
@@ -23,7 +24,6 @@ from stream.workload.steady_state.tensor import SteadyStateTensor
 from stream.workload.steady_state.transfer import SteadyStateTransfer
 from stream.workload.steady_state.workload import SteadyStateWorkload
 
-from xdsl_aie.dialects.aie import AIEDeviceEnum
 
 class AIECodeGenerationStage(Stage):
     def __init__(
