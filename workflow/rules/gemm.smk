@@ -1,7 +1,6 @@
 # Build a lookup so rules can fetch per-profile trace_size based on {stream_hw_id}
 GEMM = config["gemm"]
 TRACE_SIZE = { v["stream_hw_id"]: v["trace_size"] for v in GEMM.values() }
-NPU = { v["stream_hw_id"]: v["npu"] for v in GEMM.values() }
 STREAM_MAIN_FILE = {v["stream_hw_id"]: v["stream_main_file"] for v in GEMM.values()}
 WARMUP = {v["stream_hw_id"]: v.get("warmup", 1) for v in GEMM.values()}
 ITERATIONS = {v["stream_hw_id"]: v.get("iterations", 5) for v in GEMM.values()}
@@ -11,7 +10,7 @@ rule run_stream_aie_to_generate_mlir_output:
         "outputs/{stream_hw_id}-gemm_{M}_{K}_{N}-{nb_rows}_row_{nb_cols}_col/output.mlir"
     params:
         trace_size = lambda wc: TRACE_SIZE[wc.stream_hw_id],
-        npu = lambda wc: NPU[wc.stream_hw_id],
+        npu = config["npu"],
         stream_main_file = lambda wc: STREAM_MAIN_FILE[wc.stream_hw_id]
     shell:
         """

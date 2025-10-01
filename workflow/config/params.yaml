@@ -1,9 +1,8 @@
 gemm:
-  single_core_npu1:
+  single_core:
     stream_hw_id: single_core
     stream_main_file: "main_gemm_single_core.py"
     trace_size: 1048576
-    npu: "npu1"
     m: 32
     k: 32
     n: 32
@@ -21,32 +20,10 @@ gemm:
     # Ks: [128]
     # Ns: [128]
 
-  single_core_npu2:
-    stream_hw_id: single_core
-    stream_main_file: "main_gemm_single_core.py"
-    trace_size: 1048576
-    npu: "npu2"
-    m: 32
-    k: 32
-    n: 32
-    nb_rows: 1
-    nb_cols: 1
-    warmup: 1
-    iterations: 5
-    Ms: [64,128,256]
-    Ks: [64,128,256]
-    Ns: [64,128,256]
-    # Ms: [32, 64, 96, 128, 160, 192, 224, 256]
-    # Ks: [256,]
-    # Ns: [256,]
-    # Ms: [128]
-    # Ks: [128]
-    # Ns: [128]
   single_col:
     stream_hw_id: single_col
     stream_main_file: "main_gemm_single_col.py"
     trace_size: 1048576
-    npu: "npu2"
     m: 32
     k: 32
     n: 32
@@ -68,7 +45,6 @@ gemm:
     stream_hw_id: whole_array
     stream_main_file: "main_gemm_whole_array.py"
     trace_size: 1048576
-    npu: "npu2"
     m: 32
     k: 32
     n: 32
