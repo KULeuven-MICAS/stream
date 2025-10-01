@@ -1437,7 +1437,7 @@ class StartDMAs(RewritePattern):
 
 
 @dataclass
-class SetKernelLayouts(RewritePattern):
+class SetKernelLayoutsNPU1(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: CallOp, rewriter: PatternRewriter):
         # handle the conv case
@@ -1510,6 +1510,94 @@ class SetKernelLayouts(RewritePattern):
                 [
                     TiledStride([Stride(16 * 32 // 4, 32 // 4), Stride(4, 4)]),
                     TiledStride([Stride(16, 32 // 4), Stride(1, 4)]),
+                ]
+            )
+            D_type_new = MemRefType(
+                D_type.element_type, D_type.shape, TiledStridedLayoutAttr(layout_D), D_type.memory_space
+            )
+            D_new = LayoutCast(D_operand, D_type_new)
+
+            rewriter.insert_op((A_new, B_new, D_new), InsertPoint.before(op))
+
+            op.operands[0] = A_new.results[0]
+            op.operands[1] = B_new.results[0]
+            op.operands[2] = D_new.results[0]
+
+
+@dataclass
+class SetKernelLayoutsNPU2(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: CallOp, rewriter: PatternRewriter):
+        # handle the conv case
+        if op.callee.root_reference.data == "conv2dk1_i8":
+            input = op.arguments[0]
+            output = op.arguments[2]
+            input_type = cast(MemRefType[Attribute], op.arguments[0].type)
+
+            if isinstance(input_type.layout, TiledStridedLayoutAttr):
+                return
+
+            input_layout = TiledStridedLayout(
+                [
+                    TiledStride([Stride(32 * 64, 1)]),  # N
+                    TiledStride([Stride(32 * 64, 1)]),  # G
+                    TiledStride([Stride(32 * 64, 1)]),  # H
+                    TiledStride([Stride(8, 32)]),  # W
+                    TiledStride([Stride(8 * 32, 8), Stride(1, 8)]),  # C
+                ]
+            )
+
+            input_type = MemRefType(
+                input_type.element_type, input_type.shape, TiledStridedLayoutAttr(input_layout), input_type.memory_space
+            )
+
+            new_input = LayoutCast(input, input_type)
+            new_output = LayoutCast(output, input_type)
+
+            rewriter.insert_op([new_input, new_output], InsertPoint.before(op))
+
+            op.operands[0] = new_input.results[0]
+            op.operands[2] = new_output.results[0]
+
+        if op.callee.root_reference.data == "matmul_i16_i32":
+            A_operand = op.operands[0]
+            A_type = cast(MemRefType[Attribute], op.arguments[0].type)
+            if isinstance(A_type.layout, TiledStridedLayoutAttr):
+                return
+            layout_A = TiledStridedLayout(
+                [
+                    TiledStride([Stride(16 * 32 // 4, 32 // 4), Stride(4, 4)]),
+                    TiledStride([Stride(16, 32 // 4), Stride(1, 4)]),
+                ]
+            )
+            A_type_new = MemRefType(
+                A_type.element_type, A_type.shape, TiledStridedLayoutAttr(layout_A), A_type.memory_space
+            )
+            A_new = LayoutCast(A_operand, A_type_new)
+
+            B_operand = op.operands[1]
+            B_type = cast(MemRefType[Attribute], op.arguments[1].type)
+            if isinstance(B_type.layout, TiledStridedLayoutAttr):
+                return
+            layout_B = TiledStridedLayout(
+                [
+                    TiledStride([Stride(32 * 32 // 8, 32 // 4), Stride(8, 4)]),
+                    TiledStride([Stride(32, 32 // 8), Stride(1, 8)]),
+                ]
+            )
+            B_type_new = MemRefType(
+                B_type.element_type, B_type.shape, TiledStridedLayoutAttr(layout_B), B_type.memory_space
+            )
+            B_new = LayoutCast(B_operand, B_type_new)
+
+            D_operand = op.operands[2]
+            D_type = cast(MemRefType[Attribute], op.arguments[2].type)
+            if isinstance(D_type.layout, TiledStridedLayoutAttr):
+                return
+            layout_D = TiledStridedLayout(
+                [
+                    TiledStride([Stride(32 * 32 // 8, 32 // 4), Stride(8, 4)]),
+                    TiledStride([Stride(32, 32 // 8), Stride(1, 8)]),
                 ]
             )
             D_type_new = MemRefType(
@@ -1784,7 +1872,8 @@ class ConvertStreamToAIEPass(ModulePass):
         ).rewrite_module(op)
 
         # handle layouts
-        PatternRewriteWalker(SetKernelLayouts()).rewrite_module(op)
+        # PatternRewriteWalker(SetKernelLayoutsNPU1()).rewrite_module(op)
+        PatternRewriteWalker(SetKernelLayoutsNPU2()).rewrite_module(op)
         PatternRewriteWalker(RealizeLayoutCats(object_fifo_manager)).rewrite_module(op)
 
         PatternRewriteWalker(InfinteLoopCol(), apply_recursively=False).rewrite_module(op)
