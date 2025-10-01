@@ -1797,10 +1797,11 @@ class ConvertStreamToAIEPass(ModulePass):
     def apply(self, ctx: MLContext, op: ModuleOp) -> None:
         # wrap everything in a device op
         #
+        npu = AIEDeviceEnum.npu2
 
         rewriter = Rewriter()
         device_op = DeviceOp(
-            IntegerAttr.from_int_and_width(AIEDeviceEnum.npu1.get_int(), 32),
+            IntegerAttr.from_int_and_width(npu.get_int(), 32),
             rewriter.move_region_contents_to_new_regions(op.body),
         )
         op.body.add_block(Block([device_op]))
@@ -1872,7 +1873,13 @@ class ConvertStreamToAIEPass(ModulePass):
         ).rewrite_module(op)
 
         # handle layouts
-        # PatternRewriteWalker(SetKernelLayoutsNPU1()).rewrite_module(op)
+        match npu:
+            case AIEDeviceEnum.npu1:
+                PatternRewriteWalker(SetKernelLayoutsNPU1()).rewrite_module(op)
+            case AIEDeviceEnum.npu2:
+                PatternRewriteWalker(SetKernelLayoutsNPU2()).rewrite_module(op)
+            case _:
+                raise NotImplementedError(f"npu {npu} not supported")
         PatternRewriteWalker(SetKernelLayoutsNPU2()).rewrite_module(op)
         PatternRewriteWalker(RealizeLayoutCats(object_fifo_manager)).rewrite_module(op)
 
