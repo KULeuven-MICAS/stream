@@ -3,6 +3,7 @@ gemm:
     stream_hw_id: single_core
     stream_main_file: "main_gemm_single_core.py"
     trace_size: 1048576
+    npu: "npu2"
     m: 32
     k: 32
     n: 32
@@ -24,6 +25,7 @@ gemm:
     stream_hw_id: single_col
     stream_main_file: "main_gemm_single_col.py"
     trace_size: 1048576
+    npu: "npu2"
     m: 32
     k: 32
     n: 32
@@ -45,6 +47,7 @@ gemm:
     stream_hw_id: whole_array
     stream_main_file: "main_gemm_whole_array.py"
     trace_size: 1048576
+    npu: "npu2"
     m: 32
     k: 32
     n: 32

@@ -11,7 +11,7 @@ _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
 
 
-def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_rows, nb_cols):  # noqa: N803, PLR0913
+def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_rows, nb_cols, npu):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
     workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
@@ -65,6 +65,7 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
         skip_if_exists=False,
         enable_codegen=True,
         trace_size=trace_size,
+        npu=npu,
     )
 
     # #####################CostModelEvaluationLUT LOAD#############################
@@ -92,6 +93,7 @@ if __name__ == "__main__":
     parser.add_argument("--trace_size", type=int, default=1048576, help="Size of the trace buffer (default: 1048576)")
     parser.add_argument("--rows", type=int, default=1, help="Number of AIE rows to use (has to be 1)")
     parser.add_argument("--cols", type=int, default=1, help="Number of AIE columns to use (default: 1)")
+    parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
     args = parser.parse_args()
     assert args.rows == 1, "This script only supports 1 AIE row. Use main_gemm_single_col.py for more than 1 row."
     assert args.cols == 1, (
@@ -110,4 +112,5 @@ if __name__ == "__main__":
         args.trace_size,
         args.rows,
         args.cols,
+        args.npu,
     )

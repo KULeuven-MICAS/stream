@@ -1794,10 +1794,11 @@ class InfinteLoopCol(RewritePattern):
 class ConvertStreamToAIEPass(ModulePass):
     name = "convert-stream-to-aie"
 
-    def apply(self, ctx: MLContext, op: ModuleOp) -> None:
+    def apply(self, ctx: MLContext, op: ModuleOp, npu: str) -> None:
         # wrap everything in a device op
         #
-        npu = AIEDeviceEnum.npu2
+
+        npu = AIEDeviceEnum.npu2 if npu == "npu2" else AIEDeviceEnum.npu1
 
         rewriter = Rewriter()
         device_op = DeviceOp(

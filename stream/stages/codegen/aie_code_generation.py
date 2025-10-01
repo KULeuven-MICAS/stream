@@ -23,6 +23,7 @@ from stream.workload.steady_state.tensor import SteadyStateTensor
 from stream.workload.steady_state.transfer import SteadyStateTransfer
 from stream.workload.steady_state.workload import SteadyStateWorkload
 
+from xdsl_aie.dialects.aie import AIEDeviceEnum
 
 class AIECodeGenerationStage(Stage):
     def __init__(
@@ -42,13 +43,14 @@ class AIECodeGenerationStage(Stage):
         self.output_path: str = kwargs["codegen_path"]
 
         self.trace_size = kwargs.get("trace_size", 1048576)
+        self.npu = kwargs.get("npu", "npu2")
 
     def run(self):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **self.kwargs)
 
         for cme, extra_info in sub_stage.run():
             if cme:
-                self.codegen_main(cme, self.trace_size)
+                self.codegen_main(cme, self.trace_size, self.npu)
             yield cme, extra_info
 
     def create_edge_op(
@@ -244,7 +246,7 @@ class AIECodeGenerationStage(Stage):
 
         return module
 
-    def codegen_main(self, cme: SteadyStateScheduler, trace_size: int) -> None:
+    def codegen_main(self, cme: SteadyStateScheduler, trace_size: int, npu: AIEDeviceEnum) -> None:
         workload = cme.steady_state_workload
         assert workload is not None
 
@@ -255,7 +257,7 @@ class AIECodeGenerationStage(Stage):
         StreamSplitTransfersPass().apply(self.context, module)
 
         # Convert to AIE
-        ConvertStreamToAIEPass().apply(self.context, module)
+        ConvertStreamToAIEPass().apply(self.context, module, npu)
 
         # Remove custom layout attributes
         ClearMemorySpace().apply(self.context, module)
