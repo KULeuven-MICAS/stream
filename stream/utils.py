@@ -4,6 +4,7 @@ import pprint
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from numpy.typing import NDArray
+from onnx import ModelProto, numpy_helper
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
 from zigzag.mapping.data_movement import FourWayDataMoving
@@ -212,3 +213,12 @@ class CostModelEvaluationLUT:
         """! Removes cores with the same id as core for node from the look-up table."""
         if node in self.lut:
             self.lut[node] = {c: v for c, v in self.lut[node].items() if c.id != core.id}
+
+
+def get_value(name: str, model: ModelProto):
+    for init in model.graph.initializer:
+        if init.name == name:
+            return numpy_helper.to_array(init)
+    for constant in model.graph.value_info:
+        if constant.name == name:
+            return [element.dim_value for element in constant.type.tensor_type.shape.dim]

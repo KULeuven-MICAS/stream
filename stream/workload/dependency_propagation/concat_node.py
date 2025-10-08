@@ -15,9 +15,10 @@ class ConcatConstantNode(PropagationNode):
         node_name: str,
         predecessors: list[int],
         axis: int,
-        constant_shape: tuple[int, ...],
-        variable_input_first: bool,
         input_names: list[str] | None = None,
+        state: tuple[str, bool] = ("constant", False),
+        input_1_shape: tuple[int, ...] = None,
+        input_2_shape: tuple[int, ...] = None,
     ) -> None:
         """Initialize the ConcatConstantNode
 
@@ -28,23 +29,38 @@ class ConcatConstantNode(PropagationNode):
             variable_input_first: Wether the result is `concat(input, constant_tensor)` or
                 `concat(constant_tensor, input)`
         """
+        mode, variable_input_first = state
+
         if input_names is None:
             input_names = []
         op_type = "concat"
         super().__init__(node_id, node_name, op_type, input_names)
 
         self.axis = axis
-        self.constant_shape = constant_shape
+        if mode == "constant":
+            self.constant_shape = input_2_shape if variable_input_first else input_1_shape
         self.variable_input_first = variable_input_first
-
+        self.predecessors = predecessors
+        self.input_1_shape = input_1_shape
+        self.input_2_shape = input_2_shape
+        self.mode = mode
         match len(predecessors):
             case 0:
                 self.input_operand_source = {}
             case 1:
                 self.input_operand_source = {LayerOperand("I"): predecessors[0]}
             case 2:
-                # `indices` (the second input) are considered as inputs
-                self.input_operand_source = {LayerOperand("W"): predecessors[0], LayerOperand("I"): predecessors[1]}
+                if mode == "constant":
+                    # `indices` (the second input) are considered as inputs
+                    self.input_operand_source = {
+                        LayerOperand("W"): predecessors[1 if variable_input_first else 0],
+                        LayerOperand("I"): predecessors[0 if variable_input_first else 1],
+                    }
+                else:
+                    self.input_operand_source = {
+                        LayerOperand(f"I{0}"): predecessors[0],
+                        LayerOperand(f"I{1}"): predecessors[1],
+                    }
             case _:
                 raise ValueError("More than two inputs for ConcatConstantNode")
 
@@ -59,9 +75,21 @@ class ConcatConstantNode(PropagationNode):
         if relevant_axes is None:
             relevant_axes = [False] * len(tensor.tensor_shape)
         relevant_axes[self.axis] = True
-        extended_tensor = tensor.concat_with_empty(
-            shape=self.constant_shape, axis=self.axis, variable_input_first=self.variable_input_first
-        )
+
+        if self.mode == "constant":
+            extended_tensor = tensor.concat_with_empty(
+                shape=self.constant_shape, axis=self.axis, variable_input_first=self.variable_input_first
+            )
+        elif previous_node.id == self.predecessors[0]:
+            extended_tensor = tensor.concat_with_empty(
+                shape=self.input_2_shape, axis=self.axis, variable_input_first=self.variable_input_first
+            )
+        elif previous_node.id == self.predecessors[1]:
+            extended_tensor = tensor.concat_with_empty(
+                shape=self.input_1_shape, axis=self.axis, variable_input_first=self.variable_input_first
+            )
+        else:
+            raise ValueError
         return extended_tensor, relevant_axes
 
 

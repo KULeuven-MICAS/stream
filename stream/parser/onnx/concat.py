@@ -26,27 +26,34 @@ class ConcatParser(OnnxOperatorParser):
 
         input_1, input_2 = self.node.input[0], self.node.input[1]
 
-        try:  # Try first one as constant input
-            constant_tensor = get_onnx_tensor_type(input_1, self.onnx_model)
-            if constant_tensor.category != OnnxTensorCategory.HIDDEN or "constant" not in input_1.lower():
-                raise ValueError
+        input_1_tensor = get_onnx_tensor_type(input_1, self.onnx_model)
+        input_2_tensor = get_onnx_tensor_type(input_2, self.onnx_model)
 
-            constant_shape = tuple(constant_tensor.shape)
+        input_1_shape = tuple(input_1_tensor.shape)
+        input_2_shape = tuple(input_2_tensor.shape)
+
+        # Find if any input is constant and update the state with it
+        if input_1_tensor.category is OnnxTensorCategory.CONSTANT:
             variable_input_first = True
-        except ValueError as exc:  # Try second one as constant input
-            constant_tensor = get_onnx_tensor_type(input_2, self.onnx_model)
-            if constant_tensor.category != OnnxTensorCategory.HIDDEN or "constant" not in input_2.lower():
-                raise ValueError("Second input is not a constant tensor") from exc
+            mode = "constant"
+        elif input_2_tensor.category is OnnxTensorCategory.CONSTANT:
+            variable_input_first = False
+            mode = "constant"
+        elif (
+            input_2_tensor.category is OnnxTensorCategory.HIDDEN
+            and input_1_tensor.category is OnnxTensorCategory.HIDDEN
+        ):
+            variable_input_first = False
+            mode = "variable"
 
-            constant_shape = tuple(constant_tensor.shape)
-            variable_input_first = True
-
+        state = (mode, variable_input_first)
         return ConcatConstantNode(
             node_id=self.node_id,
             node_name=self.node.name,
             predecessors=predecessors,
             axis=axis,
-            constant_shape=constant_shape,
-            variable_input_first=variable_input_first,
             input_names=input_names,
+            state=state,
+            input_1_shape=input_1_shape,
+            input_2_shape=input_2_shape,
         )

@@ -1,3 +1,4 @@
+import numpy as np
 from zigzag.datatypes import LayerOperand
 
 from stream.node_tensor import NodeTensor
@@ -50,8 +51,16 @@ class GatherNode(PropagationNode):
         relevant_axes: list[bool] | None = None,
     ) -> tuple[NodeTensor, list[bool]]:
         """Perform gather operation on the tensor."""
+        new_rank = len(tensor.tensor_shape) + (np.array(self.gather_indices).ndim - 1)
         if relevant_axes is None:
-            relevant_axes = [False] * len(tensor.tensor_shape)
-        relevant_axes[self.gather_axis] = True
+            relevant_axes = [False] * new_rank
+
+        if len(relevant_axes) < new_rank:
+            relevant_axes.insert(self.gather_axis, [True] * (new_rank - len(relevant_axes)))
+            for i in range(0, np.array(self.gather_indices).ndim):
+                relevant_axes[self.gather_axis + i] = True
+        if len(relevant_axes) > new_rank:
+            # Can happen when gather_indices is a scalar
+            del relevant_axes[self.gather_axis]
 
         return tensor.gather(self.gather_indices, axis=self.gather_axis), relevant_axes

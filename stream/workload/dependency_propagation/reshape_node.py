@@ -55,29 +55,11 @@ class ReshapeNode(PropagationNode):
         return tensor.reshape(new_shape), relevant_axes
 
     def update_relevant_axes(self, relevant_axes: list[bool], old_shape: tuple[int, ...], new_shape: tuple[int, ...]):
-        if len(new_shape) < len(old_shape):
-            # We need to cut an axis
-            try:
-                axis_to_cut = next(i for i in range(len(new_shape)) if old_shape[i] != new_shape[i])
-            except StopIteration:
-                axis_to_cut = len(old_shape) - 1
-
-            new_shape_list = list(new_shape)
-            del relevant_axes[axis_to_cut]
-            del new_shape_list[axis_to_cut]
-
-            for idx, (old_dim, new_dim) in enumerate(zip(old_shape, new_shape_list, strict=False)):
-                if old_dim != new_dim:
-                    relevant_axes[idx] = True
-
-            return relevant_axes
-
-        if len(new_shape) > len(old_shape):
-            # We need to add an axes
-            relevant_axes.append(new_shape[-1] != old_shape[-1])
+        new_relevant_axes = len(new_shape) * [False]
 
         for idx, (old_dim, new_dim) in enumerate(zip(old_shape, new_shape, strict=False)):
+            new_relevant_axes[idx] = relevant_axes[idx] if idx < len(relevant_axes) else False
             if old_dim != new_dim:
-                relevant_axes[idx] = True
+                new_relevant_axes[idx] = True
 
-        return relevant_axes
+        return new_relevant_axes

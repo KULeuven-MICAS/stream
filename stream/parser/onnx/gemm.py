@@ -1,7 +1,15 @@
 import logging
+from collections.abc import Generator
 from typing import Any
 
+from zigzag.parser.onnx.utils import (
+    get_attribute_ints_with_name,
+    get_node_input_output_dimension_shapes,
+)
+from zigzag.parser.workload_factory import LayerNodeFactory
+
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.mapping import InterCoreMappingAttributes
 
 logger = logging.getLogger(__name__)
@@ -9,6 +17,35 @@ logger = logging.getLogger(__name__)
 
 class GemmParser(OnnxComputeOperatorParser):
     """Parses an ONNX Gemm operator into a ComputationNode"""
+
+    def run(self) -> Generator[ComputationNode, None, None]:  # type: ignore
+        yield self.generate_node()
+
+    def generate_node(self):
+        # Get the input and output activation shapes
+        input_shape, output_shape = get_node_input_output_dimension_shapes(self.node, self.onnx_model)
+        transpose_first_input = get_attribute_ints_with_name("transA", self.node.attribute, default=0)
+        if transpose_first_input:
+            NUM_INPUTS_EXPECTED = 2
+            assert len(input_shape) == NUM_INPUTS_EXPECTED, (
+                "Transpose only supported for GEMMs with two input dimensions"
+            )
+            input_shape = [input_shape[1], input_shape[0]]
+
+        logger.info("%s node name %s input shape %s output shape", self.node.name, input_shape, output_shape)
+        # From the ONNX node
+        mapping = self.get_mapping_this_node()
+        node_data = self.get_layer_node_user_format(input_shape, output_shape, mapping)
+        node_factory = LayerNodeFactory(node_data, mapping_data=[])
+        node_attrs = node_factory.create_node_attr()
+
+        return ComputationNode(
+            node_id=self.node_id,
+            node_name=self.node.name,
+            op_type=self.node.op_type,
+            node_attr=node_attrs,
+            mapping_attr=mapping,
+        )
 
     DEFAULT_LAYER_DIMENSIONS = ["B", "H", "D", "C", "K"]
 

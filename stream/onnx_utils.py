@@ -93,8 +93,23 @@ def get_axis_attribute(node: NodeProto):
 
 
 def get_split_attribute(node: NodeProto, onnx_model: ModelProto):
-    output_name = next(n for n in node.input if "split" in n.lower())
-    return get_constant_tensor_int(onnx_model, output_name)
+    if len(node.input) > 1 and node.input[1] != "":
+        split_name = node.input[1]
+    else:
+        return None
+
+    # Check if the split is in the onnx inputs or the onnx initializers
+    try:
+        splits = get_constant_tensor_int(onnx_model, split_name)
+        return splits
+    except Exception:
+        print(f"Split Input of node {node.name} not in onnx_model.graph.inputs")
+
+    try:
+        splits = next(filter(lambda x: x.name == split_name, onnx_model.graph.initializer))
+        return numpy_helper.to_array(splits)
+    except Exception:
+        print(f"Split Input of node {node.name} not in Inputs or Initializers")
 
 
 def get_slice_attributes(node: NodeProto, onnx_model: ModelProto):

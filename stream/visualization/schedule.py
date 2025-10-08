@@ -46,9 +46,9 @@ def _set_matplotlib_rc(nb_layers: int) -> None:
 
 
 def _get_latency_energy_edp(scme):
-    latency = scme.latency
+    latency = int(scme.latency)
     assert isinstance(latency, int), f"Latency should be an integer, got {type(latency)}."
-    energy = scme.energy
+    energy = float(scme.energy)
     assert isinstance(energy, float), f"Energy should be a float, got {type(energy)}."
     edp = latency * energy
     return latency, energy, edp

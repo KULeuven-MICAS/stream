@@ -133,7 +133,6 @@ class NodeTensor(np.ndarray[Any, Any]):
             axes = [(i - 1 if i < 0 else i) for i in axes]
             # Leave last dimension unchanged
             axes = axes + [len(self.tensor_shape)]
-
         return (np.transpose(self.as_ndarray(), axes=axes)).view(NodeTensor)
 
     def gather(self, gather_indices: int | list[int], axis: int) -> "NodeTensor":
@@ -161,6 +160,16 @@ class NodeTensor(np.ndarray[Any, Any]):
             return np.concat((empty_tensor, self.as_ndarray()), axis=axis).view(NodeTensor)
         else:
             return np.concat((self.as_ndarray(), empty_tensor), axis=axis).view(NodeTensor)
+
+    def pad(self, padding: list[int]) -> "NodeTensor":
+        # We take into account that the last dimension is reserved for nodes, so we must pad the other dimensions
+        return np.pad(self.as_ndarray(), padding + [(0, 0)]).view(NodeTensor)  # No padding for the last dimension
+
+    def unsqueeze(self, axes: list[int]) -> "NodeTensor":
+        return np.expand_dims(self.as_ndarray(), axes).view(NodeTensor)
+
+    def squeeze(self, axes: list[int]) -> "NodeTensor":
+        return np.squeeze(self.as_ndarray(), axes).view(NodeTensor)
 
     def concat_with_empty_both_sides(
         self, output_shape: tuple[int, ...], axis: int, slice_idx: int, axis_exists_in_input: bool = False

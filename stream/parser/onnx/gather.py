@@ -28,6 +28,7 @@ class GatherParser(OnnxOperatorParser):
 
         # `indices` is the second input to the node
         indices_tensor_name = self.node.input[1]
+        # Try to find the indices in the graph nodes first
         try:
             indices_tensor = next(
                 filter(
@@ -38,6 +39,14 @@ class GatherParser(OnnxOperatorParser):
             indices_array = numpy_helper.to_array(indices_attr.t)  # type: ignore
             indices = list(indices_array) if len(indices_array.shape) > 0 else DEFAULT  # type: ignore
         except StopIteration:
-            indices = DEFAULT
+            # Try to find the indices in the initializers
+            try:
+                indices_tensor = next(
+                    filter(lambda x: x.name == indices_tensor_name, self.onnx_model.graph.initializer)
+                )
+                indices_array = numpy_helper.to_array(indices_tensor)
+                indices = list(indices_array) if len(indices_array.shape) > 0 else DEFAULT
+            except StopIteration:
+                indices = DEFAULT
 
         return indices

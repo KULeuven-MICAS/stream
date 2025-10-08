@@ -22,6 +22,7 @@ from stream.utils import contains_wildcard, get_inter_core_tiling_size
 from stream.workload.computation.computation_node import LOOP_RANGES_T, ComputationNode, GeneratedComputationNode
 from stream.workload.dependency_propagation.dummy_node import DummyNode
 from stream.workload.dependency_propagation.propagation_node import PropagationNode
+from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.node import Node
 from stream.workload.onnx_workload import ComputationNodeWorkload, ONNXWorkload
 from stream.workload.tensor import Tensor
@@ -217,14 +218,11 @@ class TiledWorkloadGenerationStage(Stage):
 
             # Now we have all ComputationNode successors
             for successor in successors:
-                assert isinstance(successor, ComputationNode), f"Successor {successor} is not a ComputationNode."
-                intermediates = g.shortest_path(node, successor)[1:-1]
+                intermediates = get_non_compute_shortest_path(g, node, successor)
+                if intermediates is None:
+                    raise ValueError("No valid Path found between two ComputationNodes. ")
                 complex_pair = False
-                for intermediate in intermediates:
-                    if isinstance(intermediate, ComputationNode):
-                        raise ValueError(
-                            "Intermediate node between two ComputationNodes should not be a ComputationNode."
-                        )
+                for intermediate in intermediates[1:-1]:
                     if not isinstance(intermediate, DummyNode):
                         complex_pair = True
                 pairs.append((node, successor, complex_pair))
@@ -759,7 +757,6 @@ class TiledWorkloadGenerationStage(Stage):
                 p_bounding_box = self.get_bounding_box_dimensions(
                     producer, consumer, producer_r_dims_output, p_inclusive_ranges
                 )
-
                 # Get the consumer tile ids that intersect with this producer tile
                 intersecting_consumer_node_ids = consumer_tree.intersection(p_bounding_box)
 
@@ -886,6 +883,7 @@ class TiledWorkloadGenerationStage(Stage):
         """
         inter_edges: set[tuple[ComputationNode, ComputationNode]] = set()
         dims = final_node.operand_dimensionality_order[op]
+
         assert len(dims) == len(relevant_axes)
         for consumer_tile in self.tiles_dict[final_node]:
             relevant_loop_ranges = [consumer_tile.loop_ranges[dim] for dim in dims]
@@ -1022,7 +1020,108 @@ class TiledWorkloadGenerationStage(Stage):
         new_workload.add_edges_from(edges)
         return new_workload
 
+    def get_weight_capacities(self):
+        # Get the weight capacity of all cores
+        weight_capacities: dict[int, int] = {}
+        for core in self.accelerator.cores.node_list:
+            if core.id == self.accelerator.offchip_core_id:
+                continue  # skip offchip core
+            core_weight_capacity = core.memory_hierarchy.get_operand_top_level(Constants.MEM_OP_2).memory_instance.size
+            weight_capacities[core.id] = core_weight_capacity
+        return weight_capacities
+
+    def get_layer_split_factors_k(self):
+        # Get for each layer the split factor we need to be able to fit weights on possible cores
+        split_factors: dict[ComputationNode, int] = {}
+        for node in self.workload.node_list:
+            if isinstance(node, DummyNode):
+                continue
+            # Get the weight capacity of all possible core allocations of this node
+            core_allocations = node.possible_core_allocation
+            # for fixed single allocation don't consider the splitting
+            if len(core_allocations) == 1:
+                continue
+            core_capacities = [self.weight_capacities[core_id] for core_id in core_allocations]
+            min_core_capacity = min(core_capacities)
+            # Get the weight size of this layer
+            constant_operands = node.constant_operands
+            if not constant_operands:
+                continue
+
+            constant_operand = node.constant_operands[0]
+            weight_size = node.operand_size_bit[constant_operand]
+            if weight_size == 0:
+                continue
+            split_factor = ceil(weight_size / (self.split_W_percentage * min_core_capacity))  # 0.5 for double buffering
+            if split_factor == 1:
+                continue
+            # Check if the split_factor is a divisor of the number of output channels
+            try:
+                output_channels = node.layer_dim_sizes[LayerDim("K")]
+            except KeyError:
+                raise NotImplementedError(f"{node} doesn't have a 'K' loop.") from KeyError
+            while divmod(output_channels, split_factor)[1] != 0:
+                split_factor += 1
+                if split_factor > output_channels:
+                    raise ValueError("Something went wrong.")
+            split_factors[node] = split_factor
+        return split_factors
+
     def load_cached_tiled_workload(self) -> ComputationNodeWorkload | None:
         if os.path.exists(self.tiled_workload_path):
             return pickle_load(self.tiled_workload_path)
         return None
+
+
+# Function that find the shortest path between nodes that does not have ComputationNodes in between.
+def get_non_compute_shortest_path(
+    g: DNNWorkloadStream, producer: ComputationNode, consumer: ComputationNode
+) -> list[Node]:
+    """
+    Perform BFS recursively to find the shortest path between two nodes in a graph,
+    ensuring the path does not contain any ComputationNode as intermediate nodes.
+
+    Args:
+        G (DNNWorkloadStream): The graph to search.
+        producer (ComputationNode): The starting node.
+        consumer (ComputationNode): The target node.
+
+    Returns:
+        list[Node]: The shortest path from producer to consumer without ComputationNode intermediates.
+    """
+
+    def bfs_recursive(queue, visited):
+        # Base case: if the queue is empty, return None (no path found)
+        if not queue:
+            return None
+
+        # Dequeue the first element
+        current_node, path = queue.pop(0)
+        # If we reach the consumer node, return the path
+        if current_node == consumer:
+            return path
+
+        # Mark the current node as visited
+        visited.add(current_node)
+
+        # Explore neighbors
+        for neighbor in g.neighbors(current_node):
+            # If we reach the consumer node, return the path
+            if neighbor == consumer:
+                return path + [neighbor]
+            # Skip visited nodes and ComputationNodes
+            if neighbor in visited or isinstance(neighbor, ComputationNode):
+                continue
+
+            # Add the neighbor to the queue with the updated path
+            queue.append((neighbor, path + [neighbor]))
+
+        # Recursive call with the updated queue and visited set
+        return bfs_recursive(queue, visited)
+
+    # Initialize the queue and visited set
+    queue = [(producer, [producer])]
+    visited = set()
+
+    # Start the recursive BFS
+    return bfs_recursive(queue, visited)
