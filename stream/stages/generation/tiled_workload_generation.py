@@ -345,6 +345,7 @@ class TiledWorkloadGenerationStage(Stage):
 
         tiles: list[ComputationNode] = []
         tensors: list[SubviewTensor] = []
+        tensor_by_hash: dict[int, SubviewTensor] = {}
         group_id_manager = GroupIdManager(
             layer_dim_sizes=original_node.extended_layer_dim_sizes,
             intra_core_tiling=original_node.intra_core_tiling,
@@ -379,7 +380,7 @@ class TiledWorkloadGenerationStage(Stage):
                 tensor = tile.operand_tensors[constant_operand]
                 tensor.set_base_priorities(tensor_reuse_factors[constant_operand][n])
 
-            tensors = self._replace_identical_tensors(tile, tensors)
+            tensors, tensor_by_hash = self._replace_identical_tensors(tile, tensors, tensor_by_hash)
             tile.data_produced_unique = self._get_data_produced_unique(tile)
             self._set_core_allocation_for_tile(tile, group_id, original_node)
             tiles.append(tile)
@@ -493,18 +494,23 @@ class TiledWorkloadGenerationStage(Stage):
         original_node_output_ir_dims = node.loop_relevancy_info.get_ir_layer_dims(Constants.OUTPUT_LAYER_OP)
         return all([dim_min_max[dim][1] >= node.layer_dim_sizes[dim] for dim in original_node_output_ir_dims])
 
-    def _replace_identical_tensors(self, tile: ComputationNode, previous_tensors: list[SubviewTensor]):
+    def _replace_identical_tensors(
+        self,
+        tile: ComputationNode,
+        previous_tensors: list[SubviewTensor],
+        tensor_by_hash: dict[int, SubviewTensor],
+    ) -> tuple[list[SubviewTensor], dict[int, SubviewTensor]]:
         """Replace any of the tensors with identical tensors of previous tiles.
-        If no identical tensor is found, add the tensor to the list of previous tensors."""
+        If no identical tensor is found, add the tensor to the list and map."""
         for op, tensor in tile.operand_tensors.items():
-            replaced = False
-            for previous_tensor in previous_tensors:
-                if tensor.equality_hash == previous_tensor.equality_hash:
-                    tile.operand_tensors[op] = previous_tensor
-                    replaced = True
-            if not replaced:
+            key = tensor.equality_hash()
+            canonical = tensor_by_hash.get(key)
+            if canonical is not None:
+                tile.operand_tensors[op] = canonical
+            else:
                 previous_tensors.append(tensor)
-        return previous_tensors
+                tensor_by_hash[key] = tensor
+        return previous_tensors, tensor_by_hash
 
     def _get_data_produced_unique(self, tile: ComputationNode):
         """Compute the output data produced by each tile, assuming that all the data produced by different CNs unique"""

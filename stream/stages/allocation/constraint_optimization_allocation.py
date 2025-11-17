@@ -27,7 +27,7 @@ from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
 from stream.workload.onnx_workload import ComputationNodeWorkload
 from stream.workload.steady_state.computation import SteadyStateComputation
-from stream.workload.utils import get_real_successors
+from stream.workload.utils import get_real_predecessors, get_real_successors
 
 logger = logging.getLogger(__name__)
 
@@ -379,10 +379,23 @@ class ConstraintOptimizationAllocationStage(Stage):
         to_compute_unique: dict[tuple[ComputationNode, ...], set[ComputationNode]] = {}
         hashes_per_sink_pair: dict[tuple[ComputationNode, ...], int] = {}
 
+        # Dynamic programming cache for the ancestors of each node
+        logger.info(f"Building ancestors cache for the subgraph of stack {stack}.")
+        ancestors_cache: dict[ComputationNode, set[ComputationNode]] = {}
+        for node in nx.topological_sort(sg):
+            # direct parents in original graph
+            parents = set(get_real_predecessors(node, sg))
+            # union of all parents + their ancestors
+            anc = set(parents)
+            for p in parents:
+                anc |= ancestors_cache[p]
+            ancestors_cache[node] = anc
+        logger.info(f"Finished building ancestors cache for the subgraph of stack {stack}.")
+
         for sink_nodes in grouped_sink_nodes:
             needed_compute = set()
             for sink_node in sink_nodes:
-                needed_compute |= nx.ancestors(sg, sink_node) | {sink_node}  # type: ignore
+                needed_compute |= ancestors_cache[sink_node] | {sink_node}  # type: ignore
             to_compute: set[ComputationNode] = needed_compute - computed  # type: ignore
             to_compute_unique[sink_nodes] = to_compute
             to_compute_ids = [n.id for n in to_compute]
