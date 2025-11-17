@@ -173,3 +173,6 @@ stream/inputs/aie/mapping/gemm_*.yml
 stream/inputs/aie/workload/two_conv_*.onnx
 stream/inputs/aie/mapping/two_conv_*.yaml
 stream/inputs/aie/mapping/two_conv_*.yml
+
+# svg files (e.g. flamegraphs)
+*.svg
