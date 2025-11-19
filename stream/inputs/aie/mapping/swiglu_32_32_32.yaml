@@ -1,0 +1,43 @@
+- name: Gemm_Left
+  core_allocation: &id004
+  - 2
+  intra_core_tiling: &id001
+  - C, 1
+  - D, 32
+  - K, 1
+  inter_core_tiling: &id002
+  - K, 1
+  kernel: &id003
+    name: mm_1x32x32
+    utilization: 61.8
+- name: Gemm_Right
+  core_allocation:
+  - 3
+  intra_core_tiling: *id001
+  inter_core_tiling: *id002
+  kernel: *id003
+- name: Silu
+  core_allocation:
+  - 4
+  intra_core_tiling:
+  - H, 1
+  - B, 32
+  inter_core_tiling: *id002
+  kernel:
+    name: silu_bf16
+    utilization: 50.0
+- name: Elt_Mul
+  core_allocation:
+  - 5
+  intra_core_tiling:
+  - H, 1
+  - B, 32
+  inter_core_tiling: *id002
+  kernel:
+    name: elemwise_mul_bf16
+    utilization: 50.0
+- name: default
+  core_allocation: *id004
+  intra_core_tiling: *id001
+  inter_core_tiling: *id002
+  kernel: *id003

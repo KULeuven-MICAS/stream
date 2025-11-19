@@ -1,7 +1,7 @@
 # transfer_and_tensor_allocator.py
 import math
 from collections import defaultdict
-from math import ceil
+from math import ceil, prod
 from typing import Any
 
 import gurobipy as gp
@@ -150,19 +150,24 @@ class TransferAndTensorAllocator:
         Ensure that all transfers have the same steady-state iteration space dimensions and sizes (SSIS).
         """
         first_transfer_ssis = self.transfer_nodes[0].steady_state_iteration_space
-        first_transfer_ssis_dims = first_transfer_ssis.get_temporal_dimensions()
+        # first_transfer_ssis_dims = first_transfer_ssis.get_temporal_dimensions()
         first_transfer_ssis_sizes = first_transfer_ssis.get_temporal_sizes()
+        first_transfer_ssis_total_size = prod(first_transfer_ssis_sizes)
         for tr in self.transfer_nodes:
             transfer_ssis = tr.steady_state_iteration_space
-            transfer_ssis_dims = transfer_ssis.get_temporal_dimensions()
+            # transfer_ssis_dims = transfer_ssis.get_temporal_dimensions()
             transfer_ssis_sizes = transfer_ssis.get_temporal_sizes()
-            if not (
-                transfer_ssis_dims == first_transfer_ssis_dims and transfer_ssis_sizes == first_transfer_ssis_sizes
-            ):
+            transfer_ssis_total_size = prod(transfer_ssis_sizes)
+            # if not (
+            #     transfer_ssis_dims == first_transfer_ssis_dims and transfer_ssis_sizes == first_transfer_ssis_sizes
+            # ):
+            if transfer_ssis_total_size != first_transfer_ssis_total_size:
                 raise ValueError(
-                    f"Transfer {tr.node_name} has different SSIS dims and sizes than the {self.transfer_nodes[0]}: "
-                    f"{transfer_ssis_dims}, {transfer_ssis_sizes} != "
-                    f"{first_transfer_ssis_dims}, {first_transfer_ssis_sizes}"
+                    # f"Transfer {tr.node_name} has different SSIS dims and sizes than the {self.transfer_nodes[0]}: "
+                    # f"{transfer_ssis_dims}, {transfer_ssis_sizes} != "
+                    # f"{first_transfer_ssis_dims}, {first_transfer_ssis_sizes}"
+                    f"Transfer {tr.node_name} has different SSIS total size than the {self.transfer_nodes[0]}: "
+                    f"{transfer_ssis_total_size} != {first_transfer_ssis_total_size}"
                 )
 
     def _init_transfer_fire_helpers(self) -> None:

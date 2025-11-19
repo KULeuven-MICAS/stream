@@ -117,6 +117,9 @@ class TiledWorkloadGenerationStage(Stage):
         self.numpy_tensors: dict[tuple[ComputationNode, LayerOperand], NodeTensor] = {}
         self.tiled_workload_path = tiled_workload_path
 
+        # Memoize the already seen tensors for operand_tensors
+        self.tensor_by_hash: dict[int, SubviewTensor] = {}
+
     def run(self):
         all_unique_tiles: list[ComputationNode] = []
         # For each node get all the tiles and the edges between them
@@ -344,8 +347,6 @@ class TiledWorkloadGenerationStage(Stage):
         mult_factors = self._get_multiplication_factors(outer_temporal_loops, tile_span)
 
         tiles: list[ComputationNode] = []
-        tensors: list[SubviewTensor] = []
-        tensor_by_hash: dict[int, SubviewTensor] = {}
         group_id_manager = GroupIdManager(
             layer_dim_sizes=original_node.extended_layer_dim_sizes,
             intra_core_tiling=original_node.intra_core_tiling,
@@ -380,7 +381,7 @@ class TiledWorkloadGenerationStage(Stage):
                 tensor = tile.operand_tensors[constant_operand]
                 tensor.set_base_priorities(tensor_reuse_factors[constant_operand][n])
 
-            tensors, tensor_by_hash = self._replace_identical_tensors(tile, tensors, tensor_by_hash)
+            self._replace_identical_tensors(tile)
             tile.data_produced_unique = self._get_data_produced_unique(tile)
             self._set_core_allocation_for_tile(tile, group_id, original_node)
             tiles.append(tile)
@@ -497,20 +498,18 @@ class TiledWorkloadGenerationStage(Stage):
     def _replace_identical_tensors(
         self,
         tile: ComputationNode,
-        previous_tensors: list[SubviewTensor],
-        tensor_by_hash: dict[int, SubviewTensor],
-    ) -> tuple[list[SubviewTensor], dict[int, SubviewTensor]]:
+    ) -> None:
         """Replace any of the tensors with identical tensors of previous tiles.
-        If no identical tensor is found, add the tensor to the list and map."""
+        If no identical tensor is found, add the tensor to the list and map.
+        This will also replace tensors across different layers,
+        for example two layers that have the same input activations."""
         for op, tensor in tile.operand_tensors.items():
             key = tensor.equality_hash()
-            canonical = tensor_by_hash.get(key)
+            canonical = self.tensor_by_hash.get(key)
             if canonical is not None:
                 tile.operand_tensors[op] = canonical
             else:
-                previous_tensors.append(tensor)
-                tensor_by_hash[key] = tensor
-        return previous_tensors, tensor_by_hash
+                self.tensor_by_hash[key] = tensor
 
     def _get_data_produced_unique(self, tile: ComputationNode):
         """Compute the output data produced by each tile, assuming that all the data produced by different CNs unique"""
@@ -559,6 +558,7 @@ class TiledWorkloadGenerationStage(Stage):
                 produces_final_output=produces_final_output,
                 group_id=group_id,
                 subview_ops=original_subviews,
+                input_names=original_node.input_names,
             )
         else:
             return ComputationNode(
@@ -572,6 +572,7 @@ class TiledWorkloadGenerationStage(Stage):
                 group_id=group_id,
                 partially_constant_operands=original_node.partially_constant_operands,
                 subview_ops=original_subviews,
+                input_names=original_node.input_names,
             )
 
     @staticmethod

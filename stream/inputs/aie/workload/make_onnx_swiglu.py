@@ -1,8 +1,9 @@
 import numpy as np
 import onnx
-from onnx import helper, TensorProto, numpy_helper, shape_inference
+from onnx import TensorProto, helper, shape_inference
 
-def make_swiglu_workload(input_shape, out_channels):
+
+def make_swiglu_workload(input_shape, out_channels, in_dtype, out_dtype):
     """
     Build an ONNX model for SwigLU using a custom function-op SiLU in a private domain:
         left  = Gemm(input, W1)                 # [x,y] @ [y,n] -> [x,n]
@@ -17,10 +18,19 @@ def make_swiglu_workload(input_shape, out_channels):
         onnx.ModelProto: Shape-inferred model.
     """
     # Validate and unpack shapes
-    if not (isinstance(input_shape, (tuple, list)) and len(input_shape) == 2):
+    EXPECTED_INPUT_DIMS = 2
+    if not (isinstance(input_shape, tuple | list) and len(input_shape) == EXPECTED_INPUT_DIMS):
         raise ValueError("input_shape must be a tuple/list of length 2 like (x, y).")
     x, y = int(input_shape[0]), int(input_shape[1])
     n = int(out_channels)
+
+    # Get data type sizes
+    dtype_size_map = {"f32": 32, "f16": 16, "bf16": 16, "i8": 8}
+    if in_dtype not in dtype_size_map or out_dtype not in dtype_size_map:
+        raise ValueError("Unsupported data type. Supported types: float32, float16, bfloat16, int8.")
+    act_size = dtype_size_map[in_dtype]
+    weight_size = dtype_size_map[in_dtype]
+    output_size = dtype_size_map[out_dtype]
 
     # Initializers (weights)
     # Omit the weight values by creating dummy weight initializers, just for shape definition
@@ -32,7 +42,7 @@ def make_swiglu_workload(input_shape, out_channels):
     )
     B1.ClearField("float_data")
     B2 = helper.make_tensor(
-        "B1",
+        "B2",
         TensorProto.FLOAT,
         [y, n],
         np.zeros((y, n)),
@@ -46,22 +56,36 @@ def make_swiglu_workload(input_shape, out_channels):
     # Branch GEMMs
     gemm_left = helper.make_node(
         "Gemm",
-        inputs=["input", "B1"], outputs=["left"],
+        inputs=["input", "B1"],
+        outputs=["left"],
         name="Gemm_Left",
-        transA=0, transB=0, alpha=1.0, beta=1.0
+        transA=0,
+        transB=0,
+        alpha=1.0,
+        beta=1.0,
+        act_size=act_size,
+        weight_size=weight_size,
+        output_size=output_size,
     )
     gemm_right = helper.make_node(
         "Gemm",
-        inputs=["input", "B2"], outputs=["right"],
+        inputs=["input", "B2"],
+        outputs=["right"],
         name="Gemm_Right",
-        transA=0, transB=0, alpha=1.0, beta=1.0
+        transA=0,
+        transB=0,
+        alpha=1.0,
+        beta=1.0,
+        act_size=act_size,
+        weight_size=weight_size,
+        output_size=output_size,
     )
 
     # Define custom SiLU as a Function in private domain (appears as a single node in the graph)
     # Body uses standard ONNX ops so built-in shape inference can see through it.
     silu_func = helper.make_function(
         domain="com.example",
-        fname="SiLU",
+        fname="Silu",
         inputs=["X"],
         outputs=["Y"],
         nodes=[
@@ -69,22 +93,30 @@ def make_swiglu_workload(input_shape, out_channels):
             helper.make_node("Mul", inputs=["X", "S"], outputs=["Y"], name="Mul_in_fn"),
         ],
         opset_imports=[helper.make_opsetid("", 17)],
-        doc_string="SiLU(X) = X * Sigmoid(X)"
+        doc_string="SiLU(X) = X * Sigmoid(X)",
     )
 
     # Use the function-op as a single node
     silu_left = helper.make_node(
-        "SiLU",
-        inputs=["left"], outputs=["left_silu"],
-        name="SiLU_Left",
-        domain="com.example"
+        "Silu",
+        inputs=["left"],
+        outputs=["left_silu"],
+        name="Silu",
+        domain="com.example",
+        act_size=act_size,
+        weight_size=0,
+        output_size=output_size,
     )
 
     # Final elementwise multiply
     out_mul = helper.make_node(
         "Mul",
-        inputs=["left_silu", "right"], outputs=["result"],
-        name="SwigLU_Out"
+        inputs=["left_silu", "right"],
+        outputs=["result"],
+        name="Elt_Mul",
+        act_size=act_size,
+        weight_size=0,
+        output_size=output_size,
     )
 
     graph = helper.make_graph(
@@ -104,7 +136,7 @@ def make_swiglu_workload(input_shape, out_channels):
         ],
         producer_name="swiglu-generator",
         producer_version="1.0",
-        doc_string="SwigLU: left Gemm -> SiLU (custom function-op), right Gemm, then elementwise Mul."
+        doc_string="SwigLU: left Gemm -> SiLU (custom function-op), right Gemm, then elementwise Mul.",
     )
 
     # Attach the function definition to the model
@@ -114,9 +146,7 @@ def make_swiglu_workload(input_shape, out_channels):
     inferred = shape_inference.infer_shapes(model)
 
     # Save
-    onnx_path = f"swiglu_{x}_{y}_{n}.onnx"
+    onnx_path = f"stream/inputs/aie/workload/swiglu_{x}_{y}_{n}.onnx"
     onnx.save(inferred, onnx_path)
+    print(f"SWIGLU ONNX model created: {onnx_path}")
     return onnx_path
-
-# Example usage:
-m = make_swiglu_workload((32, 128), 256)

@@ -2,125 +2,82 @@ import yaml
 
 
 def make_swiglu_mapping_pipelined(input_shape, out_channels, m, k, n, line_size):  # noqa: N803
-    x, y = int(input_shape[0]), int(input_shape[1])
-    name = f"swiglu_{x}_{y}_{out_channels}_{line_size}"
+    """
+    This mapping assumes that m rows are computed for each Gemm in a pipelined fashion.
+    It also assumes that line_size columns are computed in a pipelined fashion."""
+    X, Y = int(input_shape[0]), int(input_shape[1])
+    name = f"swiglu_{X}_{Y}_{out_channels}"
     output_file = f"stream/inputs/aie/mapping/{name}.yaml"
-    # Calculate the 
-    # Construct tiling entries as comma-separated strings
-    intra_core_tiling = [
-        f"C, {K // k}",
-        f"D, {M // m}",
-        f"K, {N // n}",
-    ]
 
+    # General mapping entries for all operators
     inter_core_tiling = ["K, 1"]
-    compute_allocation = [1] if not has_mem_tile else [2]
-    kernel = {"name": f"mm_{m}x{k}x{n}", "utilization": 61.8}
-    mapping = [
-        {
-            "name": "Gemm",
-            "core_allocation": compute_allocation,
-            "intra_core_tiling": intra_core_tiling,
-            "inter_core_tiling": inter_core_tiling,
-            "kernel": kernel,
-        },
-        {
-            "name": "default",
-            "core_allocation": compute_allocation,
-            "intra_core_tiling": intra_core_tiling,
-            "inter_core_tiling": inter_core_tiling,
-            "kernel": kernel,
-        },
+    compute_allocation_gemm_left = [2]
+    compute_allocation_gemm_right = [3]
+
+    # Left and right Gemms specific mapping entries
+    intra_core_tiling_gemm = [
+        f"C, {X // k}",
+        f"D, {Y // m}",
+        f"K, {out_channels // n}",
     ]
+    kernel_gemm = {"name": f"mm_{m}x{k}x{n}", "utilization": 61.8}
+    gemm_left = {
+        "name": "Gemm_Left",
+        "core_allocation": compute_allocation_gemm_left,
+        "intra_core_tiling": intra_core_tiling_gemm,
+        "inter_core_tiling": inter_core_tiling,
+        "kernel": kernel_gemm,
+    }
+    gemm_right = {
+        "name": "Gemm_Right",
+        "core_allocation": compute_allocation_gemm_right,
+        "intra_core_tiling": intra_core_tiling_gemm,
+        "inter_core_tiling": inter_core_tiling,
+        "kernel": kernel_gemm,
+    }
+
+    # SiLU specific mapping entries. SiLU uses SIMDParser which for two dims goes to (B, H)
+    compute_allocation_silu = [4]
+    intra_core_tiling_silu = [
+        f"H, {out_channels // line_size}",
+        f"B, {Y // 1}",
+    ]
+    kernel_silu = {"name": "silu_bf16", "utilization": 50.0}  # TODO: utilization
+    silu = {
+        "name": "Silu",
+        "core_allocation": compute_allocation_silu,
+        "intra_core_tiling": intra_core_tiling_silu,
+        "inter_core_tiling": inter_core_tiling,
+        "kernel": kernel_silu,
+    }
+
+    # Elementwise Mul specific mapping entries
+    compute_allocation_mul = [5]
+    intra_core_tiling_mul = [
+        f"H, {out_channels // line_size}",
+        f"B, {Y // 1}",
+    ]
+    kernel_mul = {"name": "elemwise_mul_bf16", "utilization": 50.0}  # TODO: utilization
+    mul = {
+        "name": "Elt_Mul",
+        "core_allocation": compute_allocation_mul,
+        "intra_core_tiling": intra_core_tiling_mul,
+        "inter_core_tiling": inter_core_tiling,
+        "kernel": kernel_mul,
+    }
+
+    # Default specific mapping entries
+    default = {
+        "name": "default",
+        "core_allocation": compute_allocation_gemm_left,
+        "intra_core_tiling": intra_core_tiling_gemm,
+        "inter_core_tiling": inter_core_tiling,
+        "kernel": kernel_gemm,
+    }
+
+    mapping = [gemm_left, gemm_right, silu, mul, default]
 
     with open(output_file, "w") as f:
         yaml.dump(mapping, f, default_flow_style=False, sort_keys=False)
-    return output_file
-
-
-def make_gemm_mapping_single_col(M, K, N, m, k, n, has_mem_tile: bool = False, nb_rows: int = 4):  # noqa: N803
-    name = f"gemm_{M}_{K}_{N}"
-    output_file = f"stream/inputs/aie/mapping/{name}_col.yaml"
-    # Construct tiling entries as comma-separated strings
-    k_inter_core = min(N // n, nb_rows)
-    k_intra_core = N // n // k_inter_core
-    intra_core_tiling = [
-        f"C, {K // k}",
-        f"D, {M // m}",
-        f"K, {k_intra_core}",
-    ]
-    inter_core_tiling = [f"K, {k_inter_core}"]
-    compute_allocation = (
-        [i + 1 for i in range(k_inter_core)] if not has_mem_tile else [i + 2 for i in range(k_inter_core)]
-    )
-    kernel = {"name": f"mm_{m}x{k}x{n}", "utilization": 61.8}
-    mapping = [
-        {
-            "name": "Gemm",
-            "core_allocation": compute_allocation,
-            "intra_core_tiling": intra_core_tiling,
-            "inter_core_tiling": inter_core_tiling,
-            "kernel": kernel,
-        },
-        {
-            "name": "default",
-            "core_allocation": compute_allocation,
-            "intra_core_tiling": intra_core_tiling,
-            "inter_core_tiling": inter_core_tiling,
-            "kernel": kernel,
-        },
-    ]
-
-    with open(output_file, "w") as f:
-        yaml.dump(mapping, f, default_flow_style=False, sort_keys=False)
-    return output_file
-
-
-def make_gemm_mapping_whole_array(M, K, N, m, k, n, nb_rows_to_use: int = 4, nb_cols_to_use: int = 4):  # noqa: N803
-    NB_COMPUTE_ROWS_OF_ARRAY = 4
-    name = f"gemm_{M}_{K}_{N}"
-    output_file = f"stream/inputs/aie/mapping/{name}_whole_array.yaml"
-    # Construct tiling entries as comma-separated strings
-    k_inter_core = min(N // n, nb_cols_to_use)
-    k_intra_core = N // n // k_inter_core
-    d_inter_core = min(M // m, nb_rows_to_use)
-    d_intra_core = M // m // d_inter_core
-    intra_core_tiling = [
-        f"C, {K // k}",
-        f"D, {d_intra_core}",
-        f"K, {k_intra_core}",
-    ]
-    inter_core_tiling = [
-        f"D, {d_inter_core}",
-        f"K, {k_inter_core}",
-    ]
-    # compute_allocation = (
-    #     [i + 1 for i in range(k_inter_core)] if not has_mem_tile else [i + 2 for i in range(k_inter_core)]
-    # )
-    compute_allocation = [
-        row_idx + 2 * (col_idx + 1) + NB_COMPUTE_ROWS_OF_ARRAY * col_idx
-        for col_idx in range(nb_cols_to_use)
-        for row_idx in range(nb_rows_to_use)
-    ]
-
-    kernel = {"name": f"mm_{m}x{k}x{n}", "utilization": 61.8}
-    mapping = [
-        {
-            "name": "Gemm",
-            "core_allocation": compute_allocation,
-            "intra_core_tiling": intra_core_tiling,
-            "inter_core_tiling": inter_core_tiling,
-            "kernel": kernel,
-        },
-        {
-            "name": "default",
-            "core_allocation": compute_allocation,
-            "intra_core_tiling": intra_core_tiling,
-            "inter_core_tiling": inter_core_tiling,
-            "kernel": kernel,
-        },
-    ]
-
-    with open(output_file, "w") as f:
-        yaml.dump(mapping, f, default_flow_style=False, sort_keys=False)
+    print(f"SWIGLU mapping file created: {output_file}")
     return output_file

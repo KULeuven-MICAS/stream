@@ -100,10 +100,19 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
 
             # ------------------------------------------------ computations --
             comp_nodes = [n for n in generation if isinstance(n, SteadyStateComputation)]
+
+            next_free_slot_per_core: dict[Resource, int] = {}  # Track next free slot per core
+            highest_slot_used = global_slot
+
             for n in comp_nodes:
                 core = n.chosen_resource_allocation
                 assert core is not None, f"{n.node_name} has no core assigned."
-                allocations.append((global_slot, core, n))
+                # Determine the next available slot for this core
+                slot = next_free_slot_per_core.get(core, global_slot)
+                # Set the helper var and update the allocations
+                next_free_slot_per_core[core] = slot + 1
+                highest_slot_used = max(highest_slot_used, slot)
+                allocations.append((slot, core, n))
 
             # --------------------------------------------------- tensors ----
             tensor_nodes = [n for n in generation if isinstance(n, SteadyStateTensor)]

@@ -43,6 +43,7 @@ class SubviewTensor:
         layer_operand: LayerOperand,
         loop_dimensions: list[LayerDim],
         loop_ranges: tuple[tuple[int, int], ...],
+        name: str = "",
     ):
         """Initialize the SubviewTensor instance.
 
@@ -64,6 +65,7 @@ class SubviewTensor:
         self.base_priority: None | int = None  # Will be set when we know how many successors this node has (static)
         self.instance_priorities: dict[MemoryInstance, int] = {}
         self.id = (self.cn_source.id, self.cn_source.sub_id, layer_operand)
+        self.name = name
 
     def __str__(self) -> str:
         return f"SubviewTensor{self.id}"
@@ -94,7 +96,7 @@ class SubviewTensor:
         )
 
     def equality_hash(self):
-        return hash((self.cn_source.id, self.layer_operand, self.loop_ranges))
+        return hash((self.name, self.loop_ranges))
 
     def set_base_priorities(self, base_priority: int):
         self.base_priority = base_priority

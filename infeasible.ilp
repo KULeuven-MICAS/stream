@@ -1,0 +1,91 @@
+\ Model compute_alloc_copy
+\ LP format - for model browsing. Use MPS format to capture full model detail.
+\ Signature: 0xe8c844896cf70891
+Minimize
+ 
+Subject To
+ R8: - k_splits[0] + core_asgn[Core_1,0] + core_asgn[Core_2,0] = 0
+ R12: core_asgn[Core_1,0] = 0
+ R14: core_asgn[Core_1,1048576] = 0
+ R16: core_asgn[Core_1,2097152] = 0
+ R21: slot_asgn[0,1048576] + slot_asgn[1,1048576] + slot_asgn[2,1048576]
+   + slot_asgn[3,1048576] = 1
+ R22: slot_asgn[0,2097152] + slot_asgn[1,2097152] + slot_asgn[2,2097152]
+   + slot_asgn[3,2097152] = 1
+ R25: core_asgn[Core_1,1048576] - asgn[Core_1,0,1048576]
+   - asgn[Core_1,1,1048576] - asgn[Core_1,2,1048576]
+   - asgn[Core_1,3,1048576] = 0
+ R26: core_asgn[Core_1,2097152] - asgn[Core_1,0,2097152]
+   - asgn[Core_1,1,2097152] - asgn[Core_1,2,2097152]
+   - asgn[Core_1,3,2097152] = 0
+ R28: core_asgn[Core_2,0] - asgn[Core_2,0,0] - asgn[Core_2,1,0]
+   - asgn[Core_2,2,0] - asgn[Core_2,3,0] = 0
+ R48: w_core[Core_2] <= 524288
+ qc0: [ - k_splits[1048576] * slot_asgn[0,1048576]
+   + slot_asgn[0,1048576] * asgn[Core_1,0,1048576]
+   + slot_asgn[0,1048576] * asgn[Core_2,0,1048576] ] = 0
+ qc1: [ - k_splits[1048576] * slot_asgn[1,1048576]
+   + slot_asgn[1,1048576] * asgn[Core_1,1,1048576]
+   + slot_asgn[1,1048576] * asgn[Core_2,1,1048576] ] = 0
+ qc2: [ - k_splits[1048576] * slot_asgn[2,1048576]
+   + slot_asgn[2,1048576] * asgn[Core_1,2,1048576]
+   + slot_asgn[2,1048576] * asgn[Core_2,2,1048576] ] = 0
+ qc3: [ - k_splits[1048576] * slot_asgn[3,1048576]
+   + slot_asgn[3,1048576] * asgn[Core_1,3,1048576]
+   + slot_asgn[3,1048576] * asgn[Core_2,3,1048576] ] = 0
+ qc4: [ - k_splits[2097152] * slot_asgn[0,2097152]
+   + slot_asgn[0,2097152] * asgn[Core_1,0,2097152]
+   + slot_asgn[0,2097152] * asgn[Core_2,0,2097152] ] = 0
+ qc5: [ - k_splits[2097152] * slot_asgn[1,2097152]
+   + slot_asgn[1,2097152] * asgn[Core_1,1,2097152]
+   + slot_asgn[1,2097152] * asgn[Core_2,1,2097152] ] = 0
+ qc6: [ - k_splits[2097152] * slot_asgn[2,2097152]
+   + slot_asgn[2,2097152] * asgn[Core_1,2,2097152]
+   + slot_asgn[2,2097152] * asgn[Core_2,2,2097152] ] = 0
+ qc7: [ - k_splits[2097152] * slot_asgn[3,2097152]
+   + slot_asgn[3,2097152] * asgn[Core_1,3,2097152]
+   + slot_asgn[3,2097152] * asgn[Core_2,3,2097152] ] = 0
+ qc8: [ k_splits[0] * w_split[0] ] >= 262144
+ qc9: [ k_splits[1048576] * w_split[1048576] ] >= 262144
+ qc10: [ k_splits[2097152] * w_split[2097152] ] >= 8
+ qc11: w_core[Core_2] + [ - asgn[Core_2,0,0] * w_split[0]
+   - asgn[Core_2,0,1048576] * w_split[1048576]
+   - asgn[Core_2,0,2097152] * w_split[2097152]
+   - asgn[Core_2,0,3145728] * w_split[3145728]
+   - asgn[Core_2,1,0] * w_split[0]
+   - asgn[Core_2,1,1048576] * w_split[1048576]
+   - asgn[Core_2,1,2097152] * w_split[2097152]
+   - asgn[Core_2,1,3145728] * w_split[3145728]
+   - asgn[Core_2,2,0] * w_split[0]
+   - asgn[Core_2,2,1048576] * w_split[1048576]
+   - asgn[Core_2,2,2097152] * w_split[2097152]
+   - asgn[Core_2,2,3145728] * w_split[3145728]
+   - asgn[Core_2,3,0] * w_split[0]
+   - asgn[Core_2,3,1048576] * w_split[1048576]
+   - asgn[Core_2,3,2097152] * w_split[2097152]
+   - asgn[Core_2,3,3145728] * w_split[3145728] ] >= 0
+Bounds
+ k_splits[0] free
+ k_splits[1048576] free
+ k_splits[2097152] free
+ w_split[0] free
+ w_split[1048576] free
+ w_split[2097152] free
+ w_core[Core_2] free
+Binaries
+ core_asgn[Core_1,0] core_asgn[Core_1,1048576] core_asgn[Core_1,2097152]
+ core_asgn[Core_2,0] slot_asgn[0,1048576] slot_asgn[0,2097152]
+ slot_asgn[1,1048576] slot_asgn[1,2097152] slot_asgn[2,1048576]
+ slot_asgn[2,2097152] slot_asgn[3,1048576] slot_asgn[3,2097152]
+ asgn[Core_1,0,1048576] asgn[Core_1,0,2097152] asgn[Core_1,1,1048576]
+ asgn[Core_1,1,2097152] asgn[Core_1,2,1048576] asgn[Core_1,2,2097152]
+ asgn[Core_1,3,1048576] asgn[Core_1,3,2097152] asgn[Core_2,0,0]
+ asgn[Core_2,0,1048576] asgn[Core_2,0,2097152] asgn[Core_2,0,3145728]
+ asgn[Core_2,1,0] asgn[Core_2,1,1048576] asgn[Core_2,1,2097152]
+ asgn[Core_2,1,3145728] asgn[Core_2,2,0] asgn[Core_2,2,1048576]
+ asgn[Core_2,2,2097152] asgn[Core_2,2,3145728] asgn[Core_2,3,0]
+ asgn[Core_2,3,1048576] asgn[Core_2,3,2097152] asgn[Core_2,3,3145728]
+Generals
+ k_splits[0] k_splits[1048576] k_splits[2097152] w_split[0]
+ w_split[1048576] w_split[2097152] w_split[3145728] w_core[Core_2]
+End

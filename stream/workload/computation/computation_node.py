@@ -177,6 +177,14 @@ class ComputationNode(LayerNode, Node):
                 sizes=sizes,
                 strides=strides,
             )
+            if op in self.input_operands:
+                input_op_idx = self.input_operands.index(op)
+                try:
+                    tensor_name = self.input_names[input_op_idx]
+                except IndexError:
+                    tensor_name = self.name + "_" + str(op)
+            else:
+                tensor_name = self.name + "_" + str(op)
             self.operand_tensors[op] = SubviewTensor(
                 subview=subview,
                 sizes=sizes,
@@ -184,6 +192,7 @@ class ComputationNode(LayerNode, Node):
                 layer_operand=op,
                 loop_dimensions=op_dimensionality_order,
                 loop_ranges=ranges,
+                name=tensor_name,
             )
 
     def get_operand_tensor_reshape_default(self) -> OperandTensorReshape | None:

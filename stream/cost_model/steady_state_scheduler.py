@@ -18,7 +18,6 @@ from stream.workload.steady_state.rolling_buffer import SteadyStateRollingBuffer
 from stream.workload.steady_state.tensor import SteadyStateTensor, TensorFlag
 from stream.workload.steady_state.transfer import SteadyStateTransfer, TransferType
 from stream.workload.steady_state.workload import SteadyStateWorkload
-from stream.workload.tensor import SubviewTensor
 from stream.workload.utils import get_real_in_edges, get_real_out_edges
 
 
@@ -45,7 +44,7 @@ class SteadyStateScheduler:
         self.iterations = iterations
         self.current_node_id = 0
         self.partitioned_nodes: dict[ComputationNode, list[SteadyStateComputation]] = {}
-        self.constant_tensors: dict[SubviewTensor, SteadyStateTensor] = {}
+        self.constant_tensors: dict[int, SteadyStateTensor] = {}
 
         # Steady state workload that will be set after running the scheduler
         self.steady_state_workload: SteadyStateWorkload | None = None
@@ -189,11 +188,14 @@ class SteadyStateScheduler:
                     operand=input_op,
                 )
                 if input_op in node.constant_operands:
+                    # Check that the operand is not a 0 precision operand (means it is not used like in relu)
+                    if original_node.operand_precision[input_op] == 0:
+                        continue
                     # This is a constant tensor, add it to the steady state workload
                     tensor = original_node.operand_tensors[input_op]
                     tensor_precision = original_node.operand_precision[input_op]
                     tensor_inputs = tensor.get_inputs()
-                    if tensor not in self.constant_tensors:
+                    if tensor.equality_hash() not in self.constant_tensors:
                         possible_resource_allocation = self.get_constant_tensor_resource_allocation(offchip_core)
                         full_shape = [ub - lb for lb, ub in tensor.loop_ranges]
                         slices_per_full = ssis.slices_per_full
@@ -209,11 +211,11 @@ class SteadyStateScheduler:
                             full_shape=full_shape,
                             slices_per_full=slices_per_full,
                         )
-                        self.constant_tensors[tensor] = constant_node
+                        self.constant_tensors[tensor.equality_hash()] = constant_node
                         steady_state_workload.add(constant_node)
                         self.current_node_id += 1
                     else:
-                        constant_node = self.constant_tensors[tensor]
+                        constant_node = self.constant_tensors[tensor.equality_hash()]
                     # Add edges from the constant tensor to the partitioned nodes
                     for new_node in self.partitioned_nodes[node]:
                         steady_state_workload.add_edge(constant_node, new_node)
@@ -774,10 +776,10 @@ class SteadyStateScheduler:
         # TODO: If there are multiple successors, the total rolling buffer size is calculated.
         in_edges = get_real_in_edges(eq_node, self.workload)
         num_tensors = sum(1 for _, _, data in in_edges if "operand" in data and data["operand"] == operand)
-        if num_tensors != len(in_edges):
-            raise NotImplementedError(
-                f"Expected all in edges of {eq_node} to have the same operand {operand}, but got {in_edges}"
-            )
+        # if num_tensors != len(in_edges):
+        #     raise NotImplementedError(
+        #         f"Expected all in edges of {eq_node} to have the same operand {operand}, but got {in_edges}"
+        #     )
 
         return num_tensors
 
