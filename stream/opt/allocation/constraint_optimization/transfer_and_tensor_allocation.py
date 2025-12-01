@@ -500,27 +500,28 @@ class TransferAndTensorAllocator:
             if its FIRST link originates or ends in a memory core, enforce memory core matching:
             y_path ≤ m_store[(tr, memc)]
         """
+        if not self._is_const_io(tr):
+            return
         for p in paths:
             if not p[1]:
                 continue  # empty path
-            first_link_sender = p[1][0].sender
-            first_link_receiver = p[1][0].receiver
-            if first_link_sender in self.mem_cores:
-                assert isinstance(first_link_sender, Core), (
-                    f"Expected {first_link_sender} to be a Core, got {type(first_link_sender)}"
-                )
-                self.model.addConstr(
-                    self.y_path[p] <= self.m_store[(tr, first_link_sender)],
-                    name=f"pathMemMatchSender_{tr.node_name}_{_resource_key(first_link_sender)}",
-                )
-            if first_link_receiver in self.mem_cores:
-                assert isinstance(first_link_receiver, Core), (
-                    f"Expected {first_link_receiver} to be a Core, got {type(first_link_receiver)}"
-                )
-                self.model.addConstr(
-                    self.y_path[p] <= self.m_store[(tr, first_link_receiver)],
-                    name=f"pathMemMatchReceiver_{tr.node_name}_{_resource_key(first_link_receiver)}",
-                )
+            # Gather the mem cores involved in this path and make sure there's only one
+            links = p[1]
+            seen_mem_cores = set()
+            for link in links:
+                sender = link.sender
+                receiver = link.receiver
+                if sender in self.mem_cores:
+                    seen_mem_cores.add(sender)
+                if receiver in self.mem_cores:
+                    seen_mem_cores.add(receiver)
+            if len(seen_mem_cores) != 1:
+                raise ValueError(f"Transfer {tr.node_name} doesn't have exactly one MemC in its path: {seen_mem_cores}")
+            mem_core = seen_mem_cores.pop()
+            self.model.addConstr(
+                self.y_path[p] <= self.m_store[(tr, mem_core)],
+                name=f"pathMemMatch_{tr.node_name}_{_resource_key(mem_core)}",
+            )
 
     # ...................... link contention .................... #
     def _link_contention_constraints(self):

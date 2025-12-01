@@ -1,4 +1,5 @@
 from collections import defaultdict
+from math import ceil
 
 import networkx as nx
 
@@ -282,7 +283,7 @@ class SteadyStateScheduler:
             elif self.is_nonconstant_output_tensor(tensor):
                 self.add_transfers_and_post_transfer_tensor_nodes_for_nonconstant_output(tensor, steady_state_workload)
         # Calculate the optimal paths for the transfer nodes and set the possible_resource_allocation
-        self.set_transfer_paths(steady_state_workload)
+        self.assign_transfer_paths(steady_state_workload)
         return steady_state_workload
 
     def is_constant_input_tensor(self, tensor: SteadyStateTensor) -> bool:
@@ -629,8 +630,45 @@ class SteadyStateScheduler:
         grouped_predecessors_tuple = {k: tuple(v) for k, v in grouped_predecessors.items()}
         return pre_transfer_tensor_nodes_tuple, grouped_predecessors_tuple
 
-    def set_transfer_paths(self, steady_state_workload: SteadyStateWorkload) -> None:
-        for transfer_node in steady_state_workload.transfer_nodes:
+    def assign_transfer_paths(self, steady_state_workload: SteadyStateWorkload) -> None:
+        self.process_nonconstant_transfers(steady_state_workload)
+        self.process_constant_transfers(steady_state_workload)
+
+    def process_nonconstant_transfers(self, steady_state_workload: SteadyStateWorkload) -> None:
+        """
+        Process the transfer paths for nonconstant transfers.
+        """
+        nonconstant_transfers = [
+            tr for tr in steady_state_workload.transfer_nodes if self.is_nonconstant_output_tensor(tr.tensor)
+        ]
+        for transfer_node in nonconstant_transfers:
+            src_allocs = tuple([src.chosen_resource_allocation for src in transfer_node.srcs])
+            dst_allocs = tuple([dst.chosen_resource_allocation for dst in transfer_node.dsts])
+            assert transfer_node.transfer_type == TransferType.UNICAST
+            assert len(src_allocs) == 1
+            assert len(dst_allocs) == 1
+            src_core = src_allocs[0]
+            dst_core = dst_allocs[0]
+            assert src_core is not None
+            assert dst_core is not None
+            plan = self.accelerator.communication_manager.get_unicast_plan_no_memory_core(src_core, dst_core)
+            links_used = self.accelerator.communication_manager.get_links_for_unicast_plan(plan)
+            transfer_node.set_possible_resource_allocation((links_used,))
+
+    def process_constant_transfers(self, steady_state_workload: SteadyStateWorkload) -> None:
+        """
+        Process the transfer paths for constant transfers.
+        """
+        MAX_TRANSFERS_PER_MEM_CORE = 3
+        constant_transfers = [
+            tr
+            for tr in steady_state_workload.transfer_nodes
+            if self.is_constant_input_tensor(tr.tensor) or self.is_constant_output_tensor(tr.tensor)
+        ]
+        nb_constant_transfers = len(constant_transfers)
+        nb_mem_cores_to_use = ceil(nb_constant_transfers / MAX_TRANSFERS_PER_MEM_CORE)
+        cols_to_use_for_constant_transfers = tuple(range(0, nb_mem_cores_to_use))
+        for transfer_node in constant_transfers:
             src_allocs = tuple([src.chosen_resource_allocation for src in transfer_node.srcs])
             dst_allocs = tuple([dst.chosen_resource_allocation for dst in transfer_node.dsts])
             # Create a multicast request for the transfer node
@@ -639,15 +677,14 @@ class SteadyStateScheduler:
                 destinations=dst_allocs,  # type: ignore
             )
             multicast_plans = self.accelerator.communication_manager.enumerate_multicast_plans(
-                request.sources, request.destinations, max_meetings=self.nb_cols_to_use
+                request.sources, request.destinations, cols_to_use_for_constant_transfers
             )
             possible_paths = []
             for multicast_plan in multicast_plans:
                 links_used = self.accelerator.communication_manager.get_links_for_multicast_plan(multicast_plan)
                 possible_paths.append(links_used)
-            # Set the possible resouce allocation for the transfer node (this also sets the chosen resource allocation)
+            # Set the possible resource allocation for the transfer node (this also sets the chosen resource allocation)
             transfer_node.set_possible_resource_allocation(tuple(possible_paths))
-            pass
 
     def add_this_iteration_nonconstant_tensor_nodes(
         self, steady_state_workload: SteadyStateWorkload

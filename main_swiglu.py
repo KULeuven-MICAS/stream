@@ -18,7 +18,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     # CREATE THE SWIGLU ONNX MODEL AND MAPPING
     input_shape = (x, y)
     workload_path = make_swiglu_workload(input_shape, out_channels, in_dtype, out_dtype)
-    accelerator = "stream/inputs/aie/hardware/single_core.yaml"
+    accelerator = "stream/inputs/aie/hardware/whole_array.yaml"
     mapping_path = make_swiglu_mapping_pipelined(input_shape, out_channels, m, k, n, line_size)
     # mode = "lbl"
     # layer_stacks = [(0,),]
@@ -99,7 +99,6 @@ if __name__ == "__main__":
     parser.add_argument("--cols", type=int, default=1, help="Number of AIE columns to use (default: 1)")
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
     args = parser.parse_args()
-    assert args.rows == 1, "This script only supports 1 AIE row. Use main_gemm_single_col.py for more than 1 row."
     assert args.cols == 1, (
         "This script only supports 1 AIE column. Use main_gemm_whole_array.py for more than 1 column."
     )

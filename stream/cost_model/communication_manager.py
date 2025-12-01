@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
-from itertools import islice, product
+from itertools import product
 from math import ceil, floor
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -126,6 +126,13 @@ class MulticastRequest(NamedTuple):
 
 
 @dataclass(frozen=True, slots=True)
+class UnicastPathPlan:
+    source: "Core"
+    target: "Core"
+    full_paths: list["Core"]  # Core sequence
+
+
+@dataclass(frozen=True, slots=True)
 class MulticastPathPlan:
     sources: tuple["Core", ...]
     targets: tuple["Core", ...]
@@ -196,12 +203,17 @@ class CommunicationManager:
         """Return all unique CommunicationLinks."""
         return list(set(d["cl"] for _, _, d in self.accelerator.cores.edges(data=True)))
 
+    def get_unicast_plan_no_memory_core(self, source: "Core", target: "Core") -> UnicastPathPlan:
+        assert nx.has_path(self.accelerator.cores, source, target), f"No path between {source} and {target}"
+        path = self.shortest_paths[(source, target)]
+        return UnicastPathPlan(source=source, target=target, full_paths=path)
+
     def enumerate_multicast_plans(
         self,
         sources: Sequence["Core"],
         targets: Sequence["Core"],
+        cols_in_use: tuple[int, ...],
         *,
-        max_meetings: int = 4,
         offchip_mem_penalty: float = 1000.0,
     ) -> list[MulticastPathPlan]:
         """
@@ -245,12 +257,11 @@ class CommunicationManager:
         Grev = Gw.reverse(copy=False) if Gw.is_directed() else Gw  # for distances *to* targets
 
         # Candidate meeting nodes: memory tiles, not offchip, and in used columns
-        cols_in_use = {s.col_id for s in sources} if len(sources) > 1 else {t.col_id for t in targets}
         candidates = [
             m for m in Gw.nodes() if is_memory(m) and not is_offchip(m) and getattr(m, "col_id", None) in cols_in_use
         ]
         if not candidates:
-            raise nx.NetworkXNoPath("no eligible meeting nodes")
+            raise nx.NetworkXNoPath("No eligible memory core meeting nodes for multicast transfer.")
 
         # Precompute weighted distances
         dist_from_sources: dict[Core, dict[Core, float]] = {
@@ -272,7 +283,7 @@ class CommunicationManager:
 
         # Rank meetings and keep the best few (stable tie-break on node id if present)
         ranked = sorted(((objective(m), m) for m in candidates), key=lambda x: (x[0], getattr(x[1], "id", 0)))
-        top_meetings = [m for score, m in islice(ranked, max_meetings) if score < INF]
+        top_meetings = [m for score, m in ranked if score < INF]
         if not top_meetings:
             raise nx.NetworkXNoPath("no meeting node connects all endpoints")
 
@@ -311,6 +322,26 @@ class CommunicationManager:
             )
 
         return plans
+
+    def get_links_for_unicast_plan(
+        self,
+        plan: "UnicastPathPlan",
+    ) -> tuple["CommunicationLink", ...]:
+        """
+        Return the unique CommunicationLink objects required to execute a given unicast plan.
+
+        Args:
+            plan: A UnicastPlan with .full_paths specifying the node sequences.
+
+        Returns:
+            A tuple of unique CommunicationLink objects (edge attribute 'cl'),
+            sorted for deterministic output.
+        """
+        G = self.accelerator.cores
+        links: set[CommunicationLink] = set()
+        for u, v in zip(plan.full_paths, plan.full_paths[1:], strict=False):
+            links.add(G.edges[(u, v)]["cl"])
+        return tuple(sorted(links))
 
     def get_links_for_multicast_plan(
         self,
