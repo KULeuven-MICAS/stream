@@ -58,8 +58,9 @@ class IterationVariable:
         yield from (self.dimension, self.size, self.relevant, self.compute_tile_reuse, self.spatial)
 
     def __repr__(self):
+        prefix = "S" if self.spatial else "T"
         tag = "R" if self.relevant else "IR"
-        return f"IterVar({self.dimension.name},{self.size},{tag},{self.compute_tile_reuse},spatial={self.spatial})"
+        return f"{prefix}({self.dimension.name},{self.size},{tag})"
 
     def __eq__(self, other):
         if not isinstance(other, IterationVariable):

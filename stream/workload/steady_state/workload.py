@@ -213,7 +213,8 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
                     f"{node.node_name}\n"
                     f"Resource: {getattr(node, 'chosen_resource_allocation', 'None')}\n"
                     f"Type: {node.transfer_type.value.capitalize()}\n"
-                    f"Chosen Mem Core: {getattr(node, 'chosen_memory_core', 'None')}"
+                    f"Chosen Mem Core: {getattr(node, 'chosen_memory_core', 'None')}\n"
+                    f"{node.steady_state_iteration_space}"
                 )
                 n.set_style("filled")
                 n.set_fillcolor("#ffcb9a")
