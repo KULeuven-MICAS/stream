@@ -260,6 +260,48 @@ class ObjectFifoHop:
             return cls.mem_to_compute(consumers, memtile, tile_op_manager, name_base)
 
     @classmethod
+    def compute_to_compute(
+        cls,
+        producers: Sequence[PushOp],
+        consumers: Sequence[PullOp],
+        tile_op_manager: TileOpManager,
+        name_base: str,
+    ) -> Self:
+        assert isinstance(memref_type := producers[0].input.type, MemRefType)
+        assert isinstance(memref_type_consumer := consumers[0].output.type, MemRefType)
+        assert memref_type.get_element_type() == memref_type_consumer.get_element_type()
+        assert memref_type.get_shape() == memref_type_consumer.get_shape()
+        if len(producers) > 1:
+            of_type = "join"
+        else:
+            of_type = "unicast"
+        producers = sorted(producers, key=lambda op: SortPullPushOp(op, tile_op_manager))
+        producer_tiles = [tile_op_manager.get_tile(producer) for producer in producers]
+        consumers = sorted(consumers, key=lambda op: SortPullPushOp(op, tile_op_manager))
+        consumer_tiles = [tile_op_manager.get_tile(consumer) for consumer in consumers]
+        object_fifos: list[ObjectFifoOp] = []
+        for i, producer_tile in enumerate(producer_tiles):
+            if len(producers) > 1:
+                of_name = name_base + "_" + of_type + "_" + string.ascii_lowercase[i]
+            else:
+                of_name = name_base + "_" + of_type
+            object_fifo = ObjectFifoOp.from_referenced_type(
+                elemNumber=(producers[0].ssis.data.nb_local_tensors_compute() + cls.DB_EXTRA,)
+                * (1 + len(consumer_tiles)),
+                producerTile=producer_tile,
+                consumerTiles=consumer_tiles,
+                referenced_type=memref_type.get_element_type(),
+                shape=memref_type.get_shape(),
+                name=of_name,
+                repeat_count=producers[0].ssis.data.reuse_factor_compute(),
+            )
+            assert isinstance(object_fifo.repeat_count, IntegerAttr)
+            if object_fifo.repeat_count.value.data == 1:
+                del object_fifo.properties["repeat_count"]
+            object_fifos.append(object_fifo)
+        return cls(object_fifos)
+
+    @classmethod
     def compute_to_mem(
         cls, producers: Sequence[PushOp], memtile: TileOp, tile_op_manager: TileOpManager, name_base: str
     ) -> Self:
@@ -413,7 +455,7 @@ class ObjectFifoChain:
                 ObjectFifoHop.from_memtile(consumers, memtile, tile_op_manager, name_base),
             ]
         else:
-            raise NotImplementedError()
+            hops = [ObjectFifoHop.compute_to_compute(producers, consumers, tile_op_manager, name_base)]
 
         # generate links for every hop
         links: Sequence[ObjectFifoLinkOp] = []
@@ -601,6 +643,8 @@ class PutTransfersBeforeFirstUse(RewritePattern):
 class TransferToRuntimeSequence(RewritePattern):
     object_fifo_manager: ObjectFifoManager
 
+    arg_order: list[str]
+
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: PushOp | PullOp, rewriter: PatternRewriter):  # noqa: PLR0912, PLR0915
         if not isinstance(runtime_sequence := op.parent_op(), RuntimeSequenceOp):
@@ -629,9 +673,7 @@ class TransferToRuntimeSequence(RewritePattern):
 
         of_name = of.sym_name.data
 
-        arg_order = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]
-
-        arg_index = arg_order.index(edge.tensor.data)
+        arg_index = self.arg_order.index(edge.tensor.data)
         arg = runtime_sequence.body.block.args[arg_index]
 
         # offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
@@ -935,6 +977,50 @@ class MMPattern(RewritePattern):
 
 
 @dataclass
+class MatVecPattern(RewritePattern):
+    tile_op_manager: TileOpManager
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
+        if op.kernel.data != "mm_1x32x32":
+            return
+
+        input_types = [operand.type for operand in op.inputs]
+        if op.outputs:
+            input_types.append(op.outputs.type)
+
+        function_name = "matvec_vectorized_bf16_bf16"
+
+        func_op = FuncOp(function_name, (input_types, []), Region(), "private")
+
+        # find  device op to insert function call
+        device_op = op
+        while not isinstance(device_op, DeviceOp):
+            assert device_op.parent
+            device_op = device_op.parent
+        device_op = cast(DeviceOp, device_op)
+
+        SymbolTable.insert_or_update(device_op, func_op)
+
+        # find core op to set link_with attribute
+        core_op = op
+        while not isinstance(core_op, CoreOp):
+            assert core_op.parent
+            core_op = core_op.parent
+        core_op = cast(CoreOp, core_op)
+
+        core_op.link_with = StringAttr(op.kernel.data + ".o")
+
+        inputs: list[SSAValue | Operation] = list(op.inputs)
+        if op.outputs:
+            inputs.append(op.outputs)
+
+        func_call = CallOp(function_name, inputs, [])
+        rewriter.insert_op(func_call, InsertPoint.after(op))
+        rewriter.erase_matched_op()
+
+
+@dataclass
 class ConvPattern(RewritePattern):
     tile_op_manager: TileOpManager
 
@@ -982,6 +1068,91 @@ class ConvPattern(RewritePattern):
         func_call = CallOp(op.kernel.data, inputs, [])
 
         rewriter.replace_matched_op((c32, c64, c10, func_call))
+
+@dataclass
+class SiluPattern(RewritePattern):
+    tile_op_manager: TileOpManager
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
+        if op.kernel.data != "silu_bf16":
+            return
+
+        input_types = [operand.type for operand in op.inputs]
+        if op.outputs:
+            input_types.append(op.outputs.type)
+
+        func_op = FuncOp(op.kernel.data, (input_types, []), Region(), "private")
+
+        # find  device op to insert function call
+        device_op = op
+        while not isinstance(device_op, DeviceOp):
+            assert device_op.parent
+            device_op = device_op.parent
+        device_op = cast(DeviceOp, device_op)
+
+        SymbolTable.insert_or_update(device_op, func_op)
+
+        # find core op to set link_with attribute
+        core_op = op
+        while not isinstance(core_op, CoreOp):
+            assert core_op.parent
+            core_op = core_op.parent
+        core_op = cast(CoreOp, core_op)
+
+        core_op.link_with = StringAttr(op.kernel.data + ".o")
+
+        inputs: list[SSAValue | Operation] = list(op.inputs)
+        if op.outputs:
+            inputs.append(op.outputs)
+
+        func_call = CallOp(op.kernel.data, inputs, [])
+
+        rewriter.insert_op(func_call, InsertPoint.after(op))
+        rewriter.erase_matched_op()
+
+
+@dataclass
+class ElementwiseMulPattern(RewritePattern):
+    tile_op_manager: TileOpManager
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
+        if op.kernel.data != "elemwise_mul_bf16":
+            return
+
+        input_types = [operand.type for operand in op.inputs]
+        if op.outputs:
+            input_types.append(op.outputs.type)
+
+        func_op = FuncOp(op.kernel.data, (input_types, []), Region(), "private")
+
+        # find  device op to insert function call
+        device_op = op
+        while not isinstance(device_op, DeviceOp):
+            assert device_op.parent
+            device_op = device_op.parent
+        device_op = cast(DeviceOp, device_op)
+
+        SymbolTable.insert_or_update(device_op, func_op)
+
+        # find core op to set link_with attribute
+        core_op = op
+        while not isinstance(core_op, CoreOp):
+            assert core_op.parent
+            core_op = core_op.parent
+        core_op = cast(CoreOp, core_op)
+
+        core_op.link_with = StringAttr(op.kernel.data + ".o")
+
+        inputs: list[SSAValue | Operation] = list(op.inputs)
+        if op.outputs:
+            inputs.append(op.outputs)
+
+        func_call = CallOp(op.kernel.data, inputs, [])
+
+        rewriter.insert_op(func_call, InsertPoint.after(op))
+        rewriter.erase_matched_op()
 
 
 @dataclass
@@ -1791,8 +1962,12 @@ class InfinteLoopCol(RewritePattern):
         op.region.add_block(Block([start, step, end, for_op, aie_end]))
 
 
+@dataclass(frozen=True)
 class ConvertStreamToAIEPass(ModulePass):
     name = "convert-stream-to-aie"
+
+    # The order in which the edge ops should appear in the runtime sequence
+    arg_order: list[str]
 
     def apply(self, ctx: MLContext, op: ModuleOp, npu: str) -> None:
         # wrap everything in a device op
@@ -1810,10 +1985,10 @@ class ConvertStreamToAIEPass(ModulePass):
         # add a runtime sequence operation
         # find all edges
         edges: list[EdgeOp] = [edge for edge in op.walk() if isinstance(edge, EdgeOp)]
-        order = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]
+        # order = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]
 
         runtime_arg_types = []
-        for operand_name in order:
+        for operand_name in self.arg_order:
             edge = next(edge for edge in edges if edge.tensor.data == operand_name)
             operand = edge.inputs[0] if len(edge.inputs) else edge.output
             assert operand is not None
@@ -1845,14 +2020,13 @@ class ConvertStreamToAIEPass(ModulePass):
                 # insert runtime sequence op
                 iteration_space_to_for(core_op.region.block, rewriter)
 
-        # Convert transfers to object fifo patterns
         PatternRewriteWalker(
             TransferToObjectFIFOPattern(object_fifo_manager),
             apply_recursively=False,
         ).rewrite_module(op)
 
         PatternRewriteWalker(
-            TransferToRuntimeSequence(object_fifo_manager),
+            TransferToRuntimeSequence(object_fifo_manager, self.arg_order),
             apply_recursively=False,
         ).rewrite_module(op)
 
@@ -1863,15 +2037,11 @@ class ConvertStreamToAIEPass(ModulePass):
 
         ## lower computation node ops for known kernels
 
-        PatternRewriteWalker(
-            ConvPattern(tile_op_manager),
-            apply_recursively=False,
-        ).rewrite_module(op)
-
-        PatternRewriteWalker(
-            MMPattern(tile_op_manager),
-            apply_recursively=False,
-        ).rewrite_module(op)
+        PatternRewriteWalker(ConvPattern(tile_op_manager), apply_recursively=False).rewrite_module(op)
+        PatternRewriteWalker(MMPattern(tile_op_manager), apply_recursively=False).rewrite_module(op)
+        PatternRewriteWalker(MatVecPattern(tile_op_manager), apply_recursively=False).rewrite_module(op)
+        PatternRewriteWalker(SiluPattern(tile_op_manager), apply_recursively=False).rewrite_module(op)
+        PatternRewriteWalker(ElementwiseMulPattern(tile_op_manager), apply_recursively=False).rewrite_module(op)
 
         # handle layouts
         match npu:
@@ -1879,9 +2049,6 @@ class ConvertStreamToAIEPass(ModulePass):
                 PatternRewriteWalker(SetKernelLayoutsNPU1()).rewrite_module(op)
             case AIEDeviceEnum.npu2:
                 PatternRewriteWalker(SetKernelLayoutsNPU2()).rewrite_module(op)
-            case _:
-                raise NotImplementedError(f"npu {npu} not supported")
-        PatternRewriteWalker(SetKernelLayoutsNPU2()).rewrite_module(op)
         PatternRewriteWalker(RealizeLayoutCats(object_fifo_manager)).rewrite_module(op)
 
         PatternRewriteWalker(InfinteLoopCol(), apply_recursively=False).rewrite_module(op)

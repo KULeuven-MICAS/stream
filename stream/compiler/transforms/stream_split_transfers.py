@@ -54,7 +54,7 @@ class SplitTransferPattern(RewritePattern):
                     pull := PullOp(
                         op.outputs[0].type,
                         channel,
-                        op.ssis.data,
+                        op.ssis_dest.data,
                         offsets,
                         op.sizes,
                         op.strides,

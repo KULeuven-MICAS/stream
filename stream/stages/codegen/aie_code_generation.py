@@ -1,4 +1,6 @@
 from collections.abc import Sequence
+from copy import copy
+import warnings
 from math import prod
 from typing import Any
 
@@ -9,16 +11,18 @@ from xdsl.ir import Operation, SSAValue
 from xdsl.irdl import Operand
 from xdsl.printer import Printer
 from xdsl_aie.dialects.aie import AIEDeviceEnum
+from zigzag.datatypes import LayerOperand
 from zigzag.utils import DiGraphWrapper
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, Stream, TransferOp
-from stream.compiler.transforms.aie_add_tracing_script import AIEAddTracingScript
+# from stream.compiler.transforms.aie_add_tracing_script import AIEAddTracingScript
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
 from stream.compiler.transforms.stream_split_transfers import StreamSplitTransfersPass
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.computation import SteadyStateComputation
+from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 from stream.workload.steady_state.node import SteadyStateNode
 from stream.workload.steady_state.tensor import SteadyStateTensor
 from stream.workload.steady_state.transfer import SteadyStateTransfer
@@ -94,6 +98,26 @@ class AIECodeGenerationStage(Stage):
         source = transfer.srcs[0]
         dest = transfer.dsts[0]
 
+        # construct destionation steady state iteration space
+        dest_op = next(workload.successors(next(workload.successors(transfer))), None)
+        is_output = transfer.tensor.origin.output_operand == transfer.tensor.operand
+        if isinstance(dest_op, SteadyStateComputation) and is_output:
+            current_operands = transfer.tensor.loop_dimensions
+            next_layer_operand = next(key for key, val in dest_op.input_operand_source.items() if val == transfer.tensor.origin.id)
+            next_operand_dims = dest_op.operand_dimensionality_order[next_layer_operand]
+            operand_mapping = {prev: cur for (prev, cur) in zip(current_operands, next_operand_dims, strict=True)}
+            dest_ssis_vars = []
+            for ssis_var in transfer.steady_state_iteration_space:
+                copyed_ssis_var = copy(ssis_var)
+                if copyed_ssis_var.dimension not in operand_mapping:
+                    assert not copyed_ssis_var.relevant
+                else:
+                    copyed_ssis_var.dimension = operand_mapping[ssis_var.dimension]
+                    dest_ssis_vars.append(copyed_ssis_var)
+            dest_ssis = SteadyStateIterationSpace(dest_ssis_vars)
+        else:
+            dest_ssis = transfer.steady_state_iteration_space
+
         if isinstance(dest, SteadyStateComputation):
             pass
 
@@ -112,7 +136,12 @@ class AIECodeGenerationStage(Stage):
                 source_val = edge_ops[source]
             else:
                 # find source op
-                source_source = next(workload.predecessors(source))
+                if source not in workload:
+                    warnings.warn(f"Source {source} not in workload, applying a little hack :)")
+                    source_source = next(workload.predecessors(transfer))
+                    source_source = next(workload.predecessors(source_source))
+                else:
+                    source_source = next(workload.predecessors(source))
                 assert isinstance(source_source, SteadyStateComputation)
                 source_val = compute_ops[source_source]
             source_vals.append(source_val)
@@ -160,6 +189,7 @@ class AIECodeGenerationStage(Stage):
             "dest_todo",
             "tensor_todo",
             transfer.steady_state_iteration_space,
+            dest_ssis,
             offsets,
             sizes,
             strides,
@@ -256,15 +286,18 @@ class AIECodeGenerationStage(Stage):
         # Split transfers in push and pull
         StreamSplitTransfersPass().apply(self.context, module)
 
+        # Arguments that will be supplied via runtime sequence, modify as needed
+        args = ["Gemm_Right.I_in", "Gemm_Right.W_in", "Gemm_Left.W_in", "Elt_Mul.O_out"]
+
         # Convert to AIE
-        ConvertStreamToAIEPass().apply(self.context, module, npu)
+        ConvertStreamToAIEPass(args).apply(self.context, module, npu)
 
         # Remove custom layout attributes
         ClearMemorySpace().apply(self.context, module)
 
         # Optionally, Add Tracing Script
-        if True:
-            AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
+        # if False:
+            # AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
 
         # print output to codegen path
         file = open(self.output_path, "w")

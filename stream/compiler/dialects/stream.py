@@ -131,6 +131,7 @@ class TransferOp(IRDLOperation):
     source = prop_def(StringAttr)
     dest = prop_def(StringAttr)
     ssis = prop_def(SteadyStateIterationSpaceAttr)
+    ssis_dest = prop_def(SteadyStateIterationSpaceAttr)
 
     def __init__(  # noqa: PLR0913
         self,
@@ -140,6 +141,7 @@ class TransferOp(IRDLOperation):
         dest: str,
         tensor: str,
         ssis: SteadyStateIterationSpace,
+        ssis_dest: SteadyStateIterationSpace,
         offsets: DenseArrayBase | Sequence[int],
         sizes: DenseArrayBase | Sequence[int],
         strides: DenseArrayBase | Sequence[int],
@@ -167,6 +169,7 @@ class TransferOp(IRDLOperation):
                 "dest": StringAttr(dest),
                 "tensor": StringAttr(tensor),
                 "ssis": SteadyStateIterationSpaceAttr(ssis),
+                "ssis_dest": SteadyStateIterationSpaceAttr(ssis_dest),
                 "offsets": offsets,
                 "sizes": sizes,
                 "strides": strides,

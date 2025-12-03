@@ -301,6 +301,25 @@ class SteadyStateIterationSpace:
         """
         return [iv.mem_tile_reuse for iv in self.get_temporal_variables()]
 
+    @classmethod
+    def merge_iteration_spaces(cls, ssis_list: list[SteadyStateIterationSpace]) -> SteadyStateIterationSpace:
+        """
+        Merges multiple SteadyStateIterationSpace into one, combining the relevancy
+        If one of the iteration variables is relevant, the merged one is relevant.
+        TODO: maybe not necessary anymore this method
+        """
+        iter_vars = []
+        for ssis in ssis_list:
+            print(ssis)
+        for iter_var in zip(*ssis_list, strict=True):
+            iv = iter_var[0]
+            for other_iv in iter_var[1:]:
+                if other_iv.relevant:
+                    iv.relevant = True
+            iter_vars.append(iv)
+        result =  SteadyStateIterationSpace(iter_vars)
+        return result
+
     # ..................................................................... #
     # ── Iteration / pretty printing                                         #
     # ..................................................................... #
