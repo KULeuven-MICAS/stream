@@ -8,7 +8,7 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import Re
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.node import SteadyStateNode
 from stream.workload.steady_state.rolling_buffer import SteadyStateRollingBuffer
-from stream.workload.steady_state.tensor import SteadyStateTensor
+from stream.workload.steady_state.tensor import SteadyStateTensor, TensorFlag
 from stream.workload.steady_state.transfer import SteadyStateTransfer
 
 
@@ -188,7 +188,11 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
             n = dot.get_node(str(node))[0]
             if isinstance(node, SteadyStateComputation):
                 n.set_shape("ellipse")
-                n.set_label(f"{node.node_name}\nResource: {getattr(node, 'chosen_resource_allocation', 'None')}")
+                n.set_label(
+                    f"{node.node_name}\n"
+                    f"Resource: {getattr(node, 'chosen_resource_allocation', 'None')}\n"
+                    f"{node.steady_state_iteration_space}"
+                )
                 n.set_style("filled")
                 n.set_fillcolor("#60bcf0")
             elif isinstance(node, SteadyStateRollingBuffer):
@@ -208,12 +212,16 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
                 n.set_style("filled")
                 n.set_fillcolor("#c2f0c2")
             elif isinstance(node, SteadyStateTransfer):
+                if TensorFlag.CONSTANT in node.tensor.tensor_flag:
+                    chosen_mem_core_label = f"Chosen Mem Core: {getattr(node, 'chosen_memory_core', 'None')}\n"
+                else:
+                    chosen_mem_core_label = ""
                 n.set_shape("box")
                 n.set_label(
                     f"{node.node_name}\n"
                     f"Resource: {getattr(node, 'chosen_resource_allocation', 'None')}\n"
                     f"Type: {node.transfer_type.value.capitalize()}\n"
-                    f"Chosen Mem Core: {getattr(node, 'chosen_memory_core', 'None')}\n"
+                    f"{chosen_mem_core_label}"
                     f"{node.steady_state_iteration_space}"
                 )
                 n.set_style("filled")

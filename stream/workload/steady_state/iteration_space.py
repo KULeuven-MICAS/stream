@@ -11,6 +11,7 @@ from math import prod
 from zigzag.datatypes import LayerDim, LayerOperand
 from zigzag.workload.layer_node import LoopRelevancyInfo
 
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.mapping import TILING_T
 
 
@@ -179,6 +180,17 @@ class SteadyStateIterationSpace:
                 iter_var.mem_tile_reuse = MemTileReuse.NO_REUSE
             variables.append(iter_var)
 
+        return cls(variables)
+
+    @classmethod
+    def from_computation_node(cls, *, node: ComputationNode):
+        # Temporal intra_core_tiling loop variables only
+        variables: list[IterationVariable] = []
+        intra_core_tiling = node.intra_core_tiling
+        for dim, size in intra_core_tiling:
+            is_rel = True  # All dimensions are relevant for the computation node
+            iter_var = IterationVariable(dim, size, is_rel)
+            variables.append(iter_var)
         return cls(variables)
 
     # ..................................................................... #
