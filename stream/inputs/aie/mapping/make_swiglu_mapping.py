@@ -17,8 +17,8 @@ def make_swiglu_mapping_pipelined(input_shape, out_channels, m, k, n, line_size)
     # Left and right Gemms specific mapping entries
     intra_core_tiling_gemm = [
         f"C, {X // k}",
-        f"D, {Y // m}",
         f"K, {out_channels // n}",
+        f"D, {Y // m}",
     ]
     kernel_gemm = {"name": f"mm_{m}x{k}x{n}", "utilization": 61.8}
     gemm_left = {
