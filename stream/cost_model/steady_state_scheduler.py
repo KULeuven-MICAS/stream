@@ -429,13 +429,15 @@ class SteadyStateScheduler:
         if not all_successors:
             raise ValueError(f"No valid successors found for constant input {tensor}.")
         # Get correct steady state iteration space for the intra core tilling
-        loop_relevancy_info = tensor.origin.loop_relevancy_info
-        intra_core_tiling = tensor.origin.intra_core_tiling
+        original_node = next(n for n in self.original_workload.node_list if n.id == tensor.origin.id)
+        loop_relevancy_info = original_node.loop_relevancy_info
+        intra_core_tiling = original_node.intra_core_tiling
+        inter_core_tiling = original_node.inter_core_tiling
         ssis = SteadyStateIterationSpace.from_loop_info(
             loop_relevancy=loop_relevancy_info,
             intra_core_tiling=intra_core_tiling,
             operand=tensor.operand,
-            inter_core_tiling=tensor.origin.inter_core_tiling,
+            inter_core_tiling=inter_core_tiling,
         )
         # Get the post transfer tensor node(s)
         grouped_post_transfer_tensor_nodes, grouped_successors = (
