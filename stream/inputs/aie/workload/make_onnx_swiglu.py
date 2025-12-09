@@ -1,7 +1,9 @@
+import os
+
 import numpy as np
 import onnx
 from onnx import TensorProto, helper, shape_inference
-import os
+
 
 def make_swiglu_workload(input_shape, out_channels, in_dtype, out_dtype):
     """

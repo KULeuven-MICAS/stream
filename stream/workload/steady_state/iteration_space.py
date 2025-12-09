@@ -317,7 +317,7 @@ class SteadyStateIterationSpace:
                 if other_iv.relevant:
                     iv.relevant = True
             iter_vars.append(iv)
-        result =  SteadyStateIterationSpace(iter_vars)
+        result = SteadyStateIterationSpace(iter_vars)
         return result
 
     # ..................................................................... #

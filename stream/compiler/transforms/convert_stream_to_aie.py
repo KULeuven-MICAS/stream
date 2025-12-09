@@ -52,6 +52,7 @@ from xdsl_aie.dialects.aie import (
     ObjectFIFOReleaseOp,
     ObjectFIFOSubview,
     ObjectFIFOSubviewAccessOp,
+    RuntimeSequenceOp,
     SymbolTable,
     TileOp,
 )
@@ -61,7 +62,6 @@ from xdsl_aie.dialects.aiex import (
     DmaMemcpyNdOp,
     DmaStartTaskOp,
     DmaWaitOp,
-    RuntimeSequenceOp,
 )
 from zigzag.datatypes import LayerDim
 
@@ -1083,6 +1083,7 @@ class ConvPattern(RewritePattern):
         func_call = CallOp(op.kernel.data, inputs, [])
 
         rewriter.replace_matched_op((c32, c64, c10, func_call))
+
 
 @dataclass
 class SiluPattern(RewritePattern):

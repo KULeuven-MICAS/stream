@@ -1,6 +1,6 @@
+import warnings
 from collections.abc import Sequence
 from copy import copy
-import warnings
 from math import prod
 from typing import Any
 
@@ -9,12 +9,11 @@ from xdsl.context import MLContext
 from xdsl.dialects.builtin import MemRefType, ModuleOp
 from xdsl.ir import Operation, SSAValue
 from xdsl.irdl import Operand
-from xdsl.printer import Printer
 from xdsl_aie.dialects.aie import AIEDeviceEnum
-from zigzag.datatypes import LayerOperand
 from zigzag.utils import DiGraphWrapper
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, Stream, TransferOp
+
 # from stream.compiler.transforms.aie_add_tracing_script import AIEAddTracingScript
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
@@ -105,7 +104,9 @@ class AIECodeGenerationStage(Stage):
         is_output = transfer.tensor.origin.output_operand == transfer.tensor.operand
         if isinstance(dest_op, SteadyStateComputation) and is_output:
             current_operands = transfer.tensor.loop_dimensions
-            next_layer_operand = next(key for key, val in dest_op.input_operand_source.items() if val == transfer.tensor.origin.id)
+            next_layer_operand = next(
+                key for key, val in dest_op.input_operand_source.items() if val == transfer.tensor.origin.id
+            )
             next_operand_dims = dest_op.operand_dimensionality_order[next_layer_operand]
             operand_mapping = {prev: cur for (prev, cur) in zip(current_operands, next_operand_dims, strict=True)}
             dest_ssis_vars = []
@@ -299,7 +300,7 @@ class AIECodeGenerationStage(Stage):
 
         # Optionally, Add Tracing Script
         # if False:
-            # AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
+        # AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
 
         # print output to codegen path
         # file = open(self.output_path, "w")

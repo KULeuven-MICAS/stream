@@ -1,5 +1,7 @@
-import yaml
 import os
+
+import yaml
+
 
 def make_swiglu_mapping_pipelined(input_shape, out_channels, m, k, n, line_size):  # noqa: N803
     """
