@@ -989,6 +989,9 @@ class MatVecPattern(RewritePattern):
         if op.outputs:
             input_types.append(op.outputs.type)
 
+        # fist three i32 params: (m, n, row_offset)
+        input_types = [i32] * 3 + input_types
+
         function_name = "matvec_vectorized_bf16_bf16"
 
         func_op = FuncOp(function_name, (input_types, []), Region(), "private")
@@ -1011,12 +1014,24 @@ class MatVecPattern(RewritePattern):
 
         core_op.link_with = StringAttr(op.kernel.data + ".o")
 
-        inputs: list[SSAValue | Operation] = list(op.inputs)
+        c32 = ConstantOp.from_int_and_width(32, i32)
+        c1 = ConstantOp.from_int_and_width(1, i32)
+
+        inputs: list[SSAValue | Operation] = []
+
+        # M
+        inputs.append(c32)
+        # K
+        inputs.append(c32)
+        # Row Offset
+        inputs.append(c1)
+
+        inputs.extend(list(op.inputs))
         if op.outputs:
             inputs.append(op.outputs)
 
         func_call = CallOp(function_name, inputs, [])
-        rewriter.insert_op(func_call, InsertPoint.after(op))
+        rewriter.insert_op((c1, c32, func_call), InsertPoint.after(op))
         rewriter.erase_matched_op()
 
 
@@ -1082,6 +1097,9 @@ class SiluPattern(RewritePattern):
         if op.outputs:
             input_types.append(op.outputs.type)
 
+        # size parameter
+        input_types.extend([i32])
+
         func_op = FuncOp(op.kernel.data, (input_types, []), Region(), "private")
 
         # find  device op to insert function call
@@ -1106,9 +1124,12 @@ class SiluPattern(RewritePattern):
         if op.outputs:
             inputs.append(op.outputs)
 
+        c32 = ConstantOp.from_int_and_width(32, i32)
+        inputs.extend([c32])
+
         func_call = CallOp(op.kernel.data, inputs, [])
 
-        rewriter.insert_op(func_call, InsertPoint.after(op))
+        rewriter.insert_op((c32, func_call), InsertPoint.after(op))
         rewriter.erase_matched_op()
 
 
@@ -1125,6 +1146,9 @@ class ElementwiseMulPattern(RewritePattern):
         if op.outputs:
             input_types.append(op.outputs.type)
 
+        # size parameter
+        input_types.extend([i32])
+
         func_op = FuncOp(op.kernel.data, (input_types, []), Region(), "private")
 
         # find  device op to insert function call
@@ -1149,9 +1173,12 @@ class ElementwiseMulPattern(RewritePattern):
         if op.outputs:
             inputs.append(op.outputs)
 
+        c32 = ConstantOp.from_int_and_width(32, i32)
+        inputs.extend([c32])
+
         func_call = CallOp(op.kernel.data, inputs, [])
 
-        rewriter.insert_op(func_call, InsertPoint.after(op))
+        rewriter.insert_op((c32, func_call), InsertPoint.after(op))
         rewriter.erase_matched_op()
 
 
