@@ -1,29 +1,29 @@
 name: whole_array
 cores:
-  0: shim_dma.yaml
-  1: mem_tile_256KB.yaml
-  2: aie_tile.yaml
-  3: aie_tile.yaml
-  4: aie_tile.yaml
-  5: aie_tile.yaml
-  6: shim_dma.yaml
-  7: mem_tile_256KB.yaml
-  8: aie_tile.yaml
-  9: aie_tile.yaml
-  10: aie_tile.yaml
-  11: aie_tile.yaml
-  12: shim_dma.yaml
-  13: mem_tile_256KB.yaml
-  14: aie_tile.yaml
-  15: aie_tile.yaml
-  16: aie_tile.yaml
-  17: aie_tile.yaml
-  18: shim_dma.yaml
-  19: mem_tile_256KB.yaml
-  20: aie_tile.yaml
-  21: aie_tile.yaml
-  22: aie_tile.yaml
-  23: aie_tile.yaml
+  0: ./cores/shim_dma.yaml
+  1: ./cores/mem_tile_256KB.yaml
+  2: ./cores/aie_tile.yaml
+  3: ./cores/aie_tile.yaml
+  4: ./cores/aie_tile.yaml
+  5: ./cores/aie_tile.yaml
+  6: ./cores/shim_dma.yaml
+  7: ./cores/mem_tile_256KB.yaml
+  8: ./cores/aie_tile.yaml
+  9: ./cores/aie_tile.yaml
+  10: ./cores/aie_tile.yaml
+  11: ./cores/aie_tile.yaml
+  12: ./cores/shim_dma.yaml
+  13: ./cores/mem_tile_256KB.yaml
+  14: ./cores/aie_tile.yaml
+  15: ./cores/aie_tile.yaml
+  16: ./cores/aie_tile.yaml
+  17: ./cores/aie_tile.yaml
+  18: ./cores/shim_dma.yaml
+  19: ./cores/mem_tile_256KB.yaml
+  20: ./cores/aie_tile.yaml
+  21: ./cores/aie_tile.yaml
+  22: ./cores/aie_tile.yaml
+  23: ./cores/aie_tile.yaml
 core_coordinates:
 # code id: [col, row]
   0: [0, 0]

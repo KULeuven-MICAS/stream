@@ -1,7 +1,7 @@
 import numpy as np
 import onnx
 from onnx import TensorProto, helper, shape_inference
-
+import os
 
 def make_swiglu_workload(input_shape, out_channels, in_dtype, out_dtype):
     """
@@ -146,7 +146,8 @@ def make_swiglu_workload(input_shape, out_channels, in_dtype, out_dtype):
     inferred = shape_inference.infer_shapes(model)
 
     # Save
-    onnx_path = f"stream/inputs/aie/workload/swiglu_{x}_{y}_{n}.onnx"
+
+    onnx_path = os.path.join(os.path.dirname(__file__), f"swiglu_{x}_{y}_{n}.onnx")
     onnx.save(inferred, onnx_path)
     print(f"SWIGLU ONNX model created: {onnx_path}")
     return onnx_path

@@ -18,7 +18,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     # CREATE THE SWIGLU ONNX MODEL AND MAPPING
     input_shape = (x, y)
     workload_path = make_swiglu_workload(input_shape, out_channels, in_dtype, out_dtype)
-    accelerator = "stream/inputs/aie/hardware/whole_array.yaml"
+    accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array.yaml")
     mapping_path = make_swiglu_mapping_pipelined(input_shape, out_channels, m, k, n, line_size)
     # mode = "lbl"
     # layer_stacks = [(0,),]
@@ -57,7 +57,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     # json_path = f"outputs/{experiment_id}/scme.json"
     #####################################################################
 
-    _ = optimize_allocation_co(
+    module = optimize_allocation_co(
         hardware=accelerator,
         workload=workload_path,
         mapping=mapping_path,
@@ -81,6 +81,8 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
 
     # # Plotting memory usage of best SCME
     # plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
+
+    return module
 
 
 if __name__ == "__main__":

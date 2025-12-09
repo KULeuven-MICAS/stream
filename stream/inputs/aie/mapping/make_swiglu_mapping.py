@@ -1,5 +1,5 @@
 import yaml
-
+import os
 
 def make_swiglu_mapping_pipelined(input_shape, out_channels, m, k, n, line_size):  # noqa: N803
     """
@@ -7,7 +7,7 @@ def make_swiglu_mapping_pipelined(input_shape, out_channels, m, k, n, line_size)
     It also assumes that line_size columns are computed in a pipelined fashion."""
     X, Y = int(input_shape[0]), int(input_shape[1])
     name = f"swiglu_{X}_{Y}_{out_channels}"
-    output_file = f"stream/inputs/aie/mapping/{name}.yaml"
+    output_file = os.path.join(os.path.dirname(__file__), f"{name}.yaml")
 
     # General mapping entries for all operators
     inter_core_tiling = ["K, 1"]

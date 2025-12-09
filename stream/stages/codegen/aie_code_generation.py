@@ -48,6 +48,7 @@ class AIECodeGenerationStage(Stage):
 
         self.trace_size = kwargs.get("trace_size", 1048576)
         self.npu = kwargs.get("npu", "npu2")
+        self.module = None
 
     def run(self):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **self.kwargs)
@@ -55,7 +56,8 @@ class AIECodeGenerationStage(Stage):
         for cme, extra_info in sub_stage.run():
             if cme:
                 self.codegen_main(cme, self.trace_size, self.npu)
-            yield cme, extra_info
+                assert self.module is not None
+            yield self.module, extra_info
 
     def create_edge_op(
         self,
@@ -300,9 +302,10 @@ class AIECodeGenerationStage(Stage):
             # AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
 
         # print output to codegen path
-        file = open(self.output_path, "w")
-        printer = Printer(file)
-        printer.print(module)
+        # file = open(self.output_path, "w")
+        # printer = Printer(file)
+        # printer.print(module)
+        self.module = module
 
     def is_leaf(self) -> bool:
         return False

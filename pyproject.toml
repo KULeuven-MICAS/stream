@@ -22,13 +22,21 @@ classifiers = [
 ]
 keywords = ["stream", "multi-core", "accelerator", "layer-fused", "scheduling", "zigzag", "dse", "design-space-exploration", "machine-learning", "deep-learning", "mapping"]
 dependencies = [
-    'zigzag-dse',
-    'rtree',
-    'deap',
-    'brokenaxes',
-    'plotly',
-    'pandas',
-    'gurobipy',
+    "zigzag-dse==3.8.2",
+    "rtree",
+    "deap",
+    "matplotlib",
+    "brokenaxes",
+    "plotly",
+    "pandas",
+    "cerberus",
+    "pre-commit",
+    "gurobipy",
+    "pydot",
+    "xdsl-aie @ git+https://github.com/xdslproject/xdsl-aie.git@ab795b4ff3e2d4dcc3fdf003774769cb049d13c8",
+    "snax-mlir @ git+https://github.com/kuleuven-micas/snax-mlir.git@1c01c5d100df128c9fa01d3336ebea98e19b20cf",
+    "snakemake",
+    "openai",
 ]
 requires-python = ">=3.11"
 

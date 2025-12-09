@@ -168,7 +168,7 @@ def optimize_allocation_co(  # noqa: PLR0913
 
     # Load SCME if it exists and skip_if_exists is True
     if os.path.exists(scme_path) and skip_if_exists:
-        scme = pickle_load(scme_path)
+        module = pickle_load(scme_path)
         logger.info(f"Loaded SCME from {scme_path}")
     else:
         stages: list[StageCallable] = [  # Initializes the MainStage as entry point
@@ -212,6 +212,6 @@ def optimize_allocation_co(  # noqa: PLR0913
         )
         # Launch the MainStage
         answers = mainstage.run()
-        scme = answers[0][0]
+        module = answers[0][0]
         # pickle_save(scme, scme_path)  # type: ignore
-    return scme
+    return module
