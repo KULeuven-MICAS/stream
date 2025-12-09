@@ -1015,7 +1015,7 @@ class MatVecPattern(RewritePattern):
         core_op.link_with = StringAttr(op.kernel.data + ".o")
 
         c32 = ConstantOp.from_int_and_width(32, i32)
-        c1 = ConstantOp.from_int_and_width(1, i32)
+        c0 = ConstantOp.from_int_and_width(0, i32)
 
         inputs: list[SSAValue | Operation] = []
 
@@ -1024,14 +1024,14 @@ class MatVecPattern(RewritePattern):
         # K
         inputs.append(c32)
         # Row Offset
-        inputs.append(c1)
+        inputs.append(c0)
 
         inputs.extend(list(op.inputs))
         if op.outputs:
             inputs.append(op.outputs)
 
         func_call = CallOp(function_name, inputs, [])
-        rewriter.insert_op((c1, c32, func_call), InsertPoint.after(op))
+        rewriter.insert_op((c0, c32, func_call), InsertPoint.after(op))
         rewriter.erase_matched_op()
 
 
