@@ -1,28 +1,35 @@
 - name: Gemm_Left
-  core_allocation: &id004
+  core_allocation:
   - 2
-  intra_core_tiling: &id001
+  intra_core_tiling:
   - C, 1
+  - K, 1
   - D, 32
+  inter_core_tiling:
   - K, 1
-  inter_core_tiling: &id002
-  - K, 1
-  kernel: &id003
-    name: mm_1x32x32
+  kernel:
+    name: matvec_vectorized_bf16_bf16
     utilization: 61.8
 - name: Gemm_Right
   core_allocation:
   - 3
-  intra_core_tiling: *id001
-  inter_core_tiling: *id002
-  kernel: *id003
+  intra_core_tiling:
+  - C, 1
+  - K, 1
+  - D, 32
+  inter_core_tiling:
+  - K, 1
+  kernel:
+    name: matvec_vectorized_bf16_bf16
+    utilization: 61.8
 - name: Silu
   core_allocation:
   - 4
   intra_core_tiling:
   - H, 1
   - B, 32
-  inter_core_tiling: *id002
+  inter_core_tiling:
+  - K, 1
   kernel:
     name: silu_bf16
     utilization: 50.0
@@ -32,12 +39,32 @@
   intra_core_tiling:
   - H, 1
   - B, 32
-  inter_core_tiling: *id002
+  inter_core_tiling:
+  - K, 1
   kernel:
-    name: elemwise_mul_bf16
+    name: eltwise_mul_bf16_vector
     utilization: 50.0
+- name: Gemm_Down
+  core_allocation:
+  - 11
+  intra_core_tiling:
+  - C, 1
+  - K, 1
+  - D, 32
+  inter_core_tiling:
+  - K, 1
+  kernel:
+    name: matvec_vectorized_bf16_bf16
+    utilization: 61.8
 - name: default
-  core_allocation: *id004
-  intra_core_tiling: *id001
-  inter_core_tiling: *id002
-  kernel: *id003
+  core_allocation:
+  - 2
+  intra_core_tiling:
+  - C, 1
+  - K, 1
+  - D, 32
+  inter_core_tiling:
+  - K, 1
+  kernel:
+    name: matvec_vectorized_bf16_bf16
+    utilization: 61.8
