@@ -22,7 +22,7 @@ def make_swiglu_mapping_pipelined(input_shape, out_channels, m, k, n, line_size)
         f"K, {out_channels // n}",
         f"D, {Y // m}",
     ]
-    kernel_gemm = {"name": f"mm_{m}x{k}x{n}", "utilization": 61.8}
+    kernel_gemm = {"name": "matvec_vectorized_bf16_bf16", "utilization": 61.8}
     gemm_left = {
         "name": "Gemm_Left",
         "core_allocation": compute_allocation_gemm_left,
@@ -59,7 +59,7 @@ def make_swiglu_mapping_pipelined(input_shape, out_channels, m, k, n, line_size)
         f"H, {out_channels // line_size}",
         f"B, {Y // 1}",
     ]
-    kernel_mul = {"name": "elemwise_mul_bf16", "utilization": 50.0}  # TODO: utilization
+    kernel_mul = {"name": "eltwise_mul_bf16_vector", "utilization": 50.0}  # TODO: utilization
     mul = {
         "name": "Elt_Mul",
         "core_allocation": compute_allocation_mul,

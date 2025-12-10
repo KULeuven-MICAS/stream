@@ -290,7 +290,9 @@ class AIECodeGenerationStage(Stage):
         StreamSplitTransfersPass().apply(self.context, module)
 
         # Arguments that will be supplied via runtime sequence, modify as needed
-        args = ["Gemm_Right.I_in", "Gemm_Right.W_in", "Gemm_Left.W_in", "Elt_Mul.O_out"]
+        # args = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]  # gemm
+        # args = ["Gemm_Right.I_in", "Gemm_Right.W_in", "Gemm_Left.W_in", "Elt_Mul.O_out"]  # swiglu
+        args = []  # will be inferred automatically based on EdgeOps
 
         # Convert to AIE
         ConvertStreamToAIEPass(args).apply(self.context, module, npu)

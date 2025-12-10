@@ -25,18 +25,12 @@ dependencies = [
     "zigzag-dse==3.8.2",
     "rtree",
     "deap",
-    "matplotlib",
-    "brokenaxes",
-    "plotly",
-    "pandas",
     "cerberus",
     "pre-commit",
     "gurobipy",
     "pydot",
     "xdsl-aie @ git+https://github.com/xdslproject/xdsl-aie.git@378c4c69c7f643ec31c6ef96c2fd830a0fb87244",
     "snax-mlir @ git+https://github.com/kuleuven-micas/snax-mlir.git@1c01c5d100df128c9fa01d3336ebea98e19b20cf",
-    "snakemake",
-    "openai",
 ]
 requires-python = ">=3.11"
 

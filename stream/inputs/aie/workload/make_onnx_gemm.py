@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import onnx
 import onnx.shape_inference
@@ -67,12 +68,11 @@ def make_gemm_workload(M, K, N, in_dtype, out_dtype):  # noqa: N803
     inferred_model = onnx.shape_inference.infer_shapes(model)
 
     # Save the model to file
-    save_path = f"stream/inputs/aie/workload/{name}.onnx"
-    onnx.save(inferred_model, save_path)
+    onnx_path = os.path.join(os.path.dirname(__file__), f"{name}.onnx")
+    onnx.save(inferred_model, onnx_path)
+    print(f"{name} exported to {onnx_path}.")
 
-    print(f"{name} exported to {save_path}.")
-
-    return save_path
+    return onnx_path
 
 
 if __name__ == "__main__":

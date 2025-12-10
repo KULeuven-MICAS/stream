@@ -930,17 +930,17 @@ class MMPattern(RewritePattern):
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
-        if op.kernel.data != "mm_32x32x32":
+        if op.kernel.data != "gemm_32x32x32_0_0":
             return
 
         input_types = [operand.type for operand in op.inputs]
         if op.outputs:
             input_types.append(op.outputs.type)
 
-        function_name = "matmul_i16_i32"
+        function_name = "matmul_bf16_bf16"
 
         func_op = FuncOp(function_name, (input_types, []), Region(), "private")
-        zero_func_op = FuncOp("zero_i32", (input_types[-1:], []), Region(), "private")
+        zero_func_op = FuncOp("zero_bf16", (input_types[-1:], []), Region(), "private")
 
         # find  device op to insert function call
         device_op = op
@@ -968,7 +968,7 @@ class MMPattern(RewritePattern):
         # insert zero func call for first use
         output = SSAValue.get(inputs[-1])
         assert isinstance(output, OpResult)
-        zero_call = CallOp("zero_i32", inputs[-1:], [])
+        zero_call = CallOp("zero_bf16", inputs[-1:], [])
         rewriter.insert_op(zero_call, InsertPoint.after(output.op))
 
         func_call = CallOp(function_name, inputs, [])
@@ -982,7 +982,7 @@ class MatVecPattern(RewritePattern):
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
-        if op.kernel.data != "mm_1x32x32":
+        if op.kernel.data != "matvec_vectorized_bf16_bf16":
             return
 
         input_types = [operand.type for operand in op.inputs]
@@ -1012,7 +1012,7 @@ class MatVecPattern(RewritePattern):
             core_op = core_op.parent
         core_op = cast(CoreOp, core_op)
 
-        core_op.link_with = StringAttr(op.kernel.data + ".o")
+        core_op.link_with = StringAttr("mv.o")
 
         c32 = ConstantOp.from_int_and_width(32, i32)
         c0 = ConstantOp.from_int_and_width(0, i32)
@@ -1119,7 +1119,7 @@ class SiluPattern(RewritePattern):
             core_op = core_op.parent
         core_op = cast(CoreOp, core_op)
 
-        core_op.link_with = StringAttr(op.kernel.data + ".o")
+        core_op.link_with = StringAttr("silu.o")
 
         inputs: list[SSAValue | Operation] = list(op.inputs)
         if op.outputs:
@@ -1140,7 +1140,7 @@ class ElementwiseMulPattern(RewritePattern):
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
-        if op.kernel.data != "elemwise_mul_bf16":
+        if op.kernel.data != "eltwise_mul_bf16_vector":
             return
 
         input_types = [operand.type for operand in op.inputs]
@@ -1168,7 +1168,7 @@ class ElementwiseMulPattern(RewritePattern):
             core_op = core_op.parent
         core_op = cast(CoreOp, core_op)
 
-        core_op.link_with = StringAttr(op.kernel.data + ".o")
+        core_op.link_with = StringAttr("mul.o")
 
         inputs: list[SSAValue | Operation] = list(op.inputs)
         if op.outputs:
@@ -1670,7 +1670,7 @@ class SetKernelLayoutsNPU1(RewritePattern):
             op.operands[0] = new_input.results[0]
             op.operands[2] = new_output.results[0]
 
-        if op.callee.root_reference.data == "matmul_i16_i32":
+        if op.callee.root_reference.data == "matmul_bf16_bf16":
             A_operand = op.operands[0]
             A_type = cast(MemRefType[Attribute], op.arguments[0].type)
             if isinstance(A_type.layout, TiledStridedLayoutAttr):
@@ -1758,7 +1758,7 @@ class SetKernelLayoutsNPU2(RewritePattern):
             op.operands[0] = new_input.results[0]
             op.operands[2] = new_output.results[0]
 
-        if op.callee.root_reference.data == "matmul_i16_i32":
+        if op.callee.root_reference.data == "matmul_bf16_bf16":
             A_operand = op.operands[0]
             A_type = cast(MemRefType[Attribute], op.arguments[0].type)
             if isinstance(A_type.layout, TiledStridedLayoutAttr):
@@ -2014,9 +2014,13 @@ class ConvertStreamToAIEPass(ModulePass):
         # find all edges
         edges: list[EdgeOp] = [edge for edge in op.walk() if isinstance(edge, EdgeOp)]
         # order = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]
+        if not self.arg_order:
+            arg_order = [edge.tensor.data for edge in edges]
+        else:
+            arg_order = self.arg_order
 
         runtime_arg_types = []
-        for operand_name in self.arg_order:
+        for operand_name in arg_order:
             edge = next(edge for edge in edges if edge.tensor.data == operand_name)
             operand = edge.inputs[0] if len(edge.inputs) else edge.output
             assert operand is not None
@@ -2054,7 +2058,7 @@ class ConvertStreamToAIEPass(ModulePass):
         ).rewrite_module(op)
 
         PatternRewriteWalker(
-            TransferToRuntimeSequence(object_fifo_manager, self.arg_order),
+            TransferToRuntimeSequence(object_fifo_manager, arg_order),
             apply_recursively=False,
         ).rewrite_module(op)
 
