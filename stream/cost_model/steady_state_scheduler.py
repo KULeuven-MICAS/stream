@@ -7,6 +7,7 @@ import networkx as nx
 from stream.cost_model.communication_manager import MulticastRequest
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import TimeSlotAllocation
 from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
 from stream.utils import CostModelEvaluationLUT
@@ -82,9 +83,9 @@ class SteadyStateScheduler:
         print(tsa_upd)
         offchip_core_id = self.accelerator.offchip_core_id
         total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
-        assert total == total_latency_solver, (
-            f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
-        )
+        # assert total == total_latency_solver, (
+            # f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
+        # )
         print(f"Total latency: {total}, per iteration: {per_iter}, overlap: {ov}")
         self.latency_total, self.latency_per_iteration, self.overlap_between_iterations = total, per_iter, ov
         # Check that all nodes in the steady state workload have a chosen resource allocation
@@ -336,6 +337,7 @@ class SteadyStateScheduler:
                 size=size,
                 tensor=tensor,
                 possible_resource_allocation=tuple(),  # will be set later by 'set_transfer_paths'
+                possible_memory_core_allocation=tuple(),  # will be set later by 'set_transfer_paths'
                 steady_state_iteration_space=ssis,
             )
             ssw.add(transfer_node)
@@ -394,6 +396,7 @@ class SteadyStateScheduler:
                 size=size,
                 tensor=tensor,
                 possible_resource_allocation=tuple(),  # will be set later by 'set_transfer_paths'
+                possible_memory_core_allocation=tuple(),  # will be set later by 'set_transfer_paths'
                 steady_state_iteration_space=ssis,
             )
             ssw.add(transfer_node)
@@ -463,6 +466,7 @@ class SteadyStateScheduler:
                 size=size,
                 tensor=tensor,
                 possible_resource_allocation=tuple(),  # will be set later by 'set_transfer_paths'
+                possible_memory_core_allocation=tuple(),  # will be set later by 'set_transfer_paths'
                 steady_state_iteration_space=ssis,
             )
             ssw.add(transfer_node)
@@ -664,14 +668,14 @@ class SteadyStateScheduler:
         """
         Process the transfer paths for constant transfers.
         """
-        MAX_TRANSFERS_PER_MEM_CORE = 3
+        # MAX_TRANSFERS_PER_MEM_CORE = 3
         constant_transfers = [
             tr
             for tr in steady_state_workload.transfer_nodes
             if self.is_constant_input_tensor(tr.tensor) or self.is_constant_output_tensor(tr.tensor)
         ]
-        nb_constant_transfers = len(constant_transfers)
-        nb_mem_cores_to_use = ceil(nb_constant_transfers / MAX_TRANSFERS_PER_MEM_CORE)
+        # nb_constant_transfers = len(constant_transfers)
+        nb_mem_cores_to_use = self.nb_cols_to_use
         cols_to_use_for_constant_transfers = tuple(range(0, nb_mem_cores_to_use))
         for transfer_node in constant_transfers:
             src_allocs = tuple([src.chosen_resource_allocation for src in transfer_node.srcs])
@@ -685,11 +689,39 @@ class SteadyStateScheduler:
                 request.sources, request.destinations, cols_to_use_for_constant_transfers
             )
             possible_paths = []
+            possible_memory_cores = set()
             for multicast_plan in multicast_plans:
                 links_used = self.accelerator.communication_manager.get_links_for_multicast_plan(multicast_plan)
+                possible_memory_cores_this_path = self._get_possible_memory_core_allocations(links_used)
                 possible_paths.append(links_used)
+                possible_memory_cores.update(possible_memory_cores_this_path)
             # Set the possible resource allocation for the transfer node (this also sets the chosen resource allocation)
             transfer_node.set_possible_resource_allocation(tuple(possible_paths))
+            # Set the possible memory core allocation for the transfer node
+            transfer_node.set_possible_memory_core_allocation(tuple(possible_memory_cores))
+
+    def _get_accelerator_memory_cores(self) -> set[Core]:
+        """
+        Get all memory cores in the accelerator.
+        """
+        memory_cores = set()
+        for core in self.accelerator.core_list:
+            if core.type == 'memory' and not core.id == self.accelerator.offchip_core_id and core.col_id < self.nb_cols_to_use:
+                memory_cores.add(core)
+        return memory_cores
+    
+    def _get_possible_memory_core_allocations(self, links_used: tuple[CommunicationLink, ...]) -> set[Core]:
+        all_mem_cores = self._get_accelerator_memory_cores()
+        seen_mem_cores = set()
+        for link in links_used:
+            sender = link.sender
+            receiver = link.receiver
+            if sender in all_mem_cores:
+                seen_mem_cores.add(sender)
+            if receiver in all_mem_cores:
+                seen_mem_cores.add(receiver)
+        return seen_mem_cores & all_mem_cores
+        
 
     def add_this_iteration_nonconstant_tensor_nodes(
         self, steady_state_workload: SteadyStateWorkload

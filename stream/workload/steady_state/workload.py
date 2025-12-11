@@ -213,7 +213,7 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
                 n.set_fillcolor("#c2f0c2")
             elif isinstance(node, SteadyStateTransfer):
                 if TensorFlag.CONSTANT in node.tensor.tensor_flag:
-                    chosen_mem_core_label = f"Chosen Mem Core: {getattr(node, 'chosen_memory_core', 'None')}\n"
+                    chosen_mem_core_label = self._get_transfer_mem_core_label(node)
                 else:
                     chosen_mem_core_label = ""
                 n.set_shape("box")
@@ -232,3 +232,10 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
         # Save to file
         dot.write_png(filepath)
         print(f"Graph saved to {filepath}")
+
+    def _get_transfer_mem_core_label(self, node: SteadyStateTransfer) -> str:
+        chosen_mem_core = getattr(node, 'chosen_memory_core', 'None')
+        if chosen_mem_core is None:
+            possible_mem_cores = node.possible_memory_core_allocation
+            return f"Possible Mem Cores: {possible_mem_cores}\n"
+        return f"Chosen Mem Core: {chosen_mem_core}\n"

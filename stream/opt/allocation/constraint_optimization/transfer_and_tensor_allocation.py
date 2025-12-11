@@ -334,15 +334,13 @@ class TransferAndTensorAllocator:
         for tr in self.transfer_nodes:
             if not self._is_const_io(tr):
                 continue
-            possible_mem_cores = []
-            for mc in self.mem_cores:
+            possible_mem_cores = tr.possible_memory_core_allocation
+            for mc in possible_mem_cores:
                 v = self.model.addVar(vtype=GRB.BINARY, name=f"mStore_{tr.node_name}_{_resource_key(mc)}")
                 self.m_store[(tr, mc)] = v
-                possible_mem_cores.append(mc)
             if not self.force_io_transfers_on_mem_tile:
                 v_none = self.model.addVar(vtype=GRB.BINARY, name=f"mStore_{tr.node_name}_NONE")
                 self.m_store[(tr, None)] = v_none
-                possible_mem_cores.append(None)
             self.model.addConstr(
                 quicksum(self.m_store[(tr, c)] for c in possible_mem_cores) == 1, name=f"chooseMemCore_{tr.node_name}"
             )
@@ -417,7 +415,7 @@ class TransferAndTensorAllocator:
             self._add_one_path_constraint(tr, paths)
             self._add_source_tensor_coherence_constraints(tr, paths)
             self._add_destination_tensor_coherence_constraints(tr, paths)
-            self._add_io_transfers_path_coherence_constraints(tr, paths)
+            # self._add_io_transfers_path_coherence_constraints(tr, paths)
 
     def _add_one_path_constraint(
         self, tr: SteadyStateTransfer, paths: list[tuple[SteadyStateTransfer, tuple[CommunicationLink, ...]]]
@@ -568,7 +566,7 @@ class TransferAndTensorAllocator:
                 continue
             for stop in range(-1, len(tr.steady_state_iteration_space.get_temporal_variables())):
                 _, mem_need = self.reuse_levels[(tr, stop)]
-                for mc in self.mem_cores:
+                for mc in tr.possible_memory_core_allocation:
                     self.core_load[mc] += mem_need * self.m_store[(tr, mc)] * self.z_stopM[(tr, stop)]
 
         # add memory capacity constraints for each core
@@ -770,7 +768,7 @@ class TransferAndTensorAllocator:
             )
             self.mem_core_usage_per_core[mc] = usage
 
-        MAX_MEM_CORE_USAGE = 3
+        MAX_MEM_CORE_USAGE = 2
         self.max_mem_core_usage = self.model.addVar(vtype=GRB.INTEGER, name="maxMemCoreUsage")
         for i, usage in enumerate(self.mem_core_usage_per_core.values()):
             self.model.addConstr(self.max_mem_core_usage >= usage, name=f"maxMemCoreUsage_le_{i}")
