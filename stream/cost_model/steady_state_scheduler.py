@@ -182,17 +182,16 @@ class SteadyStateScheduler:
         for node in subgraph.node_list:
             original_node = next(n for n in self.original_workload.node_list if n.id == node.id)
             loop_relevancy_info = original_node.loop_relevancy_info
+            # Filter out fake input ops (like W in ReLU)
+            real_input_ops = [op for op in node.input_operands if original_node.operand_precision[op] != 0]
             # Create a ConstantTensorNode for each constant tensor in the computation node
-            for input_op in node.input_operands:
+            for input_op, input_name in zip(real_input_ops, node.input_names, strict=True):
                 ssis = SteadyStateIterationSpace.from_loop_info(
                     loop_relevancy=loop_relevancy_info,
                     intra_core_tiling=[],  # make tensor for entire layer
                     operand=input_op,
                 )
                 if input_op in node.constant_operands:
-                    # Check that the operand is not a 0 precision operand (means it is not used like in relu)
-                    if original_node.operand_precision[input_op] == 0:
-                        continue
                     # This is a constant tensor, add it to the steady state workload
                     tensor = original_node.operand_tensors[input_op]
                     tensor_precision = original_node.operand_precision[input_op]
@@ -204,7 +203,7 @@ class SteadyStateScheduler:
                         constant_node = SteadyStateTensor(
                             type=TensorFlag.INPUT | TensorFlag.CONSTANT,
                             id=node.id,
-                            node_name=f"{node.name}.{input_op}_in",
+                            node_name=f"{input_name}",
                             size=tensor.size * tensor_precision,
                             operand=input_op,
                             steady_state_iteration_space=ssis,
@@ -243,7 +242,7 @@ class SteadyStateScheduler:
                     constant_node = SteadyStateTensor(
                         type=TensorFlag.OUTPUT | TensorFlag.CONSTANT,
                         id=node.id,
-                        node_name=f"{node.name}.{output_operand}_out",
+                        node_name=f"output",  # TODO: get from actual output name of onnx
                         size=output_tensor.size * output_tensor_precision,
                         operand=output_operand,
                         steady_state_iteration_space=ssis,

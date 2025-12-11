@@ -38,21 +38,21 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
 
     # Initializers (weights)
     w_left = helper.make_tensor(
-        "w_left",
+        "weights_1",
         TensorProto.FLOAT,
         [embedding_dim, hidden_dim],
         np.zeros((embedding_dim, hidden_dim)),
     )
     w_left.ClearField("float_data")
     w_right = helper.make_tensor(
-        "w_right",
+        "weights_2",
         TensorProto.FLOAT,
         [embedding_dim, hidden_dim],
         np.zeros((embedding_dim, hidden_dim)),
     )
     w_right.ClearField("float_data")
     w_down = helper.make_tensor(
-        "w_down",
+        "weights_3",
         TensorProto.FLOAT,
         [hidden_dim, embedding_dim],
         np.zeros((hidden_dim, embedding_dim)),
@@ -66,7 +66,7 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
     # Branch GEMMs
     gemm_left = helper.make_node(
         "Gemm",
-        inputs=["input", "w_left"],
+        inputs=["input", "weights_1"],
         outputs=["left"],
         name="Gemm_Left",
         transA=0,
@@ -79,7 +79,7 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
     )
     gemm_right = helper.make_node(
         "Gemm",
-        inputs=["input", "w_right"],
+        inputs=["input", "weights_2"],
         outputs=["right"],
         name="Gemm_Right",
         transA=0,
@@ -131,7 +131,7 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
     # Final down projection gemm
     gemm_down = helper.make_node(
         "Gemm",
-        inputs=["intermediate", "w_down"],
+        inputs=["intermediate", "weights_3"],
         outputs=["output"],
         name="Gemm_Down",
         transA=0,

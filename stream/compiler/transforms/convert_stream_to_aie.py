@@ -984,8 +984,10 @@ class MatVecPattern(RewritePattern):
     def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
         if op.kernel.data != "matvec_vectorized_bf16_bf16":
             return
+        
+        op_inputs = [op.inputs[1], op.inputs[0]]
 
-        input_types = [operand.type for operand in op.inputs]
+        input_types = [operand.type for operand in op_inputs]
         if op.outputs:
             input_types.append(op.outputs.type)
 
@@ -1026,7 +1028,7 @@ class MatVecPattern(RewritePattern):
         # Row Offset
         inputs.append(c0)
 
-        inputs.extend(list(op.inputs))
+        inputs.extend(list(op_inputs))
         if op.outputs:
             inputs.append(op.outputs)
 
