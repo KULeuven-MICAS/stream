@@ -340,7 +340,8 @@ class SteadyStateScheduler:
             )
             ssw.add(transfer_node)
             # Add edge from the original node to the transfer node
-            ssw.add_edge(tensor, transfer_node)
+            edge_data = {'operand': tensor.operand}
+            ssw.add_edge(tensor, transfer_node, **edge_data)
             for ptn, succ in zip(post_transfer_tensor_nodes, successors, strict=True):
                 if ptn not in ssw:  # happens for the constant tensors that were already in the graph
                     # Add the post transfer tensor node to the steady state workload
@@ -348,9 +349,9 @@ class SteadyStateScheduler:
                 # Remove original edge between node and successor
                 ssw.remove_edge(tensor, succ)
                 # Add edge from transfer node to post transfer tensor node
-                ssw.add_edge(transfer_node, ptn)
+                ssw.add_edge(transfer_node, ptn, **edge_data)
                 # Add edge from post transfer node to successor
-                ssw.add_edge(ptn, succ)
+                ssw.add_edge(ptn, succ, **edge_data)
 
     def add_transfers_and_pre_transfer_tensor_nodes_for_constant_output(
         self, tensor: SteadyStateTensor, ssw: SteadyStateWorkload
