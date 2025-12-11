@@ -2,7 +2,7 @@ import warnings
 from collections.abc import Sequence
 from copy import copy
 from math import prod
-from typing import Any
+from typing import Any, cast
 
 from snaxc.dialects.tsl import TSL
 from xdsl.context import MLContext
@@ -10,6 +10,7 @@ from xdsl.dialects.builtin import MemRefType, ModuleOp
 from xdsl.ir import Operation, SSAValue
 from xdsl.irdl import Operand
 from xdsl_aie.dialects.aie import AIEDeviceEnum
+from zigzag.datatypes import LayerOperand
 from zigzag.utils import DiGraphWrapper
 
 from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, Stream, TransferOp
@@ -210,10 +211,11 @@ class AIECodeGenerationStage(Stage):
         transfer_ops: dict[SteadyStateTransfer, TransferOp],
     ) -> ComputationNodeOp:
         # get inputs
-        inputs = list(workload.predecessors(compute))
+        inputs = [(x[0], x[2].get("operand")) for x in workload.in_edges(compute, data=True)]
+        ordered_inputs = map(lambda x: x[0], sorted(inputs, key=lambda x: compute.input_operands.index(cast(LayerOperand, x[1]))))
         transfers: list[TransferOp] = []
         operands: list[Operand] = []
-        for input in inputs:
+        for input in ordered_inputs:
             transfer = next(workload.predecessors(input))
             assert isinstance(transfer, SteadyStateTransfer)
             transfers.append(transfer_op := transfer_ops[transfer])
