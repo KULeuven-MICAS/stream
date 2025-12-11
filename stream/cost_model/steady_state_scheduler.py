@@ -476,6 +476,7 @@ class SteadyStateScheduler:
                 ssw.add_edge(
                     transfer_node,
                     ptn,
+                    **edge_data,
                 )
                 # Add edge from post transfer node to successor
                 ssw.add_edge(ptn, succ, **edge_data)
