@@ -48,6 +48,7 @@ class AIECodeGenerationStage(Stage):
 
         self.trace_size = kwargs.get("trace_size", 1048576)
         self.npu = kwargs.get("npu", "npu2")
+        self.runtime_args = kwargs.get("runtime_args", [])
         self.module = None
 
     def run(self):
@@ -294,7 +295,7 @@ class AIECodeGenerationStage(Stage):
         # Arguments that will be supplied via runtime sequence, modify as needed
         # args = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]  # gemm
         # args = ["Gemm_Right.I_in", "Gemm_Right.W_in", "Gemm_Left.W_in", "Elt_Mul.O_out"]  # swiglu
-        args = []  # will be inferred automatically based on EdgeOps
+        args = self.runtime_args  # will be inferred automatically based on EdgeOps
 
         # Convert to AIE
         ConvertStreamToAIEPass(args).apply(self.context, module, npu)

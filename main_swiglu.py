@@ -12,7 +12,7 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 
 
 def run_main_aie_codegen_swiglu(  # noqa: PLR0913
-    seq_len, embedding_dim, hidden_dim, m, k, n, in_dtype, out_dtype, trace_size, rows, cols, npu, line_size
+    seq_len, embedding_dim, hidden_dim, m, k, n, in_dtype, out_dtype, trace_size, rows, cols, npu, line_size, runtime_args=None
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     # CREATE THE SWIGLU ONNX MODEL AND MAPPING
@@ -21,6 +21,8 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     mapping_path = make_swiglu_mapping_pipelined(seq_len, embedding_dim, hidden_dim, m, k, n, line_size)
     mode = "fused"
     layer_stacks = [(0, 1, 2, 3, 4)]
+    if runtime_args is None:
+        runtime_args = ["input", "weight_1", "weight_2", "weight_3", "output"]
     ##############################################################################################
 
     ################################PARSING###############################
@@ -66,6 +68,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         enable_codegen=True,
         trace_size=trace_size,
         npu=npu,
+        runtime_args=runtime_args,
     )
 
     # #####################CostModelEvaluationLUT LOAD#############################
