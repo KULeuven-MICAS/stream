@@ -1759,14 +1759,15 @@ class SetKernelLayoutsNPU2(RewritePattern):
             op.operands[2] = new_output.results[0]
 
         if op.callee.root_reference.data == "matmul_bf16_bf16":
+            # m=4 k=8 n=8
             A_operand = op.operands[0]
             A_type = cast(MemRefType[Attribute], op.arguments[0].type)
             if isinstance(A_type.layout, TiledStridedLayoutAttr):
                 return
             layout_A = TiledStridedLayout(
                 [
-                    TiledStride([Stride(16 * 32 // 4, 32 // 4), Stride(4, 4)]),
-                    TiledStride([Stride(16, 32 // 4), Stride(1, 4)]),
+                    TiledStride([Stride(128, 8), Stride(8, 4)]),
+                    TiledStride([Stride(32, 4), Stride(1, 8)]),
                 ]
             )
             A_type_new = MemRefType(
@@ -1780,8 +1781,8 @@ class SetKernelLayoutsNPU2(RewritePattern):
                 return
             layout_B = TiledStridedLayout(
                 [
-                    TiledStride([Stride(32 * 32 // 8, 32 // 4), Stride(8, 4)]),
-                    TiledStride([Stride(32, 32 // 8), Stride(1, 8)]),
+                    TiledStride([Stride(256, 4), Stride(8, 8)]),
+                    TiledStride([Stride(64, 4), Stride(1, 8)]),
                 ]
             )
             B_type_new = MemRefType(
@@ -1795,8 +1796,8 @@ class SetKernelLayoutsNPU2(RewritePattern):
                 return
             layout_D = TiledStridedLayout(
                 [
-                    TiledStride([Stride(32 * 32 // 8, 32 // 4), Stride(8, 4)]),
-                    TiledStride([Stride(32, 32 // 8), Stride(1, 8)]),
+                    TiledStride([Stride(128, 8), Stride(8, 4)]),
+                    TiledStride([Stride(32, 4), Stride(1, 8)]),
                 ]
             )
             D_type_new = MemRefType(
