@@ -35,7 +35,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     mode = "fused"
     layer_stacks = [(0, 1, 2, 3, 4)]
     if runtime_args is None:
-        runtime_args = ["input", "weight_1", "weight_2", "weight_3", "output"]
+        runtime_args = ["input", "weights_1", "weights_2", "weights_3", "output"]
     ##############################################################################################
 
     ################################PARSING###############################
@@ -121,9 +121,6 @@ if __name__ == "__main__":
     parser.add_argument("--cols", type=int, default=1, help="Number of AIE columns to use (default: 1)")
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
     args = parser.parse_args()
-    assert args.cols == 1, (
-        "This script only supports 1 AIE column. Use main_gemm_whole_array.py for more than 1 column."
-    )
 
     module = run_main_aie_codegen_swiglu(
         args.seq_len,

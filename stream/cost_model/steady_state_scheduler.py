@@ -82,9 +82,9 @@ class SteadyStateScheduler:
         print(tsa_upd)
         offchip_core_id = self.accelerator.offchip_core_id
         total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
-        # assert total == total_latency_solver, (
-        # f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
-        # )
+        assert total == total_latency_solver, (
+            f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
+        )
         print(f"Total latency: {total}, per iteration: {per_iter}, overlap: {ov}")
         self.latency_total, self.latency_per_iteration, self.overlap_between_iterations = total, per_iter, ov
         # Check that all nodes in the steady state workload have a chosen resource allocation

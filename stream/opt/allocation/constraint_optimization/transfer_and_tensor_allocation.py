@@ -201,11 +201,11 @@ class TransferAndTensorAllocator:
     # ------------------------------------------------------------------------------
     def _is_const_i(self, tr: SteadyStateTransfer) -> bool:
         src_t = tr.srcs[0]
-        return src_t and TensorFlag.CONSTANT | TensorFlag.INPUT in src_t.tensor_flag
+        return (TensorFlag.CONSTANT | TensorFlag.INPUT) in src_t.tensor_flag
 
     def _is_const_o(self, tr: SteadyStateTransfer) -> bool:
         dst_t = tr.dsts[0]
-        return dst_t and TensorFlag.CONSTANT | TensorFlag.OUTPUT in dst_t.tensor_flag
+        return (TensorFlag.CONSTANT | TensorFlag.OUTPUT) in dst_t.tensor_flag
 
     def _is_const_io(self, tr: SteadyStateTransfer) -> bool:
         return self._is_const_i(tr) or self._is_const_o(tr)
