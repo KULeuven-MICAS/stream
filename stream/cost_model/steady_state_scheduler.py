@@ -1,5 +1,4 @@
 from collections import defaultdict
-from math import ceil
 
 import networkx as nx
 
@@ -84,7 +83,7 @@ class SteadyStateScheduler:
         offchip_core_id = self.accelerator.offchip_core_id
         total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
         # assert total == total_latency_solver, (
-            # f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
+        # f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
         # )
         print(f"Total latency: {total}, per iteration: {per_iter}, overlap: {ov}")
         self.latency_total, self.latency_per_iteration, self.overlap_between_iterations = total, per_iter, ov
@@ -242,7 +241,7 @@ class SteadyStateScheduler:
                     constant_node = SteadyStateTensor(
                         type=TensorFlag.OUTPUT | TensorFlag.CONSTANT,
                         id=node.id,
-                        node_name=f"output",  # TODO: get from actual output name of onnx
+                        node_name="output",  # TODO: get from actual output name of onnx
                         size=output_tensor.size * output_tensor_precision,
                         operand=output_operand,
                         steady_state_iteration_space=ssis,
@@ -341,7 +340,7 @@ class SteadyStateScheduler:
             )
             ssw.add(transfer_node)
             # Add edge from the original node to the transfer node
-            edge_data = {'operand': tensor.operand}
+            edge_data = {"operand": tensor.operand}
             ssw.add_edge(tensor, transfer_node, **edge_data)
             for ptn, succ in zip(post_transfer_tensor_nodes, successors, strict=True):
                 if ptn not in ssw:  # happens for the constant tensors that were already in the graph
@@ -400,7 +399,7 @@ class SteadyStateScheduler:
             )
             ssw.add(transfer_node)
             # Add edge from transfer node to output tensor node
-            edge_data = {'operand': tensor.operand}
+            edge_data = {"operand": tensor.operand}
             ssw.add_edge(transfer_node, tensor, **edge_data)
             for ptn, pred in zip(pre_transfer_tensor_nodes, predecessors, strict=True):
                 if ptn not in ssw:  # happens for the constant tensors that were already in the graph
@@ -705,10 +704,14 @@ class SteadyStateScheduler:
         """
         memory_cores = set()
         for core in self.accelerator.core_list:
-            if core.type == 'memory' and not core.id == self.accelerator.offchip_core_id and core.col_id < self.nb_cols_to_use:
+            if (
+                core.type == "memory"
+                and not core.id == self.accelerator.offchip_core_id
+                and core.col_id < self.nb_cols_to_use
+            ):
                 memory_cores.add(core)
         return memory_cores
-    
+
     def _get_possible_memory_core_allocations(self, links_used: tuple[CommunicationLink, ...]) -> set[Core]:
         all_mem_cores = self._get_accelerator_memory_cores()
         seen_mem_cores = set()
@@ -720,7 +723,6 @@ class SteadyStateScheduler:
             if receiver in all_mem_cores:
                 seen_mem_cores.add(receiver)
         return seen_mem_cores & all_mem_cores
-        
 
     def add_this_iteration_nonconstant_tensor_nodes(
         self, steady_state_workload: SteadyStateWorkload

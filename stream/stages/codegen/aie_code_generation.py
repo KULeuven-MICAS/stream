@@ -87,7 +87,7 @@ class AIECodeGenerationStage(Stage):
             edge_op = EdgeOp(None, edge.node_name, transfer_results)
         return edge_op
 
-    def create_transfer_op(  # noqa: PLR0912
+    def create_transfer_op(  # noqa: PLR0912, PLR0915
         self,
         workload: DiGraphWrapper[SteadyStateNode],
         transfer: SteadyStateTransfer,
@@ -142,7 +142,7 @@ class AIECodeGenerationStage(Stage):
             else:
                 # find source op
                 if source not in workload:
-                    warnings.warn(f"Source {source} not in workload, applying a little hack :)")
+                    warnings.warn(f"Source {source} not in workload, applying a little hack :)")  # noqa: B028
                     source_source = next(workload.predecessors(transfer))
                     source_source = next(workload.predecessors(source_source))
                 else:
@@ -213,7 +213,9 @@ class AIECodeGenerationStage(Stage):
     ) -> ComputationNodeOp:
         # get inputs
         inputs = [(x[0], x[2].get("operand")) for x in workload.in_edges(compute, data=True)]
-        ordered_inputs = map(lambda x: x[0], sorted(inputs, key=lambda x: compute.input_operands.index(cast(LayerOperand, x[1]))))
+        ordered_inputs = map(
+            lambda x: x[0], sorted(inputs, key=lambda x: compute.input_operands.index(cast(LayerOperand, x[1])))
+        )
         transfers: list[TransferOp] = []
         operands: list[Operand] = []
         for input in ordered_inputs:

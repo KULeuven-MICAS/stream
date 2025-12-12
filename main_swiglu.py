@@ -12,7 +12,20 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 
 
 def run_main_aie_codegen_swiglu(  # noqa: PLR0913
-    seq_len, embedding_dim, hidden_dim, m, k, n, in_dtype, out_dtype, trace_size, rows, cols, npu, line_size, runtime_args=None
+    seq_len,
+    embedding_dim,
+    hidden_dim,
+    m,
+    k,
+    n,
+    in_dtype,
+    out_dtype,
+    trace_size,
+    rows,
+    cols,
+    npu,
+    line_size,
+    runtime_args=None,
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     # CREATE THE SWIGLU ONNX MODEL AND MAPPING
@@ -48,7 +61,10 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     file_handler = _logging.FileHandler(log_path)
     file_handler.setFormatter(_logging.Formatter(_logging_format))
     logger.addHandler(file_handler)
-    logger.info(f"Running AIE code generation for Swiglu with seq_len={seq_len}, embedding_dim={embedding_dim}, hidden_dim={hidden_dim}")
+    logger.info(
+        f"Running AIE code generation for Swiglu with "
+        f"seq_len={seq_len}, embedding_dim={embedding_dim}, hidden_dim={hidden_dim}"
+    )
     ######################################################################
 
     ################################PLOTS################################
@@ -88,8 +104,12 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run AIE code generation for Gemm")
     parser.add_argument("--seq_len", type=int, required=True, help="Sequence length (seq_len dimension of the input)")
-    parser.add_argument("--embedding_dim", type=int, required=True, help="Embedding dimension (embedding_dim dimension of the input)")
-    parser.add_argument("--hidden_dim", type=int, required=True, help="Hidden dimension (hidden_dim dimension of the output)")
+    parser.add_argument(
+        "--embedding_dim", type=int, required=True, help="Embedding dimension (embedding_dim dimension of the input)"
+    )
+    parser.add_argument(
+        "--hidden_dim", type=int, required=True, help="Hidden dimension (hidden_dim dimension of the output)"
+    )
     parser.add_argument("--line_size", type=int, required=True, help="N parameter for the model")
     parser.add_argument("--m", type=int, default=32, help="m parameter for the model (default: 32)")
     parser.add_argument("--k", type=int, default=32, help="k parameter for the model (default: 32)")

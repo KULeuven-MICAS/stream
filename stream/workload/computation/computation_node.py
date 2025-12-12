@@ -2,7 +2,7 @@ from copy import deepcopy
 from math import prod
 from typing import TypeAlias
 
-from xdsl.dialects.builtin import MemRefType, i8, i32, bf16, f32
+from xdsl.dialects.builtin import MemRefType, bf16, f32, i8
 from xdsl.dialects.memref import AllocOp, SubviewOp
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 from zigzag.utils import hash_sha512

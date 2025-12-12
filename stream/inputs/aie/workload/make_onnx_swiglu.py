@@ -8,11 +8,11 @@ from onnx import TensorProto, helper, shape_inference
 def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype):
     """
     Build an ONNX model for SwiGLU using a custom function-op SiLU in a private domain:
-        left  = Gemm(input, w_left)                 # [seq_len,embedding_dim] @ [embedding_dim,hidden_dim] -> [seq_len,hidden_dim]
-        right = Gemm(input, w_right)                # [seq_len,embedding_dim] @ [embedding_dim,hidden_dim] -> [seq_len,hidden_dim]
-        left_swished = com.example::SiLU(left)      # single node; body = left * Sigmoid(left)
-        intermediate = left_swished * right         # elementwise Mul -> [seq_len,hidden_dim]
-        output = Gemm(intermediate, w_down)         # [seq_len,hidden_dim] @ [hidden_dim,embedding_dim] -> [seq_len,embedding_dim]
+    left  = Gemm(input, w_left)           # [seq_len,embedding_dim] @ [embedding_dim,hidden_dim] -> [seq_len,hidden_dim]
+        right = Gemm(input, w_right)      # [seq_len,embedding_dim] @ [embedding_dim,hidden_dim] -> [seq_len,hidden_dim]
+        left_swished = SiLU(left)         # single node; body = left * Sigmoid(left)
+        intermediate = left_swished*right # elementwise Mul -> [seq_len,hidden_dim]
+        output = Gemm(intermediate,w_down)# [seq_len,hidden_dim] @ [hidden_dim,embedding_dim] -> [seq_len,embedding_dim]
 
     Args:
         seq_len (int): Sequence length dimension.
@@ -160,7 +160,7 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
         ],
         producer_name="swiglu-generator",
         producer_version="1.0",
-        doc_string="SwigLU: left Gemm -> SiLU (custom function-op), right Gemm, then elementwise Mul and down projection Gemm.",
+        doc_string="SwigLU: left Gemm -> SiLU, right Gemm, then elementwise Mul and down proj Gemm.",
     )
 
     # Attach the function definition to the model

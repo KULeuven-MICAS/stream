@@ -234,7 +234,7 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
         print(f"Graph saved to {filepath}")
 
     def _get_transfer_mem_core_label(self, node: SteadyStateTransfer) -> str:
-        chosen_mem_core = getattr(node, 'chosen_memory_core', 'None')
+        chosen_mem_core = getattr(node, "chosen_memory_core", "None")
         if chosen_mem_core is None:
             possible_mem_cores = node.possible_memory_core_allocation
             return f"Possible Mem Cores: {possible_mem_cores}\n"
