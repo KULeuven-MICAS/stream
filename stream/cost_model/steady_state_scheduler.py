@@ -535,15 +535,16 @@ class SteadyStateScheduler:
         "Grouped by loop ranges to get one joint transfer per broadcastable input."
         post_transfer_tensor_nodes: dict[tuple[tuple[int, int], ...], list[SteadyStateTensor]] = defaultdict(list)
         grouped_successors: dict[tuple[tuple[int, int], ...], list[SteadyStateNode]] = defaultdict(list)
-        # Extra check that groups all successors and post transfers in one in case all successors are on the same col id
-        first_succ_col_id = next(iter(successors)).chosen_resource_allocation.col_id if successors else None
-        if first_succ_col_id is not None and all(
-            isinstance(s, SteadyStateComputation) and s.chosen_resource_allocation.col_id == first_succ_col_id
-            for s in successors
-        ):
-            all_to_same = True
-        else:
-            all_to_same = False
+        # # Extra check that groups all successors and post transfers in one in case all are on the same col id
+        # first_succ_col_id = next(iter(successors)).chosen_resource_allocation.col_id if successors else None
+        # if first_succ_col_id is not None and all(
+        #     isinstance(s, SteadyStateComputation) and s.chosen_resource_allocation.col_id == first_succ_col_id
+        #     for s in successors
+        # ):
+        #     all_to_same = True
+        # else:
+        #     all_to_same = False
+        all_to_same = True  # Always group them all together as this is now handled in codegen
         for i, successor in enumerate(successors):
             # Create the tensor node that comes after the transfer node we just created
             if isinstance(successor, SteadyStateTensor):
