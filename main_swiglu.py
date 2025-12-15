@@ -4,7 +4,7 @@ import os
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping_pipelined
+from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping_pipelined, make_swiglu_mapping_pipelined2
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 
 _logging_level = _logging.INFO
@@ -25,17 +25,22 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     cols,
     npu,
     line_size,
-    runtime_args=None,
+    runtime_args,
+    mapping_version: int = 1,
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     # CREATE THE SWIGLU ONNX MODEL AND MAPPING
     workload_path = make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype)
-    accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array.yaml")
-    mapping_path = make_swiglu_mapping_pipelined(seq_len, embedding_dim, hidden_dim, m, k, n, line_size)
+    if mapping_version == 1:
+        accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array.yaml")
+        mapping_path = make_swiglu_mapping_pipelined(seq_len, embedding_dim, hidden_dim, m, k, n, line_size)
+    elif mapping_version == 2:
+        accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
+        mapping_path = make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, line_size)
+    else:
+        raise ValueError(f"Invalid mapping_version: {mapping_version}. Supported versions are 1 and 2.")
     mode = "fused"
     layer_stacks = [(0, 1, 2, 3, 4)]
-    if runtime_args is None:
-        runtime_args = ["input", "weights_1", "weights_2", "weights_3", "output"]
     ##############################################################################################
 
     ################################PARSING###############################
@@ -120,6 +125,7 @@ if __name__ == "__main__":
     parser.add_argument("--rows", type=int, default=4, help="Number of AIE rows to use (has to be 4)")
     parser.add_argument("--cols", type=int, default=1, help="Number of AIE columns to use (default: 1)")
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
+    parser.add_argument("--mapping_version", type=int, default=1, help="Mapping version to use (1 or 2, default: 1)")
     args = parser.parse_args()
 
     module = run_main_aie_codegen_swiglu(
@@ -136,6 +142,8 @@ if __name__ == "__main__":
         args.cols,
         args.npu,
         args.line_size,
+        runtime_args=["input", "weights_1", "weights_2", "weights_3", "output"],
+        mapping_version=args.mapping_version,
     )
 
     print(str(module))
