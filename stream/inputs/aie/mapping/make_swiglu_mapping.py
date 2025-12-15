@@ -94,6 +94,7 @@ def make_swiglu_mapping_pipelined(seq_len, embedding_dim, hidden_dim, m, k, n, l
     print(f"SWIGLU mapping file created: {output_file}")
     return output_file
 
+
 def make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, line_size):  # noqa: N803
     """
     This mapping assumes that m rows are computed for each Gemm in a pipelined fashion.
@@ -103,7 +104,6 @@ def make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, 
     output_file = os.path.join(os.path.dirname(__file__), f"{name}_v2.yaml")
 
     assert seq_len % 4 == 0, "seq_len must be divisible by 4 for this mapping"
-
 
     # Left and right Gemms specific mapping entries
     inter_core_tiling_gemm = ["D, 4"]

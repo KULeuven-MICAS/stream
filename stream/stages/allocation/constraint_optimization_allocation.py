@@ -6,21 +6,16 @@ from typing import Any, TypeAlias
 
 import networkx as nx
 import numpy as np
-from zigzag.utils import pickle_deepcopy, pickle_load, pickle_save
+from zigzag.utils import pickle_load, pickle_save
 
-from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_T, get_optimal_allocations
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import NodeType, TimeSlotAllocation
 from stream.opt.allocation.constraint_optimization.utils import calculate_total_latency, get_partitioned_nodes
-from stream.stages.estimation.stream_cost_model_evaluation import StreamCostModelEvaluationStage
-from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
 from stream.stages.generation.layer_stacks_generation import STACK_T
-from stream.stages.generation.tiled_workload_generation import TiledWorkloadGenerationStage
-from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
-from stream.stages.stage import MainStage, Stage, StageCallable
+from stream.stages.stage import Stage, StageCallable
 from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.dnn_workload import DNNWorkloadStream
@@ -115,7 +110,13 @@ class ConstraintOptimizationAllocationStage(Stage):
             stack_subgraph = self.workload.get_subgraph([n for n in self.workload.node_list if n.id in stack])
             iterations = self.ss_iterations_per_stack[stack]
             scheduler = SteadyStateScheduler(
-                stack_subgraph, self.accelerator, self.original_workload, self.cost_lut, iterations, self.nb_cols_to_use, self.output_path,
+                stack_subgraph,
+                self.accelerator,
+                self.original_workload,
+                self.cost_lut,
+                iterations,
+                self.nb_cols_to_use,
+                self.output_path,
             )
             schedule = scheduler.run(optimal_allocation)
         return schedule
