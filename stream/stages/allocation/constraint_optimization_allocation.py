@@ -52,7 +52,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         layer_stacks: list[tuple[int, ...]],
         allocations_path: str,
         tiled_workload_post_co_path: str,
-        cost_lut_post_co_path: str,
+        output_path: str,
         **kwargs: Any,
     ):
         """Initialize the ResourceAllocationStage.
@@ -64,7 +64,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             cost_lut (CostModelEvaluationLUT): A lookup table containing for each node the best CME for each core
             layer_stacks (list): List of tuples with each tuple containing the layer ids to fuse together
             allocations_path (str): Path to the directory where the optimal allocations are stored
-            cost_lut_post_co_path (str): Path to the file where the cost LUT after CO is stored
+            output_path (str): Path to the output folder to store results
         """
         super().__init__(list_of_callables, **kwargs)
         self.workload = workload
@@ -77,7 +77,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.allocations_path = allocations_path
         os.makedirs(self.allocations_path, exist_ok=True)
         self.tiled_workload_post_co_path = tiled_workload_post_co_path
-        self.cost_lut_post_co_path = cost_lut_post_co_path
+        self.output_path = output_path
         self.co_time_limit: int = kwargs.get("co_time_limit", self.CO_TIME_LIMIT)
 
         # Which CME attribute to use for the node latencies
@@ -102,15 +102,9 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.extract_steady_state_per_stack()
         self.find_best_allocation_per_stack()
         tsa = self.run_simple_scheduler()
-        # scme = self.run_coala()
 
         logger.info("End ConstraintOptimizationAllocationStage.")
         yield (tsa, None)
-
-    def run_coala(self):
-        unrolled_allocation = self.get_unrolled_allocation()
-        scme = self.schedule_allocation(unrolled_allocation)
-        return scme
 
     def run_simple_scheduler(self):
         """
@@ -121,7 +115,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             stack_subgraph = self.workload.get_subgraph([n for n in self.workload.node_list if n.id in stack])
             iterations = self.ss_iterations_per_stack[stack]
             scheduler = SteadyStateScheduler(
-                stack_subgraph, self.accelerator, self.original_workload, self.cost_lut, iterations, self.nb_cols_to_use
+                stack_subgraph, self.accelerator, self.original_workload, self.cost_lut, iterations, self.nb_cols_to_use, self.output_path,
             )
             schedule = scheduler.run(optimal_allocation)
         return schedule
@@ -573,55 +567,6 @@ class ConstraintOptimizationAllocationStage(Stage):
 
     def get_order_non_steady_state(self, to_compute: set[ComputationNode]):
         return [(n.id, n.sub_id) for n in sorted(to_compute, key=lambda x: (-x.id, -x.sub_id))]
-
-    def schedule_allocation(self, allocation: TimeSlotAllocation) -> StreamCostModelEvaluation:
-        # Get the involved layer ids we want to schedule and their core allocations
-        # Get the relevant subgraph of the original layer-wise workload
-        layer_ids = [node.id for node in allocation.nodes]
-        relevant_nodes = list(filter(lambda n: n.id in layer_ids, self.original_workload.node_list))
-        unpartitioned_sub_workload: DNNWorkloadStream = pickle_deepcopy(self.original_workload.subgraph(relevant_nodes))
-
-        for n in unpartitioned_sub_workload.node_list:
-            if n.id not in layer_ids:
-                raise ValueError(
-                    f"{n} not in steady state allocation. If this is intended, set their core allocation manually."
-                )
-        # # Manually add the wanted core ids for layers not in the steady state
-        # layer_ids, core_ids = self.add_core_ids_for_layers_not_in_steady_state(
-        #     layer_ids=layer_ids, core_ids=core_ids, sub_workload=unpartitioned_sub_workload
-        # )
-
-        # Set the correct allocations for the layers in the copied workload
-        self.set_fixed_allocations_for_workload(unpartitioned_sub_workload, allocation)
-        # Generate/check inter core mapping for all nodes
-        self.update_inter_core_mapping(unpartitioned_sub_workload, allocation)
-        scheduling_order = self.get_scheduling_order(allocation)
-
-        loma_lpf_limit = 7
-        kwargs = self.kwargs.copy()
-        kwargs["loma_lpf_limit"] = loma_lpf_limit
-        kwargs["accelerator"] = self.accelerator
-        kwargs["workload"] = unpartitioned_sub_workload
-        kwargs["scheduling_order"] = scheduling_order
-        kwargs["layer_stacks"] = self.layer_stacks
-        kwargs["tiled_workload_path"] = self.tiled_workload_post_co_path
-        kwargs["cost_lut_path"] = self.cost_lut_post_co_path
-        kwargs["latency_attr"] = self.latency_attr
-        kwargs["fix_all"] = True  # Fix all core allocations to the given ones
-
-        # Create stages that will run a single cost model evaluation (fixed core allocations)
-        main_stage = MainStage(
-            [
-                TiledWorkloadGenerationStage,  # Splits in intra-core mapping
-                ZigZagCoreMappingEstimationStage,  # type: ignore
-                SetFixedAllocationPerformanceStage,
-                StreamCostModelEvaluationStage,
-            ],
-            **kwargs,
-        )
-        scme, _ = main_stage.run()
-        scme = scme[0]
-        return scme
 
     def update_inter_core_mapping(
         self, unpartitioned_sub_workload: ComputationNodeWorkload, allocation: TimeSlotAllocation

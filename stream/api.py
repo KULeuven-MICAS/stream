@@ -152,7 +152,7 @@ def optimize_allocation_co(  # noqa: PLR0913
     cost_lut_path = f"{output_path}/{experiment_id}/cost_lut.pickle"
     allocations_path = f"{output_path}/{experiment_id}/waco/"
     tiled_workload_post_co_path = f"{output_path}/{experiment_id}/tiled_workload_post_co.pickle"
-    cost_lut_post_co_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
+    output_path = f"outputs/{experiment_id}/"
     scme_path = f"{output_path}/{experiment_id}/scme.pickle"
     codegen_path = f"{output_path}/{experiment_id}/output.mlir"
 
@@ -202,7 +202,7 @@ def optimize_allocation_co(  # noqa: PLR0913
             cost_lut_path=cost_lut_path,
             allocations_path=allocations_path,
             tiled_workload_post_co_path=tiled_workload_post_co_path,
-            cost_lut_post_co_path=cost_lut_post_co_path,
+            output_path=output_path,
             temporal_mapping_type=temporal_mapping_type,  # required by ZigZagCoreMappingEstimationStage
             operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
             latency_attr="ideal_temporal_cycle",
