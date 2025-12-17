@@ -333,7 +333,7 @@ class SteadyStateScheduler:
             transfer_node = SteadyStateTransfer(
                 transfer_type=transfer_type,
                 id=tensor.id,
-                node_name=f"Transfer({tensor.node_name} -> {post_transfer_tensor_node_names})",
+                node_name=f"Transfer({tensor.node_name} -> {post_transfer_tensor_node_names[0]}, ...)",
                 srcs=(tensor,),
                 dsts=post_transfer_tensor_nodes,  # type: ignore
                 size=size,

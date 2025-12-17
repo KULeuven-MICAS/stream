@@ -212,14 +212,12 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
                 n.set_style("filled")
                 n.set_fillcolor("#c2f0c2")
             elif isinstance(node, SteadyStateTransfer):
-                if TensorFlag.CONSTANT in node.tensor.tensor_flag:
-                    chosen_mem_core_label = self._get_transfer_mem_core_label(node)
-                else:
-                    chosen_mem_core_label = ""
+                chosen_resource_allocation_label = self._get_chosen_resource_label(node)
+                chosen_mem_core_label = self._get_transfer_mem_core_label(node)
                 n.set_shape("box")
                 n.set_label(
                     f"{node.node_name}\n"
-                    f"Resource: {getattr(node, 'chosen_resource_allocation', 'None')}\n"
+                    f"{chosen_resource_allocation_label}"
                     f"Type: {node.transfer_type.value.capitalize()}\n"
                     f"{chosen_mem_core_label}"
                     f"{node.steady_state_iteration_space}"
@@ -235,7 +233,15 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
 
     def _get_transfer_mem_core_label(self, node: SteadyStateTransfer) -> str:
         chosen_mem_core = getattr(node, "chosen_memory_core", "None")
+        if TensorFlag.CONSTANT in node.tensor.tensor_flag:
+            return ""
         if chosen_mem_core is None:
             possible_mem_cores = node.possible_memory_core_allocation
             return f"Possible Mem Cores: {possible_mem_cores}\n"
         return f"Chosen Mem Core: {chosen_mem_core}\n"
+
+    def _get_chosen_resource_label(self, node: SteadyStateTransfer) -> str:
+        chosen_resource_allocation = getattr(node, "chosen_resource_allocation", None)
+        if chosen_resource_allocation is None:
+            return "Resource: None\n"
+        return f"Resource: {chosen_resource_allocation[0]},...,{chosen_resource_allocation[-1]}\n"
