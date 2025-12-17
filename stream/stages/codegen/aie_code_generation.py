@@ -4,9 +4,10 @@ from copy import copy
 from math import prod
 from typing import Any, cast
 
+from snaxc.dialects.snax import NoneAttr
 from snaxc.dialects.tsl import TSL
 from xdsl.context import MLContext
-from xdsl.dialects.builtin import MemRefType, ModuleOp
+from xdsl.dialects.builtin import ArrayAttr, IntegerAttr, MemRefType, ModuleOp
 from xdsl.ir import Operation, SSAValue
 from xdsl.irdl import Operand
 from xdsl_aie.dialects.aie import AIEDeviceEnum
@@ -20,6 +21,7 @@ from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
 from stream.compiler.transforms.stream_split_transfers import StreamSplitTransfersPass
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
+from stream.hardware.architecture.accelerator import Accelerator
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
@@ -187,6 +189,15 @@ class AIECodeGenerationStage(Stage):
         else:
             result_types = [dest_type] * len(transfer.dsts)
 
+        memtile = transfer.chosen_memory_core
+        if memtile is None:
+            memtile = NoneAttr()
+        else:
+            row, col = memtile.row_id, memtile.col_id
+            assert row is not None
+            assert col is not None
+            memtile = ArrayAttr([IntegerAttr.from_index_int_value(x) for x in (col, row)])
+
         op = TransferOp(
             source_vals,
             result_types,
@@ -200,7 +211,7 @@ class AIECodeGenerationStage(Stage):
             strides,
             spatial_strides,
             [str(dim) for dim in tensor.loop_dimensions],
-            str(transfer.chosen_memory_core),
+            memtile,
         )
 
         return op
@@ -240,12 +251,17 @@ class AIECodeGenerationStage(Stage):
         assert isinstance(output_type, MemRefType)
         output_type = MemRefType(output_type.element_type, output_type.shape)
 
+        assert (core := compute.chosen_resource_allocation) is not None
+        row, col = core.row_id, core.col_id
+        assert row is not None
+        assert col is not None
+        core_allocation = ArrayAttr([IntegerAttr.from_index_int_value(x) for x in (col, row)])
         # create computation node op with the needed information
         op = ComputationNodeOp(
             operands,
             None,
             kernel=compute.kernel.function_name,
-            core_allocation=str(compute.chosen_resource_allocation),
+            core_allocation=core_allocation,
             ssis=compute.steady_state_iteration_space,
             result_types=[output_type],
         )
@@ -284,8 +300,8 @@ class AIECodeGenerationStage(Stage):
 
         return module
 
-    def codegen_main(self, cme: SteadyStateScheduler, trace_size: int, npu: AIEDeviceEnum) -> None:
-        workload = cme.steady_state_workload
+    def codegen_main(self, sss: SteadyStateScheduler, trace_size: int, npu: AIEDeviceEnum) -> None:
+        workload = sss.steady_state_workload
         assert workload is not None
 
         aie_kernels = {

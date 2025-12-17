@@ -12,6 +12,7 @@ from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.context import MLContext
 from xdsl.dialects.arith import AddiOp, ConstantOp, MuliOp
 from xdsl.dialects.builtin import (
+    ArrayAttr,
     DenseArrayBase,
     IndexType,
     IntegerAttr,
@@ -72,60 +73,6 @@ from stream.compiler.transforms.iteration_space_to_for import iteration_space_to
 from stream.workload.steady_state.iteration_space import ComputeTileReuse, MemTileReuse
 
 
-def get_tile(value: str) -> tuple[int, int]:  # noqa: PLR0911, PLR0912
-    if value == "Core(0)":
-        return 0, 0
-    elif value == "Core(1)":
-        return 0, 1
-    elif value == "Core(2)":
-        return 0, 2
-    elif value == "Core(3)":
-        return 0, 3
-    elif value == "Core(4)":
-        return 0, 4
-    elif value == "Core(5)":
-        return 0, 5
-    elif value == "Core(6)":
-        return 1, 0
-    elif value == "Core(7)":
-        return 1, 1
-    elif value == "Core(8)":
-        return 1, 2
-    elif value == "Core(9)":
-        return 1, 3
-    elif value == "Core(10)":
-        return 1, 4
-    elif value == "Core(11)":
-        return 1, 5
-    elif value == "Core(13)":
-        return 2, 1
-    elif value == "Core(14)":
-        return 2, 2
-    elif value == "Core(15)":
-        return 2, 3
-    elif value == "Core(16)":
-        return 2, 4
-    elif value == "Core(17)":
-        return 2, 5
-    elif value == "Core(19)":
-        return 3, 1
-    elif value == "Core(20)":
-        return 3, 2
-    elif value == "Core(21)":
-        return 3, 3
-    elif value == "Core(22)":
-        return 3, 4
-    elif value == "Core(23)":
-        return 3, 5
-
-    raise RuntimeError(f"Unknown tile value: {value}")
-    match = re.match(r"Core\((\d+)\)", value)
-    if match:
-        return 0, int(match.group(1))
-    else:
-        raise ValueError(f"Invalid tile value: {value}")
-
-
 def get_of_name(source: TileOp, dest: TileOp, operand: str) -> str:
     of_name: str = "of_"
     # compute tile specific objectfifos:
@@ -172,8 +119,11 @@ class TileOpManager:
                 return parent.tile.op
             if isinstance(parent, RuntimeSequenceOp):
                 if isinstance(operation, PushOp | PullOp):
-                    memtile_idx = get_tile(operation.memtile.data)
-                    return self.insert_or_update(memtile_idx[0], 0)
+                    if not isinstance(operation.memtile, ArrayAttr):
+                        breakpoint()
+                    assert isinstance(attr := operation.memtile, ArrayAttr)
+                    memtile_idx = cast(tuple[IntegerAttr[IndexType], ...], attr.data)
+                    return self.insert_or_update(memtile_idx[0].value.data, 0)
                 return self.insert_or_update(0, 0)
             parent = parent.parent_op()
             if parent is None:
@@ -451,7 +401,9 @@ class ObjectFifoChain:
         hops: Sequence[ObjectFifoHop]
         if is_shim(consumer_tiles[0]) or is_shim(producer_tiles[0]):
             # pass through the memtile
-            memtile = tile_op_manager.insert_or_update(*get_tile(producers[0].memtile.data))
+            assert isinstance(attr := producers[0].memtile, ArrayAttr)
+            memtile_idx = cast(tuple[IntegerAttr[IndexType], ...], attr.data)
+            memtile = tile_op_manager.insert_or_update(memtile_idx[0].value.data, memtile_idx[1].value.data)
             hops = [
                 ObjectFifoHop.to_memtile(producers, memtile, tile_op_manager, name_base),
                 ObjectFifoHop.from_memtile(consumers, memtile, tile_op_manager, name_base),
@@ -914,7 +866,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
                 compute.inputs,
                 index_switch.results[0],
                 compute.kernel.data,
-                compute.core_allocation.data,
+                compute.core_allocation,
                 compute.ssis.data,
                 compute.result_types,
             )
@@ -1937,7 +1889,9 @@ class WrapInCoreOps(RewritePattern):
     def match_and_rewrite(self, op: Operation, rewriter: PatternRewriter):  # noqa: PLR0912
         shim = (0, 0)
         if isinstance(op, ComputationNodeOp):
-            core = get_tile(op.core_allocation.data)
+            assert isinstance(attr := op.core_allocation, ArrayAttr)
+            core = cast(tuple[IntegerAttr[IndexType], ...], attr.data)
+            core = tuple(x.value.data for x in core)
         elif isinstance(op, EdgeOp):
             core = shim
         elif isinstance(op, PushOp):
@@ -1946,7 +1900,9 @@ class WrapInCoreOps(RewritePattern):
             if isinstance(op.input.op, EdgeOp):
                 core = shim
             elif isinstance(op.input.op, ComputationNodeOp):
-                core = get_tile(op.input.op.core_allocation.data)
+                assert isinstance(attr := op.input.op.core_allocation, ArrayAttr)
+                core = cast(tuple[IntegerAttr[IndexType], ...], attr.data)
+                core = tuple(x.value.data for x in core)
             else:
                 raise NotImplementedError()
         elif isinstance(op, PullOp):
@@ -1956,7 +1912,9 @@ class WrapInCoreOps(RewritePattern):
             if isinstance(use.operation, EdgeOp):
                 core = shim
             elif isinstance(use.operation, ComputationNodeOp):
-                core = get_tile(use.operation.core_allocation.data)
+                assert isinstance(attr := use.operation.core_allocation, ArrayAttr)
+                core = cast(tuple[IntegerAttr[IndexType], ...], attr.data)
+                core = tuple(x.value.data for x in core)
             else:
                 raise NotImplementedError()
         else:
