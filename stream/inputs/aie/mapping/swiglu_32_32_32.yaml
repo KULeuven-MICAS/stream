@@ -8,7 +8,7 @@
   inter_core_tiling:
   - K, 1
   kernel:
-    name: matvec_vectorized_bf16_bf16
+    name: matvec
     utilization: 61.8
 - name: Gemm_Right
   core_allocation:
@@ -20,7 +20,7 @@
   inter_core_tiling:
   - K, 1
   kernel:
-    name: matvec_vectorized_bf16_bf16
+    name: matvec
     utilization: 61.8
 - name: Silu
   core_allocation:
@@ -31,7 +31,7 @@
   inter_core_tiling:
   - K, 1
   kernel:
-    name: silu_bf16
+    name: silu
     utilization: 50.0
 - name: Elt_Mul
   core_allocation:
@@ -42,7 +42,7 @@
   inter_core_tiling:
   - K, 1
   kernel:
-    name: eltwise_mul_bf16_vector
+    name: eltwise_mul
     utilization: 50.0
 - name: Gemm_Down
   core_allocation:
@@ -54,7 +54,7 @@
   inter_core_tiling:
   - K, 1
   kernel:
-    name: matvec_vectorized_bf16_bf16
+    name: matvec
     utilization: 61.8
 - name: default
   core_allocation:
@@ -66,5 +66,5 @@
   inter_core_tiling:
   - K, 1
   kernel:
-    name: matvec_vectorized_bf16_bf16
+    name: matvec
     utilization: 61.8

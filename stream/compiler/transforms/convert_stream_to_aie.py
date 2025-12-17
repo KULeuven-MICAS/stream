@@ -66,6 +66,7 @@ from xdsl_aie.dialects.aiex import (
 from zigzag.datatypes import LayerDim
 
 from stream.compiler.dialects.stream import ChannelOp, ComputationNodeOp, EdgeOp, PullOp, PushOp, TransferOp
+from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.compiler.transforms.convert_aie_kernels import ConvertAIEKernels
 from stream.compiler.transforms.iteration_space_to_for import iteration_space_to_for
 from stream.workload.steady_state.iteration_space import ComputeTileReuse, MemTileReuse
@@ -2000,6 +2001,7 @@ class ConvertStreamToAIEPass(ModulePass):
 
     # The order in which the edge ops should appear in the runtime sequence
     arg_order: list[str]
+    aie_kernels: dict[str, AIEKernel]
 
     def apply(self, ctx: MLContext, op: ModuleOp, npu: str) -> None:
         # wrap everything in a device op
@@ -2077,7 +2079,7 @@ class ConvertStreamToAIEPass(ModulePass):
         PatternRewriteWalker(MMPattern(tile_op_manager), apply_recursively=False).rewrite_module(op)
 
         # Use the new convert aie kernels operation:
-        PatternRewriteWalker(ConvertAIEKernels()).rewrite_module(op)
+        PatternRewriteWalker(ConvertAIEKernels(self.aie_kernels)).rewrite_module(op)
 
         # handle layouts
         match npu:

@@ -5,10 +5,7 @@ from stream.compiler.kernels.matvec import MatVecKernel
 from stream.compiler.kernels.silu import SiluKernel
 
 AIEKernels = {
-    x.function_name: x
-    for x in [
-        MatVecKernel(bf16),
-        SiluKernel(bf16),
-        EltwiseMulKernel(bf16)
-    ]
+    "matvec": lambda utilization: MatVecKernel(utilization, bf16),
+    "silu": lambda utilization: SiluKernel(utilization, bf16),
+    "eltwise_mul": lambda utilization: EltwiseMulKernel(utilization, bf16),
 }

@@ -10,7 +10,8 @@ from zigzag.mapping.spatial_mapping import (
     SpatialMapping,
 )
 
-from stream.workload.kernel import AIEKernel
+from stream.compiler.kernels import AIEKernels
+from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.workload.mapping import TILING_T, TILING_WILDCARD_T, InterCoreMappingAttributes
 
 
@@ -42,10 +43,16 @@ class MappingFactory:
         return all_mappings
 
     def create_kernel(self, mapping_data: dict[str, Any]) -> AIEKernel:
-        return AIEKernel(
-            name=mapping_data["kernel"]["name"],
-            utilization=mapping_data["kernel"]["utilization"],
-        )
+        kernel_name = mapping_data["kernel"]["name"]
+        kernel = AIEKernels.get(kernel_name, None)
+        if kernel is None:
+            raise ValueError(f"Unknown kernel name {kernel_name}. Available kernels: {list(AIEKernels.keys())}")
+        utilization = mapping_data["kernel"].get("utilization", None)
+        if utilization is None:
+            raise ValueError(
+                f"Utilization not specified for kernel {kernel_name}. Update the mapping file to include it."
+            )
+        return kernel(utilization=utilization)
 
     def create_spatial_mapping(self, mapping_data: dict[str, Any]) -> SpatialMapping:
         if mapping_data["spatial_mapping"] is None:

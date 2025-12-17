@@ -244,7 +244,7 @@ class AIECodeGenerationStage(Stage):
         op = ComputationNodeOp(
             operands,
             None,
-            kernel=compute.kernel.name,
+            kernel=compute.kernel.function_name,
             core_allocation=str(compute.chosen_resource_allocation),
             ssis=compute.steady_state_iteration_space,
             result_types=[output_type],
@@ -288,6 +288,12 @@ class AIECodeGenerationStage(Stage):
         workload = cme.steady_state_workload
         assert workload is not None
 
+        aie_kernels = {
+            node.kernel.function_name: node.kernel
+            for node in workload.node_list
+            if isinstance(node, SteadyStateComputation)
+        }
+
         module = self.generate_steady_state_workload(workload)
 
         # SetNoReusePass().apply(self.context, module)
@@ -300,7 +306,7 @@ class AIECodeGenerationStage(Stage):
         args = self.runtime_args  # will be inferred automatically based on EdgeOps
 
         # Convert to AIE
-        ConvertStreamToAIEPass(args).apply(self.context, module, npu)
+        ConvertStreamToAIEPass(args, aie_kernels).apply(self.context, module, npu)
 
         # Remove custom layout attributes
         ClearMemorySpace().apply(self.context, module)

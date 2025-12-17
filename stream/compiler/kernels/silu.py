@@ -7,12 +7,10 @@ from xdsl.dialects.arith import ConstantOp
 from xdsl.dialects.builtin import (
     AnyDenseElement,
     FunctionType,
-    IndexType,
     MemRefType,
     i32,
 )
 from xdsl.dialects.func import CallOp
-from xdsl.dialects.memref import ExtractAlignedPointerAsIndexOp
 from xdsl.irdl import Operation
 
 from stream.compiler.dialects.stream import ComputationNodeOp

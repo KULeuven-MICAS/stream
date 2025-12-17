@@ -15,8 +15,6 @@ from stream.compiler.dialects.stream import ComputationNodeOp
 
 @dataclass
 class AIEKernel(ABC):
-
-    name: str
     utilization: float
 
     @property
