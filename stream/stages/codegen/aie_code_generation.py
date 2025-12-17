@@ -21,7 +21,6 @@ from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
 from stream.compiler.transforms.stream_split_transfers import StreamSplitTransfersPass
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
-from stream.hardware.architecture.accelerator import Accelerator
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace

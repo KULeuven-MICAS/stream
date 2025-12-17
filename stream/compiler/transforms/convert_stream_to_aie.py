@@ -1,4 +1,3 @@
-import re
 import string
 from collections import defaultdict
 from collections.abc import Iterable, Sequence

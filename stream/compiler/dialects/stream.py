@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 
-from xdsl.dialects.builtin import ArrayAttr, IndexType, IntegerAttr, StringAttr, i64
+from xdsl.dialects.builtin import ArrayAttr, StringAttr, i64
 from xdsl.ir import Attribute, Data, Dialect, Operation, ParametrizedAttribute, SSAValue, TypeAttribute
 from xdsl.irdl import (
     AttrSizedOperandSegments,

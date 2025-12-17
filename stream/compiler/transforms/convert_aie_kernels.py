@@ -7,7 +7,6 @@ from xdsl.pattern_rewriter import (
 )
 
 from stream.compiler.dialects.stream import ComputationNodeOp
-from stream.compiler.kernels import AIEKernels
 from stream.compiler.kernels.aie_kernel import AIEKernel
 
 
@@ -17,6 +16,6 @@ class ConvertAIEKernels(RewritePattern):
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
-        aie_kernel = AIEKernels.get(op.kernel.data)
+        aie_kernel = self.kernels.get(op.kernel.data)
         if aie_kernel is not None:
             aie_kernel.rewrite(op, rewriter)
