@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias
+from typing import TYPE_CHECKING, Literal, TypeAlias
 
 from zigzag.datatypes import (
     Constants,
@@ -11,6 +11,9 @@ from zigzag.workload.layer_attributes import (
     MemoryOperandLinks,
 )
 from zigzag.workload.layer_node import MappingAttributes as IntraCoreMappingAttributes
+
+if TYPE_CHECKING:
+    from stream.compiler.kernels.aie_kernel import AIEKernel
 
 TILING_T: TypeAlias = list[tuple[LayerDim, int]]
 TILING_WILDCARD_T: TypeAlias = list[tuple[LayerDim, int | Literal["*", "all"]]]
@@ -37,4 +40,4 @@ class InterCoreMappingAttributes:
     intra_core_tiling: TILING_T
     inter_core_tiling: TILING_WILDCARD_T | TILING_T
     layer_dimension_names: list[str]
-    kernel: Any
+    kernel: "AIEKernel"

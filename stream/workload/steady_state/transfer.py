@@ -14,6 +14,7 @@ class TransferType(Enum):
     DISTRIBUTE = "distribute"
     BROADCAST = "broadcast"
     JOIN = "join"
+    DISTRIBUTE_AND_BROADCAST = "distribute_and_broadcast"
 
 
 class SteadyStateTransfer(SteadyStateNode):

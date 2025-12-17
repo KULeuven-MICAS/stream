@@ -53,7 +53,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     ######################################################################
 
     ################################LOGGING###############################
-    log_path = f"outputs/{experiment_id}/stream.log"
+    log_path = os.path.join(os.getcwd(), f"outputs/{experiment_id}/stream.log")
     # Ensure the output directory exists
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     # Get root logger and remove any existing handlers
@@ -88,6 +88,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         skip_if_exists=False,
         enable_codegen=True,
         trace_size=trace_size,
+        nb_cols_to_use=cols,
         npu=npu,
         runtime_args=runtime_args,
     )

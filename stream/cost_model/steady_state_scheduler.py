@@ -496,20 +496,29 @@ class SteadyStateScheduler:
         Determine the transfer type based on the post transfer tensor nodes.
         This assumes that the post transfer tensor nodes are all the slice if more than one (broadcast)
         """
-        if len(post_transfer_tensor_nodes) > 1:
-            loop_ranges = [ptn.loop_ranges for ptn in post_transfer_tensor_nodes]
-            if all(lr == loop_ranges[0] for lr in loop_ranges):
-                # All loop ranges are the same, this means we are broadcasting the same data to multiple cores
-                size = max(ptn.size for ptn in post_transfer_tensor_nodes)
-                return TransferType.BROADCAST, size
-            else:
-                # Different loop ranges, this means we are joining different data from multiple cores
-                size = sum(ptn.size for ptn in post_transfer_tensor_nodes)
-                return TransferType.DISTRIBUTE, size
-        else:
-            assert len(post_transfer_tensor_nodes) == 1
+        if len(post_transfer_tensor_nodes) == 1:
             size = post_transfer_tensor_nodes[0].size
             return TransferType.UNICAST, size
+        # Now we know there are multiple destinations of the transfer, but we don't know if it's
+        # broadcast or distribute or a combination.
+        loop_ranges = [ptn.loop_ranges for ptn in post_transfer_tensor_nodes]
+        # Create multiset from the loop ranges to get the type of transfer based on the multiplicities
+        multiset = defaultdict(int)
+        for lr in loop_ranges:
+            multiset[lr] += 1
+        max_multiplicity = max(multiset.values())
+        if max_multiplicity == 1:
+            # All loop ranges are different, this means we are distributing different data to multiple cores
+            size = sum(ptn.size for ptn in post_transfer_tensor_nodes)
+            return TransferType.DISTRIBUTE, size
+        if len(multiset) == 1:
+            # Only one unique loop range, means its a pure broadcast
+            size = max(ptn.size for ptn in post_transfer_tensor_nodes)
+            return TransferType.BROADCAST, size
+        # Mixed case, we have both broadcast and distribute happening
+        unique_ptns = [post_transfer_tensor_nodes[loop_ranges.index(lr)] for lr in multiset]
+        total_size = sum(ptn.size for ptn in unique_ptns)
+        return TransferType.DISTRIBUTE_AND_BROADCAST, total_size
 
     def get_transfer_type_and_size_for_output(
         self, pre_transfer_tensor_nodes: tuple[SteadyStateTensor, ...]

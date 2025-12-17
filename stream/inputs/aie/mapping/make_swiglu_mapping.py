@@ -112,7 +112,7 @@ def make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, 
         f"K, {hidden_dim // n}",
         f"D, {seq_len // 4}",
     ]
-    kernel_gemm = {"name": "matvec", "utilization": 61.8}
+    kernel_gemm = {"name": "matvec", "kwargs": {"utilization": 61.8}}
     compute_allocation_gemm_left = [2, 3, 4, 5]
     gemm_left = {
         "name": "Gemm_Left",
@@ -137,7 +137,7 @@ def make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, 
         f"H, {hidden_dim // line_size}",
         f"B, {seq_len // 4}",
     ]
-    kernel_silu = {"name": "silu", "utilization": 50.0}  # TODO: utilization
+    kernel_silu = {"name": "silu", "kwargs": {"utilization": 50.0}}  # TODO: utilization
     silu = {
         "name": "Silu",
         "core_allocation": copy.deepcopy(compute_allocation_silu),
@@ -153,7 +153,7 @@ def make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, 
         f"H, {hidden_dim // line_size}",
         f"B, {seq_len // 4}",
     ]
-    kernel_mul = {"name": "eltwise_mul", "utilization": 50.0}  # TODO: utilization
+    kernel_mul = {"name": "eltwise_mul", "kwargs": {"utilization": 50.0}}  # TODO: utilization
     mul = {
         "name": "Elt_Mul",
         "core_allocation": copy.deepcopy(compute_allocation_mul),
@@ -177,7 +177,7 @@ def make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, 
         "name": "default",
         "core_allocation": copy.deepcopy(compute_allocation_gemm_left),
         "intra_core_tiling": copy.deepcopy(intra_core_tiling_gemm),
-        "inter_core_tiling": copy.deepcopy(intra_core_tiling_gemm),
+        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm),
         "kernel": copy.deepcopy(kernel_gemm),
     }
 

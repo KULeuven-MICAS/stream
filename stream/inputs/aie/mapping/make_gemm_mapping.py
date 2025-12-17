@@ -103,7 +103,7 @@ def make_gemm_mapping_whole_array(M, K, N, m, k, n, nb_rows_to_use: int = 4, nb_
         for row_idx in range(nb_rows_to_use)
     ]
 
-    kernel = {"name": f"gemm_{m}x{k}x{n}_0_0", "utilization": 61.8}
+    kernel = {"name": "gemm", "kwargs": {"m": m, "k": k, "n": n, "utilization": 61.8}}
     mapping = [
         {
             "name": "Gemm",
