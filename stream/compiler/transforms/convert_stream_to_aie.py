@@ -66,6 +66,7 @@ from xdsl_aie.dialects.aiex import (
 from zigzag.datatypes import LayerDim
 
 from stream.compiler.dialects.stream import ChannelOp, ComputationNodeOp, EdgeOp, PullOp, PushOp, TransferOp
+from stream.compiler.transforms.convert_aie_kernels import ConvertAIEKernels
 from stream.compiler.transforms.iteration_space_to_for import iteration_space_to_for
 from stream.workload.steady_state.iteration_space import ComputeTileReuse, MemTileReuse
 
@@ -2074,9 +2075,9 @@ class ConvertStreamToAIEPass(ModulePass):
 
         PatternRewriteWalker(ConvPattern(tile_op_manager), apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(MMPattern(tile_op_manager), apply_recursively=False).rewrite_module(op)
-        PatternRewriteWalker(MatVecPattern(tile_op_manager), apply_recursively=False).rewrite_module(op)
-        PatternRewriteWalker(SiluPattern(tile_op_manager), apply_recursively=False).rewrite_module(op)
-        PatternRewriteWalker(ElementwiseMulPattern(tile_op_manager), apply_recursively=False).rewrite_module(op)
+
+        # Use the new convert aie kernels operation:
+        PatternRewriteWalker(ConvertAIEKernels()).rewrite_module(op)
 
         # handle layouts
         match npu:
