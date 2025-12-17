@@ -174,19 +174,18 @@ class AIECodeGenerationStage(Stage):
             sorted_transfers = sorted(transfer.srcs, key=lambda x: x.loop_ranges)
         else:
             sorted_transfers = sorted(transfer.dsts, key=lambda x: x.loop_ranges)
-        if len(sorted_transfers) > 1:
+        unique_transfers = {x.loop_ranges: x for x in sorted_transfers}
+        if len(unique_transfers) > 1:
             for dim in tensor.loop_dimensions:
                 spatial_strides.append(
-                    sorted_transfers[1].loop_ranges_per_dim[dim][0] - sorted_transfers[0].loop_ranges_per_dim[dim][0]
+                    list(unique_transfers.values())[1].loop_ranges_per_dim[dim][0]
+                    - list(unique_transfers.values())[0].loop_ranges_per_dim[dim][0]
                 )
         else:
             for dim in tensor.loop_dimensions:
                 spatial_strides.append(transfer.srcs[0].loop_ranges_per_dim[dim][0])
 
-        if not any(spatial_strides):
-            result_types = [dest_type]
-        else:
-            result_types = [dest_type] * len(transfer.dsts)
+        result_types = [dest_type] * len(unique_transfers)
 
         memtile = transfer.chosen_memory_core
         if memtile is None:
@@ -236,8 +235,9 @@ class AIECodeGenerationStage(Stage):
                 operands.append(transfer_op.results[0])
             else:
                 sorted_transfers = sorted(transfer.dsts, key=lambda x: x.loop_ranges)
+                unique_transfers = {x.loop_ranges: x for x in sorted_transfers}
                 assert isinstance(input, SteadyStateTensor)
-                index = sorted_transfers.index(input)
+                index = list(unique_transfers.keys()).index(input.loop_ranges)
                 operands.append(transfer_op.results[index])
 
         # get output type:

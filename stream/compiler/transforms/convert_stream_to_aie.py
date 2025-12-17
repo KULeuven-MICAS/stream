@@ -286,25 +286,33 @@ class ObjectFifoHop:
         cls, consumers: Sequence[PullOp], memtile: TileOp, tile_op_manager: TileOpManager, name_base: str
     ) -> Self:
         assert isinstance(memref_type := consumers[0].output.type, MemRefType)
-        distribute = False
+        unique_consumers = len(set(x.offsets for x in consumers))
+        breakpoint()
         if len(consumers) > 1:
             # determine whether to broadcast / distribute
-            distribute = consumers[0].offsets != consumers[1].offsets
-            if distribute:
+            if unique_consumers == 1:
+                of_type = "broadcast"
+            elif unique_consumers == len(consumers):
                 of_type = "distribute"
             else:
-                of_type = "broadcast"
+                of_type = "distribroad"
         else:
             of_type = "unicast"
         consumers = sorted(consumers, key=lambda op: SortPullPushOp(op, tile_op_manager))
         consumer_tiles = [tile_op_manager.get_tile(consumer) for consumer in consumers]
-        if distribute:
+        if of_type == "distribute":
             fifos = [(memtile, [tile]) for tile in consumer_tiles]
+        elif of_type == "distribroad":
+            # gather unique consumer tiles
+            unique_consumer_tiles = defaultdict(list)
+            for consumer in consumers:
+                unique_consumer_tiles[consumer.offsets].append(tile_op_manager.get_tile(consumer))
+            fifos = [(memtile, tiles) for tiles in unique_consumer_tiles.values()]
         else:
             fifos = [(memtile, consumer_tiles)]
         object_fifos: list[ObjectFifoOp] = []
         for i, (of_producer, of_consumers) in enumerate(fifos):
-            if distribute:
+            if of_type in ("distribute", "distribroad"):
                 of_name = name_base + "_" + of_type + "_" + string.ascii_lowercase[i]
             else:
                 of_name = name_base + "_" + of_type

@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 
-from xdsl.dialects.builtin import ArrayAttr, StringAttr, i64
+from xdsl.dialects.builtin import ArrayAttr, IndexType, IntegerAttr, StringAttr, i64
 from xdsl.ir import Attribute, Data, Dialect, Operation, ParametrizedAttribute, SSAValue, TypeAttribute
 from xdsl.irdl import (
     AttrSizedOperandSegments,
@@ -260,6 +260,7 @@ class PullOp(IRDLOperation):
     spatial_strides = prop_def(DenseArrayBase)
     loop_dimensions = prop_def(ArrayAttr[StringAttr])
     memtile = prop_def(Attribute)
+    operand = prop_def(IntegerAttr[IndexType])
 
     ssis = prop_def(SteadyStateIterationSpaceAttr)
 
