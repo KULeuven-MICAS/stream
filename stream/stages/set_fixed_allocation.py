@@ -4,7 +4,7 @@ from typing import Any
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.stages.stage import Stage, StageCallable
 from stream.utils import (
-    CostModelEvaluationLUT,
+    CoreCostLUT,
     get_inter_core_tiling_size,
 )
 from stream.workload.onnx_workload import ComputationNodeWorkload
@@ -19,7 +19,7 @@ class SetFixedAllocationStage(Stage):
         *,
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
-        cost_lut: CostModelEvaluationLUT,
+        cost_lut: CoreCostLUT,
         **kwargs: Any,
     ):
         super().__init__(list_of_callables, **kwargs)

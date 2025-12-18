@@ -3,8 +3,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 
 if TYPE_CHECKING:
@@ -67,38 +67,37 @@ def get_real_input_tensors(n, g):
 
 
 def get_spatial_utilizations(
-    scme: "StreamCostModelEvaluation", node: "ComputationNode", cost_lut: "CostModelEvaluationLUT | None"
+    scme: "StreamCostModelEvaluation", node: "ComputationNode", cost_lut: "CoreCostLUT | None"
 ):
     if cost_lut:
         equal_node = cost_lut.get_equal_node(node)
-        assert equal_node, (
-            f"No equal node for {node} found in CostModelEvaluationLUT. Check if pre/post LUT path is correct."
-        )
+        assert equal_node, f"No equal node for {node} found in CoreCostLUT. Check if pre/post LUT path is correct."
         assert isinstance(node.chosen_core_allocation, int), (
             f"Chosen core allocation for {node} should be an integer, got {type(node.chosen_core_allocation)}."
         )
         core = scme.accelerator.get_core(node.chosen_core_allocation)
-        cme = cost_lut.get_cme(equal_node, core)
-        return cme.mac_spatial_utilization, cme.mac_utilization1
+        cme = cost_lut.get_cost(equal_node, core)
+        return (
+            getattr(cme, "mac_spatial_utilization", np.nan),
+            getattr(cme, "mac_utilization1", np.nan),
+        )
     return np.nan, np.nan
 
 
-def get_energy_breakdown(
-    scme: "StreamCostModelEvaluation", node: "ComputationNode", cost_lut: "CostModelEvaluationLUT | None"
-):
+def get_energy_breakdown(scme: "StreamCostModelEvaluation", node: "ComputationNode", cost_lut: "CoreCostLUT | None"):
     if cost_lut:
         equal_node = cost_lut.get_equal_node(node)
-        assert equal_node, (
-            f"No equal node for {node} found in CostModelEvaluationLUT. Check if pre/post LUT path is correct."
-        )
+        assert equal_node, f"No equal node for {node} found in CoreCostLUT. Check if pre/post LUT path is correct."
         assert isinstance(node.chosen_core_allocation, int), (
             f"Chosen core allocation for {node} should be an integer, got {type(node.chosen_core_allocation)}."
         )
         core = scme.accelerator.get_core(node.chosen_core_allocation)
-        cme = cost_lut.get_cme(equal_node, core)
-        total_ops = cme.layer.total_mac_count
-        en_total_per_op = cme.energy_total / total_ops
-        en_breakdown = cme.mem_energy_breakdown
+        cme = cost_lut.get_cost(equal_node, core)
+        total_ops = getattr(cme.layer, "total_mac_count", None)
+        if not total_ops:
+            return np.nan, {}
+        en_total_per_op = getattr(cme, "energy_total", 0) / total_ops
+        en_breakdown = getattr(cme, "mem_energy_breakdown", {}) or {}
         en_breakdown_per_op = {}
         energy_sum_check = 0
         for layer_op, energies_for_all_levels in en_breakdown.items():
@@ -118,7 +117,7 @@ def get_dataframe_from_scme(
     scme: "StreamCostModelEvaluation",
     layer_ids: list[int],
     add_communication: bool = False,
-    cost_lut: "CostModelEvaluationLUT | None" = None,
+    cost_lut: "CoreCostLUT | None" = None,
 ):
     nodes = scme.workload.topological_sort()
     dicts = []

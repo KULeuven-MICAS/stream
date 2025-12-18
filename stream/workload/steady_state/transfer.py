@@ -60,9 +60,10 @@ class SteadyStateTransfer(SteadyStateNode):
         self.chosen_resource_allocation = None if len(allocation) > 1 else allocation[0]
 
     def set_possible_memory_core_allocation(self, allocation: tuple[Core, ...]) -> None:
-        assert len(allocation) > 0, "Allocation must not be empty."
         self.possible_memory_core_allocation = allocation
-        self.chosen_memory_core = None if len(allocation) > 1 else allocation[0]
+        # Only set the chosen memory core if there is exactly one option. Else it stays 'None'
+        if len(allocation) == 1:
+            self.chosen_memory_core = allocation[0]
 
     def __str__(self):
         return f"Transfer({self.srcs} -> {self.dsts})"

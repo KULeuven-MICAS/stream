@@ -10,7 +10,7 @@ from zigzag.utils import pickle_load, pickle_save
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
-from stream.stages.estimation.zigzag_core_mapping_estimation import ZigZagCoreMappingEstimationStage
+from stream.stages.estimation.zigzag_core_mapping_estimation import CoreCostEstimationStage
 from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
 from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
 from stream.stages.generation.tiled_workload_generation import TiledWorkloadGenerationStage
@@ -100,7 +100,7 @@ def optimize_allocation_ga(  # noqa: PLR0913
                 LayerStacksGenerationStage,
                 TilingGenerationStage,
                 TiledWorkloadGenerationStage,
-                ZigZagCoreMappingEstimationStage,
+                CoreCostEstimationStage,
                 SetFixedAllocationPerformanceStage,
                 SchedulingOrderGenerationStage,
                 GeneticAlgorithmAllocationStage,
@@ -115,7 +115,7 @@ def optimize_allocation_ga(  # noqa: PLR0913
             layer_stacks=layer_stacks,
             tiled_workload_path=tiled_workload_path,
             cost_lut_path=cost_lut_path,
-            temporal_mapping_type=temporal_mapping_type,  # required by ZigZagCoreMappingEstimationStage
+            temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
             operands_to_prefetch=[],  # required by GeneticAlgorithmAllocationStage
         )
         # Launch the MainStage
@@ -178,7 +178,7 @@ def optimize_allocation_co(  # noqa: PLR0913
             LayerStacksGenerationStage,
             TilingGenerationStage,
             TiledWorkloadGenerationStage,
-            ZigZagCoreMappingEstimationStage,
+            CoreCostEstimationStage,
             SetFixedAllocationPerformanceStage,
             SchedulingOrderGenerationStage,
             ConstraintOptimizationAllocationStage,
@@ -203,7 +203,7 @@ def optimize_allocation_co(  # noqa: PLR0913
             allocations_path=allocations_path,
             tiled_workload_post_co_path=tiled_workload_post_co_path,
             output_path=output_path,
-            temporal_mapping_type=temporal_mapping_type,  # required by ZigZagCoreMappingEstimationStage
+            temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
             operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
             latency_attr="ideal_temporal_cycle",
             codegen_path=codegen_path,

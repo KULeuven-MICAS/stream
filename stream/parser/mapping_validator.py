@@ -42,7 +42,8 @@ class MappingValidator:
                 "name": {"type": "string", "required": True},
                 "kwargs": {"type": "dict", "required": True},
             },
-            "required": True,
+            "required": False,
+            "default": {},
         },
         "spatial_mapping": {
             "type": "dict",
@@ -157,4 +158,7 @@ class MappingValidator:
         """
         # TODO check that the inter-core splits do not exceed the number of cores
         """
-        return
+        # Provide user-friendly defaults for missing kernel info
+        kernel = layer_data.setdefault("kernel", {})
+        kernel.setdefault("name", layer_data.get("name", ""))
+        kernel.setdefault("utilization", 100.0)

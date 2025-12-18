@@ -1,5 +1,5 @@
 name: aie_tile
-type: compute
+type: aie2.compute
 
 memories:
   rf_iw:

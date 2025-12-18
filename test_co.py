@@ -2,7 +2,7 @@ import logging as _logging
 import re
 
 from stream.api import optimize_allocation_co
-from stream.utils import CostModelEvaluationLUT
+from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.perfetto import convert_scme_to_perfetto_json
 
@@ -11,9 +11,9 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 ############################################INPUTS############################################
-accelerator = "stream/inputs/testing/hardware/tpu_like_quad_core.yaml"
+accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 workload_path = "stream/inputs/testing/workload/2_conv.onnx"
-mapping_path = "stream/inputs/testing/mapping/tpu_like_quad_core.yaml"
+mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
 mode = "fused"
 layer_stacks = [
     (0, 1),
@@ -54,8 +54,8 @@ json_path = f"outputs/{experiment_id}/scme.json"
 #####################################################################
 
 #####################CostModelEvaluationLUT LOAD#############################
-cost_lut_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
-cost_lut = CostModelEvaluationLUT(cost_lut_path)
+cost_lut_path = f"outputs/{experiment_id}/cost_lut.pickle"
+cost_lut = CoreCostLUT(cost_lut_path)
 #############################################################################
 
 # Plotting memory usage of best SCME

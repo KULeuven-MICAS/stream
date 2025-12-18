@@ -22,6 +22,7 @@ import gurobipy as gp
 from gurobipy import GRB, Var
 from zigzag.datatypes import LayerOperand, MemoryOperand
 
+from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.utils import get_core_capacities
 from stream.opt.allocation.constraint_optimization.utils import (
@@ -30,7 +31,6 @@ from stream.opt.allocation.constraint_optimization.utils import (
     get_latencies,
     invert_ids_list,
 )
-from stream.utils import CostModelEvaluationLUT
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
 # --------------------------------------------------------------------------- #
@@ -78,7 +78,7 @@ class ComputeAllocator:
         self,
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
-        cost_lut: CostModelEvaluationLUT,
+        cost_lut: CoreCostLUT,
         *,
         iterations: int = 1,
         gap: float = 0.5,
@@ -464,7 +464,7 @@ class ComputeAllocator:
 def get_optimal_allocations(
     workload: ComputationNodeWorkload,
     accelerator: Accelerator,
-    cost_lut: CostModelEvaluationLUT,
+    cost_lut: CoreCostLUT,
     *,
     iterations: int = 1,
     gap: float = 0.5,

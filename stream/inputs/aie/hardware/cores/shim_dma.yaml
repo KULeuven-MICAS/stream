@@ -1,5 +1,5 @@
 name: shim_dma
-type: memory
+type: aie2.memory
 
 memories:
   dram:

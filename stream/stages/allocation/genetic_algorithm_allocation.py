@@ -3,11 +3,12 @@ from typing import Any
 
 from zigzag.datatypes import LayerOperand
 
+from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.opt.allocation.genetic_algorithm.fitness_evaluator import StandardFitnessEvaluator
 from stream.opt.allocation.genetic_algorithm.genetic_algorithm import GeneticAlgorithm
 from stream.stages.stage import Stage, StageCallable
-from stream.utils import CostModelEvaluationLUT, get_unique_nodes
+from stream.utils import get_unique_nodes
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 class GeneticAlgorithmAllocationStage(Stage):
     """
     Class that finds the best inter-core mapping using a genetic algorithm.
-    From the IntraCoreMappingStage we receive the `CostModelEvaluationLUT`, containing for each node and its valid core
+    From the IntraCoreMappingStage we receive the `CoreCostLUT`, containing for each node and its valid core
       allocations the best CME.
     We then initialize the genetic algorithm.
     TODO A separate "GeneticAlgorithmStage" should be added where we parse all GA-related info and this stage then calls
@@ -30,7 +31,7 @@ class GeneticAlgorithmAllocationStage(Stage):
         *,
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
-        cost_lut: CostModelEvaluationLUT,
+        cost_lut: CoreCostLUT,
         nb_ga_generations: int,
         nb_ga_individuals: int,
         operands_to_prefetch: list[LayerOperand],
@@ -43,7 +44,7 @@ class GeneticAlgorithmAllocationStage(Stage):
             list_of_callables (list): List of the substages to be called. This should be empty as this is a leaf stage.
             workload (DiGraph): The NetworkX DiGraph representing the workload to be scheduled
             accelerator (Accelerator): The hardware accelerator onto which we schedule the workload
-            cost_lut (CostModelEvaluationLUT): A LUT of CMEs for each unique node and their valid cores
+            cost_lut (CoreCostLUT): A LUT of cost entries for each unique node and their valid cores
             nb_ga_generations: The number of generations considered by the genetic algorithm
             nb_ga_individuals: The number of individuals in each genetic algorithm generation
         """

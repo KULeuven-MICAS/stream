@@ -7,6 +7,7 @@ from zigzag.hardware.architecture.accelerator import Accelerator as ZigZagCore
 class Core(ZigZagCore):
     def __init__(self, args: Any):
         super().__init__(**args)
+        self.core_type: str = "zigzag.compute"
         self.type: str = "compute"  # default type for a core
         self.max_object_fifo_depth: int = 16  # default max object FIFO depth for compute
         self.utilization: int = 100

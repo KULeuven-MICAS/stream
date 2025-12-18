@@ -5,12 +5,11 @@ import networkx as nx
 
 # if TYPE_CHECKING:
 from stream.cost_model.communication_manager import MulticastRequest
+from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import TimeSlotAllocation
 from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
-from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 from stream.workload.steady_state.computation import SteadyStateComputation
@@ -29,7 +28,7 @@ class SteadyStateScheduler:
         workload: "ComputationNodeWorkload",
         accelerator: "Accelerator",
         original_workload: "ComputationNodeWorkload",
-        cost_lut: CostModelEvaluationLUT,
+        cost_lut: CoreCostLUT,
         iterations: int,
         nb_cols_to_use: int = 4,
         output_path: str = "",
@@ -63,6 +62,8 @@ class SteadyStateScheduler:
         self.nb_cols_to_use = nb_cols_to_use
 
         self.output_path = output_path
+        if self.output_path:
+            os.makedirs(self.output_path, exist_ok=True)
 
     def run(self, allocation: "TimeSlotAllocation"):
         """
@@ -420,15 +421,19 @@ class SteadyStateScheduler:
         self, tensor: SteadyStateTensor, ssw: SteadyStateWorkload
     ):
         out_edges = list(ssw.out_edges(tensor, data=True))
-        if len(out_edges) != 1:
-            raise NotImplementedError(f"edge data propagation not implemented for multiple outputs yet: {out_edges}")
-        edge_data = out_edges[0][2]
-        successor = out_edges[0][1]
-        assert "operand" in edge_data
-        operand = edge_data["operand"]
+        first_edge_data = out_edges[0][2]
+        assert all(edge_data == first_edge_data for _, _, edge_data in out_edges), (
+            "All outgoing edges from a tensor must have the same edge data in current implementation (for operand)."
+        )
+        first_operand = first_edge_data["operand"]
         # Get the number of tensors that will need to be buffered for this successor CN
-        num_tensors = self.calculate_operand_in_degree(successor, operand)
-        edge_data["num_tensors"] = num_tensors
+        num_tensors = [self.calculate_operand_in_degree(succ, first_operand) for _, succ, _ in out_edges]
+        first_num_tensors = num_tensors[0]
+        assert all(nt == first_num_tensors for nt in num_tensors), (
+            "All outgoing edges from a tensor must lead to successors that require the same number of tensors."
+        )
+        num_tensors = num_tensors[0]
+        first_edge_data["num_tensors"] = num_tensors
         all_successors = [i for _, i, _ in out_edges]
         assert all(isinstance(s, (SteadyStateTensor | SteadyStateComputation)) for s in all_successors), (
             "All successors of a tensor node should be either SteadyStateTensor or SteadyStateComputation nodes."
@@ -473,7 +478,7 @@ class SteadyStateScheduler:
             )
             ssw.add(transfer_node)
             # Add edge from the original node to the transfer node
-            ssw.add_edge(tensor, transfer_node, **edge_data)
+            ssw.add_edge(tensor, transfer_node, **first_edge_data)
             for ptn, succ in zip(post_transfer_tensor_nodes, successors, strict=True):
                 if ptn not in ssw:  # happens for the constant tensors that were already in the graph
                     # Add the post transfer tensor node to the steady state workload
@@ -484,10 +489,10 @@ class SteadyStateScheduler:
                 ssw.add_edge(
                     transfer_node,
                     ptn,
-                    **edge_data,
+                    **first_edge_data,
                 )
                 # Add edge from post transfer node to successor
-                ssw.add_edge(ptn, succ, **edge_data)
+                ssw.add_edge(ptn, succ, **first_edge_data)
 
     def get_transfer_type_and_size_for_input(
         self, post_transfer_tensor_nodes: tuple[SteadyStateTensor, ...]
@@ -680,37 +685,32 @@ class SteadyStateScheduler:
         """
         Process the transfer paths for constant transfers.
         """
-        # MAX_TRANSFERS_PER_MEM_CORE = 3
         constant_transfers = [
             tr
             for tr in steady_state_workload.transfer_nodes
             if self.is_constant_input_tensor(tr.tensor) or self.is_constant_output_tensor(tr.tensor)
         ]
-        # nb_constant_transfers = len(constant_transfers)
-        nb_mem_cores_to_use = self.nb_cols_to_use
-        cols_to_use_for_constant_transfers = tuple(range(0, nb_mem_cores_to_use))
         for transfer_node in constant_transfers:
             src_allocs = tuple([src.chosen_resource_allocation for src in transfer_node.srcs])
             dst_allocs = tuple([dst.chosen_resource_allocation for dst in transfer_node.dsts])
+            possible_memory_cores = self._get_possible_memory_core_allocations(transfer_node)
             # Create a multicast request for the transfer node
             request = MulticastRequest(
                 sources=src_allocs,  # type: ignore
                 destinations=dst_allocs,  # type: ignore
+                possible_memory_cores=possible_memory_cores,
             )
             multicast_plans = self.accelerator.communication_manager.enumerate_multicast_plans(
-                request.sources, request.destinations, cols_to_use_for_constant_transfers
+                request,
             )
             possible_paths = []
-            possible_memory_cores = set()
             for multicast_plan in multicast_plans:
                 links_used = self.accelerator.communication_manager.get_links_for_multicast_plan(multicast_plan)
-                possible_memory_cores_this_path = self._get_possible_memory_core_allocations(links_used)
                 possible_paths.append(links_used)
-                possible_memory_cores.update(possible_memory_cores_this_path)
             # Set the possible resource allocation for the transfer node (this also sets the chosen resource allocation)
             transfer_node.set_possible_resource_allocation(tuple(possible_paths))
             # Set the possible memory core allocation for the transfer node
-            transfer_node.set_possible_memory_core_allocation(tuple(possible_memory_cores))
+            transfer_node.set_possible_memory_core_allocation(possible_memory_cores)
 
     def _get_accelerator_memory_cores(self) -> set[Core]:
         """
@@ -726,17 +726,13 @@ class SteadyStateScheduler:
                 memory_cores.add(core)
         return memory_cores
 
-    def _get_possible_memory_core_allocations(self, links_used: tuple[CommunicationLink, ...]) -> set[Core]:
+    def _get_possible_memory_core_allocations(self, transfer_node: SteadyStateTransfer) -> tuple[Core, ...]:
+        assert TensorFlag.CONSTANT in transfer_node.srcs[0].tensor_flag, (
+            f"{transfer_node} should be a constant transfer."
+        )
         all_mem_cores = self._get_accelerator_memory_cores()
-        seen_mem_cores = set()
-        for link in links_used:
-            sender = link.sender
-            receiver = link.receiver
-            if sender in all_mem_cores:
-                seen_mem_cores.add(sender)
-            if receiver in all_mem_cores:
-                seen_mem_cores.add(receiver)
-        return seen_mem_cores & all_mem_cores
+        candidates = [mem_core for mem_core in all_mem_cores if not mem_core.id == self.accelerator.offchip_core_id]
+        return tuple(candidates)
 
     def add_this_iteration_nonconstant_tensor_nodes(
         self, steady_state_workload: SteadyStateWorkload

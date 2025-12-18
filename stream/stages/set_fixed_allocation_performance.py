@@ -6,13 +6,10 @@ from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
 from zigzag.mapping.data_movement import FourWayDataMoving
 
+from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.stages.stage import Stage, StageCallable
-from stream.utils import (
-    CostModelEvaluationLUT,
-    get_too_large_operands,
-    get_top_level_inst_bandwidth,
-)
+from stream.utils import get_too_large_operands, get_top_level_inst_bandwidth
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
@@ -26,7 +23,7 @@ class SetFixedAllocationPerformanceStage(Stage):
         *,
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
-        cost_lut: CostModelEvaluationLUT,
+        cost_lut: CoreCostLUT,
         **kwargs: Any,
     ):
         super().__init__(list_of_callables, **kwargs)
@@ -65,7 +62,7 @@ class SetFixedAllocationPerformanceStage(Stage):
                 equal_node = self.cost_lut.get_equal_node(node)
                 assert equal_node is not None, f"{node} has fixed allocation but no equal node found."
                 core = self.accelerator.get_core(core_id)
-                cme = self.cost_lut.get_cme(equal_node, core)
+                cme = self.cost_lut.get_cost(equal_node, core)
                 latency = int(cme.ideal_cycle)
                 # Scale latency based on utilization of core
                 latency = int(latency * 100 / node.kernel.utilization)
@@ -85,12 +82,15 @@ class SetFixedAllocationPerformanceStage(Stage):
     def get_energy_distribution(
         self, cme: CostModelEvaluation, too_large_operands: list[MemoryOperand]
     ) -> tuple[float, float]:
-        onchip_energy = cme.energy_total  # initialize the on-chip energy as total energy
+        onchip_energy = getattr(cme, "energy_total", 0)  # initialize the on-chip energy as total energy
         # If there is a too_large_operand, we separate the off-chip energy.
         offchip_energy = 0
+        mem_energy_breakdown = getattr(cme, "mem_energy_breakdown", {}) or {}
         for too_large_operand in too_large_operands:
+            if not mem_energy_breakdown:
+                continue
             layer_operand = cme.layer.memory_operand_links.mem_to_layer_op(too_large_operand)
-            layer_operand_offchip_energy = cme.mem_energy_breakdown[layer_operand][-1]
+            layer_operand_offchip_energy = mem_energy_breakdown[layer_operand][-1]
             offchip_energy += layer_operand_offchip_energy
             onchip_energy -= layer_operand_offchip_energy
         return onchip_energy, offchip_energy

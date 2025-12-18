@@ -13,11 +13,13 @@ from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGener
 from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
 from zigzag.utils import pickle_deepcopy
 
+from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
+from stream.stages.estimation.core_performance import AIEPerformanceEstimator, ZigZagPerformanceEstimator
 from stream.stages.generation.layer_stacks_generation import STACK_T
 from stream.stages.stage import MainStage, Stage, StageCallable
-from stream.utils import CostModelEvaluationLUT, contains_wildcard, get_top_level_inst_bandwidth, get_unique_nodes
+from stream.utils import contains_wildcard, get_top_level_inst_bandwidth, get_unique_nodes
 from stream.visualization.cost_model_evaluation_lut import (
     visualize_cost_lut_pickle,
 )
@@ -27,9 +29,9 @@ from stream.workload.onnx_workload import ComputationNodeWorkload
 logger = logging.getLogger(__name__)
 
 
-class ZigZagCoreMappingEstimationStage(Stage):
+class CoreCostEstimationStage(Stage):
     """
-    Class that saves the optimal CME for each valid node-core allocation to the node.
+    Stage that computes and caches core cost entries for each valid node-core allocation.
     """
 
     def __init__(
@@ -61,22 +63,35 @@ class ZigZagCoreMappingEstimationStage(Stage):
         self.unique_nodes = get_unique_nodes(self.workload)
 
         assert all(isinstance(node, ComputationNode) for node in self.unique_nodes), (
-            "ZigZagCoreMappingEstimationStage received a non-ComputationNode."
+            "CoreCostEstimationStage received a non-ComputationNode."
         )
         assert all(isinstance(node.possible_core_allocation, list) for node in self.unique_nodes), (
-            "ZigZagCoreMappingEstimationStage received a node with a non-list core allocation."
+            "CoreCostEstimationStage received a node with a non-list core allocation."
         )
 
         self.valid_allocations: dict[ComputationNode, list[int]] = {
             node: node.possible_core_allocation for node in self.unique_nodes
         }
-        self.cost_lut = CostModelEvaluationLUT(self.cost_lut_path)
+        self.cost_lut: CoreCostLUT = CoreCostLUT(self.cost_lut_path)
+        self.aie_operator_utilization = {
+            # Utilization expressed as percentage; simple, per-op heuristic
+            "conv": 70.0,
+            "gemm": 70.0,
+            "relu": 90.0,
+            "silu": 80.0,
+            "sigmoid": 80.0,
+            "exp": 80.0,
+            "maxpool": 60.0,
+            "averagepool": 60.0,
+            "globalaveragepool": 60.0,
+            "add": 85.0,
+        }
 
     def run(self):
-        logger.info("Start ZigZagCoreMappingEstimationStage.")
+        logger.info("Start CoreCostEstimationStage.")
         self.update_cost_lut()
         self.visualize_cost_lut()
-        logger.info("Finished ZigZagCoreMappingEstimationStage.")
+        logger.info("Finished CoreCostEstimationStage.")
 
         kwargs = self.kwargs.copy()
         kwargs["workload"] = self.workload
@@ -90,47 +105,34 @@ class ZigZagCoreMappingEstimationStage(Stage):
             core_ids = self.valid_allocations[node]
             for core_id in core_ids:
                 core = self.accelerator.get_core(core_id)
-                # Offchip memory core doesn't have operational units
                 if core.operational_array.total_unit_count == 0:
                     continue
-                # If the (node, core) combination has already been optimized, we skip it
-                if self.cost_lut.has_cme(node, core):
+                if self.cost_lut.has_cost(node, core):
                     continue
-                # If an equal performance has already been computed, we take it
                 equal_node = self.cost_lut.get_equal_node(node)
                 equal_core = self.cost_lut.get_equal_core(equal_node, core) if equal_node else None
                 if equal_node and equal_core:
-                    cme = pickle_deepcopy(self.cost_lut.get_cme(equal_node, equal_core))
-                    # Update the CME attributes for this node-core combination
-                    cme.layer.core_allocation = [core_id]
-                    cme.core_id = core_id
-                    self.cost_lut.add_cme(node, core, cme, allow_overwrite=False)
+                    cost = pickle_deepcopy(self.cost_lut.get_cost(equal_node, equal_core))
+                    self.cost_lut.add_cost(node, core, cost, allow_overwrite=False)
                     continue
-                else:
-                    node_duplicate = pickle_deepcopy(node)
-                    # Remove duplicate cores with same id in case the core definition has changed
-                    self.cost_lut.remove_cores_with_same_id(node, core)
-                    # Compute the optimal performance for this node-core combination. If this node does not fully fit
-                    # within the core's top level memories, we update the core to include an offchip memory.
-                    too_large_operands_for_cme = self.check_core_capacity_for_node(core, node_duplicate)
-                    # # ! --- ensure all constant weights are accessed via blocking behavior i.s.o. transfer -RG
-                    # for layer_op in node.constant_operands:
-                    #     mem_op = node.memory_operand_links.layer_to_mem_op(layer_op)
-                    #     if mem_op not in too_large_operands_for_cme and node.operand_precision[layer_op] > 0:
-                    #         too_large_operands_for_cme.append(mem_op)
-                    # # ! ---
-                    node_duplicate.set_chosen_core_allocation(core_id)
-
-                    # Attempt to override the node's spatial mapping based on the core's dataflow
-                    if core.dataflows:
-                        node_duplicate.spatial_mapping = core.dataflows
-
-                    cme = self.run_zigzag(node_duplicate, too_large_operands_for_cme, core_id)
-                    cme = self.increase_cc_per_op(cme, node.type)
-
-                    node_duplicate.set_chosen_core_allocation(None)  # Reset the node's chosen core allocation
-                    self.cost_lut.add_cme(node, core, cme, allow_overwrite=False)
+                estimator = self.get_estimator(core)
+                cost_entry = estimator.estimate(node, core, core_id)
+                self.cost_lut.add_cost(node, core, cost_entry, allow_overwrite=False)
             self.cost_lut.save()
+
+    def get_estimator(self, core: Core):
+        if self.is_aie_compute_core(core):
+            return AIEPerformanceEstimator()
+        return ZigZagPerformanceEstimator(
+            run_zigzag=self.run_zigzag,
+            increase_cc_per_op=self.increase_cc_per_op,
+            check_core_capacity_for_node=self.check_core_capacity_for_node,
+            cost_lut=self.cost_lut,
+            copy_fn=pickle_deepcopy,
+        )
+
+    def is_aie_compute_core(self, core: Core) -> bool:
+        return str(core.core_type).startswith("aie2.") and core.type == "compute"
 
     def get_cc_per_op(self, op_type: str):
         """Return the number of cycles that the operational units need to finish the given operation."""
@@ -178,7 +180,7 @@ class ZigZagCoreMappingEstimationStage(Stage):
         main_stage = self.instantiate_zigzag_flow(node, too_large_operands, core_id)
         logger.info(f"Launching intra-core mapping optimization for {node} -> core {core_id} ...")
         answers = main_stage.run()
-        assert len(answers) == 1, "ZigZagCoreMappingEstimationStage's subflow returned more than one CME"
+        assert len(answers) == 1, "CoreCostEstimationStage's subflow returned more than one cost entry"
         cme: CostModelEvaluation = answers[0][0]  # type: ignore
         return cme
 

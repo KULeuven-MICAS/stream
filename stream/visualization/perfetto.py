@@ -5,8 +5,8 @@ import numpy as np
 import pandas as pd
 from zigzag.utils import pickle_load
 
+from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.cost_model.cost_model import StreamCostModelEvaluation
-from stream.utils import CostModelEvaluationLUT
 from stream.visualization.utils import get_dataframe_from_scme
 
 PROCESS_NAME = "scme"
@@ -91,7 +91,7 @@ def get_task_name(row: pd.Series, unknown_string: str) -> str:
 
 def convert_scme_to_perfetto_json(
     scme: "StreamCostModelEvaluation",
-    cost_lut: CostModelEvaluationLUT,
+    cost_lut: CoreCostLUT,
     json_path: str,
     layer_ids: list[int] | None = None,
     process_name: str = PROCESS_NAME,
@@ -162,7 +162,7 @@ def convert_scme_to_perfetto_json(
 if __name__ == "__main__":
     # Example usage
     scme = pickle_load("outputs/tpu_like_quad_core-resnet18-fused-genetic_algorithm/scme.pickle")
-    cost_lut = CostModelEvaluationLUT("outputs/tpu_like_quad_core-resnet18-fused-genetic_algorithm/cost_lut.pickle")
+    cost_lut = CoreCostLUT("outputs/tpu_like_quad_core-resnet18-fused-genetic_algorithm/cost_lut.pickle")
     layer_ids = sorted(set(n.id for n in scme.workload.node_list))
     json_path = "outputs/tpu_like_quad_core-resnet18-fused-genetic_algorithm/scme.json"
     perfetto_json = convert_scme_to_perfetto_json(scme, cost_lut, json_path=json_path, layer_ids=layer_ids)

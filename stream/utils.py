@@ -1,3 +1,4 @@
+import logging
 import os
 import pickle
 import pprint
@@ -8,8 +9,10 @@ from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
 from zigzag.mapping.data_movement import FourWayDataMoving
 
-from stream.hardware.architecture.core import Core
+from stream.cost_model.core_cost import CoreCostEntry
 from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
@@ -19,7 +22,9 @@ if TYPE_CHECKING:
 ARRAY_T: TypeAlias = NDArray[Any]
 
 
-def get_too_large_operands(cme: CostModelEvaluation, accelerator: "Accelerator", core_id: int) -> list[MemoryOperand]:
+def get_too_large_operands(
+    cme: CoreCostEntry | CostModelEvaluation, accelerator: "Accelerator", core_id: int
+) -> list[MemoryOperand]:
     """Create a list of memory operands for which an extra memory level (i.e. offchip) was added.
 
     Args:
@@ -30,7 +35,10 @@ def get_too_large_operands(cme: CostModelEvaluation, accelerator: "Accelerator",
     too_large_operands: list[MemoryOperand] = []
     core = accelerator.get_core(core_id)
     core_nb_memory_levels = core.memory_hierarchy.nb_levels
-    for layer_operand, lvl in cme.mapping.data_elem_per_level.items():
+    mapping = getattr(cme, "mapping", None)
+    if not mapping or not hasattr(mapping, "data_elem_per_level"):
+        return too_large_operands
+    for layer_operand, lvl in mapping.data_elem_per_level.items():
         memory_operand = cme.layer.memory_operand_links.layer_to_mem_op(layer_operand)
         if len(lvl) > core_nb_memory_levels[memory_operand] + 1:  # +1 because of spatial level
             too_large_operands.append(memory_operand)
@@ -97,15 +105,14 @@ def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNo
 
 
 def get_top_level_inst_bandwidth(
-    cme: CostModelEvaluation, mem_op: MemoryOperand, scaling: float = 1
+    cme: CoreCostEntry | CostModelEvaluation, mem_op: MemoryOperand, scaling: float = 1
 ) -> FourWayDataMoving[int]:
-    """Given a cost model evaluation and a memory instance, compute the memory's total instantaneous bandwidth
-    required throughout the execution of the layer that corresponds to this CME. Returns empty bandwidth
-    requirements if the given memory instance is not included in this CME's memory hierarchy.
-    The scaling factor can be used to scale the returned bandwidth.
-    """
-    memory_level = cme.accelerator.get_memory_level(mem_op, -1)
-    return cme.get_inst_bandwidth(memory_level=memory_level, memory_operand=mem_op, scaling=scaling)
+    """Given a cost model evaluation and a memory instance, compute the memory's total instantaneous bandwidth.
+    Falls back to zero bandwidth if not available."""
+    if hasattr(cme, "get_inst_bandwidth") and hasattr(cme, "accelerator"):
+        memory_level = cme.accelerator.get_memory_level(mem_op, -1)
+        return cme.get_inst_bandwidth(memory_level=memory_level, memory_operand=mem_op, scaling=scaling)
+    return FourWayDataMoving({})  # type: ignore[arg-type]
 
 
 def contains_wildcard(tiling: TILING_T | TILING_WILDCARD_T) -> bool:
@@ -139,84 +146,3 @@ def get_inter_core_tiling_size(node: "ComputationNode") -> int:
             total_tiling_size *= tiling_size_updated
         return total_tiling_size
     return 1
-
-
-class CostModelEvaluationLUT:
-    """A class to store the cost model evaluations in a look-up table.
-    The look-up table is a dictionary with the following structure:
-    {
-        node0: {
-            core0: CostModelEvaluation,
-            ...
-        },
-        ...
-    }
-    """
-
-    def __init__(self, cache_path: str | None, load: bool = True):
-        self.lut: dict[ComputationNode, dict[Core, CostModelEvaluation]] = {}
-        self.cache_path = cache_path
-        if load and self.cache_path and os.path.exists(self.cache_path):
-            self.load()
-
-    def load(self):
-        if not self.cache_path:
-            raise ValueError("No cache_path provided.")
-        try:
-            with open(self.cache_path, "rb") as fp:
-                self.lut = pickle.load(fp)
-        except Exception as e:
-            raise ValueError(
-                f"Could not load look-up table from {self.cache_path}. Try removing the file if it exists."
-            ) from e
-
-    def save(self):
-        if not self.cache_path:
-            raise ValueError("No cache_path provided.")
-        with open(self.cache_path, "wb") as fp:
-            pickle.dump(self.lut, fp)
-
-    def add_cme(self, node: "ComputationNode", core: Core, cme: CostModelEvaluation, allow_overwrite: bool = True):
-        """Add a CostModelEvaluation to the look-up table for a given node and core.
-        If a node with equal performance already exists in the look-up table,
-        the CostModelEvaluation is added to that node."""
-        if not allow_overwrite and self.has_cme(node, core):
-            raise ValueError(f"CostModelEvaluation for node {node} and core {core} already exists.")
-        if node not in self.lut:
-            self.lut[node] = {}
-        self.lut[node][core] = cme
-
-    def has_cme(self, node: "ComputationNode", core: Core):
-        """Check if a CostModelEvaluation exists for a given node and core."""
-        return self.get_equal_node(node) is not None and node in self.get_nodes() and core in self.lut[node]
-
-    def get_cme(self, node: "ComputationNode", core: Core):
-        """Retrieve the CostModelEvaluation for a given node and core."""
-        if not self.has_cme(node, core):
-            raise ValueError(f"No CostModelEvaluation found for node {node} and core {core}.")
-        return self.lut[node][core]
-
-    def get_equal_node(self, node: "ComputationNode"):
-        """Retrieve the node in the look-up table that is equal to the given node."""
-        if any(n.has_same_performance(node) for n in self.lut):
-            return next(n for n in self.lut if n.has_same_performance(node))
-        else:
-            return None
-
-    def get_equal_core(self, node: "ComputationNode", core: Core):
-        """Retrieve the core in the look-up table that is equal to the given core."""
-        try:
-            return next(c for c in self.lut[node] if c.has_same_performance(core))
-        except (StopIteration, KeyError):
-            return None
-
-    def get_nodes(self):
-        return list(self.lut.keys())
-
-    def get_cores(self, node: "ComputationNode"):
-        return list(self.lut.get(node, {}).keys())
-
-    def remove_cores_with_same_id(self, node: "ComputationNode", core: Core):
-        """! Removes cores with the same id as core for node from the look-up table."""
-        if node in self.lut:
-            self.lut[node] = {c: v for c, v in self.lut[node].items() if c.id != core.id}

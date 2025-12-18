@@ -3,9 +3,9 @@ from typing import TYPE_CHECKING
 
 from zigzag.datatypes import LayerDim, LayerOperand, UnrollFactor
 
+from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.steady_state.computation import SteadyStateComputation
 
@@ -50,7 +50,7 @@ def get_latencies(
     nodes: list[ComputationNode],
     core_ids: list[int],
     accelerator: Accelerator,
-    cost_lut: CostModelEvaluationLUT,
+    cost_lut: CoreCostLUT,
     impossible_lat: float = 1e11,
     latency_attr: str = "latency_total1",
 ) -> tuple[dict[tuple[ComputationNode, Core, int], int], dict]:
@@ -66,8 +66,8 @@ def get_latencies(
                 continue
             try:
                 equal_node = cost_lut.get_equal_node(node)
-                assert equal_node, f"No equal node for {node} found in CostModelEvaluationLUT"
-                cme = cost_lut.get_cme(equal_node, core)
+                assert equal_node, f"No equal node for {node} found in CoreCostLUT"
+                cme = cost_lut.get_cost(equal_node, core)
                 output_operand = LayerOperand("O")
                 temporal_loops = [
                     i for tm_level in cme.temporal_mapping.mapping_dic_stationary[output_operand] for i in tm_level
@@ -111,7 +111,7 @@ def get_energies(
     nodes: list[ComputationNode],
     core_ids: list[int],
     accelerator: Accelerator,
-    cost_lut: CostModelEvaluationLUT,
+    cost_lut: CoreCostLUT,
     impossible_energy: float = 1e11,
     ids: dict[ComputationNode, int] | None = None,
 ) -> dict[tuple[int, str], float]:
@@ -125,8 +125,8 @@ def get_energies(
             core = accelerator.get_core(core_id)
             try:
                 eq_node = cost_lut.get_equal_node(node)
-                assert eq_node, f"No equal node for {node} found in CostModelEvaluationLUT"
-                cme = cost_lut.get_cme(eq_node, core)
+                assert eq_node, f"No equal node for {node} found in CoreCostLUT"
+                cme = cost_lut.get_cost(eq_node, core)
                 en = cme.energy_total
             except ValueError:
                 en = impossible_energy
@@ -212,7 +212,7 @@ def get_partitioned_nodes(
     node: ComputationNode,
     core_allocations: list[Core],
     accelerator: Accelerator,
-    cost_lut: CostModelEvaluationLUT,
+    cost_lut: CoreCostLUT,
 ) -> list[SteadyStateComputation]:
     """
     Get the partitioned SteadyStateComputation nodes for a given ComputationNode based on the core allocations.

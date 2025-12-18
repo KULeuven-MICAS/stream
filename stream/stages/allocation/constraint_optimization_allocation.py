@@ -8,6 +8,7 @@ import networkx as nx
 import numpy as np
 from zigzag.utils import pickle_load, pickle_save
 
+from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
@@ -16,7 +17,6 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import No
 from stream.opt.allocation.constraint_optimization.utils import calculate_total_latency, get_partitioned_nodes
 from stream.stages.generation.layer_stacks_generation import STACK_T
 from stream.stages.stage import Stage, StageCallable
-from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
@@ -32,7 +32,7 @@ SCHEDULE_ORDER_T: TypeAlias = list[tuple[int, int]]
 class ConstraintOptimizationAllocationStage(Stage):
     """
     Class that finds the best workload allocation for the workload using constraint optimization.
-    This stages requires a CostModelEvaluationLUT, containing for each node and its valid core allocations the best CME.
+    This stages requires a CoreCostLUT, containing for each node and its valid core allocations the best CME.
     """
 
     CO_TIME_LIMIT = 600
@@ -43,7 +43,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         *,
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
-        cost_lut: CostModelEvaluationLUT,
+        cost_lut: CoreCostLUT,
         layer_stacks: list[tuple[int, ...]],
         allocations_path: str,
         tiled_workload_post_co_path: str,
@@ -56,7 +56,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             list_of_callables (list): List of the substages to be called. This should be empty as this is a leaf stage.
             workload (DiGraph): The NetworkX DiGraph representing the workload to be scheduled
             accelerator (Accelerator): The hardware accelerator onto which we schedule the workload
-            cost_lut (CostModelEvaluationLUT): A lookup table containing for each node the best CME for each core
+            cost_lut (CoreCostLUT): A lookup table containing for each node the best cost entry for each core
             layer_stacks (list): List of tuples with each tuple containing the layer ids to fuse together
             allocations_path (str): Path to the directory where the optimal allocations are stored
             output_path (str): Path to the output folder to store results

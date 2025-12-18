@@ -1,5 +1,5 @@
 name: mem_tile
-type: memory
+type: aie2.memory
 
 memories:
   dram:
