@@ -1,61 +1,26 @@
 gemm:
-  single_core:
-    stream_hw_id: single_core
-    stream_main_file: "main_gemm_single_core.py"
-    trace_size: 1048576
-    m: 32
-    k: 32
-    n: 32
-    nb_rows: 1
-    nb_cols: 1
-    warmup: 1
-    iterations: 5
-    Ms: [64,128,256]
-    Ks: [64,128,256]
-    Ns: [64,128,256]
-    # Ms: [32, 64, 96, 128, 160, 192, 224, 256]
-    # Ks: [256,]
-    # Ns: [256,]
-    # Ms: [128]
-    # Ks: [128]
-    # Ns: [128]
-
-  single_col:
-    stream_hw_id: single_col
-    stream_main_file: "main_gemm_single_col.py"
-    trace_size: 1048576
-    m: 32
-    k: 32
-    n: 32
-    nb_rows: 2
-    nb_cols: 1
-    warmup: 1
-    iterations: 5
-    Ms: [64,128,256]
-    Ks: [64,128,256]
-    Ns: [64,128,256]
-    # Ms: [32, 64, 96, 128, 160, 192, 224, 256]
-    # Ks: [256,]
-    # Ns: [256,]
-    # Ms: [128,]
-    # Ks: [128]
-    # Ns: [128]
-
-  whole_array:
-    stream_hw_id: whole_array
-    stream_main_file: "main_gemm_whole_array.py"
-    trace_size: 1048576
-    m: 32
-    k: 32
-    n: 32
-    nb_rows: 2
-    nb_cols: 4
-    warmup: 1
-    iterations: 5
-    Ms: [64,128,256]
-    Ks: [64,128,256]
-    Ns: [256]
-    # Ms: [64,]
-    # # Ks: [32, 64, 96, 128, 160, 192, 224, 256]
-    # Ks: [64,]
-    # Ns: [256,]
+  stream_hw_id: whole_array
+  stream_main_file: "main_gemm.py"
+  trace_size: 1048576
+  npu: "npu2"
+  m: 32
+  k: 32
+  n: 32
+  nb_rows: 4
+  nb_cols: 4
+  Ms: [256]
+  Ks: [256]
+  Ns: [256]
+swiglu:  # to be updated later
+  stream_hw_id: whole_array
+  stream_main_file: "main_swiglu.py"
+  trace_size: 1048576
+  npu: "npu2"
+  m: 32
+  k: 32
+  n: 32
+  nb_rows: 4
+  nb_cols: 4
+  Ms: [256]
+  Ks: [256]
+  Ns: [256]  
