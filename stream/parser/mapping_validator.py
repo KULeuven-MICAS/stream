@@ -40,7 +40,7 @@ class MappingValidator:
             "type": "dict",
             "schema": {
                 "name": {"type": "string", "required": True},
-                "args": {"type": "dict", "required": True},
+                "kwargs": {"type": "dict", "required": True},
             },
             "required": True,
         },

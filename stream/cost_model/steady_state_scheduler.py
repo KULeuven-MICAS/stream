@@ -518,7 +518,7 @@ class SteadyStateScheduler:
         # Mixed case, we have both broadcast and distribute happening
         unique_ptns = [post_transfer_tensor_nodes[loop_ranges.index(lr)] for lr in multiset]
         total_size = sum(ptn.size for ptn in unique_ptns)
-        return TransferType.DISTRIBUTE_AND_BROADCAST, total_size
+        return TransferType.DISTRIBROAD, total_size
 
     def get_transfer_type_and_size_for_output(
         self, pre_transfer_tensor_nodes: tuple[SteadyStateTensor, ...]

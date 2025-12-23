@@ -118,8 +118,6 @@ class TileOpManager:
                 return parent.tile.op
             if isinstance(parent, RuntimeSequenceOp):
                 if isinstance(operation, PushOp | PullOp):
-                    if not isinstance(operation.memtile, ArrayAttr):
-                        breakpoint()
                     assert isinstance(attr := operation.memtile, ArrayAttr)
                     memtile_idx = cast(tuple[IntegerAttr[IndexType], ...], attr.data)
                     return self.insert_or_update(memtile_idx[0].value.data, 0)
@@ -282,12 +280,11 @@ class ObjectFifoHop:
         return cls(object_fifos)
 
     @classmethod
-    def mem_to_compute(
+    def mem_to_compute(  # noqa: PLR0912
         cls, consumers: Sequence[PullOp], memtile: TileOp, tile_op_manager: TileOpManager, name_base: str
     ) -> Self:
         assert isinstance(memref_type := consumers[0].output.type, MemRefType)
         unique_consumers = len(set(x.offsets for x in consumers))
-        breakpoint()
         if len(consumers) > 1:
             # determine whether to broadcast / distribute
             if unique_consumers == 1:
