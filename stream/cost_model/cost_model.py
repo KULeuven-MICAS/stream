@@ -2,8 +2,6 @@ from zigzag.datatypes import LayerOperand
 
 from stream.cost_model.scheduler import CoalaScheduler
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.visualization.memory_usage import plot_memory_usage
-from stream.visualization.schedule import plot_timeline_brokenaxes
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
 
@@ -78,29 +76,3 @@ class StreamCostModelEvaluation:
             + self.total_core_to_core_link_energy
             + self.total_core_to_core_memory_energy
         )
-
-    def plot_schedule(
-        self,
-        plot_full_schedule: bool = False,
-        draw_dependencies: bool = True,
-        plot_data_transfer: bool = False,
-        section_start_percent: tuple[int, ...] = (0, 50, 95),
-        percent_shown: tuple[int, ...] = (5, 5, 5),
-        fig_path: str = "outputs/schedule_plot.png",
-    ):
-        """Plot the schedule of this SCME."""
-        if plot_full_schedule:
-            section_start_percent = (0,)
-            percent_shown = (100,)
-        plot_timeline_brokenaxes(
-            self,
-            draw_dependencies,
-            section_start_percent,
-            percent_shown,
-            plot_data_transfer,
-            fig_path,
-        )
-
-    def plot_memory_usage(self, *args, **kwargs):
-        """Plot the memory usage of this SCME."""
-        plot_memory_usage(self, *args, **kwargs)

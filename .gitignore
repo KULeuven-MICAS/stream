@@ -164,12 +164,10 @@ docs/make.bat
 # snakemake files
 .snakemake
 
-# gemm workload and mapping files
-stream/inputs/aie/workload/gemm_*.onnx
-stream/inputs/aie/mapping/gemm_*.yaml
-stream/inputs/aie/mapping/gemm_*.yml
+# workload and mapping input files
+stream/inputs/aie/workload/*.onnx
+stream/inputs/aie/mapping/*.yaml
+stream/inputs/aie/mapping/*.yml
 
-# two conv workload and mapping files
-stream/inputs/aie/workload/two_conv_*.onnx
-stream/inputs/aie/mapping/two_conv_*.yaml
-stream/inputs/aie/mapping/two_conv_*.yml
+# svg files (e.g. flamegraphs)
+*.svg

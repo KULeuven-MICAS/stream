@@ -1,3 +1,4 @@
+import inspect
 from typing import Any
 
 from zigzag.datatypes import (
@@ -10,7 +11,8 @@ from zigzag.mapping.spatial_mapping import (
     SpatialMapping,
 )
 
-from stream.workload.kernel import AIEKernel
+from stream.compiler.kernels import AIEKernels
+from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.workload.mapping import TILING_T, TILING_WILDCARD_T, InterCoreMappingAttributes
 
 
@@ -41,11 +43,22 @@ class MappingFactory:
             all_mappings[op_type] = mapping
         return all_mappings
 
+    def kernel_args_match_kernel_signature(self, kernel, kwargs):
+        try:
+            inspect.signature(kernel).bind(**kwargs)
+            return True
+        except TypeError:
+            return False
+
     def create_kernel(self, mapping_data: dict[str, Any]) -> AIEKernel:
-        return AIEKernel(
-            name=mapping_data["kernel"]["name"],
-            utilization=mapping_data["kernel"]["utilization"],
-        )
+        kernel_name = mapping_data["kernel"]["name"]
+        kernel = AIEKernels.get(kernel_name, None)
+        if kernel is None:
+            raise ValueError(f"Unknown kernel name {kernel_name}. Available kernels: {list(AIEKernels.keys())}")
+        kernel_kwargs = mapping_data["kernel"].get("kwargs", {})
+        if not self.kernel_args_match_kernel_signature(kernel, kernel_kwargs):
+            raise ValueError(f"Kernel arguments {kernel_kwargs} do not match kernel {kernel_name} signature.")
+        return kernel(**kernel_kwargs)
 
     def create_spatial_mapping(self, mapping_data: dict[str, Any]) -> SpatialMapping:
         if mapping_data["spatial_mapping"] is None:

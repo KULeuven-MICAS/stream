@@ -1,7 +1,7 @@
 # transfer_and_tensor_allocator.py
 import math
 from collections import defaultdict
-from math import ceil
+from math import ceil, prod
 from typing import Any
 
 import gurobipy as gp
@@ -150,19 +150,24 @@ class TransferAndTensorAllocator:
         Ensure that all transfers have the same steady-state iteration space dimensions and sizes (SSIS).
         """
         first_transfer_ssis = self.transfer_nodes[0].steady_state_iteration_space
-        first_transfer_ssis_dims = first_transfer_ssis.get_temporal_dimensions()
+        # first_transfer_ssis_dims = first_transfer_ssis.get_temporal_dimensions()
         first_transfer_ssis_sizes = first_transfer_ssis.get_temporal_sizes()
+        first_transfer_ssis_total_size = prod(first_transfer_ssis_sizes)
         for tr in self.transfer_nodes:
             transfer_ssis = tr.steady_state_iteration_space
-            transfer_ssis_dims = transfer_ssis.get_temporal_dimensions()
+            # transfer_ssis_dims = transfer_ssis.get_temporal_dimensions()
             transfer_ssis_sizes = transfer_ssis.get_temporal_sizes()
-            if not (
-                transfer_ssis_dims == first_transfer_ssis_dims and transfer_ssis_sizes == first_transfer_ssis_sizes
-            ):
+            transfer_ssis_total_size = prod(transfer_ssis_sizes)
+            # if not (
+            #     transfer_ssis_dims == first_transfer_ssis_dims and transfer_ssis_sizes == first_transfer_ssis_sizes
+            # ):
+            if transfer_ssis_total_size != first_transfer_ssis_total_size:
                 raise ValueError(
-                    f"Transfer {tr.node_name} has different SSIS dims and sizes than the {self.transfer_nodes[0]}: "
-                    f"{transfer_ssis_dims}, {transfer_ssis_sizes} != "
-                    f"{first_transfer_ssis_dims}, {first_transfer_ssis_sizes}"
+                    # f"Transfer {tr.node_name} has different SSIS dims and sizes than the {self.transfer_nodes[0]}: "
+                    # f"{transfer_ssis_dims}, {transfer_ssis_sizes} != "
+                    # f"{first_transfer_ssis_dims}, {first_transfer_ssis_sizes}"
+                    f"Transfer {tr.node_name} has different SSIS total size than the {self.transfer_nodes[0]}: "
+                    f"{transfer_ssis_total_size} != {first_transfer_ssis_total_size}"
                 )
 
     def _init_transfer_fire_helpers(self) -> None:
@@ -194,16 +199,16 @@ class TransferAndTensorAllocator:
     # ------------------------------------------------------------------------------
     # only transfers whose src OR dst tensor is CONSTANT are eligible for MemC
     # ------------------------------------------------------------------------------
-    def _is_const_io(self, tr: SteadyStateTransfer) -> bool:
-        src_t = next(iter(self.ssw.predecessors(tr)), None)
-        dst_t = next(iter(self.ssw.successors(tr)), None)
-        return src_t and TensorFlag.CONSTANT in src_t.tensor_flag or dst_t and TensorFlag.CONSTANT in dst_t.tensor_flag
+    def _is_const_i(self, tr: SteadyStateTransfer) -> bool:
+        src_t = tr.srcs[0]
+        return (TensorFlag.CONSTANT | TensorFlag.INPUT) in src_t.tensor_flag
 
-    def _any_path_through_mc(self, tr: SteadyStateTransfer, mc: Core) -> bool:
-        for path in tr.possible_resource_allocation:
-            if any(mc.id == link.receiver.id for link in path):
-                return True
-        return False
+    def _is_const_o(self, tr: SteadyStateTransfer) -> bool:
+        dst_t = tr.dsts[0]
+        return (TensorFlag.CONSTANT | TensorFlag.OUTPUT) in dst_t.tensor_flag
+
+    def _is_const_io(self, tr: SteadyStateTransfer) -> bool:
+        return self._is_const_i(tr) or self._is_const_o(tr)
 
     # ------------------------------------------------------------
     # bandwidth of the FIRST link on a DRAM → mem‑core path
@@ -329,15 +334,13 @@ class TransferAndTensorAllocator:
         for tr in self.transfer_nodes:
             if not self._is_const_io(tr):
                 continue
-            possible_mem_cores = []
-            for mc in self.mem_cores:
+            possible_mem_cores = tr.possible_memory_core_allocation
+            for mc in possible_mem_cores:
                 v = self.model.addVar(vtype=GRB.BINARY, name=f"mStore_{tr.node_name}_{_resource_key(mc)}")
                 self.m_store[(tr, mc)] = v
-                possible_mem_cores.append(mc)
             if not self.force_io_transfers_on_mem_tile:
                 v_none = self.model.addVar(vtype=GRB.BINARY, name=f"mStore_{tr.node_name}_NONE")
                 self.m_store[(tr, None)] = v_none
-                possible_mem_cores.append(None)
             self.model.addConstr(
                 quicksum(self.m_store[(tr, c)] for c in possible_mem_cores) == 1, name=f"chooseMemCore_{tr.node_name}"
             )
@@ -412,7 +415,7 @@ class TransferAndTensorAllocator:
             self._add_one_path_constraint(tr, paths)
             self._add_source_tensor_coherence_constraints(tr, paths)
             self._add_destination_tensor_coherence_constraints(tr, paths)
-            self._add_io_transfers_path_coherence_constraints(tr, paths)
+            # self._add_io_transfers_path_coherence_constraints(tr, paths)
 
     def _add_one_path_constraint(
         self, tr: SteadyStateTransfer, paths: list[tuple[SteadyStateTransfer, tuple[CommunicationLink, ...]]]
@@ -495,27 +498,28 @@ class TransferAndTensorAllocator:
             if its FIRST link originates or ends in a memory core, enforce memory core matching:
             y_path ≤ m_store[(tr, memc)]
         """
+        if not self._is_const_io(tr):
+            return
         for p in paths:
             if not p[1]:
                 continue  # empty path
-            first_link_sender = p[1][0].sender
-            first_link_receiver = p[1][0].receiver
-            if first_link_sender in self.mem_cores:
-                assert isinstance(first_link_sender, Core), (
-                    f"Expected {first_link_sender} to be a Core, got {type(first_link_sender)}"
-                )
-                self.model.addConstr(
-                    self.y_path[p] <= self.m_store[(tr, first_link_sender)],
-                    name=f"pathMemMatchSender_{tr.node_name}_{_resource_key(first_link_sender)}",
-                )
-            if first_link_receiver in self.mem_cores:
-                assert isinstance(first_link_receiver, Core), (
-                    f"Expected {first_link_receiver} to be a Core, got {type(first_link_receiver)}"
-                )
-                self.model.addConstr(
-                    self.y_path[p] <= self.m_store[(tr, first_link_receiver)],
-                    name=f"pathMemMatchReceiver_{tr.node_name}_{_resource_key(first_link_receiver)}",
-                )
+            # Gather the mem cores involved in this path and make sure there's only one
+            links = p[1]
+            seen_mem_cores = set()
+            for link in links:
+                sender = link.sender
+                receiver = link.receiver
+                if sender in self.mem_cores:
+                    seen_mem_cores.add(sender)
+                if receiver in self.mem_cores:
+                    seen_mem_cores.add(receiver)
+            if len(seen_mem_cores) != 1:
+                raise ValueError(f"Transfer {tr.node_name} doesn't have exactly one MemC in its path: {seen_mem_cores}")
+            mem_core = seen_mem_cores.pop()
+            self.model.addConstr(
+                self.y_path[p] <= self.m_store[(tr, mem_core)],
+                name=f"pathMemMatch_{tr.node_name}_{_resource_key(mem_core)}",
+            )
 
     # ...................... link contention .................... #
     def _link_contention_constraints(self):
@@ -562,7 +566,7 @@ class TransferAndTensorAllocator:
                 continue
             for stop in range(-1, len(tr.steady_state_iteration_space.get_temporal_variables())):
                 _, mem_need = self.reuse_levels[(tr, stop)]
-                for mc in self.mem_cores:
+                for mc in tr.possible_memory_core_allocation:
                     self.core_load[mc] += mem_need * self.m_store[(tr, mc)] * self.z_stopM[(tr, stop)]
 
         # add memory capacity constraints for each core
@@ -605,57 +609,50 @@ class TransferAndTensorAllocator:
             self.model.addConstr(self.slot_latency[s] >= lat * y, name=f"tr_lat_{tr.node_name}_{hash(p)}")
 
     # ...................... overlap + objective ................. #
-    def _overlap_and_objective(self) -> None:  # noqa: PLR0915
+    def _overlap_and_objective(self) -> None:
         """
         ▸ idle_start[res,s]  == 1  ⇔  slot *s* is *before* the first activity on *res*
         ▸ idle_end  [res,s]  == 1  ⇔  slot *s* is *after*  the last  activity on *res*
         Only these slots contribute to the idle-latency that can overlap
         successive steady-state iterations.
         """
-        # ------------------------------------------------------------------
-        # helpers
-        # ------------------------------------------------------------------
         max_s = self.max_slot
         big_m = self.big_m
 
-        def _first_last_busy(res: Resource) -> tuple[int | None, int | None]:
-            """Return first / last busy slot of a *fixed* resource."""
-            busy = sorted(self.slot_of[n] for n, r in self.resource_of.items() if r is res)
-            return (busy[0], busy[-1]) if busy else (None, None)
+        self._init_idle_indicators(max_s, big_m)
+        self._create_idle_latency_vars(max_s)
+        self._define_overlap_var()
+        self._add_transfer_costs()
+        self._add_dma_usage_constraints()
+        self._set_total_latency_and_objective()
 
-        # ------------------------------------------------------------------
-        # 1) idle-indicator   idleS / idleE
-        # ------------------------------------------------------------------
+    # --------------------- overlap helpers --------------------- #
+    def _first_last_busy_slot(self, res: Resource) -> tuple[int | None, int | None]:
+        busy = sorted(self.slot_of[n] for n, r in self.resource_of.items() if r is res)
+        return (busy[0], busy[-1]) if busy else (None, None)
+
+    def _init_idle_indicators(self, max_s: int, big_m: int) -> None:
         self.idleS: dict[tuple[Resource, int], gp.Var | int] = {}
         self.idleE: dict[tuple[Resource, int], gp.Var | int] = {}
+        self._init_fixed_idle_indicators(max_s)
+        self._init_link_idle_indicators(max_s, big_m)
 
-        # ............................................ fixed cores .........
+    def _init_fixed_idle_indicators(self, max_s: int) -> None:
         for res in self.tsa.resources:
             if res is None or (isinstance(res, Core) and res.id == self.offchip_core_id):
-                continue  # not part of overlap
-
-            first_busy, last_busy = _first_last_busy(res)
+                continue
+            first_busy, last_busy = self._first_last_busy_slot(res)
             if first_busy is None or last_busy is None:
                 continue
-
             for s in range(max_s + 1):
                 self.idleS[(res, s)] = 1 if s < first_busy else 0
                 self.idleE[(res, s)] = 1 if s > last_busy else 0
 
-        # ............................................ links (path-dep) ....
-        # we need:
-        #   link_used      = 1  ⇔  link carries traffic in *any* slot
-        #   prefix_sum[s]  = Σ_{τ≤s}  active_{τ}
-        #   suffix_sum[s]  = Σ_{τ≥s}  active_{τ}
-        # idleS = 1  ⇔  prefix_sum[s]==0        (no activity up to *s*)
-        # idleE = 1  ⇔  suffix_sum[s]==0        (no activity after *s*)
-
+    def _init_link_idle_indicators(self, max_s: int, big_m: int) -> None:
         self.link_used: dict[CommunicationLink, gp.Var] = {}
         self.prefixs: dict[CommunicationLink, list[gp.Var]] = {}
         self.suffixs: dict[CommunicationLink, list[gp.Var]] = {}
-
         for link in self.link_set:
-            # ---------- active_{link,s} expression ------------------------
             active_s: dict[int, gp.LinExpr] = {}
             for s in range(max_s + 1):
                 active_s[s] = quicksum(
@@ -663,17 +660,12 @@ class TransferAndTensorAllocator:
                     for (tr, p) in self.y_path
                     if link in self.links_in_path[(tr, p)] and self.slot_of[tr] == s
                 )
-
-            # ---------- link_used binary ----------------------------------
             lu = self.model.addVar(vtype=GRB.BINARY, name=f"linkUsed_{_resource_key(link)}")
             self.link_used[link] = lu
             sum_active = quicksum(active_s.values())
-            # (1) if lu == 1  ⇒  link carries traffic
             self.model.addConstr(sum_active >= lu, name=f"link_used_def_{_resource_key(link)}")
-            # (2) if link carries traffic  ⇒  lu == 1
             self.model.addConstr(sum_active <= big_m * lu, name=f"link_used_def2_{_resource_key(link)}")
 
-            # ---------- cumulative sums -----------------------------------
             prefix = [
                 self.model.addVar(vtype=GRB.INTEGER, name=f"pre_{_resource_key(link)}_{s}") for s in range(max_s + 1)
             ]
@@ -682,35 +674,26 @@ class TransferAndTensorAllocator:
             ]
             self.prefixs[link] = prefix
             self.suffixs[link] = suffix
-
             self.model.addConstr(prefix[0] == active_s[0])
             self.model.addConstr(suffix[-1] == active_s[max_s])
             for s in range(1, max_s + 1):
                 self.model.addConstr(prefix[s] == prefix[s - 1] + active_s[s])
                 self.model.addConstr(suffix[max_s - s] == suffix[max_s - s + 1] + active_s[max_s - s])
 
-            # ---------- idleS / idleE binaries ----------------------------
             for s in range(max_s + 1):
                 is_ = self.model.addVar(vtype=GRB.BINARY, name=f"idleS_{_resource_key(link)}_{s}")
                 ie_ = self.model.addVar(vtype=GRB.BINARY, name=f"idleE_{_resource_key(link)}_{s}")
                 self.idleS[(link, s)] = is_
                 self.idleE[(link, s)] = ie_
 
-                # prefix_sum == 0  →  is_ = 1
                 self.model.addConstr(prefix[s] <= big_m * (1 - is_))
                 self.model.addConstr(prefix[s] >= lu - big_m * is_)
-
-                # suffix_sum == 0  →  ie_ = 1
                 self.model.addConstr(suffix[s] <= big_m * (1 - ie_))
                 self.model.addConstr(suffix[s] >= lu - big_m * ie_)
-
-                # If the link is never used (lu==0) → force is_=1 and ie_=0 for correct idle_lat calculation
                 self.model.addConstr(is_ >= 1 - lu)
                 self.model.addConstr(ie_ <= lu)
 
-        # ------------------------------------------------------------------
-        # 2) idle-latency per resource
-        # ------------------------------------------------------------------
+    def _create_idle_latency_vars(self, max_s: int) -> None:
         self.idle_lat: dict[Resource, gp.Var] = {}
         for res in {r for r, _ in self.idleS} | {r for r, _ in self.idleE}:
             expr = quicksum(
@@ -721,62 +704,97 @@ class TransferAndTensorAllocator:
             self.model.addConstr(v == expr)
             self.idle_lat[res] = v
 
-        # ------------------------------------------------------------------
-        # 3) overlap  =  min idle_lat[r]   (only over resources that are used)
-        # ------------------------------------------------------------------
+    def _define_overlap_var(self) -> None:
         overlap = self.model.addVar(vtype=GRB.INTEGER, name="overlap")
         self.overlap = overlap
         for v in self.idle_lat.values():
             self.model.addConstr(overlap <= v)
 
-        # ------------------------------------------------------------------
-        # EXTRA) transfer fires (across all transfers and steady-state iterations)
-        # ------------------------------------------------------------------
+    def _add_transfer_costs(self) -> None:
         self.total_transfer_cost = quicksum(
             self._transfer_latency(tr, p) * self.y_path[(tr, p)] * self.firesC[tr] for (tr, p) in self.y_path
         )
-
-        # cost of DRAM → MemC   (single hop, latency = size / bw of that link)
         lat_dram_mem = {
             (tr, mc): ceil(tr.size / self._first_link_bw_from_dram(tr, mc))
             for tr in self.transfer_nodes
             if self._is_const_io(tr)
-            for mc in self.mem_cores
-            if self._any_path_through_mc(tr, mc)
+            for mc in tr.possible_memory_core_allocation
         }
         self.total_transfer_cost += quicksum(
             lat_dram_mem[(tr, mc)] * self.firesM[tr] * self.m_store[(tr, mc)]
             for tr in self.transfer_nodes
             if self._is_const_io(tr)
-            for mc in self.mem_cores
-            if self._any_path_through_mc(tr, mc)
+            for mc in tr.possible_memory_core_allocation
         )
 
-        # ------------------------------------------------------------------
-        # EXTRA) max mem core usage across all memory cores (for constant IO transfers)
-        # ------------------------------------------------------------------
-        self.mem_core_usage_per_core: dict[Core, gp.Var] = {}
+    def _add_dma_usage_constraints(self) -> None:
+        self.mem_core_usage_s2mm: dict[Core, gp.Var] = {}
+        self.mem_core_usage_mm2s: dict[Core, gp.Var] = {}
+        self.shim_core_usage_s2mm: dict[Core, gp.Var] = {}
+        self.shim_core_usage_mm2s: dict[Core, gp.Var] = {}
         for mc in self.mem_cores:
-            usage = self.model.addVar(vtype=GRB.INTEGER, name=f"memCoreUsage_{_resource_key(mc)}")
+            mem_core_usage_s2mm = self.model.addVar(vtype=GRB.INTEGER, name=f"memCoreUsageS2MM_{_resource_key(mc)}")
             self.model.addConstr(
-                usage == quicksum(self.m_store[(tr, mc)] for tr in self.transfer_nodes if self._is_const_io(tr)),
-                name=f"memCoreUsageConstr_{_resource_key(mc)}",
+                mem_core_usage_s2mm
+                == quicksum(self.m_store[(tr, mc)] for tr in self.transfer_nodes if self._is_const_io(tr)),
+                name=f"memCoreUsageS2MMConstr_{_resource_key(mc)}",
             )
-            self.mem_core_usage_per_core[mc] = usage
+            self.mem_core_usage_s2mm[mc] = mem_core_usage_s2mm
 
-        MAX_MEM_CORE_USAGE = 3
+            mem_core_usage_mm2s = self.model.addVar(vtype=GRB.INTEGER, name=f"memCoreUsageMM2S_{_resource_key(mc)}")
+            self.model.addConstr(
+                mem_core_usage_mm2s
+                == quicksum(self.m_store[(tr, mc)] for tr in self.transfer_nodes if self._is_const_io(tr)),
+                name=f"memCoreUsageMM2SConstr_{_resource_key(mc)}",
+            )
+            self.mem_core_usage_mm2s[mc] = mem_core_usage_mm2s
+
+            shim_core_usage_s2mm = self.model.addVar(vtype=GRB.INTEGER, name=f"shimCoreUsageS2MM_{_resource_key(mc)}")
+            self.model.addConstr(
+                shim_core_usage_s2mm
+                == quicksum(self.m_store[(tr, mc)] for tr in self.transfer_nodes if self._is_const_o(tr)),
+                name=f"shimCoreUsageS2MMConstr_{_resource_key(mc)}",
+            )
+            self.shim_core_usage_s2mm[mc] = shim_core_usage_s2mm
+
+            shim_core_usage_mm2s = self.model.addVar(vtype=GRB.INTEGER, name=f"shimCoreUsageMM2S_{_resource_key(mc)}")
+            self.model.addConstr(
+                shim_core_usage_mm2s
+                == quicksum(self.m_store[(tr, mc)] for tr in self.transfer_nodes if self._is_const_i(tr)),
+                name=f"shimCoreUsageMM2SConstr_{_resource_key(mc)}",
+            )
+            self.shim_core_usage_mm2s[mc] = shim_core_usage_mm2s
+
+        self.MAX_MEM_TILE_DMA_CHANNELS = 6
+        self.MAX_SHIM_TILE_DMA_CHANNELS = 2
+
         self.max_mem_core_usage = self.model.addVar(vtype=GRB.INTEGER, name="maxMemCoreUsage")
-        for i, usage in enumerate(self.mem_core_usage_per_core.values()):
-            self.model.addConstr(self.max_mem_core_usage >= usage, name=f"maxMemCoreUsage_le_{i}")
-        self.model.addConstr(self.max_mem_core_usage <= MAX_MEM_CORE_USAGE, name="maxMemCoreUsage_le_3")
+        for i, usage in enumerate(self.mem_core_usage_s2mm.values()):
+            self.model.addConstr(self.max_mem_core_usage >= usage, name=f"maxMemCoreUsageS2MM_le_{i}")
+        for i, usage in enumerate(self.mem_core_usage_mm2s.values()):
+            self.model.addConstr(self.max_mem_core_usage >= usage, name=f"maxMemCoreUsageMM2S_le_{i}")
+        self.model.addConstr(
+            self.max_mem_core_usage <= self.MAX_MEM_TILE_DMA_CHANNELS,
+            name=f"maxMemCoreUsage_le_{self.MAX_MEM_TILE_DMA_CHANNELS}",
+        )
 
-        # ------------------------------------------------------------------
-        # 4) total latency + objective
-        # ------------------------------------------------------------------
+        self.max_shim_core_usage = self.model.addVar(vtype=GRB.INTEGER, name="maxShimCoreUsage")
+        for i, usage in enumerate(self.shim_core_usage_s2mm.values()):
+            self.model.addConstr(self.max_shim_core_usage >= usage, name=f"maxShimCoreUsageS2MM_le_{i}")
+        for i, usage in enumerate(self.shim_core_usage_mm2s.values()):
+            self.model.addConstr(self.max_shim_core_usage >= usage, name=f"maxShimCoreUsageMM2S_le_{i}")
+        self.model.addConstr(
+            self.max_shim_core_usage <= self.MAX_SHIM_TILE_DMA_CHANNELS,
+            name=f"maxShimCoreUsage_le_{self.MAX_SHIM_TILE_DMA_CHANNELS}",
+        )
+
+    def _set_total_latency_and_objective(self) -> None:
         self.total_lat = self.model.addVar(vtype=GRB.INTEGER, name="total_latency")
         self.total_latency = self.total_lat
+        assert self.overlap is not None, "Overlap variable must be initialized before objective."
         self.model.addConstr(
-            self.total_lat == self.iterations * quicksum(self.slot_latency.values()) - (self.iterations - 1) * overlap
+            self.total_lat
+            == self.iterations * quicksum(self.slot_latency.values()) - (self.iterations - 1) * self.overlap
         )
         obj_func = self.total_lat + self.total_transfer_cost + self.max_mem_core_usage
         self.model.setObjective(obj_func, GRB.MINIMIZE)

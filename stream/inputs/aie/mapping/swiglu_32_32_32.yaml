@@ -1,0 +1,70 @@
+- name: Gemm_Left
+  core_allocation:
+  - 2
+  intra_core_tiling:
+  - C, 1
+  - K, 1
+  - D, 32
+  inter_core_tiling:
+  - K, 1
+  kernel:
+    name: matvec
+    utilization: 61.8
+- name: Gemm_Right
+  core_allocation:
+  - 3
+  intra_core_tiling:
+  - C, 1
+  - K, 1
+  - D, 32
+  inter_core_tiling:
+  - K, 1
+  kernel:
+    name: matvec
+    utilization: 61.8
+- name: Silu
+  core_allocation:
+  - 4
+  intra_core_tiling:
+  - H, 1
+  - B, 32
+  inter_core_tiling:
+  - K, 1
+  kernel:
+    name: silu
+    utilization: 50.0
+- name: Elt_Mul
+  core_allocation:
+  - 5
+  intra_core_tiling:
+  - H, 1
+  - B, 32
+  inter_core_tiling:
+  - K, 1
+  kernel:
+    name: eltwise_mul
+    utilization: 50.0
+- name: Gemm_Down
+  core_allocation:
+  - 11
+  intra_core_tiling:
+  - C, 1
+  - K, 1
+  - D, 32
+  inter_core_tiling:
+  - K, 1
+  kernel:
+    name: matvec
+    utilization: 61.8
+- name: default
+  core_allocation:
+  - 2
+  intra_core_tiling:
+  - C, 1
+  - K, 1
+  - D, 32
+  inter_core_tiling:
+  - K, 1
+  kernel:
+    name: matvec
+    utilization: 61.8

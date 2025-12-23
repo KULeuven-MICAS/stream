@@ -44,8 +44,7 @@ class SteadyStateComputation(ComputationNode, SteadyStateNode):
             partially_constant_operands=partially_constant_operands,
         )
 
-        # For now, assume the steady state iteration space is not important for the computation nodes
-        steady_state_iteration_space = SteadyStateIterationSpace([])
+        steady_state_iteration_space = SteadyStateIterationSpace.from_computation_node(node=self)
 
         # Initialize SteadyStateNode (explicitly, since ComputationNode also inherits from Node)
         SteadyStateNode.__init__(

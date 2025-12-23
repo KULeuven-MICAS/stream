@@ -334,11 +334,7 @@ class TimeSlotAllocation:
             if isinstance(res, Core) and res.id == offchip_core_id:
                 continue  # overlap doesn't take off-chip core into account
             # list of busy slots for this resource (dont look at tensor nodes)
-            busy = sorted(
-                slot
-                for slot, res_map in self._slot_res_to_node.items()
-                if res in res_map.keys() and all(not isinstance(n, SteadyStateTensor) for n in res_map.values())
-            )
+            busy = sorted(slot for slot, res_map in self._slot_res_to_node.items() if res in res_map.keys())
             if not busy:
                 continue  # never used → ignore
             first_busy, last_busy = busy[0], busy[-1]

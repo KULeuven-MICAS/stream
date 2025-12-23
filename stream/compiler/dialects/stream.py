@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 
-from xdsl.dialects.builtin import ArrayAttr, StringAttr, i64
+from xdsl.dialects.builtin import ArrayAttr, IndexType, IntegerAttr, StringAttr, i64
 from xdsl.ir import Attribute, Data, Dialect, Operation, ParametrizedAttribute, SSAValue, TypeAttribute
 from xdsl.irdl import (
     AttrSizedOperandSegments,
@@ -87,7 +87,7 @@ class ComputationNodeOp(IRDLOperation):
     result = opt_result_def()
 
     kernel = prop_def(StringAttr)
-    core_allocation = prop_def(StringAttr)
+    core_allocation = prop_def(Attribute)
     ssis = prop_def(SteadyStateIterationSpaceAttr)
 
     irdl_options = [AttrSizedOperandSegments()]
@@ -97,7 +97,7 @@ class ComputationNodeOp(IRDLOperation):
         inputs: Sequence[Operation | SSAValue],
         output: Operation | SSAValue | None,
         kernel: str,
-        core_allocation: str,
+        core_allocation: Attribute,
         ssis: SteadyStateIterationSpace,
         result_types: Sequence[Attribute] | None = None,
     ) -> None:
@@ -105,7 +105,7 @@ class ComputationNodeOp(IRDLOperation):
             operands=[inputs, output],
             properties={
                 "kernel": StringAttr(kernel),
-                "core_allocation": StringAttr(core_allocation),
+                "core_allocation": core_allocation,
                 "ssis": SteadyStateIterationSpaceAttr(ssis),
             },
             result_types=result_types,
@@ -126,11 +126,12 @@ class TransferOp(IRDLOperation):
     strides = prop_def(DenseArrayBase)
     spatial_strides = prop_def(DenseArrayBase)
     loop_dimensions = prop_def(ArrayAttr[StringAttr])
-    memtile = prop_def(StringAttr)
+    memtile = prop_def(Attribute)
 
     source = prop_def(StringAttr)
     dest = prop_def(StringAttr)
     ssis = prop_def(SteadyStateIterationSpaceAttr)
+    ssis_dest = prop_def(SteadyStateIterationSpaceAttr)
 
     def __init__(  # noqa: PLR0913
         self,
@@ -140,12 +141,13 @@ class TransferOp(IRDLOperation):
         dest: str,
         tensor: str,
         ssis: SteadyStateIterationSpace,
+        ssis_dest: SteadyStateIterationSpace,
         offsets: DenseArrayBase | Sequence[int],
         sizes: DenseArrayBase | Sequence[int],
         strides: DenseArrayBase | Sequence[int],
         spatial_strides: DenseArrayBase | Sequence[int],
         loop_dimensions: ArrayAttr[StringAttr] | Sequence[str],
-        memtile: str | StringAttr,
+        memtile: Attribute,
     ) -> None:
         if not isinstance(offsets, DenseArrayBase):
             offsets = DenseArrayBase.create_dense_int(i64, offsets)
@@ -157,8 +159,6 @@ class TransferOp(IRDLOperation):
             spatial_strides = DenseArrayBase.create_dense_int(i64, spatial_strides)
         if not isinstance(loop_dimensions, ArrayAttr):
             loop_dimensions = ArrayAttr([StringAttr(dim) for dim in loop_dimensions])
-        if not isinstance(memtile, StringAttr):
-            memtile = StringAttr(memtile)
         super().__init__(
             operands=[input],
             result_types=[result_types],
@@ -167,6 +167,7 @@ class TransferOp(IRDLOperation):
                 "dest": StringAttr(dest),
                 "tensor": StringAttr(tensor),
                 "ssis": SteadyStateIterationSpaceAttr(ssis),
+                "ssis_dest": SteadyStateIterationSpaceAttr(ssis_dest),
                 "offsets": offsets,
                 "sizes": sizes,
                 "strides": strides,
@@ -203,7 +204,7 @@ class PushOp(IRDLOperation):
     strides = prop_def(DenseArrayBase)
     spatial_strides = prop_def(DenseArrayBase)
     loop_dimensions = prop_def(ArrayAttr[StringAttr])
-    memtile = prop_def(StringAttr)
+    memtile = prop_def(Attribute)
 
     ssis = prop_def(SteadyStateIterationSpaceAttr)
 
@@ -217,7 +218,7 @@ class PushOp(IRDLOperation):
         strides: DenseArrayBase | Sequence[int],
         spatial_strides: DenseArrayBase | Sequence[int],
         loop_dimensions: ArrayAttr[StringAttr] | Sequence[str],
-        memtile: str | StringAttr,
+        memtile: Attribute,
     ) -> None:
         if not isinstance(offsets, DenseArrayBase):
             offsets = DenseArrayBase.create_dense_int(i64, offsets)
@@ -229,8 +230,6 @@ class PushOp(IRDLOperation):
             spatial_strides = DenseArrayBase.create_dense_int(i64, spatial_strides)
         if not isinstance(loop_dimensions, ArrayAttr):
             loop_dimensions = ArrayAttr([StringAttr(dim) for dim in loop_dimensions])
-        if not isinstance(memtile, StringAttr):
-            memtile = StringAttr(memtile)
         super().__init__(
             operands=[
                 input,
@@ -260,7 +259,8 @@ class PullOp(IRDLOperation):
     strides = prop_def(DenseArrayBase)
     spatial_strides = prop_def(DenseArrayBase)
     loop_dimensions = prop_def(ArrayAttr[StringAttr])
-    memtile = prop_def(StringAttr)
+    memtile = prop_def(Attribute)
+    operand = prop_def(IntegerAttr[IndexType])
 
     ssis = prop_def(SteadyStateIterationSpaceAttr)
 
@@ -274,7 +274,7 @@ class PullOp(IRDLOperation):
         strides: DenseArrayBase | Sequence[int],
         spatial_strides: DenseArrayBase | Sequence[int],
         loop_dimensions: ArrayAttr[StringAttr] | Sequence[str],
-        memtile: str | StringAttr,
+        memtile: Attribute,
     ) -> None:
         if not isinstance(offsets, DenseArrayBase):
             offsets = DenseArrayBase.create_dense_int(i64, offsets)
@@ -286,8 +286,6 @@ class PullOp(IRDLOperation):
             spatial_strides = DenseArrayBase.create_dense_int(i64, spatial_strides)
         if not isinstance(loop_dimensions, ArrayAttr):
             loop_dimensions = ArrayAttr([StringAttr(dim) for dim in loop_dimensions])
-        if not isinstance(memtile, StringAttr):
-            memtile = StringAttr(memtile)
         super().__init__(
             operands=[channel],
             result_types=[result_type],

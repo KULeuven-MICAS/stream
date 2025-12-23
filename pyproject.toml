@@ -22,13 +22,15 @@ classifiers = [
 ]
 keywords = ["stream", "multi-core", "accelerator", "layer-fused", "scheduling", "zigzag", "dse", "design-space-exploration", "machine-learning", "deep-learning", "mapping"]
 dependencies = [
-    'zigzag-dse',
-    'rtree',
-    'deap',
-    'brokenaxes',
-    'plotly',
-    'pandas',
-    'gurobipy',
+    "zigzag-dse==3.8.2",
+    "rtree",
+    "deap",
+    "cerberus",
+    "pre-commit",
+    "gurobipy",
+    "pydot",
+    "xdsl-aie @ git+https://github.com/xdslproject/xdsl-aie.git@378c4c69c7f643ec31c6ef96c2fd830a0fb87244",
+    "snax-mlir @ git+https://github.com/kuleuven-micas/snax-mlir.git@1c01c5d100df128c9fa01d3336ebea98e19b20cf",
 ]
 requires-python = ">=3.11"
 
@@ -52,7 +54,7 @@ push = false
 
 [tool.bumpver.file_patterns]
 "pyproject.toml" = [
-    'current_version = "{version}"', 
+    'current_version = "{version}"',
     'version = "{version}"'
 ]
 "stream/__init__.py" = ["{version}"]

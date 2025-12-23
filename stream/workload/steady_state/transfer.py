@@ -14,6 +14,7 @@ class TransferType(Enum):
     DISTRIBUTE = "distribute"
     BROADCAST = "broadcast"
     JOIN = "join"
+    DISTRIBROAD = "distribroad"
 
 
 class SteadyStateTransfer(SteadyStateNode):
@@ -29,6 +30,7 @@ class SteadyStateTransfer(SteadyStateNode):
         size: int,  # in bits
         tensor: SteadyStateTensor,
         possible_resource_allocation: tuple[tuple[CommunicationLink, ...], ...],
+        possible_memory_core_allocation: tuple[Core, ...],
         steady_state_iteration_space: SteadyStateIterationSpace,
     ):
         super().__init__(
@@ -49,12 +51,18 @@ class SteadyStateTransfer(SteadyStateNode):
             self.chosen_resource_allocation: tuple[CommunicationLink, ...] | None = (
                 possible_resource_allocation[0] if len(possible_resource_allocation) == 1 else None
             )
+        self.possible_memory_core_allocation: tuple[Core, ...] = possible_memory_core_allocation
         self.chosen_memory_core: Core | None = None
 
     def set_possible_resource_allocation(self, allocation: tuple[tuple[CommunicationLink, ...], ...]) -> None:
         assert len(allocation) > 0, "Allocation must not be empty."
         self.possible_resource_allocation = allocation
         self.chosen_resource_allocation = None if len(allocation) > 1 else allocation[0]
+
+    def set_possible_memory_core_allocation(self, allocation: tuple[Core, ...]) -> None:
+        assert len(allocation) > 0, "Allocation must not be empty."
+        self.possible_memory_core_allocation = allocation
+        self.chosen_memory_core = None if len(allocation) > 1 else allocation[0]
 
     def __str__(self):
         return f"Transfer({self.srcs} -> {self.dsts})"

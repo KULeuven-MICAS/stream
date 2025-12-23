@@ -4,23 +4,43 @@ import os
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping_single_core
-from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
+from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping_pipelined, make_swiglu_mapping_pipelined2
+from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
 
 
-def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_rows, nb_cols):  # noqa: N803, PLR0913
+def run_main_aie_codegen_swiglu(  # noqa: PLR0913
+    seq_len,
+    embedding_dim,
+    hidden_dim,
+    m,
+    k,
+    n,
+    in_dtype,
+    out_dtype,
+    trace_size,
+    rows,
+    cols,
+    npu,
+    line_size,
+    runtime_args,
+    mapping_version: int = 1,
+):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
-    # CREATE THE CONV ONNX MODEL
-    workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
-    accelerator = "stream/inputs/aie/hardware/single_core.yaml"
-    mapping_path = make_gemm_mapping_single_core(M, K, N, m, k, n, has_mem_tile=True)
-    # mode = "lbl"
-    # layer_stacks = [(0,),]
+    # CREATE THE SWIGLU ONNX MODEL AND MAPPING
+    workload_path = make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype)
+    if mapping_version == 1:
+        accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array.yaml")
+        mapping_path = make_swiglu_mapping_pipelined(seq_len, embedding_dim, hidden_dim, m, k, n, line_size)
+    elif mapping_version == 2:  # noqa: PLR2004
+        accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
+        mapping_path = make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, line_size)
+    else:
+        raise ValueError(f"Invalid mapping_version: {mapping_version}. Supported versions are 1 and 2.")
     mode = "fused"
-    layer_stacks = [(0,)]
+    layer_stacks = [(0, 1, 2, 3, 4)]
     ##############################################################################################
 
     ################################PARSING###############################
@@ -28,12 +48,12 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
     wl_name = re.split(r"/|\.", workload_path)[-1]
     if wl_name == "onnx":
         wl_name = re.split(r"/|\.", workload_path)[-2]
-    mapping_name = f"{nb_rows}_row_{nb_cols}_col"
+    mapping_name = f"{rows}_row_{cols}_col"
     experiment_id = f"{hw_name}-{wl_name}-{mapping_name}"
     ######################################################################
 
     ################################LOGGING###############################
-    log_path = f"outputs/{experiment_id}/stream.log"
+    log_path = os.path.join(os.getcwd(), f"outputs/{experiment_id}/stream.log")
     # Ensure the output directory exists
     os.makedirs(os.path.dirname(log_path), exist_ok=True)
     # Get root logger and remove any existing handlers
@@ -46,7 +66,10 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
     file_handler = _logging.FileHandler(log_path)
     file_handler.setFormatter(_logging.Formatter(_logging_format))
     logger.addHandler(file_handler)
-    logger.info(f"Running AIE code generation for Gemm with M={M}, N={N}, K={K}")
+    logger.info(
+        f"Running AIE code generation for Swiglu with "
+        f"seq_len={seq_len}, embedding_dim={embedding_dim}, hidden_dim={hidden_dim}"
+    )
     ######################################################################
 
     ################################PLOTS################################
@@ -54,7 +77,7 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
     # json_path = f"outputs/{experiment_id}/scme.json"
     #####################################################################
 
-    _ = optimize_allocation_co(
+    module = optimize_allocation_co(
         hardware=accelerator,
         workload=workload_path,
         mapping=mapping_path,
@@ -65,6 +88,9 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
         skip_if_exists=False,
         enable_codegen=True,
         trace_size=trace_size,
+        nb_cols_to_use=cols,
+        npu=npu,
+        runtime_args=runtime_args,
     )
 
     # #####################CostModelEvaluationLUT LOAD#############################
@@ -78,30 +104,35 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
     # # Plotting memory usage of best SCME
     # plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
 
+    return module
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run AIE code generation for Gemm")
-    parser.add_argument("--M", type=int, required=True, help="M parameter for the model")
-    parser.add_argument("--K", type=int, required=True, help="K parameter for the model")
-    parser.add_argument("--N", type=int, required=True, help="N parameter for the model")
+    parser.add_argument("--seq_len", type=int, required=True, help="Sequence length (seq_len dimension of the input)")
+    parser.add_argument(
+        "--embedding_dim", type=int, required=True, help="Embedding dimension (embedding_dim dimension of the input)"
+    )
+    parser.add_argument(
+        "--hidden_dim", type=int, required=True, help="Hidden dimension (hidden_dim dimension of the output)"
+    )
+    parser.add_argument("--line_size", type=int, required=True, help="N parameter for the model")
     parser.add_argument("--m", type=int, default=32, help="m parameter for the model (default: 32)")
     parser.add_argument("--k", type=int, default=32, help="k parameter for the model (default: 32)")
     parser.add_argument("--n", type=int, default=32, help="n parameter for the model (default: 32)")
-    parser.add_argument("--in_dtype", type=str, default="i16", help="Input data type (default: i16)")
-    parser.add_argument("--out_dtype", type=str, default="i32", help="Output data type (default: i32)")
+    parser.add_argument("--in_dtype", type=str, default="bf16", help="Input data type (default: bf16)")
+    parser.add_argument("--out_dtype", type=str, default="bf16", help="Output data type (default: bf16)")
     parser.add_argument("--trace_size", type=int, default=1048576, help="Size of the trace buffer (default: 1048576)")
-    parser.add_argument("--rows", type=int, default=1, help="Number of AIE rows to use (has to be 1)")
+    parser.add_argument("--rows", type=int, default=4, help="Number of AIE rows to use (has to be 4)")
     parser.add_argument("--cols", type=int, default=1, help="Number of AIE columns to use (default: 1)")
+    parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
+    parser.add_argument("--mapping_version", type=int, default=1, help="Mapping version to use (1 or 2, default: 1)")
     args = parser.parse_args()
-    assert args.rows == 1, "This script only supports 1 AIE row. Use main_gemm_single_col.py for more than 1 row."
-    assert args.cols == 1, (
-        "This script only supports 1 AIE column. Use main_gemm_whole_array.py for more than 1 column."
-    )
 
-    run_main_aie_codegen_gemm(
-        args.M,
-        args.K,
-        args.N,
+    module = run_main_aie_codegen_swiglu(
+        args.seq_len,
+        args.embedding_dim,
+        args.hidden_dim,
         args.m,
         args.k,
         args.n,
@@ -110,4 +141,10 @@ if __name__ == "__main__":
         args.trace_size,
         args.rows,
         args.cols,
+        args.npu,
+        args.line_size,
+        runtime_args=["input", "weights_1", "weights_2", "weights_3", "output"],
+        mapping_version=args.mapping_version,
     )
+
+    print(str(module))

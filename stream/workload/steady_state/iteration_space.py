@@ -11,6 +11,7 @@ from math import prod
 from zigzag.datatypes import LayerDim, LayerOperand
 from zigzag.workload.layer_node import LoopRelevancyInfo
 
+from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.mapping import TILING_T
 
 
@@ -58,8 +59,9 @@ class IterationVariable:
         yield from (self.dimension, self.size, self.relevant, self.compute_tile_reuse, self.spatial)
 
     def __repr__(self):
+        prefix = "S" if self.spatial else "T"
         tag = "R" if self.relevant else "IR"
-        return f"IterVar({self.dimension.name},{self.size},{tag},{self.compute_tile_reuse},spatial={self.spatial})"
+        return f"{prefix}({self.dimension.name},{self.size},{tag})"
 
     def __eq__(self, other):
         if not isinstance(other, IterationVariable):
@@ -180,6 +182,17 @@ class SteadyStateIterationSpace:
 
         return cls(variables)
 
+    @classmethod
+    def from_computation_node(cls, *, node: ComputationNode):
+        # Temporal intra_core_tiling loop variables only
+        variables: list[IterationVariable] = []
+        intra_core_tiling = node.intra_core_tiling
+        for dim, size in intra_core_tiling:
+            is_rel = True  # All dimensions are relevant for the computation node
+            iter_var = IterationVariable(dim, size, is_rel)
+            variables.append(iter_var)
+        return cls(variables)
+
     # ..................................................................... #
     # ── Convenience helpers                                                 #
     # ..................................................................... #
@@ -287,6 +300,25 @@ class SteadyStateIterationSpace:
         Returns the list of reuses of temporal iteration variables.
         """
         return [iv.mem_tile_reuse for iv in self.get_temporal_variables()]
+
+    @classmethod
+    def merge_iteration_spaces(cls, ssis_list: list[SteadyStateIterationSpace]) -> SteadyStateIterationSpace:
+        """
+        Merges multiple SteadyStateIterationSpace into one, combining the relevancy
+        If one of the iteration variables is relevant, the merged one is relevant.
+        TODO: maybe not necessary anymore this method
+        """
+        iter_vars = []
+        for ssis in ssis_list:
+            print(ssis)
+        for iter_var in zip(*ssis_list, strict=True):
+            iv = iter_var[0]
+            for other_iv in iter_var[1:]:
+                if other_iv.relevant:
+                    iv.relevant = True
+            iter_vars.append(iv)
+        result = SteadyStateIterationSpace(iter_vars)
+        return result
 
     # ..................................................................... #
     # ── Iteration / pretty printing                                         #

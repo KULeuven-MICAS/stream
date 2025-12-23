@@ -1,9 +1,10 @@
 import argparse
 import logging as _logging
+import os
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping_single_col
+from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping_whole_array
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
 
 _logging_level = _logging.INFO
@@ -11,12 +12,12 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
-def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_rows, nb_cols):  # noqa: N803, PLR0913
+def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_rows, nb_cols, npu):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
     workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
-    accelerator = "stream/inputs/aie/hardware/single_col.yaml"
-    mapping_path = make_gemm_mapping_single_col(M, K, N, m, k, n, has_mem_tile=True, nb_rows=nb_rows)
+    accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array.yaml")
+    mapping_path = make_gemm_mapping_whole_array(M, K, N, m, k, n, nb_rows_to_use=nb_rows, nb_cols_to_use=nb_cols)
     # mode = "lbl"
     # layer_stacks = [(0,),]
     mode = "fused"
@@ -42,7 +43,7 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
     # json_path = f"outputs/{experiment_id}/scme.json"
     #####################################################################
 
-    _ = optimize_allocation_co(
+    module = optimize_allocation_co(
         hardware=accelerator,
         workload=workload_path,
         mapping=mapping_path,
@@ -53,18 +54,16 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
         skip_if_exists=False,
         enable_codegen=True,
         trace_size=trace_size,
+        nb_cols_to_use=nb_cols,
+        npu=npu,
     )
 
-    # #####################CostModelEvaluationLUT LOAD#############################
-    # cost_lut_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
-    # cost_lut = CostModelEvaluationLUT(cost_lut_path)
-    # #############################################################################
+    # Save the mlir module to output.mlir
+    mlir_path = f"outputs/{experiment_id}/output.mlir"
+    with open(mlir_path, "w") as f:
+        f.write(str(module))
 
-    # # Save json for perfetto visualization (Visualize at http://ui.perfetto.dev/)
-    # convert_scme_to_perfetto_json(scme, cost_lut, json_path=json_path)
-
-    # # Plotting memory usage of best SCME
-    # plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
+    return module
 
 
 if __name__ == "__main__":
@@ -79,11 +78,9 @@ if __name__ == "__main__":
     parser.add_argument("--out_dtype", type=str, default="i32", help="Output data type (default: i32)")
     parser.add_argument("--trace_size", type=int, default=1048576, help="Size of the trace buffer (default: 1048576)")
     parser.add_argument("--rows", type=int, default=2, help="Number of AIE rows to use (default: 2)")
-    parser.add_argument("--cols", type=int, default=1, help="Number of AIE columns to use (has to be 1)")
+    parser.add_argument("--cols", type=int, default=2, help="Number of AIE columns to use (default: 2)")
+    parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
     args = parser.parse_args()
-    assert args.cols == 1, (
-        "This script only supports 1 AIE column. Use main_gemm_whole_array.py for more than 1 column."
-    )
 
     run_main_aie_codegen_gemm(
         args.M,
@@ -97,4 +94,5 @@ if __name__ == "__main__":
         args.trace_size,
         args.rows,
         args.cols,
+        args.npu,
     )

@@ -2,7 +2,7 @@ from copy import deepcopy
 from math import prod
 from typing import TypeAlias
 
-from xdsl.dialects.builtin import MemRefType, i8, i16, i32
+from xdsl.dialects.builtin import MemRefType, bf16, f32, i8
 from xdsl.dialects.memref import AllocOp, SubviewOp
 from zigzag.datatypes import Constants, LayerDim, LayerOperand, MemoryOperand
 from zigzag.utils import hash_sha512
@@ -24,8 +24,8 @@ LOOP_RANGES_T: TypeAlias = dict[LayerDim, tuple[int, int]]
 
 PRECISION_TYPE_MAP = {
     8: i8,
-    16: i16,
-    32: i32,
+    16: bf16,
+    32: f32,
 }
 
 
@@ -177,6 +177,14 @@ class ComputationNode(LayerNode, Node):
                 sizes=sizes,
                 strides=strides,
             )
+            if op in self.input_operands:
+                input_op_idx = self.input_operands.index(op)
+                try:
+                    tensor_name = self.input_names[input_op_idx]
+                except IndexError:
+                    tensor_name = self.name + "_" + str(op)
+            else:
+                tensor_name = self.name + "_" + str(op)
             self.operand_tensors[op] = SubviewTensor(
                 subview=subview,
                 sizes=sizes,
@@ -184,6 +192,7 @@ class ComputationNode(LayerNode, Node):
                 layer_operand=op,
                 loop_dimensions=op_dimensionality_order,
                 loop_ranges=ranges,
+                name=tensor_name,
             )
 
     def get_operand_tensor_reshape_default(self) -> OperandTensorReshape | None:

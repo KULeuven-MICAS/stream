@@ -138,6 +138,8 @@ def optimize_allocation_co(  # noqa: PLR0913
     enable_codegen: bool = False,
     trace_size: int = 1048576,
     nb_cols_to_use: int = 4,
+    npu: str = "npu2",
+    runtime_args: list[str] | None = None,
 ) -> StreamCostModelEvaluation:
     _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
     _sanity_check_gurobi_license()
@@ -150,7 +152,7 @@ def optimize_allocation_co(  # noqa: PLR0913
     cost_lut_path = f"{output_path}/{experiment_id}/cost_lut.pickle"
     allocations_path = f"{output_path}/{experiment_id}/waco/"
     tiled_workload_post_co_path = f"{output_path}/{experiment_id}/tiled_workload_post_co.pickle"
-    cost_lut_post_co_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
+    output_path = f"outputs/{experiment_id}/"
     scme_path = f"{output_path}/{experiment_id}/scme.pickle"
     codegen_path = f"{output_path}/{experiment_id}/output.mlir"
 
@@ -167,7 +169,7 @@ def optimize_allocation_co(  # noqa: PLR0913
 
     # Load SCME if it exists and skip_if_exists is True
     if os.path.exists(scme_path) and skip_if_exists:
-        scme = pickle_load(scme_path)
+        module = pickle_load(scme_path)
         logger.info(f"Loaded SCME from {scme_path}")
     else:
         stages: list[StageCallable] = [  # Initializes the MainStage as entry point
@@ -200,16 +202,18 @@ def optimize_allocation_co(  # noqa: PLR0913
             cost_lut_path=cost_lut_path,
             allocations_path=allocations_path,
             tiled_workload_post_co_path=tiled_workload_post_co_path,
-            cost_lut_post_co_path=cost_lut_post_co_path,
+            output_path=output_path,
             temporal_mapping_type=temporal_mapping_type,  # required by ZigZagCoreMappingEstimationStage
             operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
             latency_attr="ideal_temporal_cycle",
             codegen_path=codegen_path,
             trace_size=trace_size,
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
+            npu=npu,  # required by AIECodeGenerationStage
+            runtime_args=runtime_args,  # required by AIECodeGenerationStage
         )
         # Launch the MainStage
         answers = mainstage.run()
-        scme = answers[0][0]
+        module = answers[0][0]
         # pickle_save(scme, scme_path)  # type: ignore
-    return scme
+    return module

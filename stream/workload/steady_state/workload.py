@@ -8,7 +8,7 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import Re
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.node import SteadyStateNode
 from stream.workload.steady_state.rolling_buffer import SteadyStateRollingBuffer
-from stream.workload.steady_state.tensor import SteadyStateTensor
+from stream.workload.steady_state.tensor import SteadyStateTensor, TensorFlag
 from stream.workload.steady_state.transfer import SteadyStateTransfer
 
 
@@ -100,10 +100,19 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
 
             # ------------------------------------------------ computations --
             comp_nodes = [n for n in generation if isinstance(n, SteadyStateComputation)]
+
+            next_free_slot_per_core: dict[Resource, int] = {}  # Track next free slot per core
+            highest_slot_used = global_slot
+
             for n in comp_nodes:
                 core = n.chosen_resource_allocation
                 assert core is not None, f"{n.node_name} has no core assigned."
-                allocations.append((global_slot, core, n))
+                # Determine the next available slot for this core
+                slot = next_free_slot_per_core.get(core, global_slot)
+                # Set the helper var and update the allocations
+                next_free_slot_per_core[core] = slot + 1
+                highest_slot_used = max(highest_slot_used, slot)
+                allocations.append((slot, core, n))
 
             # --------------------------------------------------- tensors ----
             tensor_nodes = [n for n in generation if isinstance(n, SteadyStateTensor)]
@@ -179,7 +188,11 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
             n = dot.get_node(str(node))[0]
             if isinstance(node, SteadyStateComputation):
                 n.set_shape("ellipse")
-                n.set_label(f"{node.node_name}\nResource: {getattr(node, 'chosen_resource_allocation', 'None')}")
+                n.set_label(
+                    f"{node.node_name}\n"
+                    f"Resource: {getattr(node, 'chosen_resource_allocation', 'None')}\n"
+                    f"{node.steady_state_iteration_space}"
+                )
                 n.set_style("filled")
                 n.set_fillcolor("#60bcf0")
             elif isinstance(node, SteadyStateRollingBuffer):
@@ -199,12 +212,15 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
                 n.set_style("filled")
                 n.set_fillcolor("#c2f0c2")
             elif isinstance(node, SteadyStateTransfer):
+                chosen_resource_allocation_label = self._get_chosen_resource_label(node)
+                chosen_mem_core_label = self._get_transfer_mem_core_label(node)
                 n.set_shape("box")
                 n.set_label(
                     f"{node.node_name}\n"
-                    f"Resource: {getattr(node, 'chosen_resource_allocation', 'None')}\n"
+                    f"{chosen_resource_allocation_label}"
                     f"Type: {node.transfer_type.value.capitalize()}\n"
-                    f"Chosen Mem Core: {getattr(node, 'chosen_memory_core', 'None')}"
+                    f"{chosen_mem_core_label}"
+                    f"{node.steady_state_iteration_space}"
                 )
                 n.set_style("filled")
                 n.set_fillcolor("#ffcb9a")
@@ -214,3 +230,18 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
         # Save to file
         dot.write_png(filepath)
         print(f"Graph saved to {filepath}")
+
+    def _get_transfer_mem_core_label(self, node: SteadyStateTransfer) -> str:
+        chosen_mem_core = getattr(node, "chosen_memory_core", "None")
+        if TensorFlag.CONSTANT not in node.tensor.tensor_flag:
+            return ""
+        if chosen_mem_core is None:
+            possible_mem_cores = node.possible_memory_core_allocation
+            return f"Possible Mem Cores: {possible_mem_cores}\n"
+        return f"Chosen Mem Core: {chosen_mem_core}\n"
+
+    def _get_chosen_resource_label(self, node: SteadyStateTransfer) -> str:
+        chosen_resource_allocation = getattr(node, "chosen_resource_allocation", None)
+        if chosen_resource_allocation is None:
+            return "Resource: None\n"
+        return f"Resource: {chosen_resource_allocation[0]},...,{chosen_resource_allocation[-1]}\n"

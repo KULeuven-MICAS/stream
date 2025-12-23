@@ -45,8 +45,6 @@ jobs:
           ARGS: ${{ inputs.snakemake_args }}
         run: |
           source .venv/bin/activate
-          source setup_mlir_aie_path.sh
-          source setup_mlir_aie_pythonpath.sh
           snakemake $ARGS || true
 
       - name: Upload outputs artifact
