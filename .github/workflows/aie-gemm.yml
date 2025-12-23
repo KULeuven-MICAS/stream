@@ -13,22 +13,22 @@ jobs:
     uses: ./.github/workflows/_gemm-run.yml
     secrets: inherit
     with:
-      snakemake_args: "-j 1 --forceall --keep-going --config npu=npu1"
+      snakemake_args: "-j 1 --forceall --keep-going"
 
-  summarize_errors:
-    needs: run
-    uses: ./.github/workflows/_summarize-errors.yml
-    secrets: inherit
+  # summarize_errors:
+  #   needs: run
+  #   uses: ./.github/workflows/_summarize-errors.yml
+  #   secrets: inherit
 
-  summarize_results:
-    needs: summarize_errors
-    uses: ./.github/workflows/_summarize-results.yml
-    secrets: inherit
+  # summarize_results:
+  #   needs: summarize_errors
+  #   uses: ./.github/workflows/_summarize-results.yml
+  #   secrets: inherit
 
-  comment:
-    needs: summarize_results
-    if: ${{ github.event_name == 'pull_request' }}
-    uses: ./.github/workflows/_pr-comment.yml
-    with:
-      body: ${{ needs.summarize_results.outputs.summary_md }}
-    secrets: inherit
+  # comment:
+  #   needs: summarize_results
+  #   if: ${{ github.event_name == 'pull_request' }}
+  #   uses: ./.github/workflows/_pr-comment.yml
+  #   with:
+  #     body: ${{ needs.summarize_results.outputs.summary_md }}
+  #   secrets: inherit
