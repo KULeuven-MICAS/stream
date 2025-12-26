@@ -9,16 +9,7 @@ This document explains the concept of stages within the **Stream** framework. It
 Stages in Stream allow modular customization of the framework’s behavior. The sequence of stages defines what the framework will execute. These are configured in the `MainStage`. Example:
 
 ```python
-mainstage = MainStage(
-    [
-        AcceleratorParserStage,
-        StreamONNXModelParserStage,
-        LayerSplittingStage,
-        StreamONNXModelParserStage,
-        GenerateCNWorkloadHybridStage,
-        IntraCoreMappingStage,
-        InterCoreMappingStage,
-    ],
+ctx = StageContext.from_kwargs(
     accelerator=accelerator,
     workload_path=workload_path,
     mapping_path=mapping_path,
@@ -36,6 +27,19 @@ mainstage = MainStage(
     operands_to_prefetch=[],
     split_onnx_model_path=split_onnx_model_path,
     split_W_double_buffered=split_W_double_buffered,
+)
+
+mainstage = MainStage(
+    [
+        AcceleratorParserStage,
+        StreamONNXModelParserStage,
+        LayerSplittingStage,
+        StreamONNXModelParserStage,
+        GenerateCNWorkloadHybridStage,
+        IntraCoreMappingStage,
+        InterCoreMappingStage,
+    ],
+    ctx,
 )
 
 scme, _ = mainstage.run()

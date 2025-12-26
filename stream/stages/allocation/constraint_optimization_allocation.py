@@ -1,20 +1,22 @@
 import logging
 import os
+from dataclasses import replace
 from math import prod
 from time import time
-from typing import Any, TypeAlias
+from typing import TypeAlias
 
 import networkx as nx
 import numpy as np
 from zigzag.utils import pickle_load, pickle_save
 
-from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
-from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_T, get_optimal_allocations
+from stream.opt.allocation.constraint_optimization.config import ConstraintOptStageConfig
+from stream.opt.allocation.constraint_optimization.context import build_constraint_context
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import NodeType, TimeSlotAllocation
 from stream.opt.allocation.constraint_optimization.utils import calculate_total_latency, get_partitioned_nodes
+from stream.stages.context import StageContext
 from stream.stages.generation.layer_stacks_generation import STACK_T
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.computation.computation_node import ComputationNode
@@ -37,18 +39,21 @@ class ConstraintOptimizationAllocationStage(Stage):
 
     CO_TIME_LIMIT = 600
 
+    REQUIRED_FIELDS = (
+        "workload",
+        "accelerator",
+        "cost_lut",
+        "layer_stacks",
+        "allocations_path",
+        "tiled_workload_post_co_path",
+        "output_path",
+        "original_workload",
+    )
+
     def __init__(
         self,
         list_of_callables: list[StageCallable],
-        *,
-        workload: ComputationNodeWorkload,
-        accelerator: Accelerator,
-        cost_lut: CoreCostLUT,
-        layer_stacks: list[tuple[int, ...]],
-        allocations_path: str,
-        tiled_workload_post_co_path: str,
-        output_path: str,
-        **kwargs: Any,
+        ctx: StageContext,
     ):
         """Initialize the ResourceAllocationStage.
 
@@ -61,25 +66,32 @@ class ConstraintOptimizationAllocationStage(Stage):
             allocations_path (str): Path to the directory where the optimal allocations are stored
             output_path (str): Path to the output folder to store results
         """
-        super().__init__(list_of_callables, **kwargs)
-        self.workload = workload
-        self.accelerator = accelerator
-        self.cost_lut = cost_lut
-        self.layer_stacks = layer_stacks
-        self.original_workload: ComputationNodeWorkload = kwargs["original_workload"]
-        self.mode = kwargs.get("mode", "fused")  # assume default is fused
+        super().__init__(list_of_callables, ctx)
+        self.workload = self.ctx.require_value("workload", self.__class__.__name__)
+        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
+        self.cost_lut = self.ctx.require_value("cost_lut", self.__class__.__name__)
+        self.layer_stacks = self.ctx.require_value("layer_stacks", self.__class__.__name__)
+        self.original_workload: ComputationNodeWorkload = self.ctx.require_value(
+            "original_workload", self.__class__.__name__
+        )
+        self.mode = self.ctx.get("mode", "fused")  # assume default is fused
 
-        self.allocations_path = allocations_path
+        config = self.ctx.get("constraint_opt_config")
+        if config is None:
+            logger.warning(
+                "ConstraintOptimizationAllocationStage: legacy kwargs configuration path is deprecated. "
+                "Please pass a ConstraintOptStageConfig. Building config from kwargs for now."
+            )
+            config = ConstraintOptStageConfig.from_legacy_kwargs(**self.ctx.data)
+        self.config = config
+        self.constraint_context = build_constraint_context(self.accelerator, self.config)
+
+        self.allocations_path = self.ctx.require_value("allocations_path", self.__class__.__name__)
         os.makedirs(self.allocations_path, exist_ok=True)
-        self.tiled_workload_post_co_path = tiled_workload_post_co_path
-        self.output_path = output_path
-        self.co_time_limit: int = kwargs.get("co_time_limit", self.CO_TIME_LIMIT)
-
-        # Which CME attribute to use for the node latencies
-        self.latency_attr = kwargs.get("latency_attr", "latency_total1")
-
-        # Number of AIE columns to use in the allocation
-        self.nb_cols_to_use = kwargs.get("nb_cols_to_use", 4)
+        self.tiled_workload_post_co_path = self.ctx.require_value(
+            "tiled_workload_post_co_path", self.__class__.__name__
+        )
+        self.output_path = self.ctx.require_value("output_path", self.__class__.__name__)
 
         # Attributes that will be assigned throughout the stage
         self.ss_to_computes: dict[STACK_T, set[ComputationNode]] = {}
@@ -115,7 +127,7 @@ class ConstraintOptimizationAllocationStage(Stage):
                 self.original_workload,
                 self.cost_lut,
                 iterations,
-                self.nb_cols_to_use,
+                self.config.transfer.nb_cols_to_use,
                 self.output_path,
             )
             schedule = scheduler.run(optimal_allocation)
@@ -463,7 +475,9 @@ class ConstraintOptimizationAllocationStage(Stage):
         for stack, to_compute in self.ss_to_computes.items():
             iterations = self.ss_iterations_per_stack[stack]
             t_start = time()
-            optimal_allocation = self.find_best_allocation(to_compute, iterations, stack, self.co_time_limit)
+            optimal_allocation = self.find_best_allocation(
+                to_compute, iterations, stack, self.config.compute.time_limit
+            )
             ss_latency, _ = calculate_total_latency(optimal_allocation, iterations)
             t_end = time()
             logger.info(f"Stack {stack}: Optimization took {t_end - t_start:.3f} seconds.")
@@ -473,7 +487,11 @@ class ConstraintOptimizationAllocationStage(Stage):
         logger.info(f"Total steady-state latency across stacks: {total_ss_latency} cycles")
 
     def find_best_allocation(
-        self, to_compute: set[ComputationNode], iterations: int, stack: STACK_T = (0,), time_limit: int = 600
+        self,
+        to_compute: set[ComputationNode],
+        iterations: int,
+        stack: STACK_T = (0,),
+        time_limit: int | None = None,
     ) -> TimeSlotAllocation:
         """# TODO: Implement overhead of tensor transfers between cores"""
         # Check if the allocation is already cached, if not: find it
@@ -484,19 +502,27 @@ class ConstraintOptimizationAllocationStage(Stage):
             allocation = pickle_load(stack_allocations_path)
         else:
             logger.info(f"Optimizing allocation for {iterations} iterations of {len(to_compute)} ss nodes.")
+            effective_time_limit = time_limit or self.config.compute.time_limit
+            compute_cfg = (
+                self.config.compute
+                if effective_time_limit == self.config.compute.time_limit
+                else replace(self.config.compute, time_limit=effective_time_limit)
+            )
             allocation = get_optimal_allocations(
                 sg,
                 self.accelerator,
                 self.cost_lut,
+                context=self.constraint_context,
+                compute_config=compute_cfg,
                 iterations=iterations,
-                time_limit=time_limit,
-                latency_attr=self.latency_attr,
             )
             pickle_save(allocation, stack_allocations_path)  # type: ignore
         steady_state_allocation_list = self.get_steady_state_allocation_list(allocation)
         tsa = TimeSlotAllocation(steady_state_allocation_list)  # type: ignore
         # json_path = stack_allocations_path.replace(".pickle", ".json")
-        # to_perfetto_json(allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr, json_path)
+        # to_perfetto_json(
+        #     allocation, self.cost_lut, self.accelerator, iterations, self.config.compute.latency_attr, json_path
+        # )
 
         return tsa
 

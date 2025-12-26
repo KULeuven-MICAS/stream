@@ -1,37 +1,32 @@
 import logging
 from math import prod
-from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
 from zigzag.mapping.data_movement import FourWayDataMoving
 
-from stream.cost_model.core_cost_lut import CoreCostLUT
-from stream.hardware.architecture.accelerator import Accelerator
+from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.utils import get_too_large_operands, get_top_level_inst_bandwidth
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 
 
 class SetFixedAllocationPerformanceStage(Stage):
+    REQUIRED_FIELDS = ("workload", "accelerator", "cost_lut")
+
     def __init__(
         self,
         list_of_callables: list[StageCallable],
-        *,
-        workload: ComputationNodeWorkload,
-        accelerator: Accelerator,
-        cost_lut: CoreCostLUT,
-        **kwargs: Any,
+        ctx: StageContext,
     ):
-        super().__init__(list_of_callables, **kwargs)
-        self.accelerator = accelerator
-        self.workload = workload
-        self.cost_lut = cost_lut
-        self.latency_attr = kwargs.get("latency_attr", "latency_total2")
-        self.fix_all = kwargs.get("fix_all", False)
+        super().__init__(list_of_callables, ctx)
+        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
+        self.workload = self.ctx.require_value("workload", self.__class__.__name__)
+        self.cost_lut = self.ctx.require_value("cost_lut", self.__class__.__name__)
+        self.latency_attr = self.ctx.get("latency_attr", "latency_total2")
+        self.fix_all = self.ctx.get("fix_all", False)
 
     def run(self):
         logger.info("Start SetFixedAllocationPerformanceStage.")
@@ -42,14 +37,8 @@ class SetFixedAllocationPerformanceStage(Stage):
         self.set_fixed_allocation_performance()
         logger.info("Finished SetFixedAllocationPerformanceStage.")
 
-        kwargs = self.kwargs.copy()
-        kwargs["workload"] = self.workload
-        kwargs["accelerator"] = self.accelerator
-        kwargs["cost_lut"] = self.cost_lut
-        sub_stage = self.list_of_callables[0](
-            self.list_of_callables[1:],
-            **kwargs,
-        )
+        self.ctx.set(workload=self.workload, accelerator=self.accelerator, cost_lut=self.cost_lut)
+        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
     def set_fixed_allocation_performance(self):

@@ -1,16 +1,15 @@
 import logging
 from collections import defaultdict
-from typing import Any, Literal
+from typing import Literal
 
 import numpy as np
 from onnx import ModelProto, helper, numpy_helper
 from zigzag.datatypes import LayerDim
 
-from stream.hardware.architecture.accelerator import Accelerator
+from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
-from stream.workload.onnx_workload import ONNXWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -41,22 +40,19 @@ class TilingGenerationStage(Stage):
     # Split node in this dimension to partition layer over cores. NOTE this list is ordered
     INTER_CORE_PARTITION_DIM_DEFAULT = [LayerDim("G"), LayerDim("H"), LayerDim("K")]
 
+    REQUIRED_FIELDS = ("accelerator", "workload", "layer_stacks")
+
     def __init__(
         self,
         list_of_callables: list[StageCallable],
-        *,
-        accelerator: Accelerator,
-        workload: ONNXWorkload,
-        layer_stacks: list[tuple[int, ...]],
-        **kwargs: Any,
+        ctx: StageContext,
     ):
-        super().__init__(list_of_callables, **kwargs)
-        self.accelerator = accelerator
-        self.workload = workload
+        super().__init__(list_of_callables, ctx)
+        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
+        self.workload = self.ctx.require_value("workload", self.__class__.__name__)
 
-        assert layer_stacks is not None
-        self.layer_stacks = layer_stacks
-        self.mode = kwargs.get("mode")
+        self.layer_stacks = self.ctx.require_value("layer_stacks", self.__class__.__name__)
+        self.mode = self.ctx.get("mode")
 
     def run(self):
         for node in self.workload.node_list:
@@ -66,14 +62,8 @@ class TilingGenerationStage(Stage):
             self.set_valid_intra_core_tiling(node, nb_nodes_in_stack)
             self.set_valid_inter_core_tiling(node)
 
-        self.kwargs["accelerator"] = self.accelerator
-        self.kwargs["workload"] = self.workload
-        self.kwargs["layer_stacks"] = self.layer_stacks
-
-        sub_stage = self.list_of_callables[0](
-            self.list_of_callables[1:],
-            **self.kwargs,
-        )
+        self.ctx.set(accelerator=self.accelerator, workload=self.workload, layer_stacks=self.layer_stacks)
+        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
     def set_valid_intra_core_tiling(self, node: ComputationNode, stack_size: int):

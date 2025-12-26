@@ -34,10 +34,15 @@ def convert_ids(nodes: list[ComputationNode]):
     return ids
 
 
-def invert_ids_list(ids_list: list[tuple[int, str, int]], nb_nodes: int) -> list[tuple[int, int, tuple[int, int]]]:
+def invert_ids_list(
+    ids_list: list[tuple[int, Core | int, int]], nb_nodes: int
+) -> list[tuple[int, int, tuple[int, int]]]:
     new_l: list[tuple[int, int, tuple[int, int]]] = []
     for timestep, core_str, k in ids_list:
-        core_id = int(core_str.split(" ")[-1])  # Extract core id from "Core <id>"
+        if hasattr(core_str, "id"):
+            core_id = int(core_str.id)
+        else:
+            core_id = int(core_str)
         new_l.append((timestep, core_id, invert_id(k)))
     return new_l
 
@@ -114,15 +119,14 @@ def get_energies(
     cost_lut: CoreCostLUT,
     impossible_energy: float = 1e11,
     ids: dict[ComputationNode, int] | None = None,
-) -> dict[tuple[int, str], float]:
+) -> dict[tuple[int, Core], float]:
     if ids is None:
         ids = {node: node.id for node in nodes}
-    core_names = [f"Core {id}" for id in core_ids]
-    energies = {(ids[node], core_name): impossible_energy for node in nodes for core_name in core_names}
+    cores = [accelerator.get_core(core_id) for core_id in core_ids]
+    energies = {(ids[node], core): impossible_energy for node in nodes for core in cores}
 
     for node in nodes:
-        for core_id, core_name in zip(core_ids, core_names, strict=False):
-            core = accelerator.get_core(core_id)
+        for core in cores:
             try:
                 eq_node = cost_lut.get_equal_node(node)
                 assert eq_node, f"No equal node for {node} found in CoreCostLUT"
@@ -130,7 +134,7 @@ def get_energies(
                 en = cme.energy_total
             except ValueError:
                 en = impossible_energy
-            energies[(ids[node], core_name)] = en
+            energies[(ids[node], core)] = en
 
     return energies
 

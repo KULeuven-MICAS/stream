@@ -2,7 +2,7 @@ import warnings
 from collections.abc import Sequence
 from copy import copy
 from math import prod
-from typing import Any, cast
+from typing import cast
 
 from snaxc.dialects.snax import NoneAttr
 from snaxc.dialects.tsl import TSL
@@ -21,6 +21,7 @@ from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
 from stream.compiler.transforms.stream_split_transfers import StreamSplitTransfersPass
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
+from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
@@ -31,12 +32,14 @@ from stream.workload.steady_state.workload import SteadyStateWorkload
 
 
 class AIECodeGenerationStage(Stage):
+    REQUIRED_FIELDS = ("codegen_path",)
+
     def __init__(
         self,
         list_of_callables: list[StageCallable],
-        **kwargs: Any,
+        ctx: StageContext,
     ):
-        super().__init__(list_of_callables, **kwargs)
+        super().__init__(list_of_callables, ctx)
 
         # set up the correct xDSL context
         self.context: MLContext = MLContext()
@@ -45,15 +48,15 @@ class AIECodeGenerationStage(Stage):
         self.context.load_dialect(Stream)
         self.context.load_dialect(TSL)
 
-        self.output_path: str = kwargs["codegen_path"]
+        self.output_path: str = self.ctx.require_value("codegen_path", self.__class__.__name__)
 
-        self.trace_size = kwargs.get("trace_size", 1048576)
-        self.npu = kwargs.get("npu", "npu2")
-        self.runtime_args = kwargs.get("runtime_args", [])
+        self.trace_size = self.ctx.get("trace_size", 1048576)
+        self.npu = self.ctx.get("npu", "npu2")
+        self.runtime_args = self.ctx.get("runtime_args", [])
         self.module = None
 
     def run(self):
-        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **self.kwargs)
+        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
 
         for cme, extra_info in sub_stage.run():
             if cme:

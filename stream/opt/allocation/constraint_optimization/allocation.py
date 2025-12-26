@@ -15,6 +15,7 @@ Highlights
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TypeAlias, cast
 
@@ -24,7 +25,9 @@ from zigzag.datatypes import LayerOperand, MemoryOperand
 
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.hardware.architecture.utils import get_core_capacities
+from stream.hardware.architecture.core import Core
+from stream.opt.allocation.constraint_optimization.config import ComputeMilpConfig, ConstraintOptStageConfig
+from stream.opt.allocation.constraint_optimization.context import ConstraintContext, build_constraint_context
 from stream.opt.allocation.constraint_optimization.utils import (
     convert_ids,
     get_energies,
@@ -33,19 +36,21 @@ from stream.opt.allocation.constraint_optimization.utils import (
 )
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
+logger = logging.getLogger(__name__)
+
 # --------------------------------------------------------------------------- #
 # Type aliases                                                                #
 # --------------------------------------------------------------------------- #
 ALLOCATION_T: TypeAlias = list[tuple[int, int, tuple[int, int]]]
-ALLOCATION_INTERNAL_T: TypeAlias = list[tuple[int, str, int]]
+ALLOCATION_INTERNAL_T: TypeAlias = list[tuple[int, Core, int]]
 
-LatDict = dict[tuple[int, str, int], int]
-EnergyDict = dict[tuple[int, str], float]
+LatDict = dict[tuple[int, Core, int], int]
+EnergyDict = dict[tuple[int, Core], float]
 WeightDict = dict[int, int]
 DepDict = dict[tuple[int, int], int]
-CapDict = dict[str, float]
+CapDict = dict[Core, float]
 GroupDict = dict[tuple[int, int], list[int]]  # key = (node.id, node.group)
-SplitDict = dict[int, dict[str, dict[int, int]]]
+SplitDict = dict[int, dict[Core, dict[int, int]]]
 
 
 # --------------------------------------------------------------------------- #
@@ -63,6 +68,7 @@ class ComputeAllocatorConstants:
     groups: GroupDict
     splits: SplitDict
     node_count: int
+    cores: list[Core]
 
 
 # --------------------------------------------------------------------------- #
@@ -79,20 +85,18 @@ class ComputeAllocator:
         workload: ComputationNodeWorkload,
         accelerator: Accelerator,
         cost_lut: CoreCostLUT,
+        context: ConstraintContext,
+        compute_cfg: ComputeMilpConfig,
         *,
         iterations: int = 1,
-        gap: float = 0.5,
-        time_limit: int = 600,
-        latency_attr: str = "latency_total1",
     ) -> None:
         self.workload = workload
         self.accelerator = accelerator
         self.cost_lut = cost_lut
+        self.context = context
+        self.compute_cfg = compute_cfg
 
         self.iterations = iterations
-        self.gap = gap
-        self.time_limit = time_limit
-        self.latency_attr = latency_attr
 
         # Gurobi model and main assignment tensor
         self.model: gp.Model | None = None
@@ -118,7 +122,7 @@ class ComputeAllocator:
 
         # ---------------- sets populated during model build ------------- #
         self.node_ids: list[int] = []
-        self.cores: list[str] = []
+        self.cores: list[Core] = []
         self.slots: list[int] = []
         self.p_vals: list[int] = []
 
@@ -139,10 +143,10 @@ class ComputeAllocator:
     # Prepare constants                                                  #
     # ------------------------------------------------------------------ #
     def _prepare_constants(self) -> ComputeAllocatorConstants:
-        core_ids, cores, caps = self._collect_core_data()
+        cores, caps = self._collect_core_data()
         nodes, ids = self._collect_node_data()
-        lat, splits = self._calculate_latencies(nodes, core_ids, cores, ids)
-        en = self._calculate_energies(nodes, core_ids, ids)
+        lat, splits = self._calculate_latencies(nodes, cores, ids)
+        en = self._calculate_energies(nodes, cores, ids)
         deps = self._build_dependency_map(nodes, ids)
         groups = self._group_nodes(nodes, ids)
         weights = self._calculate_weights(groups, ids)
@@ -157,47 +161,46 @@ class ComputeAllocator:
             groups=groups,
             splits=splits,
             node_count=len(nodes),
+            cores=cores,
         )
 
     # ----------------- low-level helpers -------------------------------- #
-    def _collect_core_data(self) -> tuple[list[int], list, CapDict]:
-        core_ids = sorted(c.id for c in self.accelerator.cores.node_list if c.id != self.accelerator.offchip_core_id)
-        cores = [self.accelerator.get_core(cid) for cid in core_ids]
-        caps = get_core_capacities(self.accelerator, MemoryOperand("I2"), core_ids)
-        return core_ids, cores, caps
+    def _collect_core_data(self) -> tuple[list[Core], CapDict]:
+        cores = sorted(self.context.compute_cores, key=lambda c: c.id)
+        if not cores:
+            raise ValueError("No eligible compute cores found for ComputeAllocator.")
+        caps = {core: self.context.capacities[core] for core in cores}
+        return cores, caps
 
     def _collect_node_data(self) -> tuple[list, dict]:
-        nodes = sorted(self.workload.node_list)
+        nodes = sorted(self.workload.node_list, key=lambda n: n.id)
         return nodes, convert_ids(nodes)
 
     def _calculate_latencies(
         self,
         nodes,
-        core_ids: list[int],
-        cores,
+        cores: list[Core],
         ids: dict,
     ) -> tuple[LatDict, SplitDict]:
         raw_lat, raw_split = get_latencies(
             nodes,
-            core_ids,
+            [c.id for c in cores],
             self.accelerator,
             self.cost_lut,
             impossible_lat=0,
-            latency_attr=self.latency_attr,
+            latency_attr=self.compute_cfg.latency_attr,
         )
-        lat: LatDict = {(ids[n], f"Core {c.id}", k): v for (n, c, k), v in raw_lat.items()}
-        split: SplitDict = {
-            ids[n]: {f"Core {c.id}": {k: raw_split[n][c][k] for k in raw_split[n][c]} for c in cores} for n in nodes
-        }
+        lat: LatDict = {(ids[n], c, k): v for (n, c, k), v in raw_lat.items()}
+        split: SplitDict = {ids[n]: {c: {k: raw_split[n][c][k] for k in raw_split[n][c]} for c in cores} for n in nodes}
         return lat, split
 
     def _calculate_energies(
         self,
         nodes,
-        core_ids: list[int],
+        cores: list[Core],
         ids: dict,
     ) -> EnergyDict:
-        return get_energies(nodes, core_ids, self.accelerator, self.cost_lut, 0, ids)
+        return get_energies(nodes, [c.id for c in cores], self.accelerator, self.cost_lut, 0, ids)
 
     def _build_dependency_map(self, nodes, ids: dict) -> DepDict:
         out_op = LayerOperand("O")
@@ -261,15 +264,15 @@ class ComputeAllocator:
     def _create_basic_sets(self, lat: LatDict, caps: CapDict) -> None:
         node_core_k = list(lat.keys())
         self.node_ids = sorted({n for n, _, _ in node_core_k})
-        self.cores = sorted(caps)
+        self.cores = sorted(caps, key=lambda c: c.id)
         self.p_vals = list(range(1, len(self.cores) + 1))
         self.slots = list(range(len(self.node_ids)))
 
         self.model = gp.Model("compute_alloc")
         self.model.Params.OutputFlag = 0
-        self.model.Params.TimeLimit = self.time_limit
+        self.model.Params.TimeLimit = self.compute_cfg.time_limit
         self.model.Params.Threads = 1
-        self.model.Params.PoolGap = self.gap
+        self.model.Params.PoolGap = self.compute_cfg.gap
 
     # -------------------- variable creation ---------------------------- #
     def _create_variables(self) -> None:
@@ -455,7 +458,7 @@ class ComputeAllocator:
         alloc: ALLOCATION_INTERNAL_T = [
             (slot, core, nid) for (core, slot, nid), var in self.asgn.items() if round(var.X) == 1
         ]
-        return sorted(alloc)
+        return sorted(alloc, key=lambda t: (t[0], getattr(t[1], "id", t[1]), t[2]))
 
 
 # --------------------------------------------------------------------------- #
@@ -466,18 +469,26 @@ def get_optimal_allocations(
     accelerator: Accelerator,
     cost_lut: CoreCostLUT,
     *,
+    context: ConstraintContext | None = None,
+    compute_config: ComputeMilpConfig | None = None,
+    stage_config: ConstraintOptStageConfig | None = None,
     iterations: int = 1,
-    gap: float = 0.5,
-    time_limit: int = 600,
-    latency_attr: str = "latency_total1",
 ) -> ALLOCATION_T:
     """Backwards-compatible helper preserving the original functional API."""
+    if compute_config is None or context is None:
+        logger.warning(
+            "get_optimal_allocations called without explicit config/context. "
+            "Building defaults; please pass ConstraintOptStageConfig explicitly."
+        )
+        stage_cfg = stage_config or ConstraintOptStageConfig()
+        compute_config = compute_config or stage_cfg.compute
+        context = context or build_constraint_context(accelerator, stage_cfg, compute_config)
+
     return ComputeAllocator(
         workload,
         accelerator,
         cost_lut,
+        context,
+        compute_config,
         iterations=iterations,
-        gap=gap,
-        time_limit=time_limit,
-        latency_attr=latency_attr,
     ).get_optimal_allocations()

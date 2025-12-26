@@ -1,13 +1,12 @@
 import logging
 from math import prod
-from typing import Any, TypeAlias
+from typing import TypeAlias
 
-from stream.hardware.architecture.accelerator import Accelerator
+from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.utils import return_tiling_type
 from stream.workload.computation.computation_node import ComputationNode, GeneratedComputationNode
 from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
-from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -16,18 +15,17 @@ SCHEDULE_ORDER_T: TypeAlias = list[tuple[int, int]]
 
 
 class SchedulingOrderGenerationStage(Stage):
+    REQUIRED_FIELDS = ("accelerator", "workload")
+
     def __init__(
         self,
         list_of_callables: list[StageCallable],
-        *,
-        accelerator: Accelerator,
-        workload: ComputationNodeWorkload,
-        **kwargs: Any,
+        ctx: StageContext,
     ):
-        super().__init__(list_of_callables, **kwargs)
-        self.accelerator = accelerator
-        self.workload = workload
-        self.layer_stacks: list[tuple[int, ...]] | None = kwargs.get("layer_stacks", None)  # optional
+        super().__init__(list_of_callables, ctx)
+        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
+        self.workload = self.ctx.require_value("workload", self.__class__.__name__)
+        self.layer_stacks: list[tuple[int, ...]] | None = self.ctx.get("layer_stacks", None)  # optional
 
         # Mapping from (base_id, gen_id) to layer_id
         self.base_and_gen_to_layer_id: dict[tuple[int, int], int] = {
@@ -40,13 +38,8 @@ class SchedulingOrderGenerationStage(Stage):
         else:
             self.scheduling_order = self.get_scheduling_order_lbl()
 
-        self.kwargs["accelerator"] = self.accelerator
-        self.kwargs["workload"] = self.workload
-        self.kwargs["scheduling_order"] = self.scheduling_order
-        sub_stage = self.list_of_callables[0](
-            self.list_of_callables[1:],
-            **self.kwargs,
-        )
+        self.ctx.set(accelerator=self.accelerator, workload=self.workload, scheduling_order=self.scheduling_order)
+        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
     def get_scheduling_order_lbl(self):

@@ -229,6 +229,7 @@ class CommunicationManager:
                         overlap_edges=0,
                     )
                 )
+        return plans
 
     def enumerate_multicast_plans(
         self,

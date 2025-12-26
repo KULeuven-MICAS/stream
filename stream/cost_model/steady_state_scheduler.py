@@ -118,8 +118,8 @@ class SteadyStateScheduler:
         ssw = self.add_transfer_nodes(ssw)
         ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_3.png"))
         # Bufferize the non-constant steady state tensors
-        ssw = self.bufferize_nonconstant_tensors(ssw)
-        ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_4.png"))
+        # ssw = self.bufferize_nonconstant_tensors(ssw)
+        # ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_4.png"))
         return ssw
 
     def get_workload_subgraph(self, allocation: "TimeSlotAllocation") -> ComputationNodeWorkload:
@@ -703,10 +703,10 @@ class SteadyStateScheduler:
             multicast_plans = self.accelerator.communication_manager.enumerate_multicast_plans(
                 request,
             )
-            possible_paths = []
+            possible_paths = set()
             for multicast_plan in multicast_plans:
                 links_used = self.accelerator.communication_manager.get_links_for_multicast_plan(multicast_plan)
-                possible_paths.append(links_used)
+                possible_paths.add(links_used)
             # Set the possible resource allocation for the transfer node (this also sets the chosen resource allocation)
             transfer_node.set_possible_resource_allocation(tuple(possible_paths))
             # Set the possible memory core allocation for the transfer node

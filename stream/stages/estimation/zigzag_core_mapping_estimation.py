@@ -11,22 +11,34 @@ from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
 from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
 from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
+from zigzag.stages.stage import Stage as ZigZagStage
 from zigzag.utils import pickle_deepcopy
 
 from stream.cost_model.core_cost_lut import CoreCostLUT
-from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
+from stream.stages.context import StageContext
 from stream.stages.estimation.core_performance import AIEPerformanceEstimator, ZigZagPerformanceEstimator
 from stream.stages.generation.layer_stacks_generation import STACK_T
-from stream.stages.stage import MainStage, Stage, StageCallable
+from stream.stages.stage import Stage, StageCallable
 from stream.utils import contains_wildcard, get_top_level_inst_bandwidth, get_unique_nodes
 from stream.visualization.cost_model_evaluation_lut import (
     visualize_cost_lut_pickle,
 )
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
+
+
+class _KwargsMainStage:
+    def __init__(self, list_of_callables, **kwargs: Any):
+        self.kwargs = kwargs
+        self.list_of_callables = list_of_callables
+
+    def run(self):
+        answers = []
+        for cme, extra_info in self.list_of_callables[0](self.list_of_callables[1:], **self.kwargs).run():
+            answers.append((cme, extra_info))
+        return answers
 
 
 class CoreCostEstimationStage(Stage):
@@ -34,30 +46,36 @@ class CoreCostEstimationStage(Stage):
     Stage that computes and caches core cost entries for each valid node-core allocation.
     """
 
+    REQUIRED_FIELDS = (
+        "workload",
+        "accelerator",
+        "loma_lpf_limit",
+        "cost_lut_path",
+        "layer_stacks",
+        "temporal_mapping_type",
+    )
+
     def __init__(
         self,
         list_of_callables: list[StageCallable],
-        *,
-        workload: ComputationNodeWorkload,
-        accelerator: Accelerator,
-        loma_lpf_limit: int,
-        cost_lut_path: str,
-        **kwargs: Any,
+        ctx: StageContext,
     ):
         """
         Initialize the stage by:
         - extracting all the unique nodes that will have to be evaluated
         - initializing the valid node-core allocations (which are used later by the InterCoreMappingStage)
         """
-        super().__init__(list_of_callables, **kwargs)
-        self.workload = workload
-        self.accelerator = accelerator
-        self.loma_lpf_limit = loma_lpf_limit
-        self.cost_lut_path = cost_lut_path
+        super().__init__(list_of_callables, ctx)
+        self.workload = self.ctx.require_value("workload", self.__class__.__name__)
+        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
+        self.loma_lpf_limit = self.ctx.require_value("loma_lpf_limit", self.__class__.__name__)
+        self.cost_lut_path = self.ctx.require_value("cost_lut_path", self.__class__.__name__)
         self.visualize_cost_lut_path = os.path.splitext(self.cost_lut_path)[0] + ".png"
-        self.loma_show_progress_bar: bool = kwargs.get("loma_show_progress_bar", False)
-        self.layer_stacks: list[STACK_T] = kwargs["layer_stacks"]
-        self.temporal_mapping_type: TemporalMappingType = kwargs["temporal_mapping_type"]
+        self.loma_show_progress_bar: bool = self.ctx.get("loma_show_progress_bar", False)
+        self.layer_stacks: list[STACK_T] = self.ctx.require_value("layer_stacks", self.__class__.__name__)
+        self.temporal_mapping_type: TemporalMappingType = self.ctx.require_value(
+            "temporal_mapping_type", self.__class__.__name__
+        )
 
         # Extract all unique nodes that will have to be evaluated
         self.unique_nodes = get_unique_nodes(self.workload)
@@ -93,11 +111,8 @@ class CoreCostEstimationStage(Stage):
         self.visualize_cost_lut()
         logger.info("Finished CoreCostEstimationStage.")
 
-        kwargs = self.kwargs.copy()
-        kwargs["workload"] = self.workload
-        kwargs["accelerator"] = self.accelerator
-        kwargs["cost_lut"] = self.cost_lut
-        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
+        self.ctx.set(workload=self.workload, accelerator=self.accelerator, cost_lut=self.cost_lut)
+        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
     def update_cost_lut(self):
@@ -194,7 +209,7 @@ class CoreCostEstimationStage(Stage):
         if too_large_operands:
             core = self.add_offchip_to_core(core, too_large_operands, node.id)
 
-        main_stage = MainStage(
+        main_stage = _KwargsMainStage(
             [  # Initializes the MainStage as entry point
                 MinimalBandwidthLatencyStage,  # type: ignore
                 SpatialMappingGeneratorStage,  # Generates multiple spatial mappings (SM)
@@ -397,7 +412,7 @@ class CoreCostEstimationStage(Stage):
         return updated_core
 
 
-class MinimalBandwidthLatencyStage(Stage):
+class MinimalBandwidthLatencyStage(ZigZagStage):
     """Class that keeps yields only the cost model evaluation that has minimal objective function of all cost model
     evaluations generated by it's substages created by list_of_callables.
     The objective function is defined as:
@@ -482,7 +497,7 @@ class MinimalBandwidthLatencyStage(Stage):
     def run(self):
         """! Run the compare stage by comparing a new cost model output with the current best found result."""
         sub_list_of_callables = self.list_of_callables[1:]
-        substage: Stage = self.list_of_callables[0](sub_list_of_callables, **self.kwargs)
+        substage: Stage = self.list_of_callables[0](sub_list_of_callables, self.ctx)
 
         other_cmes: list[tuple[CostModelEvaluation, Any]] = []
         best_cme: CostModelEvaluation | None = None

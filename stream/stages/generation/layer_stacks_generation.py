@@ -1,12 +1,11 @@
 import logging
-from typing import Any, TypeAlias
+from typing import TypeAlias
 
 from zigzag.datatypes import MemoryOperand
 
-from stream.hardware.architecture.accelerator import Accelerator
+from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -16,22 +15,21 @@ STACK_T: TypeAlias = tuple[int, ...]
 class LayerStacksGenerationStage(Stage):
     layer_stacks: list[STACK_T] | None
 
+    REQUIRED_FIELDS = ("accelerator", "workload")
+
     def __init__(
         self,
         list_of_callables: list[StageCallable],
-        *,
-        accelerator: Accelerator,
-        workload: ComputationNodeWorkload,
-        **kwargs: Any,
+        ctx: StageContext,
     ):
-        super().__init__(list_of_callables, **kwargs)
-        self.accelerator = accelerator
-        self.workload = workload
+        super().__init__(list_of_callables, ctx)
+        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
+        self.workload = self.ctx.require_value("workload", self.__class__.__name__)
 
-        self.layer_stacks = kwargs.get("layer_stacks", None)
-        self.mode = kwargs.get("mode")
-        self.stack_cutoff = kwargs.get("stack_cutoff", None)
-        self.stack_cutoffs = kwargs.get("stack_cutoffs", None)
+        self.layer_stacks = self.ctx.get("layer_stacks", None)
+        self.mode = self.ctx.get("mode")
+        self.stack_cutoff = self.ctx.get("stack_cutoff", None)
+        self.stack_cutoffs = self.ctx.get("stack_cutoffs", None)
 
         # Get the weight capacity of all cores
         weight_capacities: dict[int, int] = {}
@@ -64,13 +62,8 @@ class LayerStacksGenerationStage(Stage):
 
         self.only_keep_computation_node_ids()
 
-        self.kwargs["accelerator"] = self.accelerator
-        self.kwargs["workload"] = self.workload
-        self.kwargs["layer_stacks"] = self.layer_stacks
-        sub_stage = self.list_of_callables[0](
-            self.list_of_callables[1:],
-            **self.kwargs,
-        )
+        self.ctx.set(accelerator=self.accelerator, workload=self.workload, layer_stacks=self.layer_stacks)
+        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
     def only_keep_computation_node_ids(self):

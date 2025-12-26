@@ -10,6 +10,7 @@ from zigzag.utils import pickle_load, pickle_save
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
+from stream.stages.context import StageContext
 from stream.stages.estimation.zigzag_core_mapping_estimation import CoreCostEstimationStage
 from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
 from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
@@ -93,18 +94,7 @@ def optimize_allocation_ga(  # noqa: PLR0913
         scme = pickle_load(scme_path)
         logger.info(f"Loaded SCME from {scme_path}")
     else:
-        mainstage = MainStage(
-            [  # Initializes the MainStage as entry point
-                AcceleratorParserStage,  # Parses the accelerator
-                StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-                LayerStacksGenerationStage,
-                TilingGenerationStage,
-                TiledWorkloadGenerationStage,
-                CoreCostEstimationStage,
-                SetFixedAllocationPerformanceStage,
-                SchedulingOrderGenerationStage,
-                GeneticAlgorithmAllocationStage,
-            ],
+        ctx = StageContext.from_kwargs(
             accelerator=hardware,  # required by AcceleratorParserStage
             workload_path=workload,  # required by ModelParserStage
             mapping_path=mapping,  # required by ModelParserStage
@@ -117,6 +107,20 @@ def optimize_allocation_ga(  # noqa: PLR0913
             cost_lut_path=cost_lut_path,
             temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
             operands_to_prefetch=[],  # required by GeneticAlgorithmAllocationStage
+        )
+        mainstage = MainStage(
+            [  # Initializes the MainStage as entry point
+                AcceleratorParserStage,  # Parses the accelerator
+                StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+                LayerStacksGenerationStage,
+                TilingGenerationStage,
+                TiledWorkloadGenerationStage,
+                CoreCostEstimationStage,
+                SetFixedAllocationPerformanceStage,
+                SchedulingOrderGenerationStage,
+                GeneticAlgorithmAllocationStage,
+            ],
+            ctx,
         )
         # Launch the MainStage
         answers = mainstage.run()
@@ -190,8 +194,7 @@ def optimize_allocation_co(  # noqa: PLR0913
 
             stages = [AIECodeGenerationStage] + stages
 
-        mainstage = MainStage(
-            stages,
+        ctx = StageContext.from_kwargs(
             accelerator=hardware,  # required by AcceleratorParserStage
             workload_path=workload,  # required by ModelParserStage
             mapping_path=mapping,  # required by ModelParserStage
@@ -212,6 +215,7 @@ def optimize_allocation_co(  # noqa: PLR0913
             npu=npu,  # required by AIECodeGenerationStage
             runtime_args=runtime_args,  # required by AIECodeGenerationStage
         )
+        mainstage = MainStage(stages, ctx)
         # Launch the MainStage
         answers = mainstage.run()
         module = answers[0][0]
