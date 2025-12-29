@@ -675,16 +675,22 @@ class SteadyStateScheduler:
         for transfer_node in nonconstant_transfers:
             src_allocs = tuple([src.chosen_resource_allocation for src in transfer_node.srcs])
             dst_allocs = tuple([dst.chosen_resource_allocation for dst in transfer_node.dsts])
-            assert transfer_node.transfer_type == TransferType.UNICAST
-            assert len(src_allocs) == 1
-            assert len(dst_allocs) == 1
-            src_core = src_allocs[0]
-            dst_core = dst_allocs[0]
-            assert src_core is not None
-            assert dst_core is not None
-            plan = self.accelerator.communication_manager.get_unicast_plan_no_memory_core(src_core, dst_core)
-            links_used = self.accelerator.communication_manager.get_links_for_unicast_plan(plan)
-            transfer_node.set_possible_resource_allocation((links_used,))
+            # Create a multicast request for the transfer node and get the possible paths
+            request = MulticastRequest(
+                sources=src_allocs,  # type: ignore
+                destinations=dst_allocs,  # type: ignore
+                possible_memory_cores=None,
+            )
+            multicast_plans = self.accelerator.communication_manager.enumerate_multicast_plans(
+                request,
+            )
+            possible_paths = set()
+            for multicast_plan in multicast_plans:
+                links_used = self.accelerator.communication_manager.get_links_for_multicast_plan(multicast_plan)
+                if links_used:  # empty path possible for identical src and dst as part of a multicast
+                    possible_paths.add(links_used)
+            # Set the possible resource allocation for the transfer node (this also sets the chosen resource allocation)
+            transfer_node.set_possible_resource_allocation(tuple(possible_paths))
 
     def process_constant_transfers(self, steady_state_workload: SteadyStateWorkload) -> None:
         """

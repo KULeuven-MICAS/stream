@@ -216,6 +216,8 @@ class CommunicationManager:
         for source in sources:
             for target in targets:
                 path = self.shortest_paths[(source, target)]
+                if not path:
+                    continue
                 full_paths = {target: path}
                 plans.append(
                     MulticastPathPlan(

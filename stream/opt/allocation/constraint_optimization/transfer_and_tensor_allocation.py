@@ -179,16 +179,16 @@ class TransferAndTensorAllocator:
 
             # level = -1  →  "transfer every steady state iteration"
             fires = math.prod(sizes)
-            mem_needed = tr.size
-            self.reuse_levels[(tr, -1)] = (fires, mem_needed)
+            size_factor = 1
+            self.reuse_levels[(tr, -1)] = (fires, size_factor)
             tiles_needed = 1
             self.tiles_needed_levels[(tr, -1)] = tiles_needed
             # level = i  →  keep while loops 0..i stay in cache
             for i, (Nl, relevancy) in enumerate(zip(sizes, relevancies, strict=True)):  # i = 0 … K-1
-                mem_needed *= Nl if relevancy else 1  # enlarge tile size factor only if relevant
+                size_factor *= Nl if relevancy else 1  # enlarge tile size factor only if relevant
                 tiles_needed *= Nl if relevancy else 1
                 fires //= Nl  # fewer transfers
-                self.reuse_levels[(tr, i)] = (fires, mem_needed)
+                self.reuse_levels[(tr, i)] = (fires, size_factor)
                 self.tiles_needed_levels[(tr, i)] = tiles_needed
 
     # ------------------------------------------------------------------------------
@@ -556,16 +556,18 @@ class TransferAndTensorAllocator:
                 assert isinstance(c, Core), f"Expected {c} to be a Core, got {type(c)}"
                 for stop in range(-1, len(tr.steady_state_iteration_space.get_temporal_variables())):
                     _, size_factor = self.reuse_levels[(tr, stop)]
-                    self.core_load[c] += size_factor * self.z_stopC[(tr, stop)]
+                    req_size = size_factor * t.size
+                    self.core_load[c] += req_size * self.z_stopC[(tr, stop)]
 
         # add MemC load for transfers going through
         for tr in self.transfer_nodes:
             if not self._is_const_io(tr):
                 continue
             for stop in range(-1, len(tr.steady_state_iteration_space.get_temporal_variables())):
-                _, mem_need = self.reuse_levels[(tr, stop)]
+                _, size_factor = self.reuse_levels[(tr, stop)]
+                req_size = size_factor * tr.size  # full transfer size across all dsts
                 for mc in tr.possible_memory_core_allocation:
-                    self.core_load[mc] += mem_need * self.m_store[(tr, mc)] * self.z_stopM[(tr, stop)]
+                    self.core_load[mc] += req_size * self.m_store[(tr, mc)] * self.z_stopM[(tr, stop)]
 
         # add memory capacity constraints for each core
         for c, expr in self.core_load.items():
