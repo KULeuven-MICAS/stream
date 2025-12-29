@@ -121,6 +121,8 @@ class ConstraintOptimizationAllocationStage(Stage):
         for stack, optimal_allocation in self.optimal_allocation_per_stack.items():
             stack_subgraph = self.workload.get_subgraph([n for n in self.workload.node_list if n.id in stack])
             iterations = self.ss_iterations_per_stack[stack]
+            stack_str = "_".join(str(layer_id) for layer_id in stack)
+            output_path = os.path.join(self.output_path, "tetra", stack_str)
             scheduler = SteadyStateScheduler(
                 stack_subgraph,
                 self.accelerator,
@@ -128,7 +130,7 @@ class ConstraintOptimizationAllocationStage(Stage):
                 self.cost_lut,
                 iterations,
                 self.config.transfer.nb_cols_to_use,
-                self.output_path,
+                output_path,
             )
             schedule = scheduler.run(optimal_allocation)
         return schedule
@@ -536,6 +538,8 @@ class ConstraintOptimizationAllocationStage(Stage):
         # Get the core allocations for each unique node id and sub id in the allocation
         node_id_to_cores: dict[tuple[int, int], list[Core]] = {}
         node_id_to_slots: dict[tuple[int, int], list[int]] = {}
+        layer_id_to_nb_nodes: dict[int, int] = {}
+        layer_id_to_cores: dict[int, set[Core]] = {}
         for slot, core_id, (n_id, n_sub_id) in allocation:
             # Keep slot
             node_id_to_slots[(n_id, n_sub_id)] = node_id_to_slots.get((n_id, n_sub_id), [])
@@ -543,13 +547,17 @@ class ConstraintOptimizationAllocationStage(Stage):
             core = self.accelerator.get_core(core_id)
             node_id_to_cores[(n_id, n_sub_id)] = node_id_to_cores.get((n_id, n_sub_id), [])
             node_id_to_cores[(n_id, n_sub_id)].append(core)
+            layer_id_to_nb_nodes[n_id] = layer_id_to_nb_nodes.get(n_id, 0) + 1
+            layer_id_to_cores[n_id] = layer_id_to_cores.get(n_id, set())
+            layer_id_to_cores[n_id].add(core)
         # Get the partitioned SteadyStateComputation objects for each unique node id and sub id
         steady_state_computations: dict[tuple[int, int], list[SteadyStateComputation]] = {}
         for (n_id, n_sub_id), cores in node_id_to_cores.items():
             # Get the original node from the workload
             node = next(n for n in self.workload.node_list if n.id == n_id and n.sub_id == n_sub_id)
+            multiplicity = layer_id_to_nb_nodes[n_id] // len(layer_id_to_cores[n_id])
             steady_state_computations[(n_id, n_sub_id)] = get_partitioned_nodes(
-                node, cores, self.accelerator, self.cost_lut
+                node, cores, self.accelerator, self.cost_lut, multiplicity
             )
         # Create the converted allocation_list with SteadyStateComputation objects
         allocation_list: list[tuple[int, Core, SteadyStateComputation]] = []
@@ -558,6 +566,10 @@ class ConstraintOptimizationAllocationStage(Stage):
             computations = steady_state_computations[(n_id, n_sub_id)]
             for slot, core, computation in zip(slots, cores, computations, strict=False):
                 allocation_list.append((slot, core, computation))
+        assert len(allocation) == len(allocation_list), (
+            "Expected the length of the allocation list to be the same as the original allocation."
+            f"Got {len(allocation)} and {len(allocation_list)}."
+        )
         return allocation_list
 
     def get_scheduling_order(self, allocation: TimeSlotAllocation) -> SCHEDULE_ORDER_T:

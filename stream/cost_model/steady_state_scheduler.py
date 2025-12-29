@@ -204,10 +204,11 @@ class SteadyStateScheduler:
                         possible_resource_allocation = self.get_constant_tensor_resource_allocation(offchip_core)
                         full_shape = [ub - lb for lb, ub in tensor.loop_ranges]
                         slices_per_full = ssis.slices_per_full
+                        adjusted_node_name = self.adjust_constant_tensor_name(input_name)
                         constant_node = SteadyStateTensor(
                             type=TensorFlag.INPUT | TensorFlag.CONSTANT,
                             id=node.id,
-                            node_name=f"{input_name}",
+                            node_name=adjusted_node_name,
                             size=tensor.size * tensor_precision,
                             operand=input_op,
                             steady_state_iteration_space=ssis,
@@ -311,7 +312,9 @@ class SteadyStateScheduler:
             raise ValueError(f"No valid successors found for constant input {tensor}.")
         # Get correct steady state iteration space for the intra core tilling
         loop_relevancy_info = tensor.origin.loop_relevancy_info
-        intra_core_tiling = tensor.origin.intra_core_tiling
+        first_successor = all_successors[0]
+        assert isinstance(first_successor, SteadyStateComputation), "First successor must be a SteadyStateComputation."
+        intra_core_tiling = first_successor.intra_core_tiling
         ssis = SteadyStateIterationSpace.from_loop_info(
             loop_relevancy=loop_relevancy_info,
             intra_core_tiling=intra_core_tiling,
@@ -443,7 +446,9 @@ class SteadyStateScheduler:
         # Get correct steady state iteration space for the intra core tilling
         original_node = next(n for n in self.original_workload.node_list if n.id == tensor.origin.id)
         loop_relevancy_info = original_node.loop_relevancy_info
-        intra_core_tiling = original_node.intra_core_tiling
+        first_successor = all_successors[0]
+        assert isinstance(first_successor, SteadyStateComputation), "First successor must be a SteadyStateComputation."
+        intra_core_tiling = first_successor.intra_core_tiling
         inter_core_tiling = original_node.inter_core_tiling
         ssis = SteadyStateIterationSpace.from_loop_info(
             loop_relevancy=loop_relevancy_info,
@@ -878,3 +883,16 @@ class SteadyStateScheduler:
                 f"Node {node.node_name} has chosen resource allocation {alloc}. "
                 "This should not happen after the TransferAndTensorAllocator has run."
             )
+
+    def adjust_constant_tensor_name(self, input_name: str) -> str:
+        """
+        Adjust the constant tensor name to ensure it is formatted as needed for dot visualization.
+
+        Args:
+            input_name (str): The original input name.
+
+        Returns:
+            str: The adjusted tensor name.
+        """
+        sanitized_name = input_name.replace(":", "_")
+        return f"{sanitized_name}"

@@ -64,3 +64,8 @@ class GemmParser(OnnxComputeOperatorParser):
         data["equation"] = equation
 
         return data
+
+    def generate_node(self):
+        node = super().generate_node()
+        node.input_names = list(self.node.input)[:2]  # Disregard bias input name if present
+        return node

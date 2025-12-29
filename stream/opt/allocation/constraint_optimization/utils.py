@@ -217,6 +217,7 @@ def get_partitioned_nodes(
     core_allocations: list[Core],
     accelerator: Accelerator,
     cost_lut: CoreCostLUT,
+    multiplicity: int,
 ) -> list[SteadyStateComputation]:
     """
     Get the partitioned SteadyStateComputation nodes for a given ComputationNode based on the core allocations.
@@ -251,6 +252,7 @@ def get_partitioned_nodes(
             input_names=node.input_names,
             partially_constant_operands=node.partially_constant_operands,
             possible_resource_allocation=possible_resource_allocation,
+            ssis_multiplicity=multiplicity,
         )
         new_node.set_runtime(runtime)
         new_node.update_loop_ranges(node.loop_ranges)
@@ -309,6 +311,7 @@ def get_partitioned_nodes(
             input_names=node.input_names,
             partially_constant_operands=node.partially_constant_operands,
             possible_resource_allocation=possible_resource_allocation,
+            ssis_multiplicity=multiplicity,
         )
         partitioned_node.loop_ranges[tiling_dim] = partitioned_loop_ranges[i]
         partitioned_node.set_chosen_core_allocation(core.id)

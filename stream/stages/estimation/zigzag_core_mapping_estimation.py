@@ -117,6 +117,7 @@ class CoreCostEstimationStage(Stage):
 
     def update_cost_lut(self):
         for node in self.unique_nodes:
+            seen_new = False
             core_ids = self.valid_allocations[node]
             for core_id in core_ids:
                 core = self.accelerator.get_core(core_id)
@@ -133,7 +134,9 @@ class CoreCostEstimationStage(Stage):
                 estimator = self.get_estimator(core)
                 cost_entry = estimator.estimate(node, core, core_id)
                 self.cost_lut.add_cost(node, core, cost_entry, allow_overwrite=False)
-            self.cost_lut.save()
+                seen_new = True
+            if seen_new:
+                self.cost_lut.save()
 
     def get_estimator(self, core: Core):
         if self.is_aie_compute_core(core):
@@ -430,10 +433,11 @@ class MinimalBandwidthLatencyStage(ZigZagStage):
         Initialize the compare stage.
         """
         super().__init__(list_of_callables, **kwargs)
+        self.ctx = StageContext.from_kwargs(**kwargs)
         self.keep_others = reduce_minimal_keep_others
-        accelerator: Core = kwargs["accelerator"]
-        self.nb_parallel_nodes: int = kwargs.get("nb_parallel_nodes", 1)
-        self.has_dram_level: bool = kwargs.get("has_dram_level", False)
+        accelerator: Core = self.ctx.require_value("accelerator", self.__class__.__name__)
+        self.nb_parallel_nodes: int = self.ctx.get("nb_parallel_nodes", 1)
+        self.has_dram_level: bool = self.ctx.get("has_dram_level", False)
 
         self.mem_ops_with_dram: list[MemoryOperand] = []
         self.mem_ops = list(accelerator.memory_hierarchy.operands)
@@ -497,7 +501,7 @@ class MinimalBandwidthLatencyStage(ZigZagStage):
     def run(self):
         """! Run the compare stage by comparing a new cost model output with the current best found result."""
         sub_list_of_callables = self.list_of_callables[1:]
-        substage: Stage = self.list_of_callables[0](sub_list_of_callables, self.ctx)
+        substage: ZigZagStage = self.list_of_callables[0](sub_list_of_callables, **self.ctx.data)
 
         other_cmes: list[tuple[CostModelEvaluation, Any]] = []
         best_cme: CostModelEvaluation | None = None

@@ -24,6 +24,7 @@ class SteadyStateComputation(ComputationNode, SteadyStateNode):
         group_id: int = 0,
         sub_id: int = -1,
         partially_constant_operands: list[LayerOperand] | None = None,
+        ssis_multiplicity: int = 1,
     ):
         if partially_constant_operands is None:
             partially_constant_operands = []
@@ -43,8 +44,18 @@ class SteadyStateComputation(ComputationNode, SteadyStateNode):
             input_names=input_names,
             partially_constant_operands=partially_constant_operands,
         )
-
-        steady_state_iteration_space = SteadyStateIterationSpace.from_computation_node(node=self)
+        # Adjust intra_core_tiling according to ssis_multiplicity
+        if self.intra_core_tiling and ssis_multiplicity > 1:
+            first_dim = self.intra_core_tiling[0][0]
+            first_size = self.intra_core_tiling[0][1]
+            assert first_size % ssis_multiplicity == 0, (
+                "SteadyStateComputation: The first dimension size of intra_core_tiling must be divisible by "
+                f"ssis_multiplicity. Got {first_size} and {ssis_multiplicity}."
+            )
+            self.intra_core_tiling[0] = (first_dim, first_size // ssis_multiplicity)
+        steady_state_iteration_space = SteadyStateIterationSpace.from_computation_node(
+            node=self, multiplicity=ssis_multiplicity
+        )
 
         # Initialize SteadyStateNode (explicitly, since ComputationNode also inherits from Node)
         SteadyStateNode.__init__(
