@@ -479,19 +479,9 @@ class SteadyStateScheduler:
         )
         if not all_successors:
             raise ValueError(f"No valid successors found for constant input {tensor}.")
-        # Get correct steady state iteration space for the intra core tilling
-        original_node = next(n for n in self.original_workload.node_list if n.id == tensor.origin.id)
-        loop_relevancy_info = original_node.loop_relevancy_info
         first_successor = all_successors[0]
         assert isinstance(first_successor, SteadyStateComputation), "First successor must be a SteadyStateComputation."
-        intra_core_tiling = first_successor.intra_core_tiling
-        inter_core_tiling = original_node.inter_core_tiling
-        ssis = SteadyStateIterationSpace.from_loop_info(
-            loop_relevancy=loop_relevancy_info,
-            intra_core_tiling=intra_core_tiling,
-            operand=tensor.operand,
-            inter_core_tiling=inter_core_tiling,
-        )
+        ssis = tensor.steady_state_iteration_space
         # Get the post transfer tensor node(s)
         grouped_post_transfer_tensor_nodes, grouped_successors = (
             self.get_grouped_post_transfer_tensor_nodes_and_successors(
@@ -638,14 +628,8 @@ class SteadyStateScheduler:
     def create_post_transfer_tensor_node(
         self, pre_transfer_tensor: SteadyStateTensor, i, successor: SteadyStateComputation
     ) -> SteadyStateTensor:
-        loop_relevancy_info = pre_transfer_tensor.origin.loop_relevancy_info
-        intra_core_tiling = pre_transfer_tensor.origin.intra_core_tiling
         input_operand = pre_transfer_tensor.operand
-        ssis = SteadyStateIterationSpace.from_loop_info(
-            loop_relevancy=loop_relevancy_info,
-            intra_core_tiling=intra_core_tiling,
-            operand=input_operand,
-        )
+        ssis = pre_transfer_tensor.steady_state_iteration_space
         post_transfer_node_name = f"{pre_transfer_tensor.node_name}{'*' * (i + 1)}"
         full_shape = pre_transfer_tensor.full_shape
         slices_per_full = ssis.slices_per_full

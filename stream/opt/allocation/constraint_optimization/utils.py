@@ -1,7 +1,7 @@
 from math import ceil, prod
 from typing import TYPE_CHECKING
 
-from zigzag.datatypes import LayerDim, LayerOperand, UnrollFactor
+from zigzag.datatypes import LayerDim, UnrollFactor
 
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
@@ -47,8 +47,8 @@ def invert_ids_list(
     return new_l
 
 
-def get_loop_size(loops: list[tuple[LayerDim, UnrollFactor]], dims: list[LayerDim]) -> int:
-    return int(prod([tl[1] for tl in loops if tl[0] in dims]))
+def get_loop_size(loops: list[tuple[LayerDim, UnrollFactor]]) -> int:
+    return int(prod(unroll_factor for _, unroll_factor in loops))
 
 
 def get_latencies(
@@ -72,15 +72,10 @@ def get_latencies(
             try:
                 equal_node = cost_lut.get_equal_node(node)
                 assert equal_node, f"No equal node for {node} found in CoreCostLUT"
-                cme = cost_lut.get_cost(equal_node, core)
-                output_operand = LayerOperand("O")
-                temporal_loops = [
-                    i for tm_level in cme.temporal_mapping.mapping_dic_stationary[output_operand] for i in tm_level
-                ]
-                inter_core_tiling_dims = [layer_dim for layer_dim, _ in node.inter_core_tiling]
-                inter_core_tiling_size = get_loop_size(temporal_loops, inter_core_tiling_dims)
+                cce = cost_lut.get_cost(equal_node, core)
+                inter_core_tiling_size = get_loop_size(node.inter_core_tiling)
                 inter_core_tiling_sizes[(node, core)] = inter_core_tiling_size
-                lat = getattr(cme, latency_attr)
+                lat = cce.latency_total
                 possible_allocations[node].append(core)
             except ValueError:
                 lat = impossible_lat

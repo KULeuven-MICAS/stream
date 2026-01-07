@@ -187,9 +187,13 @@ class SteadyStateIterationSpace:
         # Temporal intra_core_tiling loop variables only
         variables: list[IterationVariable] = []
         intra_core_tiling = node.intra_core_tiling
-        for i, (dim, size) in enumerate(intra_core_tiling):
-            if i == 0:
-                adj_size = size // multiplicity  # Adjust for multiplicity on innermost temporal loop
+        adjusted = False
+        for dim, size in intra_core_tiling:
+            if not adjusted and size >= multiplicity:
+                adj_size = size // multiplicity  # Adjust for multiplicity on first large enough loop
+                adjusted = True
+            else:
+                adj_size = size
             is_rel = True  # All dimensions are relevant for the computation node
             iter_var = IterationVariable(dim, adj_size, is_rel)
             variables.append(iter_var)
