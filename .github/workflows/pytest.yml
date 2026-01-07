@@ -1,0 +1,18 @@
+name: Pytest
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write   # lets us comment on PRs
+
+
+jobs:
+  tests:
+    uses: ./.github/workflows/_pytest-run.yml
+    with:
+      pytest_args: ${{ github.event.inputs.pytest_args || '-q' }}
+    secrets:
+      CI_TOKEN: ${{ secrets.CI_TOKEN }}

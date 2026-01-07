@@ -1,0 +1,52 @@
+name: _pytest-run
+
+on:
+  workflow_call:
+    inputs:
+      pytest_args:
+        type: string
+        required: false
+        default: "-q"
+    secrets:
+      CI_TOKEN:
+        required: false
+      OPENAI_API_KEY:
+        required: false
+
+jobs:
+  run:
+    runs-on: [self-hosted, linux]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.CI_TOKEN || github.token }}
+
+      - name: Cache Python virtualenv
+        uses: actions/cache@v4
+        with:
+          path: .venv
+          key: venv-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            venv-${{ runner.os }}-
+
+      - name: Setup Python env
+        shell: bash -l {0}
+        run: |
+          if [ ! -d ".venv" ]; then python3 -m venv .venv; fi
+          source .venv/bin/activate
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          if [ -f setup_mlir_aie_requirements.sh ]; then
+            bash setup_mlir_aie_requirements.sh
+          fi
+
+      - name: Run pytest
+        shell: bash -l {0}
+        env:
+          ARGS: ${{ inputs.pytest_args }}
+        run: |
+          source .venv/bin/activate
+          python -m pytest $ARGS
