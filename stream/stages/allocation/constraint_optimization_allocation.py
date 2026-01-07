@@ -1,22 +1,24 @@
 import logging
 import os
+from dataclasses import replace
 from math import prod
 from time import time
-from typing import Any, TypeAlias
+from typing import TypeAlias
 
 import networkx as nx
 import numpy as np
 from zigzag.utils import pickle_load, pickle_save
 
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
-from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.allocation import ALLOCATION_T, get_optimal_allocations
+from stream.opt.allocation.constraint_optimization.config import ConstraintOptStageConfig
+from stream.opt.allocation.constraint_optimization.context import build_constraint_context
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import NodeType, TimeSlotAllocation
 from stream.opt.allocation.constraint_optimization.utils import calculate_total_latency, get_partitioned_nodes
+from stream.stages.context import StageContext
 from stream.stages.generation.layer_stacks_generation import STACK_T
 from stream.stages.stage import Stage, StageCallable
-from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
@@ -32,23 +34,26 @@ SCHEDULE_ORDER_T: TypeAlias = list[tuple[int, int]]
 class ConstraintOptimizationAllocationStage(Stage):
     """
     Class that finds the best workload allocation for the workload using constraint optimization.
-    This stages requires a CostModelEvaluationLUT, containing for each node and its valid core allocations the best CME.
+    This stages requires a CoreCostLUT, containing for each node and its valid core allocations the best CME.
     """
 
     CO_TIME_LIMIT = 600
 
+    REQUIRED_FIELDS = (
+        "workload",
+        "accelerator",
+        "cost_lut",
+        "layer_stacks",
+        "allocations_path",
+        "tiled_workload_post_co_path",
+        "output_path",
+        "original_workload",
+    )
+
     def __init__(
         self,
         list_of_callables: list[StageCallable],
-        *,
-        workload: ComputationNodeWorkload,
-        accelerator: Accelerator,
-        cost_lut: CostModelEvaluationLUT,
-        layer_stacks: list[tuple[int, ...]],
-        allocations_path: str,
-        tiled_workload_post_co_path: str,
-        output_path: str,
-        **kwargs: Any,
+        ctx: StageContext,
     ):
         """Initialize the ResourceAllocationStage.
 
@@ -56,30 +61,37 @@ class ConstraintOptimizationAllocationStage(Stage):
             list_of_callables (list): List of the substages to be called. This should be empty as this is a leaf stage.
             workload (DiGraph): The NetworkX DiGraph representing the workload to be scheduled
             accelerator (Accelerator): The hardware accelerator onto which we schedule the workload
-            cost_lut (CostModelEvaluationLUT): A lookup table containing for each node the best CME for each core
+            cost_lut (CoreCostLUT): A lookup table containing for each node the best cost entry for each core
             layer_stacks (list): List of tuples with each tuple containing the layer ids to fuse together
             allocations_path (str): Path to the directory where the optimal allocations are stored
             output_path (str): Path to the output folder to store results
         """
-        super().__init__(list_of_callables, **kwargs)
-        self.workload = workload
-        self.accelerator = accelerator
-        self.cost_lut = cost_lut
-        self.layer_stacks = layer_stacks
-        self.original_workload: ComputationNodeWorkload = kwargs["original_workload"]
-        self.mode = kwargs.get("mode", "fused")  # assume default is fused
+        super().__init__(list_of_callables, ctx)
+        self.workload = self.ctx.require_value("workload", self.__class__.__name__)
+        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
+        self.cost_lut = self.ctx.require_value("cost_lut", self.__class__.__name__)
+        self.layer_stacks = self.ctx.require_value("layer_stacks", self.__class__.__name__)
+        self.original_workload: ComputationNodeWorkload = self.ctx.require_value(
+            "original_workload", self.__class__.__name__
+        )
+        self.mode = self.ctx.get("mode", "fused")  # assume default is fused
 
-        self.allocations_path = allocations_path
+        config = self.ctx.get("constraint_opt_config")
+        if config is None:
+            logger.warning(
+                "ConstraintOptimizationAllocationStage: legacy kwargs configuration path is deprecated. "
+                "Please pass a ConstraintOptStageConfig. Building config from kwargs for now."
+            )
+            config = ConstraintOptStageConfig.from_legacy_kwargs(**self.ctx.data)
+        self.config = config
+        self.constraint_context = build_constraint_context(self.accelerator, self.config)
+
+        self.allocations_path = self.ctx.require_value("allocations_path", self.__class__.__name__)
         os.makedirs(self.allocations_path, exist_ok=True)
-        self.tiled_workload_post_co_path = tiled_workload_post_co_path
-        self.output_path = output_path
-        self.co_time_limit: int = kwargs.get("co_time_limit", self.CO_TIME_LIMIT)
-
-        # Which CME attribute to use for the node latencies
-        self.latency_attr = kwargs.get("latency_attr", "latency_total1")
-
-        # Number of AIE columns to use in the allocation
-        self.nb_cols_to_use = kwargs.get("nb_cols_to_use", 4)
+        self.tiled_workload_post_co_path = self.ctx.require_value(
+            "tiled_workload_post_co_path", self.__class__.__name__
+        )
+        self.output_path = self.ctx.require_value("output_path", self.__class__.__name__)
 
         # Attributes that will be assigned throughout the stage
         self.ss_to_computes: dict[STACK_T, set[ComputationNode]] = {}
@@ -109,14 +121,16 @@ class ConstraintOptimizationAllocationStage(Stage):
         for stack, optimal_allocation in self.optimal_allocation_per_stack.items():
             stack_subgraph = self.workload.get_subgraph([n for n in self.workload.node_list if n.id in stack])
             iterations = self.ss_iterations_per_stack[stack]
+            stack_str = "_".join(str(layer_id) for layer_id in stack)
+            output_path = os.path.join(self.output_path, "tetra", stack_str)
             scheduler = SteadyStateScheduler(
                 stack_subgraph,
                 self.accelerator,
                 self.original_workload,
                 self.cost_lut,
                 iterations,
-                self.nb_cols_to_use,
-                self.output_path,
+                self.config.transfer.nb_cols_to_use,
+                output_path,
             )
             schedule = scheduler.run(optimal_allocation)
         return schedule
@@ -463,7 +477,9 @@ class ConstraintOptimizationAllocationStage(Stage):
         for stack, to_compute in self.ss_to_computes.items():
             iterations = self.ss_iterations_per_stack[stack]
             t_start = time()
-            optimal_allocation = self.find_best_allocation(to_compute, iterations, stack, self.co_time_limit)
+            optimal_allocation = self.find_best_allocation(
+                to_compute, iterations, stack, self.config.compute.time_limit
+            )
             ss_latency, _ = calculate_total_latency(optimal_allocation, iterations)
             t_end = time()
             logger.info(f"Stack {stack}: Optimization took {t_end - t_start:.3f} seconds.")
@@ -473,7 +489,11 @@ class ConstraintOptimizationAllocationStage(Stage):
         logger.info(f"Total steady-state latency across stacks: {total_ss_latency} cycles")
 
     def find_best_allocation(
-        self, to_compute: set[ComputationNode], iterations: int, stack: STACK_T = (0,), time_limit: int = 600
+        self,
+        to_compute: set[ComputationNode],
+        iterations: int,
+        stack: STACK_T = (0,),
+        time_limit: int | None = None,
     ) -> TimeSlotAllocation:
         """# TODO: Implement overhead of tensor transfers between cores"""
         # Check if the allocation is already cached, if not: find it
@@ -484,19 +504,27 @@ class ConstraintOptimizationAllocationStage(Stage):
             allocation = pickle_load(stack_allocations_path)
         else:
             logger.info(f"Optimizing allocation for {iterations} iterations of {len(to_compute)} ss nodes.")
+            effective_time_limit = time_limit or self.config.compute.time_limit
+            compute_cfg = (
+                self.config.compute
+                if effective_time_limit == self.config.compute.time_limit
+                else replace(self.config.compute, time_limit=effective_time_limit)
+            )
             allocation = get_optimal_allocations(
                 sg,
                 self.accelerator,
                 self.cost_lut,
+                context=self.constraint_context,
+                compute_config=compute_cfg,
                 iterations=iterations,
-                time_limit=time_limit,
-                latency_attr=self.latency_attr,
             )
             pickle_save(allocation, stack_allocations_path)  # type: ignore
         steady_state_allocation_list = self.get_steady_state_allocation_list(allocation)
         tsa = TimeSlotAllocation(steady_state_allocation_list)  # type: ignore
         # json_path = stack_allocations_path.replace(".pickle", ".json")
-        # to_perfetto_json(allocation, self.cost_lut, self.accelerator, iterations, self.latency_attr, json_path)
+        # to_perfetto_json(
+        #     allocation, self.cost_lut, self.accelerator, iterations, self.config.compute.latency_attr, json_path
+        # )
 
         return tsa
 
@@ -510,6 +538,8 @@ class ConstraintOptimizationAllocationStage(Stage):
         # Get the core allocations for each unique node id and sub id in the allocation
         node_id_to_cores: dict[tuple[int, int], list[Core]] = {}
         node_id_to_slots: dict[tuple[int, int], list[int]] = {}
+        layer_id_to_nb_nodes: dict[int, int] = {}
+        layer_id_to_cores: dict[int, set[Core]] = {}
         for slot, core_id, (n_id, n_sub_id) in allocation:
             # Keep slot
             node_id_to_slots[(n_id, n_sub_id)] = node_id_to_slots.get((n_id, n_sub_id), [])
@@ -517,13 +547,17 @@ class ConstraintOptimizationAllocationStage(Stage):
             core = self.accelerator.get_core(core_id)
             node_id_to_cores[(n_id, n_sub_id)] = node_id_to_cores.get((n_id, n_sub_id), [])
             node_id_to_cores[(n_id, n_sub_id)].append(core)
+            layer_id_to_nb_nodes[n_id] = layer_id_to_nb_nodes.get(n_id, 0) + 1
+            layer_id_to_cores[n_id] = layer_id_to_cores.get(n_id, set())
+            layer_id_to_cores[n_id].add(core)
         # Get the partitioned SteadyStateComputation objects for each unique node id and sub id
         steady_state_computations: dict[tuple[int, int], list[SteadyStateComputation]] = {}
         for (n_id, n_sub_id), cores in node_id_to_cores.items():
             # Get the original node from the workload
             node = next(n for n in self.workload.node_list if n.id == n_id and n.sub_id == n_sub_id)
+            multiplicity = layer_id_to_nb_nodes[n_id] // len(layer_id_to_cores[n_id])
             steady_state_computations[(n_id, n_sub_id)] = get_partitioned_nodes(
-                node, cores, self.accelerator, self.cost_lut
+                node, cores, self.accelerator, self.cost_lut, multiplicity
             )
         # Create the converted allocation_list with SteadyStateComputation objects
         allocation_list: list[tuple[int, Core, SteadyStateComputation]] = []
@@ -532,6 +566,10 @@ class ConstraintOptimizationAllocationStage(Stage):
             computations = steady_state_computations[(n_id, n_sub_id)]
             for slot, core, computation in zip(slots, cores, computations, strict=False):
                 allocation_list.append((slot, core, computation))
+        assert len(allocation) == len(allocation_list), (
+            "Expected the length of the allocation list to be the same as the original allocation."
+            f"Got {len(allocation)} and {len(allocation_list)}."
+        )
         return allocation_list
 
     def get_scheduling_order(self, allocation: TimeSlotAllocation) -> SCHEDULE_ORDER_T:

@@ -6,6 +6,7 @@ from zigzag.parser.accelerator_factory import AcceleratorFactory as ZigZagCoreFa
 from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
+from stream.parser.core_validator import CoreValidatorRegistry, core_kind_from_type
 
 
 class AcceleratorFactory:
@@ -68,7 +69,17 @@ class AcceleratorFactory:
         core = core_factory.create(core_id, shared_mem_group_id=shared_mem_group_id)
         # Typecast
         core = Core.from_zigzag_core(core)
-        core.type = core_data.get("type", "compute")  # Default type is 'compute'
+        core.core_type = CoreValidatorRegistry.normalize_core_type(
+            core_data.get("type"),
+            default_namespace=CoreValidatorRegistry.default_namespace,
+            default_kind="compute",
+        )
+        core.type = core_kind_from_type(core.core_type) or "compute"
+        if core.type not in max_object_fifo_depth:
+            raise ValueError(
+                f"max_object_fifo_depth is missing an entry for core kind '{core.type}'. "
+                f"Available kinds: {list(max_object_fifo_depth.keys())}"
+            )
         core.utilization = core_data.get("utilization", 100)
         core.max_object_fifo_depth = max_object_fifo_depth[core.type]
         if coordinates:
@@ -122,7 +133,6 @@ class AcceleratorFactory:
     def create_core_graph(self, cores: list[Core]):
         assert all(core.id == i for i, core in enumerate(cores))
         edges: list[tuple[Core, Core, dict[str, CommunicationLink]]] = []
-        current_bus_id = 0
         core_connectivity: list[dict[str, Any]] = self.data["core_connectivity"]
         default_unit_energy_cost = self.data.get("unit_energy_cost", 0)
 
@@ -150,8 +160,7 @@ class AcceleratorFactory:
             elif connection_type == "bus":
                 # Connect cores to bus, edge by edge
                 # Make sure all links refer to the same `CommunicationLink` instance
-                bus_instance = CommunicationLink("Any", "Any", bw, uec, bus_id=current_bus_id)
-                current_bus_id += 1
+                bus_instance = CommunicationLink("Any", "Any", bw, uec, bidirectional=True)
                 pairs_this_connection = [(a, b) for idx, a in enumerate(core_objs) for b in core_objs[idx + 1 :]]
                 for core_a, core_b in pairs_this_connection:
                     edges += get_bidirectional_edges(

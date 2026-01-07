@@ -1,5 +1,5 @@
-name: pooling
-type: compute
+name: simd
+type: zigzag.compute
 
 memories:
   sram_128KB_2rw:

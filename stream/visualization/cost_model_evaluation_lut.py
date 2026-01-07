@@ -75,7 +75,7 @@ def visualize_cost_lut_pickle(pickle_filepath, scale_factors=None, fig_path=None
     _format_axes(axs, x, node_labels, cores, worst_case_latency, best_case_energy)
     fig.tight_layout()
     plt.savefig(fig_path, bbox_inches="tight")
-    logger.info(f"Saved CostModelEvaluationLUT visualization to: {fig_path}")
+    logger.info(f"Saved CoreCostLUT visualization to: {fig_path}")
 
 
 def _set_matplotlib_styles():
@@ -118,12 +118,14 @@ def _collect_node_core_data(cost_lut, scale_factors):
         min_latency_per_node[node] = float("inf")
         min_energy_per_node[node] = float("inf")
         for core in cost_lut.get_cores(node):
-            cme = cost_lut.get_cme(node, core)
+            cme = cost_lut.get_cost(node, core)
             if core not in cores:
                 cores.append(core)
-            if cme.latency_total2 < min_latency_per_node[node]:
-                min_latency_per_node[node] = cme.latency_total2
-                min_energy_per_node[node] = cme.energy_total
+            latency_val = getattr(cme, "latency_total2", getattr(cme, "latency_total", getattr(cme, "ideal_cycle", 0)))
+            energy_val = getattr(cme, "energy_total", 0)
+            if latency_val < min_latency_per_node[node]:
+                min_latency_per_node[node] = latency_val
+                min_energy_per_node[node] = energy_val
     for node in min_latency_per_node:
         min_latency_per_node[node] *= scale_factors[node]
         min_energy_per_node[node] *= scale_factors[node]
@@ -150,9 +152,13 @@ def _plot_bars(axs, cost_lut, cores, offsets, x, width, colors, scale_factors):
         for node in cost_lut.get_nodes():
             node_cores = cost_lut.get_cores(node)
             if core in node_cores:
-                cme = cost_lut.get_cme(node, core)
-                core_latencies.append(scale_factors[node] * cme.latency_total2)
-                core_energies.append(scale_factors[node] * cme.energy_total)
+                cme = cost_lut.get_cost(node, core)
+                latency_val = getattr(
+                    cme, "latency_total2", getattr(cme, "latency_total", getattr(cme, "ideal_cycle", 0))
+                )
+                energy_val = getattr(cme, "energy_total", 0)
+                core_latencies.append(scale_factors[node] * latency_val)
+                core_energies.append(scale_factors[node] * energy_val)
             else:
                 core_latencies.append(0)
                 core_energies.append(0)

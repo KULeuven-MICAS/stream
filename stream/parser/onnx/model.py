@@ -9,20 +9,26 @@ from stream.parser.onnx.concat import ConcatParser
 from stream.parser.onnx.conv import ConvParser
 from stream.parser.onnx.default import DefaultNodeParser
 from stream.parser.onnx.einsum import EinsumParser
+from stream.parser.onnx.exp import ExpParser
 from stream.parser.onnx.flatten import FlattenParser
 from stream.parser.onnx.gather import GatherParser
+from stream.parser.onnx.gelu import GeluParser
 from stream.parser.onnx.gemm import GemmParser
 from stream.parser.onnx.lpnormalization import LpNormalizationParser
 from stream.parser.onnx.matmul import MatMulParser
 from stream.parser.onnx.mul import MulParser
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.parser.onnx.pooling import PoolingParser
+from stream.parser.onnx.reciprocal import ReciprocalParser
 from stream.parser.onnx.reduce_1d import Reduce1DParser
+from stream.parser.onnx.relu import ReluParser
 from stream.parser.onnx.reshape import ReshapeParser
+from stream.parser.onnx.sigmoid import SigmoidParser
 from stream.parser.onnx.simd import SimdParser
 from stream.parser.onnx.slice import SliceParser
 from stream.parser.onnx.softmax import SoftmaxParser
 from stream.parser.onnx.split import SplitParser
+from stream.parser.onnx.sqrt import SqrtParser
 from stream.parser.onnx.ssm import SSMParser
 from stream.parser.onnx.transpose import TransposeParser
 from stream.workload.mapping import InterCoreMappingAttributes
@@ -52,16 +58,16 @@ class ONNXModelParser:
         "SSM": SSMParser,
         "Softmax": SoftmaxParser,
         # Single-input element-wise
-        "Exp": SimdParser,
+        "Exp": ExpParser,
         "ReduceMean": Reduce1DParser,
-        "Relu": SimdParser,
-        "Gelu": SimdParser,
+        "Relu": ReluParser,
+        "Gelu": GeluParser,
         "Silu": SimdParser,
-        "Sigmoid": SimdParser,
-        "Sqrt": SimdParser,
+        "Sigmoid": SigmoidParser,
+        "Sqrt": SqrtParser,
         "Div": SimdParser,
         "Pow": SimdParser,
-        "Reciprocal": SimdParser,  # Div with 1 as numerator
+        "Reciprocal": ReciprocalParser,  # Div with 1 as numerator
         # Dependency propagation
         "LpNormalization": LpNormalizationParser,
         "Gather": GatherParser,

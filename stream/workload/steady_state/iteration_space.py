@@ -183,13 +183,15 @@ class SteadyStateIterationSpace:
         return cls(variables)
 
     @classmethod
-    def from_computation_node(cls, *, node: ComputationNode):
+    def from_computation_node(cls, *, node: ComputationNode, multiplicity: int = 1) -> SteadyStateIterationSpace:
         # Temporal intra_core_tiling loop variables only
         variables: list[IterationVariable] = []
         intra_core_tiling = node.intra_core_tiling
-        for dim, size in intra_core_tiling:
+        for i, (dim, size) in enumerate(intra_core_tiling):
+            if i == 0:
+                adj_size = size // multiplicity  # Adjust for multiplicity on innermost temporal loop
             is_rel = True  # All dimensions are relevant for the computation node
-            iter_var = IterationVariable(dim, size, is_rel)
+            iter_var = IterationVariable(dim, adj_size, is_rel)
             variables.append(iter_var)
         return cls(variables)
 

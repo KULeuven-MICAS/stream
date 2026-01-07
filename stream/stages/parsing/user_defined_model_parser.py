@@ -1,11 +1,9 @@
-from typing import Any
-
 from zigzag.stages.parser.workload_parser import WorkloadParserStage as ZigZagWorkloadParserStage
-from zigzag.stages.stage import StageCallable
 
-from stream.hardware.architecture.accelerator import Accelerator
 from stream.parser.mapping_parser import MappingParser
 from stream.parser.workload_factory import WorkloadFactoryStream
+from stream.stages.context import StageContext
+from stream.stages.stage import StageCallable
 from stream.workload.dnn_workload import DNNWorkloadStream
 from stream.workload.mapping import InterCoreMappingAttributes
 
@@ -19,21 +17,22 @@ class UserDefinedModelParserStage(ZigZagWorkloadParserStage):
     def __init__(
         self,
         list_of_callables: list[StageCallable],
-        *,
-        workload_path: str,
-        mapping_path: str,
-        accelerator: Accelerator,
-        **kwargs: Any,
+        ctx: StageContext,
     ):
-        super().__init__(list_of_callables=list_of_callables, workload=workload_path, mapping=mapping_path, **kwargs)
-        self.accelerator = accelerator
-        self.mapping_parser = MappingParser(mapping_path)
+        super().__init__(
+            list_of_callables=list_of_callables,
+            workload=ctx.require_value("workload_path", self.__class__.__name__),
+            mapping=ctx.require_value("mapping_path", self.__class__.__name__),
+        )
+        self.ctx = ctx
+        self.accelerator = ctx.require_value("accelerator", self.__class__.__name__)
+        self.mapping_parser = MappingParser(ctx.require_value("mapping_path", self.__class__.__name__))
 
     def run(self):
         all_mappings = self.mapping_parser.run()
         workload = self.parse_workload_stream(all_mappings)
-        self.kwargs["accelerator"] = self.accelerator
-        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], workload=workload, **self.kwargs)
+        self.ctx.set(accelerator=self.accelerator, workload=workload, all_mappings=all_mappings)
+        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
     def parse_workload_stream(self, all_mappings: dict[str, InterCoreMappingAttributes]) -> DNNWorkloadStream:

@@ -7,7 +7,7 @@ from typing import Any
 from cerberus import Validator
 from zigzag.utils import open_yaml
 
-from stream.parser.core_validator import CoreValidator
+from stream.parser.core_validator import CoreValidatorRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -112,9 +112,11 @@ class AcceleratorValidator:
         self.data: dict[str, Any] = self.validator.normalized(data)  # type: ignore
         self.is_valid = True
         self.accelerator_dirname = os.path.dirname(accelerator_path)
+        self.errors: list[str] = []
 
     def invalidate(self, extra_msg: str):
         self.is_valid = False
+        self.errors.append(extra_msg)
         logger.critical("User-defined accelerator is invalid. %s", extra_msg)
 
     def validate(self) -> bool:
@@ -135,6 +137,9 @@ class AcceleratorValidator:
         self.validate_core_connectivity()
         self.validate_core_mem_sharing()
 
+        if not self.is_valid and self.errors:
+            logger.critical("Accelerator validation failed with %d issue(s).", len(self.errors))
+
         return self.is_valid
 
     def validate_core_ids(self):
@@ -153,12 +158,10 @@ class AcceleratorValidator:
         - validate core data
         - replace core file path with core data
         """
-        core_id = 0
         for core_id, core_file_name in self.data["cores"].items():
             normalized_core_data = self.validate_single_core(core_file_name)
-            if not normalized_core_data:
-                return
-            self.data["cores"][core_id] = normalized_core_data
+            if normalized_core_data:
+                self.data["cores"][core_id] = normalized_core_data
 
     def validate_core_coordinates(self) -> None:
         """For all given core coordinates:
@@ -179,10 +182,26 @@ class AcceleratorValidator:
         if core_data is None:
             return
 
-        core_validator = CoreValidator(core_data)
+        raw_type = core_data.get("type")
+        default_kind = raw_type if raw_type in {"compute", "memory"} else "compute"
+        normalized_type = CoreValidatorRegistry.normalize_core_type(
+            raw_type,
+            default_namespace=CoreValidatorRegistry.default_namespace,
+            default_kind=str(default_kind),
+        )
+        validator_cls = CoreValidatorRegistry.get_validator(normalized_type)
+        if validator_cls is None:
+            supported_types = ", ".join(CoreValidatorRegistry.supported_types())
+            self.invalidate(
+                f"Core '{core_file_name}' has unsupported type '{normalized_type}'. Supported types: {supported_types}"
+            )
+            return
+
+        core_validator = validator_cls(core_data)
         validate_success = core_validator.validate()
         if not validate_success:
-            self.invalidate(f"User-given core  {core_file_name} cannot be validated.")
+            self.invalidate(f"User-given core {core_file_name} cannot be validated.")
+            self.errors.extend(core_validator.errors)
 
         # Fill in default values
         normalized_core_data = core_validator.normalized_data

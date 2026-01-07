@@ -141,7 +141,7 @@ class ConvParser(OnnxComputeOperatorParser):
         weight_dim = "g" if group_size > 1 else "k"
 
         loop_size_dict = {"B": B, "K": K, "G": G, "OX": OX, "C": C, "FX": FX, "OY": OY, "FY": FY}
-        equation = f"O[b][g][k][oy][ox]+=W[{weight_dim}][c][fy][fx]*I[b][g][c][iy][ix]"
+        equation = f"O[b][g][k][oy][ox]+=I[b][g][c][iy][ix]*W[{weight_dim}][c][fy][fx]"
         pr_loop_dims = ["IX", "IY"]
         pr_loop_sizes = [IX, IY]
         dimension_relations = [
@@ -171,7 +171,7 @@ class ConvParser(OnnxComputeOperatorParser):
         node_factory = LayerNodeFactory(node_data, mapping_data=None)
         node_attrs = node_factory.create_node_attr()
         mapping = self.get_mapping_this_node()
-        input_names = list(self.node.input)
+        input_names = list(self.node.input)[:2]  # Disregard bias input if present
 
         return ComputationNode(
             node_id=self.node_id,

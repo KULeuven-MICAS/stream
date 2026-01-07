@@ -1,15 +1,11 @@
 import logging
-from typing import Any
 
-from zigzag.datatypes import LayerOperand
-
-from stream.hardware.architecture.accelerator import Accelerator
 from stream.opt.allocation.genetic_algorithm.fitness_evaluator import StandardFitnessEvaluator
 from stream.opt.allocation.genetic_algorithm.genetic_algorithm import GeneticAlgorithm
+from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
-from stream.utils import CostModelEvaluationLUT, get_unique_nodes
+from stream.utils import get_unique_nodes
 from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 
@@ -17,25 +13,27 @@ logger = logging.getLogger(__name__)
 class GeneticAlgorithmAllocationStage(Stage):
     """
     Class that finds the best inter-core mapping using a genetic algorithm.
-    From the IntraCoreMappingStage we receive the `CostModelEvaluationLUT`, containing for each node and its valid core
+    From the IntraCoreMappingStage we receive the `CoreCostLUT`, containing for each node and its valid core
       allocations the best CME.
     We then initialize the genetic algorithm.
     TODO A separate "GeneticAlgorithmStage" should be added where we parse all GA-related info and this stage then calls
     TODO that stage.
     """
 
+    REQUIRED_FIELDS = (
+        "workload",
+        "accelerator",
+        "cost_lut",
+        "nb_ga_generations",
+        "nb_ga_individuals",
+        "operands_to_prefetch",
+        "scheduling_order",
+    )
+
     def __init__(
         self,
         list_of_callables: list[StageCallable],
-        *,
-        workload: ComputationNodeWorkload,
-        accelerator: Accelerator,
-        cost_lut: CostModelEvaluationLUT,
-        nb_ga_generations: int,
-        nb_ga_individuals: int,
-        operands_to_prefetch: list[LayerOperand],
-        scheduling_order: list[tuple[int, int]],
-        **kwargs: Any,
+        ctx: StageContext,
     ):
         """Initialize the InterCoreMappingStage.
 
@@ -43,19 +41,19 @@ class GeneticAlgorithmAllocationStage(Stage):
             list_of_callables (list): List of the substages to be called. This should be empty as this is a leaf stage.
             workload (DiGraph): The NetworkX DiGraph representing the workload to be scheduled
             accelerator (Accelerator): The hardware accelerator onto which we schedule the workload
-            cost_lut (CostModelEvaluationLUT): A LUT of CMEs for each unique node and their valid cores
+            cost_lut (CoreCostLUT): A LUT of cost entries for each unique node and their valid cores
             nb_ga_generations: The number of generations considered by the genetic algorithm
             nb_ga_individuals: The number of individuals in each genetic algorithm generation
         """
-        super().__init__(list_of_callables, **kwargs)
-        self.workload = workload
-        self.accelerator = accelerator
-        self.cost_lut = cost_lut
-        self.nb_generations = nb_ga_generations
-        self.nb_individuals = nb_ga_individuals
-        self.operands_to_prefetch = operands_to_prefetch
-        self.scheduling_order = scheduling_order
-        self.latency_attr = kwargs.get("latency_attr", "latency_total2")
+        super().__init__(list_of_callables, ctx)
+        self.workload = self.ctx.require_value("workload", self.__class__.__name__)
+        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
+        self.cost_lut = self.ctx.require_value("cost_lut", self.__class__.__name__)
+        self.nb_generations = self.ctx.require_value("nb_ga_generations", self.__class__.__name__)
+        self.nb_individuals = self.ctx.require_value("nb_ga_individuals", self.__class__.__name__)
+        self.operands_to_prefetch = self.ctx.require_value("operands_to_prefetch", self.__class__.__name__)
+        self.scheduling_order = self.ctx.require_value("scheduling_order", self.__class__.__name__)
+        self.latency_attr = self.ctx.get("latency_attr", "latency_total2")
 
         # Determine the set of all (layer, group) combinations to be allocated separately
         self.layer_groups: list[tuple[int, int]] = sorted(set((n.id, n.group) for n in self.workload.node_list))

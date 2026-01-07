@@ -1,4 +1,3 @@
-from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import product
 from math import ceil, floor
@@ -120,6 +119,7 @@ class SharedPrefixPath:
 class MulticastRequest(NamedTuple):
     sources: tuple["Core", ...]
     destinations: tuple["Core", ...]
+    possible_memory_cores: tuple["Core", ...]
 
     def __hash__(self) -> int:
         return hash((self.sources, self.destinations))
@@ -208,11 +208,34 @@ class CommunicationManager:
         path = self.shortest_paths[(source, target)]
         return UnicastPathPlan(source=source, target=target, full_paths=path)
 
+    def _get_simple_no_meeting_node_plans(
+        self, sources: tuple["Core", ...], targets: tuple["Core", ...]
+    ) -> list[MulticastPathPlan]:
+        # Fallback to simple paths stored in the communication manager
+        plans = []
+        for source in sources:
+            for target in targets:
+                path = self.shortest_paths[(source, target)]
+                if not path:
+                    continue
+                full_paths = {target: path}
+                plans.append(
+                    MulticastPathPlan(
+                        sources=(source,),
+                        targets=(target,),
+                        meeting=None,
+                        paths_from_sources={source: path},
+                        paths_to_targets={target: path},
+                        full_paths=full_paths,
+                        total_hops_objective=len(path) - 1,
+                        overlap_edges=0,
+                    )
+                )
+        return plans
+
     def enumerate_multicast_plans(
         self,
-        sources: Sequence["Core"],
-        targets: Sequence["Core"],
-        cols_in_use: tuple[int, ...],
+        request: MulticastRequest,
         *,
         offchip_mem_penalty: float = 1000.0,
     ) -> list[MulticastPathPlan]:
@@ -229,6 +252,8 @@ class CommunicationManager:
 
         The original graph is NOT modified.
         """
+        sources = request.sources
+        targets = request.destinations
         if not sources or not targets:
             raise ValueError("sources and targets must be non-empty")
         if len(sources) > 1 and len(targets) > 1:
@@ -257,11 +282,10 @@ class CommunicationManager:
         Grev = Gw.reverse(copy=False) if Gw.is_directed() else Gw  # for distances *to* targets
 
         # Candidate meeting nodes: memory tiles, not offchip, and in used columns
-        candidates = [
-            m for m in Gw.nodes() if is_memory(m) and not is_offchip(m) and getattr(m, "col_id", None) in cols_in_use
-        ]
+        candidates = request.possible_memory_cores
         if not candidates:
-            raise nx.NetworkXNoPath("No eligible memory core meeting nodes for multicast transfer.")
+            plans = self._get_simple_no_meeting_node_plans(sources, targets)
+            return plans
 
         # Precompute weighted distances
         dist_from_sources: dict[Core, dict[Core, float]] = {

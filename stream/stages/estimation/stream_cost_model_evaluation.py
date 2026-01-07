@@ -2,10 +2,8 @@ import logging
 from collections.abc import Generator
 from typing import Any
 
-from zigzag.datatypes import LayerOperand
-
 from stream.cost_model.cost_model import StreamCostModelEvaluation
-from stream.hardware.architecture.accelerator import Accelerator
+from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.onnx_workload import ComputationNodeWorkload
 
@@ -17,14 +15,12 @@ class StreamCostModelEvaluationStage(Stage):
     Class that runs a StreamCostModelEvaluation.
     """
 
+    REQUIRED_FIELDS = ("workload", "accelerator", "operands_to_prefetch", "scheduling_order")
+
     def __init__(
         self,
         list_of_callables: list[StageCallable],
-        *,
-        workload: ComputationNodeWorkload,
-        accelerator: Accelerator,
-        operands_to_prefetch: list[LayerOperand],
-        **kwargs: Any,
+        ctx: StageContext,
     ):
         """Initialize the InterCoreMappingStage.
 
@@ -34,11 +30,11 @@ class StreamCostModelEvaluationStage(Stage):
             accelerator (Accelerator): The hardware accelerator onto which we schedule the workload
             operands_to_prefetch (list[LayerOperand]): A list of LayerOperands that whose tensors should be prefetched
         """
-        super().__init__(list_of_callables, **kwargs)
-        self.workload = workload
-        self.accelerator = accelerator
-        self.operands_to_prefetch = operands_to_prefetch
-        self.scheduling_order = kwargs["scheduling_order"]
+        super().__init__(list_of_callables, ctx)
+        self.workload = self.ctx.require_value("workload", self.__class__.__name__)
+        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
+        self.operands_to_prefetch = self.ctx.require_value("operands_to_prefetch", self.__class__.__name__)
+        self.scheduling_order = self.ctx.require_value("scheduling_order", self.__class__.__name__)
 
     def run(self) -> Generator[tuple[StreamCostModelEvaluation, Any], None, None]:
         """! Run the StreamCostModelEvaluation."""

@@ -1,5 +1,5 @@
 name: tpu_like
-type: compute
+type: zigzag.compute
 
 memories:
   rf_128B:

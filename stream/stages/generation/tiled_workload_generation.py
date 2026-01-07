@@ -13,10 +13,10 @@ from zigzag.workload.layer_attributes import LayerDimSizes
 from zigzag.workload.layer_node import LayerNodeAttributes
 
 from stream.cost_model.group_allocation import GroupIdManager
-from stream.hardware.architecture.accelerator import Accelerator
 from stream.node_tensor import NodeTensor
 from stream.opt.partitioning.temporal_loop import TemporalLoop
 from stream.opt.partitioning.utils import convert_outer_cn_loops
+from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.utils import contains_wildcard, get_inter_core_tiling_size
 from stream.workload.computation.computation_node import LOOP_RANGES_T, ComputationNode, GeneratedComputationNode
@@ -93,29 +93,27 @@ class TiledWorkloadGenerationStage(Stage):
     Class that transforms the layer-by-layer workload into tiled workload graph.
     """
 
+    REQUIRED_FIELDS = ("workload", "accelerator", "tiled_workload_path")
+
     def __init__(
         self,
         list_of_callables: list[StageCallable],
-        *,
-        workload: ONNXWorkload,
-        accelerator: Accelerator,
-        tiled_workload_path: str,
-        **kwargs: Any,
+        ctx: StageContext,
     ):
         """
         Initialization of self.workload.
         :param main_inputs: MainInputs, NOT copied
         """
-        super().__init__(list_of_callables, **kwargs)
-        self.workload = workload
-        self.accelerator = accelerator
-        self.layer_stacks = kwargs.get("layer_stacks", [])
+        super().__init__(list_of_callables, ctx)
+        self.workload = self.ctx.require_value("workload", self.__class__.__name__)
+        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
+        self.layer_stacks = self.ctx.get("layer_stacks", [])
 
         # Save for each of the workload's nodes the tiles that will be generated
         self.tiles_dict: dict[ComputationNode, list[ComputationNode]] = {}
         # Memoize the numpy tensors for dependency generation
         self.numpy_tensors: dict[tuple[ComputationNode, LayerOperand], NodeTensor] = {}
-        self.tiled_workload_path = tiled_workload_path
+        self.tiled_workload_path = self.ctx.require_value("tiled_workload_path", self.__class__.__name__)
 
         # Memoize the already seen tensors for operand_tensors
         self.tensor_by_hash: dict[int, SubviewTensor] = {}
@@ -174,14 +172,14 @@ class TiledWorkloadGenerationStage(Stage):
 
         logger.info(f"Finer graph: {tiled_workload}.")
 
-        kwargs = self.kwargs.copy()
-        kwargs["original_workload"] = pickle_deepcopy(self.workload)
-        kwargs["workload"] = tiled_workload
-        kwargs["accelerator"] = self.accelerator
-
-        if "scheduling_order" not in kwargs:
-            kwargs["scheduling_order"] = self.get_scheduling_order(tiled_workload)
-        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], **kwargs)
+        self.ctx.set(
+            original_workload=pickle_deepcopy(self.workload),
+            workload=tiled_workload,
+            accelerator=self.accelerator,
+        )
+        if self.ctx.get("scheduling_order") is None:
+            self.ctx.set(scheduling_order=self.get_scheduling_order(tiled_workload))
+        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
         yield None, None

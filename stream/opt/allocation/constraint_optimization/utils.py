@@ -3,9 +3,9 @@ from typing import TYPE_CHECKING
 
 from zigzag.datatypes import LayerDim, LayerOperand, UnrollFactor
 
+from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.utils import CostModelEvaluationLUT
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.steady_state.computation import SteadyStateComputation
 
@@ -34,10 +34,15 @@ def convert_ids(nodes: list[ComputationNode]):
     return ids
 
 
-def invert_ids_list(ids_list: list[tuple[int, str, int]], nb_nodes: int) -> list[tuple[int, int, tuple[int, int]]]:
+def invert_ids_list(
+    ids_list: list[tuple[int, Core | int, int]], nb_nodes: int
+) -> list[tuple[int, int, tuple[int, int]]]:
     new_l: list[tuple[int, int, tuple[int, int]]] = []
     for timestep, core_str, k in ids_list:
-        core_id = int(core_str.split(" ")[-1])  # Extract core id from "Core <id>"
+        if hasattr(core_str, "id"):
+            core_id = int(core_str.id)
+        else:
+            core_id = int(core_str)
         new_l.append((timestep, core_id, invert_id(k)))
     return new_l
 
@@ -50,7 +55,7 @@ def get_latencies(
     nodes: list[ComputationNode],
     core_ids: list[int],
     accelerator: Accelerator,
-    cost_lut: CostModelEvaluationLUT,
+    cost_lut: CoreCostLUT,
     impossible_lat: float = 1e11,
     latency_attr: str = "latency_total1",
 ) -> tuple[dict[tuple[ComputationNode, Core, int], int], dict]:
@@ -66,8 +71,8 @@ def get_latencies(
                 continue
             try:
                 equal_node = cost_lut.get_equal_node(node)
-                assert equal_node, f"No equal node for {node} found in CostModelEvaluationLUT"
-                cme = cost_lut.get_cme(equal_node, core)
+                assert equal_node, f"No equal node for {node} found in CoreCostLUT"
+                cme = cost_lut.get_cost(equal_node, core)
                 output_operand = LayerOperand("O")
                 temporal_loops = [
                     i for tm_level in cme.temporal_mapping.mapping_dic_stationary[output_operand] for i in tm_level
@@ -111,26 +116,25 @@ def get_energies(
     nodes: list[ComputationNode],
     core_ids: list[int],
     accelerator: Accelerator,
-    cost_lut: CostModelEvaluationLUT,
+    cost_lut: CoreCostLUT,
     impossible_energy: float = 1e11,
     ids: dict[ComputationNode, int] | None = None,
-) -> dict[tuple[int, str], float]:
+) -> dict[tuple[int, Core], float]:
     if ids is None:
         ids = {node: node.id for node in nodes}
-    core_names = [f"Core {id}" for id in core_ids]
-    energies = {(ids[node], core_name): impossible_energy for node in nodes for core_name in core_names}
+    cores = [accelerator.get_core(core_id) for core_id in core_ids]
+    energies = {(ids[node], core): impossible_energy for node in nodes for core in cores}
 
     for node in nodes:
-        for core_id, core_name in zip(core_ids, core_names, strict=False):
-            core = accelerator.get_core(core_id)
+        for core in cores:
             try:
                 eq_node = cost_lut.get_equal_node(node)
-                assert eq_node, f"No equal node for {node} found in CostModelEvaluationLUT"
-                cme = cost_lut.get_cme(eq_node, core)
+                assert eq_node, f"No equal node for {node} found in CoreCostLUT"
+                cme = cost_lut.get_cost(eq_node, core)
                 en = cme.energy_total
             except ValueError:
                 en = impossible_energy
-            energies[(ids[node], core_name)] = en
+            energies[(ids[node], core)] = en
 
     return energies
 
@@ -212,7 +216,8 @@ def get_partitioned_nodes(
     node: ComputationNode,
     core_allocations: list[Core],
     accelerator: Accelerator,
-    cost_lut: CostModelEvaluationLUT,
+    cost_lut: CoreCostLUT,
+    multiplicity: int,
 ) -> list[SteadyStateComputation]:
     """
     Get the partitioned SteadyStateComputation nodes for a given ComputationNode based on the core allocations.
@@ -247,6 +252,7 @@ def get_partitioned_nodes(
             input_names=node.input_names,
             partially_constant_operands=node.partially_constant_operands,
             possible_resource_allocation=possible_resource_allocation,
+            ssis_multiplicity=multiplicity,
         )
         new_node.set_runtime(runtime)
         new_node.update_loop_ranges(node.loop_ranges)
@@ -305,6 +311,7 @@ def get_partitioned_nodes(
             input_names=node.input_names,
             partially_constant_operands=node.partially_constant_operands,
             possible_resource_allocation=possible_resource_allocation,
+            ssis_multiplicity=multiplicity,
         )
         partitioned_node.loop_ranges[tiling_dim] = partitioned_loop_ranges[i]
         partitioned_node.set_chosen_core_allocation(core.id)

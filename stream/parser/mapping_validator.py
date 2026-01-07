@@ -42,7 +42,8 @@ class MappingValidator:
                 "name": {"type": "string", "required": True},
                 "kwargs": {"type": "dict", "required": True},
             },
-            "required": True,
+            "required": False,
+            "default": {},
         },
         "spatial_mapping": {
             "type": "dict",
@@ -138,6 +139,10 @@ class MappingValidator:
         """! Validate the user-provided accelerator data. Log a critical warning when invalid data is encountered and
         return true iff valid.
         """
+        # Add defaults where missing
+        for mapping_data in self.data:
+            self.add_defaults(mapping_data)
+
         # Validate according to schema
         validate_success = self.validator.validate(self.data, schema=self.schema)  # type: ignore
         errors = self.validator.errors
@@ -148,13 +153,13 @@ class MappingValidator:
         if "default" not in map(lambda x: x["name"], self.data):
             self.invalidate("No default mapping defined.")
 
-        for mapping_data in self.data:
-            self.validate_single_mapping(mapping_data)
-
         return self.is_valid
 
-    def validate_single_mapping(self, layer_data: dict[str, Any]) -> None:
+    def add_defaults(self, layer_data: dict[str, Any]) -> None:
         """
         # TODO check that the inter-core splits do not exceed the number of cores
         """
-        return
+        # Provide user-friendly defaults for missing kernel info
+        kernel = layer_data.setdefault("kernel", {})
+        kernel.setdefault("name", layer_data.get("name", ""))
+        kernel.setdefault("kwargs", {"utilization": 100.0})

@@ -1,27 +1,25 @@
 import logging
-from typing import Any
 
-from stream.hardware.architecture.accelerator import Accelerator
 from stream.parser.mapping_parser import MappingParser
 from stream.parser.onnx.model import ONNXModelParser
+from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 
 logger = logging.getLogger(__name__)
 
 
 class ONNXModelParserStage(Stage):
+    REQUIRED_FIELDS = ("workload_path", "mapping_path", "accelerator")
+
     def __init__(
         self,
         list_of_callables: list[StageCallable],
-        *,
-        workload_path: str,
-        mapping_path: str,
-        accelerator: Accelerator,
-        **kwargs: Any,
+        ctx: StageContext,
     ):
-        super().__init__(list_of_callables, **kwargs)
-        self.workload_path = workload_path
-        self.accelerator = accelerator
+        super().__init__(list_of_callables, ctx)
+        self.workload_path = self.ctx.require_value("workload_path", self.__class__.__name__)
+        mapping_path = self.ctx.require_value("mapping_path", self.__class__.__name__)
+        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
         self.mapping_parser = MappingParser(mapping_path)
 
     def run(self):
@@ -31,12 +29,11 @@ class ONNXModelParserStage(Stage):
         onnx_model = onnx_model_parser.onnx_model
         workload = onnx_model_parser.workload
 
-        self.kwargs["accelerator"] = self.accelerator
-        self.kwargs["all_mappings"] = all_mappings
-        sub_stage = self.list_of_callables[0](
-            self.list_of_callables[1:],
+        self.ctx.set(
+            accelerator=self.accelerator,
+            all_mappings=all_mappings,
             onnx_model=onnx_model,
             workload=workload,
-            **self.kwargs,
         )
+        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()

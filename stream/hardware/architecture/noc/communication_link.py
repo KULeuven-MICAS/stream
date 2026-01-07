@@ -18,9 +18,10 @@ def get_bidirectional_edges(
     bandwidth: float,
     unit_energy_cost: float,
     link_type: Literal["bus"] | Literal["link"],
+    bus_instance: "CommunicationLink | None" = None,
 ) -> list[tuple["Core", "Core", dict[str, "CommunicationLink"]]]:
     """Create a list with two edges: from A to B and B to A."""
-    bus = CommunicationLink("Any", "Any", bandwidth, unit_energy_cost)
+    bus = bus_instance or CommunicationLink("Any", "Any", bandwidth, unit_energy_cost, bidirectional=True)
     link_a_to_b = CommunicationLink(core_a, core_b, bandwidth, unit_energy_cost)
     link_b_to_a = CommunicationLink(core_b, core_a, bandwidth, unit_energy_cost)
 
