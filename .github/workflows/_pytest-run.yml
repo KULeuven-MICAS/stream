@@ -24,24 +24,35 @@ jobs:
           submodules: recursive
           token: ${{ secrets.CI_TOKEN || github.token }}
 
+      - name: Detect Python version
+        id: pyver
+        shell: bash -l {0}
+        run: |
+          python3 - <<'PY'
+          import sys
+          print(f"py={sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")
+          PY
+          echo "version=$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}")')" >> "$GITHUB_OUTPUT"
+
       - name: Cache Python virtualenv
         uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-${{ runner.os }}-${{ hashFiles('requirements.txt') }}
+          key: venv-${{ runner.os }}-py${{ steps.pyver.outputs.version }}-${{ hashFiles('pyproject.toml') }}
           restore-keys: |
+            venv-${{ runner.os }}-py${{ steps.pyver.outputs.version }}-
             venv-${{ runner.os }}-
 
-      - name: Setup Python env
+      - name: Setup Python env from pyproject.toml
         shell: bash -l {0}
         run: |
           if [ ! -d ".venv" ]; then python3 -m venv .venv; fi
           source .venv/bin/activate
-          pip install --upgrade pip
-          pip install -r requirements.txt
-          if [ -f setup_mlir_aie_requirements.sh ]; then
-            bash setup_mlir_aie_requirements.sh
-          fi
+
+          python -m pip install --upgrade pip
+
+          # Install project + optional dev deps (includes pytest per your pyproject.toml)
+          python -m pip install -e ".[dev]"
 
       - name: Run pytest
         shell: bash -l {0}
