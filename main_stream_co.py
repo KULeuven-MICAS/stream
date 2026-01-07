@@ -12,7 +12,7 @@ accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 workload_path = "stream/inputs/examples/workload/resnet18.onnx"
 mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
 mode = "fused"
-layer_stacks = [tuple(range(0, 12)), tuple(range(12, 22))] + list((i,) for i in range(22, 49))
+layer_stacks = [tuple(range(0, 12)), tuple(range(12, 23))] + list((i,) for i in range(23, 49))
 ##############################################################################################
 
 ################################PARSING###############################
