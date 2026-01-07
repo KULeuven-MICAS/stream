@@ -8,6 +8,7 @@ from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.parser.mapping_parser import MappingParser
 from stream.parser.onnx.model import ONNXModelParser
+from stream.stages.context import StageContext
 from stream.stages.estimation.zigzag_core_mapping_estimation import CoreCostEstimationStage
 
 
@@ -40,12 +41,14 @@ def generate_cost_lut(tmp_path: Path) -> Path:
 
     estimator = CoreCostEstimationStage(
         [_NoOpLeafStage],
-        workload=workload,
-        accelerator=accelerator,
-        loma_lpf_limit=6,
-        cost_lut_path=str(cost_lut_path),
-        layer_stacks=[(0, 1)],
-        temporal_mapping_type=TemporalMappingType.UNEVEN,
+        StageContext.from_kwargs(
+            workload=workload,
+            accelerator=accelerator,
+            loma_lpf_limit=6,
+            cost_lut_path=str(cost_lut_path),
+            layer_stacks=[(0, 1)],
+            temporal_mapping_type=TemporalMappingType.UNEVEN,
+        ),
     )
     estimator.update_cost_lut()
     estimator.cost_lut.save()
@@ -62,16 +65,18 @@ def test_core_cost_lut_caches_and_loads(tmp_path):
     # Re-run with existing cache to ensure it loads successfully
     estimator = CoreCostEstimationStage(
         [_NoOpLeafStage],
-        workload=build_workload(
-            "stream/inputs/testing/workload/2_conv.onnx",
-            "stream/inputs/examples/mapping/tpu_like_quad_core.yaml",
-            build_accelerator("stream/inputs/examples/hardware/tpu_like_quad_core.yaml"),
+        StageContext.from_kwargs(
+            workload=build_workload(
+                "stream/inputs/testing/workload/2_conv.onnx",
+                "stream/inputs/examples/mapping/tpu_like_quad_core.yaml",
+                build_accelerator("stream/inputs/examples/hardware/tpu_like_quad_core.yaml"),
+            ),
+            accelerator=build_accelerator("stream/inputs/examples/hardware/tpu_like_quad_core.yaml"),
+            loma_lpf_limit=6,
+            cost_lut_path=str(cost_lut_path),
+            layer_stacks=[(0, 1)],
+            temporal_mapping_type=TemporalMappingType.UNEVEN,
         ),
-        accelerator=build_accelerator("stream/inputs/examples/hardware/tpu_like_quad_core.yaml"),
-        loma_lpf_limit=6,
-        cost_lut_path=str(cost_lut_path),
-        layer_stacks=[(0, 1)],
-        temporal_mapping_type=TemporalMappingType.UNEVEN,
     )
     estimator.update_cost_lut()
     estimator.cost_lut.save()
