@@ -1,7 +1,6 @@
 import logging
 
 from stream.parser.mapping_parser import MappingParser
-from stream.parser.onnx.model import ONNXModelParser
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 
