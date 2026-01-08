@@ -9,7 +9,8 @@
   - K, 1
   kernel:
     name: matvec
-    utilization: 61.8
+    kwargs:
+      utilization: 61.8
 - name: Gemm_Right
   core_allocation:
   - 3
@@ -21,7 +22,8 @@
   - K, 1
   kernel:
     name: matvec
-    utilization: 61.8
+    kwargs:
+      utilization: 61.8
 - name: Silu
   core_allocation:
   - 4
@@ -32,7 +34,8 @@
   - K, 1
   kernel:
     name: silu
-    utilization: 50.0
+    kwargs:
+      utilization: 50.0
 - name: Elt_Mul
   core_allocation:
   - 5
@@ -43,7 +46,8 @@
   - K, 1
   kernel:
     name: eltwise_mul
-    utilization: 50.0
+    kwargs:
+      utilization: 50.0
 - name: Gemm_Down
   core_allocation:
   - 11
@@ -55,7 +59,8 @@
   - K, 1
   kernel:
     name: matvec
-    utilization: 61.8
+    kwargs:
+      utilization: 61.8
 - name: default
   core_allocation:
   - 2
@@ -67,4 +72,5 @@
   - K, 1
   kernel:
     name: matvec
-    utilization: 61.8
+    kwargs:
+      utilization: 61.8

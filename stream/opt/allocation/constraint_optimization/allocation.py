@@ -269,9 +269,9 @@ class ComputeAllocator:
         self.slots = list(range(len(self.node_ids)))
 
         self.model = gp.Model("compute_alloc")
-        self.model.Params.OutputFlag = 0
+        self.model.Params.OutputFlag = 1
         self.model.Params.TimeLimit = self.compute_cfg.time_limit
-        self.model.Params.Threads = 1
+        self.model.Params.Threads = 0
         self.model.Params.PoolGap = self.compute_cfg.gap
 
     # -------------------- variable creation ---------------------------- #

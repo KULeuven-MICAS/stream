@@ -51,7 +51,7 @@ class DummyTemporalMapping:
 class DummyCostEntry:
     def __init__(self, latency: int, energy: float):
         self.temporal_mapping = DummyTemporalMapping()
-        self.latency_total1 = latency
+        self.latency_total = latency
         self.energy_total = energy
 
 

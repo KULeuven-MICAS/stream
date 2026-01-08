@@ -109,6 +109,7 @@ class AIECodeGenerationStage(Stage):
         dest_op = next(workload.successors(next(workload.successors(transfer))), None)
         is_output = transfer.tensor.origin.output_operand == transfer.tensor.operand
         if isinstance(dest_op, SteadyStateComputation) and is_output:
+            dest_op_ssis = [copy(x) for x in dest_op.steady_state_iteration_space.variables if not x.spatial]
             current_operands = transfer.tensor.loop_dimensions
             next_layer_operand = next(
                 key for key, val in dest_op.input_operand_source.items() if val == transfer.tensor.origin.id
@@ -122,7 +123,27 @@ class AIECodeGenerationStage(Stage):
                     assert not copyed_ssis_var.relevant
                 else:
                     copyed_ssis_var.dimension = operand_mapping[ssis_var.dimension]
+                    # fill up with destination ssis, overlapping with the ssis of the destination op:
+                    while (
+                        not copyed_ssis_var.spatial
+                        and len(dest_op_ssis) > 0
+                        and dest_op_ssis[0].dimension != copyed_ssis_var.dimension
+                    ):
+                        irrelevant_dim = dest_op_ssis.pop(0)
+                        irrelevant_dim.relevant = False
+                        dest_ssis_vars.append(irrelevant_dim)
+                    if not copyed_ssis_var.spatial:
+                        if not (
+                            dest_op_ssis[0].dimension == copyed_ssis_var.dimension
+                            and dest_op_ssis[0].size == copyed_ssis_var.size
+                        ):
+                            raise RuntimeError("hmmm, this doesn't seem right")
+                        dest_op_ssis.pop(0)
                     dest_ssis_vars.append(copyed_ssis_var)
+
+            for remaining_irrelevant_var in dest_op_ssis:
+                remaining_irrelevant_var.relevant = False
+                dest_ssis_vars.append(remaining_irrelevant_var)
             dest_ssis = SteadyStateIterationSpace(dest_ssis_vars)
         else:
             dest_ssis = transfer.steady_state_iteration_space
