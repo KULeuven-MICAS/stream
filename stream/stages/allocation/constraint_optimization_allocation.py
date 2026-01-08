@@ -556,7 +556,8 @@ class ConstraintOptimizationAllocationStage(Stage):
             # Get the original node from the workload
             node = next(n for n in self.workload.node_list if n.id == n_id and n.sub_id == n_sub_id)
             # If there is a strided convolution (stride > 1), we need to adjust the multiplicity accordingly
-            if node.pr_scaling_factors and any(factor > 1 for factor in node.pr_scaling_factors.values()):
+            factors = [entry[1] for rhs in node.pr_scaling_factors.values() for entry in rhs]
+            if factors and any(factor > 1 for factor in factors):
                 multiplicity = layer_id_to_nb_nodes[n_id] // len(layer_id_to_cores[n_id])
             else:
                 multiplicity = 1
