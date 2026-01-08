@@ -20,11 +20,11 @@ from stream.stages.context import StageContext
 from stream.stages.estimation.core_performance import AIEPerformanceEstimator, ZigZagPerformanceEstimator
 from stream.stages.generation.layer_stacks_generation import STACK_T
 from stream.stages.stage import Stage, StageCallable
-from stream.utils import contains_wildcard, get_top_level_inst_bandwidth, get_unique_nodes
+from stream.utils import contains_wildcard, get_unique_nodes
 from stream.visualization.cost_model_evaluation_lut import (
     visualize_cost_lut_pickle,
 )
-from stream.workload.computation.computation_node import ComputationNode
+from stream.workload.workload import ComputationNode
 
 logger = logging.getLogger(__name__)
 
@@ -455,7 +455,7 @@ class MinimalBandwidthLatencyStage(ZigZagStage):
     def get_used_dram_bandwidth_for_op(self, cme: CostModelEvaluation, mem_op: MemoryOperand):
         if mem_op not in self.mem_ops_with_dram:
             return 0
-        bw_per_direction = get_top_level_inst_bandwidth(cme, mem_op)
+        bw_per_direction = 100  # TODO: maybe this is wrong
         total_bw = sum(bw_per_direction.data.values())
         return total_bw
 

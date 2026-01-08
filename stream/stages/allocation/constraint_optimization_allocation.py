@@ -19,12 +19,9 @@ from stream.opt.allocation.constraint_optimization.utils import calculate_total_
 from stream.stages.context import StageContext
 from stream.stages.generation.layer_stacks_generation import STACK_T
 from stream.stages.stage import Stage, StageCallable
-from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.dnn_workload import DNNWorkloadStream
-from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
-from stream.workload.onnx_workload import ComputationNodeWorkload
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.utils import get_real_predecessors, get_real_successors
+from stream.workload.workload import ComputationNode, Workload
 
 logger = logging.getLogger(__name__)
 
@@ -71,9 +68,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
         self.cost_lut = self.ctx.require_value("cost_lut", self.__class__.__name__)
         self.layer_stacks = self.ctx.require_value("layer_stacks", self.__class__.__name__)
-        self.original_workload: ComputationNodeWorkload = self.ctx.require_value(
-            "original_workload", self.__class__.__name__
-        )
+        self.original_workload: Workload = self.ctx.require_value("original_workload", self.__class__.__name__)
         self.mode = self.ctx.get("mode", "fused")  # assume default is fused
 
         config = self.ctx.get("constraint_opt_config")
@@ -284,7 +279,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         return tsa, already_computed
 
     def sort_like_steady_state(
-        self, subgraph: ComputationNodeWorkload, optimal_allocation: TimeSlotAllocation, node_type: NodeType
+        self, subgraph: Workload, optimal_allocation: TimeSlotAllocation, node_type: NodeType
     ) -> list[ComputationNode]:
         """
         Sort the nodes in the subgraph like they are sorted in the steady state allocation.
@@ -342,7 +337,7 @@ class ConstraintOptimizationAllocationStage(Stage):
 
         self._log_steady_state_statistics()
 
-    def _get_sink_node_groups(self, sg: ComputationNodeWorkload) -> list[tuple[ComputationNode, ...]]:
+    def _get_sink_node_groups(self, sg: Workload) -> list[tuple[ComputationNode, ...]]:
         sink_nodes = sorted(
             n
             for n in sg.nodes()
@@ -378,7 +373,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         self,
         stack: STACK_T,
         grouped_sink_nodes: list[tuple[ComputationNode, ...]],
-        sg: ComputationNodeWorkload,
+        sg: Workload,
     ) -> None:
         computed: set[ComputationNode] = set()
         to_compute_sets: dict[int, set[ComputationNode]] = {}
@@ -604,7 +599,7 @@ class ConstraintOptimizationAllocationStage(Stage):
     def get_nb_nodes_for_layer(self, layer_id: int):
         return len(list(n for n in self.workload.node_list if n.id == layer_id))
 
-    def get_computation_nodes(self, stack: tuple[int, ...], workload: DNNWorkloadStream) -> list[ComputationNode]:
+    def get_computation_nodes(self, stack: tuple[int, ...], workload) -> list[ComputationNode]:
         nodes = [n for n in workload.node_list if n.id in stack]
         computation_nodes = [n for n in nodes if isinstance(n, ComputationNode)]
         return computation_nodes
@@ -612,9 +607,7 @@ class ConstraintOptimizationAllocationStage(Stage):
     def get_order_non_steady_state(self, to_compute: set[ComputationNode]):
         return [(n.id, n.sub_id) for n in sorted(to_compute, key=lambda x: (-x.id, -x.sub_id))]
 
-    def update_inter_core_mapping(
-        self, unpartitioned_sub_workload: ComputationNodeWorkload, allocation: TimeSlotAllocation
-    ):
+    def update_inter_core_mapping(self, unpartitioned_sub_workload: Workload, allocation: TimeSlotAllocation):
         for node in unpartitioned_sub_workload.node_list:
             nb_cores = len(allocation.get_resources_for_node_id(node.id))
             # Set correct inter core tiling. Replacing the wildcard will signal to the TiledWorkloadGenerationStage
@@ -629,7 +622,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             )
 
     def add_core_ids_for_layers_not_in_steady_state(
-        self, layer_ids: list[int], core_ids: list[list[int]], sub_workload: ComputationNodeWorkload
+        self, layer_ids: list[int], core_ids: list[list[int]], sub_workload: Workload
     ) -> tuple[list[int], list[list[int]]]:
         """Find any layers that might not have been in the steady state allocation and need to be allocated manually
         The nodes of these layers will be allocated across all possible cores in their defined inter core tiling
@@ -651,13 +644,13 @@ class ConstraintOptimizationAllocationStage(Stage):
 
         return layer_ids, core_ids
 
-    def set_fixed_allocations_for_workload(self, workload: ComputationNodeWorkload, allocation: TimeSlotAllocation):
+    def set_fixed_allocations_for_workload(self, workload: Workload, allocation: TimeSlotAllocation):
         """! Modify the workload to fix the core allocations to the given core_ids for the given layer_ids."""
         for n in workload.node_list:
             cores = allocation.get_resources_for_node_id(n.id)
             n.possible_core_allocation = list(core.id for core in cores)  # type: ignore
 
-    def replace_wildcard_in_tiling(self, tiling: TILING_WILDCARD_T | TILING_T, nb_cores_split: int):
+    def replace_wildcard_in_tiling(self, tiling, nb_cores_split: int):
         """The user can define a wildcard `*` in the inter core tiling, meaning that the value found by the CO
         must be used instead.
         """
@@ -665,7 +658,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             raise ValueError("Only 1 partition dimension should be defined in inter core tiling")
         assert len(tiling) == 1, "No inter core tiling found"
 
-        tiling_replaced: TILING_T = []
+        tiling_replaced = []
         for layer_dim, split_factor in tiling:
             if split_factor == "*":
                 split_factor_new = nb_cores_split

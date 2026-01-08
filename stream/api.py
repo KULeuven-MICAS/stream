@@ -11,14 +11,16 @@ from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.context import StageContext
-from stream.stages.estimation.zigzag_core_mapping_estimation import CoreCostEstimationStage
-from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
-from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
-from stream.stages.generation.tiled_workload_generation import TiledWorkloadGenerationStage
-from stream.stages.generation.tiling_generation import TilingGenerationStage
+# from stream.stages.estimation.zigzag_core_mapping_estimation import CoreCostEstimationStage
+# from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
+# from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
+
+# from stream.stages.generation.tiled_workload_generation import TiledWorkloadGenerationStage
+# from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
-from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
+
+# from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 from stream.stages.stage import MainStage, StageCallable
 
 _logging_level = _logging.INFO
@@ -112,12 +114,12 @@ def optimize_allocation_ga(  # noqa: PLR0913
             [  # Initializes the MainStage as entry point
                 AcceleratorParserStage,  # Parses the accelerator
                 StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-                LayerStacksGenerationStage,
-                TilingGenerationStage,
-                TiledWorkloadGenerationStage,
-                CoreCostEstimationStage,
-                SetFixedAllocationPerformanceStage,
-                SchedulingOrderGenerationStage,
+                # LayerStacksGenerationStage,
+                # TilingGenerationStage,
+                # TiledWorkloadGenerationStage,
+                # CoreCostEstimationStage,
+                # SetFixedAllocationPerformanceStage,
+                # SchedulingOrderGenerationStage,
                 GeneticAlgorithmAllocationStage,
             ],
             ctx,
@@ -179,14 +181,14 @@ def optimize_allocation_co(  # noqa: PLR0913
         stages: list[StageCallable] = [  # Initializes the MainStage as entry point
             AcceleratorParserStage,  # Parses the accelerator
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-            LayerStacksGenerationStage,
-            # Infer unique dimensions using linear algebra
-            TilingGenerationStage,  # Set using new unique dimensions
-            # SteadyStateWorkloadGenerationStage
-            TiledWorkloadGenerationStage,  # remove
-            CoreCostEstimationStage,
-            SetFixedAllocationPerformanceStage,
-            SchedulingOrderGenerationStage,  # remove?
+            # LayerStacksGenerationStage,
+            # # Infer unique dimensions using linear algebra
+            # TilingGenerationStage,  # Set using new unique dimensions
+            # # SteadyStateWorkloadGenerationStage
+            # # TiledWorkloadGenerationStage,  # remove
+            # CoreCostEstimationStage,
+            # SetFixedAllocationPerformanceStage,
+            # SchedulingOrderGenerationStage,  # remove?
             ConstraintOptimizationAllocationStage,  # revamp to already use steady state workload
             # Add separate TETRA stage
         ]

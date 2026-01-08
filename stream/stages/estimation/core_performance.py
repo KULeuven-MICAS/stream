@@ -5,7 +5,7 @@ from typing import Any, Protocol
 
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
-from stream.workload.computation.computation_node import ComputationNode
+from stream.workload.workload import ComputationNode
 
 
 class CorePerformanceEstimator(Protocol):

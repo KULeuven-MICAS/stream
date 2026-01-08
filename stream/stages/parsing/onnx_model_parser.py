@@ -24,7 +24,7 @@ class ONNXModelParserStage(Stage):
 
     def run(self):
         all_mappings = self.mapping_parser.run()
-        onnx_model_parser = ONNXModelParser(self.workload_path, all_mappings, self.accelerator)
+        onnx_model_parser = ONNXModelParser(self.workload_path)
         onnx_model_parser.run()
         onnx_model = onnx_model_parser.onnx_model
         workload = onnx_model_parser.workload

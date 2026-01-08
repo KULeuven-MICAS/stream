@@ -6,11 +6,8 @@ from zigzag.hardware.architecture.memory_instance import MemoryInstance
 from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.utils import DiGraphWrapper
 
-from stream.cost_model.communication_manager import CommunicationManager
-from stream.cost_model.memory_manager import MemoryManager
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.tensor import SubviewTensor
 
 
@@ -37,8 +34,6 @@ class Accelerator:
         self.cores = cores
         self.offchip_core_id = offchip_core_id
         self.nb_shared_mem_groups = nb_shared_mem_groups
-        self.memory_manager = MemoryManager(self)
-        self.communication_manager = CommunicationManager(self)
 
     def get_core(self, core_id: int) -> Core:
         """s
@@ -51,23 +46,6 @@ class Accelerator:
         """Return the offchip core."""
         assert self.offchip_core_id, "This accelerator has no offchip core id."
         return self.get_core(self.offchip_core_id)
-
-    def get_top_instances_of_core(self, core: int | Core) -> list[MemoryInstance]:
-        if isinstance(core, int):
-            core = self.get_core(core)
-        top_instances = self.memory_manager.top_instances_per_core[core]
-        return top_instances
-
-    def get_top_instance_of_core(self, core: Core | int, mem_op: MemoryOperand) -> MemoryInstance:
-        if isinstance(core, int):
-            core = self.get_core(core)
-        top_instances = self.memory_manager.top_instances_per_core[core]
-        for instance in top_instances:
-            core_idx = self.memory_manager.cores_per_top_instance[instance].index(core)
-            instance_mem_ops = self.memory_manager.memory_operands_per_top_instance[instance][core_idx]
-            if mem_op in instance_mem_ops:
-                return instance
-        raise ValueError(f"No top instance for {core} with memory operand {mem_op}.")
 
     def get_spatial_mapping_from_core(self, core_allocation: list[int]) -> SpatialMapping:
         """Iff the dataflows of all given cores is the same, return that dataflow. Otherwise, throw an error"""
@@ -106,187 +84,6 @@ class Accelerator:
             )
         )
         return top_memory_instance_a is top_memory_instance_b
-
-    def get_storing_memory_instance_and_timestep(self, tensor: SubviewTensor, suggested_core: Core | None):
-        """Get the top instance storing the given tensor, and the timestep since which it was available.
-        If a core id is provided, we get the instance of that core. Else, we find the instance where the tensor has
-        been stored the longest.
-
-        Args:
-            tensor: The tensor to find the storing instance for.
-            suggested_core_id: The core id to suggest for the storing instance.
-        """
-        if suggested_core is not None:
-            storing_instance = self.get_top_instance_of_core(suggested_core, tensor.memory_operand)
-            assert self.contains_tensor(tensor, storing_instance)
-            available_since_timestep = self.memory_manager.top_instance_available_since_timestep[storing_instance][
-                tensor.equality_hash
-            ]
-        else:
-            (_, available_since_timesteps) = self.find_tensor_in_top_instances(tensor)
-            # Pick the core that has stored the tensor the longest
-            available_since_timestep = min(available_since_timesteps.values())
-            storing_instance = next(
-                top_instance
-                for (top_instance, timestep) in available_since_timesteps.items()
-                if timestep == available_since_timestep
-            )
-
-        return storing_instance, available_since_timestep
-
-    def get_available_timestep(self, tensor: SubviewTensor, suggested_core: Core | None):
-        _, available_since_timestep = self.get_storing_memory_instance_and_timestep(tensor, suggested_core)
-        return available_since_timestep
-
-    def get_storing_memory_instance(self, tensor: SubviewTensor, suggested_core: Core | None):
-        storing_instance, _ = self.get_storing_memory_instance_and_timestep(tensor, suggested_core)
-        return storing_instance
-
-    def get_storing_cores(self, tensor: SubviewTensor, suggested_core: Core | None):
-        storing_instance, _ = self.get_storing_memory_instance_and_timestep(tensor, suggested_core)
-        storing_cores = self.memory_manager.cores_per_top_instance[storing_instance]
-        return storing_cores
-
-    def get_tensors_stored_in_core(self, core: Core, memory_operand: MemoryOperand, timestep: int):
-        top_instance = self.get_top_instance_of_core(core, memory_operand)
-        tensors = self.memory_manager.get_tensors_stored_at_timestep(top_instance, timestep)
-        return tensors
-
-    def core_contains_tensor(self, tensor: SubviewTensor, core: int | Core):
-        memory_op = tensor.memory_operand
-        top_instance = self.get_top_instance_of_core(core, memory_op)
-        assert isinstance(top_instance, MemoryInstance)
-        return self.memory_manager.contains(tensor, top_instance)
-
-    def contains_tensor(self, tensor: SubviewTensor, top_instance: int | MemoryInstance):
-        if isinstance(top_instance, int):  # assume core id
-            return self.core_contains_tensor(tensor, top_instance)
-        assert isinstance(top_instance, MemoryInstance)
-        return self.memory_manager.contains(tensor, top_instance)
-
-    def find_tensor(self, tensor: SubviewTensor):
-        return self.memory_manager.find_tensor(tensor)
-
-    def find_tensor_in_top_instances(self, tensor: SubviewTensor):
-        return self.memory_manager.find_tensor_in_top_instances(tensor)
-
-    def find_best_tensor_combination_to_evict_fast(
-        self, tensor: SubviewTensor, core: Core, timestep: int, exceptions: list[SubviewTensor] | None = None
-    ):
-        if exceptions is None:
-            exceptions = []
-        top_instance = self.get_top_instance_of_core(core, tensor.memory_operand)
-        tensors_to_evict = self.memory_manager.find_best_tensor_combination_to_evict_fast(
-            top_instance=top_instance,
-            tensor_to_add=tensor,
-            timestep=timestep,
-            exceptions=exceptions,
-        )
-        return tensors_to_evict
-
-    def remove_tensor(
-        self,
-        tensor: SubviewTensor,
-        core: Core,
-        memory_op: MemoryOperand,
-        timestep: int,
-    ):
-        """Remove the tensor from the memory manager's attributes"""
-        top_instance = self.get_top_instance_of_core(core, memory_op)
-        self.memory_manager.remove_tensor_from_top_instance(
-            top_instance,
-            tensor,
-            timestep,
-        )
-
-    def spawn(
-        self,
-        tensor: SubviewTensor,
-        core: Core,
-        memory_op: MemoryOperand,
-        initial_timestep: int,
-        available_timestep: int,
-    ):
-        """Spawns a tensor on a core.
-
-        Args:
-            tensor: The tensor to be spawned.
-            core: The core on which to spawn the tensor.
-            memory_op: The memory operand on the core where the tensor will spawn.
-            initial_timestep: The timestep at which space will be reserved for the tensor.
-            available_timestep: The timestep at which the tensor will become available. Different from
-            initial_timestep when it is transferred.
-        """
-        self.memory_manager.add_tensor(tensor, core, initial_timestep, available_timestep, memory_op)
-
-    def fix_memory_usage_and_nb_stored_tensors(self, core: Core, start_timestep: int, end_timestep: int):
-        """Fix the memory usage and number of stored tensors for a given timestep.
-
-        Args:
-            start_timestep (int): The start timestep.
-            end_timestep (int): The end timestep.
-        """
-        self.memory_manager.fix_memory_usage_and_nb_stored_tensors(core, start_timestep, end_timestep)
-
-    def remove(
-        self,
-        tensor: SubviewTensor,
-        core: Core,
-        memory_op: MemoryOperand,
-        timestep: int,
-        write_back_to_offchip: bool = False,
-    ):
-        """Remove tensor from core. If required, transfer to offchip before removal.
-
-        Args:
-            tensor (SubviewTensor): The tensor to remove.
-            core (Core): The Core to remove the tensor from.
-            memory_op (str): The memory operand of the tensor.
-            timestep (int): The timestep to remove the tensor at.
-            write_back_to_offchip (bool, optional): Write the tensor to offchip before removal. Defaults to False.
-        """
-        assert self.offchip_core_id is not None
-        ################################# STEP 1 #################################
-        # Transfer the tensor to off-chip if required and not present there
-        link_energy_cost = 0
-        memory_energy_cost = 0
-        offchip_instance = self.get_top_instance_of_core(self.offchip_core_id, memory_op)
-        should_be_written_to_offchip = write_back_to_offchip and not self.contains_tensor(tensor, offchip_instance)
-        current_timestep = timestep
-        if should_be_written_to_offchip:
-            assert self.offchip_core_id is not None
-            (
-                transfer_end,
-                transfer_link_energy_cost,
-                transfer_memory_energy_cost,
-                eviction_link_energy_cost,
-                eviction_memory_energy_cost,
-                came_from_offchip,
-            ) = self.transfer_tensor_to_core(
-                tensor,
-                self.offchip_core_id,
-                memory_op,
-                non_evictable_tensors=[],
-                sending_core_id=core.id,
-            )
-            # There should be no evictions as we are writing to offchip
-            assert eviction_link_energy_cost == 0
-            assert eviction_memory_energy_cost == 0
-            assert not came_from_offchip
-            link_energy_cost = transfer_link_energy_cost
-            memory_energy_cost = transfer_memory_energy_cost
-            current_timestep = max(current_timestep, transfer_end)
-
-        ################################# STEP 2 #################################
-        # Remove the tensor from the memory manager's attributes
-        top_instance = self.get_top_instance_of_core(core, memory_op)
-        self.memory_manager.remove_tensor_from_top_instance(
-            top_instance,
-            tensor,
-            timestep,
-        )
-
-        return current_timestep, link_energy_cost, memory_energy_cost
 
     def remove_all(
         self,
@@ -588,16 +385,6 @@ class Accelerator:
         )
 
         return sender_energy + receiver_energy
-
-    def block_offchip_links(
-        self,
-        too_large_operands: list[MemoryOperand],
-        core_id: int,
-        start_timestep: int,
-        duration: int,
-        cn: ComputationNode,
-    ) -> int:
-        return self.communication_manager.block_offchip_links(too_large_operands, core_id, start_timestep, duration, cn)
 
     @property
     def core_list(self) -> list[Core]:

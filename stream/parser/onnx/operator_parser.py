@@ -1,43 +1,41 @@
 from abc import ABCMeta, abstractmethod
 from collections.abc import Generator
+from os import name
 from typing import Any
 
 from onnx import ModelProto, NodeProto
 from zigzag.datatypes import Constants
 from zigzag.parser.onnx.onnx_operator_parser import ONNXOperatorParser as ONNXOperatorParserZigZag
-from zigzag.parser.onnx.utils import get_attribute_ints_with_name, get_node_input_output_dimension_shapes
+from zigzag.parser.onnx.utils import (
+    get_attribute_ints_with_name,
+    get_node_input_output_dimension_shapes,
+    get_onnx_tensor_type,
+)
 from zigzag.parser.workload_factory import LayerNodeFactory
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.onnx_utils import get_axis_attribute
-from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.mapping import InterCoreMappingAttributes
-from stream.workload.node import Node
+from stream.parser.onnx.utils import onnx_tensor_to_tensor
+from stream.workload.workload import ComputationNode, HasOutput, Node, Tensor
 
 
 class OnnxOperatorParser(ONNXOperatorParserZigZag, metaclass=ABCMeta):
     def __init__(
         self,
-        node_id: int,
         node: NodeProto,
         nodes_outputs: dict[int, Any],
         onnx_model: ModelProto,
-        all_mappings: dict[str, InterCoreMappingAttributes],
-        accelerator: Accelerator,
     ) -> None:
         """'overloads' the ONNXOperatorParserZigZag init method with the correct `accelerator` type"""
-        self.node_id = node_id
         self.node = node
         self.nodes_outputs = nodes_outputs
         self.onnx_model = onnx_model
-        self.all_mappings = all_mappings
-        self.accelerator = accelerator
 
-    def run(self) -> Generator[Node, None, None]:  # type: ignore
-        yield self.generate_node()
+    def run(self, name_to_node_dict: dict[str, HasOutput]) -> Generator[Node, None, None]:  # type: ignore
+        yield self.generate_node(name_to_node_dict)
 
     @abstractmethod
-    def generate_node(self) -> Node: ...
+    def generate_node(self, name_to_node_dict: dict[str, HasOutput]) -> Node: ...
 
     def get_operand_source_input_format(self):
         predecessors = self.get_node_predecessors()
@@ -60,8 +58,8 @@ class OnnxOperatorParser(ONNXOperatorParserZigZag, metaclass=ABCMeta):
 
 
 class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
-    def run(self) -> Generator[ComputationNode, None, None]:
-        yield self.generate_node()
+    def run(self, name_to_node_dict) -> Generator[Node, None, None]:
+        yield self.generate_node(name_to_node_dict)
 
     def get_output_activation_precision(self):
         """Return the output activation precision for this node.
@@ -74,11 +72,6 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
             )
         except NotImplementedError as exc:
             raise ValueError("Custom activation size attribute must be an integer.") from exc
-
-    @abstractmethod
-    def get_layer_node_user_format(
-        self, input_shape: list[int], output_shape: list[int], mapping: InterCoreMappingAttributes | None
-    ) -> dict[str, Any]: ...
 
     def get_operand_precision_user_format(self) -> dict[str, int]:
         act_precision: int = self.get_activation_precision()
@@ -143,29 +136,8 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
 
         return mapping
 
-    def generate_node(self):
+    def get_output_tensor(self) -> Tensor:
         # Get the input and output activation shapes
-        input_shape, output_shape = get_node_input_output_dimension_shapes(self.node, self.onnx_model)
-
-        # From the ONNX node
-        mapping = self.get_mapping_this_node()
-        node_data = self.get_layer_node_user_format(input_shape, output_shape, mapping)
-        node_factory = LayerNodeFactory(node_data, mapping_data=[])
-        node_attrs = node_factory.create_node_attr()
-        input_names = list(self.node.input)
-
-        # ! Messy patchwork for KV caches. Assumes that operators that take in the cache have a special name
-        if "_cache" in self.node.name:
-            partially_constant_operands = [Constants.LAYER_OP_W]
-        else:
-            partially_constant_operands = []
-
-        return ComputationNode(
-            node_id=self.node_id,
-            node_name=self.node.name,
-            op_type=self.node.op_type,
-            node_attr=node_attrs,
-            mapping_attr=mapping,
-            input_names=input_names,
-            partially_constant_operands=partially_constant_operands,
-        )
+        assert len(self.node.output) == 1
+        onnx_tensor = get_onnx_tensor_type(self.node.output[0], self.onnx_model)
+        return onnx_tensor_to_tensor(onnx_tensor)

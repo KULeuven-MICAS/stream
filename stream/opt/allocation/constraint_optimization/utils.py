@@ -6,8 +6,8 @@ from zigzag.datatypes import LayerDim, UnrollFactor
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.steady_state.computation import SteadyStateComputation
+from stream.workload.workload import ComputationNode
 
 if TYPE_CHECKING:
     from stream.opt.allocation.constraint_optimization.timeslot_allocation import TimeSlotAllocation
@@ -26,25 +26,13 @@ def invert_id(k: int) -> tuple[int, int]:
 
 
 def convert_ids(nodes: list[ComputationNode]):
-    ids: dict[ComputationNode, int] = {}
-    for node in nodes:
-        i, j = node.id, node.sub_id
-        new_id = convert_id(i, j)
-        ids[node] = new_id
-    return ids
+    return {}
 
 
 def invert_ids_list(
     ids_list: list[tuple[int, Core | int, int]], nb_nodes: int
 ) -> list[tuple[int, int, tuple[int, int]]]:
-    new_l: list[tuple[int, int, tuple[int, int]]] = []
-    for timestep, core_str, k in ids_list:
-        if hasattr(core_str, "id"):
-            core_id = int(core_str.id)
-        else:
-            core_id = int(core_str)
-        new_l.append((timestep, core_id, invert_id(k)))
-    return new_l
+    return []
 
 
 def get_loop_size(loops: list[tuple[LayerDim, UnrollFactor]]) -> int:

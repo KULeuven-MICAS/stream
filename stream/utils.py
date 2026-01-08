@@ -10,14 +10,11 @@ from zigzag.datatypes import MemoryOperand
 from zigzag.mapping.data_movement import FourWayDataMoving
 
 from stream.cost_model.core_cost import CoreCostEntry
-from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
-    from stream.workload.computation.computation_node import ComputationNode
-    from stream.workload.onnx_workload import ComputationNodeWorkload
 
 ARRAY_T: TypeAlias = NDArray[Any]
 
@@ -104,24 +101,13 @@ def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNo
     return unique_nodes
 
 
-def get_top_level_inst_bandwidth(
-    cme: CoreCostEntry | CostModelEvaluation, mem_op: MemoryOperand, scaling: float = 1
-) -> FourWayDataMoving[int]:
-    """Given a cost model evaluation and a memory instance, compute the memory's total instantaneous bandwidth.
-    Falls back to zero bandwidth if not available."""
-    if hasattr(cme, "get_inst_bandwidth") and hasattr(cme, "accelerator"):
-        memory_level = cme.accelerator.get_memory_level(mem_op, -1)
-        return cme.get_inst_bandwidth(memory_level=memory_level, memory_operand=mem_op, scaling=scaling)
-    return FourWayDataMoving({})  # type: ignore[arg-type]
-
-
-def contains_wildcard(tiling: TILING_T | TILING_WILDCARD_T) -> bool:
+def contains_wildcard(tiling) -> bool:
     """Returns wether the given tiling contains a wildcard number `*`. The wildcard must later be replaced by the
     constraint optimization into the optimal number of tiles"""
     return any(tiling == "*" for _, tiling in tiling)
 
 
-def return_tiling_type(tiling: TILING_T | TILING_WILDCARD_T) -> TILING_T:
+def return_tiling_type(tiling):
     if contains_wildcard(tiling):
         raise ValueError(
             "Tiling contains wildcard. Use `replace_wildcard_tiling` to replace the wildcard with a number of tiles."
@@ -129,7 +115,7 @@ def return_tiling_type(tiling: TILING_T | TILING_WILDCARD_T) -> TILING_T:
     return tiling  # type: ignore
 
 
-def get_inter_core_tiling_size(node: "ComputationNode") -> int:
+def get_inter_core_tiling_size(node) -> int:
     inter_core_tiling = node.inter_core_tiling
     if inter_core_tiling and not contains_wildcard(inter_core_tiling):
         total_tiling_size = 1

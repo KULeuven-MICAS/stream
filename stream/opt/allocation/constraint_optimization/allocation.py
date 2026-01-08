@@ -34,7 +34,7 @@ from stream.opt.allocation.constraint_optimization.utils import (
     get_latencies,
     invert_ids_list,
 )
-from stream.workload.onnx_workload import ComputationNodeWorkload
+from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ class ComputeAllocator:
     # ------------------------------------------------------------------ #
     def __init__(
         self,
-        workload: ComputationNodeWorkload,
+        workload: Workload,
         accelerator: Accelerator,
         cost_lut: CoreCostLUT,
         context: ConstraintContext,
@@ -465,7 +465,7 @@ class ComputeAllocator:
 # Functional façade                                                           #
 # --------------------------------------------------------------------------- #
 def get_optimal_allocations(
-    workload: ComputationNodeWorkload,
+    workload: Workload,
     accelerator: Accelerator,
     cost_lut: CoreCostLUT,
     *,

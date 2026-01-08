@@ -13,15 +13,14 @@ from zigzag.mapping.spatial_mapping import (
 
 from stream.compiler.kernels import AIEKernels
 from stream.compiler.kernels.aie_kernel import AIEKernel
-from stream.workload.mapping import TILING_T, TILING_WILDCARD_T, InterCoreMappingAttributes
 
 
 class MappingFactory:
     def __init__(self, mapping_data: list[dict[str, Any]]):
         self.all_mapping_data = mapping_data
 
-    def create(self) -> dict[str, InterCoreMappingAttributes]:  # type: ignore
-        all_mappings: dict[str, InterCoreMappingAttributes] = {}
+    def create(self) -> dict[str, Any]:  # type: ignore
+        all_mappings: dict[str, Any] = {}
 
         for mapping_data in self.all_mapping_data:
             op_type = mapping_data["name"]
@@ -31,16 +30,16 @@ class MappingFactory:
             inter_core_tiling = self.create_inter_core_tiling(mapping_data)
             intra_core_tiling = self.create_intra_core_tiling(mapping_data)
             kernel = self.create_kernel(mapping_data)
-            mapping = InterCoreMappingAttributes(
-                op_type=op_type,
-                spatial_mapping=spatial_mapping,
-                core_allocation=core_allocation,
-                inter_core_tiling=inter_core_tiling,
-                intra_core_tiling=intra_core_tiling,
-                layer_dimension_names=layer_dimension_names,
-                kernel=kernel,
-            )
-            all_mappings[op_type] = mapping
+            # mapping = InterCoreMappingAttributes(
+            #    op_type=op_type,
+            #    spatial_mapping=spatial_mapping,
+            #    core_allocation=core_allocation,
+            #    inter_core_tiling=inter_core_tiling,
+            #    intra_core_tiling=intra_core_tiling,
+            #    layer_dimension_names=layer_dimension_names,
+            #    kernel=kernel,
+            # )
+            all_mappings[op_type] = None  # mapping
         return all_mappings
 
     def kernel_args_match_kernel_signature(self, kernel, kwargs):
@@ -83,10 +82,10 @@ class MappingFactory:
 
         return MappingSingleOADim(mapping_dict)
 
-    def create_inter_core_tiling(self, mapping_data: dict[str, Any]) -> TILING_WILDCARD_T:
+    def create_inter_core_tiling(self, mapping_data: dict[str, Any]) -> Any:
         return [self.__convert_layer_dim_int_pair(pair) for pair in mapping_data["inter_core_tiling"]]
 
-    def create_intra_core_tiling(self, mapping_data: dict[str, Any]) -> TILING_T:
+    def create_intra_core_tiling(self, mapping_data: dict[str, Any]) -> Any:
         return [self.__convert_layer_dim_int_pair(pair) for pair in mapping_data["intra_core_tiling"]]  # type: ignore
 
     def __convert_layer_dim_int_pair(self, pair: str):

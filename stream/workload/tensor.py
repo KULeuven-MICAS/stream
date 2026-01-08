@@ -12,8 +12,6 @@ if TYPE_CHECKING:
 
     from stream.cost_model.memory_manager import MemoryManager
     from stream.hardware.architecture.accelerator import Accelerator
-    from stream.workload.computation.computation_node import LOOP_RANGES_T, ComputationNode
-    from stream.workload.onnx_workload import ComputationNodeWorkload
 
 TensorHash: TypeAlias = int
 

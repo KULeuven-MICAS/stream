@@ -5,15 +5,14 @@ from zigzag.utils import pickle_deepcopy
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.utils import get_too_large_operands, get_top_level_inst_bandwidth
-from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.onnx_workload import ComputationNodeWorkload
+from stream.utils import get_too_large_operands
+from stream.workload.workload import ComputationNode, Workload
 
 
 class FitnessEvaluator:
     def __init__(
         self,
-        workload: ComputationNodeWorkload,
+        workload: Workload,
         accelerator: Accelerator,
         cost_lut: CoreCostLUT,
     ) -> None:
@@ -31,7 +30,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
 
     def __init__(
         self,
-        workload: ComputationNodeWorkload,
+        workload: Workload,
         accelerator: Accelerator,
         cost_lut: CoreCostLUT,
         layer_groups_flexible,
@@ -113,7 +112,7 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                 if too_large_operands and hasattr(cme, "ideal_temporal_cycle") and latency:
                     bandwidth_scaling = cme.ideal_temporal_cycle / latency
                     offchip_bandwidth_per_op = {
-                        mem_op: get_top_level_inst_bandwidth(cme, mem_op, bandwidth_scaling)
+                        mem_op: 3  # get_top_level_inst_bandwidth(cme, mem_op, bandwidth_scaling)
                         for mem_op in too_large_operands
                     }
                 node.set_onchip_energy(onchip_energy)

@@ -19,12 +19,8 @@ from stream.opt.partitioning.utils import convert_outer_cn_loops
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.utils import contains_wildcard, get_inter_core_tiling_size
-from stream.workload.computation.computation_node import LOOP_RANGES_T, ComputationNode, GeneratedComputationNode
-from stream.workload.dependency_propagation.dummy_node import DummyNode
-from stream.workload.dependency_propagation.propagation_node import PropagationNode
-from stream.workload.node import Node
-from stream.workload.onnx_workload import ComputationNodeWorkload, ONNXWorkload
 from stream.workload.tensor import SubviewTensor
+from stream.workload.workload import ComputationNode
 
 logger = logging.getLogger(__name__)
 

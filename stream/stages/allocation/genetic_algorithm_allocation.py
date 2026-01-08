@@ -5,7 +5,7 @@ from stream.opt.allocation.genetic_algorithm.genetic_algorithm import GeneticAlg
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.utils import get_unique_nodes
-from stream.workload.computation.computation_node import ComputationNode
+from stream.workload.workload import ComputationNode
 
 logger = logging.getLogger(__name__)
 

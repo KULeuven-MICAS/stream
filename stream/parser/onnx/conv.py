@@ -9,8 +9,6 @@ from zigzag.parser.onnx.utils import (
 from zigzag.parser.workload_factory import LayerNodeFactory
 
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
-from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.mapping import InterCoreMappingAttributes
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +22,6 @@ class ConvParser(OnnxComputeOperatorParser):
         self,
         input_shape: list[int],
         output_shape: list[int],
-        mapping: InterCoreMappingAttributes | None = None,
     ) -> dict[str, Any]:
         """
         Generate the necessary dictionary items required for the LayerNode creation.

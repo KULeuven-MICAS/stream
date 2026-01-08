@@ -11,8 +11,6 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import TimeSlotAllocation
 from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
-from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.onnx_workload import ComputationNodeWorkload
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 from stream.workload.steady_state.node import SteadyStateNode
@@ -21,14 +19,15 @@ from stream.workload.steady_state.tensor import SteadyStateTensor, TensorFlag
 from stream.workload.steady_state.transfer import SteadyStateTransfer, TransferType
 from stream.workload.steady_state.workload import SteadyStateWorkload
 from stream.workload.utils import get_real_in_edges, get_real_out_edges
+from stream.workload.workload import ComputationNode, Workload
 
 
 class SteadyStateScheduler:
     def __init__(
         self,
-        workload: "ComputationNodeWorkload",
+        workload: Workload,
         accelerator: "Accelerator",
-        original_workload: "ComputationNodeWorkload",
+        original_workload: Workload,
         cost_lut: CoreCostLUT,
         iterations: int,
         nb_cols_to_use: int = 4,
@@ -123,7 +122,7 @@ class SteadyStateScheduler:
         ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_4.png"))
         return ssw
 
-    def get_workload_subgraph(self, allocation: "TimeSlotAllocation") -> ComputationNodeWorkload:
+    def get_workload_subgraph(self, allocation: "TimeSlotAllocation") -> Workload:
         """
         Get the subgraph of the workload that is relevant for the steady state allocation.
         This subgraph contains only the computation nodes that are part of the current fusion stack.
@@ -163,7 +162,7 @@ class SteadyStateScheduler:
     def add_computation_nodes(
         self,
         steady_state_workload: SteadyStateWorkload,
-        subgraph: ComputationNodeWorkload,
+        subgraph: Workload,
         allocation: "TimeSlotAllocation",
     ) -> SteadyStateWorkload:
         """
@@ -198,7 +197,7 @@ class SteadyStateScheduler:
                         steady_state_workload.add_edge(sscn, dst_sscn, **attrs)
         return steady_state_workload
 
-    def is_constant_input_op(self, op: LayerOperand, node: ComputationNode, subgraph: ComputationNodeWorkload):
+    def is_constant_input_op(self, op: LayerOperand, node: ComputationNode, subgraph: Workload):
         for _, _, data in subgraph.in_edges(node, data=True):
             edge_op = data.get("operand", None)
             if edge_op and edge_op == op:
@@ -206,7 +205,7 @@ class SteadyStateScheduler:
         return True
 
     def add_constant_tensor_nodes(
-        self, steady_state_workload: SteadyStateWorkload, subgraph: ComputationNodeWorkload
+        self, steady_state_workload: SteadyStateWorkload, subgraph: Workload
     ) -> SteadyStateWorkload:
         """
         Add the constant tensor nodes to the steady state workload.

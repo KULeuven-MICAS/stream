@@ -11,8 +11,7 @@ from math import prod
 from zigzag.datatypes import LayerDim, LayerOperand
 from zigzag.workload.layer_node import LoopRelevancyInfo
 
-from stream.workload.computation.computation_node import ComputationNode
-from stream.workload.mapping import TILING_T
+from stream.workload.workload import ComputationNode
 
 
 class ComputeTileReuse(Flag):
@@ -134,7 +133,7 @@ class SteadyStateIterationSpace:
         loop_relevancy: LoopRelevancyInfo,
         intra_core_tiling: Iterable[tuple[LayerDim, int]],
         operand: LayerOperand,
-        inter_core_tiling: TILING_T | None = None,
+        # inter_core_tiling: TILING_T | None = None,
     ) -> SteadyStateIterationSpace:
         """
         Build the SSIS for **one operand** of a computation node.
@@ -154,8 +153,8 @@ class SteadyStateIterationSpace:
             Ordered (innermost→outermost) tiling definition for inter-core tiling.
             Defaults to empty iterable. Is used for transfer nodes as innermost iteration variable.
         """
-        if inter_core_tiling is None:
-            inter_core_tiling = []
+        # if inter_core_tiling is None:
+        #     inter_core_tiling = []
         # collect all R  +  PR descendants
         relevant_dims = set(loop_relevancy.get_r_or_pr_layer_dims(operand))
         # add PR loops
@@ -164,9 +163,9 @@ class SteadyStateIterationSpace:
 
         # Spatial inter_core_tiling loop variables
         variables: list[IterationVariable] = []
-        for dim, size in inter_core_tiling:
-            is_rel = dim in relevant_dims
-            variables.append(IterationVariable(dim, size, is_rel, spatial=True))
+        # for dim, size in inter_core_tiling:
+        #     is_rel = dim in relevant_dims
+        #     variables.append(IterationVariable(dim, size, is_rel, spatial=True))
 
         # Temporal intra_core_tiling loop variables
         seen_ir = False
@@ -184,19 +183,20 @@ class SteadyStateIterationSpace:
 
     @classmethod
     def from_computation_node(cls, *, node: ComputationNode, multiplicity: int = 1) -> SteadyStateIterationSpace:
+        # TODO: update
         # Temporal intra_core_tiling loop variables only
         variables: list[IterationVariable] = []
-        intra_core_tiling = node.intra_core_tiling
+        # intra_core_tiling = node.intra_core_tiling
         adjusted = False
-        for dim, size in intra_core_tiling:
-            if not adjusted and size >= multiplicity:
-                adj_size = size // multiplicity  # Adjust for multiplicity on first large enough loop
-                adjusted = True
-            else:
-                adj_size = size
-            is_rel = True  # All dimensions are relevant for the computation node
-            iter_var = IterationVariable(dim, adj_size, is_rel)
-            variables.append(iter_var)
+        # for dim, size in intra_core_tiling:
+        #     if not adjusted and size >= multiplicity:
+        #         adj_size = size // multiplicity  # Adjust for multiplicity on first large enough loop
+        #         adjusted = True
+        #     else:
+        #         adj_size = size
+        #     is_rel = True  # All dimensions are relevant for the computation node
+        #     iter_var = IterationVariable(dim, adj_size, is_rel)
+        #     variables.append(iter_var)
         return cls(variables)
 
     # ..................................................................... #

@@ -2,10 +2,6 @@ from typing import TYPE_CHECKING
 
 from networkx import DiGraph
 
-if TYPE_CHECKING:
-    from stream.workload.computation.computation_node import ComputationNode
-    from stream.workload.onnx_workload import ComputationNodeWorkload
-
 
 def prune_workload(g: DiGraph, keep_types=None):
     """Return a pruned workload graph with only nodes of type in 'keep_types'."""
