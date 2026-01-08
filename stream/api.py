@@ -180,12 +180,15 @@ def optimize_allocation_co(  # noqa: PLR0913
             AcceleratorParserStage,  # Parses the accelerator
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
             LayerStacksGenerationStage,
-            TilingGenerationStage,
-            TiledWorkloadGenerationStage,
+            # Infer unique dimensions using linear algebra
+            TilingGenerationStage,  # Set using new unique dimensions
+            # SteadyStateWorkloadGenerationStage
+            TiledWorkloadGenerationStage,  # remove
             CoreCostEstimationStage,
             SetFixedAllocationPerformanceStage,
-            SchedulingOrderGenerationStage,
-            ConstraintOptimizationAllocationStage,
+            SchedulingOrderGenerationStage,  # remove?
+            ConstraintOptimizationAllocationStage,  # revamp to already use steady state workload
+            # Add separate TETRA stage
         ]
 
         # optionally add code generation stage

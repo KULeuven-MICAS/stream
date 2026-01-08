@@ -334,8 +334,6 @@ class AIECodeGenerationStage(Stage):
         }
 
         module = self.generate_steady_state_workload(workload)
-        print(module)
-        breakpoint()
 
         # SetNoReusePass().apply(self.context, module)
         # Split transfers in push and pull

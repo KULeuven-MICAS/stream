@@ -533,18 +533,7 @@ class TransferAndTensorAllocator:
 
     # ...................... memory capacity .................... #
     def _memory_capacity_constraints(self):
-        # start with fixed tensors
         self.core_load: dict[Core, gp.QuadExpr] = defaultdict(gp.QuadExpr)
-        for t in self.tensor_fixed:
-            core = self.resource_of[t]
-            if isinstance(core, Core):
-                self.core_load[core] += self._mem_factor(t, core) * t.size  # type: ignore
-
-        # add variable tensors
-        for t in self.tensor_var:
-            for c in t.possible_resource_allocation:  # type: ignore
-                self.core_load[c] += self._mem_factor(t, c) * t.size * self.x_tensor[(t, c)]  # type: ignore
-
         # add transfer tensors
         for tr in self.transfer_nodes:
             for t in self.ssw.successors(tr):

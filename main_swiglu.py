@@ -147,4 +147,5 @@ if __name__ == "__main__":
         mapping_version=args.mapping_version,
     )
 
-    print(str(module))
+    with open(f"outputs/swiglu_module_{args.seq_len}_{args.embedding_dim}_{args.hidden_dim}.mlir", "w") as f:
+        f.write(str(module))

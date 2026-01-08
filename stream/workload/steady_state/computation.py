@@ -46,13 +46,12 @@ class SteadyStateComputation(ComputationNode, SteadyStateNode):
         )
         # Adjust intra_core_tiling according to ssis_multiplicity
         if self.intra_core_tiling and ssis_multiplicity > 1:
-            first_dim = self.intra_core_tiling[0][0]
-            first_size = self.intra_core_tiling[0][1]
-            assert first_size % ssis_multiplicity == 0, (
+            last_dim, last_size = self.intra_core_tiling[-1]
+            assert last_size % ssis_multiplicity == 0, (
                 "SteadyStateComputation: The first dimension size of intra_core_tiling must be divisible by "
-                f"ssis_multiplicity. Got {first_size} and {ssis_multiplicity}."
+                f"ssis_multiplicity. Got {last_size} and {ssis_multiplicity}."
             )
-            self.intra_core_tiling[0] = (first_dim, first_size // ssis_multiplicity)
+            self.intra_core_tiling[-1] = (last_dim, last_size // ssis_multiplicity)
         steady_state_iteration_space = SteadyStateIterationSpace.from_computation_node(
             node=self, multiplicity=ssis_multiplicity
         )
