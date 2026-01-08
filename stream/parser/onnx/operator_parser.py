@@ -1,22 +1,17 @@
 from abc import ABCMeta, abstractmethod
 from collections.abc import Generator
-from os import name
 from typing import Any
 
 from onnx import ModelProto, NodeProto
-from zigzag.datatypes import Constants
 from zigzag.parser.onnx.onnx_operator_parser import ONNXOperatorParser as ONNXOperatorParserZigZag
 from zigzag.parser.onnx.utils import (
     get_attribute_ints_with_name,
-    get_node_input_output_dimension_shapes,
     get_onnx_tensor_type,
 )
-from zigzag.parser.workload_factory import LayerNodeFactory
 
-from stream.hardware.architecture.accelerator import Accelerator
 from stream.onnx_utils import get_axis_attribute
 from stream.parser.onnx.utils import onnx_tensor_to_tensor
-from stream.workload.workload import ComputationNode, HasOutput, Node, Tensor
+from stream.workload.workload import HasOutput, Node, Tensor
 
 
 class OnnxOperatorParser(ONNXOperatorParserZigZag, metaclass=ABCMeta):

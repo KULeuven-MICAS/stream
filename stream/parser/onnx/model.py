@@ -1,9 +1,8 @@
 import logging
 from typing import Any
 
-from onnx import NodeProto, TensorProto, ValueInfoProto
-from xdsl.dialects.builtin import FixedBitwidthType, bf16, f32, i8, i16, i32
-from zigzag.parser.onnx.utils import OnnxTensorType, parse_onnx_model_from_path
+from onnx import NodeProto
+from zigzag.parser.onnx.utils import parse_onnx_model_from_path
 
 # from stream.hardware.architecture.accelerator import Accelerator
 # from stream.parser.onnx.concat import ConcatParser
@@ -36,7 +35,7 @@ from stream.parser.onnx.simd import SimdParser
 # from stream.parser.onnx.ssm import SSMParser
 # from stream.parser.onnx.transpose import TransposeParser
 from stream.parser.onnx.utils import onnx_tensor_to_tensor
-from stream.workload.workload import HasOutput, InEdge, Node, OutEdge, Tensor, Workload
+from stream.workload.workload import HasOutput, InEdge, Node, OutEdge, Workload
 
 logger = logging.getLogger(__name__)
 
@@ -180,5 +179,4 @@ class ONNXModelParser:
             workload.number_of_nodes(),
             workload.number_of_edges(),  # type: ignore
         )
-        breakpoint()
         return workload

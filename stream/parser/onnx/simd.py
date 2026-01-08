@@ -1,5 +1,3 @@
-from typing import Any
-
 from xdsl.ir.affine import AffineMap
 
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser

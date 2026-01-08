@@ -2,12 +2,10 @@ from abc import ABC
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import combinations
-from typing import Iterable, Self, cast
+from typing import cast
 
 import matplotlib.pyplot as plt
 import networkx as nx
-import numpy as np
-import numpy.typing as npt
 import sympy as sp
 from snaxc.ir.dart.affine_transform import AffineTransform
 from xdsl.dialects.builtin import FixedBitwidthType, i32

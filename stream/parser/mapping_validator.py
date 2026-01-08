@@ -9,9 +9,7 @@ logger = logging.getLogger(__name__)
 class MappingValidator:
     """Class to validate user-given mappings from yaml file"""
 
-    TILING_REGEX = r"^[A-Z]+, ([0-9]+|all|\*)$"
-    SPATIAL_MAPPING_REGEX = r"^[A-Z]+, [0-9]+$"
-    SPATIAL_MAPPING_HINT_REGEX = r"^[A-Z]+$"
+    TILING_REGEX = r"^D[0-9]+, [0-9]+$"
 
     # Schema for a single operation, UpgradeValidator extrapolates to list of operations
     SCHEMA_SINGLE: Any = {
@@ -26,16 +24,6 @@ class MappingValidator:
             "schema": {"type": "string", "regex": TILING_REGEX},
             "default": [],
         },
-        "layer_dimension_names": {
-            "type": "list",
-            "schema": {"type": "string", "nullable": True},
-            "default": [],
-        },
-        "intra_core_tiling": {
-            "type": "list",
-            "schema": {"type": "string", "regex": TILING_REGEX},
-            "default": [],
-        },
         "kernel": {
             "type": "dict",
             "schema": {
@@ -45,77 +33,6 @@ class MappingValidator:
             "required": False,
             "default": {},
         },
-        "spatial_mapping": {
-            "type": "dict",
-            "schema": {
-                "D1": {
-                    "type": "list",
-                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_REGEX},
-                    "required": False,
-                },
-                "D2": {
-                    "type": "list",
-                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_REGEX},
-                    "required": False,
-                },
-                "D3": {
-                    "type": "list",
-                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_REGEX},
-                    "required": False,
-                },
-                "D4": {
-                    "type": "list",
-                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_REGEX},
-                    "required": False,
-                },
-            },
-            "required": False,
-            "nullable": True,
-        },
-        "memory_operand_links": {
-            "type": "dict",
-            "schema": {
-                "O": {"type": "string", "required": True},
-                "W": {"type": "string", "required": True},
-                "I": {"type": "string", "required": True},
-            },
-            "default": {"O": "O", "I": "I1", "W": "I2"},
-        },
-        "spatial_mapping_hint": {
-            "type": "dict",
-            "schema": {
-                "D1": {
-                    "type": "list",
-                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_HINT_REGEX},
-                    "required": False,
-                },
-                "D2": {
-                    "type": "list",
-                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_HINT_REGEX},
-                    "required": False,
-                },
-                "D3": {
-                    "type": "list",
-                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_HINT_REGEX},
-                    "required": False,
-                },
-                "D4": {
-                    "type": "list",
-                    "schema": {"type": "string", "regex": SPATIAL_MAPPING_HINT_REGEX},
-                    "required": False,
-                },
-            },
-            "required": False,
-        },
-        "temporal_ordering": {
-            "type": "list",
-            "schema": {
-                "type": "list",
-                "items": [{"type": "string"}, {"oneof": [{"type": "integer"}, {"type": "string", "allowed": ["*"]}]}],
-                "minlength": 2,
-                "maxlength": 2,
-            },
-        },
     }
 
     def __init__(self, data: Any):
@@ -124,6 +41,7 @@ class MappingValidator:
         self.schema = MappingValidator.SCHEMA_SINGLE  # type: ignore
         self.data: list[dict[str, Any]] = self.validator.normalize_list(data, schema=self.schema)  # type: ignore
         self.is_valid = True
+        self.errors = []
 
     @property
     def normalized_data(self):
@@ -134,6 +52,7 @@ class MappingValidator:
     def invalidate(self, extra_msg: str):
         self.is_valid = False
         logger.critical("User-defined mapping is invalid. %s", extra_msg)
+        self.errors.append(extra_msg)
 
     def validate(self) -> bool:
         """! Validate the user-provided accelerator data. Log a critical warning when invalid data is encountered and
@@ -149,16 +68,9 @@ class MappingValidator:
         if not validate_success:
             self.invalidate(f"The following restrictions apply: {errors}")
 
-        # Extra checks
-        if "default" not in map(lambda x: x["name"], self.data):
-            self.invalidate("No default mapping defined.")
-
         return self.is_valid
 
     def add_defaults(self, layer_data: dict[str, Any]) -> None:
-        """
-        # TODO check that the inter-core splits do not exceed the number of cores
-        """
         # Provide user-friendly defaults for missing kernel info
         kernel = layer_data.setdefault("kernel", {})
         kernel.setdefault("name", layer_data.get("name", ""))

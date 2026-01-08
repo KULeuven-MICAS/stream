@@ -1,10 +1,9 @@
 import logging
-from typing import Any
 
 from xdsl.ir.affine import AffineMap
 
 from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
-from stream.workload.workload import ComputationNode, HasOutput, Node
+from stream.workload.workload import ComputationNode, HasOutput
 
 logger = logging.getLogger(__name__)
 

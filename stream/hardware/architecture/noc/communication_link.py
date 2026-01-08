@@ -1,11 +1,7 @@
-from itertools import combinations, product
 from typing import TYPE_CHECKING, Literal
-
-import numpy as np
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
-    from stream.workload.tensor import SubviewTensor
 
 ENABLE_BROADCASTING = False
 

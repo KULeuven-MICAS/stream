@@ -56,6 +56,10 @@ class ComputationNode(HasOutput, HasInputs):
                 return self.operand_mapping[i]
         raise RuntimeError
 
+    def get_dimension_size(self, layer_dim: str) -> int:
+        dim_index = int(layer_dim.strip("D"))
+        return self.output.shape[dim_index]  # TODO: Probably not always of output tensor
+
 
 class Workload(DiGraphWrapper[Node]):
     def __init__(self, nodes: Sequence[Node]):
@@ -66,6 +70,15 @@ class Workload(DiGraphWrapper[Node]):
                 for input in node.inputs:
                     graph.add_edge(input, node)
         super().__init__(graph)
+
+    def __repr__(self) -> str:
+        return str(self)
+
+    def __str__(self) -> str:
+        nodes = tuple(self.nodes)
+        edges = tuple(self.edges)
+        node_names = ", ".join(getattr(n, "name", type(n).__name__) for n in nodes)
+        return f"Workload(num_nodes={len(nodes)}, num_edges={len(edges)}, nodes=[{node_names}])"
 
     @property
     def num_dims(self):
@@ -109,3 +122,12 @@ class Workload(DiGraphWrapper[Node]):
                     for expr_a, expr_b in zip(mapping_a.results, mapping_b.results, strict=True):
                         result.append(expr_a - expr_b)
         return result
+
+    def get_computation_nodes(self) -> tuple[ComputationNode, ...]:
+        return tuple(cast(ComputationNode, node) for node in self.nodes if isinstance(node, ComputationNode))
+
+    def get_in_edges(self) -> tuple[InEdge, ...]:
+        return tuple(cast(InEdge, node) for node in self.nodes if isinstance(node, InEdge))
+
+    def get_out_edges(self) -> tuple[OutEdge, ...]:
+        return tuple(cast(OutEdge, node) for node in self.nodes if isinstance(node, OutEdge))

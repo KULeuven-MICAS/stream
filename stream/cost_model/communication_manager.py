@@ -1,14 +1,11 @@
 from dataclasses import dataclass
 from itertools import product
-from math import ceil, floor
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 
 import networkx as nx
-from zigzag.datatypes import Constants, MemoryOperand
-from zigzag.hardware.architecture.memory_port import DataDirection
+from zigzag.datatypes import MemoryOperand
 
 from stream.hardware.architecture.core import Core
-from stream.hardware.architecture.utils import intersections
 from stream.workload.tensor import SubviewTensor
 
 

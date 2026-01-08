@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any, TypeAlias
 from numpy.typing import NDArray
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.mapping.data_movement import FourWayDataMoving
 
 from stream.cost_model.core_cost import CoreCostEntry
 

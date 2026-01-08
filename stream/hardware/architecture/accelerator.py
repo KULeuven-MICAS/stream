@@ -2,7 +2,6 @@ from math import ceil
 from typing import Any
 
 from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.memory_instance import MemoryInstance
 from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.utils import DiGraphWrapper
 

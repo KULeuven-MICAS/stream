@@ -1,6 +1,6 @@
 from onnx import TensorProto, ValueInfoProto
+from xdsl.dialects.builtin import FixedBitwidthType, bf16, f32, i8, i16, i32
 from zigzag.parser.onnx.utils import OnnxTensorType
-from xdsl.dialects.builtin import FixedBitwidthType, i32, bf16, i8, i16, i32, f32
 
 from stream.workload.workload import Tensor
 
