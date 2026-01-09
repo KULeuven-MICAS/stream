@@ -5,6 +5,8 @@ from itertools import combinations
 from typing import cast
 
 import networkx as nx
+import sympy as sp
+from snaxc.ir.dart.affine_transform import AffineTransform
 from xdsl.dialects.builtin import FixedBitwidthType
 from xdsl.ir.affine import AffineDimExpr, AffineExpr, AffineMap
 from zigzag.utils import DiGraphWrapper
@@ -60,6 +62,10 @@ class ComputationNode(HasOutput, HasInputs):
         dim_index = int(layer_dim.strip("D"))
         return self.output.shape[dim_index]  # TODO: Probably not always of output tensor
 
+    @property
+    def tensors(self) -> tuple[Tensor, ...]:
+        return tuple(inp.output for inp in self.inputs) + (self.output,)
+
 
 class Workload(DiGraphWrapper[Node]):
     def __init__(self, nodes: Sequence[Node]):
@@ -97,6 +103,20 @@ class Workload(DiGraphWrapper[Node]):
                 idx += node.num_dims
         return global_dimension_idxs
 
+    @property
+    def tensors(self) -> tuple[Tensor, ...]:
+        seen = set()
+        tensors = []
+        for node in self.get_computation_nodes():
+            for tensor in node.tensors:
+                if tensor.operand_type not in seen:
+                    seen.add(tensor.operand_type)
+                    tensors.append(tensor)
+        return tuple(tensors)
+
+    def tensor_size(self, tensor: Tensor):
+        raise NotImplementedError("todo")
+
     def global_mapping(self, node: ComputationNode, mapping: AffineMap):
         return mapping.replace_dims_and_symbols(
             [AffineDimExpr(i) for i in self.global_idxs[node]], [], self.num_dims, 0
@@ -131,3 +151,59 @@ class Workload(DiGraphWrapper[Node]):
 
     def get_out_edges(self) -> tuple[OutEdge, ...]:
         return tuple(cast(OutEdge, node) for node in self.nodes if isinstance(node, OutEdge))
+
+    def get_dimension_ranges(self) -> tuple[int, ...]:
+        results = []
+        shapes: list[int] = []
+        for node in self.get_computation_nodes():
+            operands = [inp.output for inp in node.inputs] + [node.output]
+            for operand, mapping in zip(operands, node.operand_mapping, strict=True):
+                global_mapping = self.global_mapping(node, mapping)
+                results.extend(global_mapping.results)
+                shapes.extend(operand.shape)
+        total_map = AffineMap(self.num_dims, 0, tuple(results))
+        return total_map.inverse_permutation().eval(shapes, [])
+
+    def get_dims(self, node: ComputationNode) -> list[int]:
+        global_idxs = self.global_idxs
+        _, expressions = self.unique_dimensions()
+        start_idx = global_idxs[node].start
+        stop_idx = global_idxs[node].stop
+        dims = expressions[start_idx:stop_idx]
+        return dims
+
+    def get_dimension_size(self, dim: int) -> int:
+        unique_dims, expressions = self.unique_dimensions()
+        assert dim in unique_dims, "Dimension not found in workload"
+
+        dim_ranges = self.get_dimension_ranges()
+        idx = expressions.index(dim)
+        return dim_ranges[idx]
+
+    def unique_dimensions(self):
+        relations = AffineMap(self.num_dims, 0, tuple(self.dimension_relations()))
+        transform = AffineTransform.from_affine_map(relations)
+
+        A_sp = sp.Matrix(transform.A)
+        rref_A, pivots = A_sp.rref()
+
+        n_vars = transform.A.shape[1]
+        free_vars = [i for i in range(n_vars) if i not in pivots]
+
+        basis_vectors = []
+        for free in free_vars:
+            v = sp.zeros(n_vars, 1)
+            v[free] = 1
+            for row, pivot in enumerate(pivots):
+                v[pivot] = -rref_A[row, free]
+            basis_vectors.append(v)
+
+        N = sp.Matrix.hstack(*basis_vectors)
+        z = sp.symbols(f"z0:{len(free_vars)}")
+        x = N * sp.Matrix(z)
+
+        dim_values = []
+        for expr in x:
+            dim_values.append(sp.simplify(expr))
+
+        return z, dim_values

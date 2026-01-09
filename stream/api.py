@@ -16,7 +16,7 @@ from stream.stages.context import StageContext
 # from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
 # from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
 # from stream.stages.generation.tiled_workload_generation import TiledWorkloadGenerationStage
-# from stream.stages.generation.tiling_generation import TilingGenerationStage
+from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.mapping_parser import MappingParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
@@ -184,7 +184,7 @@ def optimize_allocation_co(  # noqa: PLR0913
             AcceleratorParserStage,  # Parses the accelerator
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
             MappingParserStage,
-            # LayerStacksGenerationStage,
+            TilingGenerationStage,
             # # Infer unique dimensions using linear algebra
             # TilingGenerationStage,  # Set using new unique dimensions
             # # SteadyStateWorkloadGenerationStage

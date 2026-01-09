@@ -122,7 +122,6 @@ class ONNXModelParser:
         assert self.onnx_model is not None
 
         # Saves for each node_id the inputs and outputs tensor names
-        nodes_inputs: dict[int, Any] = {}
         nodes_outputs: dict[int, Any] = {}
 
         unnamed_id = 0

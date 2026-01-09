@@ -13,9 +13,9 @@ class GemmParser(OnnxComputeOperatorParser):
 
     def generate_node(self, name_to_node_dict: dict[str, HasOutput]) -> ComputationNode:
         mappings = (
-            AffineMap.from_callable(lambda m, n, k: (m, k)),
-            AffineMap.from_callable(lambda m, n, k: (k, n)),
-            AffineMap.from_callable(lambda m, n, k: (m, n)),
+            AffineMap.from_callable(lambda m, k, n: (m, k)),
+            AffineMap.from_callable(lambda m, k, n: (k, n)),
+            AffineMap.from_callable(lambda m, k, n: (m, n)),
         )
 
         return ComputationNode(
