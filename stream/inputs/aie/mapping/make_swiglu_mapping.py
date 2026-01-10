@@ -106,7 +106,7 @@ def make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, 
     assert seq_len % 4 == 0, "seq_len must be divisible by 4 for this mapping"
 
     # Left and right Gemms specific mapping entries
-    inter_core_tiling_gemm = ["D0, 4"]
+    inter_core_tiling_gemm = ["D0, 8"]
     # intra_core_tiling_gemm = [
     #     f"C, {embedding_dim // k}",
     #     f"K, {hidden_dim // n}",

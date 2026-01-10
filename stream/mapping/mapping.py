@@ -5,15 +5,9 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from stream.compiler.kernels.aie_kernel import AIEKernel
+from stream.datatypes import InterCoreTiling
 from stream.hardware.architecture.core import Core
 from stream.workload.workload import Node
-
-InterCoreTiling = list[tuple[str, int]]
-
-
-def _is_valid_dim(dim: str) -> bool:
-    # Expected: "Dx" where x is an integer index (e.g., "D0", "D1", ...)
-    return isinstance(dim, str) and len(dim) >= 2 and dim[0] == "D" and dim[1:].isdigit()
 
 
 @dataclass(slots=True)
@@ -35,8 +29,6 @@ class LayerMapping:
             if not (isinstance(item, tuple) and len(item) == 2):
                 raise TypeError("inter_core_tiling entries must be tuples of length 2: (dim, factor)")
             dim, factor = item
-            if not _is_valid_dim(dim):
-                raise ValueError(f"Invalid dimension '{dim}'. Expected format 'Dx' (e.g., 'D0').")
             if not isinstance(factor, int) or factor <= 0:
                 raise ValueError(f"Tiling factor for '{dim}' must be a positive int, got {factor!r}.")
 

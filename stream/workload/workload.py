@@ -11,11 +11,19 @@ from xdsl.dialects.builtin import FixedBitwidthType
 from xdsl.ir.affine import AffineDimExpr, AffineExpr, AffineMap
 from zigzag.utils import DiGraphWrapper
 
+from stream.datatypes import LayerDim
+
 
 @dataclass(frozen=True)
 class Tensor:
     operand_type: FixedBitwidthType
     shape: tuple[int, ...]
+
+    def size_elements(self) -> int:
+        return sp.prod(self.shape)
+
+    def size_bits(self) -> int:
+        return self.operand_type.bitwidth * self.size_elements()
 
 
 @dataclass(frozen=True)
@@ -58,8 +66,8 @@ class ComputationNode(HasOutput, HasInputs):
                 return self.operand_mapping[i]
         raise RuntimeError
 
-    def get_dimension_size(self, layer_dim: str) -> int:
-        dim_index = int(layer_dim.strip("D"))
+    def get_dimension_size(self, layer_dim: LayerDim) -> int:
+        dim_index = layer_dim.get_idx()
         return self.output.shape[dim_index]  # TODO: Probably not always of output tensor
 
     @property
@@ -93,7 +101,7 @@ class Workload(DiGraphWrapper[Node]):
     @property
     def global_idxs(self):
         """
-        Determine unique global indeces for each iteration dimension in this workload
+        Determine unique global indices for each dimension in this workload
         """
         global_dimension_idxs: dict[Node, range] = {}
         idx = 0
@@ -113,9 +121,6 @@ class Workload(DiGraphWrapper[Node]):
                     seen.add(tensor.operand_type)
                     tensors.append(tensor)
         return tuple(tensors)
-
-    def tensor_size(self, tensor: Tensor):
-        raise NotImplementedError("todo")
 
     def global_mapping(self, node: ComputationNode, mapping: AffineMap):
         return mapping.replace_dims_and_symbols(
@@ -152,7 +157,7 @@ class Workload(DiGraphWrapper[Node]):
     def get_out_edges(self) -> tuple[OutEdge, ...]:
         return tuple(cast(OutEdge, node) for node in self.nodes if isinstance(node, OutEdge))
 
-    def get_dimension_ranges(self) -> tuple[int, ...]:
+    def get_dimension_sizes(self) -> tuple[int, ...]:
         results = []
         shapes: list[int] = []
         for node in self.get_computation_nodes():
@@ -164,7 +169,7 @@ class Workload(DiGraphWrapper[Node]):
         total_map = AffineMap(self.num_dims, 0, tuple(results))
         return total_map.inverse_permutation().eval(shapes, [])
 
-    def get_dims(self, node: ComputationNode) -> list[int]:
+    def get_dims(self, node: ComputationNode) -> list[LayerDim]:
         global_idxs = self.global_idxs
         _, expressions = self.unique_dimensions()
         start_idx = global_idxs[node].start
@@ -172,11 +177,10 @@ class Workload(DiGraphWrapper[Node]):
         dims = expressions[start_idx:stop_idx]
         return dims
 
-    def get_dimension_size(self, dim: int) -> int:
+    def get_dimension_size(self, dim: LayerDim) -> int:
         unique_dims, expressions = self.unique_dimensions()
         assert dim in unique_dims, "Dimension not found in workload"
-
-        dim_ranges = self.get_dimension_ranges()
+        dim_ranges = self.get_dimension_sizes()
         idx = expressions.index(dim)
         return dim_ranges[idx]
 
@@ -207,3 +211,87 @@ class Workload(DiGraphWrapper[Node]):
             dim_values.append(sp.simplify(expr))
 
         return z, dim_values
+
+    def with_modified_dimension_sizes(self, new_sizes: dict[int, int]) -> "Workload":
+        """Create a new workload where the dimension sizes of the given global dimension indices are modified to the new
+        sizes provided in new_sizes.
+
+        This recreates all tensors (and nodes referencing them) so tensor shapes stay consistent with the updated
+        global loop sizes.
+        """
+        # Start from the current global loop ranges and apply overrides.
+        _, all_dims = self.unique_dimensions()
+        new_sizes_for_all_dims = [new_sizes[dim] for dim in all_dims]
+
+        # Infer the updated shape for every tensor based on how each operand maps onto global dims.
+        inferred_shapes: dict[str, tuple[int, ...]] = {}
+        original_tensors_dict: dict[str, Tensor] = {}
+        for node in self.get_computation_nodes():
+            original_tensors = node.tensors
+            tensor_names = [inp.name for inp in node.inputs] + [node.name]  # output name is node name
+            for original_tensor, tensor_name, mapping in zip(
+                original_tensors, tensor_names, node.operand_mapping, strict=True
+            ):
+                original_tensors_dict[tensor_name] = original_tensor
+                global_mapping = self.global_mapping(node, mapping)
+                new_shape: list[int] = []
+                for expr in global_mapping.results:
+                    if isinstance(expr, AffineDimExpr):
+                        new_shape.append(new_sizes_for_all_dims[expr.position])
+                    else:
+                        raise NotImplementedError(
+                            "Updating tensor shapes only supports dimension projections/permutations "
+                            f"(AffineDimExpr results); got {expr} in mapping for node '{node.name}'."
+                        )
+                new_shape_t = tuple(new_shape)
+                if tensor_name in inferred_shapes and inferred_shapes[tensor_name] != new_shape_t:
+                    raise ValueError(
+                        "Inconsistent inferred shapes for a shared tensor; "
+                        f"tensor={tensor_name}, existing={inferred_shapes[tensor_name]}, new={new_shape_t}."
+                    )
+                inferred_shapes[tensor_name] = new_shape_t
+
+        # Create new Tensor objects with the inferred shapes.
+        tensor_map: dict[str, Tensor] = {}
+        for tensor_name, new_shape_t in inferred_shapes.items():
+            original_tensor = original_tensors_dict[tensor_name]
+            new_output = Tensor(
+                operand_type=original_tensor.operand_type,
+                shape=new_shape_t,
+            )
+            tensor_map[tensor_name] = new_output
+
+        # Recreate nodes in topological order so inputs are available when recreating a consumer.
+        node_map: dict[Node, Node] = {}
+        new_nodes: list[Node] = []
+        for node in nx.lexicographical_topological_sort(self, key=lambda n: n.name):
+            if isinstance(node, InEdge):
+                new_output = tensor_map.get(node.name)
+                assert new_output is not None, f"InEdge tensor {node.name} must have been inferred"
+                new_node = InEdge(
+                    name=node.name,
+                    output=new_output,
+                )
+            elif isinstance(node, ComputationNode):
+                new_inputs = tuple(cast(HasOutput, node_map[inp]) for inp in node.inputs)
+                new_output = tensor_map.get(node.name)
+                assert new_output is not None, f"ComputationNode output tensor {node.name} must have been inferred"
+                new_node = ComputationNode(
+                    name=node.name,
+                    inputs=new_inputs,
+                    output=new_output,
+                    operand_mapping=node.operand_mapping,
+                )
+            elif isinstance(node, OutEdge):
+                new_inputs = tuple(cast(HasOutput, node_map[inp]) for inp in node.inputs)
+                new_node = OutEdge(
+                    name=node.name,
+                    inputs=new_inputs,
+                )
+            else:
+                raise TypeError(f"Unknown node type: {type(node)}")
+
+            node_map[node] = new_node
+            new_nodes.append(new_node)
+
+        return Workload(new_nodes)

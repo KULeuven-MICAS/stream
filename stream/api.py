@@ -185,8 +185,6 @@ def optimize_allocation_co(  # noqa: PLR0913
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
             MappingParserStage,
             TilingGenerationStage,
-            # # Infer unique dimensions using linear algebra
-            # TilingGenerationStage,  # Set using new unique dimensions
             # # SteadyStateWorkloadGenerationStage
             # # TiledWorkloadGenerationStage,  # remove
             # CoreCostEstimationStage,

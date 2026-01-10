@@ -3,6 +3,7 @@ from typing import Any
 
 from stream.compiler.kernels import AIEKernels
 from stream.compiler.kernels.aie_kernel import AIEKernel
+from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import LayerMapping, Mapping
@@ -71,12 +72,13 @@ class MappingFactory:
 
     def _convert_layer_dim_int_pair(self, pair: str, node: ComputationNode):
         """Convert strings such as `D, 4` into a LayerDim and int"""
-        layer_dim = pair.split(",")[0]
+        layer_dim = LayerDim(pair.split(",")[0])
         unrolling_str = pair.split(",")[-1]
         match unrolling_str.strip(" "):
             case "all":
                 unrolling = node.get_dimension_size(layer_dim)
             case "*":
+                raise NotImplementedError("Wildcard unrolling '*' is not supported yet for new workload.")
                 unrolling = "*"
             case _:
                 unrolling = int(unrolling_str)
