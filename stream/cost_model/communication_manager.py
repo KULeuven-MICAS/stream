@@ -1,111 +1,83 @@
 from dataclasses import dataclass
 from itertools import product
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 import networkx as nx
-from zigzag.datatypes import MemoryOperand
 
 from stream.hardware.architecture.core import Core
-from stream.workload.tensor import SubviewTensor
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
+
+if TYPE_CHECKING:
+    from stream.hardware.architecture.accelerator import Accelerator
 
 
-class CommunicationEvent:
+# Tune these defaults as needed
+_K_PATHS_PER_TERMINAL = 4  # k in k-shortest
+_BEAM_WIDTH = 32  # B in beam search
+_MAX_ALLOCATIONS_PER_MEETING = 4
+_MAX_MEETINGS = 8
+_MAX_POSSIBLE_ALLOCATIONS = 16
+
+
+def _iter_k_shortest_simple_paths(
+    G: nx.Graph,
+    src,
+    dst,
+    *,
+    k: int,
+    weight: str | None,
+) -> list[list]:
     """
-    Represents a communication event between two cores, aggregating one or more CommunicationLinkEvents.
-    Tracks sender, receiver, and total energy for the event.
+    Return up to k loopless paths from src to dst ordered by total weight.
+    Uses networkx.shortest_simple_paths (Yen-like). If weight is unsupported
+    by the installed NetworkX version, falls back to unweighted.
     """
+    if src == dst:
+        return [[src]]
 
-    def __init__(self, id: int, tasks: list["CommunicationLinkEvent"], sender: Core, receiver: Core) -> None:
-        # Sanity checks
-        assert len(tasks) > 0
-        assert all([t.type == tasks[0].type] for t in tasks)
-        assert all([t.start == tasks[0].start for t in tasks])
-        assert all([t.end == tasks[0].end for t in tasks])
-        self.id = id
-        self.tasks = tasks
-        self.type = tasks[0].type
-        self.start = tasks[0].start
-        self.end = tasks[0].end
-        self.energy = sum([t.energy for t in tasks])
-        self.sender = sender
-        self.receiver = receiver
+    try:
+        gen = nx.shortest_simple_paths(G, src, dst, weight=weight)
+    except TypeError:
+        # Older NetworkX versions did not accept "weight=" here
+        gen = nx.shortest_simple_paths(G, src, dst)
 
-    def __str__(self) -> str:
-        return (
-            f"CommunicationEvent(id={self.id}, sender={self.sender}, receiver={self.receiver}, "
-            f"tensor={self.tasks[0].tensors}, energy={self.energy:.2e})"
-        )
-
-    def __repr__(self) -> str:
-        return str(self)
+    paths: list[list] = []
+    for p in gen:
+        paths.append(list(p))
+        if len(paths) >= k:
+            break
+    return paths
 
 
-class CommunicationLinkEvent:
-    """Represents an event on a communication link.
-    An event has:
-        - a type, e.g. "transfer" or "block"
-        - a start time
-        - an end time
-        - a list of tensors relevant for the event:
-            * the tensor being transferred
-            * the tensor(s) for which we are blocking
-        - an activity:
-            * the bits per clock cycle used of the link bandwidth
+def _path_edge_pairs(path: list) -> list[tuple]:
+    return list(zip(path, path[1:], strict=False))
+
+
+def _edge_weight_sum_new(
+    edge_pairs: list[tuple],
+    *,
+    current_edges: set[tuple],
+    edge_w: dict[tuple, float],
+) -> float:
     """
-
-    def __init__(
-        self,
-        type: str,
-        start: int,
-        end: int,
-        tensors: list[SubviewTensor],
-        energy: float,
-        activity: float,
-        source: Core,
-        destinations: list[Core],
-    ) -> None:
-        self.type = type
-        self.start = start
-        self.end = end
-        self.duration = self.end - self.start
-        self.tensors = tensors
-        self.energy = energy
-        self.activity = activity
-        self.source = source
-        self.destinations = destinations
-
-    def __str__(self) -> str:
-        return (
-            f"CommunicationLinkEvent(type={self.type}, src={self.source}, dests={self.destinations}, "
-            f"start={self.start}, end={self.end}, tensors={self.tensors}, "
-            f"energy={self.energy:.2e}, activity={self.activity:.2f})"
-        )
-
-    def __repr__(self) -> str:
-        return str(self)
-
-    def get_operands(self):
-        """
-        Returns the operand associated with the tensor for this event.
-        """
-        return [t.layer_operand for t in self.tensors]
-
-    def get_origin(self):
-        origins = [tensor.cn_source for tensor in self.tensors]
-        assert all([origin == origins[0] for origin in origins])
-        return origins[0]
+    Incremental score: add weights only for edges not already present.
+    """
+    add = 0.0
+    for e in edge_pairs:
+        if e not in current_edges:
+            add += edge_w[e]
+    return add
 
 
-@dataclass(frozen=True, slots=True)
-class SharedPrefixPath:
-    sources: tuple["Core", ...]
-    targets: tuple["Core", ...]
-    meeting: "Core"
-    paths_from_sources: dict["Core", list["Core"]]
-    paths_to_targets: dict["Core", list["Core"]]
-    full_paths: dict["Core", list["Core"]]
-    total_cost: float
-    overlap_edges: int
+@dataclass(frozen=True)
+class _BeamState:
+    # Union of directed edges (u,v) in the allocation so far
+    edges: frozenset[tuple]
+    # Accumulated cost (sum of weights of unique edges)
+    score: float
+    # Chosen paths
+    paths_from_sources: dict
+    paths_to_targets: dict
 
 
 class MulticastRequest(NamedTuple):
@@ -143,14 +115,12 @@ class CommunicationManager:
     """
 
     shortest_paths: dict[tuple[Core, Core], list[Core]]
-    events: list[CommunicationEvent]
 
     def __init__(self, accelerator: "Accelerator") -> None:
         self.accelerator = accelerator
         self.shortest_paths = self.get_shortest_paths()
         self.all_shortest_paths = self.get_all_shortest_paths()
         self.all_pair_links = self.get_all_links_for_all_core_pairs()
-        self.events = []
         self.event_id = 0
 
     def get_shortest_paths(self):
@@ -195,65 +165,76 @@ class CommunicationManager:
         """Return all unique CommunicationLinks."""
         return list(set(d["cl"] for _, _, d in self.accelerator.cores.edges(data=True)))
 
-    def get_unicast_plan_no_memory_core(self, source: "Core", target: "Core") -> UnicastPathPlan:
-        assert nx.has_path(self.accelerator.cores, source, target), f"No path between {source} and {target}"
-        path = self.shortest_paths[(source, target)]
-        return UnicastPathPlan(source=source, target=target, full_paths=path)
-
     def _get_simple_no_meeting_node_plans(
         self, sources: tuple["Core", ...], targets: tuple["Core", ...]
-    ) -> list[MulticastPathPlan]:
-        # Fallback to simple paths stored in the communication manager
+    ) -> list["MulticastPathPlan"]:
+        # Fallback: per-(s,t) single shortest path as before
         plans = []
         for source in sources:
             for target in targets:
-                path = self.shortest_paths[(source, target)]
+                path = self.shortest_paths.get((source, target))
                 if not path:
                     continue
-                full_paths = {target: path}
                 plans.append(
                     MulticastPathPlan(
                         sources=(source,),
                         targets=(target,),
                         meeting=None,
                         paths_from_sources={source: path},
-                        paths_to_targets={target: path},
-                        full_paths=full_paths,
+                        paths_to_targets={target: path},  # placeholder so link extraction works
+                        full_paths={},  # keep field if your dataclass expects it
                         total_hops_objective=len(path) - 1,
                         overlap_edges=0,
                     )
                 )
         return plans
 
-    def enumerate_multicast_plans(
+    def _get_links_for_multicast_plan(
         self,
-        request: MulticastRequest,
+        plan: "MulticastPathPlan",
+    ) -> tuple["CommunicationLink", ...]:
+        """
+        Union links from both sides:
+          sources -> meeting (or direct)
+          meeting -> targets (or direct placeholder)
+        """
+        G = self.accelerator.cores
+        links: set[CommunicationLink] = set()
+
+        for path in plan.paths_from_sources.values():
+            for u, v in zip(path, path[1:], strict=False):
+                links.add(G.edges[(u, v)]["cl"])
+
+        for path in plan.paths_to_targets.values():
+            for u, v in zip(path, path[1:], strict=False):
+                links.add(G.edges[(u, v)]["cl"])
+
+        return tuple(sorted(links))
+
+    def _enumerate_multicast_plans(
+        self,
+        request: "MulticastRequest",
         *,
         offchip_mem_penalty: float = 1000.0,
-    ) -> list[MulticastPathPlan]:
+        k_paths: int = _K_PATHS_PER_TERMINAL,
+        beam_width: int = _BEAM_WIDTH,
+        max_allocations_per_meeting: int = _MAX_ALLOCATIONS_PER_MEETING,
+        max_meetings: int = _MAX_MEETINGS,
+    ) -> list["MulticastPathPlan"]:
         """
-        Minimal planner with weighted distances to avoid offchip hops:
-        - Meeting points are restricted to memory cores, excluding the offchip core, and limited to columns in use.
-        - Distances/paths use weights:
-            * weight = 1 for normal edges
-            * weight = `offchip_mem_penalty` for edges between the offchip core and any memory core
-        This strongly discourages paths that bounce via offchip.
-        - Broadcast (one source, many targets): rank meetings by sum of weighted distances m->targets.
-        - Join (many sources, one target):     rank meetings by sum of weighted distances sources->m.
-        - For each selected meeting, build weighted-shortest paths and return one plan per meeting.
-
-        The original graph is NOT modified.
+        Multi-src + multi-dst planner with:
+          - meeting constrained to request.possible_memory_cores when provided
+          - k-shortest simple paths per terminal (s->m and m->t)
+          - beam search to enumerate distinct low-cost unions of edges
         """
-        sources = request.sources
-        targets = request.destinations
+        sources = tuple(request.sources)
+        targets = tuple(request.destinations)
         if not sources or not targets:
             raise ValueError("sources and targets must be non-empty")
-        if len(sources) > 1 and len(targets) > 1:
-            raise ValueError("only one-to-many or many-to-one is supported")
 
         G = self.accelerator.cores
 
-        # Work on a COPY so we don't touch original edge attributes
+        # Copy graph and assign weights
         Gw = nx.DiGraph(G) if G.is_directed() else nx.Graph(G)
 
         offchip_id = self.accelerator.offchip_core_id
@@ -264,22 +245,26 @@ class CommunicationManager:
         def is_memory(n: "Core") -> bool:
             return getattr(n, "type", None) == "memory"
 
-        # Assign weights on the copy
         for u, v, d in Gw.edges(data=True):
             if (is_offchip(u) and is_memory(v)) or (is_offchip(v) and is_memory(u)):
                 d["w"] = float(offchip_mem_penalty)
             else:
                 d["w"] = 1.0
 
-        Grev = Gw.reverse(copy=False) if Gw.is_directed() else Gw  # for distances *to* targets
-
-        # Candidate meeting nodes: memory tiles, not offchip, and in used columns
-        candidates = request.possible_memory_cores
+        candidates = tuple(request.possible_memory_cores or ())
         if not candidates:
-            plans = self._get_simple_no_meeting_node_plans(sources, targets)
-            return plans
+            return self._get_simple_no_meeting_node_plans(sources, targets)
 
-        # Precompute weighted distances
+        # Precompute edge weights for incremental union scoring.
+        # Important: store the directed edge (u,v) as key exactly as produced by paths.
+        edge_w: dict[tuple, float] = {}
+        for u, v, d in Gw.edges(data=True):
+            edge_w[(u, v)] = float(d.get("w", 1.0))
+
+        # For meeting ranking: need dist(s->m) and dist(m->t)
+        # dist(m->t) is dist_to_target[t][m] using reverse graph single-source from t
+        Grev = Gw.reverse(copy=False) if Gw.is_directed() else Gw
+
         dist_from_sources: dict[Core, dict[Core, float]] = {
             s: nx.single_source_dijkstra_path_length(Gw, s, weight="w") for s in sources
         }
@@ -289,160 +274,166 @@ class CommunicationManager:
 
         INF = float("inf")
 
-        def objective(m: "Core") -> float:
-            if len(sources) == 1:
-                # broadcast: minimize sum weighted distances meeting->targets
-                return sum(dist_to_targets[t].get(m, INF) for t in targets)
-            else:
-                # join: minimize sum weighted distances sources->meeting
-                return sum(dist_from_sources[s].get(m, INF) for s in sources)
+        def meeting_objective(m: "Core") -> float:
+            a = 0.0
+            for s in sources:
+                a += dist_from_sources[s].get(m, INF)
+            for t in targets:
+                a += dist_to_targets[t].get(m, INF)  # equals dist(m->t) in original
+            return a
 
-        # Rank meetings and keep the best few (stable tie-break on node id if present)
-        ranked = sorted(((objective(m), m) for m in candidates), key=lambda x: (x[0], getattr(x[1], "id", 0)))
-        top_meetings = [m for score, m in ranked if score < INF]
+        ranked = sorted(
+            ((meeting_objective(m), m) for m in candidates),
+            key=lambda x: (x[0], getattr(x[1], "id", 0)),
+        )
+        top_meetings = [m for score, m in ranked if score < INF][:max_meetings]
         if not top_meetings:
             raise nx.NetworkXNoPath("no meeting node connects all endpoints")
 
-        plans: list[MulticastPathPlan] = []
+        all_plans: list[MulticastPathPlan] = []
+
         for m in top_meetings:
-            # Build weighted shortest paths on the COPY
-            paths_from_sources = {s: nx.shortest_path(Gw, s, m, weight="w") for s in sources}
-            paths_to_targets = {t: nx.shortest_path(Gw, m, t, weight="w") for t in targets}
+            # Build k path options for each terminal
+            # If any terminal has 0 paths, this meeting is infeasible.
+            src_options: dict[Core, list[list[Core]]] = {}
+            for s in sources:
+                opts = _iter_k_shortest_simple_paths(Gw, s, m, k=k_paths, weight="w")
+                if not opts:
+                    src_options = {}
+                    break
+                src_options[s] = opts
+            if not src_options:
+                continue
 
-            # Stitch full paths keyed by leaf endpoints
-            full_paths: dict[Core, list[Core]] = {}
-            if len(sources) == 1:
-                s0 = sources[0]
-                prefix = paths_from_sources[s0]
-                for t, m_to_t in paths_to_targets.items():
-                    full_paths[t] = prefix[:-1] + m_to_t
-                overlap_edges = max(0, len(prefix) - 1)
-            else:
-                t0 = targets[0]
-                tail = paths_to_targets[t0]
-                for s, s_to_m in paths_from_sources.items():
-                    full_paths[s] = s_to_m[:-1] + tail
-                overlap_edges = max(0, len(tail) - 1)
+            tgt_options: dict[Core, list[list[Core]]] = {}
+            for t in targets:
+                opts = _iter_k_shortest_simple_paths(Gw, m, t, k=k_paths, weight="w")
+                if not opts:
+                    tgt_options = {}
+                    break
+                tgt_options[t] = opts
+            if not tgt_options:
+                continue
 
-            plans.append(
-                MulticastPathPlan(
-                    sources=tuple(sources),
-                    targets=tuple(targets),
-                    meeting=m,
-                    paths_from_sources=paths_from_sources,
-                    paths_to_targets=paths_to_targets,
-                    full_paths=full_paths,
-                    total_hops_objective=int(objective(m)),  # weighted objective now
-                    overlap_edges=overlap_edges,
+            # Beam search over terminals: first sources, then targets (deterministic order)
+            init = _BeamState(
+                edges=frozenset(),
+                score=0.0,
+                paths_from_sources={},
+                paths_to_targets={},
+            )
+            beam: list[_BeamState] = [init]
+
+            def push_candidates(
+                beam: list[_BeamState],
+                key,
+                options: list[list["Core"]],
+                into_sources: bool,
+            ) -> list[_BeamState]:
+                next_states: list[_BeamState] = []
+                for st in beam:
+                    current_edges = set(st.edges)
+                    for p in options:
+                        ep = _path_edge_pairs(p)
+                        add_cost = _edge_weight_sum_new(ep, current_edges=current_edges, edge_w=edge_w)
+                        new_edges = frozenset(current_edges.union(ep))
+
+                        if into_sources:
+                            new_pfs = dict(st.paths_from_sources)
+                            new_pfs[key] = p
+                            new_pts = st.paths_to_targets
+                        else:
+                            new_pts = dict(st.paths_to_targets)
+                            new_pts[key] = p
+                            new_pfs = st.paths_from_sources
+
+                        next_states.append(
+                            _BeamState(
+                                edges=new_edges,
+                                score=st.score + add_cost,
+                                paths_from_sources=new_pfs,
+                                paths_to_targets=new_pts,
+                            )
+                        )
+
+                # Keep best beam_width by score, tie-break by size and stable repr
+                next_states.sort(
+                    key=lambda s: (
+                        s.score,
+                        len(s.edges),
+                    )
                 )
+                return next_states[:beam_width]
+
+            for s in sources:
+                beam = push_candidates(beam, s, src_options[s], into_sources=True)
+                if not beam:
+                    break
+
+            if not beam:
+                continue
+
+            for t in targets:
+                beam = push_candidates(beam, t, tgt_options[t], into_sources=False)
+                if not beam:
+                    break
+
+            if not beam:
+                continue
+
+            # Emit up to max_allocations_per_meeting plans for this meeting
+            # Ensure uniqueness by edge set.
+            seen_edge_sets: set[frozenset[tuple]] = set()
+            for st in beam:
+                if st.edges in seen_edge_sets:
+                    continue
+                seen_edge_sets.add(st.edges)
+
+                all_plans.append(
+                    MulticastPathPlan(
+                        sources=sources,
+                        targets=targets,
+                        meeting=m,
+                        paths_from_sources=st.paths_from_sources,
+                        paths_to_targets=st.paths_to_targets,
+                        full_paths={},  # optional; keep if your dataclass still has it
+                        total_hops_objective=st.score,
+                        overlap_edges=0,
+                    )
+                )
+                if len(seen_edge_sets) >= max_allocations_per_meeting:
+                    break
+
+        if not all_plans:
+            raise nx.NetworkXNoPath("no feasible meeting plan found")
+
+        # Global sort so results are stable (and good plans first)
+        all_plans.sort(
+            key=lambda p: (
+                float(getattr(p, "total_hops_objective", 0.0)),
+                getattr(getattr(p, "meeting", None), "id", 0),
             )
-
-        return plans
-
-    def get_links_for_unicast_plan(
-        self,
-        plan: "UnicastPathPlan",
-    ) -> tuple["CommunicationLink", ...]:
-        """
-        Return the unique CommunicationLink objects required to execute a given unicast plan.
-
-        Args:
-            plan: A UnicastPlan with .full_paths specifying the node sequences.
-
-        Returns:
-            A tuple of unique CommunicationLink objects (edge attribute 'cl'),
-            sorted for deterministic output.
-        """
-        G = self.accelerator.cores
-        links: set[CommunicationLink] = set()
-        for u, v in zip(plan.full_paths, plan.full_paths[1:], strict=False):
-            links.add(G.edges[(u, v)]["cl"])
-        return tuple(sorted(links))
-
-    def get_links_for_multicast_plan(
-        self,
-        plan: "MulticastPathPlan",
-    ) -> tuple["CommunicationLink", ...]:
-        """
-        Return the unique CommunicationLink objects required to execute a given multicast plan.
-
-        Args:
-            plan: A MulticastPathPlan with .full_paths specifying the node sequences.
-
-        Returns:
-            A tuple of unique CommunicationLink objects (edge attribute 'cl'),
-            sorted for deterministic output.
-        """
-        G = self.accelerator.cores
-        links: set[CommunicationLink] = set()
-        for path in plan.full_paths.values():
-            for u, v in zip(path, path[1:], strict=False):
-                links.add(G.edges[(u, v)]["cl"])
-        return tuple(sorted(links))
-
-    def transfer_tensor(
-        self,
-        tensor: SubviewTensor,
-        sender: Core | int,
-        receiver: Core | int,
-        receiver_memory_operand: MemoryOperand,
-        start_timestep: int,
-        duration: int,
-        link_bw_fraction: float = 1.0,
-    ):
-        """
-        Transfers a tensor from sender to receiver, possibly using a fraction of the link bandwidth.
-        Normalizes bandwidth if total requested exceeds link capacity.
-        Creates a CommunicationEvent if the transfer is new across all links.
-        """
-        assert 0 <= link_bw_fraction <= 1
-        end_timestep = start_timestep + duration
-        if isinstance(sender, int):
-            sender = self.accelerator.get_core(sender)
-        if isinstance(receiver, int):
-            receiver = self.accelerator.get_core(receiver)
-        links = self.get_all_links_for_pair(sender, receiver)
-        links = links[0]  # take only the first path
-        if not links:  # When sender == receiver
-            return 0, 0
-
-        cles = [
-            CommunicationLinkEvent(
-                type="transfer",
-                start=start_timestep,
-                end=end_timestep,
-                tensors=[tensor],
-                energy=duration * link.unit_energy_cost,
-                activity=link.bandwidth,
-                source=sender,
-                destinations=[receiver],
-            )
-            for link in links
-        ]
-
-        link_energy_cost = 0
-        is_new_event_across_all_links = True
-        for link, cle in zip(links, cles, strict=False):
-            transfer_energy_cost, is_new_event = link.transfer(cle)
-            if is_new_event:
-                link_energy_cost += transfer_energy_cost
-            else:
-                is_new_event_across_all_links = False
-        if is_new_event_across_all_links:
-            event = CommunicationEvent(
-                id=self.event_id,
-                tasks=cles,
-                sender=sender,
-                receiver=receiver,
-            )
-            self.events.append(event)
-            self.event_id += 1
-        # Energy cost of memory reads/writes on sender/receiver
-        # For this we need to know the memory operand in order to know where in the sender/receiver the tensor is stored
-        # We assume the tensor to be sent is defined from the sender perspective, so we take its operand as the sender
-        # memory operand
-        sender_memory_operand = tensor.memory_operand
-        memory_energy_cost = self.accelerator.get_memory_energy_cost_of_transfer(
-            tensor, sender, receiver, sender_memory_operand, receiver_memory_operand
         )
-        return link_energy_cost, memory_energy_cost
+        return all_plans
+
+    def get_possible_resource_allocations(
+        self,
+        src_allocs: list["Core"],
+        dst_allocs: list["Core"],
+        possible_memory_cores: tuple["Core", ...],
+    ) -> tuple[tuple["CommunicationLink", ...], ...]:
+        request = MulticastRequest(
+            sources=src_allocs,  # type: ignore
+            destinations=dst_allocs,  # type: ignore
+            possible_memory_cores=possible_memory_cores,
+        )
+
+        multicast_plans = self._enumerate_multicast_plans(request)
+
+        possible_paths: set[tuple[CommunicationLink, ...]] = set()
+        for multicast_plan in multicast_plans:
+            links_used = self._get_links_for_multicast_plan(multicast_plan)
+            possible_paths.add(links_used)
+
+        # Stable output ordering
+        return tuple(sorted(possible_paths, key=lambda x: (len(x), repr(x)))[:_MAX_POSSIBLE_ALLOCATIONS])

@@ -25,7 +25,7 @@ from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
-from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.steady_state.node import Node
 from stream.workload.steady_state.tensor import SteadyStateTensor
 from stream.workload.steady_state.transfer import SteadyStateTransfer
 from stream.workload.steady_state.workload import SteadyStateWorkload
@@ -64,7 +64,7 @@ class AIECodeGenerationStage(Stage):
 
     def create_edge_op(
         self,
-        workload: DiGraphWrapper[SteadyStateNode],
+        workload: DiGraphWrapper[Node],
         edge: SteadyStateTensor,
         transfer_ops: dict[SteadyStateTransfer, TransferOp],
     ) -> EdgeOp:
@@ -91,7 +91,7 @@ class AIECodeGenerationStage(Stage):
 
     def create_transfer_op(  # noqa: PLR0912, PLR0915
         self,
-        workload: DiGraphWrapper[SteadyStateNode],
+        workload: DiGraphWrapper[Node],
         transfer: SteadyStateTransfer,
         compute_ops: dict[SteadyStateComputation, ComputationNodeOp],
         edge_ops: dict[SteadyStateTensor, EdgeOp],
@@ -238,7 +238,7 @@ class AIECodeGenerationStage(Stage):
 
     def create_computation_node_op(
         self,
-        workload: DiGraphWrapper[SteadyStateNode],
+        workload: DiGraphWrapper[Node],
         compute: SteadyStateComputation,
         transfer_ops: dict[SteadyStateTransfer, TransferOp],
     ) -> ComputationNodeOp:

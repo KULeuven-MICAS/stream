@@ -3,11 +3,11 @@ from zigzag.workload.layer_node import LayerNodeAttributes
 
 from stream.hardware.architecture.core import Core
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
-from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.steady_state.node import Node
 from stream.workload.workload import ComputationNode
 
 
-class SteadyStateComputation(ComputationNode, SteadyStateNode):
+class SteadyStateComputation(ComputationNode, Node):
     """A ComputationNode that is also aware of steady-state scheduling and metrics."""
 
     def __init__(  # noqa: PLR0913
@@ -54,7 +54,7 @@ class SteadyStateComputation(ComputationNode, SteadyStateNode):
         )
 
         # Initialize SteadyStateNode (explicitly, since ComputationNode also inherits from Node)
-        SteadyStateNode.__init__(
+        Node.__init__(
             self=self,
             id=id,
             node_name=node_name,

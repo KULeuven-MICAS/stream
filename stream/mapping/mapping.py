@@ -7,23 +7,27 @@ from typing import Any
 from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.datatypes import InterCoreTiling
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.workload.workload import Node, Workload
+
+Resource = Core | tuple[CommunicationLink, ...]
 
 
 @dataclass(slots=True)
-class LayerMapping:
-    """Mapping attributes for a single workload Node (layer)."""
+class NodeMapping:
+    """Mapping attributes for a single workload Node. A Node can be either a ComputationNode or a TransferNode."""
 
-    core_allocation: list[Core] = field(default_factory=list)
-    inter_core_tiling: InterCoreTiling = field(default_factory=list)
+    core_allocation: tuple[Resource, ...] = field(default_factory=tuple)
+    inter_core_tiling: InterCoreTiling = field(default_factory=tuple)
+    memory_allocation: tuple[Core, ...] = field(default_factory=tuple)
     kernel: AIEKernel | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.core_allocation, list):
-            raise TypeError("core_allocation must be a list of Core objects")
+        if not isinstance(self.core_allocation, tuple):
+            raise TypeError("core_allocation must be a tuple of Resource objects")
 
-        if not isinstance(self.inter_core_tiling, list):
-            raise TypeError("inter_core_tiling must be a list of (dimension, factor) tuples")
+        if not isinstance(self.inter_core_tiling, tuple):
+            raise TypeError("inter_core_tiling must be a tuple of (dimension, factor) tuples")
 
         for item in self.inter_core_tiling:
             if not (isinstance(item, tuple) and len(item) == 2):
@@ -40,44 +44,46 @@ class LayerMapping:
 class Mapping:
     """Holds per-Node mapping information across multiple layers."""
 
-    def __init__(self, initial: dict[Node, LayerMapping] | None = None) -> None:
-        self._by_node: dict[Node, LayerMapping] = {}
+    def __init__(self, initial: dict[Node, NodeMapping] | None = None) -> None:
+        self._by_node: dict[Node, NodeMapping] = {}
         if initial:
             for node, layer_mapping in initial.items():
                 self.set(node, layer_mapping)
 
-    def set(self, node: Node, layer_mapping: LayerMapping) -> None:
+    def set(self, node: Node, layer_mapping: NodeMapping) -> None:
         if node is None:
             raise ValueError("node must not be None")
-        if not isinstance(layer_mapping, LayerMapping):
+        if not isinstance(layer_mapping, NodeMapping):
             raise TypeError("layer_mapping must be a LayerMapping instance")
         self._by_node[node] = layer_mapping
 
     def set_for_node(
         self,
         node: Node,
-        core_allocation: list[Core],
+        core_allocation: tuple[Resource, ...],
         inter_core_tiling: InterCoreTiling,
+        memory_allocation: tuple[Core, ...] = (),
         kernel: AIEKernel | None = None,
     ) -> None:
         self.set(
             node,
-            LayerMapping(
+            NodeMapping(
                 core_allocation=core_allocation,
                 inter_core_tiling=inter_core_tiling,
                 kernel=kernel,
+                memory_allocation=memory_allocation,
             ),
         )
 
-    def get(self, node: Node) -> LayerMapping:
+    def get(self, node: Node) -> NodeMapping:
         layer_mapping = self._by_node.get(node)
         assert layer_mapping is not None, f"No LayerMapping found for node {node}"
         return layer_mapping
 
-    def __getitem__(self, node: Node) -> LayerMapping:
+    def __getitem__(self, node: Node) -> NodeMapping:
         return self._by_node[node]
 
-    def __setitem__(self, node: Node, layer_mapping: LayerMapping) -> None:
+    def __setitem__(self, node: Node, layer_mapping: NodeMapping) -> None:
         self.set(node, layer_mapping)
 
     def __contains__(self, node: object) -> bool:
@@ -89,13 +95,13 @@ class Mapping:
     def __iter__(self) -> Iterator[Node]:
         return iter(self._by_node)
 
-    def items(self) -> Iterable[tuple[Node, LayerMapping]]:
+    def items(self) -> Iterable[tuple[Node, NodeMapping]]:
         return self._by_node.items()
 
     def nodes(self) -> Iterable[Node]:
         return self._by_node.keys()
 
-    def values(self) -> Iterable[LayerMapping]:
+    def values(self) -> Iterable[NodeMapping]:
         return self._by_node.values()
 
     def to_dict(self) -> dict[str, dict[str, Any]]:

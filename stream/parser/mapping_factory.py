@@ -6,7 +6,7 @@ from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.mapping.mapping import LayerMapping, Mapping
+from stream.mapping.mapping import Mapping, NodeMapping
 from stream.workload.workload import ComputationNode, Workload
 
 
@@ -21,12 +21,12 @@ class MappingFactory:
         # For each computation node in the graph set up mapping attributes
         for cn in self.workload.get_computation_nodes():
             mapping_data = self.get_mapping_data_for_node(cn)
-            core_allocation = self.get_core_allocation(mapping_data)
+            core_allocation = tuple(self.get_core_allocation(mapping_data))
             inter_core_tiling = self.create_inter_core_tiling(mapping_data, node=cn)
             kernel = self.create_kernel(mapping_data)
             mapping.set(
                 cn,
-                LayerMapping(
+                NodeMapping(
                     core_allocation=core_allocation,
                     inter_core_tiling=inter_core_tiling,
                     kernel=kernel,
@@ -68,7 +68,7 @@ class MappingFactory:
         return kernel(**kernel_kwargs)
 
     def create_inter_core_tiling(self, mapping_data: dict[str, Any], node: ComputationNode) -> Any:
-        return [self._convert_layer_dim_int_pair(pair, node) for pair in mapping_data["inter_core_tiling"]]
+        return tuple(self._convert_layer_dim_int_pair(pair, node) for pair in mapping_data["inter_core_tiling"])
 
     def _convert_layer_dim_int_pair(self, pair: str, node: ComputationNode):
         """Convert strings such as `D, 4` into a LayerDim and int"""

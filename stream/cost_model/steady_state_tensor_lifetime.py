@@ -6,7 +6,7 @@ import seaborn
 from matplotlib import patches
 from matplotlib import pyplot as plt
 
-from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.steady_state.node import Node
 from stream.workload.steady_state.tensor import SteadyStateTensor
 from stream.workload.steady_state.workload import SteadyStateWorkload
 
@@ -28,8 +28,8 @@ class TensorLifetimeAnalyzer:
         self.workload = workload
         self.tensor_nodes: list[SteadyStateTensor] = workload.tensor_nodes
         self.lifetimes: list[TensorLifetime] = []
-        self.node_start_times: dict[SteadyStateNode, int] = {}
-        self.node_finish_times: dict[SteadyStateNode, int] = {}
+        self.node_start_times: dict[Node, int] = {}
+        self.node_finish_times: dict[Node, int] = {}
         self.resource_times: dict[Any, int] = {}
         self._schedule_nodes_per_resource()
         self._analyze_lifetimes()
@@ -40,7 +40,7 @@ class TensorLifetimeAnalyzer:
         Assumes each node has a .runtime property (default 1 if missing).
         """
         # Group nodes by their chosen_resource_allocation
-        resource_to_nodes: dict[Any, list[SteadyStateNode]] = {}
+        resource_to_nodes: dict[Any, list[Node]] = {}
         for node in self.workload.nodes():
             resource = getattr(node, "chosen_resource_allocation", None)
             resource_to_nodes.setdefault(resource, []).append(node)

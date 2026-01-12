@@ -23,4 +23,4 @@ class LayerDim(Symbol):
             raise ValueError(f"LayerDim name {self.name!r} is not in the expected format 'D{{index}}'")
 
 
-InterCoreTiling = list[tuple[LayerDim, int]]
+InterCoreTiling = tuple[tuple[LayerDim, int], ...]

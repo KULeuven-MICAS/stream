@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any
+
+from zigzag.cost_model.cost_model import CostModelEvaluation
+from zigzag.utils import pickle_deepcopy
 
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
-from stream.mapping.mapping import Mapping
-from stream.workload.workload import ComputationNode, Workload
-from zigzag.cost_model.cost_model import CostModelEvaluation
-from zigzag.utils import pickle_deepcopy
+from stream.workload.workload import ComputationNode
 
 
 @dataclass
@@ -36,7 +36,7 @@ class ZigZagCostEstimator:
             mapping=getattr(cme, "mapping", None),
             layer=node,
         )
-    
+
     def run_zigzag(
         self, node: ComputationNode, too_large_operands: list[MemoryOperand], core_id: int
     ) -> CostModelEvaluation:
@@ -76,7 +76,7 @@ class ZigZagCostEstimator:
             has_dram_level=(len(too_large_operands) > 0),
         )
         return main_stage
-    
+
     def get_cc_per_op(self, op_type: str):
         """Return the number of cycles that the operational units need to finish the given operation."""
         match op_type:
@@ -107,6 +107,3 @@ class ZigZagCostEstimator:
         )
 
         return new_cme
-
-
-

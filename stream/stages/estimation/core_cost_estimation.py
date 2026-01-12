@@ -1,27 +1,21 @@
 import logging
 import os
-from math import ceil, prod
+from math import ceil
 from typing import Any
 
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import Constants, MemoryOperand
-from zigzag.hardware.architecture.memory_level import MemoryLevel
-from zigzag.hardware.architecture.memory_port import DataDirection, PortAllocation
 from zigzag.mapping.temporal_mapping import TemporalMappingType
-from zigzag.stages.evaluation.cost_model_evaluation import CostModelStage
-from zigzag.stages.mapping.spatial_mapping_generation import SpatialMappingGeneratorStage
-from zigzag.stages.mapping.temporal_mapping_generator_stage import TemporalMappingGeneratorStage
 from zigzag.stages.stage import Stage as ZigZagStage
 from zigzag.utils import pickle_deepcopy
 
-from stream.mapping.mapping import Mapping
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
+from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
 from stream.stages.estimation.aie_cost_estimator import AIECostEstimator
 from stream.stages.estimation.zigzag_cost_estimator import ZigZagCostEstimator
-from stream.stages.generation.layer_stacks_generation import STACK_T
 from stream.stages.stage import Stage, StageCallable
 from stream.visualization.cost_model_evaluation_lut import (
     visualize_cost_lut_pickle,
@@ -129,7 +123,6 @@ class CoreCostEstimationStage(Stage):
             for n in self.cost_lut.get_nodes()
         }
         visualize_cost_lut_pickle(self.cost_lut, scale_factors, self.visualize_cost_lut_path)
-
 
 
 class MinimalBandwidthLatencyStage(ZigZagStage):

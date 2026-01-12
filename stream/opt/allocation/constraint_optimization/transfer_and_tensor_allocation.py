@@ -21,7 +21,7 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
 )
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.iteration_space import ComputeTileReuse, MemTileReuse
-from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.steady_state.node import Node
 from stream.workload.steady_state.tensor import SteadyStateTensor, TensorFlag
 from stream.workload.steady_state.transfer import SteadyStateTransfer
 from stream.workload.steady_state.workload import SteadyStateWorkload
@@ -48,7 +48,7 @@ class TransferAndTensorAllocator:
     def __init__(
         self,
         ssw: SteadyStateWorkload,
-        tsa: TimeSlotAllocation,
+        timeslots: dict[Node, int],
         accelerator: Accelerator,
         *,
         iterations: int = 1,
@@ -58,12 +58,12 @@ class TransferAndTensorAllocator:
         context: TransferAndTensorContext | None = None,
     ):
         self.ssw = ssw
-        self.tsa = tsa
+        self.timeslots = timeslots
         self.accelerator = accelerator
         self.context = context or build_transfer_context(accelerator, nb_cols_to_use=nb_cols_to_use)
         self.offchip_core_id = self.context.offchip_core_id
         self.iterations = iterations
-        self.max_slot = tsa.slot_max
+        self.max_slot = max(timeslots.values()) if timeslots else 0
         self.big_m = big_m or len(ssw.nodes()) + 5
         self.force_io_transfers_on_mem_tile = self.context.force_io_transfers_on_mem_tile
 
@@ -622,19 +622,19 @@ class TransferAndTensorAllocator:
     def _init_idle_indicators(self, max_s: int, big_m: int) -> None:
         self.idleS: dict[tuple[Resource, int], gp.Var | int] = {}
         self.idleE: dict[tuple[Resource, int], gp.Var | int] = {}
-        self._init_fixed_idle_indicators(max_s)
+        # self._init_fixed_idle_indicators(max_s)
         self._init_link_idle_indicators(max_s, big_m)
 
-    def _init_fixed_idle_indicators(self, max_s: int) -> None:
-        for res in self.tsa.resources:
-            if res is None or (isinstance(res, Core) and res.id == self.offchip_core_id):
-                continue
-            first_busy, last_busy = self._first_last_busy_slot(res)
-            if first_busy is None or last_busy is None:
-                continue
-            for s in range(max_s + 1):
-                self.idleS[(res, s)] = 1 if s < first_busy else 0
-                self.idleE[(res, s)] = 1 if s > last_busy else 0
+    # def _init_fixed_idle_indicators(self, max_s: int) -> None:
+    #     for res in self.tsa.resources:
+    #         if res is None or (isinstance(res, Core) and res.id == self.offchip_core_id):
+    #             continue
+    #         first_busy, last_busy = self._first_last_busy_slot(res)
+    #         if first_busy is None or last_busy is None:
+    #             continue
+    #         for s in range(max_s + 1):
+    #             self.idleS[(res, s)] = 1 if s < first_busy else 0
+    #             self.idleE[(res, s)] = 1 if s > last_busy else 0
 
     def _init_link_idle_indicators(self, max_s: int, big_m: int) -> None:
         self.link_used: dict[CommunicationLink, gp.Var] = {}
@@ -793,7 +793,7 @@ class TransferAndTensorAllocator:
         self.update_transfer_memory_core_allocation()
 
         # ---------- rebuild TSA with new resources ---------------------
-        new_allocs: list[tuple[int, Resource, SteadyStateNode]] = []
+        new_allocs: list[tuple[int, Resource, Node]] = []
         for slot, res, node in self.tsa.allocations:
             if isinstance(node, SteadyStateTensor):
                 if res is None:

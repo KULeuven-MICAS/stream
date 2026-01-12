@@ -1,16 +1,18 @@
 from dataclasses import dataclass
+from math import ceil, floor, prod
 
-from math import floor, prod, ceil
+from xdsl.dialects.builtin import BFloat16Type, FixedBitwidthType
 
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
 from stream.workload.workload import ComputationNode, Workload
-from xdsl.dialects.builtin import BFloat16Type, FixedBitwidthType
+
 
 @dataclass
 class AIECostEstimator:
     """Simple utilization-based estimator for AIE compute cores."""
+
     workload: Workload
     mapping: Mapping
 
@@ -36,9 +38,9 @@ class AIECostEstimator:
             layer=node,
             metadata={"utilization": utilization},
         )
-    
+
     def ops_per_cycle(self, node: ComputationNode, core: Core) -> int:
-        """Depending on the node inputs and output data type and core type, 
+        """Depending on the node inputs and output data type and core type,
         return the number of operations per cycle."""
         inputs_datatype = [inp.output.operand_type for inp in node.inputs]
         assert all(dt == inputs_datatype[0] for dt in inputs_datatype), "All input datatypes must be the same."
@@ -64,6 +66,6 @@ class AIECostEstimator:
 
     def raise_not_implemented_for_datatypes(self, input_datatype, output_datatype, core) -> NotImplementedError:
         return NotImplementedError(
-                    f"Ops per cycle not implemented for input datatype {input_datatype} "
-                    f"and output datatype {output_datatype} on core type {core.core_type}."
-                )
+            f"Ops per cycle not implemented for input datatype {input_datatype} "
+            f"and output datatype {output_datatype} on core type {core.core_type}."
+        )

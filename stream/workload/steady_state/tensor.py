@@ -7,7 +7,7 @@ from zigzag.datatypes import LayerOperand
 
 from stream.hardware.architecture.core import Core
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
-from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.steady_state.node import Node
 from stream.workload.tensor import SubviewTensor, SubviewTensorInputs
 
 
@@ -18,7 +18,7 @@ class TensorFlag(Flag):
     OUTPUT = auto()
 
 
-class SteadyStateTensor(SteadyStateNode, SubviewTensor):
+class SteadyStateTensor(Node, SubviewTensor):
     """
     Node representing a tensor (slice) participating in the steady-state graph.
     full_shape : tuple[int, ...] | None
@@ -42,7 +42,7 @@ class SteadyStateTensor(SteadyStateNode, SubviewTensor):
         full_shape: Sequence[int] | None = None,
         slices_per_full: int | None = None,
     ):
-        SteadyStateNode.__init__(
+        Node.__init__(
             self=self,
             id=id,
             node_name=node_name,

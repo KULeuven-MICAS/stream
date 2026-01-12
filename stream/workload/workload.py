@@ -401,3 +401,12 @@ class Workload(DiGraphWrapper[Node]):
         # Save to file
         dot.write_png(filepath)
         print(f"Graph saved to {filepath}")
+
+    def get_timeslots(self) -> dict[Node, int]:
+        timeslots = {}
+        slot = 0
+        for generation in nx.topological_generations(self):
+            for node in generation:
+                timeslots[node] = slot
+                slot += 1
+        return timeslots

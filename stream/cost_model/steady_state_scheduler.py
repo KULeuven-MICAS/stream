@@ -1,6 +1,7 @@
 import os
 from collections import defaultdict
 from functools import reduce
+from math import prod
 
 import networkx as nx
 from zigzag.datatypes import LayerOperand
@@ -10,12 +11,13 @@ from stream.cost_model.communication_manager import MulticastRequest
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.mapping.mapping import Mapping
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import TimeSlotAllocation
 from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
-from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.steady_state.node import Node
 from stream.workload.steady_state.rolling_buffer import SteadyStateRollingBuffer
 from stream.workload.steady_state.tensor import SteadyStateTensor, TensorFlag
 from stream.workload.steady_state.transfer import SteadyStateTransfer, TransferType
@@ -77,13 +79,17 @@ class SteadyStateScheduler:
         Returns:
             TimeSlotAllocation: The scheduled workload.
         """
-        # Get the subgraph of the workload that is relevant for the steady state allocation
-        ssw = self.prepare_graph()
-        # Convert to TimeSlotAllocation with fixed timeslots for all nodes
-        tsa = ssw.to_timeslotallocation()
+        # Update the workload graph to include transfer nodes
+        ssw = self.build_transfer_graph()
+        # Calculate the number of iterations based on the steady state iteration spaces
+        self.iterations = self.calculate_iterations()
+        # Calculate the multiplicity of each node's execution in the steady state workload
+        multiplicities = self.calculate_multiplicities()
+        # Get the timeslots for all nodes
+        timeslots = ssw.get_timeslots()
         # At this point, the only nodes without an allocation are the transfer nodes
         tta = TransferAndTensorAllocator(
-            ssw, tsa, accelerator=self.accelerator, iterations=self.iterations, nb_cols_to_use=self.nb_cols_to_use
+            ssw, timeslots, accelerator=self.accelerator, iterations=self.iterations, nb_cols_to_use=self.nb_cols_to_use
         )
         tsa_upd, ssw_upd, total_latency_solver = tta.solve()
         print(tsa_upd)
@@ -103,7 +109,7 @@ class SteadyStateScheduler:
         self.steady_state_workload = ssw_upd
         return self
 
-    def prepare_graph(self) -> Workload:
+    def build_transfer_graph(self) -> Workload:
         new_workload = self.workload.copy()
         # Go through the edges of the graph and insert transfers between all nodes
         for edge in self.workload.edges():
@@ -120,7 +126,54 @@ class SteadyStateScheduler:
             new_workload.add_node(transfer_node)
             new_workload.add_edge(src, transfer_node)
             new_workload.add_edge(transfer_node, dst)
+            # Update the Mapping to include the transfer node's possible resource allocations
+            possible_memory_cores = self.determine_possible_memory_allocations(src, dst)
+            possible_allocations = self.determine_possible_transfer_allocations(
+                transfer_node, dst, possible_memory_cores
+            )
+            self.mapping.set_for_node(
+                transfer_node,
+                core_allocation=possible_allocations,
+                inter_core_tiling=tuple(),
+                memory_allocation=possible_memory_cores,
+            )
         return new_workload
+
+    def determine_possible_memory_allocations(self, src: HasOutput, dst: HasInputs) -> tuple[Core, ...]:
+        is_constant_transfer = isinstance(src, InEdge) or isinstance(dst, OutEdge)
+        if is_constant_transfer:
+            possible_memory_cores = self._get_possible_memory_core_allocations()
+        else:
+            possible_memory_cores = tuple()
+        return possible_memory_cores
+
+    def determine_possible_transfer_allocations(
+        self, transfer_node: TransferNode, dst: HasInputs, possible_memory_cores: tuple[Core, ...]
+    ) -> tuple[tuple[CommunicationLink, ...], ...]:
+        src = transfer_node.inputs[0]
+        src_allocs = self.retrieve_node_allocation(src)
+        dst_allocs = self.retrieve_node_allocation(dst)
+
+        possible_resource_allocations = self.accelerator.communication_manager.get_possible_resource_allocations(
+            src_allocs=src_allocs,
+            dst_allocs=dst_allocs,
+            possible_memory_cores=possible_memory_cores,
+        )
+        return possible_resource_allocations
+
+    def calculate_iterations(self) -> int:
+        """Calculate the amount of steady state iterations based on all nodes' SSIS."""
+        iterations_per_node = {node: prod(ssis.get_temporal_sizes()) for node, ssis in self.ssis.items()}
+        # For now, return the minimum number of iterations across all nodes
+        return min(iterations_per_node.values())
+
+    def calculate_multiplicities(self) -> dict[ComputationNode, int]:
+        """Calculate the multiplicity of each computation node in the steady state workload."""
+        multiplicities = {}
+        for node, ssis in self.ssis.items():
+            total_iterations = prod(ssis.get_temporal_sizes())
+            multiplicities[node] = total_iterations // self.iterations
+        return multiplicities
 
     def retrieve_node_allocation(self, node: Node) -> list[Core]:
         if isinstance(node, InEdge):
@@ -660,15 +713,15 @@ class SteadyStateScheduler:
 
     def get_grouped_post_transfer_tensor_nodes_and_successors(
         self,
-        successors: list[SteadyStateNode],
+        successors: list[Node],
         pre_transfer_tensor: SteadyStateTensor,
     ) -> tuple[
         dict[tuple[tuple[int, int], ...], tuple[SteadyStateTensor, ...]],
-        dict[tuple[tuple[int, int], ...], tuple[SteadyStateNode, ...]],
+        dict[tuple[tuple[int, int], ...], tuple[Node, ...]],
     ]:
         "Grouped by loop ranges to get one joint transfer per broadcastable input."
         post_transfer_tensor_nodes: dict[tuple[tuple[int, int], ...], list[SteadyStateTensor]] = defaultdict(list)
-        grouped_successors: dict[tuple[tuple[int, int], ...], list[SteadyStateNode]] = defaultdict(list)
+        grouped_successors: dict[tuple[tuple[int, int], ...], list[Node]] = defaultdict(list)
         # # Extra check that groups all successors and post transfers in one in case all are on the same col id
         # first_succ_col_id = next(iter(successors)).chosen_resource_allocation.col_id if successors else None
         # if first_succ_col_id is not None and all(
@@ -747,15 +800,15 @@ class SteadyStateScheduler:
 
     def get_grouped_pre_transfer_tensor_nodes_and_predecessors(
         self,
-        predecessors: list[SteadyStateNode],
+        predecessors: list[Node],
         post_transfer_tensor: SteadyStateTensor,
     ) -> tuple[
         dict[int, tuple[SteadyStateTensor, ...]],
-        dict[int, tuple[SteadyStateNode, ...]],
+        dict[int, tuple[Node, ...]],
     ]:
         """Grouped by the predecessor's col id to get one joint transfer per outputs mapped to the same column."""
         pre_transfer_tensor_nodes: dict[int, list[SteadyStateTensor]] = defaultdict(list)
-        grouped_predecessors: dict[int, list[SteadyStateNode]] = defaultdict(list)
+        grouped_predecessors: dict[int, list[Node]] = defaultdict(list)
         for i, predecessor in enumerate(predecessors):
             assert isinstance(predecessor, SteadyStateComputation), "Predecessor should be SteadyStateComputation."
             loop_relevancy_info = post_transfer_tensor.origin.loop_relevancy_info
@@ -815,12 +868,12 @@ class SteadyStateScheduler:
                 destinations=dst_allocs,  # type: ignore
                 possible_memory_cores=None,
             )
-            multicast_plans = self.accelerator.communication_manager.enumerate_multicast_plans(
+            multicast_plans = self.accelerator.communication_manager._enumerate_multicast_plans(
                 request,
             )
             possible_paths = set()
             for multicast_plan in multicast_plans:
-                links_used = self.accelerator.communication_manager.get_links_for_multicast_plan(multicast_plan)
+                links_used = self.accelerator.communication_manager._get_links_for_multicast_plan(multicast_plan)
                 if links_used:  # empty path possible for identical src and dst as part of a multicast
                     possible_paths.add(links_used)
             # Set the possible resource allocation for the transfer node (this also sets the chosen resource allocation)
@@ -845,12 +898,12 @@ class SteadyStateScheduler:
                 destinations=dst_allocs,  # type: ignore
                 possible_memory_cores=possible_memory_cores,
             )
-            multicast_plans = self.accelerator.communication_manager.enumerate_multicast_plans(
+            multicast_plans = self.accelerator.communication_manager._enumerate_multicast_plans(
                 request,
             )
             possible_paths = set()
             for multicast_plan in multicast_plans:
-                links_used = self.accelerator.communication_manager.get_links_for_multicast_plan(multicast_plan)
+                links_used = self.accelerator.communication_manager._get_links_for_multicast_plan(multicast_plan)
                 possible_paths.add(links_used)
             # Set the possible resource allocation for the transfer node (this also sets the chosen resource allocation)
             transfer_node.set_possible_resource_allocation(tuple(possible_paths))
@@ -871,10 +924,7 @@ class SteadyStateScheduler:
                 memory_cores.add(core)
         return memory_cores
 
-    def _get_possible_memory_core_allocations(self, transfer_node: SteadyStateTransfer) -> tuple[Core, ...]:
-        assert TensorFlag.CONSTANT in transfer_node.srcs[0].tensor_flag, (
-            f"{transfer_node} should be a constant transfer."
-        )
+    def _get_possible_memory_core_allocations(self) -> tuple[Core, ...]:
         all_mem_cores = self._get_accelerator_memory_cores()
         candidates = [mem_core for mem_core in all_mem_cores if not mem_core.id == self.accelerator.offchip_core_id]
         return tuple(candidates)

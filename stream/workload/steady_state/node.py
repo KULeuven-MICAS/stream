@@ -5,7 +5,7 @@ from stream.hardware.architecture.noc.communication_link import CommunicationLin
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 
 
-class SteadyStateNode(ABC):  # noqa: B024
+class Node(ABC):  # noqa: B024
     """Abstract base class for nodes in the steady state graph."""
 
     def __init__(  # noqa: PLR0913
