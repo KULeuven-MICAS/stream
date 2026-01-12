@@ -32,7 +32,7 @@ from stream.workload.steady_state.workload import SteadyStateWorkload
 
 
 class AIECodeGenerationStage(Stage):
-    REQUIRED_FIELDS = ("codegen_path",)
+    REQUIRED_FIELDS = tuple()
 
     def __init__(
         self,
@@ -47,8 +47,6 @@ class AIECodeGenerationStage(Stage):
         # add custom dialects and passes
         self.context.load_dialect(Stream)
         self.context.load_dialect(TSL)
-
-        self.output_path: str = self.ctx.require_value("codegen_path", self.__class__.__name__)
 
         self.trace_size = self.ctx.get("trace_size", 1048576)
         self.npu = self.ctx.get("npu", "npu2")
@@ -354,10 +352,6 @@ class AIECodeGenerationStage(Stage):
         # if False:
         # AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
 
-        # print output to codegen path
-        # file = open(self.output_path, "w")
-        # printer = Printer(file)
-        # printer.print(module)
         self.module = module
 
     def is_leaf(self) -> bool:

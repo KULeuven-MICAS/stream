@@ -41,8 +41,9 @@ class TilingGenerationStage(Stage):
         self.tiled_sizes = self.substitute_loop_sizes_with_tiled_sizes()
         self.steady_state_iteration_spaces = self.generate_steady_state_iteration_spaces()
         self.tiled_workload = self.workload.with_modified_dimension_sizes(self.tiled_sizes)
+        self.tiled_mapping = self.mapping.with_updated_workload(self.tiled_workload)
 
-        self.ctx.set(ssis=self.steady_state_iteration_spaces, workload=self.tiled_workload)
+        self.ctx.set(ssis=self.steady_state_iteration_spaces, workload=self.tiled_workload, mapping=self.tiled_mapping)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
@@ -169,7 +170,7 @@ class TilingGenerationStage(Stage):
         for node in self.workload.get_computation_nodes():
             node_mapping = self.mapping.get(node)
             assert node_mapping is not None, f"No mapping found for node {node.name}"
-            spatial_unrollings[node] = self._convert_inter_core_tiling_dims(node)
+            spatial_unrollings[node] = self.workload.get_unique_dims_inter_core_tiling(node, self.mapping)
 
         unique_spatial_unrollings: set[tuple[LayerDim, int]] = set()
         for unrollings in spatial_unrollings.values():
@@ -183,18 +184,6 @@ class TilingGenerationStage(Stage):
                     unique_spatial_unrollings.discard(existing)
                     unique_spatial_unrollings.add((dim, size))
         return spatial_unrollings, unique_spatial_unrollings
-
-    def _convert_inter_core_tiling_dims(self, node: ComputationNode) -> InterCoreTiling:
-        """Convert inter_core_tiling dimensions from LayerDim to unique workload indices."""
-        node_mapping = self.mapping.get(node)
-        assert node_mapping is not None, f"No mapping found for node {node.name}"
-        unique_node_dims = self.workload.get_dims(node)
-        converted_tiling: InterCoreTiling = []
-        for dim, factor in node_mapping.inter_core_tiling:
-            dim_idx = dim.get_idx()
-            unique_dim = unique_node_dims[dim_idx]
-            converted_tiling.append((unique_dim, factor))
-        return converted_tiling
 
     def _get_total_spatial_unrolling_for_dim(
         self,

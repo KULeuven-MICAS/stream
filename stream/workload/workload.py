@@ -1,17 +1,23 @@
 from abc import ABC
 from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import Flag
 from itertools import combinations
-from typing import cast
+from math import prod
+from typing import TYPE_CHECKING, cast
 
 import networkx as nx
 import sympy as sp
+from networkx.drawing.nx_pydot import to_pydot  # type: ignore
 from snaxc.ir.dart.affine_transform import AffineTransform
 from xdsl.dialects.builtin import FixedBitwidthType
 from xdsl.ir.affine import AffineDimExpr, AffineExpr, AffineMap
 from zigzag.utils import DiGraphWrapper
 
-from stream.datatypes import LayerDim
+from stream.datatypes import InterCoreTiling, LayerDim
+
+if TYPE_CHECKING:
+    from stream.mapping.mapping import Mapping
 
 
 @dataclass(frozen=True)
@@ -20,7 +26,7 @@ class Tensor:
     shape: tuple[int, ...]
 
     def size_elements(self) -> int:
-        return sp.prod(self.shape)
+        return prod(self.shape)
 
     def size_bits(self) -> int:
         return self.operand_type.bitwidth * self.size_elements()
@@ -49,6 +55,21 @@ class InEdge(HasOutput): ...
 class OutEdge(HasInputs): ...
 
 
+class TransferType(Flag):
+    """Flags for different types of data transfer operations (can be combined)."""
+
+    UNICAST = 1
+    DISTRIBUTE = 2
+    BROADCAST = 3
+    JOIN = 4
+    REDUCE = 5
+
+
+@dataclass(frozen=True)
+class TransferNode(HasInputs, HasOutput):
+    transfer_type: TransferType
+
+
 @dataclass(frozen=True)
 class ComputationNode(HasOutput, HasInputs):
     operand_mapping: tuple[AffineMap, ...]
@@ -74,9 +95,26 @@ class ComputationNode(HasOutput, HasInputs):
     def tensors(self) -> tuple[Tensor, ...]:
         return tuple(inp.output for inp in self.inputs) + (self.output,)
 
+    def has_same_performance(self, other: "ComputationNode") -> bool:
+        """Check if this computation node has the same performance characteristics as another node.
+        This is a simple check based on operand data types and shapes.
+        More sophisticated checks may be needed in the future."""
+        if len(self.inputs) != len(other.inputs):
+            return False
+        for inp_self, inp_other in zip(self.inputs, other.inputs, strict=True):
+            if inp_self.output.operand_type != inp_other.output.operand_type:
+                return False
+            if inp_self.output.shape != inp_other.output.shape:
+                return False
+        if self.output.operand_type != other.output.operand_type:
+            return False
+        if self.output.shape != other.output.shape:
+            return False
+        return True
+
 
 class Workload(DiGraphWrapper[Node]):
-    def __init__(self, nodes: Sequence[Node]):
+    def __init__(self, nodes: Sequence[Node] = ()):
         graph = nx.DiGraph()
         graph.add_nodes_from(nodes)
         for node in nodes:
@@ -151,6 +189,12 @@ class Workload(DiGraphWrapper[Node]):
     def get_computation_nodes(self) -> tuple[ComputationNode, ...]:
         return tuple(cast(ComputationNode, node) for node in self.nodes if isinstance(node, ComputationNode))
 
+    def get_node_by_name(self, name: str) -> Node:
+        for node in self.nodes:
+            if node.name == name:
+                return node
+        raise KeyError(f"No node with name {name} found in workload.")
+
     def get_in_edges(self) -> tuple[InEdge, ...]:
         return tuple(cast(InEdge, node) for node in self.nodes if isinstance(node, InEdge))
 
@@ -211,6 +255,18 @@ class Workload(DiGraphWrapper[Node]):
             dim_values.append(sp.simplify(expr))
 
         return z, dim_values
+
+    def get_unique_dims_inter_core_tiling(self, node: ComputationNode, mapping: "Mapping") -> InterCoreTiling:
+        """Convert inter_core_tiling dimensions from LayerDim to unique workload indices."""
+        node_mapping = mapping.get(node)
+        assert node_mapping is not None, f"No mapping found for node {node.name}"
+        unique_node_dims = self.get_dims(node)
+        converted_tiling: InterCoreTiling = []
+        for dim, factor in node_mapping.inter_core_tiling:
+            dim_idx = dim.get_idx()
+            unique_dim = unique_node_dims[dim_idx]
+            converted_tiling.append((unique_dim, factor))
+        return converted_tiling
 
     def with_modified_dimension_sizes(self, new_sizes: dict[int, int]) -> "Workload":
         """Create a new workload where the dimension sizes of the given global dimension indices are modified to the new
@@ -295,3 +351,53 @@ class Workload(DiGraphWrapper[Node]):
             new_nodes.append(new_node)
 
         return Workload(new_nodes)
+
+    def visualize_to_file(self, filepath: str = "workload_graph.png"):
+        """Visualize the graph using Graphviz and save it to an image file.
+
+        Nodes are laid out horizontally by topological generation,
+        and vertically stacked to avoid overlap. The resource is displayed
+        below each node in a clean and readable way.
+        """
+        dot = to_pydot(self)
+
+        # Set global graph layout left to right
+        dot.set_rankdir("LR")
+        dot.set_concentrate(True)
+
+        # Determine node positions based on topological generations
+        generation_to_nodes = {}
+        for gen_idx, generation in enumerate(nx.topological_generations(self)):
+            generation_to_nodes[gen_idx] = list(generation)
+
+        # Assign nodes to horizontal positions based on their generation
+        for gen_idx, nodes in generation_to_nodes.items():
+            for idx, node in enumerate(nodes):
+                n = dot.get_node(str(node))[0]
+                n.set_pos(f"{gen_idx},{-idx}!")  # Horizontal by generation, vertical by index
+
+        # Customize node appearances and add resource labels
+        for node in self.nodes():
+            n = dot.get_node(str(node))[0]
+            if isinstance(node, ComputationNode):
+                dim_sizes = {dim: self.get_dimension_size(dim) for dim in self.get_dims(node)}
+                n.set_shape("ellipse")
+                n.set_label(f"{node.name}\nDims: {dim_sizes}")
+                n.set_style("filled")
+                n.set_fillcolor("#60bcf0")
+            elif isinstance(node, InEdge):
+                n.set_shape("box")
+                n.set_label(f"{node.name}\nShape: {node.output.shape}")
+                n.set_style("filled")
+                n.set_fillcolor("#eaff76e1")
+            elif isinstance(node, OutEdge):
+                n.set_shape("box")
+                n.set_label(f"{node.name}\nShape: {node.inputs[0].output.shape}")
+                n.set_style("filled")
+                n.set_fillcolor("#c2f0c2")
+            else:
+                raise ValueError(f"Unknown node type: {type(node)}")
+
+        # Save to file
+        dot.write_png(filepath)
+        print(f"Graph saved to {filepath}")

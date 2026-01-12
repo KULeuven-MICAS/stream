@@ -26,7 +26,7 @@ from zigzag.datatypes import LayerOperand, MemoryOperand
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.opt.allocation.constraint_optimization.config import ComputeMilpConfig, ConstraintOptStageConfig
+from stream.opt.allocation.constraint_optimization.config import ConstraintOptStageConfig
 from stream.opt.allocation.constraint_optimization.context import ConstraintContext, build_constraint_context
 from stream.opt.allocation.constraint_optimization.utils import (
     convert_ids,
@@ -86,7 +86,6 @@ class ComputeAllocator:
         accelerator: Accelerator,
         cost_lut: CoreCostLUT,
         context: ConstraintContext,
-        compute_cfg: ComputeMilpConfig,
         *,
         iterations: int = 1,
     ) -> None:

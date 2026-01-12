@@ -9,7 +9,7 @@ from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
 
 if TYPE_CHECKING:
-    from stream.workload.computation.computation_node import ComputationNode
+    from stream.workload.workload import ComputationNode
 
 logger = logging.getLogger(__name__)
 

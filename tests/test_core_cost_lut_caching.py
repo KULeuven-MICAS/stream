@@ -9,7 +9,7 @@ from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.parser.mapping_parser import MappingParser
 from stream.parser.onnx.model import ONNXModelParser
 from stream.stages.context import StageContext
-from stream.stages.estimation.zigzag_core_mapping_estimation import CoreCostEstimationStage
+from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
 
 
 def build_accelerator(hardware_path: str):

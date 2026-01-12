@@ -1,5 +1,6 @@
 import os
 from collections import defaultdict
+from functools import reduce
 
 import networkx as nx
 from zigzag.datatypes import LayerOperand
@@ -9,6 +10,7 @@ from stream.cost_model.communication_manager import MulticastRequest
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
+from stream.mapping.mapping import Mapping
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import TimeSlotAllocation
 from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
 from stream.workload.steady_state.computation import SteadyStateComputation
@@ -19,7 +21,17 @@ from stream.workload.steady_state.tensor import SteadyStateTensor, TensorFlag
 from stream.workload.steady_state.transfer import SteadyStateTransfer, TransferType
 from stream.workload.steady_state.workload import SteadyStateWorkload
 from stream.workload.utils import get_real_in_edges, get_real_out_edges
-from stream.workload.workload import ComputationNode, Workload
+from stream.workload.workload import (
+    ComputationNode,
+    HasInputs,
+    HasOutput,
+    InEdge,
+    Node,
+    OutEdge,
+    TransferNode,
+    TransferType,
+    Workload,
+)
 
 
 class SteadyStateScheduler:
@@ -27,9 +39,9 @@ class SteadyStateScheduler:
         self,
         workload: Workload,
         accelerator: "Accelerator",
-        original_workload: Workload,
+        mapping: Mapping,
+        ssis: dict[ComputationNode, SteadyStateIterationSpace],
         cost_lut: CoreCostLUT,
-        iterations: int,
         nb_cols_to_use: int = 4,
         output_path: str = "",
     ):
@@ -41,23 +53,16 @@ class SteadyStateScheduler:
         """
         self.workload = workload  # Only contains nodes that are part of the current fusion stack
         self.accelerator = accelerator
-        self.original_workload = original_workload
+        self.mapping = mapping
+        self.ssis = ssis
         self.cost_lut = cost_lut
-        self.iterations = iterations
-        self.current_node_id = 0
         self.partitioned_nodes: dict[ComputationNode, list[SteadyStateComputation]] = {}
-        self.constant_tensors: dict[int, SteadyStateTensor] = {}
-
-        # Steady state workload that will be set after running the scheduler
-        self.steady_state_workload: SteadyStateWorkload | None = None
+        self.constant_tensors: dict[int, InEdge | OutEdge] = {}
 
         # Cost model parameters
         self.latency_total = -1
         self.latency_per_iteration = -1
         self.overlap_between_iterations = -1
-
-        self.allow_constant_tensors_on_mem_core = False
-        self.allow_constant_tensors_on_compute_core = False
 
         self.nb_cols_to_use = nb_cols_to_use
 
@@ -65,18 +70,15 @@ class SteadyStateScheduler:
         if self.output_path:
             os.makedirs(self.output_path, exist_ok=True)
 
-    def run(self, allocation: "TimeSlotAllocation"):
+    def run(self):
         """
-        Run the steady state scheduler on the given allocation.
-
-        Args:
-            allocation (TimeSlotAllocation): The allocation to be scheduled.
+        Run the steady state scheduler on the given workload.
 
         Returns:
-            TimeSlotAllocation: The scheduled allocation.
+            TimeSlotAllocation: The scheduled workload.
         """
         # Get the subgraph of the workload that is relevant for the steady state allocation
-        ssw = self.prepare_graph(allocation)
+        ssw = self.prepare_graph()
         # Convert to TimeSlotAllocation with fixed timeslots for all nodes
         tsa = ssw.to_timeslotallocation()
         # At this point, the only nodes without an allocation are the transfer nodes
@@ -101,26 +103,101 @@ class SteadyStateScheduler:
         self.steady_state_workload = ssw_upd
         return self
 
-    def prepare_graph(self, allocation: "TimeSlotAllocation") -> SteadyStateWorkload:
-        steady_state_subgraph = self.get_workload_subgraph(allocation)
-        # Create a new SteadyStateWorkload to hold the scheduled nodes, tensors and transfers
-        ssw = SteadyStateWorkload()
-        # Add all computation nodes from the subgraph to the SteadyStateWorkload
-        ssw = self.add_computation_nodes(ssw, steady_state_subgraph, allocation)
-        ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_0.png"))
-        # Add the ConstantTensorNodes to the SteadyStateWorkload
-        ssw = self.add_constant_tensor_nodes(ssw, steady_state_subgraph)
-        ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_1.png"))
-        # Add the non-constant tensors from this iteration to the SteadyStateWorkload
-        ssw = self.add_this_iteration_nonconstant_tensor_nodes(ssw)
-        ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_2.png"))
-        # Add the TransferNodes to the SteadyStateWorkload
-        ssw = self.add_transfer_nodes(ssw)
-        ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_3.png"))
-        # Bufferize the non-constant steady state tensors
-        ssw = self.bufferize_nonconstant_tensors(ssw)
-        ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_4.png"))
-        return ssw
+    def prepare_graph(self) -> Workload:
+        new_workload = self.workload.copy()
+        # Go through the edges of the graph and insert transfers between all nodes
+        for edge in self.workload.edges():
+            edge: tuple[HasOutput, Node]
+            src, dst = edge
+            tensor = src.output
+            # Determine transfer type
+            transfer_type = self.determine_transfer_type(src, dst)
+            # Remove original edge from new_workload and insert transfer in between
+            transfer_node = TransferNode(
+                name=f"Transfer {src.name}", output=tensor, inputs=(src,), transfer_type=transfer_type
+            )
+            new_workload.remove_edge(src, dst)
+            new_workload.add_node(transfer_node)
+            new_workload.add_edge(src, transfer_node)
+            new_workload.add_edge(transfer_node, dst)
+        return new_workload
+
+    def retrieve_node_allocation(self, node: Node) -> list[Core]:
+        if isinstance(node, InEdge):
+            return [
+                self.accelerator.get_core(self.accelerator.offchip_core_id),
+            ]
+        if isinstance(node, OutEdge):
+            return [
+                self.accelerator.get_core(self.accelerator.offchip_core_id),
+            ]
+        if isinstance(node, HasOutput):
+            return self.mapping.get(node).core_allocation
+        raise ValueError(f"Unexpected source node type: {type(node)}")
+
+    def determine_transfer_type(self, src: HasOutput, dst: HasInputs) -> TransferType:
+        src_allocation = self.retrieve_node_allocation(src)
+        dst_allocation = self.retrieve_node_allocation(dst)
+        _, all_dims = self.workload.unique_dimensions()
+        if isinstance(src, ComputationNode):
+            tensor_operand_mapping = src.operand_mapping[-1]
+            global_mapping = self.workload.global_mapping(src, tensor_operand_mapping)
+        else:
+            assert isinstance(dst, ComputationNode), "Either src or dst must be a ComputationNode"
+            tensor_operand_mapping = dst.operand_mapping[dst.inputs.index(src)]
+            global_mapping = self.workload.global_mapping(dst, tensor_operand_mapping)
+        # Find the unique dimensions of the tensor being transfered
+        tensor_dims = [all_dims[expr.position] for expr in global_mapping.results]
+        if isinstance(src, InEdge):
+            src_inter_core_tiling = []
+        else:
+            assert isinstance(src, ComputationNode), "Src should be ComputationNode or InEdge"
+            src_inter_core_tiling = self.workload.get_unique_dims_inter_core_tiling(src, self.mapping)
+        src_inter_core_tiling_dims = [dim for dim, _ in src_inter_core_tiling]
+        if isinstance(dst, OutEdge):
+            dst_inter_core_tiling = []
+        else:
+            assert isinstance(dst, ComputationNode), "Dst should be ComputationNode or OutEdge"
+            dst_inter_core_tiling = self.workload.get_unique_dims_inter_core_tiling(dst, self.mapping)
+        dst_inter_core_tiling_dims = [dim for dim, _ in dst_inter_core_tiling]
+        transfer_types = []
+        # If the src has an inter_core_tiling with a dim not in the tensor dim, we need to reduce it
+        if any(dim not in tensor_dims for dim in src_inter_core_tiling_dims):
+            transfer_types.append(TransferType.REDUCE)
+        # If dst tiling is equal to src tiling, it's a unicast
+        elif dst_inter_core_tiling == src_inter_core_tiling:
+            transfer_types.append(TransferType.UNICAST)
+        elif len(src_allocation) > 1:
+            transfer_types.append(TransferType.JOIN)
+
+        # If the dst has an inter_core_tiling with all dims in the tensor dim,
+        if any(dim in tensor_dims for dim in dst_inter_core_tiling_dims) and TransferType.UNICAST not in transfer_types:
+            transfer_types.append(TransferType.DISTRIBUTE)
+        if (
+            any(dim not in tensor_dims for dim in dst_inter_core_tiling_dims)
+            and TransferType.UNICAST not in transfer_types
+        ):
+            transfer_types.append(TransferType.BROADCAST)
+        return reduce(lambda a, b: a | b, transfer_types)
+
+        # # Create a new SteadyStateWorkload to hold the scheduled nodes, tensors and transfers
+        # ssw = SteadyStateWorkload()
+        # # Add all computation nodes from the subgraph to the SteadyStateWorkload
+        # ssw = self.add_computation_nodes(ssw, steady_state_subgraph, allocation)
+        # ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_0.png"))
+        # # Add the ConstantTensorNodes to the SteadyStateWorkload
+        # ssw = self.add_constant_tensor_nodes(ssw, steady_state_subgraph)
+        # ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_1.png"))
+        # # Add the non-constant tensors from this iteration to the SteadyStateWorkload
+        # ssw = self.add_this_iteration_nonconstant_tensor_nodes(ssw)
+        # ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_2.png"))
+        # # Add the TransferNodes to the SteadyStateWorkload
+        # ssw = self.add_transfer_nodes(ssw)
+        # ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_3.png"))
+        # # Bufferize the non-constant steady state tensors
+        # ssw = self.bufferize_nonconstant_tensors(ssw)
+        # ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_4.png"))
+        # return ssw
 
     def get_workload_subgraph(self, allocation: "TimeSlotAllocation") -> Workload:
         """

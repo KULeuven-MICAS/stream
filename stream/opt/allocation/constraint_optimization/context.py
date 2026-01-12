@@ -8,7 +8,6 @@ from gurobipy import GRB
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.config import (
-    ComputeMilpConfig,
     ConstraintOptStageConfig,
     CoreConstraintProfile,
     CoreRole,
@@ -31,15 +30,6 @@ class ConstraintContext:
 
     def core_ids(self) -> list[int]:
         return sorted(c.id for c in self.compute_cores)
-
-
-def _capacity_for_core(
-    core: Core, profile: CoreConstraintProfile, compute_cfg: ComputeMilpConfig, accelerator: Accelerator
-) -> float:
-    mem_op = compute_cfg.capacity_operand_override or profile.capacity_operand
-    if mem_op is None:
-        return float("inf")
-    return accelerator.get_top_instance_of_core(core, mem_op).size
 
 
 def build_constraint_context(
@@ -67,9 +57,7 @@ def build_constraint_context(
     cache_cores = _cores_with(CoreRole.CACHE)
     io_cores = _cores_with(CoreRole.IO) + _cores_with(CoreRole.SHIM)
 
-    capacities: dict[Core, float] = {
-        c: _capacity_for_core(c, core_profiles[c], compute_cfg, accelerator) for c in compute_cores
-    }
+    capacities: dict[Core, float] = {c: c.get_memory_capacity() for c in compute_cores}
 
     return ConstraintContext(
         core_profiles=core_profiles,

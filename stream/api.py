@@ -11,8 +11,8 @@ from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.context import StageContext
+from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
 
-# from stream.stages.estimation.zigzag_core_mapping_estimation import CoreCostEstimationStage
 # from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
 # from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
 # from stream.stages.generation.tiled_workload_generation import TiledWorkloadGenerationStage
@@ -74,12 +74,8 @@ def optimize_allocation_ga(  # noqa: PLR0913
     _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
 
     # Create experiment_id path
-    os.makedirs(f"{output_path}/{experiment_id}", exist_ok=True)
-
-    # Output paths
-    tiled_workload_path = f"{output_path}/{experiment_id}/tiled_workload.pickle"
-    cost_lut_path = f"{output_path}/{experiment_id}/cost_lut.pickle"
-    scme_path = f"{output_path}/{experiment_id}/scme.pickle"
+    output_path = f"{output_path}/{experiment_id}"
+    os.makedirs(output_path, exist_ok=True)
 
     # Get logger
     logger = _logging.getLogger(__name__)
@@ -93,6 +89,7 @@ def optimize_allocation_ga(  # noqa: PLR0913
         raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
 
     # Load SCME if it exists and skip_if_exists is True
+    scme_path = f"{output_path}/scme.pickle"
     if os.path.exists(scme_path) and skip_if_exists:
         scme = pickle_load(scme_path)
         logger.info(f"Loaded SCME from {scme_path}")
@@ -106,8 +103,7 @@ def optimize_allocation_ga(  # noqa: PLR0913
             nb_ga_individuals=nb_ga_individuals,  # number of individuals in each ga generation
             mode=mode,
             layer_stacks=layer_stacks,
-            tiled_workload_path=tiled_workload_path,
-            cost_lut_path=cost_lut_path,
+            output_path=output_path,
             temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
             operands_to_prefetch=[],  # required by GeneticAlgorithmAllocationStage
         )
@@ -153,16 +149,8 @@ def optimize_allocation_co(  # noqa: PLR0913
     _sanity_check_gurobi_license()
 
     # Create experiment_id path
-    os.makedirs(f"{output_path}/{experiment_id}", exist_ok=True)
-
-    # Output paths
-    tiled_workload_path = f"{output_path}/{experiment_id}/tiled_workload.pickle"
-    cost_lut_path = f"{output_path}/{experiment_id}/cost_lut.pickle"
-    allocations_path = f"{output_path}/{experiment_id}/waco/"
-    tiled_workload_post_co_path = f"{output_path}/{experiment_id}/tiled_workload_post_co.pickle"
-    output_path = f"outputs/{experiment_id}/"
-    scme_path = f"{output_path}/{experiment_id}/scme.pickle"
-    codegen_path = f"{output_path}/{experiment_id}/output.mlir"
+    output_path = f"{output_path}/{experiment_id}"
+    os.makedirs(output_path, exist_ok=True)
 
     # Get logger
     logger = _logging.getLogger(__name__)
@@ -176,6 +164,7 @@ def optimize_allocation_co(  # noqa: PLR0913
         raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
 
     # Load SCME if it exists and skip_if_exists is True
+    scme_path = f"{output_path}/scme.pickle"
     if os.path.exists(scme_path) and skip_if_exists:
         module = pickle_load(scme_path)
         logger.info(f"Loaded SCME from {scme_path}")
@@ -185,21 +174,10 @@ def optimize_allocation_co(  # noqa: PLR0913
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
             MappingParserStage,
             TilingGenerationStage,
-            # # SteadyStateWorkloadGenerationStage
-            # # TiledWorkloadGenerationStage,  # remove
-            # CoreCostEstimationStage,
-            # SetFixedAllocationPerformanceStage,
-            # SchedulingOrderGenerationStage,  # remove?
+            CoreCostEstimationStage,
             ConstraintOptimizationAllocationStage,  # revamp to already use steady state workload
             # Add separate TETRA stage
         ]
-
-        # optionally add code generation stage
-        if enable_codegen:
-            from stream.stages.codegen.aie_code_generation import AIECodeGenerationStage  # noqa: PLC0415
-
-            stages = [AIECodeGenerationStage] + stages
-
         ctx = StageContext.from_kwargs(
             accelerator=hardware,  # required by AcceleratorParserStage
             workload_path=workload,  # required by ModelParserStage
@@ -207,20 +185,22 @@ def optimize_allocation_co(  # noqa: PLR0913
             loma_lpf_limit=6,  # required by LomaEngine
             mode=mode,
             layer_stacks=layer_stacks,
-            tiled_workload_path=tiled_workload_path,
-            cost_lut_path=cost_lut_path,
-            allocations_path=allocations_path,
-            tiled_workload_post_co_path=tiled_workload_post_co_path,
             output_path=output_path,
             temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
             operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
-            latency_attr="ideal_temporal_cycle",
-            codegen_path=codegen_path,
             trace_size=trace_size,
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
-            npu=npu,  # required by AIECodeGenerationStage
-            runtime_args=runtime_args,  # required by AIECodeGenerationStage
         )
+        # optionally add code generation stage
+        if enable_codegen:
+            from stream.stages.codegen.aie_code_generation import AIECodeGenerationStage  # noqa: PLC0415
+
+            stages = [AIECodeGenerationStage] + stages
+            ctx.set(
+                npu=npu,  # required by AIECodeGenerationStage
+                runtime_args=runtime_args,  # required by AIECodeGenerationStage
+            )
+
         mainstage = MainStage(stages, ctx)
         # Launch the MainStage
         answers = mainstage.run()

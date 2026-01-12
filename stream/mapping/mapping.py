@@ -7,7 +7,7 @@ from typing import Any
 from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.datatypes import InterCoreTiling
 from stream.hardware.architecture.core import Core
-from stream.workload.workload import Node
+from stream.workload.workload import Node, Workload
 
 
 @dataclass(slots=True)
@@ -69,8 +69,10 @@ class Mapping:
             ),
         )
 
-    def get(self, node: Node, default: LayerMapping | None = None) -> LayerMapping | None:
-        return self._by_node.get(node, default)
+    def get(self, node: Node) -> LayerMapping:
+        layer_mapping = self._by_node.get(node)
+        assert layer_mapping is not None, f"No LayerMapping found for node {node}"
+        return layer_mapping
 
     def __getitem__(self, node: Node) -> LayerMapping:
         return self._by_node[node]
@@ -111,3 +113,21 @@ class Mapping:
                 "kernel": dict(lm.kernel) if lm.kernel is not None else None,
             }
         return out
+
+    def with_updated_workload(self, workload: Workload) -> Mapping:
+        """Return a new Mapping instance with the same LayerMappings but updated to a new Workload.
+        This is useful when the Workload has been modified (e.g., tiled) and we want to keep the same
+        mapping information.
+        This assumes the names of the nodes are unique identifiers that remain unchanged between workloads.
+
+        Args:
+            workload (Workload): The new Workload instance.
+
+        Returns:
+            Mapping: A new Mapping instance with updated workload reference.
+        """
+        new_mapping = Mapping()
+        for node in self.nodes():
+            updated_node = workload.get_node_by_name(node.name)
+            new_mapping.set(updated_node, self.get(node))
+        return new_mapping

@@ -1,4 +1,5 @@
 import logging
+import os
 
 from stream.parser.onnx.model import ONNXModelParser
 from stream.stages.context import StageContext
@@ -8,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 
 class ONNXModelParserStage(Stage):
-    REQUIRED_FIELDS = ("workload_path", "mapping_path", "accelerator")
+    REQUIRED_FIELDS = ("workload_path", "output_path")
 
     def __init__(
         self,
@@ -16,18 +17,18 @@ class ONNXModelParserStage(Stage):
         ctx: StageContext,
     ):
         super().__init__(list_of_callables, ctx)
-        self.workload_path = self.ctx.require_value("workload_path", self.__class__.__name__)
-        mapping_path = self.ctx.require_value("mapping_path", self.__class__.__name__)
-        self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
+        self.workload_path = self.ctx.get("workload_path")
+        self.output_path = self.ctx.get("output_path")
+        self.workload_visualization_path = os.path.join(self.output_path, "workload_graph.png")
 
     def run(self):
         onnx_model_parser = ONNXModelParser(self.workload_path)
         onnx_model_parser.run()
         onnx_model = onnx_model_parser.onnx_model
         workload = onnx_model_parser.workload
+        workload.visualize_to_file(self.workload_visualization_path)
 
         self.ctx.set(
-            accelerator=self.accelerator,
             onnx_model=onnx_model,
             workload=workload,
         )

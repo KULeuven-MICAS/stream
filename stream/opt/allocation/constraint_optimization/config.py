@@ -60,23 +60,6 @@ class CoreConstraintProfile:
 
 
 @dataclass(frozen=True)
-class ComputeMilpConfig:
-    gap: float = 0.5
-    time_limit: int = 600
-    latency_attr: str = "latency_total1"
-    capacity_operand_override: MemoryOperand | None = MemoryOperand("I2")
-    eligible_roles: set[CoreRole] = field(default_factory=lambda: {CoreRole.COMPUTE})
-
-    def __post_init__(self) -> None:
-        if self.gap < 0:
-            raise ValueError("gap must be non-negative")
-        if self.time_limit <= 0:
-            raise ValueError("time_limit must be positive")
-        if not self.eligible_roles:
-            raise ValueError("eligible_roles must be non-empty")
-
-
-@dataclass(frozen=True)
 class TransferMilpConfig:
     # Currently unused in Phase 1; defaults mirror existing behavior.
     nb_cols_to_use: int = 4
@@ -91,7 +74,6 @@ class TransferMilpConfig:
 
 @dataclass(frozen=True)
 class ConstraintOptStageConfig:
-    compute: ComputeMilpConfig = field(default_factory=ComputeMilpConfig)
     transfer: TransferMilpConfig = field(default_factory=TransferMilpConfig)
     profiles: dict[str, CoreConstraintProfile] = field(default_factory=dict)
 
@@ -106,17 +88,11 @@ class ConstraintOptStageConfig:
         """
         Temporary adapter to convert legacy kwargs into a typed config.
         """
-        compute_cfg = ComputeMilpConfig(
-            gap=kwargs.get("gap", kwargs.get("co_gap", 0.5)),
-            time_limit=kwargs.get("time_limit", kwargs.get("co_time_limit", 600)),
-            latency_attr=kwargs.get("latency_attr", "latency_total1"),
-            capacity_operand_override=kwargs.get("capacity_operand_override", MemoryOperand("I2")),
-        )
         transfer_cfg = TransferMilpConfig(
             nb_cols_to_use=kwargs.get("nb_cols_to_use", 4),
         )
         profiles = kwargs.get("core_profiles", default_core_profiles())
-        return cls(compute=compute_cfg, transfer=transfer_cfg, profiles=profiles)
+        return cls(transfer=transfer_cfg, profiles=profiles)
 
 
 def default_core_profiles() -> dict[str, CoreConstraintProfile]:
