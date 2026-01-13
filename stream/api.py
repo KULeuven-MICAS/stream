@@ -15,7 +15,6 @@ from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStag
 
 # from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
 # from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
-# from stream.stages.generation.tiled_workload_generation import TiledWorkloadGenerationStage
 from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.mapping_parser import MappingParserStage
@@ -114,7 +113,6 @@ def optimize_allocation_ga(  # noqa: PLR0913
                 MappingParserStage,
                 # LayerStacksGenerationStage,
                 # TilingGenerationStage,
-                # TiledWorkloadGenerationStage,
                 # CoreCostEstimationStage,
                 # SetFixedAllocationPerformanceStage,
                 # SchedulingOrderGenerationStage,

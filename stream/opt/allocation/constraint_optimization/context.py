@@ -79,7 +79,7 @@ class TransferAndTensorContext:
     max_shim_tile_dma_channels: int
     object_fifo_cores: set[Core]
 
-    def add_object_fifo_constraints(self, model, object_fifo_depth: dict[Core, gp.LinExpr]) -> None:
+    def add_object_fifo_constraints(self, model: gp.Model, object_fifo_depth: dict[Core, gp.LinExpr]) -> None:
         for core, expr in object_fifo_depth.items():
             if core not in self.object_fifo_cores:
                 continue
