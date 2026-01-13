@@ -11,7 +11,7 @@ from zigzag.parser.onnx.utils import (
 
 from stream.onnx_utils import get_axis_attribute
 from stream.parser.onnx.utils import onnx_tensor_to_tensor
-from stream.workload.workload import HasOutput, Node, Tensor
+from stream.workload.workload import HasOutputs, Node, Tensor
 
 
 class OnnxOperatorParser(ONNXOperatorParserZigZag, metaclass=ABCMeta):
@@ -26,11 +26,11 @@ class OnnxOperatorParser(ONNXOperatorParserZigZag, metaclass=ABCMeta):
         self.nodes_outputs = nodes_outputs
         self.onnx_model = onnx_model
 
-    def run(self, name_to_node_dict: dict[str, HasOutput]) -> Generator[Node, None, None]:  # type: ignore
+    def run(self, name_to_node_dict: dict[str, HasOutputs]) -> Generator[Node, None, None]:  # type: ignore
         yield self.generate_node(name_to_node_dict)
 
     @abstractmethod
-    def generate_node(self, name_to_node_dict: dict[str, HasOutput]) -> Node: ...
+    def generate_node(self, name_to_node_dict: dict[str, HasOutputs]) -> Node: ...
 
     def get_operand_source_input_format(self):
         predecessors = self.get_node_predecessors()
@@ -131,8 +131,10 @@ class OnnxComputeOperatorParser(OnnxOperatorParser, metaclass=ABCMeta):
 
         return mapping
 
-    def get_output_tensor(self) -> Tensor:
+    def get_output_tensors(self) -> tuple[Tensor, ...]:
         # Get the input and output activation shapes
-        assert len(self.node.output) == 1
-        onnx_tensor = get_onnx_tensor_type(self.node.output[0], self.onnx_model)
-        return onnx_tensor_to_tensor(onnx_tensor)
+        onnx_tensors = [get_onnx_tensor_type(output, self.onnx_model) for output in self.node.output]
+        return tuple(
+            onnx_tensor_to_tensor(onnx_tensor, name=output)
+            for onnx_tensor, output in zip(onnx_tensors, self.node.output, strict=False)
+        )

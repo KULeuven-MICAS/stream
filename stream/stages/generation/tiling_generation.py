@@ -1,4 +1,5 @@
 import logging
+import os
 from collections import defaultdict
 from math import prod
 
@@ -7,6 +8,10 @@ from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.iteration_space import IterationVariable, SteadyStateIterationSpace
+from stream.workload.utils import (
+    collect_spatial_unrollings,
+    determine_fusion_dimensions,
+)
 from stream.workload.workload import ComputationNode, Workload
 
 logger = logging.getLogger(__name__)
@@ -21,7 +26,7 @@ class TilingGenerationStage(Stage):
     TODO: Add support for multiple layer stacks. Curently it assumes all layers are fused together.
     """
 
-    REQUIRED_FIELDS = ("workload", "mapping")
+    REQUIRED_FIELDS = ("workload", "mapping", "output_path")
 
     def __init__(
         self,
@@ -29,86 +34,80 @@ class TilingGenerationStage(Stage):
         ctx: StageContext,
     ):
         super().__init__(list_of_callables, ctx)
-        self.workload: Workload = self.ctx.require_value("workload", self.__class__.__name__)
-        self.mapping: Mapping = self.ctx.require_value("mapping", self.__class__.__name__)
-        self.fuse_dimensions: list[int] = []
+        self.workload: Workload = self.ctx.get("workload")
+        self.mapping: Mapping = self.ctx.get("mapping")
+        self.output_path: str = self.ctx.get("output_path")
+        self.fuse_dimensions: dict[LayerDim, int] = {}
         self.tiled_sizes: dict[int, int] = {}
         self.steady_state_iteration_spaces: dict[ComputationNode, SteadyStateIterationSpace] = {}
-        self.unique_dims, _ = self.workload.unique_dimensions()
+        self.unique_dims, self.dim_expressions = self.workload.unique_dimensions()
 
     def run(self):
-        self.fuse_dimensions = self.determine_fusion_dimensions()
+        self.fuse_dimensions = determine_fusion_dimensions(self.workload)
         self.tiled_sizes = self.substitute_loop_sizes_with_tiled_sizes()
-        self.steady_state_iteration_spaces = self.generate_steady_state_iteration_spaces()
         self.tiled_workload = self.workload.with_modified_dimension_sizes(self.tiled_sizes)
         self.tiled_mapping = self.mapping.with_updated_workload(self.tiled_workload)
+        self.tiled_dimensions = self.get_tiled_dimensions_in_function_of_nodes()
+        # self.steady_state_iteration_spaces = generate_steady_state_iteration_spaces(self.tiled_workload, self.tiled_mapping, self.fuse_dimensions)
 
-        self.ctx.set(ssis=self.steady_state_iteration_spaces, workload=self.tiled_workload, mapping=self.tiled_mapping)
+        self.tiled_workload.visualize_to_file(os.path.join(self.output_path, "tiled_workload.png"))
+        self.ctx.set(workload=self.tiled_workload, mapping=self.tiled_mapping, tiled_dimensions=self.tiled_dimensions)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
-
-    def determine_fusion_dimensions(self) -> list[int]:
-        """
-        Determine the best dimension to fuse the layers on.
-        Currently, we fuse on the dimension with the smallest total size across all layers.
-        """
-        dim_occurrence_count = defaultdict(int)
-        for node in self.workload.get_computation_nodes():
-            for dim in self.workload.get_dims(node):
-                dim_occurrence_count[dim] += 1
-        max_dim_count = max(dim_occurrence_count.values())
-        max_dims = tuple(k for k, v in dim_occurrence_count.items() if v == max_dim_count)
-        for max_dim in max_dims:
-            assert dim_occurrence_count[max_dim] == len(self.workload.get_computation_nodes()), (
-                "Not all layers share the same dimension for fusion."
-            )
-        return [max_dims[0]]  # only first dimension for now
 
     def substitute_loop_sizes_with_tiled_sizes(self):
         max_dims = self.fuse_dimensions
         unique_dims, _ = self.workload.unique_dimensions()
+        _, unique_spatial_unrollings = collect_spatial_unrollings(self.workload, self.mapping)
+        unique_unrollings_dict = dict(unique_spatial_unrollings)
         # Size for the new tiled dimensions
-        d = {dim: 1 for dim in max_dims}
+        d = {dim: unique_unrollings_dict.get(dim, 1) for dim in max_dims}
         for dim in set(unique_dims) - set(max_dims):
             size = self.workload.get_dimension_size(dim)
             d[dim] = size
         return d
 
-    def generate_steady_state_iteration_spaces(self):
-        spatial_unrollings, unique_spatial_unrollings = self._collect_spatial_unrollings()
-        iteration_variables = self._create_spatial_iteration_variables(spatial_unrollings, unique_spatial_unrollings)
-        temporal_unrollings = self._derive_temporal_unrollings(unique_spatial_unrollings)
-        self._add_temporal_iteration_variables(iteration_variables, temporal_unrollings)
-        ssis_dict = self._create_steady_state_iteration_spaces(iteration_variables)
-        return ssis_dict
+    def get_tiled_dimensions_in_function_of_nodes(self) -> dict[str, tuple[int, int]]:
+        result = {}
+        for dim, size in self.fuse_dimensions.items():
+            # Find node where this dim occurs
+            node = next(
+                n for (n, range) in self.workload.global_idxs.items() if self.dim_expressions.index(dim) in range
+            )
+            dim_idx = self.workload.get_dims(node).index(dim)
+            result[node.name] = (dim_idx, size)
+        return result
 
     def _create_steady_state_iteration_spaces(self, iteration_variables):
         """Create the steady state iteration spaces for each computation node."""
         ssis_dict: dict[ComputationNode, SteadyStateIterationSpace] = {}
-        for node in self.workload.get_computation_nodes():
+        for node in self.tiled_workload.get_computation_nodes():
             ssis_dict[node] = SteadyStateIterationSpace(iteration_variables[node])
             print(node.name, ssis_dict[node])
         return ssis_dict
 
     def _add_temporal_iteration_variables(self, iteration_variables, temporal_unrollings):
         """Iterate through all computation nodes and add the temporal iteration variables."""
-        for node in self.workload.get_computation_nodes():
+        for node in self.tiled_workload.get_computation_nodes():
             for temporal_unrolling in temporal_unrollings:
                 dim, size = temporal_unrolling
-                relevant = dim in self.workload.get_dims(node)
+                relevant = dim in self.tiled_workload.get_dims(node)
                 iteration_variables[node].append(IterationVariable(dim, size, relevant, spatial=False))
 
     def _derive_temporal_unrollings(self, unique_spatial_unrollings):
         """Iterate through the unique workload dimensions and get temporal unrollings"""
         temporal_unrollings: list[tuple[LayerDim, int]] = []  # list because order matters
         for dim in self.unique_dims:  # iterate in different order here if needed
-            size, rem = divmod(
-                self.workload.get_dimension_size(dim),
-                self._get_total_spatial_unrolling_for_dim(dim, unique_spatial_unrollings),
-            )
-            assert rem == 0, (
-                f"Dimension size {self.workload.get_dimension_size(dim)} not divisible by spatial unrolling {self._get_total_spatial_unrolling_for_dim(dim, unique_spatial_unrollings)}"
-            )
+            if dim not in self.fuse_dimensions:
+                size = 1
+            else:
+                size, rem = divmod(
+                    self.workload.get_dimension_size(dim),
+                    self._get_total_spatial_unrolling_for_dim(dim, unique_spatial_unrollings),
+                )
+                assert rem == 0, (
+                    f"Dimension size {self.workload.get_dimension_size(dim)} not divisible by spatial unrolling {self._get_total_spatial_unrolling_for_dim(dim, unique_spatial_unrollings)}"
+                )
             temporal_unrollings.append((dim, size))
         return temporal_unrollings
 

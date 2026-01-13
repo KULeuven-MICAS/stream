@@ -15,6 +15,7 @@ class TransferType(Flag):
     BROADCAST = 3
     JOIN = 4
     REDUCE = 5
+    NONE = 6
 
 
 class SteadyStateTransfer(Node):

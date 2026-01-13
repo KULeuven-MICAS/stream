@@ -80,6 +80,12 @@ class Mapping:
         assert layer_mapping is not None, f"No LayerMapping found for node {node}"
         return layer_mapping
 
+    def remove(self, node: Node) -> None:
+        """Remove a node entry from the mapping."""
+        if node not in self._by_node:
+            raise KeyError(f"Node {node} not found in mapping")
+        del self._by_node[node]
+
     def __getitem__(self, node: Node) -> NodeMapping:
         return self._by_node[node]
 

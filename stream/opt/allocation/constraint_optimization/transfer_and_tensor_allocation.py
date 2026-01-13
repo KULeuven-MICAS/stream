@@ -2,29 +2,31 @@
 import math
 from collections import defaultdict
 from math import ceil, prod
-from typing import Any, TypeAlias
+from typing import TypeAlias
 
 import gurobipy as gp
 from gurobipy import GRB, quicksum
 
+from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
+from stream.mapping.mapping import Mapping, Resource
 from stream.opt.allocation.constraint_optimization.context import (
     TransferAndTensorContext,
     build_transfer_context,
 )
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
-    Resource,
     TimeSlotAllocation,
     _resource_key,
 )
 from stream.workload.steady_state.computation import SteadyStateComputation
-from stream.workload.steady_state.iteration_space import ComputeTileReuse, MemTileReuse
+from stream.workload.steady_state.iteration_space import ComputeTileReuse, MemTileReuse, SteadyStateIterationSpace
 from stream.workload.steady_state.node import Node
 from stream.workload.steady_state.tensor import SteadyStateTensor, TensorFlag
 from stream.workload.steady_state.transfer import SteadyStateTransfer
 from stream.workload.steady_state.workload import SteadyStateWorkload
+from stream.workload.workload import ComputationNode, HasIterationSpace, Tensor, TransferNode, Workload
 
 PathKey: TypeAlias = tuple[SteadyStateTransfer, tuple[CommunicationLink, ...]]
 
@@ -47,48 +49,60 @@ class TransferAndTensorAllocator:
     # ------------------------------------------------------------ #
     def __init__(
         self,
-        ssw: SteadyStateWorkload,
+        workload: Workload,
         timeslots: dict[Node, int],
         accelerator: Accelerator,
+        iterations: int,
+        ssis: dict[HasIterationSpace, SteadyStateIterationSpace],
+        multiplicities: dict[ComputationNode, int],
+        mapping: Mapping,
+        cost_lut: CoreCostLUT,
         *,
-        iterations: int = 1,
         big_m: int | None = None,
         gurobi_verbosity: int = 1,
         nb_cols_to_use: int = 4,
         context: TransferAndTensorContext | None = None,
     ):
-        self.ssw = ssw
-        self.timeslots = timeslots
+        self.workload = workload
+        self.slot_of = timeslots
         self.accelerator = accelerator
         self.context = context or build_transfer_context(accelerator, nb_cols_to_use=nb_cols_to_use)
         self.offchip_core_id = self.context.offchip_core_id
         self.iterations = iterations
+        self.ssis = ssis
+        self.multiplicities = multiplicities
+        self.mapping = mapping
+        self.cost_lut = cost_lut
+
         self.max_slot = max(timeslots.values()) if timeslots else 0
-        self.big_m = big_m or len(ssw.nodes()) + 5
+        self.big_m = big_m or len(workload.nodes()) + 5
         self.force_io_transfers_on_mem_tile = self.context.force_io_transfers_on_mem_tile
 
         # ------------------- categorise nodes -------------------- #
-        self.ssc_nodes: list[SteadyStateComputation] = ssw.computation_nodes
-        self.transfer_nodes: list[SteadyStateTransfer] = ssw.transfer_nodes
+        self.ssc_nodes: list[ComputationNode] = workload.get_computation_nodes()
+        self.transfer_nodes: list[TransferNode] = workload.get_transfer_nodes()
 
-        # Fixed-vs-movable tensors
-        self.tensor_fixed: list[SteadyStateTensor] = []
-        self.tensor_var: list[SteadyStateTensor] = []
-        for t in ssw.tensor_nodes:
-            if len(t.possible_resource_allocation or []) <= 1 or t.chosen_resource_allocation is not None:
-                self.tensor_fixed.append(t)
-            else:
-                self.tensor_var.append(t)
-        assert not self.tensor_var, "Variable tensors are not supported since transfer firing changes."
+        # Possible tensor allocations
+        self.possible_tensor_allocations: dict[Tensor, list[Resource]] = {}
+        for in_edge in workload.get_in_edges():
+            self.possible_tensor_allocations[in_edge.output] = [self.accelerator.get_core(self.offchip_core_id)]
+        for node in workload.get_computation_nodes():
+            for t in node.tensors:
+                if t not in self.possible_tensor_allocations:
+                    self.possible_tensor_allocations[t] = self.mapping.get(node).core_allocation
+        for out_edge in workload.get_out_edges():
+            tensor = out_edge.inputs[0].output
+            self.possible_tensor_allocations[tensor] = [self.accelerator.get_core(self.offchip_core_id)]
 
-        # quick look-ups from TSA
-        self.slot_of: dict[Any, int] = {n: tsa.get_timeslot_of_node(n) for n in tsa.nodes}
-        self.resource_of: dict[Any, Resource] = {n: next(iter(tsa.get_resources_for_node(n))) for n in tsa.nodes}
+        # Possiblle transfer allocations
+        self.possible_transfer_allocations: dict[TransferNode, list[Resource]] = {}
+        for node in workload.get_transfer_nodes():
+            self.possible_transfer_allocations[node] = self.mapping.get(node).core_allocation
 
         # ------------------------------------------------------------------------------
         # memory cores that may act as on‑chip caches (exclude the DRAM/off‑chip id)
         # ------------------------------------------------------------------------------
-        self.FORCE_DOUBLE_BUFFERING = self.context.force_double_buffering
+        self.force_double_buffering = self.context.force_double_buffering
         self.mem_cores = list(self.context.mem_cores)
 
         # --------------- optimisation model ---------------------- #
@@ -144,12 +158,12 @@ class TransferAndTensorAllocator:
         """
         Ensure that all transfers have the same steady-state iteration space dimensions and sizes (SSIS).
         """
-        first_transfer_ssis = self.transfer_nodes[0].steady_state_iteration_space
+        first_ssis = self.ssis[self.transfer_nodes[0]]
         # first_transfer_ssis_dims = first_transfer_ssis.get_temporal_dimensions()
-        first_transfer_ssis_sizes = first_transfer_ssis.get_temporal_sizes()
+        first_transfer_ssis_sizes = first_ssis.get_temporal_sizes()
         first_transfer_ssis_total_size = prod(first_transfer_ssis_sizes)
         for tr in self.transfer_nodes:
-            transfer_ssis = tr.steady_state_iteration_space
+            transfer_ssis = self.ssis[tr]
             # transfer_ssis_dims = transfer_ssis.get_temporal_dimensions()
             transfer_ssis_sizes = transfer_ssis.get_temporal_sizes()
             transfer_ssis_total_size = prod(transfer_ssis_sizes)
@@ -161,13 +175,13 @@ class TransferAndTensorAllocator:
                     # f"Transfer {tr.node_name} has different SSIS dims and sizes than the {self.transfer_nodes[0]}: "
                     # f"{transfer_ssis_dims}, {transfer_ssis_sizes} != "
                     # f"{first_transfer_ssis_dims}, {first_transfer_ssis_sizes}"
-                    f"Transfer {tr.node_name} has different SSIS total size than the {self.transfer_nodes[0]}: "
+                    f"Transfer {tr.name} has different SSIS total size than the {self.transfer_nodes[0].name}: "
                     f"{transfer_ssis_total_size} != {first_transfer_ssis_total_size}"
                 )
 
     def _init_transfer_fire_helpers(self) -> None:
         for tr in self.transfer_nodes:  # only the movable tensors
-            ssis = tr.steady_state_iteration_space.get_temporal_variables()  # e.g. [Nk, Nk-1, …, N0]
+            ssis = self.ssis[tr].get_temporal_variables()  # e.g. [Nk, Nk-1, …, N0]
             sizes = [iter_var.size for iter_var in ssis]
             relevancies = [iter_var.relevant for iter_var in ssis]
             reuses = [iter_var.compute_tile_reuse for iter_var in ssis]
@@ -429,11 +443,11 @@ class TransferAndTensorAllocator:
 
     def _add_source_tensor_coherence_constraints(self, tr: SteadyStateTransfer, paths: list[PathKey]) -> None:
         """Add constraints to ensure path choice is coherent with source tensor placement."""
-        predecessors = list(self.ssw.predecessors(tr))
+        predecessors = list(self.workload.predecessors(tr))
         assert all(isinstance(n, SteadyStateTensor) for n in predecessors), (
             f"Transfer {tr.node_name} has non-tensor predecessor(s): {predecessors}"
         )
-        successors = list(self.ssw.successors(tr))
+        successors = list(self.workload.successors(tr))
         for src_tensor in predecessors:
             if src_tensor in self.tensor_var:
                 assert isinstance(src_tensor, SteadyStateTensor), (
@@ -460,11 +474,11 @@ class TransferAndTensorAllocator:
 
     def _add_destination_tensor_coherence_constraints(self, tr: SteadyStateTransfer, paths: list[PathKey]) -> None:
         """Add constraints to ensure path choice is coherent with destination tensor placement."""
-        successors = list(self.ssw.successors(tr))
+        successors = list(self.workload.successors(tr))
         assert all(isinstance(n, SteadyStateTensor) for n in successors), (
             f"Transfer {tr.node_name} has non-tensor successor(s): {successors}"
         )
-        predecessors = list(self.ssw.predecessors(tr))
+        predecessors = list(self.workload.predecessors(tr))
         for dst_tensor in successors:
             if dst_tensor in self.tensor_var:
                 assert isinstance(dst_tensor, SteadyStateTensor), (
@@ -536,7 +550,7 @@ class TransferAndTensorAllocator:
         self.core_load: dict[Core, gp.QuadExpr] = defaultdict(gp.QuadExpr)
         # add transfer tensors
         for tr in self.transfer_nodes:
-            for t in self.ssw.successors(tr):
+            for t in self.workload.successors(tr):
                 assert isinstance(t, SteadyStateTensor), (
                     f"Expected {t.node_name} to be a SteadyStateTensor, got {type(t)}"
                 )
@@ -570,7 +584,7 @@ class TransferAndTensorAllocator:
         """
         self.object_fifo_depth: dict[Core, gp.LinExpr] = defaultdict(gp.LinExpr)
         for tr in self.transfer_nodes:
-            preds_and_succs = list(self.ssw.predecessors(tr)) + list(self.ssw.successors(tr))
+            preds_and_succs = list(self.workload.predecessors(tr)) + list(self.workload.successors(tr))
             resources = {self.resource_of[t] for t in preds_and_succs if isinstance(t, SteadyStateTensor)}
             for c in resources:
                 if c.id == self.offchip_core_id:
@@ -578,7 +592,7 @@ class TransferAndTensorAllocator:
                 assert isinstance(c, Core), f"Expected {c} to be a Core, got {type(c)}"
                 for stop in range(-1, len(tr.steady_state_iteration_space.get_temporal_variables())):
                     tiles_needed = self.tiles_needed_levels[(tr, stop)]
-                    tiles_needed += 1 if self.FORCE_DOUBLE_BUFFERING else 0
+                    tiles_needed += 1 if self.force_double_buffering else 0
                     self.object_fifo_depth[c] += tiles_needed * self.z_stopC[(tr, stop)]
         self.context.add_object_fifo_constraints(self.model, self.object_fifo_depth)
 
@@ -906,12 +920,12 @@ class TransferAndTensorAllocator:
         This is necessary as there's a bug in networkx that doesn't update the edges when node attributes change.
         """
         ssw_upd = SteadyStateWorkload()
-        for edge in self.ssw.edges(data=True):
+        for edge in self.workload.edges(data=True):
             src, dst, data = edge
-            assert src in self.ssw.node_list, f"Source {src} not found in ssw nodes."
-            assert dst in self.ssw.node_list, f"Destination {dst} not found in ssw nodes."
-            src = self.ssw.node_list[self.ssw.node_list.index(src)]
-            dst = self.ssw.node_list[self.ssw.node_list.index(dst)]
+            assert src in self.workload.node_list, f"Source {src} not found in ssw nodes."
+            assert dst in self.workload.node_list, f"Destination {dst} not found in ssw nodes."
+            src = self.workload.node_list[self.workload.node_list.index(src)]
+            dst = self.workload.node_list[self.workload.node_list.index(dst)]
             ssw_upd.add_edge(src, dst, **data)
         return ssw_upd
 

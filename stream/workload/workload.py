@@ -7,10 +7,12 @@ from math import prod
 from typing import TYPE_CHECKING, cast
 
 import networkx as nx
+import numpy as np
 import sympy as sp
 from networkx.drawing.nx_pydot import to_pydot  # type: ignore
 from snaxc.ir.dart.affine_transform import AffineTransform
 from xdsl.dialects.builtin import FixedBitwidthType
+from xdsl.dialects.memref import SubviewOp
 from xdsl.ir.affine import AffineDimExpr, AffineExpr, AffineMap
 from zigzag.utils import DiGraphWrapper
 
@@ -20,10 +22,15 @@ if TYPE_CHECKING:
     from stream.mapping.mapping import Mapping
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class Tensor:
+    name: str
     operand_type: FixedBitwidthType
     shape: tuple[int, ...]
+    subview: SubviewOp
+
+    def __repr__(self):
+        return f"Tensor(name={self.name}, operand_type={self.operand_type}, shape={self.shape})"
 
     def size_elements(self) -> int:
         return prod(self.shape)
@@ -32,32 +39,40 @@ class Tensor:
         return self.operand_type.bitwidth * self.size_elements()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class Node(ABC):
     name: str
 
-
-@dataclass(frozen=True)
-class HasOutput(Node, ABC):
-    output: Tensor
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(name={self.name})"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
+class HasOutputs(Node, ABC):
+    outputs: tuple[Tensor, ...]
+
+    @property
+    def output(self) -> Tensor:
+        return self.outputs[0]
+
+
+@dataclass(frozen=True, repr=False)
 class HasInputs(Node, ABC):
-    inputs: tuple[HasOutput, ...]
+    inputs: tuple[HasOutputs, ...]
 
 
-@dataclass(frozen=True)
-class InEdge(HasOutput): ...
+@dataclass(frozen=True, repr=False)
+class InEdge(HasOutputs): ...
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class OutEdge(HasInputs): ...
 
 
 class TransferType(Flag):
     """Flags for different types of data transfer operations (can be combined)."""
 
+    NONE = 0
     UNICAST = 1
     DISTRIBUTE = 2
     BROADCAST = 3
@@ -65,13 +80,8 @@ class TransferType(Flag):
     REDUCE = 5
 
 
-@dataclass(frozen=True)
-class TransferNode(HasInputs, HasOutput):
-    transfer_type: TransferType
-
-
-@dataclass(frozen=True)
-class ComputationNode(HasOutput, HasInputs):
+@dataclass(frozen=True, repr=False)
+class HasIterationSpace(HasInputs, HasOutputs):
     operand_mapping: tuple[AffineMap, ...]
 
     @property
@@ -95,6 +105,14 @@ class ComputationNode(HasOutput, HasInputs):
     def tensors(self) -> tuple[Tensor, ...]:
         return tuple(inp.output for inp in self.inputs) + (self.output,)
 
+
+@dataclass(frozen=True, repr=False)
+class TransferNode(HasIterationSpace):
+    transfer_type: TransferType
+
+
+@dataclass(frozen=True, repr=False)
+class ComputationNode(HasIterationSpace):
     def has_same_performance(self, other: "ComputationNode") -> bool:
         """Check if this computation node has the same performance characteristics as another node.
         This is a simple check based on operand data types and shapes.
@@ -120,6 +138,7 @@ class Workload(DiGraphWrapper[Node]):
         for node in nodes:
             if isinstance(node, HasInputs):
                 for input in node.inputs:
+                    assert input in graph.nodes(), f"Input {input} not in graph nodes"
                     graph.add_edge(input, node)
         super().__init__(graph)
 
@@ -134,7 +153,7 @@ class Workload(DiGraphWrapper[Node]):
 
     @property
     def num_dims(self):
-        return sum(node.num_dims for node in self.nodes if isinstance(node, ComputationNode))
+        return sum(node.num_dims for node in self.nodes if isinstance(node, HasIterationSpace))
 
     @property
     def global_idxs(self):
@@ -144,7 +163,7 @@ class Workload(DiGraphWrapper[Node]):
         global_dimension_idxs: dict[Node, range] = {}
         idx = 0
         for node in nx.lexicographical_topological_sort(self, key=lambda node: node.name):
-            if isinstance(node, ComputationNode):
+            if isinstance(node, HasIterationSpace):
                 global_dimension_idxs[node] = range(idx, idx + node.num_dims)
                 idx += node.num_dims
         return global_dimension_idxs
@@ -153,14 +172,14 @@ class Workload(DiGraphWrapper[Node]):
     def tensors(self) -> tuple[Tensor, ...]:
         seen = set()
         tensors = []
-        for node in self.get_computation_nodes():
+        for node in self.get_iteration_space_nodes():
             for tensor in node.tensors:
-                if tensor.operand_type not in seen:
-                    seen.add(tensor.operand_type)
+                if tensor.name not in seen:
+                    seen.add(tensor.name)
                     tensors.append(tensor)
         return tuple(tensors)
 
-    def global_mapping(self, node: ComputationNode, mapping: AffineMap):
+    def global_mapping(self, node: HasIterationSpace, mapping: AffineMap):
         return mapping.replace_dims_and_symbols(
             [AffineDimExpr(i) for i in self.global_idxs[node]], [], self.num_dims, 0
         )
@@ -169,7 +188,7 @@ class Workload(DiGraphWrapper[Node]):
         result = []
         # Relations between shared intermediate tensors:
         for edge in self.edges:
-            if isinstance(edge[0], ComputationNode) and isinstance(edge[1], ComputationNode):
+            if isinstance(edge[0], HasIterationSpace) and isinstance(edge[1], HasIterationSpace):
                 mapping_out = self.global_mapping(edge[0], edge[0].get_mapping(edge[0].output))
                 mapping_in = self.global_mapping(edge[1], edge[1].get_mapping(edge[0]))
                 for expr_out, expr_in in zip(mapping_out.results, mapping_in.results, strict=True):
@@ -178,7 +197,7 @@ class Workload(DiGraphWrapper[Node]):
         # Relations between shared inputs:
         for node in self.nodes:
             if isinstance(node, InEdge):
-                all_users = [cast(ComputationNode, out) for (_, out) in self.out_edges(node)]
+                all_users = [cast(HasIterationSpace, out) for (_, out) in self.out_edges(node)]
                 for a, b in combinations(all_users, 2):
                     mapping_a = self.global_mapping(a, a.get_mapping(node))
                     mapping_b = self.global_mapping(b, b.get_mapping(node))
@@ -188,6 +207,12 @@ class Workload(DiGraphWrapper[Node]):
 
     def get_computation_nodes(self) -> tuple[ComputationNode, ...]:
         return tuple(cast(ComputationNode, node) for node in self.nodes if isinstance(node, ComputationNode))
+
+    def get_transfer_nodes(self) -> tuple[TransferNode, ...]:
+        return tuple(cast(TransferNode, node) for node in self.nodes if isinstance(node, TransferNode))
+
+    def get_iteration_space_nodes(self) -> tuple[HasIterationSpace, ...]:
+        return tuple(cast(HasIterationSpace, node) for node in self.nodes if isinstance(node, HasIterationSpace))
 
     def get_node_by_name(self, name: str) -> Node:
         for node in self.nodes:
@@ -204,8 +229,8 @@ class Workload(DiGraphWrapper[Node]):
     def get_dimension_sizes(self) -> tuple[int, ...]:
         results = []
         shapes: list[int] = []
-        for node in self.get_computation_nodes():
-            operands = [inp.output for inp in node.inputs] + [node.output]
+        for node in self.get_iteration_space_nodes():
+            operands = tuple(inp.output for inp in node.inputs) + node.outputs
             for operand, mapping in zip(operands, node.operand_mapping, strict=True):
                 global_mapping = self.global_mapping(node, mapping)
                 results.extend(global_mapping.results)
@@ -213,7 +238,7 @@ class Workload(DiGraphWrapper[Node]):
         total_map = AffineMap(self.num_dims, 0, tuple(results))
         return total_map.inverse_permutation().eval(shapes, [])
 
-    def get_dims(self, node: ComputationNode) -> list[LayerDim]:
+    def get_dims(self, node: HasIterationSpace) -> list[LayerDim]:
         global_idxs = self.global_idxs
         _, expressions = self.unique_dimensions()
         start_idx = global_idxs[node].start
@@ -275,45 +300,38 @@ class Workload(DiGraphWrapper[Node]):
         This recreates all tensors (and nodes referencing them) so tensor shapes stay consistent with the updated
         global loop sizes.
         """
-        # Start from the current global loop ranges and apply overrides.
-        _, all_dims = self.unique_dimensions()
-        new_sizes_for_all_dims = [new_sizes[dim] for dim in all_dims]
-
-        # Infer the updated shape for every tensor based on how each operand maps onto global dims.
+        # Infer the updated shape for every tensor based on the strides.
         inferred_shapes: dict[str, tuple[int, ...]] = {}
         original_tensors_dict: dict[str, Tensor] = {}
         for node in self.get_computation_nodes():
             original_tensors = node.tensors
-            tensor_names = [inp.name for inp in node.inputs] + [node.name]  # output name is node name
-            for original_tensor, tensor_name, mapping in zip(
-                original_tensors, tensor_names, node.operand_mapping, strict=True
-            ):
-                original_tensors_dict[tensor_name] = original_tensor
-                global_mapping = self.global_mapping(node, mapping)
-                new_shape: list[int] = []
-                for expr in global_mapping.results:
-                    if isinstance(expr, AffineDimExpr):
-                        new_shape.append(new_sizes_for_all_dims[expr.position])
-                    else:
-                        raise NotImplementedError(
-                            "Updating tensor shapes only supports dimension projections/permutations "
-                            f"(AffineDimExpr results); got {expr} in mapping for node '{node.name}'."
-                        )
-                new_shape_t = tuple(new_shape)
-                if tensor_name in inferred_shapes and inferred_shapes[tensor_name] != new_shape_t:
-                    raise ValueError(
-                        "Inconsistent inferred shapes for a shared tensor; "
-                        f"tensor={tensor_name}, existing={inferred_shapes[tensor_name]}, new={new_shape_t}."
-                    )
+            for original_tensor in original_tensors:
+                original_tensors_dict[original_tensor.name] = original_tensor
+                strides = self.strides_for_tensor(original_tensor)
+                new_sizes_sorted = [new_sizes[dim] for dim in strides]
+                V = np.array(list(strides.values())).T
+                new_shape_t = tuple(V.dot(np.array(new_sizes_sorted)).astype(int).tolist())
+                tensor_name = original_tensor.name
                 inferred_shapes[tensor_name] = new_shape_t
 
         # Create new Tensor objects with the inferred shapes.
         tensor_map: dict[str, Tensor] = {}
         for tensor_name, new_shape_t in inferred_shapes.items():
             original_tensor = original_tensors_dict[tensor_name]
+            original_subview = original_tensor.subview
+            # Create new subview referencing original one with new sizes
+            new_subview = SubviewOp.from_static_parameters(
+                source=original_subview.source,
+                source_type=original_subview.source.type,
+                offsets=[0 for _ in new_shape_t],
+                sizes=new_shape_t,
+                strides=[1 for _ in new_shape_t],
+            )
             new_output = Tensor(
+                name=tensor_name,
                 operand_type=original_tensor.operand_type,
                 shape=new_shape_t,
+                subview=new_subview,
             )
             tensor_map[tensor_name] = new_output
 
@@ -326,20 +344,31 @@ class Workload(DiGraphWrapper[Node]):
                 assert new_output is not None, f"InEdge tensor {node.name} must have been inferred"
                 new_node = InEdge(
                     name=node.name,
-                    output=new_output,
+                    outputs=(new_output,),
                 )
             elif isinstance(node, ComputationNode):
-                new_inputs = tuple(cast(HasOutput, node_map[inp]) for inp in node.inputs)
-                new_output = tensor_map.get(node.name)
+                new_inputs = tuple(cast(HasOutputs, node_map[inp]) for inp in node.inputs)
+                new_output = tensor_map.get(node.output.name)
                 assert new_output is not None, f"ComputationNode output tensor {node.name} must have been inferred"
                 new_node = ComputationNode(
                     name=node.name,
                     inputs=new_inputs,
-                    output=new_output,
+                    outputs=(new_output,),
+                    operand_mapping=node.operand_mapping,
+                )
+            elif isinstance(node, TransferNode):
+                new_inputs = tuple(cast(HasOutputs, node_map[inp]) for inp in node.inputs)
+                new_output = tensor_map.get(node.output.name)
+                assert new_output is not None, f"TransferNode output tensor {node.name} must have been inferred"
+                new_node = TransferNode(
+                    name=node.name,
+                    inputs=new_inputs,
+                    outputs=(new_output,),
+                    transfer_type=node.transfer_type,
                     operand_mapping=node.operand_mapping,
                 )
             elif isinstance(node, OutEdge):
-                new_inputs = tuple(cast(HasOutput, node_map[inp]) for inp in node.inputs)
+                new_inputs = tuple(cast(HasOutputs, node_map[inp]) for inp in node.inputs)
                 new_node = OutEdge(
                     name=node.name,
                     inputs=new_inputs,
@@ -351,6 +380,20 @@ class Workload(DiGraphWrapper[Node]):
             new_nodes.append(new_node)
 
         return Workload(new_nodes)
+
+    def strides_for_tensor(self, tensor: Tensor) -> dict[LayerDim, tuple[int, ...]]:
+        unique_dims, all_dims = self.unique_dimensions()
+        node = next(iter(n for n in self.get_iteration_space_nodes() if tensor in n.tensors))
+        mapping = node.get_mapping(tensor)
+        global_mapping = self.global_mapping(node, mapping)
+        one_list = np.eye(len(unique_dims), dtype=int).tolist()
+        result: dict[LayerDim, tuple[int, ...]] = {}
+        for unique_dim, var in zip(unique_dims, one_list, strict=True):
+            var = cast(list[int], var)
+            all_dims_eval = [int(dim.subs(list(zip(unique_dims, var, strict=True)))) for dim in all_dims]
+            stride = global_mapping.eval(all_dims_eval, [])
+            result[unique_dim] = tuple(stride)
+        return result
 
     def visualize_to_file(self, filepath: str = "workload_graph.png"):
         """Visualize the graph using Graphviz and save it to an image file.
@@ -385,6 +428,12 @@ class Workload(DiGraphWrapper[Node]):
                 n.set_label(f"{node.name}\nDims: {dim_sizes}")
                 n.set_style("filled")
                 n.set_fillcolor("#60bcf0")
+            elif isinstance(node, TransferNode):
+                dim_sizes = {dim: self.get_dimension_size(dim) for dim in self.get_dims(node)}
+                n.set_shape("box")
+                n.set_label(f"{node.name}\nDims: {dim_sizes}")
+                n.set_style("filled")
+                n.set_fillcolor("#ffcb9a")
             elif isinstance(node, InEdge):
                 n.set_shape("box")
                 n.set_label(f"{node.name}\nShape: {node.output.shape}")

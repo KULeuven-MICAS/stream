@@ -8,7 +8,6 @@ from stream.mapping.mapping import Mapping
 from stream.opt.allocation.constraint_optimization.config import ConstraintOptStageConfig
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
-from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 from stream.workload.workload import ComputationNode, Workload
 
 logger = logging.getLogger(__name__)
@@ -27,7 +26,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         "accelerator",
         "mapping",
         "cost_lut",
-        "ssis",
+        "tiled_dimensions",
         "output_path",
     )
 
@@ -36,22 +35,11 @@ class ConstraintOptimizationAllocationStage(Stage):
         list_of_callables: list[StageCallable],
         ctx: StageContext,
     ):
-        """Initialize the ResourceAllocationStage.
-
-        Args:
-            list_of_callables (list): List of the substages to be called. This should be empty as this is a leaf stage.
-            workload (DiGraph): The NetworkX DiGraph representing the workload to be scheduled
-            accelerator (Accelerator): The hardware accelerator onto which we schedule the workload
-            cost_lut (CoreCostLUT): A lookup table containing for each node the best cost entry for each core
-            layer_stacks (list): List of tuples with each tuple containing the layer ids to fuse together
-            allocations_path (str): Path to the directory where the optimal allocations are stored
-            output_path (str): Path to the output folder to store results
-        """
         super().__init__(list_of_callables, ctx)
         self.workload: Workload = self.ctx.get("workload")
         self.accelerator: Accelerator = self.ctx.get("accelerator")
         self.mapping: Mapping = self.ctx.get("mapping")
-        self.ssis: dict[ComputationNode, SteadyStateIterationSpace] = self.ctx.get("ssis")
+        self.tiled_dimensions: dict[ComputationNode, tuple[int, int]] = self.ctx.get("tiled_dimensions")
         self.cost_lut = self.ctx.get("cost_lut")
 
         config = self.ctx.get("constraint_opt_config")
@@ -80,7 +68,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             self.workload,
             self.accelerator,
             self.mapping,
-            self.ssis,
+            self.tiled_dimensions,
             self.cost_lut,
             self.config.transfer.nb_cols_to_use,
             output_path,

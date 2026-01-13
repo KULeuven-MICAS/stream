@@ -13,60 +13,88 @@ if TYPE_CHECKING:
 
 # Tune these defaults as needed
 _K_PATHS_PER_TERMINAL = 4  # k in k-shortest
-_BEAM_WIDTH = 32  # B in beam search
-_MAX_ALLOCATIONS_PER_MEETING = 4
+_BEAM_WIDTH = 8  # B in beam search
+_MAX_ALLOCATIONS_PER_MEETING = 2
 _MAX_MEETINGS = 8
-_MAX_POSSIBLE_ALLOCATIONS = 16
+_MAX_POSSIBLE_ALLOCATIONS = 4
 
 
-def _iter_k_shortest_simple_paths(
-    G: nx.Graph,
-    src,
-    dst,
-    *,
-    k: int,
-    weight: str | None,
-) -> list[list]:
-    """
-    Return up to k loopless paths from src to dst ordered by total weight.
-    Uses networkx.shortest_simple_paths (Yen-like). If weight is unsupported
-    by the installed NetworkX version, falls back to unweighted.
-    """
-    if src == dst:
-        return [[src]]
-
-    try:
-        gen = nx.shortest_simple_paths(G, src, dst, weight=weight)
-    except TypeError:
-        # Older NetworkX versions did not accept "weight=" here
-        gen = nx.shortest_simple_paths(G, src, dst)
-
-    paths: list[list] = []
-    for p in gen:
-        paths.append(list(p))
-        if len(paths) >= k:
-            break
-    return paths
-
-
-def _path_edge_pairs(path: list) -> list[tuple]:
+def _path_edges(path: list) -> list[tuple]:
     return list(zip(path, path[1:], strict=False))
 
 
-def _edge_weight_sum_new(
-    edge_pairs: list[tuple],
-    *,
-    current_edges: set[tuple],
-    edge_w: dict[tuple, float],
-) -> float:
+def _build_edge_weight_map(Gw: nx.Graph, weight_attr: str) -> dict[tuple, float]:
     """
-    Incremental score: add weights only for edges not already present.
+    Map directed edge (u,v) -> weight.
+    For undirected graphs, also add (v,u) so scoring works regardless of direction.
     """
+    wmap: dict[tuple, float] = {}
+    for u, v, d in Gw.edges(data=True):
+        w = float(d.get(weight_attr, 1.0))
+        wmap[(u, v)] = w
+        if not Gw.is_directed():
+            wmap[(v, u)] = w
+    return wmap
+
+
+def _incremental_union_cost(edge_list: list[tuple], union_edges: set[tuple], edge_w: dict[tuple, float]) -> float:
     add = 0.0
-    for e in edge_pairs:
-        if e not in current_edges:
+    for e in edge_list:
+        if e not in union_edges:
             add += edge_w[e]
     return add
+
+
+def _k_paths_for_pair_using_cached_first(
+    Gw: nx.Graph,
+    s,
+    t,
+    *,
+    k: int,
+    weight: str,
+    cached_path: list | None,
+) -> list[list]:
+    """
+    Build up to k simple shortest paths for (s,t), preferring cached_path if provided.
+    Uses networkx.shortest_simple_paths to get alternatives (Yen-like).
+    """
+    out: list[list] = []
+    seen: set[tuple] = set()
+
+    if cached_path:
+        p = list(cached_path)
+        out.append(p)
+        seen.add(tuple(p))
+        if len(out) >= k:
+            return out
+
+    if s == t:
+        if (s,) not in seen:
+            out.append([s])
+        return out[:k]
+
+    # shortest_simple_paths might not accept weight on older nx
+    try:
+        gen = nx.shortest_simple_paths(Gw, s, t, weight=weight)
+    except TypeError:
+        gen = nx.shortest_simple_paths(Gw, s, t)
+
+    for p in gen:
+        tp = tuple(p)
+        if tp in seen:
+            continue
+        out.append(list(p))
+        seen.add(tp)
+        if len(out) >= k:
+            break
+    return out
+
+
+@dataclass(frozen=True)
+class _BeamStateNoMeeting:
+    edges: frozenset[tuple]  # union of edges for all chosen pairs so far
+    score: float  # sum of weights of unique edges
+    full_paths: dict  # (s,t) -> path
 
 
 @dataclass(frozen=True)
@@ -166,27 +194,122 @@ class CommunicationManager:
         return list(set(d["cl"] for _, _, d in self.accelerator.cores.edges(data=True)))
 
     def _get_simple_no_meeting_node_plans(
-        self, sources: tuple["Core", ...], targets: tuple["Core", ...]
+        self,
+        sources: tuple["Core", ...],
+        targets: tuple["Core", ...],
+        *,
+        k_paths: int = 3,
+        beam_width: int = 32,
+        max_allocations: int = 32,
+        offchip_mem_penalty: float = 1000.0,
     ) -> list["MulticastPathPlan"]:
-        # Fallback: per-(s,t) single shortest path as before
-        plans = []
-        for source in sources:
-            for target in targets:
-                path = self.shortest_paths.get((source, target))
-                if not path:
-                    continue
-                plans.append(
-                    MulticastPathPlan(
-                        sources=(source,),
-                        targets=(target,),
-                        meeting=None,
-                        paths_from_sources={source: path},
-                        paths_to_targets={target: path},  # placeholder so link extraction works
-                        full_paths={},  # keep field if your dataclass expects it
-                        total_hops_objective=len(path) - 1,
-                        overlap_edges=0,
+        """
+        No-meeting enumeration that covers ALL sources and ALL destinations together.
+
+        We construct a plan by choosing one path per (source,target) pair (default: all pairs),
+        then taking the union of edges (CommunicationLinks) used by those paths.
+
+        Enumeration:
+        - up to k_paths per pair via shortest_simple_paths (with cached shortest_paths as first)
+        - beam search over unions to avoid cartesian explosion
+        """
+
+        if not sources or not targets:
+            raise ValueError("sources and targets must be non-empty")
+
+        G = self.accelerator.cores
+        Gw = nx.DiGraph(G) if G.is_directed() else nx.Graph(G)
+
+        offchip_id = self.accelerator.offchip_core_id
+
+        def is_offchip(n: "Core") -> bool:
+            return getattr(n, "id", None) == offchip_id
+
+        def is_memory(n: "Core") -> bool:
+            return getattr(n, "type", None) == "memory"
+
+        # Weighting (same idea as meeting case, but applied to no-meeting too)
+        for u, v, d in Gw.edges(data=True):
+            if (is_offchip(u) and is_memory(v)) or (is_offchip(v) and is_memory(u)):
+                d["w"] = float(offchip_mem_penalty)
+            else:
+                d["w"] = 1.0
+
+        edge_w = _build_edge_weight_map(Gw, "w")
+
+        # Define the required connectivity.
+        # Default: all-pairs coverage (each source can reach each destination).
+        pairs: list[tuple[Core, Core]] = [(s, t) for s in sources for t in targets]
+
+        # Build path options for each pair.
+        pair_options: dict[tuple[Core, Core], list[list[Core]]] = {}
+        for s, t in pairs:
+            cached = self.shortest_paths.get((s, t))
+            opts = _k_paths_for_pair_using_cached_first(Gw, s, t, k=k_paths, weight="w", cached_path=cached)
+            if not opts:
+                # If any required pair is disconnected, no plan exists under this definition.
+                raise nx.NetworkXNoPath(f"no path for required pair {s}->{t}")
+            pair_options[(s, t)] = opts
+
+        # Beam search over pairs (no cartesian product).
+        beam: list[_BeamStateNoMeeting] = [_BeamStateNoMeeting(edges=frozenset(), score=0.0, full_paths={})]
+
+        # Deterministic order helps reproducibility
+        def _pair_sort_key(st_pair: tuple["Core", "Core"]) -> tuple:
+            s, t = st_pair
+            return (getattr(s, "id", 0), getattr(t, "id", 0))
+
+        for s, t in sorted(pairs, key=_pair_sort_key):
+            options = pair_options[(s, t)]
+            next_states: list[_BeamStateNoMeeting] = []
+
+            for st in beam:
+                base_edges = set(st.edges)
+                for p in options:
+                    pe = _path_edges(p)
+                    add_cost = _incremental_union_cost(pe, base_edges, edge_w)
+                    new_edges = frozenset(base_edges.union(pe))
+                    new_full = dict(st.full_paths)
+                    new_full[(s, t)] = p
+                    next_states.append(
+                        _BeamStateNoMeeting(edges=new_edges, score=st.score + add_cost, full_paths=new_full)
                     )
+
+            next_states.sort(key=lambda st: (st.score, len(st.edges)))
+            beam = next_states[:beam_width]
+            if not beam:
+                raise nx.NetworkXNoPath("beam search eliminated all states; try larger beam_width or k_paths")
+
+        # Emit unique edge-sets as MulticastPathPlans
+        plans: list[MulticastPathPlan] = []
+        seen_edge_sets: set[frozenset[tuple]] = set()
+
+        for st in beam:
+            if len(st.full_paths) != len(pairs):
+                continue
+            if st.edges in seen_edge_sets:
+                continue
+            seen_edge_sets.add(st.edges)
+
+            plans.append(
+                MulticastPathPlan(
+                    sources=tuple(sources),
+                    targets=tuple(targets),
+                    meeting=None,
+                    # For no-meeting, we put everything in full_paths; link extraction will use it.
+                    paths_from_sources={},
+                    paths_to_targets={},
+                    full_paths=st.full_paths,
+                    total_hops_objective=st.score,
+                    overlap_edges=0,
                 )
+            )
+            if len(plans) >= max_allocations:
+                break
+
+        if not plans:
+            raise nx.NetworkXNoPath("no feasible no-meeting plan found")
+
         return plans
 
     def _get_links_for_multicast_plan(
@@ -194,13 +317,23 @@ class CommunicationManager:
         plan: "MulticastPathPlan",
     ) -> tuple["CommunicationLink", ...]:
         """
-        Union links from both sides:
-          sources -> meeting (or direct)
-          meeting -> targets (or direct placeholder)
+        Return the unique CommunicationLink objects required to execute a plan.
+
+        Supports:
+        - meeting plans: union of edges from paths_from_sources and paths_to_targets
+        - no-meeting plans: union of edges from full_paths (keyed by (s,t))
         """
         G = self.accelerator.cores
         links: set[CommunicationLink] = set()
 
+        # No-meeting: use full_paths if present
+        if getattr(plan, "meeting", None) is None and getattr(plan, "full_paths", None):
+            for path in plan.full_paths.values():
+                for u, v in zip(path, path[1:], strict=False):
+                    links.add(G.edges[(u, v)]["cl"])
+            return tuple(sorted(links))
+
+        # Meeting-based (or fallback placeholder): use both dicts
         for path in plan.paths_from_sources.values():
             for u, v in zip(path, path[1:], strict=False):
                 links.add(G.edges[(u, v)]["cl"])
@@ -253,16 +386,20 @@ class CommunicationManager:
 
         candidates = tuple(request.possible_memory_cores or ())
         if not candidates:
-            return self._get_simple_no_meeting_node_plans(sources, targets)
+            return self._get_simple_no_meeting_node_plans(
+                sources,
+                targets,
+                k_paths=_K_PATHS_PER_TERMINAL,
+                beam_width=_BEAM_WIDTH,
+                max_allocations=_MAX_ALLOCATIONS_PER_MEETING,
+                offchip_mem_penalty=offchip_mem_penalty,
+            )
 
-        # Precompute edge weights for incremental union scoring.
-        # Important: store the directed edge (u,v) as key exactly as produced by paths.
-        edge_w: dict[tuple, float] = {}
-        for u, v, d in Gw.edges(data=True):
-            edge_w[(u, v)] = float(d.get("w", 1.0))
+        # Precompute edge weights for incremental union scoring (supports directed+undirected)
+        edge_w: dict[tuple, float] = _build_edge_weight_map(Gw, "w")
 
         # For meeting ranking: need dist(s->m) and dist(m->t)
-        # dist(m->t) is dist_to_target[t][m] using reverse graph single-source from t
+        # dist(m->t) is dist_to_targets[t][m] computed on the reverse graph
         Grev = Gw.reverse(copy=False) if Gw.is_directed() else Gw
 
         dist_from_sources: dict[Core, dict[Core, float]] = {
@@ -275,12 +412,10 @@ class CommunicationManager:
         INF = float("inf")
 
         def meeting_objective(m: "Core") -> float:
-            a = 0.0
-            for s in sources:
-                a += dist_from_sources[s].get(m, INF)
-            for t in targets:
-                a += dist_to_targets[t].get(m, INF)  # equals dist(m->t) in original
-            return a
+            return (
+                sum(dist_from_sources[s].get(m, INF) for s in sources)
+                + sum(dist_to_targets[t].get(m, INF) for t in targets)  # equals dist(m->t) in original
+            )
 
         ranked = sorted(
             ((meeting_objective(m), m) for m in candidates),
@@ -292,12 +427,52 @@ class CommunicationManager:
 
         all_plans: list[MulticastPathPlan] = []
 
+        def push_candidates(
+            beam: list[_BeamState],
+            key,
+            options: list[list["Core"]],
+            *,
+            into_sources: bool,
+            edge_w: dict[tuple, float],
+            beam_width: int,
+        ) -> list[_BeamState]:
+            next_states: list[_BeamState] = []
+            for st in beam:
+                union_edges = set(st.edges)
+
+                for p in options:
+                    ep = _path_edges(p)
+                    add_cost = _incremental_union_cost(ep, union_edges, edge_w)
+                    new_edges = frozenset(union_edges.union(ep))
+
+                    if into_sources:
+                        new_pfs = dict(st.paths_from_sources)
+                        new_pfs[key] = p
+                        new_pts = st.paths_to_targets  # safe to reuse
+                    else:
+                        new_pts = dict(st.paths_to_targets)
+                        new_pts[key] = p
+                        new_pfs = st.paths_from_sources  # safe to reuse
+
+                    next_states.append(
+                        _BeamState(
+                            edges=new_edges,
+                            score=st.score + add_cost,
+                            paths_from_sources=new_pfs,
+                            paths_to_targets=new_pts,
+                        )
+                    )
+
+            # Keep best beam_width by score, stabilize with edge-count + repr
+            next_states.sort(key=lambda s: (s.score, len(s.edges)))
+            return next_states[:beam_width]
+
         for m in top_meetings:
-            # Build k path options for each terminal
-            # If any terminal has 0 paths, this meeting is infeasible.
+            # Build k path options for each terminal (meeting must be feasible for all terminals)
             src_options: dict[Core, list[list[Core]]] = {}
             for s in sources:
-                opts = _iter_k_shortest_simple_paths(Gw, s, m, k=k_paths, weight="w")
+                # if you cache (s,m) paths you can pass first_path=...
+                opts = _k_paths_for_pair_using_cached_first(Gw, s, m, k=k_paths, weight="w", cached_path=None)
                 if not opts:
                     src_options = {}
                     break
@@ -307,7 +482,7 @@ class CommunicationManager:
 
             tgt_options: dict[Core, list[list[Core]]] = {}
             for t in targets:
-                opts = _iter_k_shortest_simple_paths(Gw, m, t, k=k_paths, weight="w")
+                opts = _k_paths_for_pair_using_cached_first(Gw, m, t, k=k_paths, weight="w", cached_path=None)
                 if not opts:
                     tgt_options = {}
                     break
@@ -315,76 +490,48 @@ class CommunicationManager:
             if not tgt_options:
                 continue
 
-            # Beam search over terminals: first sources, then targets (deterministic order)
-            init = _BeamState(
-                edges=frozenset(),
-                score=0.0,
-                paths_from_sources={},
-                paths_to_targets={},
-            )
-            beam: list[_BeamState] = [init]
-
-            def push_candidates(
-                beam: list[_BeamState],
-                key,
-                options: list[list["Core"]],
-                into_sources: bool,
-            ) -> list[_BeamState]:
-                next_states: list[_BeamState] = []
-                for st in beam:
-                    current_edges = set(st.edges)
-                    for p in options:
-                        ep = _path_edge_pairs(p)
-                        add_cost = _edge_weight_sum_new(ep, current_edges=current_edges, edge_w=edge_w)
-                        new_edges = frozenset(current_edges.union(ep))
-
-                        if into_sources:
-                            new_pfs = dict(st.paths_from_sources)
-                            new_pfs[key] = p
-                            new_pts = st.paths_to_targets
-                        else:
-                            new_pts = dict(st.paths_to_targets)
-                            new_pts[key] = p
-                            new_pfs = st.paths_from_sources
-
-                        next_states.append(
-                            _BeamState(
-                                edges=new_edges,
-                                score=st.score + add_cost,
-                                paths_from_sources=new_pfs,
-                                paths_to_targets=new_pts,
-                            )
-                        )
-
-                # Keep best beam_width by score, tie-break by size and stable repr
-                next_states.sort(
-                    key=lambda s: (
-                        s.score,
-                        len(s.edges),
-                    )
-                )
-                return next_states[:beam_width]
+            # Beam search: first sources, then targets (deterministic)
+            beam: list[_BeamState] = [
+                _BeamState(edges=frozenset(), score=0.0, paths_from_sources={}, paths_to_targets={})
+            ]
 
             for s in sources:
-                beam = push_candidates(beam, s, src_options[s], into_sources=True)
+                beam = push_candidates(
+                    beam,
+                    s,
+                    src_options[s],
+                    into_sources=True,
+                    edge_w=edge_w,
+                    beam_width=beam_width,
+                )
                 if not beam:
                     break
-
             if not beam:
                 continue
 
             for t in targets:
-                beam = push_candidates(beam, t, tgt_options[t], into_sources=False)
+                beam = push_candidates(
+                    beam,
+                    t,
+                    tgt_options[t],
+                    into_sources=False,
+                    edge_w=edge_w,
+                    beam_width=beam_width,
+                )
                 if not beam:
                     break
-
             if not beam:
                 continue
 
-            # Emit up to max_allocations_per_meeting plans for this meeting
-            # Ensure uniqueness by edge set.
+            # Emit up to max_allocations_per_meeting distinct unions
             seen_edge_sets: set[frozenset[tuple]] = set()
             for st in beam:
+                # Defensive: ensure full coverage
+                if len(st.paths_from_sources) != len(sources):
+                    continue
+                if len(st.paths_to_targets) != len(targets):
+                    continue
+
                 if st.edges in seen_edge_sets:
                     continue
                 seen_edge_sets.add(st.edges)
@@ -396,7 +543,7 @@ class CommunicationManager:
                         meeting=m,
                         paths_from_sources=st.paths_from_sources,
                         paths_to_targets=st.paths_to_targets,
-                        full_paths={},  # optional; keep if your dataclass still has it
+                        full_paths={},  # keep if your dataclass requires it
                         total_hops_objective=st.score,
                         overlap_edges=0,
                     )
