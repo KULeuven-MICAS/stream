@@ -81,6 +81,8 @@ class SteadyStateScheduler:
         ssw.visualize_to_file(os.path.join(self.output_path, "tiled_workload_with_transfers.png"))
         # Update the mapping for the new workload graph
         self.mapping = self.update_mapping(ssw)
+        # Update the cost lut for the new workload graph
+        self.cost_lut = self.update_cost_lut(ssw)
         # Update the steady state iteration spaces to include transfer nodes
         self.ssis = self.generate_ssis(ssw)
         # Calculate the number of iterations based on the steady state iteration spaces
@@ -101,7 +103,7 @@ class SteadyStateScheduler:
             cost_lut=self.cost_lut,
             nb_cols_to_use=self.nb_cols_to_use,
         )
-        tsa_upd, ssw_upd, total_latency_solver = tta.solve()
+        tensor_allocations, transfer_allocations, memory_allocations, total_latency_solver = tta.solve()
         print(tsa_upd)
         offchip_core_id = self.accelerator.offchip_core_id
         total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
@@ -175,6 +177,13 @@ class SteadyStateScheduler:
             dsts = tuple(cast(HasInputs, n) for n in new_workload.successors(node))
             self.update_mapping_for_transfer(node, src, dsts)
         return self.mapping
+
+    def update_cost_lut(self, new_workload: Workload):
+        # The new workload contains same computation node names but with different input tensors
+        for new_node in new_workload.get_computation_nodes():
+            old_node = next(n for n in self.cost_lut.get_nodes() if n.name == new_node.name)
+            self.cost_lut.replace_node(old_node, new_node)
+        return self.cost_lut
 
     def generate_transfer_node(
         self, dsts: list[HasInputs], tensor: Tensor, transfer_type: TransferType

@@ -20,15 +20,12 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
     TimeSlotAllocation,
     _resource_key,
 )
-from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.iteration_space import ComputeTileReuse, MemTileReuse, SteadyStateIterationSpace
 from stream.workload.steady_state.node import Node
-from stream.workload.steady_state.tensor import SteadyStateTensor
-from stream.workload.steady_state.transfer import SteadyStateTransfer
 from stream.workload.steady_state.workload import SteadyStateWorkload
 from stream.workload.workload import ComputationNode, HasIterationSpace, InEdge, OutEdge, Tensor, TransferNode, Workload
 
-PathKey: TypeAlias = tuple[SteadyStateTransfer, tuple[CommunicationLink, ...]]
+PathKey: TypeAlias = tuple[TransferNode, tuple[CommunicationLink, ...]]
 
 
 class TransferAndTensorAllocator:
@@ -114,7 +111,7 @@ class TransferAndTensorAllocator:
         self.model.setParam("OutputFlag", gurobi_verbosity)
 
         # decision vars
-        self.x_tensor: dict[tuple[SteadyStateTensor, Core], gp.Var] = {}
+        self.x_tensor: dict[tuple[Tensor, Core], gp.Var] = {}
         self.y_path: dict[PathKey, gp.Var] = {}
 
         # helpers
@@ -129,9 +126,9 @@ class TransferAndTensorAllocator:
         # transfer fire helpers init
         # dict((transfer, steady state iteration space index): (fires_across_ss_iterations, extra_mem_bytes))
         self._ensure_same_ssis_for_all_transfers()
-        self.reuse_levels: dict[tuple[SteadyStateTransfer, int], tuple[int, int]] = {}
-        self.tiles_needed_levels: dict[tuple[SteadyStateTransfer, int], int] = {}
-        self.transfer_nodes_to_optimize_firings_for: list[SteadyStateTransfer] = []
+        self.reuse_levels: dict[tuple[TransferNode, int], tuple[int, int]] = {}
+        self.tiles_needed_levels: dict[tuple[TransferNode, int], int] = {}
+        self.transfer_nodes_to_optimize_firings_for: list[TransferNode] = []
         self._init_transfer_fire_helpers()
 
         self._build_model()
@@ -142,7 +139,7 @@ class TransferAndTensorAllocator:
     # ---------- memory factor ( NO ping-pong for now ) ---------- #
     # TODO: Update this for memory-only cores
     @staticmethod
-    def _mem_factor(t: SteadyStateTensor, core: Core) -> int:
+    def _mem_factor(t: Tensor, core: Core) -> int:
         # if getattr(core, "type", None) == "COMPUTE":
         return 1  # NO ping–pong
         # else:
@@ -151,11 +148,13 @@ class TransferAndTensorAllocator:
 
     # ---------- latency of a transfer along a path -------------- #
     @staticmethod
-    def _transfer_latency(tr: SteadyStateTransfer, path: tuple[CommunicationLink, ...]) -> int:
+    def _transfer_latency(tr: TransferNode, path: tuple[CommunicationLink, ...]) -> int:
         if not path:
             return 0
         min_bw = min(link.bandwidth for link in path)
-        return ceil(tr.size / min_bw)
+        assert len(tr.inputs) == 1, "Only single-input transfers are supported for latency calculation."
+        tensor = tr.inputs[0]
+        return ceil(tensor.size_bits() / min_bw)
 
     # ---------- init transfer fire helpers ----------------------- #
     def _ensure_same_ssis_for_all_transfers(self) -> None:
@@ -228,7 +227,7 @@ class TransferAndTensorAllocator:
     # ------------------------------------------------------------
     def _first_link_bw_from_dram(
         self,
-        tr: SteadyStateTransfer,
+        tr: TransferNode,
         mc: Core,
     ) -> int:
         """
@@ -281,7 +280,7 @@ class TransferAndTensorAllocator:
         self.__create_transfer_mem_core_vars()
         self.__create_slot_latency_vars()
 
-    def _paths_for_transfer(self, tr: SteadyStateTransfer) -> list[PathKey]:
+    def _paths_for_transfer(self, tr: TransferNode) -> list[PathKey]:
         return [p for p in self.y_path if p[0] is tr]
 
     @staticmethod
@@ -297,7 +296,7 @@ class TransferAndTensorAllocator:
             self.slot_latency[s] = self.model.addVar(vtype=GRB.INTEGER, name=f"L_{s}")
 
     def __create_compute_core_reuse_vars(self):
-        self.z_stopC: dict[tuple[SteadyStateTransfer, int], gp.Var] = {}
+        self.z_stopC: dict[tuple[TransferNode, int], gp.Var] = {}
         for tr in self.transfer_nodes:
             sizes = self.ssis[tr].get_temporal_sizes()
             for stop in range(-1, len(sizes)):  # -1 .. K-1
@@ -325,7 +324,7 @@ class TransferAndTensorAllocator:
                 )
 
     def __create_mem_core_reuse_vars(self):
-        self.z_stopM: dict[tuple[SteadyStateTransfer, int], gp.Var] = {}
+        self.z_stopM: dict[tuple[TransferNode, int], gp.Var] = {}
 
         for tr in self.transfer_nodes:
             sizes = self.ssis[tr].get_temporal_sizes()
@@ -352,7 +351,7 @@ class TransferAndTensorAllocator:
                 self.model.addConstr(cumC <= cumM, name=f"nest_{tr.name}_L{s}")
 
     def __create_transfer_mem_core_vars(self):
-        self.m_store: dict[tuple[SteadyStateTransfer, Core], gp.Var] = {}
+        self.m_store: dict[tuple[TransferNode, Core], gp.Var] = {}
         if not self.mem_cores:
             return  # no memory cores, nothing to do
         for tr in self.transfer_nodes:
@@ -476,9 +475,10 @@ class TransferAndTensorAllocator:
 
     def _add_destination_tensor_coherence_constraints(self, tr: TransferNode, paths: list[PathKey]) -> None:
         """Add constraints to ensure path choice is coherent with destination tensor placement."""
-        successors = tr.outputs
-        predecessors = [inp.output for inp in tr.inputs]
-        for dst_tensor in successors:
+        dst_tensors = tr.outputs
+        assert len(tr.inputs) == 1, "Only single-input transfers are supported for destination tensor coherence."
+        src_tensor = tr.inputs[0]
+        for dst_tensor in dst_tensors:
             if dst_tensor in self.tensor_var:
                 assert isinstance(dst_tensor, Tensor), (
                     f"Expected {dst_tensor.name} to be a Tensor, got {type(dst_tensor)}"
@@ -494,7 +494,7 @@ class TransferAndTensorAllocator:
                         )
                         continue
                     # empty path is only possible if the dst_tensor is fixed on the same core as the src_tensor
-                    src_tensor = predecessors[0] if predecessors else None
+                    src_tensor = src_tensor[0] if src_tensor else None
                     if src_tensor is not None and src_tensor in self.tensor_fixed:
                         src_core = self.resource_of[src_tensor]
                         assert isinstance(src_core, Core), f"Expected {src_core} to be a Core, got {type(src_core)}"
@@ -503,7 +503,7 @@ class TransferAndTensorAllocator:
                             name=f"path_core_link_dst_empty_path_{tr.name}_{_resource_key(src_core)}",
                         )
 
-    def _add_io_transfers_path_coherence_constraints(self, tr: SteadyStateTransfer, paths: list[PathKey]) -> None:
+    def _add_io_transfers_path_coherence_constraints(self, tr: TransferNode, paths: list[PathKey]) -> None:
         """
         For every path:
             if its FIRST link originates or ends in a memory core, enforce memory core matching:
@@ -551,7 +551,11 @@ class TransferAndTensorAllocator:
         for tr in self.transfer_nodes:
             transfer_dims = self.workload.get_dims(tr)
             for t, cn in zip(tr.outputs, self.workload.successors(tr), strict=True):
-                cn_tiling = self.workload.get_unique_dims_inter_core_tiling(cn, self.mapping)
+                if isinstance(cn, OutEdge):
+                    cn_tiling = tuple()
+                else:
+                    assert isinstance(cn, ComputationNode), f"Expected ComputationNode, got {type(cn)}"
+                    cn_tiling = self.workload.get_unique_dims_inter_core_tiling(cn, self.mapping)
                 partition_factor = prod(size for dim, size in cn_tiling if dim in transfer_dims)
                 assert t in self.tensor_fixed, "Transfer tensors must be fixed (for now)."
                 for c in self.possible_tensor_allocations[t]:
@@ -568,7 +572,9 @@ class TransferAndTensorAllocator:
                 continue
             for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
                 _, size_factor = self.reuse_levels[(tr, stop)]
-                req_size = size_factor * tr.size  # full transfer size across all dsts
+                assert len(tr.inputs) == 1, "Only single-input transfers are supported for memory capacity calculation."
+                tensor = tr.inputs[0]
+                req_size = size_factor * tensor.size_bits()  # full transfer size across all dsts
                 for mc in memory_allocation:
                     self.core_load[mc] += req_size * self.m_store[(tr, mc)] * self.z_stopM[(tr, stop)]
 
@@ -583,9 +589,7 @@ class TransferAndTensorAllocator:
         """
         self.object_fifo_depth: dict[Core, gp.LinExpr] = defaultdict(gp.LinExpr)
         for tr in self.transfer_nodes:
-            tensors = tuple(inp.output for inp in tr.inputs) + tr.outputs
-            # TODO
-            resources = {c for t in tensors for c in self.possible_tensor_allocations[t]}
+            resources = {c for t in tr.tensors for c in self.possible_tensor_allocations[t]}
             for c in resources:
                 if c.id == self.offchip_core_id:
                     continue  # off-chip has no FIFO depth limit
@@ -594,6 +598,16 @@ class TransferAndTensorAllocator:
                     tiles_needed = self.tiles_needed_levels[(tr, stop)]
                     tiles_needed += 1 if self.force_double_buffering else 0
                     self.object_fifo_depth[c] += tiles_needed * self.z_stopC[(tr, stop)]
+            # Go through the possible memory cores too
+            memory_allocation = self.mapping.get(tr).memory_allocation
+            for mc in memory_allocation:
+                if mc.id == self.offchip_core_id:
+                    continue  # off-chip has no FIFO depth limit
+                assert isinstance(mc, Core), f"Expected {mc} to be a Core, got {type(mc)}"
+                for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
+                    tiles_needed = self.tiles_needed_levels[(tr, stop)]
+                    tiles_needed += 1 if self.force_double_buffering else 0
+                    self.object_fifo_depth[mc] += tiles_needed * self.m_store[(tr, mc)] * self.z_stopM[(tr, stop)]
         self.context.add_object_fifo_constraints(self.model, self.object_fifo_depth)
 
     # ...................... slot latency ........................ #
@@ -601,14 +615,15 @@ class TransferAndTensorAllocator:
         # constant SSC contributions
         for n in self.ssc_nodes:
             s = self.slot_of[n]
-            assert n.runtime is not None, f"Node {n.node_name} has no runtime defined."
-            self.model.addConstr(self.slot_latency[s] >= n.runtime, name=f"ssc_lat_{n.node_name}")
+            runtimes = [self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)]
+            runtime = ceil(max(runtimes)) if runtimes else 0
+            self.model.addConstr(self.slot_latency[s] >= runtime, name=f"ssc_lat_{n.name}")
 
         # transfer (path-dependent) contributions
         for (tr, p), y in self.y_path.items():
             s = self.slot_of[tr]
             lat = self._transfer_latency(tr, p)
-            self.model.addConstr(self.slot_latency[s] >= lat * y, name=f"tr_lat_{tr.node_name}_{hash(p)}")
+            self.model.addConstr(self.slot_latency[s] >= lat * y, name=f"tr_lat_{tr.name}_{hash(p)}")
 
     # ...................... overlap + objective ................. #
     def _overlap_and_objective(self) -> None:
@@ -717,16 +732,16 @@ class TransferAndTensorAllocator:
             self._transfer_latency(tr, p) * self.y_path[(tr, p)] * self.firesC[tr] for (tr, p) in self.y_path
         )
         lat_dram_mem = {
-            (tr, mc): ceil(tr.size / self._first_link_bw_from_dram(tr, mc))
+            (tr, mc): ceil(tr.inputs[0].size_bits() / self._first_link_bw_from_dram(tr, mc))
             for tr in self.transfer_nodes
             if self._is_const_io(tr)
-            for mc in tr.possible_memory_core_allocation
+            for mc in self.mapping.get(tr).memory_allocation
         }
         self.total_transfer_cost += quicksum(
             lat_dram_mem[(tr, mc)] * self.firesM[tr] * self.m_store[(tr, mc)]
             for tr in self.transfer_nodes
             if self._is_const_io(tr)
-            for mc in tr.possible_memory_core_allocation
+            for mc in self.mapping.get(tr).memory_allocation
         )
 
     def _add_dma_usage_constraints(self) -> None:
@@ -803,43 +818,19 @@ class TransferAndTensorAllocator:
         # ---------- read back decisions --------------------------------
         tensor_alloc = self.get_tensor_allocations()
         routing = self.get_transfer_routing()
+        chosen_memory_cores = self.get_chosen_memory_cores()
         self.update_transfer_reuse_levels()
-        self.update_transfer_memory_core_allocation()
 
-        # ---------- rebuild TSA with new resources ---------------------
-        new_allocs: list[tuple[int, Resource, Node]] = []
-        for slot, res, node in self.tsa.allocations:
-            if isinstance(node, SteadyStateTensor):
-                if res is None:
-                    assert node in tensor_alloc, f"Tensor {node.node_name} not found in tensor_alloc."
-                    res_new = tensor_alloc[node]
-                else:
-                    res_new = res
-                new_allocs.append((slot, res_new, node))
-            elif isinstance(node, SteadyStateTransfer):
-                assert node in routing, f"Transfer {node.node_name} not found in routing."
-                res_new = routing[node]
-                for link in res_new:
-                    new_allocs.append((slot, link, node))
-            elif isinstance(node, SteadyStateComputation):
-                assert res is not None, f"Computation {node.node_name} has no resource assigned."
-                new_allocs.append((slot, res, node))
-            else:
-                raise TypeError(f"Unexpected node type: {type(node)} in TSA allocations.")
-        # Update the TimeSlotAllocation with the new allocations
-        tsa_upd = TimeSlotAllocation(new_allocs)
-        # Update the steady state workload to prevent graph inconsistencies
-        ssw_upd = self.get_updated_steady_state_workload()
         assert self.total_latency is not None, "Total latency variable was not created."
-        return tsa_upd, ssw_upd, int(self.total_latency.X)
+        return tensor_alloc, routing, chosen_memory_cores, int(self.total_latency.X)
 
     def update_transfer_reuse_levels(  # noqa: PLR0912
         self,
     ) -> None:
-        compute_tile_reuse_levels: dict[SteadyStateTransfer, int] = {}
-        mem_tile_reuse_levels: dict[SteadyStateTransfer, int] = {}
+        compute_tile_reuse_levels: dict[TransferNode, int] = {}
+        mem_tile_reuse_levels: dict[TransferNode, int] = {}
         for tr in self.transfer_nodes:
-            for stop in range(-1, len(tr.steady_state_iteration_space.get_temporal_variables())):
+            for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
                 if self.z_stopC[(tr, stop)].X > self.VAR_THRESHOLD:
                     compute_tile_reuse_levels[tr] = stop
                 if self.z_stopM[(tr, stop)].X > self.VAR_THRESHOLD:
@@ -848,13 +839,13 @@ class TransferAndTensorAllocator:
         for tr in self.transfer_nodes:
             stop = compute_tile_reuse_levels[tr]
             # Set all iteration variables to REUSE flag
-            for i, iter_var in enumerate(tr.steady_state_iteration_space.get_temporal_variables()):
+            for i, iter_var in enumerate(self.ssis[tr].get_temporal_variables()):
                 if i <= stop:
                     flag = ComputeTileReuse.REUSE
                 else:
                     flag = ComputeTileReuse.NO_REUSE
                 iter_var.compute_tile_reuse = flag
-            for i, iter_var in enumerate(tr.steady_state_iteration_space.get_temporal_variables()):
+            for i, iter_var in enumerate(self.ssis[tr].get_temporal_variables()):
                 if i <= mem_tile_reuse_levels[tr]:
                     flag = MemTileReuse.REUSE
                 else:
@@ -870,23 +861,23 @@ class TransferAndTensorAllocator:
 
     def get_transfer_routing(
         self,
-    ) -> dict[SteadyStateTransfer, tuple[CommunicationLink]]:
-        routing: dict[SteadyStateTransfer, tuple[CommunicationLink]] = {}
+    ) -> dict[TransferNode, tuple[CommunicationLink]]:
+        routing: dict[TransferNode, tuple[CommunicationLink]] = {}
         for tr in self.transfer_nodes:
-            chosen = [p for p in tr.possible_resource_allocation if self.y_path[(tr, tuple(p))].X > self.VAR_THRESHOLD]
+            chosen = [
+                p for p in self.possible_transfer_allocations[tr] if self.y_path[(tr, tuple(p))].X > self.VAR_THRESHOLD
+            ]
             if len(chosen) != 1:
-                raise ValueError(f"{tr.node_name}: expected exactly one path, got {chosen}")
+                raise ValueError(f"{tr.name}: expected exactly one path, got {chosen}")
             path = chosen[0]
-            tr.chosen_resource_allocation = path
-            tr.runtime = self._transfer_latency(tr, path)
             routing[tr] = path
         return routing
 
     def get_chosen_memory_cores(
         self,
-    ) -> dict[SteadyStateTransfer, Core]:
+    ) -> dict[TransferNode, Core]:
         # --- which MemC was selected
-        chosen_memory_cores: dict[SteadyStateTransfer, Core] = {}
+        chosen_memory_cores: dict[TransferNode, Core] = {}
         for tr in self.transfer_nodes:
             for mc in self.mem_cores:
                 if self.m_store.get((tr, mc), None) and self.m_store[(tr, mc)].X > self.VAR_THRESHOLD:
@@ -904,10 +895,10 @@ class TransferAndTensorAllocator:
 
     def get_tensor_allocations(
         self,
-    ) -> dict[SteadyStateTensor, Core]:
-        tensor_alloc: dict[SteadyStateTensor, Core] = {}
+    ) -> dict[Tensor, Core]:
+        tensor_alloc: dict[Tensor, Core] = {}
         for t in self.tensor_var:
-            chosen = [c for c in t.possible_resource_allocation if self.x_tensor[(t, c)].X > self.VAR_THRESHOLD]
+            chosen = [c for c in self.possible_tensor_allocations[t] if self.x_tensor[(t, c)].X > self.VAR_THRESHOLD]
             if len(chosen) != 1:
                 raise ValueError(f"{t.node_name}: expected exactly one core, got {chosen}")
             core = chosen[0]
@@ -935,7 +926,7 @@ class TransferAndTensorAllocator:
             assert self.firesC[tr].X >= self.firesM[tr].X - 1e-6
         # chosen stopM ≥ stopC
         for tr in self.transfer_nodes:
-            stop_max = len(tr.steady_state_iteration_space.get_temporal_variables())
+            stop_max = len(self.ssis[tr].get_temporal_variables())
             stopC = next(s for s in range(-1, stop_max) if self.z_stopC[(tr, s)].X > self.VAR_THRESHOLD)
             stopM = next(s for s in range(-1, stop_max) if self.z_stopM[(tr, s)].X > self.VAR_THRESHOLD)
             assert stopM >= stopC
