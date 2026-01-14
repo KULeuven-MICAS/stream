@@ -42,10 +42,10 @@ class AIECostEstimator:
     def ops_per_cycle(self, node: ComputationNode, core: Core) -> int:
         """Depending on the node inputs and output data type and core type,
         return the number of operations per cycle."""
-        inputs_datatype = [inp.output.operand_type for inp in node.inputs]
+        inputs_datatype = [inp.operand_type for inp in node.inputs]
         assert all(dt == inputs_datatype[0] for dt in inputs_datatype), "All input datatypes must be the same."
         input_datatype = inputs_datatype[0]
-        output_datatype = node.output.operand_type
+        output_datatype = node.outputs[0].operand_type
         return self.ops_per_cycle_for_datatypes(input_datatype, output_datatype, core)
 
     def ops_per_cycle_for_datatypes(

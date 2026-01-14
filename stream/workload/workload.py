@@ -51,14 +51,10 @@ class Node(ABC):
 class HasOutputs(Node, ABC):
     outputs: tuple[Tensor, ...]
 
-    @property
-    def output(self) -> Tensor:
-        return self.outputs[0]
-
 
 @dataclass(frozen=True, repr=False)
 class HasInputs(Node, ABC):
-    inputs: tuple[HasOutputs, ...]
+    inputs: tuple[Tensor, ...]
 
 
 @dataclass(frozen=True, repr=False)
@@ -89,21 +85,19 @@ class HasIterationSpace(HasInputs, HasOutputs):
         # Dimensionality of all maps should be equal
         return self.operand_mapping[0].num_dims
 
-    def get_mapping(self, operand: Node | Tensor) -> AffineMap:
-        if operand is self.output:
-            return self.operand_mapping[-1]
-        for i, input in enumerate(self.inputs):
-            if operand is input or operand is input.output:
-                return self.operand_mapping[i]
-        raise RuntimeError
+    def get_mapping(self, tensor: Tensor) -> AffineMap:
+        if tensor in self.tensors:
+            idx = self.tensors.index(tensor)
+            return self.operand_mapping[idx]
+        raise RuntimeError(f"Tensor {tensor.name} not found in node {self.name}")
 
     def get_dimension_size(self, layer_dim: LayerDim) -> int:
         dim_index = layer_dim.get_idx()
-        return self.output.shape[dim_index]  # TODO: Probably not always of output tensor
+        return self.outputs[-1].shape[dim_index]  # TODO: Probably not always of output tensor
 
     @property
     def tensors(self) -> tuple[Tensor, ...]:
-        return tuple(inp.output for inp in self.inputs) + (self.output,)
+        return self.inputs + self.outputs
 
 
 @dataclass(frozen=True, repr=False)
@@ -120,13 +114,13 @@ class ComputationNode(HasIterationSpace):
         if len(self.inputs) != len(other.inputs):
             return False
         for inp_self, inp_other in zip(self.inputs, other.inputs, strict=True):
-            if inp_self.output.operand_type != inp_other.output.operand_type:
+            if inp_self.operand_type != inp_other.operand_type:
                 return False
-            if inp_self.output.shape != inp_other.output.shape:
+            if inp_self.shape != inp_other.shape:
                 return False
-        if self.output.operand_type != other.output.operand_type:
+        if self.outputs[0].operand_type != other.outputs[0].operand_type:
             return False
-        if self.output.shape != other.output.shape:
+        if self.outputs[0].shape != other.outputs[0].shape:
             return False
         return True
 
@@ -138,8 +132,11 @@ class Workload(DiGraphWrapper[Node]):
         for node in nodes:
             if isinstance(node, HasInputs):
                 for input in node.inputs:
-                    assert input in graph.nodes(), f"Input {input} not in graph nodes"
-                    graph.add_edge(input, node)
+                    try:
+                        pred = next(n for n in nodes if isinstance(n, HasOutputs) and input in n.outputs)
+                    except StopIteration:
+                        raise RuntimeError(f"Input tensor {input.name} for node {node.name} has no producer.")
+                    graph.add_edge(pred, node)
         super().__init__(graph)
 
     def __repr__(self) -> str:
@@ -187,20 +184,26 @@ class Workload(DiGraphWrapper[Node]):
     def dimension_relations(self) -> Sequence[AffineExpr]:
         result = []
         # Relations between shared intermediate tensors:
-        for edge in self.edges:
-            if isinstance(edge[0], HasIterationSpace) and isinstance(edge[1], HasIterationSpace):
-                mapping_out = self.global_mapping(edge[0], edge[0].get_mapping(edge[0].output))
-                mapping_in = self.global_mapping(edge[1], edge[1].get_mapping(edge[0]))
+        for src, dst in self.edges:
+            if isinstance(src, HasIterationSpace) and isinstance(dst, HasIterationSpace):
+                try:
+                    output = next(t for t in src.outputs if t in dst.inputs)
+                except StopIteration:
+                    raise RuntimeError(f"No shared tensor between nodes {src.name} and {dst.name}")
+                mapping_out = self.global_mapping(src, src.get_mapping(output))
+                mapping_in = self.global_mapping(dst, dst.get_mapping(output))
                 for expr_out, expr_in in zip(mapping_out.results, mapping_in.results, strict=True):
                     # expr_out == expr_in <=> expr_out - expr_in == 0
                     result.append(expr_out - expr_in)
         # Relations between shared inputs:
         for node in self.nodes:
             if isinstance(node, InEdge):
+                assert len(node.outputs) == 1, "Only single output InEdge supported for now."
+                output = node.outputs[0]
                 all_users = [cast(HasIterationSpace, out) for (_, out) in self.out_edges(node)]
                 for a, b in combinations(all_users, 2):
-                    mapping_a = self.global_mapping(a, a.get_mapping(node))
-                    mapping_b = self.global_mapping(b, b.get_mapping(node))
+                    mapping_a = self.global_mapping(a, a.get_mapping(output))
+                    mapping_b = self.global_mapping(b, b.get_mapping(output))
                     for expr_a, expr_b in zip(mapping_a.results, mapping_b.results, strict=True):
                         result.append(expr_a - expr_b)
         return result
@@ -230,11 +233,10 @@ class Workload(DiGraphWrapper[Node]):
         results = []
         shapes: list[int] = []
         for node in self.get_iteration_space_nodes():
-            operands = tuple(inp.output for inp in node.inputs) + node.outputs
-            for operand, mapping in zip(operands, node.operand_mapping, strict=True):
+            for tensor, mapping in zip(node.tensors, node.operand_mapping, strict=True):
                 global_mapping = self.global_mapping(node, mapping)
                 results.extend(global_mapping.results)
-                shapes.extend(operand.shape)
+                shapes.extend(tensor.shape)
         total_map = AffineMap(self.num_dims, 0, tuple(results))
         return total_map.inverse_permutation().eval(shapes, [])
 
@@ -336,7 +338,6 @@ class Workload(DiGraphWrapper[Node]):
             tensor_map[tensor_name] = new_output
 
         # Recreate nodes in topological order so inputs are available when recreating a consumer.
-        node_map: dict[Node, Node] = {}
         new_nodes: list[Node] = []
         for node in nx.lexicographical_topological_sort(self, key=lambda n: n.name):
             if isinstance(node, InEdge):
@@ -347,8 +348,8 @@ class Workload(DiGraphWrapper[Node]):
                     outputs=(new_output,),
                 )
             elif isinstance(node, ComputationNode):
-                new_inputs = tuple(cast(HasOutputs, node_map[inp]) for inp in node.inputs)
-                new_output = tensor_map.get(node.output.name)
+                new_inputs = tuple(cast(Tensor, tensor_map[inp.name]) for inp in node.inputs)
+                new_output = tensor_map.get(node.outputs[0].name)
                 assert new_output is not None, f"ComputationNode output tensor {node.name} must have been inferred"
                 new_node = ComputationNode(
                     name=node.name,
@@ -357,8 +358,8 @@ class Workload(DiGraphWrapper[Node]):
                     operand_mapping=node.operand_mapping,
                 )
             elif isinstance(node, TransferNode):
-                new_inputs = tuple(cast(HasOutputs, node_map[inp]) for inp in node.inputs)
-                new_output = tensor_map.get(node.output.name)
+                new_inputs = tuple(cast(Tensor, tensor_map[inp.name]) for inp in node.inputs)
+                new_output = tensor_map.get(node.outputs[0].name)
                 assert new_output is not None, f"TransferNode output tensor {node.name} must have been inferred"
                 new_node = TransferNode(
                     name=node.name,
@@ -368,7 +369,7 @@ class Workload(DiGraphWrapper[Node]):
                     operand_mapping=node.operand_mapping,
                 )
             elif isinstance(node, OutEdge):
-                new_inputs = tuple(cast(HasOutputs, node_map[inp]) for inp in node.inputs)
+                new_inputs = tuple(cast(Tensor, tensor_map[inp.name]) for inp in node.inputs)
                 new_node = OutEdge(
                     name=node.name,
                     inputs=new_inputs,
@@ -376,7 +377,6 @@ class Workload(DiGraphWrapper[Node]):
             else:
                 raise TypeError(f"Unknown node type: {type(node)}")
 
-            node_map[node] = new_node
             new_nodes.append(new_node)
 
         return Workload(new_nodes)
@@ -436,12 +436,12 @@ class Workload(DiGraphWrapper[Node]):
                 n.set_fillcolor("#ffcb9a")
             elif isinstance(node, InEdge):
                 n.set_shape("box")
-                n.set_label(f"{node.name}\nShape: {node.output.shape}")
+                n.set_label(f"{node.name}\nShape: {node.outputs[0].shape}")
                 n.set_style("filled")
                 n.set_fillcolor("#eaff76e1")
             elif isinstance(node, OutEdge):
                 n.set_shape("box")
-                n.set_label(f"{node.name}\nShape: {node.inputs[0].output.shape}")
+                n.set_label(f"{node.name}\nShape: {node.inputs[0].shape}")
                 n.set_style("filled")
                 n.set_fillcolor("#c2f0c2")
             else:

@@ -86,15 +86,15 @@ class TransferAndTensorAllocator:
         self.tensor_var: list[Tensor] = []  # will remain empty for now
         self.possible_tensor_allocations: dict[Tensor, list[Resource]] = {}
         for in_edge in workload.get_in_edges():
-            self.possible_tensor_allocations[in_edge.output] = [self.accelerator.get_core(self.offchip_core_id)]
-            self.tensor_fixed.append(in_edge.output)
+            self.possible_tensor_allocations[in_edge.outputs[0]] = [self.accelerator.get_core(self.offchip_core_id)]
+            self.tensor_fixed.append(in_edge.outputs[0])
         for node in workload.get_computation_nodes():
             for t in node.tensors:
                 if t not in self.possible_tensor_allocations:
                     self.possible_tensor_allocations[t] = self.mapping.get(node).core_allocation
                     self.tensor_fixed.append(t)
         for out_edge in workload.get_out_edges():
-            tensor = out_edge.inputs[0].output
+            tensor = out_edge.inputs[0]
             self.possible_tensor_allocations[tensor] = [self.accelerator.get_core(self.offchip_core_id)]
             self.tensor_fixed.append(tensor)
 
@@ -448,7 +448,7 @@ class TransferAndTensorAllocator:
     def _add_source_tensor_coherence_constraints(self, tr: TransferNode, paths: list[PathKey]) -> None:
         """Add constraints to ensure path choice is coherent with source tensor placement."""
         predecessors = list(self.workload.predecessors(tr))
-        predecessors = [inp.output for inp in tr.inputs]
+        predecessors = tr.inputs
         assert all(isinstance(n, Tensor) for n in predecessors), (
             f"Transfer {tr.name} has non-tensor predecessor(s): {predecessors}"
         )
@@ -579,7 +579,7 @@ class TransferAndTensorAllocator:
 
     def _object_fifo_depth_constraints(self):
         """
-        Ensure that the FIFO depth of each object is respected.
+        Ensure that the max FIFO depth of each core is respected.
         """
         self.object_fifo_depth: dict[Core, gp.LinExpr] = defaultdict(gp.LinExpr)
         for tr in self.transfer_nodes:

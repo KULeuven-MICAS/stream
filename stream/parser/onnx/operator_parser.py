@@ -26,11 +26,11 @@ class OnnxOperatorParser(ONNXOperatorParserZigZag, metaclass=ABCMeta):
         self.nodes_outputs = nodes_outputs
         self.onnx_model = onnx_model
 
-    def run(self, name_to_node_dict: dict[str, HasOutputs]) -> Generator[Node, None, None]:  # type: ignore
-        yield self.generate_node(name_to_node_dict)
+    def run(self, name_to_tensor_dict: dict[str, Tensor]) -> Generator[HasOutputs]:  # type: ignore
+        yield self.generate_node(name_to_tensor_dict)
 
     @abstractmethod
-    def generate_node(self, name_to_node_dict: dict[str, HasOutputs]) -> Node: ...
+    def generate_node(self, name_to_tensor_dict: dict[str, Tensor]) -> HasOutputs: ...
 
     def get_operand_source_input_format(self):
         predecessors = self.get_node_predecessors()

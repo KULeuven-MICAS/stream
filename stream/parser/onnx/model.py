@@ -35,7 +35,7 @@ from stream.parser.onnx.simd import SimdParser
 # from stream.parser.onnx.ssm import SSMParser
 # from stream.parser.onnx.transpose import TransposeParser
 from stream.parser.onnx.utils import onnx_tensor_to_tensor
-from stream.workload.workload import HasOutputs, InEdge, Node, OutEdge, Workload
+from stream.workload.workload import InEdge, Node, OutEdge, Tensor, Workload
 
 logger = logging.getLogger(__name__)
 
@@ -126,18 +126,18 @@ class ONNXModelParser:
 
         unnamed_id = 0
         # Workload Graph
-        name_to_node_dict: dict[str, HasOutputs] = {}
+        name_to_tensor_dict: dict[str, Tensor] = {}
         workload_nodes: list[Node] = []
 
         # Add InEdges
         for input in self.onnx_model.graph.input:
-            workload_nodes.append(in_edge := InEdge(name=input.name, outputs=(onnx_tensor_to_tensor(input),)))
-            name_to_node_dict[input.name] = in_edge
+            tensor = onnx_tensor_to_tensor(input)
+            workload_nodes.append(InEdge(name=input.name, outputs=(tensor,)))
+            name_to_tensor_dict[input.name] = tensor
         for initializer in self.onnx_model.graph.initializer:
-            workload_nodes.append(
-                in_edge := InEdge(name=initializer.name, outputs=(onnx_tensor_to_tensor(initializer),))
-            )
-            name_to_node_dict[initializer.name] = in_edge
+            tensor = onnx_tensor_to_tensor(initializer)
+            workload_nodes.append(InEdge(name=initializer.name, outputs=(tensor,)))
+            name_to_tensor_dict[initializer.name] = tensor
 
         # Add ComputationNodes
         for node in self.onnx_model.graph.node:
@@ -159,18 +159,16 @@ class ONNXModelParser:
             )
 
             logger.info("Parsed %s node %s.", node.op_type, node.name)
-            for node_obj in parser.run(name_to_node_dict):
-                if len(node.output) == 1:
-                    assert isinstance(node_obj, HasOutputs)
-                    name_to_node_dict[node.output[0]] = node_obj
-                # Parsers that yield multiple nodes increment the node id internally, so we must keep count here.
+            for node_obj in parser.run(name_to_tensor_dict):
+                for output in node_obj.outputs:
+                    name_to_tensor_dict[output.name] = output
                 workload_nodes.append(node_obj)
 
         # Add OutEdge
         workload_nodes.append(
             OutEdge(
                 name=self.onnx_model.graph.output[0].name,
-                inputs=(name_to_node_dict[self.onnx_model.graph.output[0].name],),
+                inputs=(name_to_tensor_dict[self.onnx_model.graph.output[0].name],),
             )
         )
 

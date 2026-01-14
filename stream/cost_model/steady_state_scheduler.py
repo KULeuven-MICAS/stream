@@ -1,7 +1,7 @@
 import os
-from collections import defaultdict
 from functools import reduce
 from math import prod
+from typing import cast
 
 from xdsl.ir.affine import AffineMap
 
@@ -120,30 +120,25 @@ class SteadyStateScheduler:
         return self
 
     def build_transfer_graph(self) -> Workload:
-        new_nodes = {node.name: node for node in self.workload.nodes}
-        new_input_names: dict[Tensor, list[str]] = defaultdict(list)
+        new_nodes: dict[str, Node] = {node.name: node for node in self.workload.nodes}
         # Go through the tensors of the workload to find sources and destinations of the tensor
         for tensor in self.workload.tensors:
             srcs = [n for n in self.workload.nodes if isinstance(n, HasOutputs) and tensor in n.outputs]
             assert len(srcs) == 1, f"Expected exactly one source for tensor {tensor}, found {len(srcs)}"
             src = srcs[0]
-            dsts = [
-                n for n in self.workload.nodes if isinstance(n, HasInputs) and tensor in [i.output for i in n.inputs]
-            ]
+            dsts = [n for n in self.workload.nodes if isinstance(n, HasInputs) and tensor in n.inputs]
             transfer_type = self.determine_transfer_type(src, dsts)
             if transfer_type != TransferType.NONE:
-                transfer_node, updated_names = self.generate_transfer_node(
-                    new_nodes[src.name], dsts, tensor, transfer_type
-                )
-                new_input_names[tensor].extend(updated_names)
+                transfer_node, updated_tensors = self.generate_transfer_node(dsts, tensor, transfer_type)
                 new_nodes[transfer_node.name] = transfer_node
                 new_dsts = []
-                for dst in dsts:
+                for dst, updated_tensor in zip(dsts, updated_tensors, strict=True):
                     # Find corresponding node in new_nodes as it might have already been updated
                     dst = new_nodes[dst.name]
                     # Update the dst input to the transfer node
-                    input_idx = dst.inputs.index(src)
-                    new_inputs = dst.inputs[:input_idx] + (transfer_node,) + dst.inputs[input_idx + 1 :]
+                    assert len(src.outputs) == 1, "Src must have exactly one output tensor for index below."
+                    input_idx = dst.inputs.index(src.outputs[0])
+                    new_inputs = dst.inputs[:input_idx] + (updated_tensor,) + dst.inputs[input_idx + 1 :]
                     if isinstance(dst, ComputationNode):
                         new_dst = ComputationNode(
                             name=dst.name,
@@ -161,7 +156,7 @@ class SteadyStateScheduler:
                     new_nodes[dst.name] = new_dst
                     new_dsts.append(new_dst)
                 # Update the transfer dsts to the new dsts
-                transfer_node = self.generate_transfer_node(src, new_dsts, tensor, transfer_type)
+                transfer_node = self.generate_transfer_node(new_dsts, tensor, transfer_type)
         new_workload = Workload(new_nodes.values())
         return new_workload
 
@@ -175,28 +170,29 @@ class SteadyStateScheduler:
                 self.mapping.remove(old_node)
         # Transfer node mappings
         for node in new_workload.get_transfer_nodes():
-            src = node.inputs[0]
-            dsts = [n for n in new_workload.node_list if isinstance(n, HasInputs) and node in n.inputs]
-            self.update_mapping_for_transfer(node, src, tuple(dsts))
+            assert len(node.inputs) == 1, "Transfer node must have exactly one input tensor."
+            src = cast(HasOutputs, list(new_workload.predecessors(node))[0])
+            dsts = tuple(cast(HasInputs, n) for n in new_workload.successors(node))
+            self.update_mapping_for_transfer(node, src, dsts)
         return self.mapping
 
     def generate_transfer_node(
-        self, src: HasOutputs, dsts: list[HasInputs], tensor: Tensor, transfer_type: TransferType
-    ) -> tuple[TransferNode, dict[Tensor, list[str]]]:
+        self, dsts: list[HasInputs], tensor: Tensor, transfer_type: TransferType
+    ) -> tuple[TransferNode, list[Tensor]]:
         transfer_outputs = self.generate_transfer_output_tensors(tensor, dsts)
         operand_mapping = tuple(AffineMap.identity(len(tensor.shape)) for _ in range(1 + len(dsts)))
         transfer_node = TransferNode(
             name=f"Transfer({tensor.name})",
-            inputs=(src,),
+            inputs=(tensor,),
             outputs=tuple(transfer_outputs),
             transfer_type=transfer_type,
             operand_mapping=operand_mapping,
         )
-        return transfer_node, {tensor: [t.name for t in transfer_outputs]}
+        return transfer_node, transfer_outputs
 
     def generate_transfer_output_tensors(self, tensor: Tensor, dsts: list[HasInputs]) -> list[Tensor]:
         transfer_outputs = []
-        for i, dst in enumerate(dsts):
+        for i, _ in enumerate(dsts):
             transfer_output = Tensor(
                 name=f"{tensor.name}.{i}",
                 operand_type=tensor.operand_type,
@@ -239,7 +235,7 @@ class SteadyStateScheduler:
 
     def update_mapping_for_transfer(self, node: TransferNode, src: HasOutputs, dsts: tuple[HasInputs, ...]) -> None:
         possible_memory_cores = self.determine_possible_memory_allocations(src, dsts)
-        possible_allocations = self.determine_possible_transfer_allocations(node, dsts, possible_memory_cores)
+        possible_allocations = self.determine_possible_transfer_allocations(src, dsts, possible_memory_cores)
         self.mapping.set_for_node(
             node,
             core_allocation=possible_allocations,
@@ -256,9 +252,8 @@ class SteadyStateScheduler:
         return possible_memory_cores
 
     def determine_possible_transfer_allocations(
-        self, transfer_node: TransferNode, dsts: tuple[HasInputs, ...], possible_memory_cores: tuple[Core, ...]
+        self, src: HasOutputs, dsts: tuple[HasInputs, ...], possible_memory_cores: tuple[Core, ...]
     ) -> tuple[tuple[CommunicationLink, ...], ...]:
-        src = transfer_node.inputs[0]
         src_allocs = self.retrieve_node_allocation(src)
         dst_allocs = {x for dst_allocs in [(self.retrieve_node_allocation(dst)) for dst in dsts] for x in dst_allocs}
 
@@ -310,7 +305,8 @@ class SteadyStateScheduler:
                 global_mapping = self.workload.global_mapping(src, tensor_operand_mapping)
             else:
                 assert isinstance(dst, ComputationNode), "Either src or dst must be a ComputationNode"
-                tensor_operand_mapping = dst.operand_mapping[dst.inputs.index(src)]
+                assert len(src.outputs) == 1, "Src must have exactly one output tensor for index below"
+                tensor_operand_mapping = dst.operand_mapping[dst.inputs.index(src.outputs[0])]
                 global_mapping = self.workload.global_mapping(dst, tensor_operand_mapping)
             # Find the unique dimensions of the tensor being transfered
             tensor_dims = [all_dims[expr.position] for expr in global_mapping.results]
