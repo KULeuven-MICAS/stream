@@ -173,8 +173,7 @@ def optimize_allocation_co(  # noqa: PLR0913
             MappingParserStage,
             TilingGenerationStage,
             CoreCostEstimationStage,
-            ConstraintOptimizationAllocationStage,  # revamp to already use steady state workload
-            # Add separate TETRA stage
+            ConstraintOptimizationAllocationStage,
         ]
         ctx = StageContext.from_kwargs(
             accelerator=hardware,  # required by AcceleratorParserStage

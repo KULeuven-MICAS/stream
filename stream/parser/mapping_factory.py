@@ -21,13 +21,13 @@ class MappingFactory:
         # For each computation node in the graph set up mapping attributes
         for cn in self.workload.get_computation_nodes():
             mapping_data = self.get_mapping_data_for_node(cn)
-            core_allocation = tuple(self.get_core_allocation(mapping_data))
+            resource_allocation = tuple(self.get_resource_allocation(mapping_data))
             inter_core_tiling = self.create_inter_core_tiling(mapping_data, node=cn)
             kernel = self.create_kernel(mapping_data)
             mapping.set(
                 cn,
                 NodeMapping(
-                    core_allocation=core_allocation,
+                    resource_allocation=resource_allocation,
                     inter_core_tiling=inter_core_tiling,
                     kernel=kernel,
                 ),
@@ -40,7 +40,7 @@ class MappingFactory:
                 return mapping_data
         raise ValueError(f"No mapping data found for node with name {node.name}")
 
-    def get_core_allocation(self, mapping_data: dict[str, Any]) -> list["Core"]:
+    def get_resource_allocation(self, mapping_data: dict[str, Any]) -> list["Core"]:
         core_ids = mapping_data["core_allocation"]
         cores = []
         for core_id in core_ids:

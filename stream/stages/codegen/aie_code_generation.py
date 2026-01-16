@@ -20,7 +20,6 @@ from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, Stream, T
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
 from stream.compiler.transforms.stream_split_transfers import StreamSplitTransfersPass
-from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.computation import SteadyStateComputation
@@ -29,6 +28,7 @@ from stream.workload.steady_state.node import Node
 from stream.workload.steady_state.tensor import SteadyStateTensor
 from stream.workload.steady_state.transfer import SteadyStateTransfer
 from stream.workload.steady_state.workload import SteadyStateWorkload
+from stream.workload.workload import Workload
 
 
 class AIECodeGenerationStage(Stage):
@@ -51,16 +51,18 @@ class AIECodeGenerationStage(Stage):
         self.trace_size = self.ctx.get("trace_size", 1048576)
         self.npu = self.ctx.get("npu", "npu2")
         self.runtime_args = self.ctx.get("runtime_args", [])
+        self.mapping = self.ctx.get("mapping")
         self.module = None
 
     def run(self):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
 
-        for cme, extra_info in sub_stage.run():
-            if cme:
-                self.codegen_main(cme, self.trace_size, self.npu)
-                assert self.module is not None
-            yield self.module, extra_info
+        for ctx in sub_stage.run():
+            self.ctx = ctx
+            self.codegen_main()
+            assert self.module is not None
+            self.ctx.set(module=self.module)
+            yield self.ctx
 
     def create_edge_op(
         self,
@@ -321,8 +323,10 @@ class AIECodeGenerationStage(Stage):
 
         return module
 
-    def codegen_main(self, sss: SteadyStateScheduler, trace_size: int, npu: AIEDeviceEnum) -> None:
-        workload = sss.steady_state_workload
+    def codegen_main(self) -> None:
+        workload: Workload = self.ctx.get("workload")
+        trace_size: int = self.ctx.get("trace_size", 1048576)
+        npu: AIEDeviceEnum = self.ctx.get("npu", "npu2")
         assert workload is not None
 
         aie_kernels = {

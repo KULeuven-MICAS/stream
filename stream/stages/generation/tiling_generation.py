@@ -50,7 +50,7 @@ class TilingGenerationStage(Stage):
         self.tiled_dimensions = self.get_tiled_dimensions_in_function_of_nodes()
         # self.steady_state_iteration_spaces = generate_steady_state_iteration_spaces(self.tiled_workload, self.tiled_mapping, self.fuse_dimensions)
 
-        self.tiled_workload.visualize_to_file(os.path.join(self.output_path, "tiled_workload.png"))
+        self.tiled_workload.visualize(os.path.join(self.output_path, "tiled_workload.png"))
         self.ctx.set(workload=self.tiled_workload, mapping=self.tiled_mapping, tiled_dimensions=self.tiled_dimensions)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()

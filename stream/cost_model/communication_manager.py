@@ -23,7 +23,7 @@ def _path_edges(path: list) -> list[tuple]:
     return list(zip(path, path[1:], strict=False))
 
 
-def _build_edge_weight_map(Gw: nx.Graph, weight_attr: str) -> dict[tuple, float]:
+def _build_edge_weight_map(Gw: nx.Graph, weight_attr: str) -> dict[tuple, float]:  # noqa: N803
     """
     Map directed edge (u,v) -> weight.
     For undirected graphs, also add (v,u) so scoring works regardless of direction.
@@ -46,7 +46,7 @@ def _incremental_union_cost(edge_list: list[tuple], union_edges: set[tuple], edg
 
 
 def _k_paths_for_pair_using_cached_first(
-    Gw: nx.Graph,
+    Gw: nx.Graph,  # noqa: N803
     s,
     t,
     *,

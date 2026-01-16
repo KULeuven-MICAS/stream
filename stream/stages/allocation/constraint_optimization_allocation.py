@@ -55,9 +55,10 @@ class ConstraintOptimizationAllocationStage(Stage):
 
     def run(self):
         logger.info("Start ConstraintOptimizationAllocationStage.")
-        tsa = self.find_best_tensor_transfer_allocation()
+        workload = self.find_best_tensor_transfer_allocation()
+        self.ctx.set(workload=workload, mapping=self.mapping)
         logger.info("End ConstraintOptimizationAllocationStage.")
-        yield (tsa, None)
+        yield self.ctx
 
     def find_best_tensor_transfer_allocation(self):
         """
@@ -73,8 +74,8 @@ class ConstraintOptimizationAllocationStage(Stage):
             self.config.transfer.nb_cols_to_use,
             output_path,
         )
-        schedule = scheduler.run()
-        return schedule
+        workload = scheduler.run()
+        return workload
 
     def is_leaf(self) -> bool:
         return True

@@ -73,7 +73,7 @@ class CoreCostEstimationStage(Stage):
         self.visualize_cost_lut_path: str = os.path.splitext(self.cost_lut_path)[0] + ".png"
 
         self.valid_allocations: dict[ComputationNode, list[Core]] = {
-            node: self.mapping.get(node).core_allocation for node in self.workload.get_computation_nodes()
+            node: self.mapping.get(node).resource_allocation for node in self.workload.get_computation_nodes()
         }
         self.cost_lut: CoreCostLUT = CoreCostLUT(self.cost_lut_path)
 

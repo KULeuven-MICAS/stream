@@ -1,5 +1,4 @@
 from abc import ABCMeta, abstractmethod
-from collections.abc import Generator
 from typing import Any, Protocol, runtime_checkable
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
@@ -39,7 +38,7 @@ class Stage(metaclass=ABCMeta):
         return False
 
     @abstractmethod
-    def run(self) -> Generator[tuple[StreamCostModelEvaluation, Any], None, None]: ...
+    def run(self) -> StageContext: ...
 
 
 @runtime_checkable

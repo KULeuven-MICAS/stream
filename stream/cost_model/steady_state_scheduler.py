@@ -12,7 +12,12 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.mapping.mapping import Mapping
-from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAndTensorAllocator
+from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
+    MemoryAlloc,
+    TensorAlloc,
+    TransferAlloc,
+    TransferAndTensorAllocator,
+)
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.iteration_space import IterationVariable, SteadyStateIterationSpace
 from stream.workload.steady_state.node import Node
@@ -68,7 +73,7 @@ class SteadyStateScheduler:
         if self.output_path:
             os.makedirs(self.output_path, exist_ok=True)
 
-    def run(self):
+    def run(self) -> Workload:
         """
         Run the steady state scheduler on the given workload.
 
@@ -78,7 +83,7 @@ class SteadyStateScheduler:
         # Update the workload graph to include transfer nodes
         ssw = self.build_transfer_graph()
         # Save the new workload with transfers
-        ssw.visualize_to_file(os.path.join(self.output_path, "tiled_workload_with_transfers.png"))
+        ssw.visualize(os.path.join(self.output_path, "tiled_workload_with_transfers.png"))
         # Update the mapping for the new workload graph
         self.mapping = self.update_mapping(ssw)
         # Update the cost lut for the new workload graph
@@ -103,23 +108,29 @@ class SteadyStateScheduler:
             cost_lut=self.cost_lut,
             nb_cols_to_use=self.nb_cols_to_use,
         )
-        tensor_allocations, transfer_allocations, memory_allocations, total_latency_solver = tta.solve()
-        print(tsa_upd)
+        tensor_allocations, transfer_allocations, memory_allocations, total_latency, overlap, latency_per_iteration = (
+            tta.solve()
+        )
         offchip_core_id = self.accelerator.offchip_core_id
-        total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
+        # total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
         # assert total == total_latency_solver, (
         #     f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
         # )
-        print(f"Total latency: {total}, per iteration: {per_iter}, overlap: {ov}")
-        self.latency_total, self.latency_per_iteration, self.overlap_between_iterations = total, per_iter, ov
+        print(
+            f"Total latency: {total_latency}; Latency per iteration: {latency_per_iteration}; Overlap: {overlap}; Iterations: {self.iterations}"
+        )
+        self.latency_total, self.latency_per_iteration, self.overlap_between_iterations = (
+            total_latency,
+            latency_per_iteration,
+            overlap,
+        )
         # Check that all nodes in the steady state workload have a chosen resource allocation
-        self.check_steady_state_workload_allocations(ssw)
-        ssw.visualize_to_file(os.path.join(self.output_path, "steady_state_workload_final.png"))
+        # self.check_steady_state_workload_allocations(ssw)
+        self.update_mapping_with_allocations(ssw, tensor_allocations, transfer_allocations, memory_allocations)
+        ssw.visualize(os.path.join(self.output_path, "steady_state_workload_final.png"))
         # tla = TensorLifetimeAnalyzer(ssw)
-        # tla.summary()
-        # tla.visualize()
-        self.steady_state_workload = ssw_upd
-        return self
+        self.steady_state_workload = ssw
+        return ssw
 
     def build_transfer_graph(self) -> Workload:
         new_nodes: dict[str, Node] = {node.name: node for node in self.workload.nodes}
@@ -177,6 +188,26 @@ class SteadyStateScheduler:
             dsts = tuple(cast(HasInputs, n) for n in new_workload.successors(node))
             self.update_mapping_for_transfer(node, src, dsts)
         return self.mapping
+
+    def update_mapping_with_allocations(
+        self,
+        ssw: Workload,
+        tensor_allocations: TensorAlloc,
+        transfer_allocations: TransferAlloc,
+        memory_allocations: MemoryAlloc,
+    ):
+        assert len(tensor_allocations) == 0, "Variable tensor allocation setting not implemented yet."
+        for tr, alloc in transfer_allocations.items():
+            self.mapping.set_for_node(
+                tr,
+                resource_allocation=(alloc,),
+                inter_core_tiling=tuple(),
+                memory_allocation=memory_allocations.get(tr, ()),
+            )
+        for tr in ssw.get_transfer_nodes():
+            assert len(self.mapping.get(tr).resource_allocation) == 1, (
+                f"Transfer node {tr.name} should have exactly one resource allocation after update."
+            )
 
     def update_cost_lut(self, new_workload: Workload):
         # The new workload contains same computation node names but with different input tensors
@@ -247,7 +278,7 @@ class SteadyStateScheduler:
         possible_allocations = self.determine_possible_transfer_allocations(src, dsts, possible_memory_cores)
         self.mapping.set_for_node(
             node,
-            core_allocation=possible_allocations,
+            resource_allocation=possible_allocations,
             inter_core_tiling=tuple(),
             memory_allocation=possible_memory_cores,
         )
@@ -297,7 +328,7 @@ class SteadyStateScheduler:
                 self.accelerator.get_core(self.accelerator.offchip_core_id),
             ]
         if isinstance(node, HasOutputs):
-            return self.mapping.get(node).core_allocation
+            return self.mapping.get(node).resource_allocation
         raise ValueError(f"Unexpected source node type: {type(node)}")
 
     def determine_transfer_type(self, src: HasOutputs, dsts: tuple[HasInputs, ...]) -> TransferType:

@@ -17,7 +17,6 @@ from stream.opt.allocation.constraint_optimization.context import (
     build_transfer_context,
 )
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
-    TimeSlotAllocation,
     _resource_key,
 )
 from stream.workload.steady_state.iteration_space import ComputeTileReuse, MemTileReuse, SteadyStateIterationSpace
@@ -26,6 +25,9 @@ from stream.workload.steady_state.workload import SteadyStateWorkload
 from stream.workload.workload import ComputationNode, HasIterationSpace, InEdge, OutEdge, Tensor, TransferNode, Workload
 
 PathKey: TypeAlias = tuple[TransferNode, tuple[CommunicationLink, ...]]
+TensorAlloc: TypeAlias = dict[Tensor, Core]
+TransferAlloc: TypeAlias = dict[TransferNode, tuple[CommunicationLink]]
+MemoryAlloc: TypeAlias = dict[TransferNode, Core]
 
 
 class TransferAndTensorAllocator:
@@ -88,7 +90,7 @@ class TransferAndTensorAllocator:
         for node in workload.get_computation_nodes():
             for t in node.tensors:
                 if t not in self.possible_tensor_allocations:
-                    self.possible_tensor_allocations[t] = self.mapping.get(node).core_allocation
+                    self.possible_tensor_allocations[t] = self.mapping.get(node).resource_allocation
                     self.tensor_fixed.append(t)
         for out_edge in workload.get_out_edges():
             tensor = out_edge.inputs[0]
@@ -98,7 +100,7 @@ class TransferAndTensorAllocator:
         # Possible transfer allocations
         self.possible_transfer_allocations: dict[TransferNode, list[Resource]] = {}
         for node in workload.get_transfer_nodes():
-            self.possible_transfer_allocations[node] = self.mapping.get(node).core_allocation
+            self.possible_transfer_allocations[node] = self.mapping.get(node).resource_allocation
 
         # ------------------------------------------------------------------------------
         # memory cores that may act as on‑chip caches (exclude the DRAM/off‑chip id)
@@ -804,7 +806,7 @@ class TransferAndTensorAllocator:
     # ------------------------------------------------------------------ #
     # public solve()                                                     #
     # ------------------------------------------------------------------ #
-    def solve(self, *, tee: bool = True) -> tuple[TimeSlotAllocation, SteadyStateWorkload, int]:  # noqa: PLR0912
+    def solve(self, *, tee: bool = True) -> tuple[TensorAlloc, TransferAlloc, MemoryAlloc, int, int, int]:  # noqa: PLR0912
         self.model.setParam("OutputFlag", 1 if tee else 0)
         self.model.optimize()
         if self.model.Status != GRB.OPTIMAL:
@@ -822,7 +824,10 @@ class TransferAndTensorAllocator:
         self.update_transfer_reuse_levels()
 
         assert self.total_latency is not None, "Total latency variable was not created."
-        return tensor_alloc, routing, chosen_memory_cores, int(self.total_latency.X)
+        total_latency = int(self.total_latency.X)
+        overlap = int(self.overlap.X)
+        latency_per_iteration = sum(slot_lat.X for slot_lat in self.slot_latency.values())
+        return tensor_alloc, routing, chosen_memory_cores, total_latency, overlap, latency_per_iteration
 
     def update_transfer_reuse_levels(  # noqa: PLR0912
         self,

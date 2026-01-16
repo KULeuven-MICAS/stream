@@ -26,7 +26,7 @@ class ONNXModelParserStage(Stage):
         onnx_model_parser.run()
         onnx_model = onnx_model_parser.onnx_model
         workload = onnx_model_parser.workload
-        workload.visualize_to_file(self.workload_visualization_path)
+        workload.visualize(self.workload_visualization_path)
 
         self.ctx.set(
             onnx_model=onnx_model,

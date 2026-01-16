@@ -17,13 +17,13 @@ Resource = Core | tuple[CommunicationLink, ...]
 class NodeMapping:
     """Mapping attributes for a single workload Node. A Node can be either a ComputationNode or a TransferNode."""
 
-    core_allocation: tuple[Resource, ...] = field(default_factory=tuple)
+    resource_allocation: tuple[Resource, ...] = field(default_factory=tuple)
     inter_core_tiling: InterCoreTiling = field(default_factory=tuple)
     memory_allocation: tuple[Core, ...] = field(default_factory=tuple)
     kernel: AIEKernel | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.core_allocation, tuple):
+        if not isinstance(self.resource_allocation, tuple):
             raise TypeError("core_allocation must be a tuple of Resource objects")
 
         if not isinstance(self.inter_core_tiling, tuple):
@@ -60,7 +60,7 @@ class Mapping:
     def set_for_node(
         self,
         node: Node,
-        core_allocation: tuple[Resource, ...],
+        resource_allocation: tuple[Resource, ...],
         inter_core_tiling: InterCoreTiling,
         memory_allocation: tuple[Core, ...] = (),
         kernel: AIEKernel | None = None,
@@ -68,7 +68,7 @@ class Mapping:
         self.set(
             node,
             NodeMapping(
-                core_allocation=core_allocation,
+                resource_allocation=resource_allocation,
                 inter_core_tiling=inter_core_tiling,
                 kernel=kernel,
                 memory_allocation=memory_allocation,
@@ -120,7 +120,7 @@ class Mapping:
         for node, lm in self._by_node.items():
             node_key = getattr(node, "name", None) or repr(node)
             out[str(node_key)] = {
-                "core_allocation": [repr(c) for c in lm.core_allocation],
+                "resource_allocation": [repr(c) for c in lm.resource_allocation],
                 "inter_core_tiling": list(lm.inter_core_tiling),
                 "kernel": dict(lm.kernel) if lm.kernel is not None else None,
             }

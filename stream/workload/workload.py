@@ -395,7 +395,7 @@ class Workload(DiGraphWrapper[Node]):
             result[unique_dim] = tuple(stride)
         return result
 
-    def visualize_to_file(self, filepath: str = "workload_graph.png"):
+    def visualize(self, filepath: str = "workload_graph.png"):
         """Visualize the graph using Graphviz and save it to an image file.
 
         Nodes are laid out horizontally by topological generation,
