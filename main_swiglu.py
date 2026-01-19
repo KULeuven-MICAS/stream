@@ -148,4 +148,4 @@ if __name__ == "__main__":
     )
 
     with open(f"outputs/swiglu_module_{args.seq_len}_{args.embedding_dim}_{args.hidden_dim}.mlir", "w") as f:
-        f.write(str(module))
+        f.write(str(module.get("module")))

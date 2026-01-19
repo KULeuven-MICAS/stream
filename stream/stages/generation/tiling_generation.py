@@ -50,7 +50,12 @@ class TilingGenerationStage(Stage):
         self.tiled_dimensions = self.get_tiled_dimensions_in_function_of_nodes()
 
         self.tiled_workload.visualize(os.path.join(self.output_path, "tiled_workload.png"))
-        self.ctx.set(workload=self.tiled_workload, mapping=self.tiled_mapping, tiled_dimensions=self.tiled_dimensions)
+        self.ctx.set(
+            workload=self.tiled_workload,
+            mapping=self.tiled_mapping,
+            tiled_dimensions=self.tiled_dimensions,
+            fuse_dimensions=self.fuse_dimensions,
+        )
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 

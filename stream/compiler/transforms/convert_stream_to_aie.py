@@ -65,7 +65,15 @@ from xdsl_aie.dialects.aiex import (
 )
 from zigzag.datatypes import LayerDim
 
-from stream.compiler.dialects.stream import ChannelOp, ComputationNodeOp, EdgeOp, PullOp, PushOp, TransferOp
+from stream.compiler.dialects.stream import (
+    ChannelOp,
+    ComputationNodeOp,
+    InEdgeOp,
+    OutEdgeOp,
+    PullOp,
+    PushOp,
+    TransferOp,
+)
 from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.compiler.transforms.convert_aie_kernels import ConvertAIEKernels
 from stream.compiler.transforms.iteration_space_to_for import iteration_space_to_for
@@ -118,10 +126,10 @@ class TileOpManager:
                 return parent.tile.op
             if isinstance(parent, RuntimeSequenceOp):
                 if isinstance(operation, PushOp | PullOp):
-                    assert isinstance(attr := operation.memtile, ArrayAttr)
-                    memtile_idx = cast(tuple[IntegerAttr[IndexType], ...], attr.data)
-                    return self.insert_or_update(memtile_idx[0].value.data, 0)
-                return self.insert_or_update(0, 0)
+                    if isinstance(attr := operation.memtile, ArrayAttr):
+                        memtile_idx = cast(tuple[IntegerAttr[IndexType], ...], attr.data)
+                        return self.insert_or_update(memtile_idx[0].value.data, 0)
+                    return self.insert_or_update(0, 0)
             parent = parent.parent_op()
             if parent is None:
                 raise RuntimeError()
@@ -332,13 +340,7 @@ class ObjectFifoHop:
     @classmethod
     def shim_to_mem(cls, producer: PushOp, memtile: TileOp, tile_op_manager: TileOpManager, name_base: str) -> Self:
         assert isinstance(memref_type := producer.input.type, MemRefType)
-        spatial_relevant = [
-            LayerDim(loop_dim.data)
-            for loop_dim, spatial_stride in zip(
-                producer.loop_dimensions, producer.spatial_strides.get_values(), strict=True
-            )
-            if spatial_stride != 0
-        ]
+        spatial_relevant = [x.dimension for x in producer.ssis.data.get_spatial_variables() if x.relevant]
         object_fifo = ObjectFifoOp.from_referenced_type(
             elemNumber=(1 + cls.DB_EXTRA, 1 + cls.DB_EXTRA),
             producerTile=tile_op_manager.get_tile(producer),
@@ -358,13 +360,7 @@ class ObjectFifoHop:
     @classmethod
     def mem_to_shim(cls, consumer: PullOp, memtile: TileOp, tile_op_manager: TileOpManager, name_base: str) -> Self:
         assert isinstance(memref_type := consumer.output.type, MemRefType)
-        spatial_relevant = [
-            LayerDim(loop_dim.data)
-            for loop_dim, spatial_stride in zip(
-                consumer.loop_dimensions, consumer.spatial_strides.get_values(), strict=True
-            )
-            if spatial_stride != 0
-        ]
+        spatial_relevant = [x.dimension for x in consumer.ssis.data.get_spatial_variables() if x.relevant]
         object_fifo = ObjectFifoOp.from_referenced_type(
             elemNumber=(1 + cls.DB_EXTRA, 1 + cls.DB_EXTRA),
             producerTile=memtile,
@@ -627,7 +623,7 @@ class TransferToRuntimeSequence(RewritePattern):
                 rewriter.erase_matched_op()
                 return
             of = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
-        assert isinstance(edge, EdgeOp)
+        assert isinstance(edge, OutEdgeOp | InEdgeOp)
 
         of_name = of.sym_name.data
 
@@ -636,55 +632,54 @@ class TransferToRuntimeSequence(RewritePattern):
 
         # offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
         sizes = cast(tuple[int, ...], op.sizes.get_values()[-4:])
+        strides = cast(tuple[int, ...], op.strides.get_values()[-4:])
         offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
         assert isinstance(arg.type, MemRefType)
         shapes = tuple(x.data for x in arg.type.shape)[-4:]
 
         # assume default layout here:
-        static_strides = []
-        current_stride = 1
+        # static_strides = []
+        # current_stride = 1
         total_offset = 0
-        for shape, offset in zip(reversed(shapes), reversed(offsets), strict=False):
-            static_strides.insert(0, current_stride)
-            total_offset += current_stride * offset
-            current_stride *= shape
+        # for shape, offset in zip(reversed(shapes), reversed(offsets), strict=False):
+        #     static_strides.insert(0, current_stride)
+        #     total_offset += current_stride * offset
+        #     current_stride *= shape
 
         static_sizes = list(sizes)
+        static_strides = list(strides)
 
         static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
 
-        iteration_strides = [1] * len(static_sizes)
+        # iteration_strides = [1] * len(static_sizes)
 
-        # add the repeating pattern
-        # offset is definitely zero for now
-        iteration_stride = 1
-        for iter_var in op.ssis.data.variables:
-            loop_dimensions = [x.data for x in op.loop_dimensions]
-            if (iter_var.relevant or MemTileReuse.NO_REUSE in iter_var.mem_tile_reuse) and iter_var.size > 1:
-                # sptial dims must only emit extra sizes and strides if they are used as spatial strides
-                if iter_var.spatial:
-                    index = loop_dimensions.index(str(iter_var.dimension))
-                    if op.spatial_strides.get_values()[index] == 0:
-                        iteration_stride *= iter_var.size
-                        continue
-                if str(iter_var.dimension) in loop_dimensions:
-                    index = loop_dimensions.index(str(iter_var.dimension))
-                    temporal_stride = op.strides.get_values()[index] if not iter_var.spatial else 1
-                    stride = prod(memref_type.get_shape()[index + 1 :]) * op.sizes.get_values()[index] * temporal_stride
-                    # stride = prod(op.sizes.get_values()[index:])
-                    assert isinstance(stride, int)
-                else:
-                    # repeat
-                    stride = 0
-                static_sizes.insert(0, iter_var.size)
-                static_strides.insert(0, stride)
-                iteration_strides.insert(0, iteration_stride)
-            iteration_stride *= iter_var.size
+        # # add the repeating pattern
+        # # offset is definitely zero for now
+        # breakpoint()
+        # iteration_stride = 1
+        # for iter_var in op.ssis.data.variables:
+        #     if (iter_var.relevant or MemTileReuse.NO_REUSE in iter_var.mem_tile_reuse) and iter_var.size > 1:
+        #         # sptial dims must only emit extra sizes and strides if they are used as spatial strides
+        #         if iter_var.spatial:
+        #             iteration_stride *= iter_var.size
+        #         if str(iter_var.dimension) in loop_dimensions:
+        #             index = loop_dimensions.index(str(iter_var.dimension))
+        #             temporal_stride = op.strides.get_values()[index] if not iter_var.spatial else 1
+        #             stride = prod(memref_type.get_shape()[index + 1 :]) * op.sizes.get_values()[index] * temporal_stride
+        #             # stride = prod(op.sizes.get_values()[index:])
+        #             assert isinstance(stride, int)
+        #         else:
+        #             # repeat
+        #             stride = 0
+        #         static_sizes.insert(0, iter_var.size)
+        #         static_strides.insert(0, stride)
+        #         iteration_strides.insert(0, iteration_stride)
+        #     iteration_stride *= iter_var.size
 
         # canonicalize transformation
         # if i were to re-enable this, make sure iteration strides are also included
         # static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
-        MAX_STATIC_SIZE_LEN = 5
+        MAX_STATIC_SIZE_LEN = 4
         if len(static_sizes) > MAX_STATIC_SIZE_LEN:
             raise RuntimeError()
         if len(static_sizes) == MAX_STATIC_SIZE_LEN:
@@ -699,7 +694,8 @@ class TransferToRuntimeSequence(RewritePattern):
 
         for i in range(software_size):
             software_offset = i * software_stride
-            iteration_t = i * iteration_strides[0]
+            # iteration_t = i * iteration_strides[0]
+            iteration_t = 0
             # static_offsets = (0, 0, 0, total_offset + software_offset)
             bd_dimensions = BDDimLayoutArrayAttr(
                 BDDimLayoutArray(
@@ -752,10 +748,10 @@ class TransferToObjectFIFOPattern(RewritePattern):
         of_chain = self.object_fifo_manager.insert_or_update(op.channel, memref_type)
 
         # get spatial offset to fetch from correct object fifo
-        offset = 0
-        for size, spatial_stride in zip(op.sizes.get_values(), op.spatial_strides.get_values(), strict=True):
-            if spatial_stride != 0:
-                offset += int((spatial_stride // size) * prod(op.sizes.get_values()))
+        # offset = 0
+        # for size, spatial_stride in zip(op.sizes.get_values(), op.spatial_strides.get_values(), strict=True):
+        #     if spatial_stride != 0:
+        #         offset += int((spatial_stride // size) * prod(op.sizes.get_values()))
 
         # decide whether to consume or produce
         if isinstance(op, PullOp):
@@ -867,12 +863,12 @@ class TransferToObjectFIFOPattern(RewritePattern):
             assert isinstance(op.input, OpResult)
             assert isinstance(compute := op.input.op, ComputationNodeOp)
             new_compute = ComputationNodeOp(
-                compute.inputs,
-                index_switch.results[0],
+                compute.result_types,
                 compute.kernel.data,
+                compute.inputs,
                 compute.core_allocation,
                 compute.ssis.data,
-                compute.result_types,
+                (index_switch.results[0],),
             )
             rewriter.replace_op(compute, new_compute)
 
@@ -1543,7 +1539,7 @@ class InsertRuntimeDMAs(RewritePattern):
 @dataclass
 class EraseEdges(RewritePattern):
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: EdgeOp | ChannelOp, rewriter: PatternRewriter) -> None:
+    def match_and_rewrite(self, op: OutEdgeOp | InEdgeOp | ChannelOp, rewriter: PatternRewriter) -> None:
         rewriter.erase_matched_op()
 
 
@@ -1896,12 +1892,12 @@ class WrapInCoreOps(RewritePattern):
             assert isinstance(attr := op.core_allocation, ArrayAttr)
             core = cast(tuple[IntegerAttr[IndexType], ...], attr.data)
             core = tuple(x.value.data for x in core)
-        elif isinstance(op, EdgeOp):
+        elif isinstance(op, InEdgeOp | OutEdgeOp):
             core = shim
         elif isinstance(op, PushOp):
             # what am i pushing?
             assert isinstance(op.input, OpResult)
-            if isinstance(op.input.op, EdgeOp):
+            if isinstance(op.input.op, InEdgeOp):
                 core = shim
             elif isinstance(op.input.op, ComputationNodeOp):
                 assert isinstance(attr := op.input.op.core_allocation, ArrayAttr)
@@ -1913,7 +1909,7 @@ class WrapInCoreOps(RewritePattern):
             # where am i pulling to?
             assert len(op.output.uses) == 1
             use = next(iter(op.output.uses))
-            if isinstance(use.operation, EdgeOp):
+            if isinstance(use.operation, OutEdgeOp):
                 core = shim
             elif isinstance(use.operation, ComputationNodeOp):
                 assert isinstance(attr := use.operation.core_allocation, ArrayAttr)
@@ -1980,7 +1976,7 @@ class ConvertStreamToAIEPass(ModulePass):
 
         # add a runtime sequence operation
         # find all edges
-        edges: list[EdgeOp] = [edge for edge in op.walk() if isinstance(edge, EdgeOp)]
+        edges: list[InEdgeOp | OutEdgeOp] = [edge for edge in op.walk() if isinstance(edge, InEdgeOp | OutEdgeOp)]
         # order = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]
         if not self.arg_order:
             arg_order = [edge.tensor.data for edge in edges]
@@ -1990,7 +1986,7 @@ class ConvertStreamToAIEPass(ModulePass):
         runtime_arg_types = []
         for operand_name in arg_order:
             edge = next(edge for edge in edges if edge.tensor.data == operand_name)
-            operand = edge.inputs[0] if len(edge.inputs) else edge.output
+            operand = edge.inputs[0] if isinstance(edge, OutEdgeOp) else edge.output
             assert operand is not None
             runtime_arg_types.append(operand.type)
 

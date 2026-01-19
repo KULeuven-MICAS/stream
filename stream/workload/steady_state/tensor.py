@@ -8,7 +8,6 @@ from zigzag.datatypes import LayerOperand
 from stream.hardware.architecture.core import Core
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 from stream.workload.steady_state.node import Node
-from stream.workload.tensor import SubviewTensor, SubviewTensorInputs
 
 
 class TensorFlag(Flag):
