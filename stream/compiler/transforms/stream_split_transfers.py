@@ -13,7 +13,7 @@ from xdsl.pattern_rewriter import (
 )
 from xdsl.rewriter import InsertPoint
 
-from stream.compiler.dialects.stream import ChannelOp, EdgeOp, PullOp, PushOp, TransferOp
+from stream.compiler.dialects.stream import ChannelOp, InEdgeOp, OutEdgeOp, PullOp, PushOp, TransferOp
 
 
 @dataclass
@@ -37,18 +37,19 @@ class SplitTransferPattern(RewritePattern):
                 op.sizes,
                 op.strides,
                 op.spatial_strides,
-                op.loop_dimensions,
                 op.memtile,
             )
             ops_to_add.append(push)
         for i, result in enumerate(op.results):
             for use in list(result.uses):
-                if isinstance(edge := use.operation, EdgeOp):
+                if isinstance(edge := use.operation, OutEdgeOp):
                     for input in edge.inputs:
                         assert isinstance(input, OpResult)
                         if isinstance(input.op, TransferOp) and input.op.memtile == op.memtile:
                             self.channel_map[input.op] = channel
                 offsets = list(cast(tuple[int, ...], op.offsets.get_values()))
+                if len(offsets) == 0:
+                    offsets = [0]
                 mult = 1
                 for j in reversed(range(len(op.spatial_strides))):
                     offsets[-1] += i * int(op.spatial_strides.get_values()[j]) * mult
@@ -62,7 +63,6 @@ class SplitTransferPattern(RewritePattern):
                         op.sizes,
                         op.strides,
                         op.spatial_strides,
-                        op.loop_dimensions,
                         op.memtile,
                     )
                 )

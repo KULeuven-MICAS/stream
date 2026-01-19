@@ -18,6 +18,10 @@ class AIEKernel(ABC):
     utilization: float
 
     @property
+    def unique_name(self) -> str:
+        return self.function_name
+
+    @property
     @abstractmethod
     def linkwith_name(self) -> str: ...
 

@@ -32,21 +32,21 @@ class GemmKernel(AIEKernel):
         return f"gemm_vectorized_{self.element_type}_{self.element_type}"
 
     def function_type(self, op: ComputationNodeOp) -> FunctionType:
-        assert op.outputs is not None
+        assert op.output is not None
         return FunctionType.from_lists(
             inputs=[i32, i32, i32]
             + [op.inputs[1].type]  # A
             + [op.inputs[0].type]  # b
-            + [op.outputs.type],  # c
+            + [op.output.type],  # c
             outputs=[],
         )
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         m, k = cast(MemRefType[AnyDenseElement], op.inputs[1].type).get_shape()
-        assert op.outputs is not None
+        assert op.output is not None
         return [
             m := ConstantOp.from_int_and_width(m, i32),
             k := ConstantOp.from_int_and_width(k, i32),
             row_offset := ConstantOp.from_int_and_width(0, i32),
-            CallOp(self.function_name, [m, k, row_offset, op.inputs[1], op.inputs[0], op.outputs], []),
+            CallOp(self.function_name, [m, k, row_offset, op.inputs[1], op.inputs[0], op.output], []),
         ]

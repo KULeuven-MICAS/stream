@@ -20,6 +20,11 @@ class Node(ABC):
 class HasOutputs(Node, ABC):
     outputs: tuple[Tensor, ...]
 
+    @property
+    def output(self):
+        assert len(self.outputs) == 1
+        return self.outputs[0]
+
 
 @dataclass(frozen=True, repr=False)
 class HasInputs(Node, ABC):

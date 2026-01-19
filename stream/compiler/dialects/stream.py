@@ -1,3 +1,4 @@
+from abc import ABC
 from collections.abc import Sequence
 
 from xdsl.dialects.builtin import ArrayAttr, IndexType, IntegerAttr, StringAttr, i64
@@ -17,8 +18,10 @@ from xdsl.irdl import (
 )
 from xdsl.parser import AttrParser, DenseArrayBase, GenericParser, MemRefType
 from xdsl.printer import Printer
+from zigzag.datatypes import LayerDim
 
 from stream.workload.steady_state.iteration_space import IterationVariable, SteadyStateIterationSpace
+from stream.workload.workload import ComputationNode, InEdge, OutEdge
 
 
 @irdl_attr_definition
@@ -32,49 +35,36 @@ class SteadyStateIterationSpaceAttr(Data[SteadyStateIterationSpace]):
 
     @classmethod
     def parse_parameter(cls, parser: AttrParser) -> SteadyStateIterationSpace:
-        def parse_iter_var() -> IterationVariable:
-            # TODO: when parsing becomes relevant
-            raise NotImplementedError()
-
-        with parser.in_angle_brackets():
-            iter_vars = parser.parse_comma_separated_list(GenericParser.Delimiter.NONE, parse_iter_var)
-            return SteadyStateIterationSpace(iter_vars)
+        raise NotImplementedError()
 
     def print_parameter(self, printer: Printer) -> None:
         printer.print_string(str(self.data))
-        return
-
-        def print_iter_var(var: IterationVariable) -> str:
-            return f"{str(var.dimension)}-{var.size}-{'r' if var.relevant else 'i'}"
-
-        val = ", ".join(print_iter_var(v) for v in self.data.variables)
-        printer.print_string(f"<{val}>")
-
-    pass
 
 
 @irdl_op_definition
-class EdgeOp(IRDLOperation):
-    name = "stream.edge"
-
-    inputs = var_operand_def(MemRefType)
-    output = opt_result_def(MemRefType)
-
+class InEdgeOp(IRDLOperation):
+    name = "stream.in_edge"
+    output = result_def(MemRefType)
     tensor = prop_def(StringAttr)
 
-    irdl_options = [AttrSizedOperandSegments()]
-
-    def __init__(
-        self, result_type: MemRefType | None, tensor: str | StringAttr, inputs: Sequence[SSAValue] | None = None
-    ) -> None:
-        if isinstance(tensor, str):
-            tensor = StringAttr(tensor)
-        operands = [inputs] if inputs is not None else [[]]
-        result_types = [result_type] if result_type is not None else [[]]
+    def __init__(self, node: InEdge):
+        result_type = node.output.subview.source.type
         super().__init__(
-            operands=operands,
-            properties={"tensor": tensor},
-            result_types=result_types,
+            result_types=(result_type,),
+            properties={"tensor": StringAttr(node.name)},
+        )
+
+
+@irdl_op_definition
+class OutEdgeOp(IRDLOperation):
+    name = "stream.out_edge"
+    inputs = var_operand_def(MemRefType)
+    tensor = prop_def(StringAttr)
+
+    def __init__(self, node: OutEdge, inputs: Sequence[SSAValue | Operation]):
+        super().__init__(
+            operands=(inputs,),
+            properties={"tensor": StringAttr(node.name)},
         )
 
 
@@ -83,7 +73,7 @@ class ComputationNodeOp(IRDLOperation):
     name = "stream.computation_node"
 
     inputs = var_operand_def()
-    outputs = opt_operand_def()
+    output = opt_operand_def()
     result = opt_result_def()
 
     kernel = prop_def(StringAttr)
@@ -94,21 +84,21 @@ class ComputationNodeOp(IRDLOperation):
 
     def __init__(
         self,
-        inputs: Sequence[Operation | SSAValue],
-        output: Operation | SSAValue | None,
+        result_types: Sequence[Attribute],
         kernel: str,
+        inputs: Sequence[SSAValue | Operation],
         core_allocation: Attribute,
         ssis: SteadyStateIterationSpace,
-        result_types: Sequence[Attribute] | None = None,
-    ) -> None:
+        outputs: Sequence[SSAValue | Operation] = [],
+    ):
         super().__init__(
-            operands=[inputs, output],
+            operands=(inputs, outputs),
+            result_types=result_types,
             properties={
-                "kernel": StringAttr(kernel),
+                "kernel": StringAttr(kernel),  # TODO: what kernel?
                 "core_allocation": core_allocation,
                 "ssis": SteadyStateIterationSpaceAttr(ssis),
             },
-            result_types=result_types,
         )
 
 
@@ -119,17 +109,12 @@ class TransferOp(IRDLOperation):
     inputs = var_operand_def()
     outputs = var_result_def()
 
-    tensor = prop_def(StringAttr)
-
     offsets = prop_def(DenseArrayBase)
     sizes = prop_def(DenseArrayBase)
     strides = prop_def(DenseArrayBase)
     spatial_strides = prop_def(DenseArrayBase)
-    loop_dimensions = prop_def(ArrayAttr[StringAttr])
     memtile = prop_def(Attribute)
 
-    source = prop_def(StringAttr)
-    dest = prop_def(StringAttr)
     ssis = prop_def(SteadyStateIterationSpaceAttr)
     ssis_dest = prop_def(SteadyStateIterationSpaceAttr)
 
@@ -137,16 +122,12 @@ class TransferOp(IRDLOperation):
         self,
         input: Sequence[SSAValue | Operation],
         result_types: Sequence[Attribute],
-        source: str,
-        dest: str,
-        tensor: str,
         ssis: SteadyStateIterationSpace,
         ssis_dest: SteadyStateIterationSpace,
         offsets: DenseArrayBase | Sequence[int],
         sizes: DenseArrayBase | Sequence[int],
         strides: DenseArrayBase | Sequence[int],
         spatial_strides: DenseArrayBase | Sequence[int],
-        loop_dimensions: ArrayAttr[StringAttr] | Sequence[str],
         memtile: Attribute,
     ) -> None:
         if not isinstance(offsets, DenseArrayBase):
@@ -157,25 +138,30 @@ class TransferOp(IRDLOperation):
             strides = DenseArrayBase.create_dense_int(i64, strides)
         if not isinstance(spatial_strides, DenseArrayBase):
             spatial_strides = DenseArrayBase.create_dense_int(i64, spatial_strides)
-        if not isinstance(loop_dimensions, ArrayAttr):
-            loop_dimensions = ArrayAttr([StringAttr(dim) for dim in loop_dimensions])
         super().__init__(
             operands=[input],
             result_types=[result_types],
             properties={
-                "source": StringAttr(source),
-                "dest": StringAttr(dest),
-                "tensor": StringAttr(tensor),
                 "ssis": SteadyStateIterationSpaceAttr(ssis),
                 "ssis_dest": SteadyStateIterationSpaceAttr(ssis_dest),
                 "offsets": offsets,
                 "sizes": sizes,
                 "strides": strides,
                 "spatial_strides": spatial_strides,
-                "loop_dimensions": loop_dimensions,
                 "memtile": memtile,
             },
         )
+
+    def get_relevant_output(self, spatial_vars: Sequence[tuple[LayerDim, int]]) -> SSAValue:
+        result = 0
+        mult = 1
+        for spat_var in self.ssis_dest.data.get_spatial_variables():
+            if spat_var.relevant:
+                for dim, dim_val in spatial_vars:
+                    if dim == spat_var.dimension:
+                        result += dim_val * mult
+                mult *= spat_var.size
+        return self.outputs[result]
 
 
 @irdl_op_definition
@@ -203,7 +189,6 @@ class PushOp(IRDLOperation):
     sizes = prop_def(DenseArrayBase)
     strides = prop_def(DenseArrayBase)
     spatial_strides = prop_def(DenseArrayBase)
-    loop_dimensions = prop_def(ArrayAttr[StringAttr])
     memtile = prop_def(Attribute)
 
     ssis = prop_def(SteadyStateIterationSpaceAttr)
@@ -217,7 +202,6 @@ class PushOp(IRDLOperation):
         sizes: DenseArrayBase | Sequence[int],
         strides: DenseArrayBase | Sequence[int],
         spatial_strides: DenseArrayBase | Sequence[int],
-        loop_dimensions: ArrayAttr[StringAttr] | Sequence[str],
         memtile: Attribute,
     ) -> None:
         if not isinstance(offsets, DenseArrayBase):
@@ -228,8 +212,6 @@ class PushOp(IRDLOperation):
             strides = DenseArrayBase.create_dense_int(i64, strides)
         if not isinstance(spatial_strides, DenseArrayBase):
             spatial_strides = DenseArrayBase.create_dense_int(i64, spatial_strides)
-        if not isinstance(loop_dimensions, ArrayAttr):
-            loop_dimensions = ArrayAttr([StringAttr(dim) for dim in loop_dimensions])
         super().__init__(
             operands=[
                 input,
@@ -241,7 +223,6 @@ class PushOp(IRDLOperation):
                 "sizes": sizes,
                 "strides": strides,
                 "spatial_strides": spatial_strides,
-                "loop_dimensions": loop_dimensions,
                 "memtile": memtile,
             },
         )
@@ -258,7 +239,6 @@ class PullOp(IRDLOperation):
     sizes = prop_def(DenseArrayBase)
     strides = prop_def(DenseArrayBase)
     spatial_strides = prop_def(DenseArrayBase)
-    loop_dimensions = prop_def(ArrayAttr[StringAttr])
     memtile = prop_def(Attribute)
     operand = prop_def(IntegerAttr[IndexType])
 
@@ -273,7 +253,6 @@ class PullOp(IRDLOperation):
         sizes: DenseArrayBase | Sequence[int],
         strides: DenseArrayBase | Sequence[int],
         spatial_strides: DenseArrayBase | Sequence[int],
-        loop_dimensions: ArrayAttr[StringAttr] | Sequence[str],
         memtile: Attribute,
     ) -> None:
         if not isinstance(offsets, DenseArrayBase):
@@ -284,8 +263,6 @@ class PullOp(IRDLOperation):
             strides = DenseArrayBase.create_dense_int(i64, strides)
         if not isinstance(spatial_strides, DenseArrayBase):
             spatial_strides = DenseArrayBase.create_dense_int(i64, spatial_strides)
-        if not isinstance(loop_dimensions, ArrayAttr):
-            loop_dimensions = ArrayAttr([StringAttr(dim) for dim in loop_dimensions])
         super().__init__(
             operands=[channel],
             result_types=[result_type],
@@ -295,7 +272,6 @@ class PullOp(IRDLOperation):
                 "sizes": sizes,
                 "strides": strides,
                 "spatial_strides": spatial_strides,
-                "loop_dimensions": loop_dimensions,
                 "memtile": memtile,
             },
         )
@@ -305,7 +281,8 @@ Stream = Dialect(
     "stream",
     [
         ComputationNodeOp,
-        EdgeOp,
+        InEdgeOp,
+        OutEdgeOp,
         TransferOp,
         ChannelOp,
         PushOp,

@@ -257,6 +257,12 @@ class SteadyStateIterationSpace:
             // self.reuse_factor_compute()
         )
 
+    def get_spatial_variables(self) -> list[IterationVariable]:
+        """
+        Returns the list of temporal iteration variables (i.e. those that are not spatial).
+        """
+        return [iv for iv in self.variables if iv.spatial]
+
     def get_temporal_variables(self) -> list[IterationVariable]:
         """
         Returns the list of temporal iteration variables (i.e. those that are not spatial).
