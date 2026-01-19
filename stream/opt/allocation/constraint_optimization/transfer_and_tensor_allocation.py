@@ -553,18 +553,14 @@ class TransferAndTensorAllocator:
         for tr in self.transfer_nodes:
             transfer_dims = self.workload.get_dims(tr)
             for t, cn in zip(tr.outputs, self.workload.successors(tr), strict=True):
-                if isinstance(cn, OutEdge):
-                    cn_tiling = tuple()
-                else:
-                    assert isinstance(cn, ComputationNode), f"Expected ComputationNode, got {type(cn)}"
-                    cn_tiling = self.workload.get_unique_dims_inter_core_tiling(cn, self.mapping)
-                partition_factor = prod(size for dim, size in cn_tiling if dim in transfer_dims)
                 assert t in self.tensor_fixed, "Transfer tensors must be fixed (for now)."
                 for c in self.possible_tensor_allocations[t]:
+                    tensor_shape = self.workload.get_tensor_shape_of_transfer_to_single_core(t, tr, self.mapping)
+                    tensor_size = t.size_bits(shape=tensor_shape)
                     assert isinstance(c, Core), f"Expected {c} to be a Core, got {type(c)}"
                     for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
                         _, size_factor = self.reuse_levels[(tr, stop)]
-                        req_size = ceil(size_factor * t.size_bits() / partition_factor)
+                        req_size = ceil(size_factor * tensor_size)
                         self.core_load[c] += req_size * self.z_stopC[(tr, stop)]
 
         # add MemC load for transfers going through
