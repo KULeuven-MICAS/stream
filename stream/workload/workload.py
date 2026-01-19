@@ -32,11 +32,11 @@ class Tensor:
     def __repr__(self):
         return f"Tensor(name={self.name}, operand_type={self.operand_type}, shape={self.shape})"
 
-    def size_elements(self) -> int:
-        return prod(self.shape)
+    def size_elements(self, shape: tuple[int, ...] | None = None) -> int:
+        return prod(shape) if shape is not None else prod(self.shape)
 
-    def size_bits(self) -> int:
-        return self.operand_type.bitwidth * self.size_elements()
+    def size_bits(self, shape: tuple[int, ...] | None = None) -> int:
+        return self.operand_type.bitwidth * self.size_elements(shape=shape)
 
 
 @dataclass(frozen=True, repr=False)
@@ -295,7 +295,43 @@ class Workload(DiGraphWrapper[Node]):
             converted_tiling.append((unique_dim, factor))
         return converted_tiling
 
-    def with_modified_dimension_sizes(self, new_sizes: dict[int, int]) -> "Workload":
+    def get_tensor_shape_with_dimension_sizes(
+        self, tensor: Tensor, dimension_sizes: dict[LayerDim, int]
+    ) -> tuple[int, ...]:
+        tensor_strides = self.strides_for_tensor(tensor)
+        assert all(dim in dimension_sizes for dim in tensor_strides), "All Workload dimensions must have provided sizes"
+        dim_sizes = [dimension_sizes[dim] for dim in tensor_strides.keys()]
+        V = np.array(list(tensor_strides.values())).T
+        new_shape_t = tuple(V.dot(np.array(dim_sizes)).astype(int).tolist())
+        return new_shape_t
+
+    def get_tensor_shape_with_tiling(self, tensor: Tensor, succ_tiling: InterCoreTiling) -> tuple[int, ...]:
+        unique_dims, _ = self.unique_dimensions()
+        dim_sizes = {}
+        for dim in unique_dims:
+            if any(dim == ict[0] for ict in succ_tiling):
+                tiling_factor = next(ict[1] for ict in succ_tiling if dim == ict[0])
+                dim_size = self.get_dimension_size(dim) // tiling_factor
+            else:
+                dim_size = self.get_dimension_size(dim)
+            dim_sizes[dim] = dim_size
+        new_shape = self.get_tensor_shape_with_dimension_sizes(tensor, dim_sizes)
+        return new_shape
+
+    def get_tensor_shape_of_transfer_to_single_core(
+        self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping"
+    ) -> tuple[int, ...]:
+        succ_idx = transfer.outputs.index(tensor)
+        succ = list(self.successors(transfer))[succ_idx]
+        if isinstance(succ, OutEdge):
+            succ_tiling = tuple()
+        else:
+            assert isinstance(succ, ComputationNode), f"Expected ComputationNode, got {type(succ)}"
+            succ_tiling = self.get_unique_dims_inter_core_tiling(succ, mapping)
+        new_shape = self.get_tensor_shape_with_tiling(tensor, succ_tiling)
+        return new_shape
+
+    def with_modified_dimension_sizes(self, new_sizes: dict[LayerDim, int]) -> "Workload":
         """Create a new workload where the dimension sizes of the given global dimension indices are modified to the new
         sizes provided in new_sizes.
 
@@ -308,12 +344,9 @@ class Workload(DiGraphWrapper[Node]):
         for node in self.get_computation_nodes():
             original_tensors = node.tensors
             for original_tensor in original_tensors:
-                original_tensors_dict[original_tensor.name] = original_tensor
-                strides = self.strides_for_tensor(original_tensor)
-                new_sizes_sorted = [new_sizes[dim] for dim in strides]
-                V = np.array(list(strides.values())).T
-                new_shape_t = tuple(V.dot(np.array(new_sizes_sorted)).astype(int).tolist())
                 tensor_name = original_tensor.name
+                original_tensors_dict[tensor_name] = original_tensor
+                new_shape_t = self.get_tensor_shape_with_dimension_sizes(original_tensor, new_sizes)
                 inferred_shapes[tensor_name] = new_shape_t
 
         # Create new Tensor objects with the inferred shapes.
@@ -380,6 +413,13 @@ class Workload(DiGraphWrapper[Node]):
             new_nodes.append(new_node)
 
         return Workload(new_nodes)
+
+    def get_tensor_dimensions(self, tensor: Tensor) -> tuple[LayerDim, ...]:
+        node = next(iter(n for n in self.get_iteration_space_nodes() if tensor in n.tensors))
+        mapping = node.get_mapping(tensor)
+        _, all_dims = self.unique_dimensions()
+        global_mapping = self.global_mapping(node, mapping)
+        return tuple([all_dims[expr.position] for expr in global_mapping.results])
 
     def strides_for_tensor(self, tensor: Tensor) -> dict[LayerDim, tuple[int, ...]]:
         unique_dims, all_dims = self.unique_dimensions()
