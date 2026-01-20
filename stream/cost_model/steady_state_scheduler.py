@@ -18,11 +18,7 @@ from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocatio
     TransferAlloc,
     TransferAndTensorAllocator,
 )
-from stream.workload.steady_state.computation import SteadyStateComputation
-from stream.workload.steady_state.iteration_space import IterationVariable, SteadyStateIterationSpace
-from stream.workload.steady_state.node import Node
-from stream.workload.utils import generate_steady_state_iteration_spaces
-from stream.workload.workload import (
+from stream.workload.node import (
     ComputationNode,
     HasInputs,
     HasIterationSpace,
@@ -33,8 +29,11 @@ from stream.workload.workload import (
     Tensor,
     TransferNode,
     TransferType,
-    Workload,
 )
+from stream.workload.steady_state.computation import SteadyStateComputation
+from stream.workload.steady_state.iteration_space import IterationVariable, SteadyStateIterationSpace
+from stream.workload.utils import generate_steady_state_iteration_spaces
+from stream.workload.workload import Workload
 
 
 class SteadyStateScheduler:
@@ -111,13 +110,15 @@ class SteadyStateScheduler:
         tensor_allocations, transfer_allocations, memory_allocations, total_latency, overlap, latency_per_iteration = (
             tta.solve()
         )
-        offchip_core_id = self.accelerator.offchip_core_id
         # total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
         # assert total == total_latency_solver, (
         #     f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
         # )
         print(
-            f"Total latency: {total_latency}; Latency per iteration: {latency_per_iteration}; Overlap: {overlap}; Iterations: {self.iterations}"
+            f"Total latency: {total_latency} "
+            f"Latency per iteration: {latency_per_iteration} "
+            f"Overlap: {overlap} "
+            f" Iterations: {self.iterations}"
         )
         self.latency_total, self.latency_per_iteration, self.overlap_between_iterations = (
             total_latency,
@@ -147,26 +148,27 @@ class SteadyStateScheduler:
                 new_dsts = []
                 for dst, updated_tensor in zip(dsts, updated_tensors, strict=True):
                     # Find corresponding node in new_nodes as it might have already been updated
-                    dst = new_nodes[dst.name]
+                    dst_new = new_nodes[dst.name]
                     # Update the dst input to the transfer node
                     assert len(src.outputs) == 1, "Src must have exactly one output tensor for index below."
-                    input_idx = dst.inputs.index(src.outputs[0])
-                    new_inputs = dst.inputs[:input_idx] + (updated_tensor,) + dst.inputs[input_idx + 1 :]
-                    if isinstance(dst, ComputationNode):
+                    input_idx = dst_new.inputs.index(src.outputs[0])
+                    new_inputs = dst_new.inputs[:input_idx] + (updated_tensor,) + dst_new.inputs[input_idx + 1 :]
+                    if isinstance(dst_new, ComputationNode):
                         new_dst = ComputationNode(
-                            name=dst.name,
+                            type=dst_new.type,
+                            name=dst_new.name,
                             inputs=new_inputs,
-                            outputs=dst.outputs,
-                            operand_mapping=dst.operand_mapping,
+                            outputs=dst_new.outputs,
+                            operand_mapping=dst_new.operand_mapping,
                         )
-                    elif isinstance(dst, OutEdge):
+                    elif isinstance(dst_new, OutEdge):
                         new_dst = OutEdge(
-                            name=dst.name,
+                            name=dst_new.name,
                             inputs=new_inputs,
                         )
                     else:
-                        raise ValueError(f"Unexpected dst node type: {type(dst)}")
-                    new_nodes[dst.name] = new_dst
+                        raise ValueError(f"Unexpected dst node type: {type(dst_new)}")
+                    new_nodes[dst_new.name] = new_dst
                     new_dsts.append(new_dst)
                 # Update the transfer dsts to the new dsts
                 transfer_node = self.generate_transfer_node(new_dsts, tensor, transfer_type)
@@ -331,7 +333,7 @@ class SteadyStateScheduler:
             return self.mapping.get(node).resource_allocation
         raise ValueError(f"Unexpected source node type: {type(node)}")
 
-    def determine_transfer_type(self, src: HasOutputs, dsts: tuple[HasInputs, ...]) -> TransferType:
+    def determine_transfer_type(self, src: HasOutputs, dsts: tuple[HasInputs, ...]) -> TransferType:  # noqa: PLR0912
         """TODO: Fix the transfer type determination logic to handle all dsts together at the same time."""
         src_allocation = self.retrieve_node_allocation(src)
         dst_allocations = [self.retrieve_node_allocation(dst) for dst in dsts]
@@ -341,15 +343,14 @@ class SteadyStateScheduler:
         transfer_types = []
         for dst in dsts:
             if isinstance(src, ComputationNode):
-                tensor_operand_mapping = src.operand_mapping[-1]
-                global_mapping = self.workload.global_mapping(src, tensor_operand_mapping)
+                assert len(src.outputs) == 1, "Src must have exactly one output tensor for index below"
+                tensor = src.outputs[0]
             else:
                 assert isinstance(dst, ComputationNode), "Either src or dst must be a ComputationNode"
                 assert len(src.outputs) == 1, "Src must have exactly one output tensor for index below"
-                tensor_operand_mapping = dst.operand_mapping[dst.inputs.index(src.outputs[0])]
-                global_mapping = self.workload.global_mapping(dst, tensor_operand_mapping)
+                tensor = dst.inputs[dst.inputs.index(src.outputs[0])]
             # Find the unique dimensions of the tensor being transfered
-            tensor_dims = [all_dims[expr.position] for expr in global_mapping.results]
+            tensor_dims = self.workload.get_tensor_dimensions(tensor)
             if isinstance(src, InEdge):
                 src_inter_core_tiling = []
             else:

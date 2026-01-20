@@ -1,7 +1,6 @@
 from abc import ABCMeta, abstractmethod
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
-from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.context import StageContext
 
 
@@ -56,7 +55,7 @@ class MainStage:
         self.list_of_callables = list_of_callables
 
     def run(self):
-        answers: list[tuple[StreamCostModelEvaluation, Any]] = []
-        for cme, extra_info in self.list_of_callables[0](self.list_of_callables[1:], self.ctx).run():
-            answers.append((cme, extra_info))
+        answers: list[StageContext] = []
+        for ctx in self.list_of_callables[0](self.list_of_callables[1:], self.ctx).run():
+            answers.append(ctx)
         return answers

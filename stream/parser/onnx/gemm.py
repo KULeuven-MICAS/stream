@@ -1,14 +1,10 @@
-import logging
-
 from xdsl.ir.affine import AffineMap
 
-from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.workload import ComputationNode, Tensor
 
-logger = logging.getLogger(__name__)
 
-
-class GemmParser(OnnxComputeOperatorParser):
+class GemmParser(OnnxOperatorParser):
     """Parses an ONNX Gemm operator into a ComputationNode"""
 
     def generate_node(self, name_to_tensor_dict: dict[str, Tensor]) -> ComputationNode:
@@ -19,6 +15,7 @@ class GemmParser(OnnxComputeOperatorParser):
         )
 
         return ComputationNode(
+            type=self.node.op_type,
             name=self.node.name,
             inputs=tuple(name_to_tensor_dict[input] for input in self.node.input),
             outputs=self.get_output_tensors(),

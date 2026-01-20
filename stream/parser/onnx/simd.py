@@ -1,10 +1,10 @@
 from xdsl.ir.affine import AffineMap
 
-from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.workload import ComputationNode, Tensor
 
 
-class SimdParser(OnnxComputeOperatorParser):
+class SimdParser(OnnxOperatorParser):
     """Parses an ONNX operator representing an elementwise operation (simd) into a ComputationNode.
     e.g. Add, etc.
     # TODO this functionality is exactly the same as Mul but without support for broadcast (asymmetric) shapes
@@ -17,6 +17,7 @@ class SimdParser(OnnxComputeOperatorParser):
         )
 
         return ComputationNode(
+            type=self.node.op_type,
             name=self.node.name,
             inputs=tuple(name_to_tensor_dict[input] for input in self.node.input),
             outputs=self.get_output_tensors(),

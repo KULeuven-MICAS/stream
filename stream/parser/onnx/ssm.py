@@ -8,7 +8,7 @@ from zigzag.parser.workload_factory import LayerNodeFactory
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.onnx_utils import get_onnx_output_shapes
-from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.computation.computation_node import GeneratedComputationNode
 from stream.workload.dependency_propagation.concat_node import ConcatNode
 from stream.workload.dependency_propagation.split_node import SplitNode
@@ -29,7 +29,7 @@ class SSMInput(StrEnum):
     C = "C"
 
 
-class SSMParser(OnnxComputeOperatorParser):
+class SSMParser(OnnxOperatorParser):
     def __init__(
         self,
         node_id: int,

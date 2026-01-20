@@ -111,7 +111,9 @@ class CoreCostEstimationStage(Stage):
         if self.is_aie_compute_core(core):
             return AIECostEstimator(self.workload, self.mapping)
         return ZigZagCostEstimator(
-            cost_lut=self.cost_lut,
+            workload=self.workload,
+            accelerator=self.accelerator,
+            mapping=self.mapping,
         )
 
     def is_aie_compute_core(self, core: Core) -> bool:

@@ -161,11 +161,11 @@ def optimize_allocation_co(  # noqa: PLR0913
     else:
         raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
 
-    # Load SCME if it exists and skip_if_exists is True
-    scme_path = f"{output_path}/scme.pickle"
-    if os.path.exists(scme_path) and skip_if_exists:
-        module = pickle_load(scme_path)
-        logger.info(f"Loaded SCME from {scme_path}")
+    # Load final resulting context if it exists and skip_if_exists is True
+    ctx_path = f"{output_path}/ctx.pickle"
+    if os.path.exists(ctx_path) and skip_if_exists:
+        ctx = pickle_load(ctx_path)
+        logger.info(f"Loaded context from {ctx_path}")
     else:
         stages: list[StageCallable] = [  # Initializes the MainStage as entry point
             AcceleratorParserStage,  # Parses the accelerator
@@ -180,11 +180,9 @@ def optimize_allocation_co(  # noqa: PLR0913
             workload_path=workload,  # required by ModelParserStage
             mapping_path=mapping,  # required by ModelParserStage
             loma_lpf_limit=6,  # required by LomaEngine
-            mode=mode,
             layer_stacks=layer_stacks,
             output_path=output_path,
             temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
-            operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
             trace_size=trace_size,
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
         )
@@ -201,6 +199,7 @@ def optimize_allocation_co(  # noqa: PLR0913
         mainstage = MainStage(stages, ctx)
         # Launch the MainStage
         answers = mainstage.run()
-        module = answers[0][0]
+        assert len(answers) == 1, "Expected a single result from the optimization."
+        ctx = answers[0]
         # pickle_save(scme, scme_path)  # type: ignore
-    return module
+    return ctx
