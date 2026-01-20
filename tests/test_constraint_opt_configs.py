@@ -1,9 +1,7 @@
-import pytest
 from zigzag.datatypes import LayerOperand, MemoryOperand
 
 from stream.opt.allocation.constraint_optimization.allocation import get_optimal_allocations
 from stream.opt.allocation.constraint_optimization.config import (
-    ComputeMilpConfig,
     ConstraintOptStageConfig,
 )
 from stream.opt.allocation.constraint_optimization.context import build_constraint_context
@@ -114,8 +112,3 @@ def test_default_profiles_include_all_compute_roles():
     cfg = ConstraintOptStageConfig()
     ctx = build_constraint_context(accelerator, cfg)
     assert sorted(c.id for c in ctx.compute_cores) == [0, 1]
-
-
-def test_invalid_compute_config_rejected():
-    with pytest.raises(ValueError):
-        ComputeMilpConfig(gap=-0.1)

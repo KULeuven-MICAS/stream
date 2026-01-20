@@ -1,7 +1,4 @@
 import logging
-import os
-import pickle
-import pprint
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from numpy.typing import NDArray
@@ -39,65 +36,6 @@ def get_too_large_operands(
         if len(lvl) > core_nb_memory_levels[memory_operand] + 1:  # +1 because of spatial level
             too_large_operands.append(memory_operand)
     return too_large_operands
-
-
-def save_core_allocation(
-    workload: "ComputationNodeWorkload", path: str, type: str = "fixed", format: str = "py"
-) -> dict:
-    """Saves the core allocations of a workload to a python or pickle file.
-    In fixed mode: if a layer has been split into multiple groups, the allocation of each group is saved to a tuple.
-    In flexible mode: for each layer, the possible allocations are saved to a list.
-    # TODO: Update this function to work with new mapping definition
-
-    Args:
-        workload (DiGraph): The graph of CNs
-        path (str): The filepath to save the dict to.
-        type (str, optional): The type of core allocation: fixed or flexible.
-
-    Returns:
-        allocations: The dictionary containing core allocations for each node name
-    """
-    node_allocations = {}
-    node_allocations_grouped = {}
-    for n in workload.node_list:
-        if n.name not in node_allocations:
-            node_allocations[n.name] = {"core_allocation": [n.chosen_core_allocation]}
-            node_allocations_grouped[n.name] = {n.group: n.chosen_core_allocation}
-        else:
-            node_allocations[n.name]["core_allocation"].append(n.chosen_core_allocation)
-            if n.group not in node_allocations_grouped[n.name]:
-                node_allocations_grouped[n.name][n.group] = n.chosen_core_allocation
-    if type == "fixed":
-        mapping = {
-            k: {"core_allocation": tuple(list(zip(*sorted(v.items()), strict=False))[1])}
-            for k, v in node_allocations_grouped.items()
-        }
-    else:
-        mapping = {k: {"core_allocation": sorted(set(v["core_allocation"]))} for k, v in node_allocations.items()}
-    # Create folder structure if it doesn't exist
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    # The dict is saved with variable name 'mapping' as this is expected for running
-    if format in ["python", "py"]:
-        assert path.split(".")[-1] == "py", "format is python but file path doesn't end in .py"
-        with open(path, "w") as handle:
-            handle.write("mapping = ")
-            handle.write(pprint.pformat(mapping))
-    elif format in ["pickle", "pkl"]:
-        with open(path, "wb") as handle:
-            pickle.dump(mapping, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    else:
-        raise ValueError(f"Invalid format: {format}.")
-    return mapping
-
-
-def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNode"]:
-    """! Get the unique nodes from a workload."""
-    unique_nodes: list[ComputationNode] = []
-    for node in workload.node_list:
-        equal_nodes = list(unique_node for unique_node in unique_nodes if node.has_same_performance(unique_node))
-        if not equal_nodes:
-            unique_nodes.append(node)
-    return unique_nodes
 
 
 def contains_wildcard(tiling) -> bool:

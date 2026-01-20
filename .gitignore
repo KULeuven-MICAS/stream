@@ -166,6 +166,7 @@ docs/make.bat
 
 # workload and mapping input files
 stream/inputs/aie/workload/*.onnx
+stream/inputs/testing/workload/*.onnx
 stream/inputs/aie/mapping/*.yaml
 stream/inputs/aie/mapping/*.yml
 

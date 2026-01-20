@@ -36,7 +36,7 @@ class MappingFactory:
 
     def get_mapping_data_for_node(self, node: Any) -> dict[str, Any]:
         for mapping_data in self.all_mapping_data:
-            if mapping_data["name"] == node.name:
+            if mapping_data["name"] in [node.name, node.type]:
                 return mapping_data
         raise ValueError(f"No mapping data found for node with name {node.name}")
 
@@ -57,11 +57,11 @@ class MappingFactory:
         except TypeError:
             return False
 
-    def create_kernel(self, mapping_data: dict[str, Any]) -> AIEKernel:
+    def create_kernel(self, mapping_data: dict[str, Any]) -> AIEKernel | None:
         kernel_name = mapping_data["kernel"]["name"]
         kernel = AIEKernels.get(kernel_name, None)
         if kernel is None:
-            raise ValueError(f"Unknown kernel name {kernel_name}. Available kernels: {list(AIEKernels.keys())}")
+            return None
         kernel_kwargs = mapping_data["kernel"].get("kwargs", {})
         if not self.kernel_args_match_kernel_signature(kernel, kernel_kwargs):
             raise ValueError(f"Kernel arguments {kernel_kwargs} do not match kernel {kernel_name} signature.")
@@ -71,8 +71,8 @@ class MappingFactory:
         return tuple(self._convert_layer_dim_int_pair(pair, node) for pair in mapping_data["inter_core_tiling"])
 
     def _convert_layer_dim_int_pair(self, pair: str, node: ComputationNode):
-        """Convert strings such as `D, 4` into a LayerDim and int"""
-        layer_dim = LayerDim(pair.split(",")[0])
+        """Convert strings such as `Dx, 4` into a LayerDim and int"""
+        layer_dim = LayerDim(int(pair.split(",")[0][1:]))  # Remove the leading 'D'
         unrolling_str = pair.split(",")[-1]
         match unrolling_str.strip(" "):
             case "all":

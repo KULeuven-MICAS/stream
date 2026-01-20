@@ -1,62 +1,29 @@
-- name: default
-  core_allocation: [0, 1, 2, 3]
-  intra_core_tiling:
-    - D, all
-  inter_core_tiling:
-    - K, 4
-
 - name: Conv
   core_allocation: [0, 1, 2, 3]
-  intra_core_tiling:
-    - OY, all
   inter_core_tiling:
-    - K, 4
+    - D6, 4  # Output channels
 
 - name: Gemm
   core_allocation: [0, 1, 2, 3]
-  intra_core_tiling:
-    - D, all
   inter_core_tiling:
-    - K, 4
+    - D2, 4  # Output channels
 
 - name: Pool
   core_allocation: [4]
-  intra_core_tiling:
-    - OY, all
-  inter_core_tiling:
-    - K, 1
 
 - name: MaxPool
   core_allocation: [4]
-  intra_core_tiling:
-    - OY, all
-  inter_core_tiling:
-    - K, 1
 
 - name: AveragePool
   core_allocation: [4]
-  intra_core_tiling:
-    - OY, all
-  inter_core_tiling:
-    - K, 1
 
 - name: GlobalAveragePool
   core_allocation: [4]
-  intra_core_tiling:
-    - OY, all
-  inter_core_tiling:
-    - K, 1
 
 - name: Add
   core_allocation: [5]
-  intra_core_tiling:
-    - D, all
-  inter_core_tiling:
-    - H, 1
 
 - name: Relu
   core_allocation: [0, 1, 2, 3]
-  intra_core_tiling:
-    - D, all
   inter_core_tiling:
-    - H, 4
+    - D3, 4  # Output channels

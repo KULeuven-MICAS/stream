@@ -6,7 +6,8 @@ from zigzag.parser.onnx.utils import parse_onnx_model_from_path
 
 # from stream.hardware.architecture.accelerator import Accelerator
 # from stream.parser.onnx.concat import ConcatParser
-# from stream.parser.onnx.conv import ConvParser
+from stream.parser.onnx.conv import ConvParser
+
 # from stream.parser.onnx.default import DefaultNodeParser
 # from stream.parser.onnx.einsum import EinsumParser
 # from stream.parser.onnx.exp import ExpParser
@@ -47,7 +48,7 @@ class ONNXModelParser:
     OP_TYPE_TO_PARSER: dict[str, type[OnnxOperatorParser]] = {
         # General
         # "QLinearConv": ConvParser,
-        # "Conv": ConvParser,
+        "Conv": ConvParser,
         # "MatMul": MatMulParser,
         "Gemm": GemmParser,
         # "Einsum": EinsumParser,

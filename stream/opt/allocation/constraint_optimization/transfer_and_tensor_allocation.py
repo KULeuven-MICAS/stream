@@ -21,7 +21,6 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
 )
 from stream.workload.steady_state.iteration_space import ComputeTileReuse, MemTileReuse, SteadyStateIterationSpace
 from stream.workload.steady_state.node import Node
-from stream.workload.steady_state.workload import SteadyStateWorkload
 from stream.workload.workload import ComputationNode, HasIterationSpace, InEdge, OutEdge, Tensor, TransferNode, Workload
 
 PathKey: TypeAlias = tuple[TransferNode, tuple[CommunicationLink, ...]]
@@ -45,7 +44,7 @@ class TransferAndTensorAllocator:
     # ------------------------------------------------------------ #
     # ctor / public API                                            #
     # ------------------------------------------------------------ #
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         workload: Workload,
         timeslots: dict[Node, int],
@@ -551,8 +550,7 @@ class TransferAndTensorAllocator:
         self.core_load: dict[Core, gp.QuadExpr] = defaultdict(gp.QuadExpr)
         # add transfer tensors
         for tr in self.transfer_nodes:
-            transfer_dims = self.workload.get_dims(tr)
-            for t, cn in zip(tr.outputs, self.workload.successors(tr), strict=True):
+            for t in tr.outputs:
                 assert t in self.tensor_fixed, "Transfer tensors must be fixed (for now)."
                 for c in self.possible_tensor_allocations[t]:
                     tensor_shape = self.workload.get_tensor_shape_of_transfer_to_single_core(t, tr, self.mapping)
@@ -906,20 +904,6 @@ class TransferAndTensorAllocator:
             t.chosen_resource_allocation = core
             tensor_alloc[t] = core
         return tensor_alloc
-
-    def get_updated_steady_state_workload(self) -> SteadyStateWorkload:
-        """Return a new SteadyStateWorkload with updated resource allocations.
-        This is necessary as there's a bug in networkx that doesn't update the edges when node attributes change.
-        """
-        ssw_upd = SteadyStateWorkload()
-        for edge in self.workload.edges(data=True):
-            src, dst, data = edge
-            assert src in self.workload.node_list, f"Source {src} not found in ssw nodes."
-            assert dst in self.workload.node_list, f"Destination {dst} not found in ssw nodes."
-            src = self.workload.node_list[self.workload.node_list.index(src)]
-            dst = self.workload.node_list[self.workload.node_list.index(dst)]
-            ssw_upd.add_edge(src, dst, **data)
-        return ssw_upd
 
     def _check_io_transfers_firing_levels(self) -> None:
         # firesC should always be greater or equal to firesM

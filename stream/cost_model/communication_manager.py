@@ -193,7 +193,7 @@ class CommunicationManager:
         """Return all unique CommunicationLinks."""
         return list(set(d["cl"] for _, _, d in self.accelerator.cores.edges(data=True)))
 
-    def _get_simple_no_meeting_node_plans(
+    def _get_simple_no_meeting_node_plans(  # noqa: PLR0912, PLR0915
         self,
         sources: tuple["Core", ...],
         targets: tuple["Core", ...],
@@ -344,7 +344,7 @@ class CommunicationManager:
 
         return tuple(sorted(links))
 
-    def _enumerate_multicast_plans(
+    def _enumerate_multicast_plans(  # noqa: PLR0912, PLR0915
         self,
         request: "MulticastRequest",
         *,

@@ -32,11 +32,8 @@ class ConstraintContext:
         return sorted(c.id for c in self.compute_cores)
 
 
-def build_constraint_context(
-    accelerator: Accelerator, cfg: ConstraintOptStageConfig, compute_cfg_override: ComputeMilpConfig | None = None
-) -> ConstraintContext:
+def build_constraint_context(accelerator: Accelerator, cfg: ConstraintOptStageConfig) -> ConstraintContext:
     profiles_registry = ensure_profile_registry(cfg.profiles)
-    compute_cfg = compute_cfg_override or cfg.compute
 
     core_profiles: dict[Core, CoreConstraintProfile] = {}
     for core in accelerator.core_list:
@@ -47,7 +44,7 @@ def build_constraint_context(
 
     def _eligible_for_compute(core: Core) -> bool:
         profile = core_profiles[core]
-        return bool(profile.roles & compute_cfg.eligible_roles)
+        return bool(profile.roles)
 
     compute_cores = [
         c

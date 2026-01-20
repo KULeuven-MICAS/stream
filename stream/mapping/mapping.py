@@ -30,7 +30,8 @@ class NodeMapping:
             raise TypeError("inter_core_tiling must be a tuple of (dimension, factor) tuples")
 
         for item in self.inter_core_tiling:
-            if not (isinstance(item, tuple) and len(item) == 2):
+            required_length = 2
+            if not (isinstance(item, tuple) and len(item) == required_length):
                 raise TypeError("inter_core_tiling entries must be tuples of length 2: (dim, factor)")
             dim, factor = item
             if not isinstance(factor, int) or factor <= 0:

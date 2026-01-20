@@ -93,8 +93,6 @@ class ComputeAllocator:
         self.accelerator = accelerator
         self.cost_lut = cost_lut
         self.context = context
-        self.compute_cfg = compute_cfg
-
         self.iterations = iterations
 
         # Gurobi model and main assignment tensor
@@ -469,25 +467,22 @@ def get_optimal_allocations(
     cost_lut: CoreCostLUT,
     *,
     context: ConstraintContext | None = None,
-    compute_config: ComputeMilpConfig | None = None,
     stage_config: ConstraintOptStageConfig | None = None,
     iterations: int = 1,
 ) -> ALLOCATION_T:
     """Backwards-compatible helper preserving the original functional API."""
-    if compute_config is None or context is None:
+    if context is None:
         logger.warning(
-            "get_optimal_allocations called without explicit config/context. "
+            "get_optimal_allocations called without explicit context. "
             "Building defaults; please pass ConstraintOptStageConfig explicitly."
         )
         stage_cfg = stage_config or ConstraintOptStageConfig()
-        compute_config = compute_config or stage_cfg.compute
-        context = context or build_constraint_context(accelerator, stage_cfg, compute_config)
+        context = context or build_constraint_context(accelerator, stage_cfg)
 
     return ComputeAllocator(
         workload,
         accelerator,
         cost_lut,
         context,
-        compute_config,
         iterations=iterations,
     ).get_optimal_allocations()

@@ -2,13 +2,13 @@ from typing import Any
 
 from zigzag.datatypes import Constants
 
-from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.parser.onnx.reduce_1d import Reduce1DParser
 from stream.parser.onnx.simd import SimdParser
 from stream.workload.mapping import InterCoreMappingAttributes
 
 
-class SoftmaxParser(OnnxComputeOperatorParser):
+class SoftmaxParser(OnnxOperatorParser):
     """Parses the Softmax operator. Softmax works on full rows and can be computed as follows:
     (1) m <- max(row[0:L])
     (2) e[0:L] <- exp(row[0:L] - m)
@@ -35,7 +35,7 @@ class SoftmaxParser(OnnxComputeOperatorParser):
         parser_classes: list[type] = [Reduce1DParser, SoftmaxExpParser, Reduce1DParser, SoftmaxDivParser]
 
         node_ids = [self.node_id + i for i in range(4)]
-        parsers: list[OnnxComputeOperatorParser] = [
+        parsers: list[OnnxOperatorParser] = [
             parser(
                 node_id=node_id,
                 node=self.node,

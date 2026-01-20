@@ -325,7 +325,7 @@ class AIECodeGenerationStage(Stage):
 
     def codegen_main(self) -> None:
         workload: Workload = self.ctx.get("workload")
-        trace_size: int = self.ctx.get("trace_size", 1048576)
+        trace_size: int = self.ctx.get("trace_size", 1048576)  # noqa: F841
         npu: AIEDeviceEnum = self.ctx.get("npu", "npu2")
         assert workload is not None
 

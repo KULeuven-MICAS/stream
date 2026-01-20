@@ -58,7 +58,7 @@ class IterationVariable:
     def __repr__(self):
         prefix = "S" if self.spatial else "T"
         tag = "R" if self.relevant else "IR"
-        return f"{prefix}({self.dimension.name},{self.size},{tag})"
+        return f"{prefix}({self.dimension},{self.size},{tag})"
 
     def __eq__(self, other):
         if not isinstance(other, IterationVariable):

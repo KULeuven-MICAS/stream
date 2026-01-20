@@ -48,7 +48,6 @@ class TilingGenerationStage(Stage):
         self.tiled_workload = self.workload.with_modified_dimension_sizes(self.tiled_sizes)
         self.tiled_mapping = self.mapping.with_updated_workload(self.tiled_workload)
         self.tiled_dimensions = self.get_tiled_dimensions_in_function_of_nodes()
-        # self.steady_state_iteration_spaces = generate_steady_state_iteration_spaces(self.tiled_workload, self.tiled_mapping, self.fuse_dimensions)
 
         self.tiled_workload.visualize(os.path.join(self.output_path, "tiled_workload.png"))
         self.ctx.set(workload=self.tiled_workload, mapping=self.tiled_mapping, tiled_dimensions=self.tiled_dimensions)
@@ -106,7 +105,8 @@ class TilingGenerationStage(Stage):
                     self._get_total_spatial_unrolling_for_dim(dim, unique_spatial_unrollings),
                 )
                 assert rem == 0, (
-                    f"Dimension size {self.workload.get_dimension_size(dim)} not divisible by spatial unrolling {self._get_total_spatial_unrolling_for_dim(dim, unique_spatial_unrollings)}"
+                    f"Dimension size {self.workload.get_dimension_size(dim)} not divisible by spatial unrolling "
+                    f"{self._get_total_spatial_unrolling_for_dim(dim, unique_spatial_unrollings)}"
                 )
             temporal_unrollings.append((dim, size))
         return temporal_unrollings
