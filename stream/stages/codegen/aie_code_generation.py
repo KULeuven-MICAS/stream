@@ -111,37 +111,11 @@ class AIECodeGenerationStage(Stage):
             result_types = (result_type,)
         if any(isinstance(user, OutEdge) for user in workload.successors(node)):
             result_types = node.outputs[0].subview.source.type
-            min_size = shape
+            assert isinstance(inputs[0], ComputationNodeOp)
+            assert inputs[0].result is not None
+            assert isinstance(inputs[0].result.type, MemRefType)
+            shape = inputs[0].result.type.get_shape()
 
-        # dest_tensor = next(workload.successors(transfer))
-        # assert isinstance(dest_tensor, SteadyStateTensor)
-        # dest_type = dest_tensor.subview.result.type
-        # assert isinstance(dest_type, MemRefType)
-
-        # get rid of layout for now
-        # assert isinstance(dest_type, MemRefType)
-        # dest_type = MemRefType(dest_type.element_type, dest_type.shape)
-
-        # source_vals: Sequence[SSAValue | Operation] = []
-        # for source in transfer.srcs:
-        #     if source in edge_ops:
-        #         source_val = edge_ops[source]
-        #     else:
-        #         # find source op
-        #         if source not in workload:
-        #             warnings.warn(f"Source {source} not in workload, applying a little hack :)")  # noqa: B028
-        #             source_source = next(workload.predecessors(transfer))
-        #             source_source = next(workload.predecessors(source_source))
-        #         else:
-        #             source_source = next(workload.predecessors(source))
-        #         assert isinstance(source_source, SteadyStateComputation)
-        #         source_val = compute_ops[source_source]
-        #     source_vals.append(source_val)
-
-        # if isinstance(source_vals[0], EdgeOp):
-        #     tensor = sorted(transfer.dsts, key=lambda x: x.loop_ranges)[0]
-        # else:
-        #     tensor = sorted(transfer.srcs, key=lambda x: x.loop_ranges)[0]
         offsets = []
         sizes = []
         strides = []
@@ -170,34 +144,6 @@ class AIECodeGenerationStage(Stage):
 
         sizes, strides = canonicalize_transformation(sizes, strides)
 
-        # tensor = node.outputs[0]
-        # offsets = [x[0] for x in tensor.loop_ranges]
-        # sizes = [x[1] - x[0] for x in tensor.loop_ranges]
-        # strides = []
-        # for loop_dim in tensor.loop_dimensions:
-        #     stride = prod(
-        #         iv.size
-        #         for iv in transfer.steady_state_iteration_space.variables
-        #         if iv.spatial and iv.dimension == loop_dim
-        #     )
-        #     strides.append(stride)
-
-        # # determine spatial strides
-        # spatial_strides = []
-        # if len(source_vals) > 1:
-        #     sorted_transfers = sorted(transfer.srcs, key=lambda x: x.loop_ranges)
-        # else:
-        #     sorted_transfers = sorted(transfer.dsts, key=lambda x: x.loop_ranges)
-        # unique_transfers = {x.loop_ranges: x for x in sorted_transfers}
-        # if len(unique_transfers) > 1:
-        #     for dim in tensor.loop_dimensions:
-        #         spatial_strides.append(
-        #             list(unique_transfers.values())[1].loop_ranges_per_dim[dim][0]
-        #             - list(unique_transfers.values())[0].loop_ranges_per_dim[dim][0]
-        #         )
-        # else:
-        #     for dim in tensor.loop_dimensions:
-        #         spatial_strides.append(transfer.srcs[0].loop_ranges_per_dim[dim][0])
         if isinstance(mapping.memory_allocation, Core):
             row, col = mapping.memory_allocation.row_id, mapping.memory_allocation.col_id
             assert row is not None
@@ -328,9 +274,8 @@ class AIECodeGenerationStage(Stage):
         mapping = self.ctx.get("mapping")
         aie_kernels = {nm.kernel.unique_name: nm.kernel for nm in mapping.values() if nm.kernel is not None}
         assert isinstance(mapping, Mapping)
-        fuse_dimensions = self.ctx.get("fuse_dimensions")
 
-        ssis_dict = generate_steady_state_iteration_spaces(workload, mapping, fuse_dimensions)
+        ssis_dict = self.ctx.get("scheduler").ssis
 
         for node in workload.nodes:
             print(node.name)

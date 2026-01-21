@@ -49,7 +49,7 @@ def iteration_space_to_for(block: Block, rewriter: Rewriter):  # noqa: PLR0912, 
         # create for loop
         ub = ConstantOp.from_int_and_width(iter_var.size, IndexType())
         for_op = ForOp(lb, ub, step, [], Block([yield_op := YieldOp()], arg_types=[IndexType()]))
-        # for_op.attributes["layer_dim"] = StringAttr(iter_var.dimension.name)
+        for_op.attributes["layer_dim"] = StringAttr(str(iter_var.dimension))
         rewriter.insert_op((ub, for_op), insertion_point)
         insertion_point = InsertPoint.before(yield_op)
     assert for_op is not None
