@@ -65,7 +65,16 @@ class TilingGenerationStage(Stage):
         _, unique_spatial_unrollings = collect_spatial_unrollings(self.workload, self.mapping)
         unique_unrollings_dict = dict(unique_spatial_unrollings)
         # Size for the new tiled dimensions
-        d = {dim: unique_unrollings_dict.get(dim, 1) for dim in max_dims}
+        d = {}
+        for dim in max_dims:
+            spatial_unrolling = unique_unrollings_dict.get(dim, 1)
+            wanted_tile_size, rem = divmod(self.workload.get_dimension_size(dim), max_dims[dim])
+            assert rem == 0, (
+                f"Dimension size {self.workload.get_dimension_size(dim)} not divisible by "
+                f"desired tile size {max_dims[dim]}"
+            )
+            tiled_size = wanted_tile_size * spatial_unrolling
+            d[dim] = tiled_size
         for dim in set(unique_dims) - set(max_dims):
             size = self.workload.get_dimension_size(dim)
             d[dim] = size

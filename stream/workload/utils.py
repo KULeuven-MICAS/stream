@@ -34,7 +34,10 @@ def determine_fusion_dimensions(workload: "Workload") -> dict[LayerDim, int]:
         assert dim_occurrence_count[max_dim] == len(workload.get_computation_nodes()), (
             "Not all layers share the same dimension for fusion."
         )
-    return {max_dims[0]: workload.get_dimension_size(max_dims[0])}  # only first dimension for now
+    return {
+        max_dims[0]: workload.get_dimension_size(max_dims[0]),
+        max_dims[1]: 16,  # fixed for testing
+    }
 
 
 def generate_steady_state_iteration_spaces(

@@ -77,7 +77,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     # json_path = f"outputs/{experiment_id}/scme.json"
     #####################################################################
 
-    module = optimize_allocation_co(
+    ctx = optimize_allocation_co(
         hardware=accelerator,
         workload=workload_path,
         mapping=mapping_path,
@@ -103,6 +103,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
 
     # # Plotting memory usage of best SCME
     # plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
+    module = ctx.get("module")
 
     return module
 
@@ -146,6 +147,7 @@ if __name__ == "__main__":
         runtime_args=["input", "weights_1", "weights_2", "weights_3", "output"],
         mapping_version=args.mapping_version,
     )
-
-    with open(f"outputs/swiglu_module_{args.seq_len}_{args.embedding_dim}_{args.hidden_dim}.mlir", "w") as f:
-        f.write(str(module.get("module")))
+    save_path = f"outputs/swiglu_module_{args.seq_len}_{args.embedding_dim}_{args.hidden_dim}.mlir"
+    with open(save_path, "w") as f:
+        f.write(str(module))
+    print(f"Saved generated module to {save_path}")
