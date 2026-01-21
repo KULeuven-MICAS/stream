@@ -1,22 +1,14 @@
-import warnings
 from collections import defaultdict
-from collections.abc import Sequence
-from copy import copy
-from itertools import accumulate, combinations, product
-from math import prod
+from collections.abc import Iterator, Sequence
+from itertools import accumulate, product
 from operator import mul
-from typing import Generator, Iterable, Iterator, cast
 
 from snaxc.dialects.snax import NoneAttr
 from snaxc.dialects.tsl import TSL
-from sympy.matrices.eigen import _is_negative_semidefinite
 from xdsl.context import MLContext
 from xdsl.dialects.builtin import ArrayAttr, IntegerAttr, MemRefType, ModuleOp
 from xdsl.ir import Operation, SSAValue
-from xdsl.irdl import Operand
 from xdsl_aie.dialects.aie import AIEDeviceEnum
-from zigzag.datatypes import LayerDim, LayerOperand
-from zigzag.utils import DiGraphWrapper
 
 from stream.compiler.dialects.stream import ComputationNodeOp, InEdgeOp, OutEdgeOp, Stream, TransferOp
 

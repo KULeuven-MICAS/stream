@@ -1,9 +1,7 @@
 from dataclasses import dataclass, field
-from typing import cast
 
 from xdsl.context import Context
 from xdsl.dialects.builtin import ModuleOp
-from xdsl.ir import Operation, OpResult
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
     PatternRewriter,
@@ -11,9 +9,8 @@ from xdsl.pattern_rewriter import (
     RewritePattern,
     op_type_rewrite_pattern,
 )
-from xdsl.rewriter import InsertPoint
 
-from stream.compiler.dialects.stream import ChannelOp, InEdgeOp, OutEdgeOp, PullOp, PushOp, TransferOp
+from stream.compiler.dialects.stream import ChannelOp, OutEdgeOp, TransferOp
 
 
 @dataclass

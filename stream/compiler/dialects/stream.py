@@ -1,7 +1,6 @@
-from abc import ABC
 from collections.abc import Sequence
 
-from xdsl.dialects.builtin import ArrayAttr, IndexType, IntegerAttr, StringAttr, i64
+from xdsl.dialects.builtin import IndexType, IntegerAttr, StringAttr, i64
 from xdsl.ir import Attribute, Data, Dialect, Operation, ParametrizedAttribute, SSAValue, TypeAttribute
 from xdsl.irdl import (
     AttrSizedOperandSegments,
@@ -16,12 +15,12 @@ from xdsl.irdl import (
     var_operand_def,
     var_result_def,
 )
-from xdsl.parser import AttrParser, DenseArrayBase, GenericParser, MemRefType
+from xdsl.parser import AttrParser, DenseArrayBase, MemRefType
 from xdsl.printer import Printer
 from zigzag.datatypes import LayerDim
 
-from stream.workload.steady_state.iteration_space import IterationVariable, SteadyStateIterationSpace
-from stream.workload.workload import ComputationNode, InEdge, OutEdge
+from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
+from stream.workload.workload import InEdge, OutEdge
 
 
 @irdl_attr_definition

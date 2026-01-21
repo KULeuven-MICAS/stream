@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 
 from xdsl.dialects.arith import ConstantOp
-from xdsl.dialects.builtin import IndexType, StringAttr
+from xdsl.dialects.builtin import IndexType
 from xdsl.dialects.scf import ForOp, YieldOp
 from xdsl.ir import Block
 from xdsl.rewriter import InsertPoint, Rewriter
