@@ -3,12 +3,13 @@ import os
 from typing import TypeAlias
 
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
+from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.mapping.mapping import Mapping
 from stream.opt.allocation.constraint_optimization.config import ConstraintOptStageConfig
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
-from stream.workload.workload import ComputationNode, Workload
+from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         "accelerator",
         "mapping",
         "cost_lut",
-        "tiled_dimensions",
+        "fuse_dimensions",
         "output_path",
     )
 
@@ -39,7 +40,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.workload: Workload = self.ctx.get("workload")
         self.accelerator: Accelerator = self.ctx.get("accelerator")
         self.mapping: Mapping = self.ctx.get("mapping")
-        self.tiled_dimensions: dict[ComputationNode, tuple[int, int]] = self.ctx.get("tiled_dimensions")
+        self.fuse_dimensions: dict[LayerDim, int] = self.ctx.get("fuse_dimensions")
         self.cost_lut = self.ctx.get("cost_lut")
 
         config = self.ctx.get("constraint_opt_config")
@@ -69,7 +70,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             self.workload,
             self.accelerator,
             self.mapping,
-            self.tiled_dimensions,
+            self.fuse_dimensions,
             self.cost_lut,
             self.config.transfer.nb_cols_to_use,
             output_path,

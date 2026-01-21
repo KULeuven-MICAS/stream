@@ -27,10 +27,13 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     line_size,
     runtime_args,
     mapping_version: int = 1,
+    last_gemm_down: bool = False,
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     # CREATE THE SWIGLU ONNX MODEL AND MAPPING
-    workload_path = make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype)
+    workload_path = make_swiglu_workload(
+        seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down=last_gemm_down
+    )
     if mapping_version == 1:
         accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array.yaml")
         mapping_path = make_swiglu_mapping_pipelined(seq_len, embedding_dim, hidden_dim, m, k, n, line_size)
@@ -128,8 +131,18 @@ if __name__ == "__main__":
     parser.add_argument("--cols", type=int, default=1, help="Number of AIE columns to use (default: 1)")
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
     parser.add_argument("--mapping_version", type=int, default=1, help="Mapping version to use (1 or 2, default: 1)")
+    parser.add_argument(
+        "--no_last_gemm_down",
+        dest="last_gemm_down",
+        action="store_false",
+        default=True,
+        help="If set, the last gemm down projection is skipped",
+    )
     args = parser.parse_args()
-
+    if args.last_gemm_down:
+        runtime_args = ["input", "weights_1", "weights_2", "weights_3", "output"]
+    else:
+        runtime_args = ["input", "weights_1", "weights_2", "output"]
     module = run_main_aie_codegen_swiglu(
         args.seq_len,
         args.embedding_dim,
@@ -144,8 +157,9 @@ if __name__ == "__main__":
         args.cols,
         args.npu,
         args.line_size,
-        runtime_args=["input", "weights_1", "weights_2", "weights_3", "output"],
+        runtime_args=runtime_args,
         mapping_version=args.mapping_version,
+        last_gemm_down=args.last_gemm_down,
     )
     save_path = f"outputs/swiglu_module_{args.seq_len}_{args.embedding_dim}_{args.hidden_dim}.mlir"
     with open(save_path, "w") as f:
