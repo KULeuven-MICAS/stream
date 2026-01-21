@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import warnings
 from collections.abc import Iterable, Sequence
-from enum import Flag, auto
+from enum import Enum, Flag, auto
 from math import prod
 
 from zigzag.datatypes import LayerDim, LayerOperand
@@ -22,6 +22,12 @@ class MemTileReuse(Flag):
     NOT_SET = auto()
     REUSE = auto()
     NO_REUSE = auto()
+
+
+class IterationVariableType(Enum):
+    KERNEL = auto()
+    SPATIAL = auto()
+    TEMPORAL = auto()
 
 
 # --------------------------------------------------------------------------- #
@@ -43,20 +49,31 @@ class IterationVariable:
         every **outer** loop is marked relevant as well.
     """
 
-    def __init__(self, dimension: LayerDim, size: int, relevant: bool, spatial: bool = False) -> None:
+    def __init__(
+        self,
+        dimension: LayerDim,
+        size: int,
+        relevant: bool,
+        type: IterationVariableType = IterationVariableType.TEMPORAL,
+    ) -> None:
         self.dimension: LayerDim = dimension
         self.size: int = int(size)
         self.relevant: bool = bool(relevant)
         self._compute_tile_reuse: ComputeTileReuse = ComputeTileReuse.NOT_SET
         self._mem_tile_reuse: MemTileReuse = MemTileReuse.NOT_SET
-        self.spatial: bool = bool(spatial)
+        self.type: IterationVariableType = type
 
     # ---------- nice aliases ------------------------------------------------
     def __iter__(self):
-        yield from (self.dimension, self.size, self.relevant, self.compute_tile_reuse, self.spatial)
+        yield from (self.dimension, self.size, self.relevant, self.compute_tile_reuse, self.type)
 
     def __repr__(self):
-        prefix = "S" if self.spatial else "T"
+        if self.type == IterationVariableType.SPATIAL:
+            prefix = "S"
+        elif self.type == IterationVariableType.KERNEL:
+            prefix = "K"
+        else:
+            prefix = "T"
         tag = "R" if self.relevant else "IR"
         return f"{prefix}({self.dimension},{self.size},{tag})"
 
@@ -69,11 +86,11 @@ class IterationVariable:
             and self.relevant == other.relevant
             and self.compute_tile_reuse == other.compute_tile_reuse
             and self.mem_tile_reuse == other.mem_tile_reuse
-            and self.spatial == other.spatial
+            and self.type == other.type
         )
 
     def __hash__(self):
-        return hash((self.dimension, self.size, self.relevant, self.compute_tile_reuse, self.spatial))
+        return hash((self.dimension, self.size, self.relevant, self.compute_tile_reuse, self.type))
 
     # Getter and setter for compute and mem tile reuse attribute
     @property
@@ -257,17 +274,23 @@ class SteadyStateIterationSpace:
             // self.reuse_factor_compute()
         )
 
+    def get_kernel_variables(self) -> list[IterationVariable]:
+        """
+        Returns the list of kernel iteration variables.
+        """
+        return [iv for iv in self.variables if iv.type == IterationVariableType.KERNEL]
+
     def get_spatial_variables(self) -> list[IterationVariable]:
         """
         Returns the list of temporal iteration variables (i.e. those that are not spatial).
         """
-        return [iv for iv in self.variables if iv.spatial]
+        return [iv for iv in self.variables if iv.type == IterationVariableType.SPATIAL]
 
     def get_temporal_variables(self) -> list[IterationVariable]:
         """
         Returns the list of temporal iteration variables (i.e. those that are not spatial).
         """
-        return [iv for iv in self.variables if not iv.spatial]
+        return [iv for iv in self.variables if iv.type == IterationVariableType.TEMPORAL]
 
     def get_temporal_dimensions(self) -> list[LayerDim]:
         """
@@ -293,24 +316,6 @@ class SteadyStateIterationSpace:
         """
         return [iv.mem_tile_reuse for iv in self.get_temporal_variables()]
 
-    @classmethod
-    def merge_iteration_spaces(cls, ssis_list: list[SteadyStateIterationSpace]) -> SteadyStateIterationSpace:
-        """
-        Merges multiple SteadyStateIterationSpace into one, combining the relevancy
-        If one of the iteration variables is relevant, the merged one is relevant.
-        TODO: maybe not necessary anymore this method
-        """
-        iter_vars = []
-        for ssis in ssis_list:
-            print(ssis)
-        for iter_var in zip(*ssis_list, strict=True):
-            iv = iter_var[0]
-            for other_iv in iter_var[1:]:
-                if other_iv.relevant:
-                    iv.relevant = True
-            iter_vars.append(iv)
-        result = SteadyStateIterationSpace(iter_vars)
-        return result
 
     # ..................................................................... #
     # ── Iteration / pretty printing                                         #

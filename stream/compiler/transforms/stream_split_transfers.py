@@ -13,7 +13,7 @@ from xdsl.pattern_rewriter import (
 )
 from xdsl.rewriter import InsertPoint
 
-from stream.compiler.dialects.stream import ChannelOp, InEdgeOp, OutEdgeOp, PullOp, PushOp, TransferOp
+from stream.compiler.dialects.stream import ChannelOp, OutEdgeOp, PullOp, PushOp, TransferOp
 
 
 @dataclass

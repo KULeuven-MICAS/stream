@@ -63,7 +63,6 @@ from xdsl_aie.dialects.aiex import (
     DmaStartTaskOp,
     DmaWaitOp,
 )
-from zigzag.datatypes import LayerDim
 
 from stream.compiler.dialects.stream import (
     ChannelOp,
@@ -77,7 +76,7 @@ from stream.compiler.dialects.stream import (
 from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.compiler.transforms.convert_aie_kernels import ConvertAIEKernels
 from stream.compiler.transforms.iteration_space_to_for import iteration_space_to_for
-from stream.workload.steady_state.iteration_space import ComputeTileReuse, MemTileReuse
+from stream.workload.steady_state.iteration_space import ComputeTileReuse
 
 
 def get_of_name(source: TileOp, dest: TileOp, operand: str) -> str:

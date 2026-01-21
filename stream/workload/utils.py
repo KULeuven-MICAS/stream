@@ -7,7 +7,11 @@ from xdsl.ir.affine import AffineConstantExpr, AffineDimExpr, AffineExpr
 
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.workload.node import TransferNode
-from stream.workload.steady_state.iteration_space import IterationVariable, SteadyStateIterationSpace
+from stream.workload.steady_state.iteration_space import (
+    IterationVariable,
+    IterationVariableType,
+    SteadyStateIterationSpace,
+)
 
 if TYPE_CHECKING:
     from stream.mapping.mapping import Mapping
@@ -40,6 +44,7 @@ def generate_steady_state_iteration_spaces(
     iteration_variables = _create_spatial_iteration_variables(workload, spatial_unrollings, unique_spatial_unrollings)
     temporal_unrollings = _derive_temporal_unrollings(workload, unique_spatial_unrollings, fuse_dimensions)
     iteration_variables = _add_temporal_iteration_variables(iteration_variables, temporal_unrollings, workload)
+    iteration_variables = _insert_kernel_iteration_variables(iteration_variables, workload, unique_spatial_unrollings)
     ssis_dict = _create_steady_state_iteration_spaces(iteration_variables, workload)
     return ssis_dict
 
@@ -61,7 +66,9 @@ def _add_temporal_iteration_variables(
         for temporal_unrolling in temporal_unrollings:
             dim, size = temporal_unrolling
             relevant = dim in workload.get_dims(node)
-            iteration_variables[node].append(IterationVariable(dim, size, relevant, spatial=False))
+            iteration_variables[node].append(
+                IterationVariable(dim, size, relevant, type=IterationVariableType.TEMPORAL)
+            )
     return iteration_variables
 
 
@@ -85,6 +92,33 @@ def _derive_temporal_unrollings(workload: "Workload", unique_spatial_unrollings,
     return temporal_unrollings
 
 
+def _insert_kernel_iteration_variables(
+    iteration_variables: dict["HasIterationSpace", list[IterationVariable]],
+    workload: "Workload",
+    unique_spatial_unrollings: set[tuple[LayerDim, int]],
+):
+    """Iterate through all computation nodes and add the kernel iteration variables for the unique dimensions."""
+    unique_dims, _ = workload.unique_dimensions()
+    for node in workload.get_iteration_space_nodes():
+        for dim in reversed(unique_dims):
+            spatial_unrolling = next((su[1] for su in unique_spatial_unrollings if su[0] == dim), 1)
+            size, rem = divmod(workload.get_dimension_size(dim), spatial_unrolling)
+            assert rem == 0, (
+                f"Dim size {workload.get_dimension_size(dim)} not divisible by spatial unrolling {spatial_unrolling}"
+            )
+            relevant = dim in workload.get_dims(node)
+            iteration_variables[node].insert(
+                0,
+                IterationVariable(
+                    dimension=dim,
+                    size=size,
+                    relevant=relevant,
+                    type=IterationVariableType.KERNEL,
+                ),
+            )
+    return iteration_variables
+
+
 def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings, unique_spatial_unrollings):
     """Iterate through all computation nodes and add the spatial or
     replacement temporal iteration variables if it doesn't have that spatial unrolling."""
@@ -99,7 +133,7 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                         dimension=dim,
                         size=unrolling,
                         relevant=True,
-                        spatial=True,
+                        type=IterationVariableType.SPATIAL,
                     )
                 )
             elif any(dim == su[0] for su in spatial_unrollings[node]):
@@ -111,7 +145,7 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                         dimension=dim,
                         size=spatial_size,
                         relevant=True,
-                        spatial=True,
+                        type=IterationVariableType.SPATIAL,
                     )
                 )
                 remaining_size, rem = divmod(unrolling, spatial_size)
@@ -121,14 +155,14 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                         dimension=dim,
                         size=remaining_size,
                         relevant=True,
-                        spatial=False,
+                        type=IterationVariableType.TEMPORAL,
                     )
                 )
             else:
                 if isinstance(node, TransferNode):
-                    spatial = True
+                    type = IterationVariableType.SPATIAL
                 else:
-                    spatial = False
+                    type = IterationVariableType.TEMPORAL
                 # Create a replacement temporal variable
                 relevant = dim in workload.get_dims(node)
                 iteration_variables[node].append(
@@ -136,7 +170,7 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                         dimension=dim,
                         size=unrolling,
                         relevant=relevant,
-                        spatial=spatial,
+                        type=type,
                     )
                 )
 
