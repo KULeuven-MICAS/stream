@@ -5,7 +5,7 @@ import onnx
 from onnx import TensorProto, helper, shape_inference
 
 
-def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype):
+def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down: bool = True):
     """
     Build an ONNX model for SwiGLU using a custom function-op SiLU in a private domain:
     left  = Gemm(input, w_left)           # [seq_len,embedding_dim] @ [embedding_dim,hidden_dim] -> [seq_len,hidden_dim]
@@ -51,13 +51,6 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
         np.zeros((embedding_dim, hidden_dim)),
     )
     w_right.ClearField("float_data")
-    w_down = helper.make_tensor(
-        "weights_3",
-        TensorProto.BFLOAT16,
-        [hidden_dim, embedding_dim],
-        np.zeros((hidden_dim, embedding_dim)),
-    )
-    w_down.ClearField("float_data")
 
     # I/O
     inp = helper.make_tensor_value_info("input", TensorProto.BFLOAT16, [seq_len, embedding_dim])
@@ -117,39 +110,72 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
         output_size=output_size,
     )
 
-    # Final elementwise multiply
-    out_mul = helper.make_node(
-        "Mul",
-        inputs=["left_swished", "right"],
-        outputs=["intermediate"],
-        name="Elt_Mul",
-        act_size=act_size,
-        weight_size=0,
-        output_size=output_size,
-    )
+    if not last_gemm_down:
+        # Final elementwise multiply
+        out_mul = helper.make_node(
+            "Mul",
+            inputs=["left_swished", "right"],
+            outputs=["output"],
+            name="Elt_Mul",
+            act_size=act_size,
+            weight_size=0,
+            output_size=output_size,
+        )
+        # If last gemm down is not needed, output directly from the elementwise mul
+        out_mul.output[0] = "output"
+        graph = helper.make_graph(
+            nodes=[gemm_left, gemm_right, silu_left, out_mul],
+            name="SwiGLU",
+            inputs=[inp],
+            outputs=[out],
+            initializer=[w_left, w_right],
+        )
+        doc_string = "SwigLU: left Gemm -> SiLU, right Gemm, then elementwise Mul."
+        onnx_path = os.path.join(
+            os.path.dirname(__file__), f"swiglu_{seq_len}_{embedding_dim}_{hidden_dim}_no_gemm_down.onnx"
+        )
+    else:
+        w_down = helper.make_tensor(
+            "weights_3",
+            TensorProto.BFLOAT16,
+            [hidden_dim, embedding_dim],
+            np.zeros((hidden_dim, embedding_dim)),
+        )
+        w_down.ClearField("float_data")
+        # Intermediate elementwise multiply
+        out_mul = helper.make_node(
+            "Mul",
+            inputs=["left_swished", "right"],
+            outputs=["intermediate"],
+            name="Elt_Mul",
+            act_size=act_size,
+            weight_size=0,
+            output_size=output_size,
+        )
+        # Final down projection gemm
+        gemm_down = helper.make_node(
+            "Gemm",
+            inputs=["intermediate", "weights_3"],
+            outputs=["output"],
+            name="Gemm_Down",
+            transA=0,
+            transB=0,
+            alpha=1.0,
+            beta=1.0,
+            act_size=act_size,
+            weight_size=weight_size,
+            output_size=output_size,
+        )
 
-    # Final down projection gemm
-    gemm_down = helper.make_node(
-        "Gemm",
-        inputs=["intermediate", "weights_3"],
-        outputs=["output"],
-        name="Gemm_Down",
-        transA=0,
-        transB=0,
-        alpha=1.0,
-        beta=1.0,
-        act_size=act_size,
-        weight_size=weight_size,
-        output_size=output_size,
-    )
-
-    graph = helper.make_graph(
-        nodes=[gemm_left, gemm_right, silu_left, out_mul, gemm_down],
-        name="SwiGLU",
-        inputs=[inp],
-        outputs=[out],
-        initializer=[w_left, w_right, w_down],
-    )
+        graph = helper.make_graph(
+            nodes=[gemm_left, gemm_right, silu_left, out_mul, gemm_down],
+            name="SwiGLU",
+            inputs=[inp],
+            outputs=[out],
+            initializer=[w_left, w_right, w_down],
+        )
+        doc_string = "SwigLU: left Gemm -> SiLU, right Gemm, then elementwise Mul and down proj Gemm."
+        onnx_path = os.path.join(os.path.dirname(__file__), f"swiglu_{seq_len}_{embedding_dim}_{hidden_dim}.onnx")
 
     # Build model and register both standard and custom domains
     model = helper.make_model(
@@ -160,7 +186,7 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
         ],
         producer_name="swiglu-generator",
         producer_version="1.0",
-        doc_string="SwigLU: left Gemm -> SiLU, right Gemm, then elementwise Mul and down proj Gemm.",
+        doc_string=doc_string,
     )
 
     # Attach the function definition to the model
@@ -170,7 +196,6 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
     inferred = shape_inference.infer_shapes(model)
 
     # Save
-    onnx_path = os.path.join(os.path.dirname(__file__), f"swiglu_{seq_len}_{embedding_dim}_{hidden_dim}.onnx")
     onnx.save(inferred, onnx_path)
     print(f"SWIGLU ONNX model created: {onnx_path}")
 

@@ -41,7 +41,7 @@ def determine_fusion_dimensions(workload: "Workload") -> dict[LayerDim, int]:
 
 
 def generate_steady_state_iteration_spaces(
-    workload: "Workload", mapping: "Mapping", fuse_dimensions: list[LayerDim]
+    workload: "Workload", mapping: "Mapping", fuse_dimensions: dict[LayerDim, int]
 ) -> dict["HasIterationSpace", SteadyStateIterationSpace]:
     spatial_unrollings, unique_spatial_unrollings = collect_spatial_unrollings(workload, mapping)
     iteration_variables = _create_spatial_iteration_variables(workload, spatial_unrollings, unique_spatial_unrollings)

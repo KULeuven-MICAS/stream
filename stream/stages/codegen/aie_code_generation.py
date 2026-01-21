@@ -21,7 +21,10 @@ from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping, NodeMapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
-from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
+from stream.workload.steady_state.iteration_space import (
+    IterationVariableType,
+    SteadyStateIterationSpace,
+)
 from stream.workload.workload import (
     ComputationNode,
     HasInputs,
@@ -123,7 +126,7 @@ class AIECodeGenerationStage(Stage):
 
         seen_dims = defaultdict(lambda: 1)
         for v in ssis.variables:
-            if v.relevant:
+            if v.relevant and v.type is not IterationVariableType.KERNEL:
                 sizes.insert(0, v.size)
                 stride = workload_strides[v.dimension]
                 # multiply the stride by previous iteration vars
@@ -272,12 +275,12 @@ class AIECodeGenerationStage(Stage):
 
         StreamSplitUnicastsPass().apply(self.context, module)
 
+        with open("test.mlir", "w") as f:
+            f.write(str(module))
+
         # SetNoReusePass().apply(self.context, module)
         # Split transfers in push and pull
         StreamSplitTransfersPass().apply(self.context, module)
-
-        with open("test.mlir", "w") as f:
-            f.write(str(module))
 
         # Arguments that will be supplied via runtime sequence, modify as needed
         # args = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]  # gemm

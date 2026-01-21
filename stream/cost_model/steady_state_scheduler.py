@@ -42,7 +42,7 @@ class SteadyStateScheduler:
         workload: Workload,
         accelerator: "Accelerator",
         mapping: Mapping,
-        tiled_dimensions: dict[str, tuple[int, int]],
+        fuse_dimensions: dict[LayerDim, int],
         cost_lut: CoreCostLUT,
         nb_cols_to_use: int = 4,
         output_path: str = "",
@@ -56,7 +56,7 @@ class SteadyStateScheduler:
         self.workload = workload  # Only contains nodes that are part of the current fusion stack
         self.accelerator = accelerator
         self.mapping = mapping
-        self.tiled_dimensions = tiled_dimensions
+        self.fuse_dimensions = fuse_dimensions
         self.cost_lut = cost_lut
         self.partitioned_nodes: dict[ComputationNode, list[SteadyStateComputation]] = {}
         self.constant_tensors: dict[int, InEdge | OutEdge] = {}
@@ -81,6 +81,8 @@ class SteadyStateScheduler:
         """
         # Update the workload graph to include transfer nodes
         ssw = self.build_transfer_graph()
+        # Update the fuse_dimensions based on the new workload with transfer nodes
+        self.fuse_dimensions = self.update_fuse_dimensions(ssw)
         # Save the new workload with transfers
         ssw.visualize(os.path.join(self.output_path, "tiled_workload_with_transfers.png"))
         # Update the mapping for the new workload graph
@@ -175,6 +177,24 @@ class SteadyStateScheduler:
         new_workload = Workload(new_nodes.values())
         return new_workload
 
+    def update_fuse_dimensions(self, new_workload: Workload) -> dict[LayerDim, int]:
+        # Update the fuse_dimensions based on the new workload with transfer nodes
+        updated_fuse_dimensions = {}
+        for dim, size in self.fuse_dimensions.items():
+            node_with_dim = None
+            for n in self.workload.get_computation_nodes():
+                if dim in self.workload.get_dims(n):
+                    node_with_dim = n
+                    break
+            assert node_with_dim is not None, f"Dimension {dim} not found in any computation node."
+            # Find the position of the dim in the old workload node
+            dim_idx = self.workload.get_dims(node_with_dim).index(dim)
+            # Find equivalent nod ein the new workload based on name
+            new_node = next(n for n in new_workload.get_computation_nodes() if n.name == node_with_dim.name)
+            new_dim = new_workload.get_dims(new_node)[dim_idx]
+            updated_fuse_dimensions[new_dim] = size
+        return updated_fuse_dimensions
+
     def update_mapping(self, new_workload: Workload):
         # Computation node replacement with new computation nodes
         old_nodes = {node.name: node for node in self.workload.get_computation_nodes()}
@@ -245,21 +265,12 @@ class SteadyStateScheduler:
         return transfer_outputs
 
     def generate_ssis(self, workload: Workload) -> dict[HasIterationSpace, SteadyStateIterationSpace]:
-        fuse_dimensions = self.generate_fuse_dimensions(workload)
         ssis = generate_steady_state_iteration_spaces(
             workload,
             self.mapping,
-            fuse_dimensions,
+            self.fuse_dimensions,
         )
         return ssis
-
-    def generate_fuse_dimensions(self, workload: Workload):
-        fuse_dimensions: dict[LayerDim, int] = {}
-        for node_name, (dim_idx, size) in self.tiled_dimensions.items():
-            node = next(n for n in workload.get_computation_nodes() if n.name == node_name)
-            dim = workload.get_dims(node)[dim_idx]
-            fuse_dimensions[dim] = size
-        return fuse_dimensions
 
     def get_updated_ssis(
         self, ssis: tuple[IterationVariable, ...], relevant_tensor_dims: list[int]
