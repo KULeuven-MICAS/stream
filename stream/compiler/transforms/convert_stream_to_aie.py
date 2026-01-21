@@ -813,7 +813,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
         assert isinstance(for_op, ForOp)
         for iter_var in relevant_reuse_iters:
             assert "layer_dim" in for_op.attributes
-            while for_op.attributes["layer_dim"] != StringAttr(iter_var.dimension.name):
+            while for_op.attributes["layer_dim"] != StringAttr(str(iter_var.dimension)):
                 for_op = for_op.parent_op()
                 assert isinstance(for_op, ForOp)
             i_arg = MuliOp(mult_val, for_op.body.block.args[0])
