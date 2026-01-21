@@ -106,7 +106,7 @@ def make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, 
     assert seq_len % 4 == 0, "seq_len must be divisible by 4 for this mapping"
 
     # Left and right Gemms specific mapping entries
-    inter_core_tiling_gemm = ["D0, 4"]
+    inter_core_tiling_gemm_left = ["D2, 4"]
     # intra_core_tiling_gemm = [
     #     f"C, {embedding_dim // k}",
     #     f"K, {hidden_dim // n}",
@@ -118,21 +118,22 @@ def make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, 
         "name": "Gemm_Left",
         "core_allocation": copy.deepcopy(compute_allocation_gemm_left),
         # "intra_core_tiling": copy.deepcopy(intra_core_tiling_gemm),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm),
+        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm_left),
         "kernel": copy.deepcopy(kernel_gemm),
     }
+    inter_core_tiling_gemm_right = ["D2, 4"]
     compute_allocation_gemm_right = [8, 9, 10, 11]
     gemm_right = {
         "name": "Gemm_Right",
         "core_allocation": copy.deepcopy(compute_allocation_gemm_right),
         # "intra_core_tiling": copy.deepcopy(intra_core_tiling_gemm),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm),
+        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm_right),
         "kernel": copy.deepcopy(kernel_gemm),
     }
 
     # SiLU specific mapping entries. SiLU uses SIMDParser which for two dims goes to (B, H)
     compute_allocation_silu = [14, 15, 16, 17]
-    inter_core_tiling_silu = ["D0, 4"]
+    inter_core_tiling_silu = ["D1, 4"]
     # intra_core_tiling_silu = [
     #     f"H, {hidden_dim // line_size}",
     #     f"B, {seq_len // 4}",
@@ -148,7 +149,7 @@ def make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, 
 
     # Elementwise Mul specific mapping entries
     compute_allocation_mul = [20, 21, 22, 23]
-    inter_core_tiling_mul = ["D0, 4"]
+    inter_core_tiling_mul = ["D1, 4"]
     # intra_core_tiling_mul = [
     #     f"H, {hidden_dim // line_size}",
     #     f"B, {seq_len // 4}",
@@ -163,12 +164,13 @@ def make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, 
     }
 
     # Final down projection Gemm
+    inter_core_tiling_gemm_down = ["D1, 4"]
     compute_allocation_gemm_down = [26, 27, 28, 29]
     gemm_down = {
         "name": "Gemm_Down",
         "core_allocation": copy.deepcopy(compute_allocation_gemm_down),
         # "intra_core_tiling": copy.deepcopy(intra_core_tiling_gemm),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm),
+        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm_down),
         "kernel": copy.deepcopy(kernel_gemm),
     }
 

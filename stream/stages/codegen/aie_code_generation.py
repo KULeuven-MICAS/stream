@@ -22,7 +22,6 @@ from stream.mapping.mapping import Mapping, NodeMapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
-from stream.workload.utils import generate_steady_state_iteration_spaces
 from stream.workload.workload import (
     ComputationNode,
     HasInputs,
@@ -268,11 +267,6 @@ class AIECodeGenerationStage(Stage):
         assert isinstance(mapping, Mapping)
 
         ssis_dict = self.ctx.get("scheduler").ssis
-
-        for node in workload.nodes:
-            print(node.name)
-            if node in ssis_dict:
-                print(ssis_dict[node])
 
         module = self.generate_steady_state_workload(workload, mapping, ssis_dict)
 
