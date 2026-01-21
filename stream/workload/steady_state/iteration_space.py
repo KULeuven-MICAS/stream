@@ -219,7 +219,11 @@ class SteadyStateIterationSpace:
         """
         Returns the shape of the relevant iteration space kept local in a memtile.
         """
-        spatial_shape = prod(iv.size for iv in self.variables if iv.spatial and iv.dimension in spatial_relevant)
+        spatial_shape = prod(
+            iv.size
+            for iv in self.variables
+            if iv.type is IterationVariableType.SPATIAL and iv.dimension in spatial_relevant
+        )
         spatial_shape = (spatial_shape,) if spatial_shape > 1 else ()
         temporal_shape = self.nb_local_tensors_mem()
         temporal_shape = (temporal_shape,) if temporal_shape > 1 else ()
@@ -315,7 +319,6 @@ class SteadyStateIterationSpace:
         Returns the list of reuses of temporal iteration variables.
         """
         return [iv.mem_tile_reuse for iv in self.get_temporal_variables()]
-
 
     # ..................................................................... #
     # ── Iteration / pretty printing                                         #
