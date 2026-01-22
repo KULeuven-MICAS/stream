@@ -36,7 +36,6 @@ class SplitTransferPattern(RewritePattern):
                 op.offsets,
                 op.sizes,
                 op.strides,
-                op.spatial_strides,
                 op.memtile,
             )
             ops_to_add.append(push)
@@ -47,22 +46,17 @@ class SplitTransferPattern(RewritePattern):
                         assert isinstance(input, OpResult)
                         if isinstance(input.op, TransferOp) and input.op.memtile == op.memtile:
                             self.channel_map[input.op] = channel
-                offsets = list(cast(tuple[int, ...], op.offsets.get_values()))
+                offsets = list(cast(tuple[int, ...], op.spatial_strides.get_values()))
                 if len(offsets) == 0:
                     offsets = [0]
-                mult = 1
-                for j in reversed(range(len(op.spatial_strides))):
-                    offsets[-1] += i * int(op.spatial_strides.get_values()[j]) * mult
-                    mult *= int(op.sizes.get_values()[j])
                 ops_to_add.append(
                     pull := PullOp(
                         op.outputs[0].type,
                         channel,
-                        op.ssis_dest.data,
-                        offsets,
+                        op.ssis.data,
+                        (offsets[i],),
                         op.sizes,
                         op.strides,
-                        op.spatial_strides,
                         op.memtile,
                     )
                 )

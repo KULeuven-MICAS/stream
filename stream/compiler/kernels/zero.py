@@ -13,24 +13,16 @@ from xdsl.dialects.func import CallOp
 from xdsl.irdl import Operation
 
 from stream.compiler.dialects.stream import ComputationNodeOp
-from stream.compiler.kernels.aie_kernel import AIEKernel, AIEKernelWithZeroing
+from stream.compiler.kernels.aie_kernel import AIEKernel
 
 
 @dataclass
-class MatVecKernel(AIEKernelWithZeroing):
+class MatVecKernel(AIEKernel, RequiresZeroing):
     element_type: AnyDenseElement
 
     @property
     def linkwith_name(self) -> str:
         return "mv.o"
-
-    @property
-    def zero_name(self) -> str:
-        return f"zero_vectorized_{self.element_type}"
-
-    def zero_type(self, op: ComputationNodeOp) -> FunctionType:
-        assert op.output is not None
-        return FunctionType.from_lists(inputs=[op.output.type], outputs=[])
 
     @property
     def function_name(self) -> str:

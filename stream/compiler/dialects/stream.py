@@ -115,14 +115,12 @@ class TransferOp(IRDLOperation):
     memtile = prop_def(Attribute)
 
     ssis = prop_def(SteadyStateIterationSpaceAttr)
-    ssis_dest = prop_def(SteadyStateIterationSpaceAttr)
 
     def __init__(  # noqa: PLR0913
         self,
         input: Sequence[SSAValue | Operation],
         result_types: Sequence[Attribute],
         ssis: SteadyStateIterationSpace,
-        ssis_dest: SteadyStateIterationSpace,
         offsets: DenseArrayBase | Sequence[int],
         sizes: DenseArrayBase | Sequence[int],
         strides: DenseArrayBase | Sequence[int],
@@ -142,7 +140,6 @@ class TransferOp(IRDLOperation):
             result_types=[result_types],
             properties={
                 "ssis": SteadyStateIterationSpaceAttr(ssis),
-                "ssis_dest": SteadyStateIterationSpaceAttr(ssis_dest),
                 "offsets": offsets,
                 "sizes": sizes,
                 "strides": strides,
@@ -154,7 +151,7 @@ class TransferOp(IRDLOperation):
     def get_relevant_output(self, spatial_vars: Sequence[tuple[LayerDim, int]]) -> SSAValue:
         result = 0
         mult = 1
-        for spat_var in self.ssis_dest.data.get_spatial_variables():
+        for spat_var in self.ssis.data.get_spatial_variables():
             if spat_var.relevant:
                 for dim, dim_val in spatial_vars:
                     if dim == spat_var.dimension:
@@ -187,7 +184,6 @@ class PushOp(IRDLOperation):
     offsets = prop_def(DenseArrayBase)
     sizes = prop_def(DenseArrayBase)
     strides = prop_def(DenseArrayBase)
-    spatial_strides = prop_def(DenseArrayBase)
     memtile = prop_def(Attribute)
 
     ssis = prop_def(SteadyStateIterationSpaceAttr)
@@ -200,7 +196,6 @@ class PushOp(IRDLOperation):
         offsets: DenseArrayBase | Sequence[int],
         sizes: DenseArrayBase | Sequence[int],
         strides: DenseArrayBase | Sequence[int],
-        spatial_strides: DenseArrayBase | Sequence[int],
         memtile: Attribute,
     ) -> None:
         if not isinstance(offsets, DenseArrayBase):
@@ -209,8 +204,6 @@ class PushOp(IRDLOperation):
             sizes = DenseArrayBase.create_dense_int(i64, sizes)
         if not isinstance(strides, DenseArrayBase):
             strides = DenseArrayBase.create_dense_int(i64, strides)
-        if not isinstance(spatial_strides, DenseArrayBase):
-            spatial_strides = DenseArrayBase.create_dense_int(i64, spatial_strides)
         super().__init__(
             operands=[
                 input,
@@ -221,7 +214,6 @@ class PushOp(IRDLOperation):
                 "offsets": offsets,
                 "sizes": sizes,
                 "strides": strides,
-                "spatial_strides": spatial_strides,
                 "memtile": memtile,
             },
         )
@@ -237,7 +229,6 @@ class PullOp(IRDLOperation):
     offsets = prop_def(DenseArrayBase)
     sizes = prop_def(DenseArrayBase)
     strides = prop_def(DenseArrayBase)
-    spatial_strides = prop_def(DenseArrayBase)
     memtile = prop_def(Attribute)
     operand = prop_def(IntegerAttr[IndexType])
 
@@ -251,7 +242,6 @@ class PullOp(IRDLOperation):
         offsets: DenseArrayBase | Sequence[int],
         sizes: DenseArrayBase | Sequence[int],
         strides: DenseArrayBase | Sequence[int],
-        spatial_strides: DenseArrayBase | Sequence[int],
         memtile: Attribute,
     ) -> None:
         if not isinstance(offsets, DenseArrayBase):
@@ -260,8 +250,6 @@ class PullOp(IRDLOperation):
             sizes = DenseArrayBase.create_dense_int(i64, sizes)
         if not isinstance(strides, DenseArrayBase):
             strides = DenseArrayBase.create_dense_int(i64, strides)
-        if not isinstance(spatial_strides, DenseArrayBase):
-            spatial_strides = DenseArrayBase.create_dense_int(i64, spatial_strides)
         super().__init__(
             operands=[channel],
             result_types=[result_type],
@@ -270,7 +258,6 @@ class PullOp(IRDLOperation):
                 "offsets": offsets,
                 "sizes": sizes,
                 "strides": strides,
-                "spatial_strides": spatial_strides,
                 "memtile": memtile,
             },
         )
