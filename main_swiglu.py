@@ -4,7 +4,7 @@ import os
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping_pipelined, make_swiglu_mapping_pipelined2
+from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping_pipelined2
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 
 _logging_level = _logging.INFO
@@ -35,8 +35,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down=last_gemm_down
     )
     if mapping_version == 1:
-        accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array.yaml")
-        mapping_path = make_swiglu_mapping_pipelined(seq_len, embedding_dim, hidden_dim, m, k, n, line_size)
+        raise NotImplementedError("Mapping version 1 is no longer supported.")
     elif mapping_version == 2:  # noqa: PLR2004
         accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
         mapping_path = make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, line_size)

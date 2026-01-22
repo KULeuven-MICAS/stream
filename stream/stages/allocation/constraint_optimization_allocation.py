@@ -27,7 +27,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         "accelerator",
         "mapping",
         "cost_lut",
-        "fuse_dimensions",
+        "fusion_splits",
         "output_path",
     )
 
@@ -40,7 +40,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.workload: Workload = self.ctx.get("workload")
         self.accelerator: Accelerator = self.ctx.get("accelerator")
         self.mapping: Mapping = self.ctx.get("mapping")
-        self.fuse_dimensions: dict[LayerDim, int] = self.ctx.get("fuse_dimensions")
+        self.fusion_splits: dict[LayerDim, int] = self.ctx.get("fusion_splits")
         self.cost_lut = self.ctx.get("cost_lut")
 
         config = self.ctx.get("constraint_opt_config")
@@ -70,7 +70,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             self.workload,
             self.accelerator,
             self.mapping,
-            self.fuse_dimensions,
+            self.fusion_splits,
             self.cost_lut,
             self.config.transfer.nb_cols_to_use,
             output_path,
