@@ -147,25 +147,14 @@ class SortPullPushOp:  # noqa: PLW1641 for no hash
         self.tile = tile_op_manager.get_tile(op)
 
     def __lt__(self, other: "SortPullPushOp") -> bool:
-        # Compare reversed spatial strides first
-        self_strides = list(reversed(self.op.spatial_strides.get_values()))
-        other_strides = list(reversed(other.op.spatial_strides.get_values()))
-
-        if self_strides != other_strides:
-            return self_strides < other_strides
-
-        # Then compare tile indices: first by row, then by column
-        self_col, self_row = self.tile.col.value.data, self.tile.row.value.data
-        other_col, other_row = other.tile.col.value.data, other.tile.row.value.data
-
-        return (self_row, self_col) < (other_row, other_col)
+        # TODO: this has changed from spatial strides to offsets, make sure this remains correct
+        return self.op.offsets.get_values()[-1] < other.op.offsets.get_values()[-1]
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, SortPullPushOp):
             return False
         return (
-            list(reversed(self.op.spatial_strides.get_values()))
-            == list(reversed(other.op.spatial_strides.get_values()))
+            list(reversed(self.op.offsets.get_values())) == list(reversed(other.op.offsets.get_values()))
             and self.tile == other.tile
         )
 
@@ -339,14 +328,12 @@ class ObjectFifoHop:
     @classmethod
     def shim_to_mem(cls, producer: PushOp, memtile: TileOp, tile_op_manager: TileOpManager, name_base: str) -> Self:
         assert isinstance(memref_type := producer.input.type, MemRefType)
-        spatial_relevant = [x.dimension for x in producer.ssis.data.get_spatial_variables() if x.relevant]
         object_fifo = ObjectFifoOp.from_referenced_type(
             elemNumber=(1 + cls.DB_EXTRA, 1 + cls.DB_EXTRA),
             producerTile=tile_op_manager.get_tile(producer),
             consumerTiles=[memtile],
             referenced_type=memref_type.get_element_type(),
-            shape=producer.ssis.data.shape_mem(spatial_relevant)[::-1]
-            + cast(tuple[int, ...], producer.sizes.get_values()),
+            shape=producer.ssis.data.shape_mem(),
             name=name_base + "mem",
             repeat_count=1,
         )
@@ -359,14 +346,12 @@ class ObjectFifoHop:
     @classmethod
     def mem_to_shim(cls, consumer: PullOp, memtile: TileOp, tile_op_manager: TileOpManager, name_base: str) -> Self:
         assert isinstance(memref_type := consumer.output.type, MemRefType)
-        spatial_relevant = [x.dimension for x in consumer.ssis.data.get_spatial_variables() if x.relevant]
         object_fifo = ObjectFifoOp.from_referenced_type(
             elemNumber=(1 + cls.DB_EXTRA, 1 + cls.DB_EXTRA),
             producerTile=memtile,
             consumerTiles=[tile_op_manager.get_tile(consumer)],
             referenced_type=memref_type.get_element_type(),
-            shape=consumer.ssis.data.shape_mem(spatial_relevant)[::-1]
-            + cast(tuple[int, ...], consumer.sizes.get_values()),
+            shape=consumer.ssis.data.shape_mem(),
             name=name_base + "mem",
         )
         del object_fifo.properties["repeat_count"]

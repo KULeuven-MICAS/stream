@@ -8,8 +8,10 @@ from collections.abc import Iterable, Sequence
 from enum import Enum, Flag, auto
 from math import prod
 
-from zigzag.datatypes import LayerDim, LayerOperand
+from zigzag.datatypes import LayerOperand
 from zigzag.workload.layer_node import LoopRelevancyInfo
+
+from stream.datatypes import LayerDim
 
 
 class ComputeTileReuse(Flag):
@@ -215,27 +217,20 @@ class SteadyStateIterationSpace:
         """Total elements/bits in *one* slice (product of *all* loop sizes)."""
         return prod(v.size for v in self.variables) if self.variables else 1
 
-    def shape_mem(self, spatial_relevant: Sequence[LayerDim]) -> tuple[int, ...]:
+    def shape_mem(self) -> tuple[int, ...]:
         """
         Returns the shape of the relevant iteration space kept local in a memtile.
+        Kernel dimensions may be misordered.
         """
-        spatial_shape = prod(
-            iv.size
-            for iv in self.variables
-            if iv.type is IterationVariableType.SPATIAL and iv.dimension in spatial_relevant
-        )
-        spatial_shape = (spatial_shape,) if spatial_shape > 1 else ()
-        temporal_shape = self.nb_local_tensors_mem()
-        temporal_shape = (temporal_shape,) if temporal_shape > 1 else ()
-        if len(spatial_shape) > 0 and len(temporal_shape) > 0:
-            warnings.warn(
-                "Both spatial and temporal shapes have more than one dimension. "
-                "This mixes temporal reuse / distribute, which seems to be unsupported. "
-                "Skipping the temporal shape for now, will break if reuse factor > 1.",
-                stacklevel=1,
-            )
-            return spatial_shape
-        return temporal_shape + spatial_shape
+        # start with transfer type: kernel + spatial dims
+        shape = tuple(var.size for var in (*self.get_kernel_variables(), *self.get_spatial_variables()) if var.relevant)
+        # add dims reused in memtile
+        local_tensors = self.nb_local_tensors_mem()
+        if local_tensors != 1:
+            shape = (local_tensors,) + shape
+        # reverse order
+        shape = shape[::-1]
+        return shape
 
     def reuse_factor_compute(self) -> int:
         """

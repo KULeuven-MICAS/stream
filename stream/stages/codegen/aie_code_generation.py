@@ -1,6 +1,7 @@
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from itertools import accumulate, product
+from math import prod
 from operator import mul
 
 from snaxc.dialects.snax import NoneAttr
@@ -22,6 +23,7 @@ from stream.mapping.mapping import Mapping, NodeMapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.iteration_space import (
+    IterationVariable,
     IterationVariableType,
     SteadyStateIterationSpace,
 )
@@ -83,58 +85,74 @@ class AIECodeGenerationStage(Stage):
         """
         Create a TransferOp for a given SteadyStateTransfer.
         """
+        # The final transfer (pointing to an OutEdgeOp) requires special treatment
+        is_out_transfer = any(isinstance(user, OutEdge) for user in workload.successors(node))
+
         # Get source and dest and convert to string for TransferOp creation which uses string
         # source = transfer.srcs[0]
         workload_strides = workload.strides_for_tensor(node.outputs[0])
 
-        result_types = []
-        spatial_strides = []
-        shape = workload.get_tensor_shape_of_transfer_to_single_core(node.outputs[0], node, full_mapping)
-        result_type = MemRefType(node.outputs[0].operand_type, shape)
-        # TODO: this only works for max 1 spatial stride
-        # copy something like for computation node
-        # TODO: this should be ssis_dest, (which should be None for an edge op)
-        full_size = None
-        min_size = None
+        # To determine transfer type, iterate over kernel ssis vars
+        transfer_shape = [0] * len(node.outputs[0].shape)
+        for kernel_var in ssis.get_kernel_variables():
+            for i, stride in enumerate(workload_strides[kernel_var.dimension]):
+                transfer_shape[i] += stride * kernel_var.size
 
-        for spat_stride in ssis.get_spatial_variables():
-            if spat_stride.relevant:
-                result_types.extend((result_type,) * spat_stride.size)
-                spatial_strides.append(workload_strides[spat_stride.dimension])
-        if len(result_types) == 0:
-            result_types = (result_type,)
-        if any(isinstance(user, OutEdge) for user in workload.successors(node)):
-            result_types = node.outputs[0].subview.source.type
-            assert isinstance(inputs[0], ComputationNodeOp)
-            assert inputs[0].result is not None
-            assert isinstance(inputs[0].result.type, MemRefType)
-            shape = inputs[0].result.type.get_shape()
-
-        offsets = []
-        sizes = []
-        strides = []
-
+        # Gather shape multiplier for determining element stride in row-major layout:
         def reverse_cumprod(t):
             return tuple(reversed(list(accumulate(reversed(t), mul, initial=1))[:-1]))
 
         assert isinstance(node.outputs[0].subview.source.type, MemRefType)
         shape_multiplier = reverse_cumprod(node.outputs[0].subview.source.type.get_shape())
 
-        # start by adding the shape of the destination
-        sizes.extend(shape)
-        strides.extend(shape_multiplier)
+        # To determine the number of (spatially) parallel transfers, iterate over spatial ssis vars
+        relevant_spat_vars = [v for v in ssis.get_spatial_variables() if v.relevant]
+        num_spat_results = prod(v.size for v in relevant_spat_vars)
 
+        # Determine the output type based on this:
+        if is_out_transfer:
+            result_type = node.outputs[0].subview.source.type
+            result_types = (result_type,)
+        else:
+            result_type = MemRefType(node.outputs[0].operand_type, transfer_shape)
+            # Unroll spatial results: [(s0, 4), (s1, 4)] should give a 4x4 array of results = 16 results
+            result_types = (result_type,) * num_spat_results
+
+        # Determine the spatial strides for this transfer:
+        # Spatial strides are simply determined in a linear fashion, each time prgressing
+        # the number of elements that one transfer type takes.
+        transfer_elements = prod(transfer_shape)
+        spatial_strides = tuple(range(0, transfer_elements * num_spat_results, transfer_elements))
+
+        # Determine the temporal strides for this transfer:
         seen_dims = defaultdict(lambda: 1)
-        for v in ssis.variables:
-            if v.relevant and v.type is not IterationVariableType.KERNEL:
-                sizes.insert(0, v.size)
-                stride = workload_strides[v.dimension]
-                # multiply the stride by previous iteration vars
-                stride = tuple(seen_dims[v.dimension] * x for x in stride)
-                seen_dims[v.dimension] *= v.size
-                # convert stride to int:
-                stride = sum(x * y for (x, y) in zip(stride, shape_multiplier, strict=True))
-                strides.insert(0, stride)
+        # this assumes that each resulting tile after tiling to be in row-major layout
+        # this could probably benefit from a more holistic view of layout transformation
+
+        all_vars: Sequence[IterationVariable] = []
+        # First, iterate over kenrel dimensions in row-major order:
+        kernel_var_dict = {v.dimension: v for v in ssis.get_kernel_variables()}
+        filtered_vars = [(dim, strides) for dim, strides in workload_strides.items() if any(strides)]
+        ordered_strides = sorted(filtered_vars, key=lambda x: x[1])
+        all_vars.extend(kernel_var_dict[dim] for dim, _ in ordered_strides)
+        # Then, iterate over spatial and temporal strides in their designated order
+        all_vars.extend(var for var in (*ssis.get_spatial_variables(), *ssis.get_temporal_variables()) if var.relevant)
+
+        # I dont' think offsets are relevant anymore with the new representation
+        offsets = [0]
+
+        # Construct sizes and strides
+        sizes = []
+        strides = []
+        for var in all_vars:
+            sizes.insert(0, var.size)
+            stride = workload_strides[var.dimension]
+            # multiply the stride by previous iteration vars
+            stride = tuple(seen_dims[var.dimension] * x for x in stride)
+            seen_dims[var.dimension] *= var.size
+            # convert stride to int (assumes dram row-major layout):
+            stride = sum(x * y for (x, y) in zip(stride, shape_multiplier, strict=True))
+            strides.insert(0, stride)
 
         sizes, strides = canonicalize_transformation(sizes, strides)
 
@@ -146,26 +164,9 @@ class AIECodeGenerationStage(Stage):
         else:
             memtile = NoneAttr()
 
-        # Convert strides to integers:
-        def strides_to_int(strides: Sequence[int], shape: Sequence[int]):
-            result = 0
-            mult = 1
-            for stride, size in zip(reversed(strides), reversed(shape), strict=True):
-                result += stride * mult
-                mult *= size
-            return result
-
-        # somehow, get the shape of the input for now, take shape of first output
-        shape = node.outputs[0].shape
-        if len(spatial_strides) > 0:
-            spatial_strides = list(map(lambda x: strides_to_int(x, shape), spatial_strides))
-        else:
-            spatial_strides = [0]
-
         op = TransferOp(
             inputs,
             result_types,
-            ssis,
             ssis,
             offsets,
             sizes,
@@ -274,13 +275,15 @@ class AIECodeGenerationStage(Stage):
         module = self.generate_steady_state_workload(workload, mapping, ssis_dict)
 
         StreamSplitUnicastsPass().apply(self.context, module)
-
         with open("test.mlir", "w") as f:
             f.write(str(module))
 
         # SetNoReusePass().apply(self.context, module)
         # Split transfers in push and pull
         StreamSplitTransfersPass().apply(self.context, module)
+
+        with open("test2.mlir", "w") as f:
+            f.write(str(module))
 
         # Arguments that will be supplied via runtime sequence, modify as needed
         # args = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]  # gemm

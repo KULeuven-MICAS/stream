@@ -35,7 +35,6 @@ class SplitUnicastsPattern(RewritePattern):
                 (input,),
                 (result_type,),
                 op.ssis.data,
-                op.ssis_dest.data,
                 op.offsets,
                 op.sizes,
                 op.strides,
