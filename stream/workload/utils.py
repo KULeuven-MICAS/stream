@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from stream.workload.workload import ComputationNode, HasIterationSpace, TransferNode, Workload
 
 
-def determine_fusion_dimensions(workload: "Workload") -> dict[LayerDim, int]:
+def determine_fusion_splits(workload: "Workload", mapping: "Mapping") -> dict[LayerDim, int]:
     """
     Determine the best dimension to fuse the layers on.
     Currently, we fuse on the dimension with the smallest total size across all layers.
@@ -30,22 +30,44 @@ def determine_fusion_dimensions(workload: "Workload") -> dict[LayerDim, int]:
                 dim_occurrence_count[LayerDim(dim)] += 1
     max_dim_count = max(dim_occurrence_count.values())
     max_dims = tuple(k for k, v in dim_occurrence_count.items() if v == max_dim_count)
-    for max_dim in max_dims:
-        assert dim_occurrence_count[max_dim] == len(workload.get_computation_nodes()), (
-            "Not all layers share the same dimension for fusion."
+    # Go through the defined mapping intra_core_tiling dims and check that they occur for all layers
+    assert len(mapping.fused_groups) == 1, "Only single fused group mappings are supported currently."
+    fused_group = mapping.fused_groups[0]
+    _, unique_spatial_unrollings = collect_spatial_unrollings(workload, mapping)
+    unique_unrollings_dict = dict(unique_spatial_unrollings)
+    result = {}
+    for dim, tile_size in fused_group.intra_core_tiling:
+        assert dim in max_dims, f"Fused group intra_core_tiling dimension {dim} not present for all layers."
+        nb_splits, rem = divmod(workload.get_dimension_size(dim), int(tile_size * unique_unrollings_dict.get(dim, 1)))
+        assert rem == 0, (
+            f"Dimension size {workload.get_dimension_size(dim)} not divisible by "
+            f"desired tile size {tile_size * unique_unrollings_dict.get(dim, 1)}"
         )
-    return {
-        max_dims[0]: workload.get_dimension_size(max_dims[0]),
-        max_dims[1]: 16,  # fixed for testing
-    }
+        result[dim] = nb_splits
+    return result
+
+
+def get_equivalent_dimension(old_workload: "Workload", new_workload: "Workload", dim: LayerDim):
+    node_with_dim = None
+    for n in old_workload.get_computation_nodes():
+        if dim in old_workload.get_dims(n):
+            node_with_dim = n
+            break
+    assert node_with_dim is not None, f"Dimension {dim} not found in any computation node."
+    # Find the position of the dim in the old workload node
+    dim_idx = old_workload.get_dims(node_with_dim).index(dim)
+    # Find equivalent nod ein the new workload based on name
+    new_node = next(n for n in new_workload.get_computation_nodes() if n.name == node_with_dim.name)
+    new_dim = new_workload.get_dims(new_node)[dim_idx]
+    return new_dim
 
 
 def generate_steady_state_iteration_spaces(
-    workload: "Workload", mapping: "Mapping", fuse_dimensions: dict[LayerDim, int]
+    workload: "Workload", mapping: "Mapping", split_factors: dict[LayerDim, int]
 ) -> dict["HasIterationSpace", SteadyStateIterationSpace]:
     spatial_unrollings, unique_spatial_unrollings = collect_spatial_unrollings(workload, mapping)
     iteration_variables = _create_spatial_iteration_variables(workload, spatial_unrollings, unique_spatial_unrollings)
-    temporal_unrollings = _derive_temporal_unrollings(workload, unique_spatial_unrollings, fuse_dimensions)
+    temporal_unrollings = _derive_temporal_unrollings(workload, unique_spatial_unrollings, split_factors)
     iteration_variables = _add_temporal_iteration_variables(iteration_variables, temporal_unrollings, workload)
     iteration_variables = _insert_kernel_iteration_variables(iteration_variables, workload, unique_spatial_unrollings)
     ssis_dict = _create_steady_state_iteration_spaces(iteration_variables, workload)
@@ -75,22 +97,15 @@ def _add_temporal_iteration_variables(
     return iteration_variables
 
 
-def _derive_temporal_unrollings(workload: "Workload", unique_spatial_unrollings, fuse_dimensions: dict[LayerDim, int]):
+def _derive_temporal_unrollings(workload: "Workload", unique_spatial_unrollings, fusion_splits: dict[LayerDim, int]):
     """Iterate through the unique workload dimensions and get temporal unrollings"""
     temporal_unrollings: list[tuple[LayerDim, int]] = []  # list because order matters
     unique_dims, _ = workload.unique_dimensions()
     for dim in unique_dims:  # iterate in different order here if needed
-        if dim not in fuse_dimensions:
+        if dim not in fusion_splits:
             size = 1
         else:
-            size, rem = divmod(
-                fuse_dimensions[dim],
-                _get_total_spatial_unrolling_for_dim(dim, unique_spatial_unrollings),
-            )
-            assert rem == 0, (
-                f"Dimension size {fuse_dimensions[dim]} not divisible by spatial unrolling "
-                f"{_get_total_spatial_unrolling_for_dim(dim, unique_spatial_unrollings)}"
-            )
+            size = fusion_splits[dim]
         temporal_unrollings.append((dim, size))
     return temporal_unrollings
 

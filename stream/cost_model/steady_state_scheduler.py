@@ -32,7 +32,7 @@ from stream.workload.node import (
 )
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.iteration_space import IterationVariable, SteadyStateIterationSpace
-from stream.workload.utils import generate_steady_state_iteration_spaces
+from stream.workload.utils import generate_steady_state_iteration_spaces, get_equivalent_dimension
 from stream.workload.workload import Workload
 
 
@@ -42,7 +42,7 @@ class SteadyStateScheduler:
         workload: Workload,
         accelerator: "Accelerator",
         mapping: Mapping,
-        fuse_dimensions: dict[LayerDim, int],
+        fusion_splits: dict[LayerDim, int],
         cost_lut: CoreCostLUT,
         nb_cols_to_use: int = 4,
         output_path: str = "",
@@ -56,7 +56,7 @@ class SteadyStateScheduler:
         self.workload = workload  # Only contains nodes that are part of the current fusion stack
         self.accelerator = accelerator
         self.mapping = mapping
-        self.fuse_dimensions = fuse_dimensions
+        self.fusion_splits = fusion_splits
         self.cost_lut = cost_lut
         self.partitioned_nodes: dict[ComputationNode, list[SteadyStateComputation]] = {}
         self.constant_tensors: dict[int, InEdge | OutEdge] = {}
@@ -81,8 +81,8 @@ class SteadyStateScheduler:
         """
         # Update the workload graph to include transfer nodes
         ssw = self.build_transfer_graph()
-        # Update the fuse_dimensions based on the new workload with transfer nodes
-        self.fuse_dimensions = self.update_fuse_dimensions(ssw)
+        # Update the fusion_splits based on the new workload with transfer nodes
+        self.fusion_splits = self.update_fusion_splits(ssw)
         # Save the new workload with transfers
         ssw.visualize(os.path.join(self.output_path, "tiled_workload_with_transfers.png"))
         # Update the mapping for the new workload graph
@@ -177,23 +177,13 @@ class SteadyStateScheduler:
         new_workload = Workload(new_nodes.values())
         return new_workload
 
-    def update_fuse_dimensions(self, new_workload: Workload) -> dict[LayerDim, int]:
-        # Update the fuse_dimensions based on the new workload with transfer nodes
-        updated_fuse_dimensions = {}
-        for dim, size in self.fuse_dimensions.items():
-            node_with_dim = None
-            for n in self.workload.get_computation_nodes():
-                if dim in self.workload.get_dims(n):
-                    node_with_dim = n
-                    break
-            assert node_with_dim is not None, f"Dimension {dim} not found in any computation node."
-            # Find the position of the dim in the old workload node
-            dim_idx = self.workload.get_dims(node_with_dim).index(dim)
-            # Find equivalent nod ein the new workload based on name
-            new_node = next(n for n in new_workload.get_computation_nodes() if n.name == node_with_dim.name)
-            new_dim = new_workload.get_dims(new_node)[dim_idx]
-            updated_fuse_dimensions[new_dim] = size
-        return updated_fuse_dimensions
+    def update_fusion_splits(self, new_workload: Workload) -> dict[LayerDim, int]:
+        # Update the fusion_splits based on the new workload with transfer nodes
+        updated_fusion_splits = {}
+        for dim, size in self.fusion_splits.items():
+            new_dim = get_equivalent_dimension(self.workload, new_workload, dim)
+            updated_fusion_splits[new_dim] = size
+        return updated_fusion_splits
 
     def update_mapping(self, new_workload: Workload):
         # Computation node replacement with new computation nodes
@@ -209,7 +199,7 @@ class SteadyStateScheduler:
             src = cast(HasOutputs, list(new_workload.predecessors(node))[0])
             dsts = tuple(cast(HasInputs, n) for n in new_workload.successors(node))
             self.update_mapping_for_transfer(node, src, dsts)
-        return self.mapping
+        return self.mapping.with_updated_workload(new_workload, self.workload)  # updates FusedGroups
 
     def update_mapping_with_allocations(
         self,
@@ -268,7 +258,7 @@ class SteadyStateScheduler:
         ssis = generate_steady_state_iteration_spaces(
             workload,
             self.mapping,
-            self.fuse_dimensions,
+            self.fusion_splits,
         )
         return ssis
 

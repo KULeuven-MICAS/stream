@@ -5,12 +5,29 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from stream.compiler.kernels.aie_kernel import AIEKernel
-from stream.datatypes import InterCoreTiling
+from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
+from stream.workload.utils import get_equivalent_dimension
 from stream.workload.workload import Node, Workload
 
 Resource = Core | tuple[CommunicationLink, ...]
+
+
+@dataclass(slots=True)
+class FusedGroup:
+    name: str
+    layers: tuple[str, ...] = field(default_factory=tuple)
+    intra_core_tiling: tuple[tuple[LayerDim, int], ...] = field(default_factory=tuple)
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise ValueError("FusedGroup name must be provided")
+        for dim, tile in self.intra_core_tiling:
+            if not isinstance(dim, LayerDim) or not dim:
+                raise TypeError("intra_core_tiling dim must be a non-empty string")
+            if not isinstance(tile, int) or tile <= 0:
+                raise ValueError(f"Tile for '{dim}' must be a positive int, got {tile!r}.")
 
 
 @dataclass(slots=True)
@@ -45,8 +62,16 @@ class NodeMapping:
 class Mapping:
     """Holds per-Node mapping information across multiple layers."""
 
-    def __init__(self, initial: dict[Node, NodeMapping] | None = None) -> None:
+    def __init__(
+        self,
+        initial: dict[Node, NodeMapping] | None = None,
+        fused_groups: Iterable[FusedGroup] | None = None,
+    ) -> None:
         self._by_node: dict[Node, NodeMapping] = {}
+        self._fused_groups: tuple[FusedGroup, ...] = tuple(fused_groups or ())
+        for fused_group in self._fused_groups:
+            if not isinstance(fused_group, FusedGroup):
+                raise TypeError("fused_groups must contain FusedGroup instances")
         if initial:
             for node, layer_mapping in initial.items():
                 self.set(node, layer_mapping)
@@ -55,7 +80,7 @@ class Mapping:
         if node is None:
             raise ValueError("node must not be None")
         if not isinstance(layer_mapping, NodeMapping):
-            raise TypeError("layer_mapping must be a LayerMapping instance")
+            raise TypeError("layer_mapping must be a NodeMapping instance")
         self._by_node[node] = layer_mapping
 
     def set_for_node(
@@ -127,7 +152,7 @@ class Mapping:
             }
         return out
 
-    def with_updated_workload(self, workload: Workload) -> Mapping:
+    def with_updated_workload(self, new_workload: Workload, old_workload: Workload) -> Mapping:
         """Return a new Mapping instance with the same LayerMappings but updated to a new Workload.
         This is useful when the Workload has been modified (e.g., tiled) and we want to keep the same
         mapping information.
@@ -139,8 +164,25 @@ class Mapping:
         Returns:
             Mapping: A new Mapping instance with updated workload reference.
         """
-        new_mapping = Mapping()
+        # Update the fused_groups to reference the new workload's dimension names
+        new_fused_groups = []
+        for fused_group in self.fused_groups:
+            new_tilings = []
+            for dim, tile in fused_group.intra_core_tiling:
+                new_dim = get_equivalent_dimension(old_workload, new_workload, dim)
+                new_tilings.append((new_dim, tile))
+                new_fused_group = FusedGroup(
+                    name=fused_group.name,
+                    layers=fused_group.layers,
+                    intra_core_tiling=tuple(new_tilings),
+                )
+            new_fused_groups.append(new_fused_group)
+        new_mapping = Mapping(fused_groups=new_fused_groups)
         for node in self.nodes():
-            updated_node = workload.get_node_by_name(node.name)
+            updated_node = new_workload.get_node_by_name(node.name)
             new_mapping.set(updated_node, self.get(node))
         return new_mapping
+
+    @property
+    def fused_groups(self) -> tuple[FusedGroup, ...]:
+        return self._fused_groups
