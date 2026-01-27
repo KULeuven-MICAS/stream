@@ -16,7 +16,7 @@ _K_PATHS_PER_TERMINAL = 4  # k in k-shortest
 _BEAM_WIDTH = 8  # B in beam search
 _MAX_ALLOCATIONS_PER_MEETING = 2
 _MAX_MEETINGS = 8
-_MAX_POSSIBLE_ALLOCATIONS = 4
+_MAX_POSSIBLE_ALLOCATIONS = 6
 
 
 def _path_edges(path: list) -> list[tuple]:
