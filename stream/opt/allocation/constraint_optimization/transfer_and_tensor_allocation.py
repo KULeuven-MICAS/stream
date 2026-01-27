@@ -851,7 +851,7 @@ class TransferAndTensorAllocator:
                     flag = MemTileReuse.REUSE
                 else:
                     flag = MemTileReuse.NO_REUSE
-                iter_var.mem_tile_reuse |= flag  # append the memory reuse flag
+                iter_var.mem_tile_reuse = flag  # append the memory reuse flag
         # # Print the updated reuse levels for debugging
         # for tr in self.transfer_nodes:
         #     compute_stop = compute_tile_reuse_levels.get(tr, -1)
