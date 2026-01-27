@@ -3,9 +3,8 @@
 # --------------------------------------------------------------------------- #
 from __future__ import annotations
 
-import warnings
-from collections.abc import Iterable, Sequence
-from enum import Enum, Flag, auto
+from collections.abc import Iterable
+from enum import Enum, auto
 from math import prod
 
 from zigzag.datatypes import LayerOperand
@@ -14,13 +13,13 @@ from zigzag.workload.layer_node import LoopRelevancyInfo
 from stream.datatypes import LayerDim
 
 
-class ComputeTileReuse(Flag):
+class ComputeTileReuse(Enum):
     NOT_SET = auto()
     REUSE = auto()
     NO_REUSE = auto()
 
 
-class MemTileReuse(Flag):
+class MemTileReuse(Enum):
     NOT_SET = auto()
     REUSE = auto()
     NO_REUSE = auto()
@@ -67,7 +66,7 @@ class IterationVariable:
 
     # ---------- nice aliases ------------------------------------------------
     def __iter__(self):
-        yield from (self.dimension, self.size, self.relevant, self.compute_tile_reuse, self.type)
+        yield from (self.dimension, self.size, self.relevant, self.compute_tile_reuse, self.mem_tile_reuse, self.type)
 
     def __repr__(self):
         if self.type == IterationVariableType.SPATIAL:
@@ -92,7 +91,7 @@ class IterationVariable:
         )
 
     def __hash__(self):
-        return hash((self.dimension, self.size, self.relevant, self.compute_tile_reuse, self.type))
+        return hash((self.dimension, self.size, self.relevant, self.compute_tile_reuse, self.mem_tile_reuse, self.type))
 
     # Getter and setter for compute and mem tile reuse attribute
     @property
