@@ -238,7 +238,7 @@ class SteadyStateIterationSpace:
         return prod(
             iv.size
             for iv in self.get_temporal_variables()
-            if not iv.relevant and ComputeTileReuse.REUSE in iv.compute_tile_reuse
+            if not iv.relevant and iv.compute_tile_reuse == ComputeTileReuse.REUSE
         )
 
     def nb_local_tensors_compute(self) -> int:
@@ -248,7 +248,7 @@ class SteadyStateIterationSpace:
         return prod(
             iv.size
             for iv in self.get_temporal_variables()
-            if iv.relevant and ComputeTileReuse.REUSE in iv.compute_tile_reuse
+            if iv.relevant and iv.compute_tile_reuse == ComputeTileReuse.REUSE
         )
 
     def nb_local_tensors_mem(self) -> int:
@@ -256,7 +256,7 @@ class SteadyStateIterationSpace:
         Returns the number of tensors that are kept local in a mem tile.
         """
         return prod(
-            iv.size for iv in self.get_temporal_variables() if iv.relevant and MemTileReuse.REUSE in iv.mem_tile_reuse
+            iv.size for iv in self.get_temporal_variables() if iv.relevant and iv.mem_tile_reuse == MemTileReuse.REUSE
         )
 
     def reuse_factor_mem(self) -> int:
@@ -267,7 +267,7 @@ class SteadyStateIterationSpace:
             prod(
                 iv.size
                 for iv in self.get_temporal_variables()
-                if not iv.relevant and MemTileReuse.REUSE in iv.mem_tile_reuse
+                if not iv.relevant and iv.mem_tile_reuse == MemTileReuse.REUSE
             )
             // self.reuse_factor_compute()
         )

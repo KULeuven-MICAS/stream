@@ -613,11 +613,11 @@ class TransferToRuntimeSequence(RewritePattern):
 
         arg_index = self.arg_order.index(edge.tensor.data)
         arg = runtime_sequence.body.block.args[arg_index]
+        assert isinstance(arg.type, MemRefType)
 
         # offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
-        sizes = cast(tuple[int, ...], op.sizes.get_values()[-4:])
-        strides = cast(tuple[int, ...], op.strides.get_values()[-4:])
-        assert isinstance(arg.type, MemRefType)
+        # sizes = cast(tuple[int, ...], op.sizes.get_values()[-4:])
+        # strides = cast(tuple[int, ...], op.strides.get_values()[-4:])
 
         # assume default layout here:
         # static_strides = []
@@ -628,8 +628,8 @@ class TransferToRuntimeSequence(RewritePattern):
         #     total_offset += current_stride * offset
         #     current_stride *= shape
 
-        static_sizes = list(sizes)
-        static_strides = list(strides)
+        static_sizes = cast(list[int], list(op.sizes.get_values()))
+        static_strides = cast(list[int], list(op.strides.get_values()))
 
         static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
 
@@ -662,7 +662,7 @@ class TransferToRuntimeSequence(RewritePattern):
         # canonicalize transformation
         # if i were to re-enable this, make sure iteration strides are also included
         # static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
-        MAX_STATIC_SIZE_LEN = 4
+        MAX_STATIC_SIZE_LEN = 5
         if len(static_sizes) > MAX_STATIC_SIZE_LEN:
             raise RuntimeError()
         if len(static_sizes) == MAX_STATIC_SIZE_LEN:
@@ -758,7 +758,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
             (
                 iv
                 for iv in op.ssis.data.get_temporal_variables()[::-1]
-                if ComputeTileReuse.REUSE in iv.compute_tile_reuse
+                if iv.compute_tile_reuse == ComputeTileReuse.REUSE
             ),
             None,
         )

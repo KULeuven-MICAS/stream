@@ -24,6 +24,7 @@ from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.iteration_space import (
     IterationVariable,
+    MemTileReuse,
     SteadyStateIterationSpace,
 )
 from stream.workload.workload import (
@@ -134,8 +135,13 @@ class AIECodeGenerationStage(Stage):
         filtered_vars = [(dim, strides) for dim, strides in workload_strides.items() if any(strides)]
         ordered_strides = sorted(filtered_vars, key=lambda x: x[1])
         all_vars.extend(kernel_var_dict[dim] for dim, _ in ordered_strides)
-        # Then, iterate over spatial and temporal strides in their designated order
-        all_vars.extend(var for var in (*ssis.get_spatial_variables(), *ssis.get_temporal_variables()) if var.relevant)
+        # Then, iterate over relevant spatial vars:
+        all_vars.extend(var for var in ssis.get_spatial_variables() if var.relevant)
+        # After that, go over the temporal strides (both relevant and irellevant)
+        # that aren't kept local in memtiles.
+        all_vars.extend(
+            var for var in ssis.get_temporal_variables() if var.relevant or var.mem_tile_reuse != MemTileReuse.REUSE
+        )
 
         # I dont' think offsets are relevant anymore with the new representation
         offsets = [0]
