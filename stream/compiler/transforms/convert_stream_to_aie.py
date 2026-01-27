@@ -162,7 +162,7 @@ class SortPullPushOp:  # noqa: PLW1641 for no hash
 @dataclass
 class ObjectFifoHop:
     fifos: list[ObjectFifoOp]
-    DB_EXTRA: int = 1  # 1 for double buffering, 0 for no DB
+    DB_EXTRA: int = 0  # 1 for double buffering, 0 for no DB
 
     @property
     def fifo(self) -> ObjectFifoOp:
@@ -617,9 +617,7 @@ class TransferToRuntimeSequence(RewritePattern):
         # offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
         sizes = cast(tuple[int, ...], op.sizes.get_values()[-4:])
         strides = cast(tuple[int, ...], op.strides.get_values()[-4:])
-        offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
         assert isinstance(arg.type, MemRefType)
-        shapes = tuple(x.data for x in arg.type.shape)[-4:]
 
         # assume default layout here:
         # static_strides = []
@@ -649,7 +647,8 @@ class TransferToRuntimeSequence(RewritePattern):
         #         if str(iter_var.dimension) in loop_dimensions:
         #             index = loop_dimensions.index(str(iter_var.dimension))
         #             temporal_stride = op.strides.get_values()[index] if not iter_var.spatial else 1
-        #             stride = prod(memref_type.get_shape()[index + 1 :]) * op.sizes.get_values()[index] * temporal_stride
+        #             stride = prod(memref_type.get_shape()[index + 1 :]) *
+        #                       op.sizes.get_values()[index] * temporal_stride
         #             # stride = prod(op.sizes.get_values()[index:])
         #             assert isinstance(stride, int)
         #         else:
