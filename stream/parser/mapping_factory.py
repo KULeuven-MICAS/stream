@@ -1,24 +1,31 @@
 import inspect
 from typing import Any
 
+from xdsl.context import Context
+from xdsl.dialects.builtin import AffineMapAttr
+from xdsl.ir.affine import AffineMap
+from xdsl.parser import Parser
+
 from stream.compiler.kernels import AIEKernels
 from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import FusedGroup, Mapping, NodeMapping
-from stream.workload.workload import ComputationNode, Workload
+from stream.workload.node import OutEdge
+from stream.workload.workload import ComputationNode, InEdge, Workload
 
 
 class MappingFactory:
     def __init__(self, mapping_data: dict[str, Any], workload: Workload, accelerator: Accelerator):
         self.layers_data: list[dict[str, Any]] = mapping_data.get("layers", [])
         self.fused_groups_data: list[dict[str, Any]] = mapping_data.get("fused_groups", [])
+        self.runtime_args_data: dict[str, str] = mapping_data.get("runtime_args", {})
         self.workload = workload
         self.accelerator = accelerator
 
     def create(self) -> Mapping:
-        mapping = Mapping(fused_groups=self.create_fused_groups())
+        mapping = Mapping(fused_groups=self.create_fused_groups(), runtime_args=self.create_runtime_args())
         # For each computation node in the graph set up mapping attributes
         for cn in self.workload.get_computation_nodes():
             mapping_data = self.get_mapping_data_for_node(cn)
@@ -104,3 +111,35 @@ class MappingFactory:
         dim = self.workload.get_dims(node)[dim_idx]
         assert isinstance(dim, LayerDim), f"Dimension at index {dim_idx} of node {node_name} is not a LayerDim."
         return dim, int(entry["tile"])
+
+    def create_runtime_args(self) -> dict[str, str]:
+        runtime_args = {}
+        for tensor_name, args in self.runtime_args_data.items():
+            if not isinstance(args, dict):
+                raise ValueError(f"Runtime args for tensor {tensor_name} must be a dict.")
+            layout = args.get("layout", None)
+            affine_map = self._get_affine_map(layout) if layout else self._get_standard_layout(tensor_name)
+            runtime_args[tensor_name] = affine_map
+        return runtime_args
+
+    def _get_standard_layout(self, tensor_name: str) -> AffineMap:
+        node = self.workload.get_node_by_name(tensor_name)
+        if isinstance(node, InEdge):
+            tensor = node.outputs[0]
+        elif isinstance(node, OutEdge):
+            tensor = node.inputs[0]
+        else:
+            raise NotImplementedError(f"Standard layout inference not implemented for tensor {tensor_name}.")
+        num_dims = len(tensor.shape)
+        map = AffineMap.identity(num_dims)
+        return map
+
+    def _get_affine_map(self, layout: str) -> AffineMap:
+        """Layout in the form of (d0, d1, ...) -> (d1, d0, ...) gets converted to AffineMap."""
+        # Prepend affine_map< and append >
+        layout_str = f"affine_map<{layout}>"
+        ctx = Context()
+        parser = Parser(ctx, layout_str)
+        attribute = parser.parse_attribute()
+        assert isinstance(attribute, AffineMapAttr)
+        return attribute.data

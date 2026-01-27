@@ -4,7 +4,7 @@ import os
 import yaml
 
 
-def make_swiglu_mapping(seq_len, embedding_dim, hidden_dim):  # noqa: N803
+def make_swiglu_mapping(seq_len, embedding_dim, hidden_dim, last_gemm_down):  # noqa: N803
     """
     This mapping assumes that m rows are computed for each Gemm in a pipelined fashion.
     Each layer is partitioned across four rows of compute tiles with inter_core_tiling in the m dimension
@@ -61,26 +61,47 @@ def make_swiglu_mapping(seq_len, embedding_dim, hidden_dim):  # noqa: N803
     }
 
     # Final down projection Gemm
-    inter_core_tiling_gemm_down = [{"dim": "D1", "split": 1}]
-    compute_allocation_gemm_down = [26]
-    gemm_down = {
-        "name": "Gemm_Down",
-        "core_allocation": copy.deepcopy(compute_allocation_gemm_down),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm_down),
-        "kernel": copy.deepcopy(kernel_gemm),
-    }
+    if last_gemm_down:
+        inter_core_tiling_gemm_down = [{"dim": "D1", "split": 1}]
+        compute_allocation_gemm_down = [26]
+        gemm_down = {
+            "name": "Gemm_Down",
+            "core_allocation": copy.deepcopy(compute_allocation_gemm_down),
+            "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm_down),
+            "kernel": copy.deepcopy(kernel_gemm),
+        }
+        layers = [gemm_left, gemm_right, silu, mul, gemm_down]
+        runtime_args = {
+            "input": {},
+            "weights_1": {"layout": "(d0, d1) -> (d1, d0)"},
+            "weights_2": {"layout": "(d0, d1) -> (d1, d0)"},
+            "weights_3": {"layout": "(d0, d1) -> (d1, d0)"},
+            "output": {},
+        }
+    else:
+        layers = [gemm_left, gemm_right, silu, mul]
+        runtime_args = {
+            "input": {},
+            "weights_1": {"layout": "(d0, d1) -> (d1, d0)"},
+            "weights_2": {"layout": "(d0, d1) -> (d1, d0)"},
+            "output": {},
+        }
 
     # Fused groups; Only one group of all operators with Gemm_Left.D0 dimension
     fused_groups = {
         "name": "Fused_Group_1",
-        "layers": ["Gemm_Left", "Gemm_Right", "Silu", "Elt_Mul", "Gemm_Down"],
+        "layers": [layer["name"] for layer in layers],
         "intra_core_tiling": [
             {"dim": "Gemm_Left.D0", "tile": SEQ_LEN_TILE_SIZE},
             {"dim": "Gemm_Left.D2", "tile": CHANNEL_TILE_SIZE},
         ],
     }
 
-    mapping = {"layers": [gemm_left, gemm_right, silu, mul, gemm_down], "fused_groups": [fused_groups]}
+    mapping = {
+        "layers": layers,
+        "fused_groups": [fused_groups],
+        "runtime_args": runtime_args,
+    }
 
     with open(output_file, "w") as f:
         yaml.dump(mapping, f, default_flow_style=False, sort_keys=False)

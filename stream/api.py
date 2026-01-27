@@ -141,7 +141,6 @@ def optimize_allocation_co(  # noqa: PLR0913
     trace_size: int = 1048576,
     nb_cols_to_use: int = 4,
     npu: str = "npu2",
-    runtime_args: list[str] | None = None,
 ) -> StreamCostModelEvaluation:
     _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
     _sanity_check_gurobi_license()
@@ -193,7 +192,6 @@ def optimize_allocation_co(  # noqa: PLR0913
             stages = [AIECodeGenerationStage] + stages
             ctx.set(
                 npu=npu,  # required by AIECodeGenerationStage
-                runtime_args=runtime_args,  # required by AIECodeGenerationStage
             )
 
         mainstage = MainStage(stages, ctx)
