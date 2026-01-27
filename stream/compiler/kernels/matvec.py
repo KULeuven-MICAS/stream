@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
+from math import prod
 from typing import cast
 
 from xdsl.dialects.arith import ConstantOp
@@ -47,7 +48,9 @@ class MatVecKernel(AIEKernel):
         )
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
-        m, k = cast(MemRefType[AnyDenseElement], op.inputs[1].type).get_shape()
+        k = prod(cast(MemRefType[AnyDenseElement], op.inputs[0].type).get_shape())
+        assert op.output is not None
+        m = prod(cast(MemRefType[AnyDenseElement], op.output.type).get_shape())
         assert op.output is not None
         return [
             m := ConstantOp.from_int_and_width(m, i32),
