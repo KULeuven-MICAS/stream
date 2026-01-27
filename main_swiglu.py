@@ -21,7 +21,6 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     rows,
     cols,
     npu,
-    runtime_args,
     last_gemm_down: bool = False,
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
@@ -30,7 +29,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down=last_gemm_down
     )
     accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
-    mapping_path = make_swiglu_mapping(seq_len, embedding_dim, hidden_dim)
+    mapping_path = make_swiglu_mapping(seq_len, embedding_dim, hidden_dim, last_gemm_down)
     mode = "fused"
     layer_stacks = [(0, 1, 2, 3, 4)]
     ##############################################################################################
@@ -82,7 +81,6 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         trace_size=trace_size,
         nb_cols_to_use=cols,
         npu=npu,
-        runtime_args=runtime_args,
     )
 
     # #####################CostModelEvaluationLUT LOAD#############################
@@ -123,10 +121,6 @@ if __name__ == "__main__":
         help="If set, the last gemm down projection is skipped",
     )
     args = parser.parse_args()
-    if args.last_gemm_down:
-        runtime_args = ["input", "weights_1", "weights_2", "weights_3", "output"]
-    else:
-        runtime_args = ["input", "weights_1", "weights_2", "output"]
     module = run_main_aie_codegen_swiglu(
         args.seq_len,
         args.embedding_dim,
@@ -137,7 +131,6 @@ if __name__ == "__main__":
         args.rows,
         args.cols,
         args.npu,
-        runtime_args=runtime_args,
         last_gemm_down=args.last_gemm_down,
     )
     save_path = f"outputs/swiglu_module_{args.seq_len}_{args.embedding_dim}_{args.hidden_dim}.mlir"

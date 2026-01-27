@@ -60,12 +60,26 @@ class MappingValidator:
         },
     }
 
+    SCHEMA_RUNTIME_ARGS = {
+        "type": "dict",
+        "valuesrules": {
+            "type": "dict",
+            "schema": {
+                "layout": {"type": "string"},
+            },
+            "allow_unknown": {"type": "string"},
+        },
+        "required": False,
+        "default": {},
+    }
+
     def __init__(self, data: Any):
         """Initialize Validator object and normalize user-given data."""
         self.layer_validator = UpgradedValidator(is_array=True)
         self.fused_group_validator = UpgradedValidator(is_array=True)
+        self.runtime_args_validator = UpgradedValidator()
         self.raw_data: Any = data
-        self.normalized: dict[str, Any] = {"layers": [], "fused_groups": []}
+        self.normalized: dict[str, Any] = {"layers": [], "fused_groups": [], "runtime_args": {}}
         self.is_valid = True
         self.errors: list[str] = []
 
@@ -114,6 +128,15 @@ class MappingValidator:
         self._validate_fused_group_layer_references()
         self._validate_positive_tiling_values()
 
+        runtime_args = root.get("runtime_args", {}) or {}
+        self.normalized["runtime_args"] = runtime_args
+        # TODO: Validate runtime args properly
+        # if not self.runtime_args_validator.validate(  # type: ignore[arg-type]
+        #     runtime_args,
+        #     schema=self.SCHEMA_RUNTIME_ARGS,
+        # ):
+        #     self.invalidate(f"The following runtime args restrictions apply: {self.runtime_args_validator.errors}")
+        self.normalized["runtime_args"] = runtime_args
         return self.is_valid
 
     def _coerce_root(self, data: Any) -> dict[str, Any]:

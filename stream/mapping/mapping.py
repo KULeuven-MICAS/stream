@@ -66,6 +66,7 @@ class Mapping:
         self,
         initial: dict[Node, NodeMapping] | None = None,
         fused_groups: Iterable[FusedGroup] | None = None,
+        runtime_args: dict[str, str] | None = None,
     ) -> None:
         self._by_node: dict[Node, NodeMapping] = {}
         self._fused_groups: tuple[FusedGroup, ...] = tuple(fused_groups or ())
@@ -75,6 +76,7 @@ class Mapping:
         if initial:
             for node, layer_mapping in initial.items():
                 self.set(node, layer_mapping)
+        self._runtime_args = runtime_args or {}
 
     def set(self, node: Node, layer_mapping: NodeMapping) -> None:
         if node is None:
@@ -186,3 +188,7 @@ class Mapping:
     @property
     def fused_groups(self) -> tuple[FusedGroup, ...]:
         return self._fused_groups
+
+    @property
+    def runtime_args(self) -> dict[str, str]:
+        return self._runtime_args
