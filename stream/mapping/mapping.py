@@ -179,7 +179,7 @@ class Mapping:
                     intra_core_tiling=tuple(new_tilings),
                 )
             new_fused_groups.append(new_fused_group)
-        new_mapping = Mapping(fused_groups=new_fused_groups)
+        new_mapping = Mapping(fused_groups=new_fused_groups, runtime_args=self.runtime_args)
         for node in self.nodes():
             updated_node = new_workload.get_node_by_name(node.name)
             new_mapping.set(updated_node, self.get(node))
