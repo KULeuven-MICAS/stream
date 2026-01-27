@@ -4,7 +4,7 @@ import os
 import yaml
 
 
-def make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, line_size):  # noqa: N803
+def make_swiglu_mapping(seq_len, embedding_dim, hidden_dim):  # noqa: N803
     """
     This mapping assumes that m rows are computed for each Gemm in a pipelined fashion.
     Each layer is partitioned across four rows of compute tiles with inter_core_tiling in the m dimension

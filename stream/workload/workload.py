@@ -359,7 +359,7 @@ class Workload(DiGraphWrapper[Node]):
             result[unique_dim] = stride
         return result
 
-    def visualize(self, filepath: str = "workload_graph.png"):
+    def visualize(self, filepath: str = "workload_graph.png", mapping: "Mapping | None" = None) -> None:
         """Visualize the graph using Graphviz and save it to an image file.
 
         Nodes are laid out horizontally by topological generation,
@@ -395,7 +395,12 @@ class Workload(DiGraphWrapper[Node]):
             elif isinstance(node, TransferNode):
                 dim_sizes = {str(dim): self.get_dimension_size(dim) for dim in self.get_dims(node)}
                 n.set_shape("box")
-                n.set_label(f"{node.name}\nDims: {dim_sizes}")
+                label = f"{node.name}\nType: {node.transfer_type}\nDims: {dim_sizes}"
+                if mapping is not None:
+                    node_mapping = mapping.get(node)
+                    if node_mapping.memory_allocation is not None:
+                        label += f"\nMemAlloc: {node_mapping.memory_allocation}"
+                n.set_label(label)
                 n.set_style("filled")
                 n.set_fillcolor("#ffcb9a")
             elif isinstance(node, InEdge):

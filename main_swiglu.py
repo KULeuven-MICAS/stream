@@ -4,7 +4,7 @@ import os
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping_pipelined2
+from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 
 _logging_level = _logging.INFO
@@ -15,18 +15,13 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     seq_len,
     embedding_dim,
     hidden_dim,
-    m,
-    k,
-    n,
     in_dtype,
     out_dtype,
     trace_size,
     rows,
     cols,
     npu,
-    line_size,
     runtime_args,
-    mapping_version: int = 1,
     last_gemm_down: bool = False,
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
@@ -34,13 +29,8 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     workload_path = make_swiglu_workload(
         seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down=last_gemm_down
     )
-    if mapping_version == 1:
-        raise NotImplementedError("Mapping version 1 is no longer supported.")
-    elif mapping_version == 2:  # noqa: PLR2004
-        accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
-        mapping_path = make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, line_size)
-    else:
-        raise ValueError(f"Invalid mapping_version: {mapping_version}. Supported versions are 1 and 2.")
+    accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
+    mapping_path = make_swiglu_mapping(seq_len, embedding_dim, hidden_dim)
     mode = "fused"
     layer_stacks = [(0, 1, 2, 3, 4)]
     ##############################################################################################
@@ -119,17 +109,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--hidden_dim", type=int, required=True, help="Hidden dimension (hidden_dim dimension of the output)"
     )
-    parser.add_argument("--line_size", type=int, required=True, help="N parameter for the model")
-    parser.add_argument("--m", type=int, default=32, help="m parameter for the model (default: 32)")
-    parser.add_argument("--k", type=int, default=32, help="k parameter for the model (default: 32)")
-    parser.add_argument("--n", type=int, default=32, help="n parameter for the model (default: 32)")
     parser.add_argument("--in_dtype", type=str, default="bf16", help="Input data type (default: bf16)")
     parser.add_argument("--out_dtype", type=str, default="bf16", help="Output data type (default: bf16)")
     parser.add_argument("--trace_size", type=int, default=1048576, help="Size of the trace buffer (default: 1048576)")
     parser.add_argument("--rows", type=int, default=4, help="Number of AIE rows to use (has to be 4)")
     parser.add_argument("--cols", type=int, default=1, help="Number of AIE columns to use (default: 1)")
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
-    parser.add_argument("--mapping_version", type=int, default=1, help="Mapping version to use (1 or 2, default: 1)")
     parser.add_argument(
         "--no_last_gemm_down",
         dest="last_gemm_down",
@@ -146,18 +131,13 @@ if __name__ == "__main__":
         args.seq_len,
         args.embedding_dim,
         args.hidden_dim,
-        args.m,
-        args.k,
-        args.n,
         args.in_dtype,
         args.out_dtype,
         args.trace_size,
         args.rows,
         args.cols,
         args.npu,
-        args.line_size,
         runtime_args=runtime_args,
-        mapping_version=args.mapping_version,
         last_gemm_down=args.last_gemm_down,
     )
     save_path = f"outputs/swiglu_module_{args.seq_len}_{args.embedding_dim}_{args.hidden_dim}.mlir"
