@@ -60,7 +60,6 @@ class AIECodeGenerationStage(Stage):
         self.trace_size = self.ctx.get("trace_size", 1048576)
         self.npu = self.ctx.get("npu", "npu2")
         self.runtime_args = self.ctx.get("runtime_args", [])
-        self.mapping = self.ctx.get("mapping")
         self.module = None
 
     def run(self):
