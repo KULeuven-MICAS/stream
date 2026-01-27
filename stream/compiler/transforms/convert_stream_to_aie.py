@@ -633,6 +633,19 @@ class TransferToRuntimeSequence(RewritePattern):
 
         static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
 
+        # only the 4th stride is allowed to be zero
+        # if this is not the case, we must insert empty sets
+        # of (size=1, stride=0) pairs
+        min_successors = 3
+        n = len(static_strides)
+        for i in range(max(0, n - min_successors - 1), n):
+            if static_strides[i] == 0 and static_sizes[i] > 1:
+                needed = min_successors - (n - i - 1)
+                for _ in range(max(0, needed)):
+                    static_sizes.insert(i + 1, 1)
+                    static_strides.insert(i + 1, 0)
+                break
+
         # iteration_strides = [1] * len(static_sizes)
 
         # # add the repeating pattern
