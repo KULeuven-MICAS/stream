@@ -63,7 +63,9 @@ class TransferAndTensorAllocator:
         self.workload = workload
         self.slot_of = timeslots
         self.accelerator = accelerator
-        self.context = context or build_transfer_context(accelerator, nb_cols_to_use=nb_cols_to_use)
+        self.context = context or build_transfer_context(
+            accelerator, nb_cols_to_use=nb_cols_to_use, force_double_buffering=False
+        )
         self.offchip_core_id = self.context.offchip_core_id
         self.iterations = iterations
         self.ssis = ssis
