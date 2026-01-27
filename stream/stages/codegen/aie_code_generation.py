@@ -2,13 +2,17 @@ from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from itertools import accumulate, product
 from math import prod
-from operator import mul
+from operator import index, mul
+from typing import cast
 
+from numpy import full
 from snaxc.dialects.snax import NoneAttr
 from snaxc.dialects.tsl import TSL
 from xdsl.context import MLContext
-from xdsl.dialects.builtin import ArrayAttr, IntegerAttr, MemRefType, ModuleOp
+from xdsl.dialects.builtin import ArrayAttr, IntegerAttr, MemRefType, ModuleOp, ShapedType
 from xdsl.ir import Operation, SSAValue
+from xdsl.ir.affine import AffineDimExpr
+from xdsl.parser import AffineMap, Parser
 from xdsl_aie.dialects.aie import AIEDeviceEnum
 
 from stream.compiler.dialects.stream import ComputationNodeOp, InEdgeOp, OutEdgeOp, Stream, TransferOp
@@ -97,12 +101,23 @@ class AIECodeGenerationStage(Stage):
             for i, stride in enumerate(workload_strides[kernel_var.dimension]):
                 transfer_shape[i] += stride * kernel_var.size
 
-        # Gather shape multiplier for determining element stride in row-major layout:
-        def reverse_cumprod(t):
-            return tuple(reversed(list(accumulate(reversed(t), mul, initial=1))[:-1]))
-
         assert isinstance(node.outputs[0].subview.source.type, MemRefType)
-        shape_multiplier = reverse_cumprod(node.outputs[0].subview.source.type.get_shape())
+
+        # Determine strides based on layout mapping:
+        # ordering of indeces:
+        # TODO: make this more robust
+        num_dims = node.outputs[0].subview.source.type.get_num_dims()
+        tensor_name = node.name[len("Transfer(") : -1]
+        if tensor_name in full_mapping.runtime_args:
+            layout_mapping = cast(AffineMap, full_mapping.runtime_args[tensor_name])
+        else:
+            layout_mapping = AffineMap.identity(num_dims)
+        # index order is the order of dimensions in layout. The last element of this list
+        # is unrolled first
+        index_order = [layout_mapping.results.index(AffineDimExpr(i)) for i in range(num_dims)]
+        source_shape = node.outputs[0].subview.source.type.get_shape()
+        strides = ShapedType.strides_for_shape([source_shape[i] for i in index_order])
+        shape_multiplier = [strides[::-1][i] for i in index_order[::-1]]
 
         # To determine the number of (spatially) parallel transfers, iterate over spatial ssis vars
         relevant_spat_vars = [v for v in ssis.get_spatial_variables() if v.relevant]
@@ -133,6 +148,7 @@ class AIECodeGenerationStage(Stage):
         kernel_var_dict = {v.dimension: v for v in ssis.get_kernel_variables()}
         filtered_vars = [(dim, strides) for dim, strides in workload_strides.items() if any(strides)]
         ordered_strides = sorted(filtered_vars, key=lambda x: x[1])
+        ordered_strides = [ordered_strides[i] for i in index_order]
         all_vars.extend(kernel_var_dict[dim] for dim, _ in ordered_strides)
         # Then, iterate over relevant spatial vars:
         all_vars.extend(var for var in ssis.get_spatial_variables() if var.relevant)
