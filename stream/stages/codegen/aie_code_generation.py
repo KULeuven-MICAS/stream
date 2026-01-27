@@ -24,7 +24,6 @@ from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.iteration_space import (
     IterationVariable,
-    IterationVariableType,
     SteadyStateIterationSpace,
 )
 from stream.workload.workload import (
@@ -266,7 +265,7 @@ class AIECodeGenerationStage(Stage):
         npu: AIEDeviceEnum = self.ctx.get("npu", "npu2")
         assert workload is not None
 
-        mapping = self.ctx.get("mapping")
+        mapping = self.ctx.get("scheduler").mapping
         aie_kernels = {nm.kernel.unique_name: nm.kernel for nm in mapping.values() if nm.kernel is not None}
         assert isinstance(mapping, Mapping)
 
