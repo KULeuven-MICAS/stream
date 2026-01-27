@@ -215,11 +215,11 @@ class TransferAndTensorAllocator:
     # only transfers whose src OR dst tensor is CONSTANT are eligible for MemC
     # ------------------------------------------------------------------------------
     def _is_const_i(self, tr: TransferNode) -> bool:
-        src = tr.inputs[0]
+        src = next(iter(self.workload.predecessors(tr)))
         return isinstance(src, InEdge)
 
     def _is_const_o(self, tr: TransferNode) -> bool:
-        dst = tr.outputs[0]
+        dst = next(iter(self.workload.successors(tr)))
         return isinstance(dst, OutEdge)
 
     def _is_const_io(self, tr: TransferNode) -> bool:
@@ -238,10 +238,10 @@ class TransferAndTensorAllocator:
         start at the off-chip core and end at the given memory core *mc*.
 
         Raises:
-            ValueError - if no such path exists in tr.possible_resource_allocation.
+            ValueError - if no such path exists in self.possible_transfer_allocations[tr].
         """
         best_bw: int | None = None
-        for path in tr.possible_resource_allocation:  # list[list[Link]]
+        for path in self.possible_transfer_allocations[tr]:  # list[list[Link]]
             if not path:  # empty == same core
                 continue
             for link in path:
@@ -261,7 +261,7 @@ class TransferAndTensorAllocator:
                     best_bw = link.bandwidth if best_bw is None else max(best_bw, link.bandwidth)
         if best_bw is None:
             raise ValueError(
-                f"No DRAM→{mc.name} path found for transfer {tr.node_name}. "
+                f"No DRAM→{mc.name} path found for transfer {tr.name}. "
                 f"Check that transfer is for constant input/output tensors."
             )
         return best_bw

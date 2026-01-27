@@ -384,6 +384,8 @@ class SteadyStateScheduler:
                 and TransferType.UNICAST not in transfer_types
             ):
                 transfer_types.append(TransferType.BROADCAST)
+        if not transfer_types:
+            return TransferType.UNICAST
         return reduce(lambda a, b: a | b, transfer_types)
 
     def _get_accelerator_memory_cores(self) -> set[Core]:
