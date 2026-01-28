@@ -28,12 +28,16 @@ class SplitTransferPattern(RewritePattern):
         else:
             channel = ChannelOp()
             ops_to_add.append(channel)
-        for input in op.inputs:
+        for i, input in enumerate(op.inputs):
+            offsets = list(cast(tuple[int, ...], op.spatial_strides.get_values()))
+            if len(offsets) == 0:
+                offsets = [0]
             push = PushOp(
                 input,
                 channel,
                 op.ssis.data,
-                op.offsets,
+                (offsets[i],),
+                # offsets
                 op.sizes,
                 op.strides,
                 op.memtile,
