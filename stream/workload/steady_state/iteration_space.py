@@ -29,6 +29,7 @@ class IterationVariableType(Enum):
     KERNEL = auto()
     SPATIAL = auto()
     TEMPORAL = auto()
+    SPATIOTEMPORAL = auto()  # for substitution temporal loops of other operators spatial loops
 
 
 # --------------------------------------------------------------------------- #
@@ -73,6 +74,8 @@ class IterationVariable:
             prefix = "S"
         elif self.type == IterationVariableType.KERNEL:
             prefix = "K"
+        elif self.type == IterationVariableType.SPATIOTEMPORAL:
+            prefix = "ST"
         else:
             prefix = "T"
         tag = "R" if self.relevant else "IR"

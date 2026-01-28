@@ -173,14 +173,14 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                         dimension=dim,
                         size=remaining_size,
                         relevant=True,
-                        type=IterationVariableType.TEMPORAL,
+                        type=IterationVariableType.SPATIOTEMPORAL,
                     )
                 )
             else:
                 if isinstance(node, TransferNode):
                     type = IterationVariableType.SPATIAL
                 else:
-                    type = IterationVariableType.TEMPORAL
+                    type = IterationVariableType.SPATIOTEMPORAL
                 # Create a replacement temporal variable
                 relevant = dim in workload.get_dims(node)
                 iteration_variables[node].append(
