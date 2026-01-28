@@ -751,7 +751,11 @@ class TransferAndTensorAllocator:
             mem_core_usage_s2mm = self.model.addVar(vtype=GRB.INTEGER, name=f"memCoreUsageS2MM_{_resource_key(mc)}")
             self.model.addConstr(
                 mem_core_usage_s2mm
-                == quicksum(self.m_store[(tr, mc)] for tr in self.transfer_nodes if self._is_const_io(tr)),
+                == quicksum(
+                    self.m_store[(tr, mc)]
+                    for tr in self.transfer_nodes
+                    if self._is_const_io(tr) and mc in self.mapping.get(tr).memory_allocation
+                ),
                 name=f"memCoreUsageS2MMConstr_{_resource_key(mc)}",
             )
             self.mem_core_usage_s2mm[mc] = mem_core_usage_s2mm
@@ -759,7 +763,11 @@ class TransferAndTensorAllocator:
             mem_core_usage_mm2s = self.model.addVar(vtype=GRB.INTEGER, name=f"memCoreUsageMM2S_{_resource_key(mc)}")
             self.model.addConstr(
                 mem_core_usage_mm2s
-                == quicksum(self.m_store[(tr, mc)] for tr in self.transfer_nodes if self._is_const_io(tr)),
+                == quicksum(
+                    self.m_store[(tr, mc)]
+                    for tr in self.transfer_nodes
+                    if self._is_const_io(tr) and mc in self.mapping.get(tr).memory_allocation
+                ),
                 name=f"memCoreUsageMM2SConstr_{_resource_key(mc)}",
             )
             self.mem_core_usage_mm2s[mc] = mem_core_usage_mm2s
@@ -767,7 +775,11 @@ class TransferAndTensorAllocator:
             shim_core_usage_s2mm = self.model.addVar(vtype=GRB.INTEGER, name=f"shimCoreUsageS2MM_{_resource_key(mc)}")
             self.model.addConstr(
                 shim_core_usage_s2mm
-                == quicksum(self.m_store[(tr, mc)] for tr in self.transfer_nodes if self._is_const_o(tr)),
+                == quicksum(
+                    self.m_store[(tr, mc)]
+                    for tr in self.transfer_nodes
+                    if self._is_const_o(tr) and mc in self.mapping.get(tr).memory_allocation
+                ),
                 name=f"shimCoreUsageS2MMConstr_{_resource_key(mc)}",
             )
             self.shim_core_usage_s2mm[mc] = shim_core_usage_s2mm
@@ -775,7 +787,11 @@ class TransferAndTensorAllocator:
             shim_core_usage_mm2s = self.model.addVar(vtype=GRB.INTEGER, name=f"shimCoreUsageMM2S_{_resource_key(mc)}")
             self.model.addConstr(
                 shim_core_usage_mm2s
-                == quicksum(self.m_store[(tr, mc)] for tr in self.transfer_nodes if self._is_const_i(tr)),
+                == quicksum(
+                    self.m_store[(tr, mc)]
+                    for tr in self.transfer_nodes
+                    if self._is_const_i(tr) and mc in self.mapping.get(tr).memory_allocation
+                ),
                 name=f"shimCoreUsageMM2SConstr_{_resource_key(mc)}",
             )
             self.shim_core_usage_mm2s[mc] = shim_core_usage_mm2s

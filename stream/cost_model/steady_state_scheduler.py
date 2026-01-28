@@ -278,12 +278,14 @@ class SteadyStateScheduler:
 
     def update_mapping_for_transfer(self, node: TransferNode, src: HasOutputs, dsts: tuple[HasInputs, ...]) -> None:
         possible_memory_cores = self.determine_possible_memory_allocations(src, dsts)
-        possible_allocations = self.determine_possible_transfer_allocations(src, dsts, possible_memory_cores)
+        possible_allocations, updated_possible_memory_cores = self.determine_possible_transfer_allocations(
+            src, dsts, possible_memory_cores
+        )
         self.mapping.set_for_node(
             node,
             resource_allocation=possible_allocations,
             inter_core_tiling=tuple(),
-            memory_allocation=possible_memory_cores,
+            memory_allocation=updated_possible_memory_cores,
         )
 
     def determine_possible_memory_allocations(self, src: HasOutputs, dsts: tuple[HasInputs, ...]) -> tuple[Core, ...]:
@@ -296,16 +298,19 @@ class SteadyStateScheduler:
 
     def determine_possible_transfer_allocations(
         self, src: HasOutputs, dsts: tuple[HasInputs, ...], possible_memory_cores: tuple[Core, ...]
-    ) -> tuple[tuple[CommunicationLink, ...], ...]:
+    ) -> tuple[tuple[tuple[CommunicationLink, ...], ...], tuple[Core, ...]]:
         src_allocs = self.retrieve_node_allocation(src)
         dst_allocs = {x for dst_allocs in [(self.retrieve_node_allocation(dst)) for dst in dsts] for x in dst_allocs}
 
-        possible_resource_allocations = self.accelerator.communication_manager.get_possible_resource_allocations(
-            src_allocs=src_allocs,
-            dst_allocs=dst_allocs,
-            possible_memory_cores=possible_memory_cores,
+        possible_resource_allocations, upd_possible_memory_cores = (
+            self.accelerator.communication_manager.get_possible_resource_allocations(
+                src_allocs=src_allocs,
+                dst_allocs=dst_allocs,
+                possible_memory_cores=possible_memory_cores,
+            )
         )
-        return possible_resource_allocations
+
+        return possible_resource_allocations, upd_possible_memory_cores
 
     def calculate_iterations(self) -> int:
         """Calculate the amount of steady state iterations based on all nodes' SSIS."""

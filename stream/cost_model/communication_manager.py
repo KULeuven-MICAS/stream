@@ -568,7 +568,7 @@ class CommunicationManager:
         src_allocs: list["Core"],
         dst_allocs: list["Core"],
         possible_memory_cores: tuple["Core", ...],
-    ) -> tuple[tuple["CommunicationLink", ...], ...]:
+    ) -> tuple[tuple[tuple["CommunicationLink", ...], ...], tuple["Core", ...]]:
         request = MulticastRequest(
             sources=src_allocs,  # type: ignore
             destinations=dst_allocs,  # type: ignore
@@ -577,10 +577,18 @@ class CommunicationManager:
 
         multicast_plans = self._enumerate_multicast_plans(request)
 
+        limited_plans = sorted(
+            multicast_plans,
+            key=lambda p: (p.total_hops_objective, getattr(p.meeting, "id", 0)),
+        )[:_MAX_POSSIBLE_ALLOCATIONS]
+
         possible_paths: set[tuple[CommunicationLink, ...]] = set()
-        for multicast_plan in multicast_plans:
+        updated_possible_memory_cores: set[Core] = set()
+        for multicast_plan in limited_plans:
             links_used = self._get_links_for_multicast_plan(multicast_plan)
             possible_paths.add(links_used)
+            if multicast_plan.meeting is not None:
+                updated_possible_memory_cores.add(multicast_plan.meeting)
 
         # Stable output ordering
-        return tuple(sorted(possible_paths, key=lambda x: (len(x), repr(x)))[:_MAX_POSSIBLE_ALLOCATIONS])
+        return tuple(possible_paths), tuple(updated_possible_memory_cores)

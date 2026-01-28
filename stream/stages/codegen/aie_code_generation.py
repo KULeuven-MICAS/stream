@@ -1,18 +1,16 @@
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
-from itertools import accumulate, product
+from itertools import product
 from math import prod
-from operator import index, mul
 from typing import cast
 
-from numpy import full
 from snaxc.dialects.snax import NoneAttr
 from snaxc.dialects.tsl import TSL
 from xdsl.context import MLContext
 from xdsl.dialects.builtin import ArrayAttr, IntegerAttr, MemRefType, ModuleOp, ShapedType
 from xdsl.ir import Operation, SSAValue
 from xdsl.ir.affine import AffineDimExpr
-from xdsl.parser import AffineMap, Parser
+from xdsl.parser import AffineMap
 from xdsl_aie.dialects.aie import AIEDeviceEnum
 
 from stream.compiler.dialects.stream import ComputationNodeOp, InEdgeOp, OutEdgeOp, Stream, TransferOp
@@ -76,7 +74,7 @@ class AIECodeGenerationStage(Stage):
             self.ctx.set(module=self.module)
             yield self.ctx
 
-    def create_transfer_op(
+    def create_transfer_op(  # noqa: PLR0915
         self,
         node: TransferNode,
         mapping: NodeMapping,
