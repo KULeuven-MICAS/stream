@@ -132,7 +132,6 @@ def optimize_allocation_co(  # noqa: PLR0913
     workload: str,
     mapping: str,
     mode: Literal["lbl"] | Literal["fused"],
-    layer_stacks: list[tuple[int, ...]],
     experiment_id: str,
     output_path: str,
     skip_if_exists: bool = False,
@@ -179,7 +178,6 @@ def optimize_allocation_co(  # noqa: PLR0913
             workload_path=workload,  # required by ModelParserStage
             mapping_path=mapping,  # required by ModelParserStage
             loma_lpf_limit=6,  # required by LomaEngine
-            layer_stacks=layer_stacks,
             output_path=output_path,
             temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
             trace_size=trace_size,
