@@ -27,7 +27,7 @@ class EltwiseMulKernel(AIEKernel):
 
     @property
     def function_name(self) -> str:
-        return f"eltwise_mul_{self.element_type}_scalar"
+        return f"eltwise_mul_{self.element_type}_vector"
 
     def function_type(self, op: ComputationNodeOp) -> FunctionType:
         assert op.output is not None
