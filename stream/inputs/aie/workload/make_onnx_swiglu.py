@@ -54,7 +54,6 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
 
     # I/O
     inp = helper.make_tensor_value_info("input", TensorProto.BFLOAT16, [seq_len, embedding_dim])
-    out = helper.make_tensor_value_info("output", TensorProto.BFLOAT16, [seq_len, embedding_dim])
 
     # Branch GEMMs
     gemm_left = helper.make_node(
@@ -123,6 +122,7 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
         )
         # If last gemm down is not needed, output directly from the elementwise mul
         out_mul.output[0] = "output"
+        out = helper.make_tensor_value_info("output", TensorProto.BFLOAT16, [seq_len, hidden_dim])
         graph = helper.make_graph(
             nodes=[gemm_left, gemm_right, silu_left, out_mul],
             name="SwiGLU",
@@ -166,6 +166,7 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
             weight_size=weight_size,
             output_size=output_size,
         )
+        out = helper.make_tensor_value_info("output", TensorProto.BFLOAT16, [seq_len, embedding_dim])
 
         graph = helper.make_graph(
             nodes=[gemm_left, gemm_right, silu_left, out_mul, gemm_down],
