@@ -2027,8 +2027,6 @@ class ConvertStreamToAIEPass(ModulePass):
 
         PatternRewriteWalker(OrderCoreOps()).rewrite_module(op)
 
-        breakpoint()
-
         for core_op in device_op.region.block.ops:
             if isinstance(core_op, CoreOp):
                 # insert runtime sequence op
