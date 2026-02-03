@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from enum import Enum, auto
+from warnings import warn
 from math import prod
 
 from zigzag.datatypes import LayerOperand
@@ -224,14 +225,22 @@ class SteadyStateIterationSpace:
         Returns the shape of the relevant iteration space kept local in a memtile.
         Kernel dimensions may be misordered.
         """
-        # start with transfer type: kernel + spatial dims
-        shape = tuple(var.size for var in (*self.get_kernel_variables(), *self.get_spatial_variables()) if var.relevant)
+        # start with kernel shape
+        # (ordering may be a bit off here)
+        shape = tuple(var.size for var in self.get_kernel_variables() if var.relevant)
+
+        # add relevant spatial shape
+        spatial_shape = tuple(var.size for var in self.get_spatial_variables() if var.relevant)
+        shape = spatial_shape + shape
+
         # add dims reused in memtile
         local_tensors = self.nb_local_tensors_mem()
-        if local_tensors != 1:
-            shape = (local_tensors,) + shape
-        # reverse order
-        shape = shape[::-1]
+        if local_tensors > 1:
+            if len(spatial_shape) > 0:
+                warn("mixing spatial and temporal reuse, which seems to be unsupported")
+            else:
+                shape = (local_tensors,) + shape
+
         return shape
 
     def reuse_factor_compute(self) -> int:
