@@ -1876,6 +1876,24 @@ class RealizeLayoutCats(RewritePattern):
 
 
 @dataclass
+class OrderCoreOps(RewritePattern):
+    # Complete a bubble-type sorting of core ops for a more deterministic output
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: CoreOp, rewriter: PatternRewriter):
+        def get_tile_idx(op: CoreOp) -> tuple[int, int]:
+            assert isinstance(op.tile, OpResult)
+            assert isinstance(op.tile.op, TileOp)
+            return (op.tile.op.col.value.data, op.tile.op.row.value.data)
+
+        if not isinstance(next_op := op.next_op, CoreOp):
+            return
+
+        if get_tile_idx(op) > get_tile_idx(next_op):
+            next_op.detach()
+            rewriter.insert_op(next_op, InsertPoint.before(op))
+
+
+@dataclass
 class WrapInCoreOps(RewritePattern):
     tile_op_manager: TileOpManager
     of_manager: ObjectFifoManager
@@ -2006,6 +2024,10 @@ class ConvertStreamToAIEPass(ModulePass):
             ),
             apply_recursively=False,
         ).rewrite_module(op)
+
+        PatternRewriteWalker(OrderCoreOps()).rewrite_module(op)
+
+        breakpoint()
 
         for core_op in device_op.region.block.ops:
             if isinstance(core_op, CoreOp):
