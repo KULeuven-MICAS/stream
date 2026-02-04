@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from enum import Enum, auto
-from warnings import warn
 from math import prod
+from warnings import warn
 
 from zigzag.datatypes import LayerOperand
 from zigzag.workload.layer_node import LoopRelevancyInfo

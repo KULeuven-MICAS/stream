@@ -121,7 +121,7 @@ def make_swiglu_mapping2(seq_len, embedding_dim, hidden_dim, last_gemm_down):  #
     CHANNEL_TILE_SIZE = 32
 
     # Left Gemm
-    inter_core_tiling_gemm_left = [{"dim": "D0", "split": 4}, {"dim": "D2", "split": 2}]
+    inter_core_tiling_gemm_left = [{"dim": "D2", "split": 2}, {"dim": "D0", "split": 4}]
     kernel_gemm = {"name": "matvec", "kwargs": {"utilization": 61.8}}
     compute_allocation_gemm_left = [2, 3, 4, 5, 8, 9, 10, 11]
     gemm_left = {
@@ -131,7 +131,7 @@ def make_swiglu_mapping2(seq_len, embedding_dim, hidden_dim, last_gemm_down):  #
         "kernel": copy.deepcopy(kernel_gemm),
     }
     # Right Gemm
-    inter_core_tiling_gemm_right = [{"dim": "D0", "split": 4}, {"dim": "D2", "split": 2}]
+    inter_core_tiling_gemm_right = [{"dim": "D2", "split": 2}, {"dim": "D0", "split": 4}]
     compute_allocation_gemm_right = [14, 15, 16, 17, 20, 21, 22, 23]
     gemm_right = {
         "name": "Gemm_Right",
@@ -163,7 +163,7 @@ def make_swiglu_mapping2(seq_len, embedding_dim, hidden_dim, last_gemm_down):  #
 
     # Final down projection Gemm
     if last_gemm_down:
-        inter_core_tiling_gemm_down = [{"dim": "D0", "split": 4}, {"dim": "D1", "split": 2}]
+        inter_core_tiling_gemm_down = [{"dim": "D1", "split": 2}, {"dim": "D0", "split": 4}]
         compute_allocation_gemm_down = [38, 39, 40, 41, 44, 45, 46, 47]
         gemm_down = {
             "name": "Gemm_Down",
