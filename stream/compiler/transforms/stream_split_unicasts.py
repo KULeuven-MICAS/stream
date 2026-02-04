@@ -1,5 +1,4 @@
 from dataclasses import dataclass, field
-from math import prod
 
 from xdsl.context import Context
 from xdsl.dialects.builtin import ModuleOp
@@ -12,7 +11,6 @@ from xdsl.pattern_rewriter import (
 )
 
 from stream.compiler.dialects.stream import ChannelOp, OutEdgeOp, TransferOp
-from stream.workload.steady_state.iteration_space import IterationVariableType
 
 
 @dataclass

@@ -158,22 +158,24 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                 # This node has a different unrolling size for the unique dim
                 # Create a hybrid of both spatial and temporal iteration variables
                 spatial_size = next(su[1] for su in spatial_unrollings[node] if su[0] == dim)
-                iteration_variables[node].append(
-                    IterationVariable(
-                        dimension=dim,
-                        size=spatial_size,
-                        relevant=True,
-                        type=IterationVariableType.SPATIAL,
-                    )
-                )
                 remaining_size, rem = divmod(unrolling, spatial_size)
                 assert rem == 0, f"Unrolling size {unrolling} not divisible by spatial size {spatial_size}"
+                # First add the spatiotemporal variable
                 iteration_variables[node].append(
                     IterationVariable(
                         dimension=dim,
                         size=remaining_size,
                         relevant=True,
                         type=IterationVariableType.SPATIOTEMPORAL,
+                    )
+                )
+                # Then add the spatial variable
+                iteration_variables[node].append(
+                    IterationVariable(
+                        dimension=dim,
+                        size=spatial_size,
+                        relevant=True,
+                        type=IterationVariableType.SPATIAL,
                     )
                 )
             else:
@@ -202,17 +204,18 @@ def collect_spatial_unrollings(workload: "Workload", mapping: "Mapping"):
         assert node_mapping is not None, f"No mapping found for node {node.name}"
         spatial_unrollings[node] = workload.get_unique_dims_inter_core_tiling(node, mapping)
 
-    unique_spatial_unrollings: set[tuple[LayerDim, int]] = set()
+    unique_spatial_unrollings: list[tuple[LayerDim, int]] = []
     for unrollings in spatial_unrollings.values():
         for unrolling in unrollings:
             # Keep the largest unrolling size for each dimension
             dim, size = unrolling
             existing = next((u for u in unique_spatial_unrollings if u[0] == dim), None)
             if existing is None:
-                unique_spatial_unrollings.add((dim, size))
+                unique_spatial_unrollings.append((dim, size))
             elif size > existing[1]:
-                unique_spatial_unrollings.discard(existing)
-                unique_spatial_unrollings.add((dim, size))
+                idx = unique_spatial_unrollings.index(existing)
+                unique_spatial_unrollings.pop(idx)
+                unique_spatial_unrollings.insert(idx, (dim, size))
     return spatial_unrollings, unique_spatial_unrollings
 
 
