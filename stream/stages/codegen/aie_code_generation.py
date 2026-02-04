@@ -144,7 +144,14 @@ class AIECodeGenerationStage(Stage):
         # Spatial strides are simply determined in a linear fashion, each time prgressing
         # the number of elements that one transfer type takes.
         transfer_elements = prod(transfer_shape)
-        spatial_strides = tuple(range(0, transfer_elements * num_spat_results, transfer_elements))
+        # spatio_temporal_elements = prod(v.size for v in ssis_dest.get_spatio_temporal_variables())
+        # spatial_stride = transfer_elements * spatio_temporal_elements
+        # breakpoint()
+        if is_out_transfer:
+            st_factor = num_spat_results // len(inputs)
+        else:
+            st_factor = 1
+        spatial_strides = tuple(range(0, transfer_elements * num_spat_results, transfer_elements * st_factor))
 
         # Determine the temporal strides for this transfer:
         seen_dims = defaultdict(lambda: 1)

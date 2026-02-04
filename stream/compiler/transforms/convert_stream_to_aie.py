@@ -407,14 +407,14 @@ class ObjectFifoChain:
     def get_link(hop_in: ObjectFifoHop, hop_out: ObjectFifoHop) -> ObjectFifoLinkOp:
         if len(hop_in.fifos) > 1:
             # determine src offsets
-            assert isinstance(memref_type := hop_in.fifos[0].elemType.buffer, MemRefType)
-            offset = prod(memref_type.get_shape())
+            assert isinstance(memref_out := hop_out.fifos[0].elemType.buffer, MemRefType)
+            offset = prod(memref_out.get_shape()) // len(hop_in.fifos)
             src_offsets = [i * offset for i in range(len(hop_in.fifos))]
         else:
             src_offsets = []
         if len(hop_out.fifos) > 1:
-            assert isinstance(memref_type := hop_out.fifos[0].elemType.buffer, MemRefType)
-            offset = prod(memref_type.get_shape())
+            assert isinstance(memref_in := hop_in.fifos[0].elemType.buffer, MemRefType)
+            offset = prod(memref_in.get_shape()) // len(hop_out.fifos)
             dst_offsets = [i * offset for i in range(len(hop_out.fifos))]
         else:
             dst_offsets = []
