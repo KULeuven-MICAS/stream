@@ -159,8 +159,6 @@ class TransferOp(IRDLOperation):
                     if dim == spat_var.dimension:
                         result += dim_val * mult
                 mult *= spat_var.size
-        if result >= len(self.outputs):
-            breakpoint()
         return self.outputs[result]
 
 
