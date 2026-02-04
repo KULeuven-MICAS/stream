@@ -217,7 +217,7 @@ class ObjectFifoHop:
         assert memref_type.get_element_type() == memref_type_consumer.get_element_type()
         assert memref_type.get_shape() == memref_type_consumer.get_shape()
         if len(producers) > 1:
-            of_type = "join"
+            of_type = "switch_join"
         else:
             of_type = "unicast"
         producers = sorted(producers, key=lambda op: SortPullPushOp(op, tile_op_manager))
@@ -430,15 +430,16 @@ class ObjectFifoChain:
         Get the correct of in this chain for the given operation
         """
         tile = tile_op_manager.get_tile(op)
+        result = []
         for hop in self.hops:
             for fifo in hop.fifos:
                 if isinstance(op, PullOp):
                     if tile.result in fifo.consumerTiles:
-                        return fifo
+                        result.append(fifo)
                 if isinstance(op, PushOp):
                     if tile.result == fifo.producerTile:
-                        return fifo
-        raise RuntimeError("Fifo not found in chain")
+                        result.append(fifo)
+        return result
 
     def __contains__(self, target: ObjectFifoOp) -> bool:
         return any(target in hop.fifos for hop in self.hops)
@@ -599,14 +600,18 @@ class TransferToRuntimeSequence(RewritePattern):
         if isinstance(op, PushOp):
             assert isinstance(op.input, OpResult)
             edge = op.input.op
-            of = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
+            ofs = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
+            assert len(ofs) == 1
+            of = ofs[0]
         else:
             edge = next((use.operation for use in op.output.uses), None)
             if edge is None:
                 # TODO: this transfer should not be present anymore
                 rewriter.erase_matched_op()
                 return
-            of = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
+            ofs = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
+            assert len(ofs) == 1
+            of = ofs[0]
         assert isinstance(edge, OutEdgeOp | InEdgeOp)
 
         of_name = of.sym_name.data
@@ -650,7 +655,6 @@ class TransferToRuntimeSequence(RewritePattern):
 
         # # add the repeating pattern
         # # offset is definitely zero for now
-        # breakpoint()
         # iteration_stride = 1
         # for iter_var in op.ssis.data.variables:
         #     if (iter_var.relevant or MemTileReuse.NO_REUSE in iter_var.mem_tile_reuse) and iter_var.size > 1:
@@ -750,19 +754,80 @@ class TransferToObjectFIFOPattern(RewritePattern):
         #         offset += int((spatial_stride // size) * prod(op.sizes.get_values()))
 
         # decide whether to consume or produce
+        join_ofs: Sequence[ObjectFifoOp] = []
         if isinstance(op, PullOp):
             port = ObjectFifoPortEnum.Consume
-            of = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
-
+            ofs = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
+            if len(ofs) > 1:
+                # programmatic join
+                join_ofs = ofs
+                of = None
+            else:
+                assert len(ofs) == 1
+                of = ofs[0]
             operand = op.output
         else:
             port = ObjectFifoPortEnum.Produce
-            of = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
+            ofs = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
+            assert len(ofs) == 1
+            of = ofs[0]
             operand = op.input
 
-        of_name = of.sym_name.data
-
         assert isinstance(memref_type := operand.type, MemRefType)
+
+        if len(join_ofs):
+            # custom handling for programmatic join here:
+
+            # multiple spatio-temporal variables get very complex, handle just one
+            # for now:
+            assert len(op.ssis.data.get_spatio_temporal_variables()) == 1
+            st_var = op.ssis.data.get_spatio_temporal_variables()[0]
+            for_op = op.parent_op()
+            assert isinstance(for_op, ForOp)
+            assert for_op.attributes.get("layer_dim") == StringAttr(str(st_var.dimension))
+            # one acquire per fifo
+            acquires = []
+            releases = []
+            for of in join_ofs:
+                of_name = of.sym_name.data
+                acquire_op = ObjectFifoAcquireOp(
+                    IntegerAttr.from_int_and_width(port.get_int(), 32),
+                    IntegerAttr.from_int_and_width(1, 32),
+                    object_fifo=of_name,
+                    shape=memref_type.get_shape(),
+                    element_type=memref_type.get_element_type(),
+                )
+                acquires.append(acquire_op)
+                release_op = ObjectFIFOReleaseOp(
+                    IntegerAttr.from_int_and_width(port.get_int(), 32),
+                    IntegerAttr.from_int_and_width(1, 32),
+                    object_fifo=of_name,
+                )
+                releases.append(release_op)
+            access_ops = [ObjectFIFOSubviewAccessOp(IntegerAttr(0, i32), acquire) for acquire in acquires]
+            # toggle between acquires with index switch op:
+            index_switch = IndexSwitchOp(
+                arg=for_op.body.block.args[0],
+                cases=DenseArrayBase.from_list(IntegerType(64), list(range(st_var.size))),
+                default_region=Region(Block([YieldOp(access_ops[0])])),
+                case_regions=[Region(Block([YieldOp(access_ops[i])])) for i in range(st_var.size)],
+                result_types=access_ops[0].result_types,
+            )
+            # put all acquries before for op:
+            rewriter.insert_op(acquires, InsertPoint.before(for_op))
+            rewriter.insert_op(access_ops, InsertPoint.before(for_op))
+            # put selection in for op:
+            rewriter.insert_op(index_switch, InsertPoint.at_start(for_op.body.block))
+            # put all releases after for op:
+            rewriter.insert_op(releases, InsertPoint.after(for_op))
+            # replace use
+            operand.replace_by(index_switch.results[0])
+            # delete original op
+            rewriter.erase_matched_op()
+            return
+
+        # otherwise, default flow with one objectfifo:
+        assert of is not None
 
         first_relevant_iter = next(iv for iv in op.ssis.data.get_temporal_variables() if iv.relevant)
         first_relevant_index = op.ssis.data.get_temporal_variables().index(first_relevant_iter)
@@ -787,6 +852,8 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
         # update object fifo depth
         # of.elemNumber = IntegerAttr.from_int_and_width(reuse_factor, 32)
+
+        of_name = of.sym_name.data
 
         # acquire:
         acquire_op = ObjectFifoAcquireOp(

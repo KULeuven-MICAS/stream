@@ -4,7 +4,7 @@ import os
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping
+from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping2
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 
 _logging_level = _logging.INFO
@@ -29,7 +29,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down=last_gemm_down
     )
     accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
-    mapping_path = make_swiglu_mapping(seq_len, embedding_dim, hidden_dim, last_gemm_down)
+    mapping_path = make_swiglu_mapping2(seq_len, embedding_dim, hidden_dim, last_gemm_down)
     # mapping_path = make_swiglu_mapping2(seq_len, embedding_dim, hidden_dim, last_gemm_down)
     mode = "fused"
     ##############################################################################################

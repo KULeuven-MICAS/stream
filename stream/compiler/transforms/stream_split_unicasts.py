@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from math import prod
 
 from xdsl.context import Context
 from xdsl.dialects.builtin import ModuleOp
@@ -11,6 +12,7 @@ from xdsl.pattern_rewriter import (
 )
 
 from stream.compiler.dialects.stream import ChannelOp, OutEdgeOp, TransferOp
+from stream.workload.steady_state.iteration_space import IterationVariableType
 
 
 @dataclass
@@ -20,29 +22,50 @@ class SplitUnicastsPattern(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter) -> None:
         if not (
-            len(op.inputs) > 1 and len(op.results) > 1 and len(op.inputs) == len(op.results)
+            len(op.inputs) > 1 and len(op.results) > 1
+            # and len(op.inputs) == len(op.results) (internal join structure has this)
             # and op.ssis == op.ssis_dest
             # #TODO: fix this condition for more complicated stuff in the future
             # that should also cover the ssis dest of an edge op being none
         ):
             return
+        if len(op.inputs) != len(op.outputs):
+            # other case is not supported yet
+            assert len(op.outputs) < len(op.inputs)
+            st_results = prod(
+                var.size
+                for var in op.ssis.data.variables
+                if var.type is IterationVariableType.SPATIOTEMPORAL and var.relevant
+            )
+            assert len(op.outputs) * st_results == len(op.inputs)
+        else:
+            st_results = 1
+
         for result in op.results:
             for use in result.uses:
                 if isinstance(use.operation, OutEdgeOp):
                     return
-        new_ops = [
-            TransferOp(
-                (input,),
-                (result_type,),
-                op.ssis.data,
-                op.offsets,
-                op.sizes,
-                op.strides,
-                op.spatial_strides,
-                op.memtile,
+
+        new_ops = []
+        input_idx = 0
+        for result in op.result_types:
+            inputs = []
+            for i in range(st_results):
+                inputs.append(op.inputs[input_idx + i * len(op.outputs)])
+            new_ops.append(
+                TransferOp(
+                    inputs,
+                    (result,),
+                    op.ssis.data,
+                    op.offsets,
+                    op.sizes,
+                    op.strides,
+                    op.spatial_strides,
+                    op.memtile,
+                )
             )
-            for (input, result_type) in zip(op.inputs, op.result_types, strict=True)
-        ]
+            input_idx += 1
+
         rewriter.replace_matched_op(new_ops, tuple(o.results[0] for o in new_ops))
 
 

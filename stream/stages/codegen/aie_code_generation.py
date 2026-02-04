@@ -20,6 +20,7 @@ from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass, canonicalize_transformation
 from stream.compiler.transforms.stream_split_transfers import StreamSplitTransfersPass
 from stream.compiler.transforms.stream_split_unicasts import StreamSplitUnicastsPass
+from stream.datatypes import LayerDim
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping, NodeMapping
 from stream.stages.context import StageContext
@@ -80,12 +81,17 @@ class AIECodeGenerationStage(Stage):
         mapping: NodeMapping,
         full_mapping: Mapping,
         inputs: Sequence[Operation | SSAValue],
-        ssis: SteadyStateIterationSpace,
+        ssis_dict: dict[HasIterationSpace, SteadyStateIterationSpace],
         workload: Workload,
     ) -> TransferOp:
         """
         Create a TransferOp for a given SteadyStateTransfer.
         """
+        ssis = ssis_dict[node]
+        if next_compute := next((n for n in workload.successors(node) if isinstance(n, ComputationNode)), None):
+            ssis_dest = ssis_dict[next_compute]
+        else:
+            ssis_dest = ssis
         # The final transfer (pointing to an OutEdgeOp) requires special treatment
         is_out_transfer = any(isinstance(user, OutEdge) for user in workload.successors(node))
 
@@ -117,8 +123,8 @@ class AIECodeGenerationStage(Stage):
         strides = ShapedType.strides_for_shape([source_shape[i] for i in index_order])
         shape_multiplier = [strides[::-1][i] for i in index_order[::-1]]
 
-        # To determine the number of (spatially) parallel transfers, iterate over spatial ssis vars
-        relevant_spat_vars = [v for v in ssis.get_spatial_variables() if v.relevant]
+        # To determine the number of (spatially) parallel transfers, iterate over spatial ssis vars of destination
+        relevant_spat_vars = [v for v in ssis_dest.get_spatial_variables() if v.relevant]
         num_spat_results = prod(v.size for v in relevant_spat_vars)
 
         # Determine the output type based on this:
@@ -150,6 +156,7 @@ class AIECodeGenerationStage(Stage):
         all_vars.extend(kernel_var_dict[dim] for dim, _ in ordered_strides)
         # Then, iterate over relevant spatial vars:
         all_vars.extend(var for var in ssis.get_spatial_variables() if var.relevant)
+        # This is only relevant for first and last ops, which should not have spatio-temporal vars.
         # After that, go over the temporal strides (both relevant and irellevant)
         # that aren't kept local in memtiles.
         all_vars.extend(
@@ -185,7 +192,7 @@ class AIECodeGenerationStage(Stage):
         op = TransferOp(
             inputs,
             result_types,
-            ssis,
+            ssis_dest,
             offsets,
             sizes,
             strides,
@@ -206,9 +213,17 @@ class AIECodeGenerationStage(Stage):
     ) -> Sequence[ComputationNodeOp]:
         ops: list[ComputationNodeOp] = []
 
+        # add spatio-temporal dims to get only inner shape:
+        st_vars = ssis.get_spatio_temporal_variables()
+        st_var: tuple[tuple[LayerDim, int], ...]
+        assert len(st_vars) <= 1
+        if len(st_vars):
+            st_var = ((st_vars[0].dimension, st_vars[0].size),)
+        else:
+            st_var = tuple()
         # determine new result type based on spatial mapping
         shape = workload.get_tensor_shape_with_tiling(
-            node.output, workload.get_unique_dims_inter_core_tiling(node, full_mapping)
+            node.output, tuple(workload.get_unique_dims_inter_core_tiling(node, full_mapping)) + st_var
         )
 
         result_type = MemRefType(node.outputs[0].operand_type, shape)
@@ -262,7 +277,12 @@ class AIECodeGenerationStage(Stage):
             if isinstance(node, TransferNode):
                 ops[node] = [
                     self.create_transfer_op(
-                        node, mapping.get(node), mapping, tuple(inputs(node)), ssis_dict[node], workload
+                        node,
+                        mapping.get(node),
+                        mapping,
+                        tuple(inputs(node)),
+                        ssis_dict,
+                        workload,
                     )
                 ]
             if isinstance(node, ComputationNode):
@@ -292,15 +312,18 @@ class AIECodeGenerationStage(Stage):
 
         module = self.generate_steady_state_workload(workload, mapping, ssis_dict)
 
-        StreamSplitUnicastsPass().apply(self.context, module)
         with open("test.mlir", "w") as f:
             f.write(str(module))
 
+        StreamSplitUnicastsPass().apply(self.context, module)
+
+        with open("test2.mlir", "w") as f:
+            f.write(str(module))
         # SetNoReusePass().apply(self.context, module)
         # Split transfers in push and pull
         StreamSplitTransfersPass().apply(self.context, module)
 
-        with open("test2.mlir", "w") as f:
+        with open("test3.mlir", "w") as f:
             f.write(str(module))
 
         # Arguments that will be supplied via runtime sequence, modify as needed

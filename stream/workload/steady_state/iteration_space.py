@@ -296,6 +296,9 @@ class SteadyStateIterationSpace:
         """
         return [iv for iv in self.variables if iv.type == IterationVariableType.SPATIAL]
 
+    def get_spatio_temporal_variables(self) -> list[IterationVariable]:
+        return [iv for iv in self.variables if iv.type == IterationVariableType.SPATIOTEMPORAL]
+
     def get_temporal_variables(self) -> list[IterationVariable]:
         """
         Returns the list of temporal iteration variables (i.e. those that are not spatial).
