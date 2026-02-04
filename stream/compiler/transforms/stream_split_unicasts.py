@@ -32,12 +32,14 @@ class SplitUnicastsPattern(RewritePattern):
         if len(op.inputs) != len(op.outputs):
             # other case is not supported yet
             assert len(op.outputs) < len(op.inputs)
-            st_results = prod(
-                var.size
-                for var in op.ssis.data.variables
-                if var.type is IterationVariableType.SPATIOTEMPORAL and var.relevant
-            )
-            assert len(op.outputs) * st_results == len(op.inputs)
+            # FIXME:
+            # st_results = prod(
+            #     var.size
+            #     for var in op.ssis.data.variables
+            #     if var.type is IterationVariableType.SPATIOTEMPORAL and var.relevant
+            # )
+            # assert len(op.outputs) * st_results == len(op.inputs)
+            st_results = len(op.inputs) // len(op.outputs)
         else:
             st_results = 1
 

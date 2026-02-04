@@ -124,7 +124,11 @@ class AIECodeGenerationStage(Stage):
         shape_multiplier = [strides[::-1][i] for i in index_order[::-1]]
 
         # To determine the number of (spatially) parallel transfers, iterate over spatial ssis vars of destination
-        relevant_spat_vars = [v for v in ssis_dest.get_spatial_variables() if v.relevant]
+        # the spatial variables must not be a spatio-temporal variable of the desintation
+        next_spatio_temporal_vars = [v.dimension for v in ssis_dest.get_spatio_temporal_variables()]
+        relevant_spat_vars = [
+            v for v in ssis.get_spatial_variables() if v.relevant and v.dimension not in next_spatio_temporal_vars
+        ]
         num_spat_results = prod(v.size for v in relevant_spat_vars)
 
         # Determine the output type based on this:
@@ -192,7 +196,7 @@ class AIECodeGenerationStage(Stage):
         op = TransferOp(
             inputs,
             result_types,
-            ssis_dest,
+            ssis,
             offsets,
             sizes,
             strides,
@@ -238,7 +242,9 @@ class AIECodeGenerationStage(Stage):
             selected_inputs = []
             for input in inputs:
                 assert isinstance(input, TransferOp)
-                selected_inputs.append(input.get_relevant_output(comb_ran))
+                selected_inputs.append(
+                    input.get_relevant_output(comb_ran, [x.dimension for x in ssis.get_spatio_temporal_variables()])
+                )
 
             assert isinstance(core, Core)
             row, col = core.row_id, core.col_id

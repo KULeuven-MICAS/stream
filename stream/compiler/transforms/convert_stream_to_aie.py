@@ -780,8 +780,11 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
             # multiple spatio-temporal variables get very complex, handle just one
             # for now:
-            assert len(op.ssis.data.get_spatio_temporal_variables()) == 1
-            st_var = op.ssis.data.get_spatio_temporal_variables()[0]
+            use_op = next(x for x in op.results[0].uses).operation
+            assert isinstance(use_op, ComputationNodeOp)
+            ssis_dest = use_op.ssis.data
+            assert len(ssis_dest.get_spatio_temporal_variables()) == 1
+            st_var = ssis_dest.get_spatio_temporal_variables()[0]
             for_op = op.parent_op()
             assert isinstance(for_op, ForOp)
             assert for_op.attributes.get("layer_dim") == StringAttr(str(st_var.dimension))
