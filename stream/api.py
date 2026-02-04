@@ -3,6 +3,7 @@ import os
 from typing import Literal
 
 import gurobipy as gp
+import yaml
 from onnx import ModelProto
 from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.utils import pickle_load, pickle_save
@@ -21,7 +22,7 @@ from stream.stages.parsing.mapping_parser import MappingParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
 
 # from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
-from stream.stages.stage import MainStage, StageCallable
+from stream.stages.stage import LeafStage, MainStage, StageCallable
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
@@ -199,3 +200,40 @@ def optimize_allocation_co(  # noqa: PLR0913
         ctx = answers[0]
         # pickle_save(scme, scme_path)  # type: ignore
     return ctx
+
+
+def parse_workload_ir(
+    workload_path: str,
+    arch_ir_path: str,
+) -> str:
+    """Parse a workload to the arch_ir.
+
+    Args:
+        workload_path: Path to the workload file (ONNX model).
+        output_path: Path where output files should be saved.
+
+    Returns:
+        The parsed workload context.
+    """
+    base_output_path = os.path.dirname(os.path.abspath(arch_ir_path))
+    os.makedirs(base_output_path, exist_ok=True)
+    ctx = StageContext.from_kwargs(
+        workload_path=workload_path,
+        output_path=base_output_path,
+    )
+    stages: list[StageCallable] = [
+        StreamONNXModelParserStage,
+        LeafStage,
+    ]
+    mainstage = MainStage(
+        stages,
+        ctx,
+    )
+    ctxs = mainstage.run()
+    assert len(ctxs) == 1, "Expected a single result from the workload parsing"
+    ctx: StageContext = ctxs[0]
+    workload = ctx.get("workload")
+    arch_ir = workload.get_ir()
+    with open(arch_ir_path, "w") as f:
+        yaml.dump(arch_ir, f, sort_keys=False)
+    return arch_ir_path
