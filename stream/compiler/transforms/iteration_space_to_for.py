@@ -33,7 +33,7 @@ def iteration_space_to_for(block: Block, rewriter: Rewriter):  # noqa: PLR0912, 
     # create for loop nest:
     for_ops = []
     for_dict: dict[IterationVariable, ForOp] = {}
-    vars = []
+    vars: list[IterationVariable] = []
     for var in ssis.variables:
         if var.type not in (IterationVariableType.TEMPORAL, IterationVariableType.SPATIOTEMPORAL):
             continue
@@ -51,6 +51,11 @@ def iteration_space_to_for(block: Block, rewriter: Rewriter):  # noqa: PLR0912, 
         these_vars = [*op.ssis.data.get_spatio_temporal_variables(), *op.ssis.data.get_temporal_variables()]
         # get rid of spatio temporal vars that are not present in compute
         these_vars = these_vars[-len(vars) :]
+        if len(these_vars) != len(vars):
+            # FIXME: bring back ssis dest for push / pull ops
+            assert vars[0].type is IterationVariableType.SPATIOTEMPORAL
+            spatial_var = next(x for x in op.ssis.data.get_spatial_variables() if x.dimension == vars[0].dimension)
+            these_vars.insert(0, spatial_var)
         # find first relevant one
         first_relevant = next((v for v in these_vars if v.relevant), None)
         if not first_relevant:
