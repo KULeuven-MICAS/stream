@@ -428,3 +428,116 @@ class Workload(DiGraphWrapper[Node]):
                 timeslots[node] = slot
                 slot += 1
         return timeslots
+
+    def get_ir(self) -> dict:
+        """Return a dictionary representation of the workload for serialization/inspection.
+
+        This captures:
+        - All nodes with their properties
+        - All edges between nodes
+        - Unique dimensions and their sizes
+        - Dimension relationships between layers and unique workload dimensions
+        - Tensor information including shapes and strides
+        """
+        unique_dims, dim_values = self.unique_dimensions()
+        dim_sizes = self.get_dimension_sizes()
+
+        # Build unique dimensions info
+        unique_dims_info = {
+            str(dim): {
+                "index": i,
+                "size": dim_sizes[i] if i < len(dim_sizes) else None,
+            }
+            for i, dim in enumerate(unique_dims)
+        }
+
+        # Build nodes info
+        nodes_info = []
+        for node in nx.lexicographical_topological_sort(self, key=lambda n: n.name):
+            node_data: dict = {
+                "name": node.name,
+                "type": type(node).__name__,
+            }
+
+            if isinstance(node, HasIterationSpace):
+                node_dims = self.get_dims(node)
+                node_data["dimensions"] = {str(dim): self.get_dimension_size(dim) for dim in node_dims}
+                node_data["global_dim_indices"] = list(self.global_idxs[node])
+
+            if isinstance(node, HasInputs):
+                node_data["inputs"] = [
+                    {
+                        "name": t.name,
+                        "shape": list(t.shape),
+                        "operand_type": str(t.operand_type),
+                    }
+                    for t in node.inputs
+                ]
+
+            if isinstance(node, HasOutputs):
+                node_data["outputs"] = [
+                    {
+                        "name": t.name,
+                        "shape": list(t.shape),
+                        "operand_type": str(t.operand_type),
+                    }
+                    for t in node.outputs
+                ]
+
+            if isinstance(node, ComputationNode):
+                node_data["computation_type"] = str(node.type)
+
+            if isinstance(node, TransferNode):
+                node_data["transfer_type"] = str(node.transfer_type)
+
+            nodes_info.append(node_data)
+
+        # Build edges info
+        edges_info = []
+        for src, dst in self.edges:
+            edge_data = {
+                "source": src.name,
+                "target": dst.name,
+            }
+            # Find shared tensor if both have iteration spaces
+            if isinstance(src, HasOutputs) and isinstance(dst, HasInputs):
+                shared_tensors = [t for t in src.outputs if t in dst.inputs]
+                if shared_tensors:
+                    edge_data["shared_tensors"] = [t.name for t in shared_tensors]
+                edges_info.append(edge_data)
+
+        # Build tensor dimension relationships
+        tensor_dim_relations = {}
+        for tensor in self.tensors:
+            tensor_dims = self.get_tensor_dimensions(tensor)
+            strides = self.strides_for_tensor(tensor)
+            tensor_dim_relations[tensor.name] = {
+                "shape": list(tensor.shape),
+                "relevant_dimensions": [str(dim) for dim in tensor_dims],
+                "strides_per_dimension": {str(dim): list(stride) for dim, stride in strides.items()},
+            }
+
+        # Build dimension relations (constraints between dimensions)
+        dim_relations = []
+        for expr in self.dimension_relations():
+            dim_relations.append(str(expr))
+
+        # Build timeslots
+        timeslots = {
+            node.name: gen_id
+            for gen_id, generation in enumerate(nx.topological_generations(self))
+            for node in generation
+        }
+
+        return {
+            "num_nodes": len(list(self.nodes)),
+            "num_edges": len(list(self.edges)),
+            "num_unique_dimensions": len(unique_dims),
+            "unique_dimensions": unique_dims_info,
+            "dimension_expressions": [str(dv) for dv in dim_values],
+            "dimension_relations": dim_relations,
+            "nodes": nodes_info,
+            "edges": edges_info,
+            "tensors": tensor_dim_relations,
+            "generations": timeslots,
+        }
