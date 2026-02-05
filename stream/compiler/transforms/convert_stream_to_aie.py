@@ -13,11 +13,13 @@ from xdsl.dialects.arith import AddiOp, ConstantOp, MuliOp
 from xdsl.dialects.builtin import (
     ArrayAttr,
     DenseArrayBase,
+    FixedBitwidthType,
     IndexType,
     IntegerAttr,
     IntegerType,
     MemRefType,
     ModuleOp,
+    ShapedType,
     StringAttr,
     SymbolRefAttr,
     i32,
@@ -1657,6 +1659,29 @@ class StartDMAs(RewritePattern):
 
 
 @dataclass
+class SetKernelLayouts(RewritePattern):
+    kernels: dict[str, AIEKernel]
+
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
+        aie_kernel = self.kernels.get(op.kernel.data)
+        assert aie_kernel is not None
+        layouts = aie_kernel.operand_layouts()
+        if not layouts:
+            return
+        shaped_operands = [operand for operand in op.operands if isinstance(operand.type, ShapedType)]
+        for layout, operand in zip(layouts, shaped_operands, strict=True):
+            assert isa(old_type := operand.type, MemRefType[FixedBitwidthType])
+            layout_attr = TiledStridedLayoutAttr(layout)
+            if old_type.layout == layout_attr:
+                continue
+            new_type = MemRefType(old_type.element_type, old_type.shape, layout_attr, old_type.memory_space)
+            new_operand = LayoutCast(operand, new_type)
+            rewriter.insert_op(new_operand, InsertPoint.before(op))
+            operand.replace_by_if(new_operand.results[0], lambda use: use.operation is op)
+
+
+@dataclass
 class SetKernelLayoutsNPU1(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: CallOp, rewriter: PatternRewriter):
@@ -2124,14 +2149,18 @@ class ConvertStreamToAIEPass(ModulePass):
         PatternRewriteWalker(MMPattern(tile_op_manager), apply_recursively=False).rewrite_module(op)
 
         # Use the new convert aie kernels operation:
+        assert npu is AIEDeviceEnum.npu2
+        PatternRewriteWalker(SetKernelLayouts(self.aie_kernels)).rewrite_module(op)
         PatternRewriteWalker(ConvertAIEKernels(self.aie_kernels)).rewrite_module(op)
 
         # handle layouts
-        match npu:
-            case AIEDeviceEnum.npu1:
-                PatternRewriteWalker(SetKernelLayoutsNPU1()).rewrite_module(op)
-            case AIEDeviceEnum.npu2:
-                PatternRewriteWalker(SetKernelLayoutsNPU2()).rewrite_module(op)
+        assert npu is AIEDeviceEnum.npu2
+        # PatternRewriteWalker(SetKernelLayouts()).rewrite_module(op)
+        # match npu:
+        #     case AIEDeviceEnum.npu1:
+        #         PatternRewriteWalker(SetKernelLayoutsNPU1()).rewrite_module(op)
+        #     case AIEDeviceEnum.npu2:
+        #         PatternRewriteWalker(SetKernelLayoutsNPU2()).rewrite_module(op)
         PatternRewriteWalker(RealizeLayoutCats(object_fifo_manager)).rewrite_module(op)
 
         PatternRewriteWalker(InfinteLoopCol(), apply_recursively=False).rewrite_module(op)

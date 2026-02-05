@@ -131,7 +131,7 @@ def make_swiglu_mapping2(
 
     # Left Gemm
     if seq_len_tile_size == 1:
-        kernel_gemm = {"name": "matvec", "kwargs": {"utilization": 61.8, "layout": []}}
+        kernel_gemm = {"name": "matvec", "kwargs": {"utilization": 61.8, "layout": "default"}}
     else:
         kernel_gemm = {
             "name": "gemm",
@@ -140,7 +140,7 @@ def make_swiglu_mapping2(
                 "m": seq_len_tile_size,
                 "k": INPUT_CHANNEL_TILE_SIZE,
                 "n": OUTPUT_CHANNEL_TILE_SIZE,
-                "layout": [],
+                "layout": "default",
             },
         }
     inter_core_tiling_gemm_left = [{"dim": "D2", "split": 2}, {"dim": "D0", "split": 4}]
@@ -163,7 +163,7 @@ def make_swiglu_mapping2(
     # SiLU specific mapping entries. SiLU uses SIMDParser which for two dims goes to (B, H)
     compute_allocation_silu = [26, 27, 28, 29]
     inter_core_tiling_silu = [{"dim": "D0", "split": 4}]
-    kernel_silu = {"name": "silu", "kwargs": {"utilization": 50.0, "layout": []}}  # TODO: utilization
+    kernel_silu = {"name": "silu", "kwargs": {"utilization": 50.0, "layout": "default"}}  # TODO: utilization
     silu = {
         "name": "Silu",
         "core_allocation": copy.deepcopy(compute_allocation_silu),
@@ -174,7 +174,7 @@ def make_swiglu_mapping2(
     # Elementwise Mul specific mapping entries
     compute_allocation_mul = [32, 33, 34, 35]
     inter_core_tiling_mul = [{"dim": "D0", "split": 4}]
-    kernel_mul = {"name": "eltwise_mul", "kwargs": {"utilization": 50.0, "layout": []}}  # TODO: utilization
+    kernel_mul = {"name": "eltwise_mul", "kwargs": {"utilization": 50.0, "layout": "default"}}  # TODO: utilization
     mul = {
         "name": "Elt_Mul",
         "core_allocation": copy.deepcopy(compute_allocation_mul),
