@@ -131,6 +131,7 @@ class TransferAndTensorAllocator:
         self._ensure_same_ssis_for_all_transfers()
         self.reuse_levels: dict[tuple[TransferNode, int], tuple[int, int]] = {}
         self.tiles_needed_levels: dict[tuple[TransferNode, int], int] = {}
+        self.bds_needed_levels: dict[tuple[TransferNode, int], int] = {}
         self.transfer_nodes_to_optimize_firings_for: list[TransferNode] = []
         self._init_transfer_fire_helpers()
 
@@ -202,7 +203,9 @@ class TransferAndTensorAllocator:
             size_factor = 1
             self.reuse_levels[(tr, -1)] = (fires, size_factor)
             tiles_needed = 1
+            bds_needed = 1
             self.tiles_needed_levels[(tr, -1)] = tiles_needed
+            self.bds_needed_levels[(tr, -1)] = bds_needed
             # level = i  →  keep while loops 0..i stay in cache
             for i, (Nl, relevancy) in enumerate(zip(sizes, relevancies, strict=True)):  # i = 0 … K-1
                 size_factor *= Nl if relevancy else 1  # enlarge tile size factor only if relevant
@@ -210,6 +213,12 @@ class TransferAndTensorAllocator:
                 fires //= Nl  # fewer transfers
                 self.reuse_levels[(tr, i)] = (fires, size_factor)
                 self.tiles_needed_levels[(tr, i)] = tiles_needed
+                if relevancy:
+                    bds_needed = 1
+                else:
+                    bds_needed *= Nl
+                self.bds_needed_levels[(tr, i)] = bds_needed
+        pass
 
     # ------------------------------------------------------------------------------
     # only transfers whose src OR dst tensor is CONSTANT are eligible for MemC
@@ -336,7 +345,7 @@ class TransferAndTensorAllocator:
                 self.z_stopM[(tr, stop)] = v
             self.model.addConstr(
                 quicksum(self.z_stopM[(tr, s)] for s in range(-1, len(sizes))) == 1,
-                name=f"cacheChooseStopM_{tr.name}",
+                name=f"zStopM_Choose_One_{tr.name}",
             )
             # If any of the reuses is already set to NO_REUSE, enforce these levels to 0
             mem_tile_reuses = self.ssis[tr].get_temporal_mem_tile_reuses()
@@ -352,6 +361,14 @@ class TransferAndTensorAllocator:
                 cumC = quicksum(self.z_stopC[(tr, u)] for u in range(s, len(sizes)))
                 cumM = quicksum(self.z_stopM[(tr, u)] for u in range(s, len(sizes)))
                 self.model.addConstr(cumC <= cumM, name=f"nest_{tr.name}_L{s}")
+
+            # Enforce max one more loop mem reuse than compute reuse
+            # chosen_compute_idx = quicksum(self.z_stopC[(tr, i)] * i for i in range(-1, len(sizes)))
+            # chosen_mem_idx = quicksum(self.z_stopM[(tr, i)] * i for i in range(-1, len(sizes)))
+            # self.model.addConstr(
+            #     chosen_mem_idx <= chosen_compute_idx + 1,
+            #     name=f"max_one_more_{tr.name}_idx",
+            # )
 
     def __create_transfer_mem_core_vars(self):
         self.m_store: dict[tuple[TransferNode, Core], gp.Var] = {}
@@ -606,6 +623,32 @@ class TransferAndTensorAllocator:
                     tiles_needed = self.tiles_needed_levels[(tr, stop)]
                     tiles_needed += 1 if self.force_double_buffering else 0
                     self.object_fifo_depth[mc] += tiles_needed * self.m_store[(tr, mc)] * self.z_stopM[(tr, stop)]
+        self.context.add_object_fifo_constraints(self.model, self.object_fifo_depth)
+
+    def _buffer_descriptor_constraints(self):
+        """
+        Ensure that the max number of buffer descriptors (BDs) of each core is respected.
+        """
+        self.bd_depth: dict[Core, gp.LinExpr] = defaultdict(gp.LinExpr)
+        for tr in self.transfer_nodes:
+            # resources = {c for t in tr.tensors for c in self.possible_tensor_allocations[t]}
+            # for c in resources:
+            #     if c.id == self.offchip_core_id:
+            #         continue  # off-chip has no BD limit
+            #     assert isinstance(c, Core), f"Expected {c} to be a Core, got {type(c)}"
+            #     for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
+            #         tiles_needed = self.tiles_needed_levels[(tr, stop)]
+            #         tiles_needed += 1 if self.force_double_buffering else 0
+            #         self.object_fifo_depth[c] += tiles_needed * self.z_stopC[(tr, stop)]
+            # Go through the possible memory cores too
+            memory_allocation = self.mapping.get(tr).memory_allocation
+            for mc in memory_allocation:
+                if mc.id == self.offchip_core_id:
+                    continue  # off-chip has no FIFO depth limit
+                assert isinstance(mc, Core), f"Expected {mc} to be a Core, got {type(mc)}"
+                for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
+                    bds_needed = self.bds_needed_levels[(tr, stop)]
+                    self.bd_depth[mc] += bds_needed * self.m_store[(tr, mc)] * self.z_stopM[(tr, stop)]
         self.context.add_object_fifo_constraints(self.model, self.object_fifo_depth)
 
     # ...................... slot latency ........................ #

@@ -19,11 +19,33 @@ class ComputeTileReuse(Enum):
     REUSE = auto()
     NO_REUSE = auto()
 
+    def __str__(self):
+        if self == ComputeTileReuse.NOT_SET:
+            return "Not Set"
+        elif self == ComputeTileReuse.REUSE:
+            return "Reuse"
+        else:
+            return "No Reuse"
+
+    def __repr__(self):
+        return str(self)
+
 
 class MemTileReuse(Enum):
     NOT_SET = auto()
     REUSE = auto()
     NO_REUSE = auto()
+
+    def __str__(self):
+        if self == MemTileReuse.NOT_SET:
+            return "Not Set"
+        elif self == MemTileReuse.REUSE:
+            return "Reuse"
+        else:
+            return "No Reuse"
+
+    def __repr__(self):
+        return str(self)
 
 
 class IterationVariableType(Enum):
