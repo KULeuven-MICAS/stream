@@ -1,12 +1,20 @@
+layers:
 - name: Conv
   core_allocation: [0, 1, 2, 3]
   inter_core_tiling:
-    - D6, 4  # Output channels
-
+  - dim: D6
+    split: 4
+- name: Conv
+  core_allocation: [0, 1, 2, 3]
+  inter_core_tiling:
+  - dim: D6
+    split: 4
+  
 - name: Gemm
   core_allocation: [0, 1, 2, 3]
   inter_core_tiling:
-    - D2, 4  # Output channels
+  - dim: D2
+    split: 4
 
 - name: Pool
   core_allocation: [4]
@@ -26,4 +34,10 @@
 - name: Relu
   core_allocation: [0, 1, 2, 3]
   inter_core_tiling:
-    - D3, 4  # Output channels
+  - dim: D3
+    split: 4
+
+fused_groups:
+- name: Fused_Group_1
+  layers:
+  - Conv

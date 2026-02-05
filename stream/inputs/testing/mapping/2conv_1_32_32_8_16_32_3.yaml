@@ -1,0 +1,38 @@
+layers:
+- name: Conv1
+  core_allocation:
+  - 0
+  - 1
+  - 2
+  - 3
+  inter_core_tiling:
+  - dim: D6
+    split: 4
+  kernel:
+    name: conv
+    kwargs: {}
+- name: Conv2
+  core_allocation:
+  - 0
+  - 1
+  - 2
+  - 3
+  inter_core_tiling:
+  - dim: D6
+    split: 4
+  kernel:
+    name: conv
+    kwargs: {}
+fused_groups:
+- name: Fused_Group_1
+  layers:
+  - Conv1
+  - Conv2
+  intra_core_tiling:
+  - dim: Conv1.D0
+    tile: 1
+runtime_args:
+  input: {}
+  weights_1: {}
+  weights_2: {}
+  output: {}
