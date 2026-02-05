@@ -14,11 +14,11 @@ from xdsl.dialects.func import CallOp
 from xdsl.irdl import Operation
 
 from stream.compiler.dialects.stream import ComputationNodeOp
-from stream.compiler.kernels.aie_kernel import AIEKernel
+from stream.compiler.kernels.aie_kernel import AIEKernelWithZeroing
 
 
 @dataclass
-class MatVecKernel(AIEKernel):
+class MatVecKernel(AIEKernelWithZeroing):
     element_type: AnyDenseElement
 
     @property

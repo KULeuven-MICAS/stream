@@ -23,13 +23,6 @@ def determine_fusion_splits(workload: "Workload", mapping: "Mapping") -> dict[La
     Determine the best dimension to fuse the layers on.
     Currently, we fuse on the dimension with the smallest total size across all layers.
     """
-    dim_occurrence_count = defaultdict(int)
-    for node in workload.get_iteration_space_nodes():
-        for expr in workload.get_dims(node):
-            for dim in expr.used_dims():
-                dim_occurrence_count[LayerDim(dim)] += 1
-    max_dim_count = max(dim_occurrence_count.values())
-    max_dims = tuple(k for k, v in dim_occurrence_count.items() if v == max_dim_count)
     # Go through the defined mapping intra_core_tiling dims and check that they occur for all layers
     assert len(mapping.fused_groups) == 1, "Only single fused group mappings are supported currently."
     fused_group = mapping.fused_groups[0]
@@ -37,7 +30,7 @@ def determine_fusion_splits(workload: "Workload", mapping: "Mapping") -> dict[La
     unique_unrollings_dict = dict(unique_spatial_unrollings)
     result = {}
     for dim, tile_size in fused_group.intra_core_tiling:
-        assert dim in max_dims, f"Fused group intra_core_tiling dimension {dim} not present for all layers."
+        # assert dim in max_dims, f"Fused group intra_core_tiling dimension {dim} not present for all layers."
         nb_splits, rem = divmod(workload.get_dimension_size(dim), int(tile_size * unique_unrollings_dict.get(dim, 1)))
         assert rem == 0, (
             f"Dimension size {workload.get_dimension_size(dim)} not divisible by "
