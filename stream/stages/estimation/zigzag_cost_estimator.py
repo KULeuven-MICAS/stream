@@ -47,10 +47,11 @@ class ZigZagCostEstimator:
     workload: Workload
     accelerator: Accelerator
     mapping: Mapping
+    nb_spatial_mappings_generated: int = 1
+    temporal_mapping_type: ZigZagTemporalMappingType = ZigZagTemporalMappingType.EVEN
+    loma_lpf_limit: int = 8
 
     input_operand_names = ["A", "B", "C", "D", "E", "F", "G", "H"]
-    temporal_mapping_type = ZigZagTemporalMappingType.EVEN
-    loma_lpf_limit = 8
     loma_show_progress_bar = False
     supported_pr_length = 2
 
@@ -304,6 +305,7 @@ class ZigZagCostEstimator:
             loma_lpf_limit=self.loma_lpf_limit,  # required by LomaEngine
             loma_show_progress_bar=self.loma_show_progress_bar,
             temporal_mapping_type=self.temporal_mapping_type,
+            nb_mappings_generated=self.nb_spatial_mappings_generated,
         )
         return main_stage
 
