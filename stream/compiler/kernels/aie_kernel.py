@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from snaxc.ir.tsl import TiledStridedLayout
 from xdsl.dialects.builtin import FunctionType, StringAttr
 from xdsl.dialects.func import CallOp, FuncOp
 from xdsl.ir import Operation, OpResult, Region
@@ -34,6 +35,9 @@ class AIEKernel(ABC):
 
     @abstractmethod
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]: ...
+
+    def operand_layouts(self) -> Sequence[TiledStridedLayout]:
+        return []
 
     def rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
         # find device op to insert function call
