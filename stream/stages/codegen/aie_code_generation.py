@@ -1,38 +1,50 @@
-import warnings
-from collections.abc import Sequence
-from copy import copy
+from collections import defaultdict
+from collections.abc import Iterator, Sequence
+from itertools import product
 from math import prod
 from typing import cast
 
 from snaxc.dialects.snax import NoneAttr
 from snaxc.dialects.tsl import TSL
 from xdsl.context import MLContext
-from xdsl.dialects.builtin import ArrayAttr, IntegerAttr, MemRefType, ModuleOp
+from xdsl.dialects.builtin import ArrayAttr, IntegerAttr, MemRefType, ModuleOp, ShapedType
 from xdsl.ir import Operation, SSAValue
-from xdsl.irdl import Operand
+from xdsl.ir.affine import AffineDimExpr
+from xdsl.parser import AffineMap
 from xdsl_aie.dialects.aie import AIEDeviceEnum
-from zigzag.datatypes import LayerOperand
-from zigzag.utils import DiGraphWrapper
 
-from stream.compiler.dialects.stream import ComputationNodeOp, EdgeOp, Stream, TransferOp
+from stream.compiler.dialects.stream import ComputationNodeOp, InEdgeOp, OutEdgeOp, Stream, TransferOp
 
 # from stream.compiler.transforms.aie_add_tracing_script import AIEAddTracingScript
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
-from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
+from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass, canonicalize_transformation
 from stream.compiler.transforms.stream_split_transfers import StreamSplitTransfersPass
-from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
+from stream.compiler.transforms.stream_split_unicasts import StreamSplitUnicastsPass
+from stream.datatypes import LayerDim
+from stream.hardware.architecture.core import Core
+from stream.mapping.mapping import Mapping, NodeMapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
-from stream.workload.steady_state.computation import SteadyStateComputation
-from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
-from stream.workload.steady_state.node import SteadyStateNode
-from stream.workload.steady_state.tensor import SteadyStateTensor
-from stream.workload.steady_state.transfer import SteadyStateTransfer
-from stream.workload.steady_state.workload import SteadyStateWorkload
+from stream.workload.steady_state.iteration_space import (
+    IterationVariable,
+    MemTileReuse,
+    SteadyStateIterationSpace,
+)
+from stream.workload.workload import (
+    ComputationNode,
+    HasInputs,
+    HasIterationSpace,
+    HasOutputs,
+    InEdge,
+    Node,
+    OutEdge,
+    TransferNode,
+    Workload,
+)
 
 
 class AIECodeGenerationStage(Stage):
-    REQUIRED_FIELDS = ("codegen_path",)
+    REQUIRED_FIELDS = tuple()
 
     def __init__(
         self,
@@ -48,8 +60,6 @@ class AIECodeGenerationStage(Stage):
         self.context.load_dialect(Stream)
         self.context.load_dialect(TSL)
 
-        self.output_path: str = self.ctx.require_value("codegen_path", self.__class__.__name__)
-
         self.trace_size = self.ctx.get("trace_size", 1048576)
         self.npu = self.ctx.get("npu", "npu2")
         self.runtime_args = self.ctx.get("runtime_args", [])
@@ -58,181 +68,146 @@ class AIECodeGenerationStage(Stage):
     def run(self):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
 
-        for cme, extra_info in sub_stage.run():
-            if cme:
-                self.codegen_main(cme, self.trace_size, self.npu)
-                assert self.module is not None
-            yield self.module, extra_info
-
-    def create_edge_op(
-        self,
-        workload: DiGraphWrapper[SteadyStateNode],
-        edge: SteadyStateTensor,
-        transfer_ops: dict[SteadyStateTransfer, TransferOp],
-    ) -> EdgeOp:
-        """
-        Create an EdgeOp for a given SteadyStateTensor.
-        """
-        assert edge.full_shape is not None
-        memref_type = edge.subview.result.type
-        assert isinstance(memref_type, MemRefType)
-        # get rid of layout for now
-        memref_type = MemRefType(memref_type.element_type, memref_type.shape)
-        if workload.out_degree(edge) > 0:
-            edge_op = EdgeOp(memref_type, edge.node_name)
-        else:
-            # find transfer:
-            transfer_results = []
-            for transfer in workload.predecessors(edge):
-                assert isinstance(transfer, SteadyStateTransfer)
-                print("\t", transfer, transfer.chosen_memory_core)
-                transfer_op = transfer_ops[transfer]
-                transfer_results.append(transfer_op.results[0])
-            edge_op = EdgeOp(None, edge.node_name, transfer_results)
-        return edge_op
+        for ctx in sub_stage.run():
+            self.ctx = ctx
+            self.codegen_main()
+            assert self.module is not None
+            self.ctx.set(module=self.module)
+            yield self.ctx
 
     def create_transfer_op(  # noqa: PLR0912, PLR0915
         self,
-        workload: DiGraphWrapper[SteadyStateNode],
-        transfer: SteadyStateTransfer,
-        compute_ops: dict[SteadyStateComputation, ComputationNodeOp],
-        edge_ops: dict[SteadyStateTensor, EdgeOp],
+        node: TransferNode,
+        mapping: NodeMapping,
+        full_mapping: Mapping,
+        inputs: Sequence[Operation | SSAValue],
+        ssis_dict: dict[HasIterationSpace, SteadyStateIterationSpace],
+        workload: Workload,
     ) -> TransferOp:
         """
         Create a TransferOp for a given SteadyStateTransfer.
         """
+        ssis = ssis_dict[node]
+        if next_compute := next((n for n in workload.successors(node) if isinstance(n, ComputationNode)), None):
+            ssis_dest = ssis_dict[next_compute]
+        else:
+            ssis_dest = ssis
+        # The final transfer (pointing to an OutEdgeOp) requires special treatment
+        is_out_transfer = any(isinstance(user, OutEdge) for user in workload.successors(node))
+
         # Get source and dest and convert to string for TransferOp creation which uses string
-        source = transfer.srcs[0]
-        dest = transfer.dsts[0]
+        # source = transfer.srcs[0]
+        workload_strides = workload.strides_for_tensor(node.outputs[0])
 
-        # construct destionation steady state iteration space
-        dest_op = next(workload.successors(next(workload.successors(transfer))), None)
-        is_output = transfer.tensor.origin.output_operand == transfer.tensor.operand
-        if isinstance(dest_op, SteadyStateComputation) and is_output:
-            dest_op_ssis = [copy(x) for x in dest_op.steady_state_iteration_space.variables if not x.spatial]
-            current_operands = transfer.tensor.loop_dimensions
-            next_layer_operand = next(
-                key for key, val in dest_op.input_operand_source.items() if val == transfer.tensor.origin.id
-            )
-            next_operand_dims = dest_op.operand_dimensionality_order[next_layer_operand]
-            operand_mapping = {prev: cur for (prev, cur) in zip(current_operands, next_operand_dims, strict=True)}
-            dest_ssis_vars = []
-            for ssis_var in transfer.steady_state_iteration_space:
-                copyed_ssis_var = copy(ssis_var)
-                if copyed_ssis_var.dimension not in operand_mapping:
-                    assert not copyed_ssis_var.relevant
-                else:
-                    copyed_ssis_var.dimension = operand_mapping[ssis_var.dimension]
-                    # fill up with destination ssis, overlapping with the ssis of the destination op:
-                    while (
-                        not copyed_ssis_var.spatial
-                        and len(dest_op_ssis) > 0
-                        and dest_op_ssis[0].dimension != copyed_ssis_var.dimension
-                    ):
-                        irrelevant_dim = dest_op_ssis.pop(0)
-                        irrelevant_dim.relevant = False
-                        dest_ssis_vars.append(irrelevant_dim)
-                    if not copyed_ssis_var.spatial:
-                        if not (
-                            dest_op_ssis[0].dimension == copyed_ssis_var.dimension
-                            and dest_op_ssis[0].size == copyed_ssis_var.size
-                        ):
-                            raise RuntimeError("hmmm, this doesn't seem right")
-                        dest_op_ssis.pop(0)
-                    dest_ssis_vars.append(copyed_ssis_var)
+        # To determine transfer type, iterate over kernel ssis vars
+        transfer_shape = [0] * len(node.outputs[0].shape)
+        for kernel_var in ssis.get_kernel_variables():
+            for i, stride in enumerate(workload_strides[kernel_var.dimension]):
+                transfer_shape[i] += stride * kernel_var.size
 
-            for remaining_irrelevant_var in dest_op_ssis:
-                remaining_irrelevant_var.relevant = False
-                dest_ssis_vars.append(remaining_irrelevant_var)
-            dest_ssis = SteadyStateIterationSpace(dest_ssis_vars)
+        assert isinstance(node.outputs[0].subview.source.type, MemRefType)
+
+        # Determine strides based on layout mapping:
+        # ordering of indeces:
+        # TODO: make this more robust
+        num_dims = node.outputs[0].subview.source.type.get_num_dims()
+        tensor_name = node.name[len("Transfer(") : -1]
+        if tensor_name in full_mapping.runtime_args:
+            layout_mapping = cast(AffineMap, full_mapping.runtime_args[tensor_name])
         else:
-            dest_ssis = transfer.steady_state_iteration_space
+            layout_mapping = AffineMap.identity(num_dims)
+        # index order is the order of dimensions in layout. The last element of this list
+        # is unrolled first
+        index_order = [layout_mapping.results.index(AffineDimExpr(i)) for i in range(num_dims)]
+        source_shape = node.outputs[0].subview.source.type.get_shape()
+        strides = ShapedType.strides_for_shape([source_shape[i] for i in index_order])
+        shape_multiplier = [strides[::-1][i] for i in index_order[::-1]]
 
-        if isinstance(dest, SteadyStateComputation):
-            pass
+        # To determine the number of (spatially) parallel transfers, iterate over spatial ssis vars of destination
+        # the spatial variables must not be a spatio-temporal variable of the desintation
+        next_spatio_temporal_vars = [v.dimension for v in ssis_dest.get_spatio_temporal_variables()]
+        relevant_spat_vars = [
+            v for v in ssis.get_spatial_variables() if v.relevant and v.dimension not in next_spatio_temporal_vars
+        ]
+        num_spat_results = prod(v.size for v in relevant_spat_vars)
 
-        dest_tensor = next(workload.successors(transfer))
-        assert isinstance(dest_tensor, SteadyStateTensor)
-        dest_type = dest_tensor.subview.result.type
-        assert isinstance(dest_type, MemRefType)
-
-        # get rid of layout for now
-        assert isinstance(dest_type, MemRefType)
-        dest_type = MemRefType(dest_type.element_type, dest_type.shape)
-
-        source_vals: Sequence[SSAValue | Operation] = []
-        for source in transfer.srcs:
-            if source in edge_ops:
-                source_val = edge_ops[source]
-            else:
-                # find source op
-                if source not in workload:
-                    warnings.warn(f"Source {source} not in workload, applying a little hack :)")  # noqa: B028
-                    source_source = next(workload.predecessors(transfer))
-                    source_source = next(workload.predecessors(source_source))
-                else:
-                    source_source = next(workload.predecessors(source))
-                assert isinstance(source_source, SteadyStateComputation)
-                source_val = compute_ops[source_source]
-            source_vals.append(source_val)
-
-        if isinstance(source_vals[0], EdgeOp):
-            tensor = sorted(transfer.dsts, key=lambda x: x.loop_ranges)[0]
+        # Determine the output type based on this:
+        if is_out_transfer:
+            result_type = node.outputs[0].subview.source.type
+            result_types = (result_type,)
         else:
-            tensor = sorted(transfer.srcs, key=lambda x: x.loop_ranges)[0]
+            result_type = MemRefType(node.outputs[0].operand_type, transfer_shape)
+            # Unroll spatial results: [(s0, 4), (s1, 4)] should give a 4x4 array of results = 16 results
+            result_types = (result_type,) * num_spat_results
 
-        offsets = [x[0] for x in tensor.loop_ranges]
-        sizes = [x[1] - x[0] for x in tensor.loop_ranges]
+        # Determine the spatial strides for this transfer:
+        # Spatial strides are simply determined in a linear fashion, each time prgressing
+        # the number of elements that one transfer type takes.
+        transfer_elements = prod(transfer_shape)
+        # spatio_temporal_elements = prod(v.size for v in ssis_dest.get_spatio_temporal_variables())
+        # spatial_stride = transfer_elements * spatio_temporal_elements
+        # breakpoint()
+        if is_out_transfer:
+            st_factor = num_spat_results // len(inputs)
+        else:
+            st_factor = 1
+        spatial_strides = tuple(range(0, transfer_elements * num_spat_results, transfer_elements * st_factor))
+
+        # Determine the temporal strides for this transfer:
+        seen_dims = defaultdict(lambda: 1)
+        # this assumes that each resulting tile after tiling to be in row-major layout
+        # this could probably benefit from a more holistic view of layout transformation
+
+        all_vars: Sequence[IterationVariable] = []
+        # First, iterate over kenrel dimensions in row-major order:
+        kernel_var_dict = {v.dimension: v for v in ssis.get_kernel_variables()}
+        filtered_vars = [(dim, strides) for dim, strides in workload_strides.items() if any(strides)]
+        ordered_strides = sorted(filtered_vars, key=lambda x: x[1])
+        ordered_strides = [ordered_strides[i] for i in index_order]
+        all_vars.extend(kernel_var_dict[dim] for dim, _ in ordered_strides)
+        # Then, iterate over relevant spatial vars:
+        all_vars.extend(var for var in ssis.get_spatial_variables() if var.relevant)
+        # This is only relevant for first and last ops, which should not have spatio-temporal vars.
+        # After that, go over the temporal strides (both relevant and irellevant)
+        # that aren't kept local in memtiles.
+        all_vars.extend(
+            var for var in ssis.get_temporal_variables() if var.relevant or var.mem_tile_reuse != MemTileReuse.REUSE
+        )
+
+        # I dont' think offsets are relevant anymore with the new representation
+        offsets = [0]
+
+        # Construct sizes and strides
+        sizes = []
         strides = []
-        for loop_dim in tensor.loop_dimensions:
-            stride = prod(
-                iv.size
-                for iv in transfer.steady_state_iteration_space.variables
-                if iv.spatial and iv.dimension == loop_dim
-            )
-            strides.append(stride)
+        for var in all_vars:
+            sizes.insert(0, var.size)
+            stride = workload_strides[var.dimension]
+            # multiply the stride by previous iteration vars
+            stride = tuple(seen_dims[var.dimension] * x for x in stride)
+            seen_dims[var.dimension] *= var.size
+            # convert stride to int (assumes dram row-major layout):
+            stride = sum(x * y for (x, y) in zip(stride, shape_multiplier, strict=True))
+            strides.insert(0, stride)
 
-        # determine spatial strides
-        spatial_strides = []
-        if len(source_vals) > 1:
-            sorted_transfers = sorted(transfer.srcs, key=lambda x: x.loop_ranges)
-        else:
-            sorted_transfers = sorted(transfer.dsts, key=lambda x: x.loop_ranges)
-        unique_transfers = {x.loop_ranges: x for x in sorted_transfers}
-        if len(unique_transfers) > 1:
-            for dim in tensor.loop_dimensions:
-                spatial_strides.append(
-                    list(unique_transfers.values())[1].loop_ranges_per_dim[dim][0]
-                    - list(unique_transfers.values())[0].loop_ranges_per_dim[dim][0]
-                )
-        else:
-            for dim in tensor.loop_dimensions:
-                spatial_strides.append(transfer.srcs[0].loop_ranges_per_dim[dim][0])
+        sizes, strides = canonicalize_transformation(sizes, strides)
 
-        result_types = [dest_type] * len(unique_transfers)
-
-        memtile = transfer.chosen_memory_core
-        if memtile is None:
-            memtile = NoneAttr()
-        else:
-            row, col = memtile.row_id, memtile.col_id
+        if isinstance(mapping.memory_allocation, Core):
+            row, col = mapping.memory_allocation.row_id, mapping.memory_allocation.col_id
             assert row is not None
             assert col is not None
             memtile = ArrayAttr([IntegerAttr.from_index_int_value(x) for x in (col, row)])
+        else:
+            memtile = NoneAttr()
 
         op = TransferOp(
-            source_vals,
+            inputs,
             result_types,
-            "source_todo",
-            "dest_todo",
-            "tensor_todo",
-            transfer.steady_state_iteration_space,
-            dest_ssis,
+            ssis,
             offsets,
             sizes,
             strides,
             spatial_strides,
-            [str(dim) for dim in tensor.loop_dimensions],
             memtile,
         )
 
@@ -240,104 +215,129 @@ class AIECodeGenerationStage(Stage):
 
     def create_computation_node_op(
         self,
-        workload: DiGraphWrapper[SteadyStateNode],
-        compute: SteadyStateComputation,
-        transfer_ops: dict[SteadyStateTransfer, TransferOp],
-    ) -> ComputationNodeOp:
-        # get inputs
-        inputs = [(x[0], x[2].get("operand")) for x in workload.in_edges(compute, data=True)]
-        ordered_inputs = map(
-            lambda x: x[0], sorted(inputs, key=lambda x: compute.input_operands.index(cast(LayerOperand, x[1])))
-        )
-        transfers: list[TransferOp] = []
-        operands: list[Operand] = []
-        for input in ordered_inputs:
-            transfer = next(workload.predecessors(input))
-            assert isinstance(transfer, SteadyStateTransfer)
-            transfers.append(transfer_op := transfer_ops[transfer])
-            if len(transfer_op.results) == 1:
-                operands.append(transfer_op.results[0])
-            else:
-                sorted_transfers = sorted(transfer.dsts, key=lambda x: x.loop_ranges)
-                unique_transfers = {x.loop_ranges: x for x in sorted_transfers}
-                assert isinstance(input, SteadyStateTensor)
-                index = list(unique_transfers.keys()).index(input.loop_ranges)
-                operands.append(transfer_op.results[index])
+        node: ComputationNode,
+        mapping: NodeMapping,
+        full_mapping: Mapping,
+        inputs: Sequence[Operation | SSAValue],
+        ssis: SteadyStateIterationSpace,
+        workload: Workload,
+    ) -> Sequence[ComputationNodeOp]:
+        ops: list[ComputationNodeOp] = []
 
-        # get output type:
-        output_type = next(
-            tensor
-            for tensor in workload.successors(compute)
-            if isinstance(tensor, SteadyStateTensor) and tensor.operand == compute.output_operand
-        ).subview.result.type
-        # get rid of layout for now
-        assert isinstance(output_type, MemRefType)
-        output_type = MemRefType(output_type.element_type, output_type.shape)
-
-        assert (core := compute.chosen_resource_allocation) is not None
-        row, col = core.row_id, core.col_id
-        assert row is not None
-        assert col is not None
-        core_allocation = ArrayAttr([IntegerAttr.from_index_int_value(x) for x in (col, row)])
-        # create computation node op with the needed information
-        op = ComputationNodeOp(
-            operands,
-            None,
-            kernel=compute.kernel.function_name,
-            core_allocation=core_allocation,
-            ssis=compute.steady_state_iteration_space,
-            result_types=[output_type],
+        # add spatio-temporal dims to get only inner shape:
+        st_vars = ssis.get_spatio_temporal_variables()
+        st_var: tuple[tuple[LayerDim, int], ...]
+        assert len(st_vars) <= 1
+        if len(st_vars):
+            st_var = ((st_vars[0].dimension, st_vars[0].size),)
+        else:
+            st_var = tuple()
+        # determine new result type based on spatial mapping
+        shape = workload.get_tensor_shape_with_tiling(
+            node.output, tuple(workload.get_unique_dims_inter_core_tiling(node, full_mapping)) + st_var
         )
 
-        return op
+        result_type = MemRefType(node.outputs[0].operand_type, shape)
+        result_type = MemRefType(node.output.operand_type, shape)
+        workload.global_mapping(node, node.operand_mapping[-1])
+        # Spatial: (m, 4), (n, 4)
+        # step 1: get iterable over all combinations with [(LayerDim, value), (LayerDim, value)] as data
+        ranges = [[(spat_var.dimension, x) for x in range(spat_var.size)] for spat_var in ssis.get_spatial_variables()]
+        # step 2:
+        combined_ranges = list(product(*ranges))
+        for core, comb_ran in zip(mapping.resource_allocation, combined_ranges, strict=True):
+            selected_inputs = []
+            for input in inputs:
+                assert isinstance(input, TransferOp)
+                selected_inputs.append(
+                    input.get_relevant_output(comb_ran, [x.dimension for x in ssis.get_spatio_temporal_variables()])
+                )
 
-    def generate_steady_state_workload(self, workload: SteadyStateWorkload) -> ModuleOp:
-        edge_ops: dict[SteadyStateTensor, EdgeOp] = {}
-        transfer_ops: dict[SteadyStateTransfer, TransferOp] = {}
-        compute_ops: dict[SteadyStateComputation, ComputationNodeOp] = {}
+            assert isinstance(core, Core)
+            row, col = core.row_id, core.col_id
+            assert row is not None
+            assert col is not None
+            core_allocation = ArrayAttr([IntegerAttr.from_index_int_value(x) for x in (col, row)])
+            assert mapping.kernel is not None
+            op = ComputationNodeOp((result_type,), mapping.kernel.unique_name, selected_inputs, core_allocation, ssis)
+            ops.append(op)
 
-        all_ops: list[Operation] = []
+        return ops
+
+    def generate_steady_state_workload(
+        self, workload: Workload, mapping: Mapping, ssis_dict: dict[HasIterationSpace, SteadyStateIterationSpace]
+    ) -> ModuleOp:
+        ops: dict[Node, Sequence[Operation]] = {}
+        # edge_ops: dict[SteadyStateTensor, InEdgeOp | OutEdgeOp] = {}
+        # transfer_ops: dict[SteadyStateTransfer, TransferOp] = {}
+        # compute_ops: dict[SteadyStateComputation, ComputationNodeOp] = {}
+
+        # all_ops: list[Operation] = []
+        def inputs(node: HasInputs) -> Iterator[Operation]:
+            for inp in node.inputs:
+                for other_node in workload.nodes:
+                    if isinstance(other_node, HasOutputs) and inp in other_node.outputs:
+                        yield from ops[other_node]
 
         for node in workload.topological_sort():
-            # create edge
-            if isinstance(node, SteadyStateTensor) and (
-                workload.in_degree(node) == 0 or workload.out_degree(node) == 0
-            ):
-                # Create edge op for the tensor
-                edge_op = self.create_edge_op(workload, node, transfer_ops)
-                edge_ops[node] = edge_op
-                all_ops.append(edge_op)
+            if isinstance(node, InEdge):
+                ops[node] = [InEdgeOp(node)]
+            if isinstance(node, OutEdge):
+                inps = tuple(inputs(node))
+                assert len(inps) == 1
+                inp = inps[0]
+                ops[node] = [OutEdgeOp(node, inp.results)]
+            if isinstance(node, TransferNode):
+                ops[node] = [
+                    self.create_transfer_op(
+                        node,
+                        mapping.get(node),
+                        mapping,
+                        tuple(inputs(node)),
+                        ssis_dict,
+                        workload,
+                    )
+                ]
+            if isinstance(node, ComputationNode):
+                ops[node] = self.create_computation_node_op(
+                    node, mapping.get(node), mapping, tuple(inputs(node)), ssis_dict[node], workload
+                )
 
-            # create transfer
-            if isinstance(node, SteadyStateTransfer):
-                transfer_op = self.create_transfer_op(workload, node, compute_ops, edge_ops)
-                transfer_ops[node] = transfer_op
-                all_ops.append(transfer_op)
+        all_ops = []
+        for opsx in ops.values():
+            all_ops.extend(opsx)
 
-            if isinstance(node, SteadyStateComputation):
-                computation_node_op = self.create_computation_node_op(workload, node, transfer_ops)
-                compute_ops[node] = computation_node_op
-                all_ops.append(computation_node_op)
-
-        module = ModuleOp(list(all_ops))
+        module = ModuleOp(all_ops)
 
         return module
 
-    def codegen_main(self, sss: SteadyStateScheduler, trace_size: int, npu: AIEDeviceEnum) -> None:
-        workload = sss.steady_state_workload
+    def codegen_main(self) -> None:
+        workload: Workload = self.ctx.get("workload")
+        trace_size: int = self.ctx.get("trace_size", 1048576)  # noqa: F841
+        npu: AIEDeviceEnum = self.ctx.get("npu", "npu2")
         assert workload is not None
 
-        aie_kernels = {
-            node.kernel.function_name: node.kernel
-            for node in workload.node_list
-            if isinstance(node, SteadyStateComputation)
-        }
+        mapping = self.ctx.get("scheduler").mapping
+        aie_kernels = {nm.kernel.unique_name: nm.kernel for nm in mapping.values() if nm.kernel is not None}
+        assert isinstance(mapping, Mapping)
 
-        module = self.generate_steady_state_workload(workload)
+        ssis_dict = self.ctx.get("scheduler").ssis
 
+        module = self.generate_steady_state_workload(workload, mapping, ssis_dict)
+
+        with open("test.mlir", "w") as f:
+            f.write(str(module))
+
+        StreamSplitUnicastsPass().apply(self.context, module)
+
+        with open("test2.mlir", "w") as f:
+            f.write(str(module))
         # SetNoReusePass().apply(self.context, module)
         # Split transfers in push and pull
         StreamSplitTransfersPass().apply(self.context, module)
+
+        with open("test3.mlir", "w") as f:
+            f.write(str(module))
 
         # Arguments that will be supplied via runtime sequence, modify as needed
         # args = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]  # gemm
@@ -354,10 +354,6 @@ class AIECodeGenerationStage(Stage):
         # if False:
         # AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
 
-        # print output to codegen path
-        # file = open(self.output_path, "w")
-        # printer = Printer(file)
-        # printer.print(module)
         self.module = module
 
     def is_leaf(self) -> bool:

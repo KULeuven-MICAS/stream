@@ -1,23 +1,24 @@
-from enum import Enum
+from enum import Flag
 
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
-from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.steady_state.node import Node
 from stream.workload.steady_state.tensor import SteadyStateTensor
 
 
-class TransferType(Enum):
-    """Enumeration for different types of data transfer operations."""
+class TransferType(Flag):
+    """Flags for different types of data transfer operations (can be combined)."""
 
-    UNICAST = "unicast"
-    DISTRIBUTE = "distribute"
-    BROADCAST = "broadcast"
-    JOIN = "join"
-    DISTRIBROAD = "distribroad"
+    UNICAST = 1
+    DISTRIBUTE = 2
+    BROADCAST = 3
+    JOIN = 4
+    REDUCE = 5
+    NONE = 6
 
 
-class SteadyStateTransfer(SteadyStateNode):
+class SteadyStateTransfer(Node):
     """A node representing a data transfer operation in the graph."""
 
     def __init__(  # noqa: PLR0913

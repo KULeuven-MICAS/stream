@@ -4,8 +4,7 @@ from stream.opt.allocation.genetic_algorithm.fitness_evaluator import StandardFi
 from stream.opt.allocation.genetic_algorithm.genetic_algorithm import GeneticAlgorithm
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
-from stream.utils import get_unique_nodes
-from stream.workload.computation.computation_node import ComputationNode
+from stream.workload.workload import ComputationNode
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +54,12 @@ class GeneticAlgorithmAllocationStage(Stage):
         self.scheduling_order = self.ctx.require_value("scheduling_order", self.__class__.__name__)
         self.latency_attr = self.ctx.get("latency_attr", "latency_total2")
 
+        raise NotImplementedError("GeneticAlgorithmAllocationStage is not ready for use yet.")
         # Determine the set of all (layer, group) combinations to be allocated separately
         self.layer_groups: list[tuple[int, int]] = sorted(set((n.id, n.group) for n in self.workload.node_list))
 
         # self.coarse_node_ids contains all the original node (aka layers) ids of the original graph
-        self.unique_nodes = get_unique_nodes(self.workload)
+        self.unique_nodes = get_unique_nodes(self.workload)  # noqa: F821
         self.coarse_node_ids: list[int] = [id for id, _ in self.layer_groups]
         # allocated to more than one core
         # TODO is this sorting key correct?

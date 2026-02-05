@@ -1,62 +1,43 @@
-- name: default
-  core_allocation: [0, 1, 2, 3]
-  intra_core_tiling:
-    - D, all
-  inter_core_tiling:
-    - K, 4
-
+layers:
 - name: Conv
   core_allocation: [0, 1, 2, 3]
-  intra_core_tiling:
-    - OY, all
   inter_core_tiling:
-    - K, 4
-
+  - dim: D6
+    split: 4
+- name: Conv
+  core_allocation: [0, 1, 2, 3]
+  inter_core_tiling:
+  - dim: D6
+    split: 4
+  
 - name: Gemm
   core_allocation: [0, 1, 2, 3]
-  intra_core_tiling:
-    - D, all
   inter_core_tiling:
-    - K, 4
+  - dim: D2
+    split: 4
 
 - name: Pool
   core_allocation: [4]
-  intra_core_tiling:
-    - OY, all
-  inter_core_tiling:
-    - K, 1
 
 - name: MaxPool
   core_allocation: [4]
-  intra_core_tiling:
-    - OY, all
-  inter_core_tiling:
-    - K, 1
 
 - name: AveragePool
   core_allocation: [4]
-  intra_core_tiling:
-    - OY, all
-  inter_core_tiling:
-    - K, 1
 
 - name: GlobalAveragePool
   core_allocation: [4]
-  intra_core_tiling:
-    - OY, all
-  inter_core_tiling:
-    - K, 1
 
 - name: Add
   core_allocation: [5]
-  intra_core_tiling:
-    - D, all
-  inter_core_tiling:
-    - H, 1
 
 - name: Relu
   core_allocation: [0, 1, 2, 3]
-  intra_core_tiling:
-    - D, all
   inter_core_tiling:
-    - H, 4
+  - dim: D3
+    split: 4
+
+fused_groups:
+- name: Fused_Group_1
+  layers:
+  - Conv

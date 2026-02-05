@@ -5,8 +5,7 @@ from typing import TypeAlias
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.utils import return_tiling_type
-from stream.workload.computation.computation_node import ComputationNode, GeneratedComputationNode
-from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
+from stream.workload.workload import ComputationNode
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +28,7 @@ class SchedulingOrderGenerationStage(Stage):
 
         # Mapping from (base_id, gen_id) to layer_id
         self.base_and_gen_to_layer_id: dict[tuple[int, int], int] = {
-            (n.base_id, n.gen_id): n.id for n in self.workload.node_list if isinstance(n, GeneratedComputationNode)
+            (n.base_id, n.gen_id): n.id for n in self.workload.node_list if isinstance(n, ComputationNode)
         }
 
     def run(self):
@@ -77,8 +76,8 @@ class SchedulingOrderGenerationStage(Stage):
         some_node_per_layer = [self.get_some_node_for_id(layer_id) for layer_id in filtered_stack]
 
         # Keep track which nodes are generated and which are not
-        non_generated_nodes = [n for n in some_node_per_layer if not isinstance(n, GeneratedComputationNode)]
-        generated_base_nodes = [n for n in some_node_per_layer if isinstance(n, GeneratedComputationNode)]
+        non_generated_nodes = [n for n in some_node_per_layer if not isinstance(n, ComputationNode)]
+        generated_base_nodes = [n for n in some_node_per_layer if isinstance(n, ComputationNode)]
         generated_base_ids = [n.base_id for n in generated_base_nodes]
 
         nb_intra_core_slots = self._get_and_assert_intra_core_tiling(non_generated_nodes)
@@ -124,9 +123,7 @@ class SchedulingOrderGenerationStage(Stage):
         if not generated_base_ids:
             return order
 
-        gen_base_nodes: list[GeneratedComputationNode] = [
-            self.get_some_node_for_id(base_id) for base_id in generated_base_ids
-        ]  # type: ignore
+        gen_base_nodes: list[ComputationNode] = [self.get_some_node_for_id(base_id) for base_id in generated_base_ids]  # type: ignore
         gen_dim_size: dict[int, int] = {
             base_node.id: self.get_nb_generated_nodes(base_node) for base_node in gen_base_nodes
         }
@@ -187,7 +184,7 @@ class SchedulingOrderGenerationStage(Stage):
         NOTE For `GeneratedComputationNode`, this also includes the `gen_id` dimension for the same base_id. The
         `layer_id` must always be a base_id"""
         node = self.get_some_node_for_id(layer_id)
-        if isinstance(node, GeneratedComputationNode):
+        if isinstance(node, ComputationNode):
             split_dim = node.gen_split_layer_dim
             intra_core_tiling = [(dim, size) for dim, size in node.intra_core_tiling if dim != split_dim]
             nb_nodes_per_gen_id = self.get_total_tiling_size(intra_core_tiling)
@@ -205,7 +202,7 @@ class SchedulingOrderGenerationStage(Stage):
         )
         return min_tiling_factor
 
-    def _get_nb_generated_layer_ids_per_intra_slot(self, generated_base_nodes: list[GeneratedComputationNode]) -> int:
+    def _get_nb_generated_layer_ids_per_intra_slot(self, generated_base_nodes: list[ComputationNode]) -> int:
         """Generated nodes are split by default over their `gen_split_layer_dim` and the number of splits is equal to
         the loop dim size of that layer dim. However, this is not necessarily equal to the intra-core tiling of other
         nodes.
@@ -238,7 +235,7 @@ class SchedulingOrderGenerationStage(Stage):
         nb_layer_ids_per_intra_slot = nb_layer_ids // tiling_factor
         return nb_layer_ids_per_intra_slot
 
-    def _get_and_assert_nb_generated_nodes(self, generated_base_nodes: list[GeneratedComputationNode]) -> int:
+    def _get_and_assert_nb_generated_nodes(self, generated_base_nodes: list[ComputationNode]) -> int:
         if not generated_base_nodes:
             return 0
         all_nb_generated_nodes = [self.get_nb_generated_nodes(node) for node in generated_base_nodes]
@@ -247,7 +244,7 @@ class SchedulingOrderGenerationStage(Stage):
         return nb_generated_nodes
 
     @staticmethod
-    def get_total_tiling_size(tiling: TILING_T | TILING_WILDCARD_T) -> int:
+    def get_total_tiling_size(tiling) -> int:
         tiling_converted = return_tiling_type(tiling)
         return prod(size for _, size in tiling_converted)
 
@@ -256,9 +253,7 @@ class SchedulingOrderGenerationStage(Stage):
         `GeneratedComputationNodes` who all have a different layer ID but the same `base_id` and the same performance"""
 
         nodes_in_stack = [next(n for n in self.workload.node_list if n.id == layer_id) for layer_id in stack]
-        filtered_stack = tuple(
-            n.id for n in nodes_in_stack if not isinstance(n, GeneratedComputationNode) or n.gen_id == 0
-        )
+        filtered_stack = tuple(n.id for n in nodes_in_stack if not isinstance(n, ComputationNode) or n.gen_id == 0)
         return filtered_stack
 
     def get_gen_layer_id(self, base_id: int, gen_id: int):
@@ -274,6 +269,6 @@ class SchedulingOrderGenerationStage(Stage):
         """Get any node (regardless of sub-id) with the given layer_id"""
         return next(n for n in self.workload.node_list if n.id == layer_id)
 
-    def get_nb_generated_nodes(self, node: GeneratedComputationNode) -> int:
+    def get_nb_generated_nodes(self, node: ComputationNode) -> int:
         """Get the number of generated nodes for a given base_id"""
         return max(gen_id for base_id, gen_id in self.base_and_gen_to_layer_id if base_id == node.base_id) + 1

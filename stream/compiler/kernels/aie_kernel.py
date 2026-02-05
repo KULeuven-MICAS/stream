@@ -3,8 +3,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from xdsl.dialects.builtin import FunctionType, StringAttr
-from xdsl.dialects.func import FuncOp
-from xdsl.ir import Operation, Region
+from xdsl.dialects.func import CallOp, FuncOp
+from xdsl.ir import Operation, OpResult, Region
 from xdsl.pattern_rewriter import PatternRewriter
 from xdsl.rewriter import InsertPoint
 from xdsl.traits import SymbolTable
@@ -16,6 +16,10 @@ from stream.compiler.dialects.stream import ComputationNodeOp
 @dataclass
 class AIEKernel(ABC):
     utilization: float
+
+    @property
+    def unique_name(self) -> str:
+        return self.function_name
 
     @property
     @abstractmethod
@@ -50,3 +54,33 @@ class AIEKernel(ABC):
         # replace computation node with func call op
         rewriter.insert_op(self.function_call(op), InsertPoint.after(op))
         rewriter.erase_matched_op()
+
+
+@dataclass
+class AIEKernelWithZeroing(AIEKernel, ABC):
+    @property
+    @abstractmethod
+    def zero_name(self) -> str: ...
+
+    @abstractmethod
+    def zero_type(self, op: ComputationNodeOp) -> FunctionType: ...
+
+    def zero_call(self, op: ComputationNodeOp) -> Operation:
+        assert op.output is not None
+        return CallOp(self.zero_name, [op.output], [])
+
+    def rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
+        # find device op to insert zero call
+        device_op = op
+        while not isinstance(device_op, DeviceOp):
+            assert device_op.parent
+            device_op = device_op.parent
+
+        SymbolTable.insert_or_update(device_op, FuncOp(self.zero_name, self.zero_type(op), Region(), "private"))
+
+        # Insert zeroing after definition of output
+        assert isinstance(op.output, OpResult)
+        rewriter.insert_op(self.zero_call(op), InsertPoint.after(op.output.op))
+
+        # Then, rewrite op as before:
+        AIEKernel.rewrite(self, op, rewriter)

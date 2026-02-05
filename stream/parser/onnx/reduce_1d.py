@@ -1,10 +1,10 @@
 from typing import Any
 
-from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.mapping import InterCoreMappingAttributes
 
 
-class Reduce1DParser(OnnxComputeOperatorParser):
+class Reduce1DParser(OnnxOperatorParser):
     """Parses an operator that reduces the data in a single dimension.
     e.g. sum over one row or max of a single row
     """

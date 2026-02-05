@@ -6,13 +6,13 @@ from zigzag.utils import DiGraphWrapper
 
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import Resource, TimeSlotAllocation
 from stream.workload.steady_state.computation import SteadyStateComputation
-from stream.workload.steady_state.node import SteadyStateNode
+from stream.workload.steady_state.node import Node
 from stream.workload.steady_state.rolling_buffer import SteadyStateRollingBuffer
 from stream.workload.steady_state.tensor import SteadyStateTensor, TensorFlag
 from stream.workload.steady_state.transfer import SteadyStateTransfer
 
 
-class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
+class SteadyStateWorkload(DiGraphWrapper[Node]):
     """Workload graph for steady state scheduling, supporting multiple node types."""
 
     def __init__(self, **attr: Any):
@@ -30,11 +30,11 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
     def __repr__(self) -> str:
         return str(self)
 
-    def add(self, node_obj: SteadyStateNode):
+    def add(self, node_obj: Node):
         self.add_node(node_obj)
         # Edges should be added externally as needed
 
-    def add_edge(self, u: SteadyStateNode, v: SteadyStateNode, **attrs: Any):
+    def add_edge(self, u: Node, v: Node, **attrs: Any):
         """Add an edge between two nodes in the workload graph."""
         super().add_edges_from(
             [
@@ -42,9 +42,7 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
             ]
         )
 
-    def get_edges(
-        self, data: bool = False
-    ) -> list[tuple[SteadyStateNode, SteadyStateNode]] | list[tuple[SteadyStateNode, SteadyStateNode, dict[Any, Any]]]:
+    def get_edges(self, data: bool = False) -> list[tuple[Node, Node]] | list[tuple[Node, Node, dict[Any, Any]]]:
         """Return all edges in the workload graph."""
         return list(self.edges(data=data))  # type: ignore
 
@@ -63,7 +61,7 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
         """Return a list of all tensor nodes in the workload."""
         return [node for node in self.nodes() if isinstance(node, SteadyStateTensor)]
 
-    def get_subgraph(self, nodes: list[SteadyStateNode]) -> "SteadyStateWorkload":
+    def get_subgraph(self, nodes: list[Node]) -> "SteadyStateWorkload":
         return self.subgraph(nodes)  # type: ignore
 
     def to_timeslotallocation(self) -> TimeSlotAllocation:
@@ -92,7 +90,7 @@ class SteadyStateWorkload(DiGraphWrapper[SteadyStateNode]):
         (the generic ``TimeSlotAllocation`` already accepts that).
         """
 
-        allocations: list[tuple[int, Resource, SteadyStateNode]] = []
+        allocations: list[tuple[int, Resource, Node]] = []
         global_slot = 0  # next free slot number
 
         for generation_iter in nx.topological_generations(self):

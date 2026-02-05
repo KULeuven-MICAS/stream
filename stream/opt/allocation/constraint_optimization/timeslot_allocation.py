@@ -9,10 +9,7 @@ from pyparsing import Any
 
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.workload.steady_state.computation import SteadyStateComputation
-from stream.workload.steady_state.node import SteadyStateNode
-from stream.workload.steady_state.tensor import SteadyStateTensor
-from stream.workload.steady_state.transfer import SteadyStateTransfer
+from stream.workload.workload import Node
 
 # --------------------------------------------------------------------------- #
 # Helpers                                                                     #
@@ -50,7 +47,7 @@ class TimeSlotAllocation:
 
         * rows   - any resources (`Core`, `CommunicationLink`, …)
         * cols   - integer time-slots
-        * cells  - *one* `SteadyStateNode` (or subclass) or empty
+        * cells  - *one* `Node` (or subclass) or empty
     """
 
     # .................................................... nested exception ...
@@ -60,14 +57,14 @@ class TimeSlotAllocation:
     # ........................................................... constructor
     def __init__(
         self,
-        allocations: list[tuple[int, Resource, SteadyStateNode]] | None = None,
+        allocations: list[tuple[int, Resource, Node]] | None = None,
         node_type: NodeType = NodeType.STEADY_STATE,
     ):
-        self.allocations: list[tuple[int, Resource, SteadyStateNode]] = []
-        self._slot_res_to_node: dict[int, dict[Resource, SteadyStateNode]] = {}
-        self._node_to_res: dict[SteadyStateNode, set[Resource]] = {}
+        self.allocations: list[tuple[int, Resource, Node]] = []
+        self._slot_res_to_node: dict[int, dict[Resource, Node]] = {}
+        self._node_to_res: dict[Node, set[Resource]] = {}
         self._res_max_slot: dict[Resource, int] = {}
-        self._node_types: dict[SteadyStateNode, NodeType] = {}
+        self._node_types: dict[Node, NodeType] = {}
 
         if allocations:
             for slot, res, node in allocations:
@@ -90,16 +87,12 @@ class TimeSlotAllocation:
     def resources(self) -> list[Resource]:
         return sorted(self._res_max_slot, key=_resource_key)
 
-    @property
-    def nodes(self) -> list[SteadyStateNode]:
-        return sorted(self._node_to_res, key=lambda n: n.id)
-
     # .............................................................. low-lvl
     def _add_alloc(
         self,
         slot: int,
         res: Resource,
-        node: SteadyStateNode,
+        node: Node,
         node_type: NodeType = NodeType.STEADY_STATE,
     ):
         # double-booking guard
@@ -107,7 +100,7 @@ class TimeSlotAllocation:
             return  # already booked exactly like this
         if slot in self._slot_res_to_node and res in self._slot_res_to_node[slot]:
             raise self.AllocationConflictError(
-                f"slot {slot} / {_resource_key(res)} already holds {self._slot_res_to_node[slot][res].node_name}"
+                f"slot {slot} / {_resource_key(res)} already holds {self._slot_res_to_node[slot][res].name}"
             )
 
         self.allocations.append((slot, res, node))
@@ -119,7 +112,7 @@ class TimeSlotAllocation:
     # ................................................. public slot helpers
     def add_node_to_next_slot(
         self,
-        node: SteadyStateNode,
+        node: Node,
         res: Resource,
         *,
         min_slot: int = 0,
@@ -132,26 +125,26 @@ class TimeSlotAllocation:
         self._add_alloc(next_slot, res, node, node_type)
         return next_slot
 
-    def get_allocations_in_slot(self, slot: int) -> dict[Resource, SteadyStateNode]:
+    def get_allocations_in_slot(self, slot: int) -> dict[Resource, Node]:
         return dict(self._slot_res_to_node.get(slot, {}))
 
-    def get_resources_for_node(self, node: SteadyStateNode) -> set[Resource]:
+    def get_resources_for_node(self, node: Node) -> set[Resource]:
         return set(self._node_to_res.get(node, set()))
 
     def get_resources_for_node_id(self, node_id: int) -> set[Resource]:
         nodes = [n for n in self._node_to_res if n.id == node_id]
         return set(res for n in nodes for res in self._node_to_res[n])
 
-    def get_timeslot_of_node_on_resource(self, node: SteadyStateNode, res: Resource) -> int:
+    def get_timeslot_of_node_on_resource(self, node: Node, res: Resource) -> int:
         for slot, res_map in self._slot_res_to_node.items():
             if res_map.get(res) is node:
                 return slot
-        raise ValueError(f"{node.node_name} not on {_resource_key(res)}.")
+        raise ValueError(f"{node.name} not on {_resource_key(res)}.")
 
-    def get_timeslot_of_node(self, node: SteadyStateNode) -> int:
+    def get_timeslot_of_node(self, node: Node) -> int:
         slots = [slot for slot, res_map in self._slot_res_to_node.items() if node in res_map.values()]
         if not slots:
-            raise ValueError(f"{node.node_name} not scheduled.")
+            raise ValueError(f"{node.name} not scheduled.")
         return max(slots)
 
     def get_timeslot_runtime(self, slot: int) -> int:
@@ -197,7 +190,7 @@ class TimeSlotAllocation:
                     node = self._slot_res_to_node.get(s, {}).get(res)
                     if node:
                         nt = self._node_types.get(node, NodeType.STEADY_STATE)
-                        txt = f"{node.node_name}"[:20]
+                        txt = f"{node.name}"[:20]
                         row += f"|{color[nt]}{txt:^{col_w}}{color['END']}"
                     else:
                         row += f"|{'':^{col_w}}"
@@ -262,7 +255,7 @@ class TimeSlotAllocation:
             dur = node.runtime
             trace_events.append(
                 {
-                    "name": node.node_name,
+                    "name": node.name,
                     "cat": cat,
                     "ph": "X",
                     "ts": ts,
@@ -270,8 +263,6 @@ class TimeSlotAllocation:
                     "pid": pid,
                     "tid": tid,
                     "args": {
-                        "id": node.id,
-                        "type": node.type,
                         "slot": slot,
                         "resource": _resource_key(res),
                     },
@@ -360,16 +351,3 @@ class TimeSlotAllocation:
         finally:
             sys.stdout = stdout
         return buff.getvalue()
-
-    # .................................................... node type helpers
-    def get_computation_nodes(self):
-        """Return all SteadyStateComputation nodes in the allocation."""
-        return [n for n in self.nodes if isinstance(n, SteadyStateComputation)]
-
-    def get_transfer_nodes(self):
-        """Return all SteadyStateTransfer nodes in the allocation."""
-        return [n for n in self.nodes if isinstance(n, SteadyStateTransfer)]
-
-    def get_tensor_nodes(self):
-        """Return all SteadyStateTensor nodes in the allocation."""
-        return [n for n in self.nodes if isinstance(n, SteadyStateTensor)]

@@ -6,11 +6,11 @@ from zigzag.parser.onnx.utils import (
 )
 from zigzag.parser.workload_factory import LayerNodeFactory
 
-from stream.parser.onnx.operator_parser import OnnxComputeOperatorParser
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.computation.pooling_node import PoolingNode
 
 
-class PoolingParser(OnnxComputeOperatorParser):
+class PoolingParser(OnnxOperatorParser):
     """Parses an onnx pooling operator into a PoolingNode.
     e.g. MaxPool, AveragePool, etc.
     """

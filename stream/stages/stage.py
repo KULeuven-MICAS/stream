@@ -1,8 +1,6 @@
 from abc import ABCMeta, abstractmethod
-from collections.abc import Generator
-from typing import Any, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
-from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.context import StageContext
 
 
@@ -39,7 +37,7 @@ class Stage(metaclass=ABCMeta):
         return False
 
     @abstractmethod
-    def run(self) -> Generator[tuple[StreamCostModelEvaluation, Any], None, None]: ...
+    def run(self) -> StageContext: ...
 
 
 @runtime_checkable
@@ -57,7 +55,21 @@ class MainStage:
         self.list_of_callables = list_of_callables
 
     def run(self):
-        answers: list[tuple[StreamCostModelEvaluation, Any]] = []
-        for cme, extra_info in self.list_of_callables[0](self.list_of_callables[1:], self.ctx).run():
-            answers.append((cme, extra_info))
+        answers: list[StageContext] = []
+        for ctx in self.list_of_callables[0](self.list_of_callables[1:], self.ctx).run():
+            answers.append(ctx)
         return answers
+
+
+class LeafStage(Stage):
+    """Leaf stage class that doesn't do anything besides return the ctx."""
+
+    def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
+        assert not list_of_callables, "LeafStage must have an empty list_of_callables"
+        super().__init__(list_of_callables, ctx)
+
+    def is_leaf(self) -> bool:
+        return True
+
+    def run(self):
+        yield self.ctx
