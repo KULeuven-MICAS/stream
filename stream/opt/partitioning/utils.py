@@ -1,8 +1,7 @@
 from stream.opt.partitioning.temporal_loop import TemporalLoop
-from stream.workload.mapping import TILING_T
 
 
-def convert_outer_cn_loops(outer_cn_loops: TILING_T):
+def convert_outer_cn_loops(outer_cn_loops):
     """Converts a list of string-defined outer-cn loops to outer-cn TemporalLoop objects.
 
     Args:

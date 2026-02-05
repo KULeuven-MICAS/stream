@@ -36,10 +36,3 @@ operational_array:
   dimensions: [D1, D2, D3]
   sizes: [3, 3, 8]
 
-dataflows:
-  D1: 
-    - FX, 3
-  D2: 
-    - FY, 3
-  D3:
-    - K, 8

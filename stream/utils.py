@@ -1,23 +1,16 @@
 import logging
-import os
-import pickle
-import pprint
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from numpy.typing import NDArray
 from zigzag.cost_model.cost_model import CostModelEvaluation
 from zigzag.datatypes import MemoryOperand
-from zigzag.mapping.data_movement import FourWayDataMoving
 
 from stream.cost_model.core_cost import CoreCostEntry
-from stream.workload.mapping import TILING_T, TILING_WILDCARD_T
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
-    from stream.workload.computation.computation_node import ComputationNode
-    from stream.workload.onnx_workload import ComputationNodeWorkload
 
 ARRAY_T: TypeAlias = NDArray[Any]
 
@@ -45,83 +38,13 @@ def get_too_large_operands(
     return too_large_operands
 
 
-def save_core_allocation(
-    workload: "ComputationNodeWorkload", path: str, type: str = "fixed", format: str = "py"
-) -> dict:
-    """Saves the core allocations of a workload to a python or pickle file.
-    In fixed mode: if a layer has been split into multiple groups, the allocation of each group is saved to a tuple.
-    In flexible mode: for each layer, the possible allocations are saved to a list.
-    # TODO: Update this function to work with new mapping definition
-
-    Args:
-        workload (DiGraph): The graph of CNs
-        path (str): The filepath to save the dict to.
-        type (str, optional): The type of core allocation: fixed or flexible.
-
-    Returns:
-        allocations: The dictionary containing core allocations for each node name
-    """
-    node_allocations = {}
-    node_allocations_grouped = {}
-    for n in workload.node_list:
-        if n.name not in node_allocations:
-            node_allocations[n.name] = {"core_allocation": [n.chosen_core_allocation]}
-            node_allocations_grouped[n.name] = {n.group: n.chosen_core_allocation}
-        else:
-            node_allocations[n.name]["core_allocation"].append(n.chosen_core_allocation)
-            if n.group not in node_allocations_grouped[n.name]:
-                node_allocations_grouped[n.name][n.group] = n.chosen_core_allocation
-    if type == "fixed":
-        mapping = {
-            k: {"core_allocation": tuple(list(zip(*sorted(v.items()), strict=False))[1])}
-            for k, v in node_allocations_grouped.items()
-        }
-    else:
-        mapping = {k: {"core_allocation": sorted(set(v["core_allocation"]))} for k, v in node_allocations.items()}
-    # Create folder structure if it doesn't exist
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    # The dict is saved with variable name 'mapping' as this is expected for running
-    if format in ["python", "py"]:
-        assert path.split(".")[-1] == "py", "format is python but file path doesn't end in .py"
-        with open(path, "w") as handle:
-            handle.write("mapping = ")
-            handle.write(pprint.pformat(mapping))
-    elif format in ["pickle", "pkl"]:
-        with open(path, "wb") as handle:
-            pickle.dump(mapping, handle, protocol=pickle.HIGHEST_PROTOCOL)
-    else:
-        raise ValueError(f"Invalid format: {format}.")
-    return mapping
-
-
-def get_unique_nodes(workload: "ComputationNodeWorkload") -> list["ComputationNode"]:
-    """! Get the unique nodes from a workload."""
-    unique_nodes: list[ComputationNode] = []
-    for node in workload.node_list:
-        equal_nodes = list(unique_node for unique_node in unique_nodes if node.has_same_performance(unique_node))
-        if not equal_nodes:
-            unique_nodes.append(node)
-    return unique_nodes
-
-
-def get_top_level_inst_bandwidth(
-    cme: CoreCostEntry | CostModelEvaluation, mem_op: MemoryOperand, scaling: float = 1
-) -> FourWayDataMoving[int]:
-    """Given a cost model evaluation and a memory instance, compute the memory's total instantaneous bandwidth.
-    Falls back to zero bandwidth if not available."""
-    if hasattr(cme, "get_inst_bandwidth") and hasattr(cme, "accelerator"):
-        memory_level = cme.accelerator.get_memory_level(mem_op, -1)
-        return cme.get_inst_bandwidth(memory_level=memory_level, memory_operand=mem_op, scaling=scaling)
-    return FourWayDataMoving({})  # type: ignore[arg-type]
-
-
-def contains_wildcard(tiling: TILING_T | TILING_WILDCARD_T) -> bool:
+def contains_wildcard(tiling) -> bool:
     """Returns wether the given tiling contains a wildcard number `*`. The wildcard must later be replaced by the
     constraint optimization into the optimal number of tiles"""
     return any(tiling == "*" for _, tiling in tiling)
 
 
-def return_tiling_type(tiling: TILING_T | TILING_WILDCARD_T) -> TILING_T:
+def return_tiling_type(tiling):
     if contains_wildcard(tiling):
         raise ValueError(
             "Tiling contains wildcard. Use `replace_wildcard_tiling` to replace the wildcard with a number of tiles."
@@ -129,7 +52,7 @@ def return_tiling_type(tiling: TILING_T | TILING_WILDCARD_T) -> TILING_T:
     return tiling  # type: ignore
 
 
-def get_inter_core_tiling_size(node: "ComputationNode") -> int:
+def get_inter_core_tiling_size(node) -> int:
     inter_core_tiling = node.inter_core_tiling
     if inter_core_tiling and not contains_wildcard(inter_core_tiling):
         total_tiling_size = 1

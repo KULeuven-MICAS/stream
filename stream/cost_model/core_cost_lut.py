@@ -9,7 +9,7 @@ from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
 
 if TYPE_CHECKING:
-    from stream.workload.computation.computation_node import ComputationNode
+    from stream.workload.workload import ComputationNode
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,12 @@ class CoreCostLUT:
             return next(c for c in self.lut[node] if c.has_same_performance(core))
         except (StopIteration, KeyError):
             return None
+
+    def replace_node(self, old_node: ComputationNode, new_node: ComputationNode):
+        equal_node = self.get_equal_node(old_node)
+        if equal_node is None:
+            raise ValueError(f"Node {old_node} not found in LUT.")
+        self.lut[new_node] = self.lut.pop(equal_node)
 
     def remove_cores_with_same_id(self, node: ComputationNode, core: Core):
         if node not in self.lut:

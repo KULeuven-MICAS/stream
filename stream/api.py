@@ -3,6 +3,7 @@ import os
 from typing import Literal
 
 import gurobipy as gp
+import yaml
 from onnx import ModelProto
 from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.utils import pickle_load, pickle_save
@@ -11,28 +12,27 @@ from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.context import StageContext
-from stream.stages.estimation.zigzag_core_mapping_estimation import CoreCostEstimationStage
-from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
-from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
-from stream.stages.generation.tiled_workload_generation import TiledWorkloadGenerationStage
+from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
+
+# from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
+# from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
 from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
+from stream.stages.parsing.mapping_parser import MappingParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
-from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
-from stream.stages.stage import MainStage, StageCallable
+
+# from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
+from stream.stages.stage import LeafStage, MainStage, StageCallable
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
-def _sanity_check_inputs(
-    hardware: str, workload: str, mapping: str, mode: Literal["lbl"] | Literal["fused"], output_path: str
-):
+def _sanity_check_inputs(hardware: str, workload: str, mapping: str, output_path: str):
     assert os.path.exists(hardware), f"Hardware file {hardware} does not exist"
     assert isinstance(workload, ModelProto) or os.path.exists(workload), f"Workload file {workload} does not exist"
     assert os.path.exists(mapping), f"Mapping file {mapping} does not exist"
-    assert mode in ["lbl", "fused"], "Mode must be either 'lbl' or 'fused'"
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
@@ -71,12 +71,8 @@ def optimize_allocation_ga(  # noqa: PLR0913
     _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
 
     # Create experiment_id path
-    os.makedirs(f"{output_path}/{experiment_id}", exist_ok=True)
-
-    # Output paths
-    tiled_workload_path = f"{output_path}/{experiment_id}/tiled_workload.pickle"
-    cost_lut_path = f"{output_path}/{experiment_id}/cost_lut.pickle"
-    scme_path = f"{output_path}/{experiment_id}/scme.pickle"
+    output_path = f"{output_path}/{experiment_id}"
+    os.makedirs(output_path, exist_ok=True)
 
     # Get logger
     logger = _logging.getLogger(__name__)
@@ -90,6 +86,7 @@ def optimize_allocation_ga(  # noqa: PLR0913
         raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
 
     # Load SCME if it exists and skip_if_exists is True
+    scme_path = f"{output_path}/scme.pickle"
     if os.path.exists(scme_path) and skip_if_exists:
         scme = pickle_load(scme_path)
         logger.info(f"Loaded SCME from {scme_path}")
@@ -103,8 +100,7 @@ def optimize_allocation_ga(  # noqa: PLR0913
             nb_ga_individuals=nb_ga_individuals,  # number of individuals in each ga generation
             mode=mode,
             layer_stacks=layer_stacks,
-            tiled_workload_path=tiled_workload_path,
-            cost_lut_path=cost_lut_path,
+            output_path=output_path,
             temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
             operands_to_prefetch=[],  # required by GeneticAlgorithmAllocationStage
         )
@@ -112,12 +108,12 @@ def optimize_allocation_ga(  # noqa: PLR0913
             [  # Initializes the MainStage as entry point
                 AcceleratorParserStage,  # Parses the accelerator
                 StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-                LayerStacksGenerationStage,
-                TilingGenerationStage,
-                TiledWorkloadGenerationStage,
-                CoreCostEstimationStage,
-                SetFixedAllocationPerformanceStage,
-                SchedulingOrderGenerationStage,
+                MappingParserStage,
+                # LayerStacksGenerationStage,
+                # TilingGenerationStage,
+                # CoreCostEstimationStage,
+                # SetFixedAllocationPerformanceStage,
+                # SchedulingOrderGenerationStage,
                 GeneticAlgorithmAllocationStage,
             ],
             ctx,
@@ -133,8 +129,6 @@ def optimize_allocation_co(  # noqa: PLR0913
     hardware: str,
     workload: str,
     mapping: str,
-    mode: Literal["lbl"] | Literal["fused"],
-    layer_stacks: list[tuple[int, ...]],
     experiment_id: str,
     output_path: str,
     skip_if_exists: bool = False,
@@ -143,22 +137,13 @@ def optimize_allocation_co(  # noqa: PLR0913
     trace_size: int = 1048576,
     nb_cols_to_use: int = 4,
     npu: str = "npu2",
-    runtime_args: list[str] | None = None,
 ) -> StreamCostModelEvaluation:
-    _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
+    _sanity_check_inputs(hardware, workload, mapping, output_path)
     _sanity_check_gurobi_license()
 
     # Create experiment_id path
-    os.makedirs(f"{output_path}/{experiment_id}", exist_ok=True)
-
-    # Output paths
-    tiled_workload_path = f"{output_path}/{experiment_id}/tiled_workload.pickle"
-    cost_lut_path = f"{output_path}/{experiment_id}/cost_lut.pickle"
-    allocations_path = f"{output_path}/{experiment_id}/waco/"
-    tiled_workload_post_co_path = f"{output_path}/{experiment_id}/tiled_workload_post_co.pickle"
-    output_path = f"outputs/{experiment_id}/"
-    scme_path = f"{output_path}/{experiment_id}/scme.pickle"
-    codegen_path = f"{output_path}/{experiment_id}/output.mlir"
+    output_path = f"{output_path}/{experiment_id}"
+    os.makedirs(output_path, exist_ok=True)
 
     # Get logger
     logger = _logging.getLogger(__name__)
@@ -171,56 +156,80 @@ def optimize_allocation_co(  # noqa: PLR0913
     else:
         raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
 
-    # Load SCME if it exists and skip_if_exists is True
-    if os.path.exists(scme_path) and skip_if_exists:
-        module = pickle_load(scme_path)
-        logger.info(f"Loaded SCME from {scme_path}")
+    # Load final resulting context if it exists and skip_if_exists is True
+    ctx_path = f"{output_path}/ctx.pickle"
+    if os.path.exists(ctx_path) and skip_if_exists:
+        ctx = pickle_load(ctx_path)
+        logger.info(f"Loaded context from {ctx_path}")
     else:
         stages: list[StageCallable] = [  # Initializes the MainStage as entry point
             AcceleratorParserStage,  # Parses the accelerator
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-            LayerStacksGenerationStage,
-            # Infer unique dimensions using linear algebra
-            TilingGenerationStage,  # Set using new unique dimensions
-            # SteadyStateWorkloadGenerationStage
-            TiledWorkloadGenerationStage,  # remove
+            MappingParserStage,
+            TilingGenerationStage,
             CoreCostEstimationStage,
-            SetFixedAllocationPerformanceStage,
-            SchedulingOrderGenerationStage,  # remove?
-            ConstraintOptimizationAllocationStage,  # revamp to already use steady state workload
-            # Add separate TETRA stage
+            ConstraintOptimizationAllocationStage,
         ]
-
-        # optionally add code generation stage
-        if enable_codegen:
-            from stream.stages.codegen.aie_code_generation import AIECodeGenerationStage  # noqa: PLC0415
-
-            stages = [AIECodeGenerationStage] + stages
-
         ctx = StageContext.from_kwargs(
             accelerator=hardware,  # required by AcceleratorParserStage
             workload_path=workload,  # required by ModelParserStage
             mapping_path=mapping,  # required by ModelParserStage
             loma_lpf_limit=6,  # required by LomaEngine
-            mode=mode,
-            layer_stacks=layer_stacks,
-            tiled_workload_path=tiled_workload_path,
-            cost_lut_path=cost_lut_path,
-            allocations_path=allocations_path,
-            tiled_workload_post_co_path=tiled_workload_post_co_path,
             output_path=output_path,
             temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
-            operands_to_prefetch=[],  # required by ConstraintOptimizationAllocationStage
-            latency_attr="ideal_temporal_cycle",
-            codegen_path=codegen_path,
             trace_size=trace_size,
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
-            npu=npu,  # required by AIECodeGenerationStage
-            runtime_args=runtime_args,  # required by AIECodeGenerationStage
         )
+        # optionally add code generation stage
+        if enable_codegen:
+            from stream.stages.codegen.aie_code_generation import AIECodeGenerationStage  # noqa: PLC0415
+
+            stages = [AIECodeGenerationStage] + stages
+            ctx.set(
+                npu=npu,  # required by AIECodeGenerationStage
+            )
+
         mainstage = MainStage(stages, ctx)
         # Launch the MainStage
         answers = mainstage.run()
-        module = answers[0][0]
+        assert len(answers) == 1, "Expected a single result from the optimization."
+        ctx = answers[0]
         # pickle_save(scme, scme_path)  # type: ignore
-    return module
+    return ctx
+
+
+def parse_workload_ir(
+    workload_path: str,
+    arch_ir_path: str,
+) -> str:
+    """Parse a workload to the arch_ir.
+
+    Args:
+        workload_path: Path to the workload file (ONNX model).
+        output_path: Path where output files should be saved.
+
+    Returns:
+        The parsed workload context.
+    """
+    base_output_path = os.path.dirname(os.path.abspath(arch_ir_path))
+    os.makedirs(base_output_path, exist_ok=True)
+    ctx = StageContext.from_kwargs(
+        workload_path=workload_path,
+        output_path=base_output_path,
+    )
+    stages: list[StageCallable] = [
+        StreamONNXModelParserStage,
+        LeafStage,
+    ]
+    mainstage = MainStage(
+        stages,
+        ctx,
+    )
+    ctxs = mainstage.run()
+    assert len(ctxs) == 1, "Expected a single result from the workload parsing"
+    ctx: StageContext = ctxs[0]
+    workload = ctx.get("workload")
+    arch_ir = workload.get_ir()
+    with open(arch_ir_path, "w") as f:
+        yaml.dump(arch_ir, f, sort_keys=False)
+    return arch_ir_path

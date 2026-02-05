@@ -26,7 +26,7 @@ from zigzag.datatypes import LayerOperand, MemoryOperand
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.opt.allocation.constraint_optimization.config import ComputeMilpConfig, ConstraintOptStageConfig
+from stream.opt.allocation.constraint_optimization.config import ConstraintOptStageConfig
 from stream.opt.allocation.constraint_optimization.context import ConstraintContext, build_constraint_context
 from stream.opt.allocation.constraint_optimization.utils import (
     convert_ids,
@@ -34,7 +34,7 @@ from stream.opt.allocation.constraint_optimization.utils import (
     get_latencies,
     invert_ids_list,
 )
-from stream.workload.onnx_workload import ComputationNodeWorkload
+from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
 
@@ -82,11 +82,10 @@ class ComputeAllocator:
     # ------------------------------------------------------------------ #
     def __init__(
         self,
-        workload: ComputationNodeWorkload,
+        workload: Workload,
         accelerator: Accelerator,
         cost_lut: CoreCostLUT,
         context: ConstraintContext,
-        compute_cfg: ComputeMilpConfig,
         *,
         iterations: int = 1,
     ) -> None:
@@ -94,8 +93,6 @@ class ComputeAllocator:
         self.accelerator = accelerator
         self.cost_lut = cost_lut
         self.context = context
-        self.compute_cfg = compute_cfg
-
         self.iterations = iterations
 
         # Gurobi model and main assignment tensor
@@ -188,7 +185,6 @@ class ComputeAllocator:
             self.accelerator,
             self.cost_lut,
             impossible_lat=0,
-            latency_attr=self.compute_cfg.latency_attr,
         )
         lat: LatDict = {(ids[n], c, k): v for (n, c, k), v in raw_lat.items()}
         split: SplitDict = {ids[n]: {c: {k: raw_split[n][c][k] for k in raw_split[n][c]} for c in cores} for n in nodes}
@@ -465,30 +461,27 @@ class ComputeAllocator:
 # Functional façade                                                           #
 # --------------------------------------------------------------------------- #
 def get_optimal_allocations(
-    workload: ComputationNodeWorkload,
+    workload: Workload,
     accelerator: Accelerator,
     cost_lut: CoreCostLUT,
     *,
     context: ConstraintContext | None = None,
-    compute_config: ComputeMilpConfig | None = None,
     stage_config: ConstraintOptStageConfig | None = None,
     iterations: int = 1,
 ) -> ALLOCATION_T:
     """Backwards-compatible helper preserving the original functional API."""
-    if compute_config is None or context is None:
+    if context is None:
         logger.warning(
-            "get_optimal_allocations called without explicit config/context. "
+            "get_optimal_allocations called without explicit context. "
             "Building defaults; please pass ConstraintOptStageConfig explicitly."
         )
         stage_cfg = stage_config or ConstraintOptStageConfig()
-        compute_config = compute_config or stage_cfg.compute
-        context = context or build_constraint_context(accelerator, stage_cfg, compute_config)
+        context = context or build_constraint_context(accelerator, stage_cfg)
 
     return ComputeAllocator(
         workload,
         accelerator,
         cost_lut,
         context,
-        compute_config,
         iterations=iterations,
     ).get_optimal_allocations()

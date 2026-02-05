@@ -13,7 +13,7 @@ from xdsl.pattern_rewriter import (
 )
 from xdsl.rewriter import InsertPoint
 
-from stream.compiler.dialects.stream import ChannelOp, EdgeOp, PullOp, PushOp, TransferOp
+from stream.compiler.dialects.stream import ChannelOp, OutEdgeOp, PullOp, PushOp, TransferOp
 
 
 @dataclass
@@ -28,41 +28,39 @@ class SplitTransferPattern(RewritePattern):
         else:
             channel = ChannelOp()
             ops_to_add.append(channel)
-        for input in op.inputs:
+        for i, input in enumerate(op.inputs):
+            offsets = list(cast(tuple[int, ...], op.spatial_strides.get_values()))
+            if len(offsets) == 0:
+                offsets = [0]
             push = PushOp(
                 input,
                 channel,
                 op.ssis.data,
-                op.offsets,
+                (offsets[i],),
+                # offsets
                 op.sizes,
                 op.strides,
-                op.spatial_strides,
-                op.loop_dimensions,
                 op.memtile,
             )
             ops_to_add.append(push)
         for i, result in enumerate(op.results):
             for use in list(result.uses):
-                if isinstance(edge := use.operation, EdgeOp):
+                if isinstance(edge := use.operation, OutEdgeOp):
                     for input in edge.inputs:
                         assert isinstance(input, OpResult)
                         if isinstance(input.op, TransferOp) and input.op.memtile == op.memtile:
                             self.channel_map[input.op] = channel
-                offsets = list(cast(tuple[int, ...], op.offsets.get_values()))
-                mult = 1
-                for j in reversed(range(len(op.spatial_strides))):
-                    offsets[-1] += i * int(op.spatial_strides.get_values()[j]) * mult
-                    mult *= int(op.sizes.get_values()[j])
+                offsets = list(cast(tuple[int, ...], op.spatial_strides.get_values()))
+                if len(offsets) == 0:
+                    offsets = [0]
                 ops_to_add.append(
                     pull := PullOp(
                         op.outputs[0].type,
                         channel,
-                        op.ssis_dest.data,
-                        offsets,
+                        op.ssis.data,
+                        (offsets[i],),
                         op.sizes,
                         op.strides,
-                        op.spatial_strides,
-                        op.loop_dimensions,
                         op.memtile,
                     )
                 )

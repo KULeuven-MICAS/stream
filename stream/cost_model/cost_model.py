@@ -1,8 +1,7 @@
 from zigzag.datatypes import LayerOperand
 
-from stream.cost_model.scheduler import CoalaScheduler
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.workload.onnx_workload import ComputationNodeWorkload
+from stream.workload.workload import Workload
 
 
 class StreamCostModelEvaluation:
@@ -13,7 +12,7 @@ class StreamCostModelEvaluation:
 
     def __init__(
         self,
-        workload: ComputationNodeWorkload,
+        workload: Workload,
         accelerator: Accelerator,
         operands_to_prefetch: list[LayerOperand],
         scheduling_order: list[tuple[int, int]],
@@ -46,33 +45,33 @@ class StreamCostModelEvaluation:
         Runs the scheduling and cost model evaluation, updating latency and energy attributes.
         Uses the Schedule class for modular scheduling and result extraction.
         """
-        schedule = CoalaScheduler(
-            g=self.workload,
-            accelerator=self.accelerator,
-            scheduling_order=self.scheduling_order,
-            operands_to_prefetch=self.operands_to_prefetch,
-        )
-        schedule.run()
+        # schedule = CoalaScheduler(
+        #     g=self.workload,
+        #     accelerator=self.accelerator,
+        #     scheduling_order=self.scheduling_order,
+        #     operands_to_prefetch=self.operands_to_prefetch,
+        # )
+        # schedule.run()
 
-        self.latency = schedule.latency
-        self.total_cn_onchip_energy = schedule.total_cn_onchip_energy
-        self.total_cn_offchip_link_energy = schedule.total_cn_offchip_link_energy
-        self.total_cn_offchip_memory_energy = schedule.total_cn_offchip_memory_energy
-        self.total_eviction_to_offchip_link_energy = schedule.total_eviction_to_offchip_link_energy
-        self.total_eviction_to_offchip_memory_energy = schedule.total_eviction_to_offchip_memory_energy
-        self.total_sink_layer_output_offchip_link_energy = schedule.total_sink_layer_output_offchip_link_energy
-        self.total_sink_layer_output_offchip_memory_energy = schedule.total_sink_layer_output_offchip_memory_energy
-        self.total_core_to_core_link_energy = schedule.total_core_to_core_link_energy
-        self.total_core_to_core_memory_energy = schedule.total_core_to_core_memory_energy
+        # self.latency = schedule.latency
+        # self.total_cn_onchip_energy = schedule.total_cn_onchip_energy
+        # self.total_cn_offchip_link_energy = schedule.total_cn_offchip_link_energy
+        # self.total_cn_offchip_memory_energy = schedule.total_cn_offchip_memory_energy
+        # self.total_eviction_to_offchip_link_energy = schedule.total_eviction_to_offchip_link_energy
+        # self.total_eviction_to_offchip_memory_energy = schedule.total_eviction_to_offchip_memory_energy
+        # self.total_sink_layer_output_offchip_link_energy = schedule.total_sink_layer_output_offchip_link_energy
+        # self.total_sink_layer_output_offchip_memory_energy = schedule.total_sink_layer_output_offchip_memory_energy
+        # self.total_core_to_core_link_energy = schedule.total_core_to_core_link_energy
+        # self.total_core_to_core_memory_energy = schedule.total_core_to_core_memory_energy
 
-        self.energy = (
-            self.total_cn_onchip_energy
-            + self.total_cn_offchip_link_energy
-            + self.total_cn_offchip_memory_energy
-            + self.total_eviction_to_offchip_link_energy
-            + self.total_eviction_to_offchip_memory_energy
-            + self.total_sink_layer_output_offchip_link_energy
-            + self.total_sink_layer_output_offchip_memory_energy
-            + self.total_core_to_core_link_energy
-            + self.total_core_to_core_memory_energy
-        )
+        # self.energy = (
+        #     self.total_cn_onchip_energy
+        #     + self.total_cn_offchip_link_energy
+        #     + self.total_cn_offchip_memory_energy
+        #     + self.total_eviction_to_offchip_link_energy
+        #     + self.total_eviction_to_offchip_memory_energy
+        #     + self.total_sink_layer_output_offchip_link_energy
+        #     + self.total_sink_layer_output_offchip_memory_energy
+        #     + self.total_core_to_core_link_energy
+        #     + self.total_core_to_core_memory_energy
+        # )

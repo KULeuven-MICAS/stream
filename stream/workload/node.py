@@ -1,140 +1,101 @@
-from abc import ABCMeta
+from abc import ABC
+from dataclasses import dataclass
+from enum import Flag
 
-from zigzag.datatypes import MemoryOperand
-from zigzag.mapping.data_movement import FourWayDataMoving
-from zigzag.workload.layer_node_abc import LayerNodeABC
+from xdsl.ir.affine import AffineMap
+
+from stream.datatypes import LayerDim
+from stream.workload.tensor import Tensor
 
 
-class Node(LayerNodeABC, metaclass=ABCMeta):
-    """Abstract base class that represents a piece of an algorithmic workload.
-    Example: ComputationNode, etc.
-    """
+@dataclass(frozen=True, repr=False)
+class Node(ABC):
+    name: str
 
-    offchip_bandwidth_per_op: dict[MemoryOperand, FourWayDataMoving]
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(name={self.name})"
 
-    def __init__(  # noqa: PLR0913
-        self,
-        node_id: int,
-        node_name: str,
-        type: str,
-        onchip_energy: float,
-        offchip_energy: float,
-        runtime: int,
-        possible_core_allocation: list[int],
-        chosen_core_allocation: int | None = None,
-        input_names: list[str] | None = None,
-    ) -> None:
-        """Initialize the Node metaclass
 
-        Args:
-            type: The type of Node.
-            energy: The energy consumption of this Node.
-            runtime: The runtime of this Node.
-            possible_core_allocation: The core id on which this Node can be mapped.
-            inputs: The names of the input tensors of this node
-            outputs: The names of the output tensors of this node.
-            chosen_core_allocation: The final core allocation of this node
-            input_names: Names of the ONNX input node
-        """
-        if input_names is None:
-            input_names = []
-        super().__init__(node_id, node_name)
+@dataclass(frozen=True, repr=False)
+class HasOutputs(Node, ABC):
+    outputs: tuple[Tensor, ...]
 
-        self.type = type.lower()
-        self.onchip_energy = onchip_energy
-        self.offchip_energy = offchip_energy
-        self.runtime = runtime
-        self.possible_core_allocation = possible_core_allocation
-        self.chosen_core_allocation = chosen_core_allocation
-        self.input_names = input_names
-        self.start = -1
-        self.end = -1
-        # number of data (in bits) only this node produces (not produced by any other node)
-        self.data_produced_unique = 0
+    @property
+    def output(self):
+        assert len(self.outputs) == 1
+        return self.outputs[0]
 
-    def get_total_energy(self) -> float:
-        """Get the total energy of running this node, including off-chip energy."""
-        return self.onchip_energy + self.offchip_energy
 
-    def get_onchip_energy(self):
-        """Get the on-chip energy of running this node."""
-        return self.onchip_energy
+@dataclass(frozen=True, repr=False)
+class HasInputs(Node, ABC):
+    inputs: tuple[Tensor, ...]
 
-    def get_offchip_energy(self):
-        """Get the off-chip energy of running this node."""
-        return self.offchip_energy
 
-    def get_runtime(self):
-        """Get the runtime of running this node."""
-        return self.runtime
+@dataclass(frozen=True, repr=False)
+class InEdge(HasOutputs): ...
 
-    def get_start(self):
-        """Get the start time in cycles of this node."""
-        return self.start
 
-    def get_end(self):
-        """Get the end time in cycles of this node."""
-        return self.end
+@dataclass(frozen=True, repr=False)
+class OutEdge(HasInputs): ...
 
-    def set_onchip_energy(self, energy: float):
-        """Set the on-chip energy of running this node.
 
-        Args:
-            energy (float): energy consumption of this node
-        """
-        self.onchip_energy = energy
+class TransferType(Flag):
+    """Flags for different types of data transfer operations (can be combined)."""
 
-    def set_offchip_energy(self, energy: float):
-        """Set the off-chip energy of running this node.
+    NONE = 0
+    UNICAST = 1
+    DISTRIBUTE = 2
+    BROADCAST = 3
+    JOIN = 4
+    REDUCE = 5
 
-        Args:
-            energy (float): energy consumption of this node
-        """
-        self.offchip_energy = energy
 
-    def set_runtime(self, runtime: int):
-        """Set the runtime of running this node.
+@dataclass(frozen=True, repr=False)
+class HasIterationSpace(HasInputs, HasOutputs):
+    operand_mapping: tuple[AffineMap, ...]
 
-        Args:
-            runtime: runtime in cycles
-        """
-        self.runtime = runtime
+    @property
+    def num_dims(self) -> int:
+        # Dimensionality of all maps should be equal
+        return self.operand_mapping[0].num_dims
 
-    def set_start(self, start: int):
-        """Set the start time in cycles of this node.
+    def get_mapping(self, tensor: Tensor) -> AffineMap:
+        if tensor in self.tensors:
+            idx = self.tensors.index(tensor)
+            return self.operand_mapping[idx]
+        raise RuntimeError(f"Tensor {tensor.name} not found in node {self.name}")
 
-        Args:
-            start: start time in cycles
-        """
-        self.start = start
+    def get_dimension_size(self, layer_dim: LayerDim) -> int:
+        dim_index = layer_dim.get_idx()
+        return self.outputs[-1].shape[dim_index]  # TODO: Probably not always of output tensor
 
-    def set_end(self, end: int):
-        """Set the end time in cycles of this node.
+    @property
+    def tensors(self) -> tuple[Tensor, ...]:
+        return self.inputs + self.outputs
 
-        Args:
-            end: end time in cycles
-        """
-        self.end = end
 
-    def set_core_allocation(self, core_allocation: int):
-        self.core_allocation = [core_allocation]
+@dataclass(frozen=True, repr=False)
+class TransferNode(HasIterationSpace):
+    transfer_type: TransferType
 
-    def set_chosen_core_allocation(self, core_allocation: int | None):
-        self.chosen_core_allocation = core_allocation
 
-    def has_end(self) -> bool:
-        """Check if this node has already been assigned an end time.
+@dataclass(frozen=True, repr=False)
+class ComputationNode(HasIterationSpace):
+    type: str  # e.g., "Conv", "Gemm", etc.
 
-        Returns:
-            bool: True if this node has been assigned an end time
-        """
-        return self.end is not None
-
-    def set_offchip_bandwidth(self, offchip_bandwidth_per_op: dict[MemoryOperand, FourWayDataMoving]):
-        self.offchip_bandwidth_per_op = offchip_bandwidth_per_op
-
-    def __str__(self):
-        return self.name
-
-    def __repr__(self):
-        return self.name
+    def has_same_performance(self, other: "ComputationNode") -> bool:
+        """Check if this computation node has the same performance characteristics as another node.
+        This is a simple check based on operand data types and shapes.
+        More sophisticated checks may be needed in the future."""
+        if len(self.inputs) != len(other.inputs):
+            return False
+        for inp_self, inp_other in zip(self.inputs, other.inputs, strict=True):
+            if inp_self.operand_type != inp_other.operand_type:
+                return False
+            if inp_self.shape != inp_other.shape:
+                return False
+        if self.outputs[0].operand_type != other.outputs[0].operand_type:
+            return False
+        if self.outputs[0].shape != other.outputs[0].shape:
+            return False
+        return True

@@ -4,98 +4,7 @@ import os
 import yaml
 
 
-def make_swiglu_mapping_pipelined(seq_len, embedding_dim, hidden_dim, m, k, n, line_size):  # noqa: N803
-    """
-    This mapping assumes that m rows are computed for each Gemm in a pipelined fashion.
-    It also assumes that line_size columns are computed in a pipelined fashion."""
-    name = f"swiglu_{seq_len}_{embedding_dim}_{hidden_dim}"
-    output_file = os.path.join(os.path.dirname(__file__), f"{name}.yaml")
-
-    # General mapping entries for all operators
-    inter_core_tiling = ["K, 1"]
-    compute_allocation_gemm_left = [2]
-    compute_allocation_gemm_right = [3]
-
-    # Left and right Gemms specific mapping entries
-    intra_core_tiling_gemm = [
-        f"C, {embedding_dim // k}",
-        f"K, {hidden_dim // n}",
-        f"D, {seq_len}",
-    ]
-    kernel_gemm = {"name": "matvec", "kwargs": {"utilization": 61.8}}
-    gemm_left = {
-        "name": "Gemm_Left",
-        "core_allocation": copy.deepcopy(compute_allocation_gemm_left),
-        "intra_core_tiling": copy.deepcopy(intra_core_tiling_gemm),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling),
-        "kernel": copy.deepcopy(kernel_gemm),
-    }
-    gemm_right = {
-        "name": "Gemm_Right",
-        "core_allocation": copy.deepcopy(compute_allocation_gemm_right),
-        "intra_core_tiling": copy.deepcopy(intra_core_tiling_gemm),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling),
-        "kernel": copy.deepcopy(kernel_gemm),
-    }
-
-    # SiLU specific mapping entries. SiLU uses SIMDParser which for two dims goes to (B, H)
-    compute_allocation_silu = [4]
-    intra_core_tiling_silu = [
-        f"H, {hidden_dim // line_size}",
-        f"B, {seq_len // 1}",
-    ]
-    kernel_silu = {"name": "silu", "kwargs": {"utilization": 50.0}}  # TODO: utilization
-    silu = {
-        "name": "Silu",
-        "core_allocation": copy.deepcopy(compute_allocation_silu),
-        "intra_core_tiling": copy.deepcopy(intra_core_tiling_silu),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling),
-        "kernel": copy.deepcopy(kernel_silu),
-    }
-
-    # Elementwise Mul specific mapping entries
-    compute_allocation_mul = [5]
-    intra_core_tiling_mul = [
-        f"H, {hidden_dim // line_size}",
-        f"B, {seq_len // 1}",
-    ]
-    kernel_mul = {"name": "eltwise_mul", "kwargs": {"utilization": 50.0}}  # TODO: utilization
-    mul = {
-        "name": "Elt_Mul",
-        "core_allocation": copy.deepcopy(compute_allocation_mul),
-        "intra_core_tiling": copy.deepcopy(intra_core_tiling_mul),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling),
-        "kernel": copy.deepcopy(kernel_mul),
-    }
-
-    # Final down projection Gemm
-    compute_allocation_gemm_down = [11]
-    gemm_down = {
-        "name": "Gemm_Down",
-        "core_allocation": copy.deepcopy(compute_allocation_gemm_down),
-        "intra_core_tiling": copy.deepcopy(intra_core_tiling_gemm),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling),
-        "kernel": copy.deepcopy(kernel_gemm),
-    }
-
-    # Default specific mapping entries
-    default = {
-        "name": "default",
-        "core_allocation": copy.deepcopy(compute_allocation_gemm_left),
-        "intra_core_tiling": copy.deepcopy(intra_core_tiling_gemm),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling),
-        "kernel": copy.deepcopy(kernel_gemm),
-    }
-
-    mapping = [gemm_left, gemm_right, silu, mul, gemm_down, default]
-
-    with open(output_file, "w") as f:
-        yaml.dump(mapping, f, default_flow_style=False, sort_keys=False)
-    print(f"SWIGLU mapping file created: {output_file}")
-    return output_file
-
-
-def make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, line_size):  # noqa: N803
+def make_swiglu_mapping(seq_len, embedding_dim, hidden_dim, last_gemm_down):  # noqa: N803
     """
     This mapping assumes that m rows are computed for each Gemm in a pipelined fashion.
     Each layer is partitioned across four rows of compute tiles with inter_core_tiling in the m dimension
@@ -103,85 +12,197 @@ def make_swiglu_mapping_pipelined2(seq_len, embedding_dim, hidden_dim, m, k, n, 
     name = f"swiglu_{seq_len}_{embedding_dim}_{hidden_dim}"
     output_file = os.path.join(os.path.dirname(__file__), f"{name}_v2.yaml")
 
+    SEQ_LEN_TILE_SIZE = 1  # per core
     assert seq_len % 4 == 0, "seq_len must be divisible by 4 for this mapping"
+    assert seq_len >= SEQ_LEN_TILE_SIZE * 4, f"seq_len must be at least {SEQ_LEN_TILE_SIZE * 4} for this mapping"
+    CHANNEL_TILE_SIZE = 32
 
-    # Left and right Gemms specific mapping entries
-    inter_core_tiling_gemm = ["D, 4"]
-    intra_core_tiling_gemm = [
-        f"C, {embedding_dim // k}",
-        f"K, {hidden_dim // n}",
-        f"D, {seq_len // 4}",
-    ]
+    # Left Gemm
+    inter_core_tiling_gemm_left = [{"dim": "D2", "split": 4}]
     kernel_gemm = {"name": "matvec", "kwargs": {"utilization": 61.8}}
     compute_allocation_gemm_left = [2, 3, 4, 5]
     gemm_left = {
         "name": "Gemm_Left",
         "core_allocation": copy.deepcopy(compute_allocation_gemm_left),
-        "intra_core_tiling": copy.deepcopy(intra_core_tiling_gemm),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm),
+        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm_left),
         "kernel": copy.deepcopy(kernel_gemm),
     }
+    # Right Gemm
+    inter_core_tiling_gemm_right = [{"dim": "D2", "split": 4}]
     compute_allocation_gemm_right = [8, 9, 10, 11]
     gemm_right = {
         "name": "Gemm_Right",
         "core_allocation": copy.deepcopy(compute_allocation_gemm_right),
-        "intra_core_tiling": copy.deepcopy(intra_core_tiling_gemm),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm),
+        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm_right),
         "kernel": copy.deepcopy(kernel_gemm),
     }
-
     # SiLU specific mapping entries. SiLU uses SIMDParser which for two dims goes to (B, H)
     compute_allocation_silu = [14, 15, 16, 17]
-    inter_core_tiling_silu = ["B, 4"]
-    intra_core_tiling_silu = [
-        f"H, {hidden_dim // line_size}",
-        f"B, {seq_len // 4}",
-    ]
+    inter_core_tiling_silu = [{"dim": "D1", "split": 4}]
     kernel_silu = {"name": "silu", "kwargs": {"utilization": 50.0}}  # TODO: utilization
     silu = {
         "name": "Silu",
         "core_allocation": copy.deepcopy(compute_allocation_silu),
-        "intra_core_tiling": copy.deepcopy(intra_core_tiling_silu),
         "inter_core_tiling": copy.deepcopy(inter_core_tiling_silu),
         "kernel": copy.deepcopy(kernel_silu),
     }
 
     # Elementwise Mul specific mapping entries
     compute_allocation_mul = [20, 21, 22, 23]
-    inter_core_tiling_mul = ["B, 4"]
-    intra_core_tiling_mul = [
-        f"H, {hidden_dim // line_size}",
-        f"B, {seq_len // 4}",
-    ]
+    inter_core_tiling_mul = [{"dim": "D1", "split": 4}]
     kernel_mul = {"name": "eltwise_mul", "kwargs": {"utilization": 50.0}}  # TODO: utilization
     mul = {
         "name": "Elt_Mul",
         "core_allocation": copy.deepcopy(compute_allocation_mul),
-        "intra_core_tiling": copy.deepcopy(intra_core_tiling_mul),
         "inter_core_tiling": copy.deepcopy(inter_core_tiling_mul),
         "kernel": copy.deepcopy(kernel_mul),
     }
 
     # Final down projection Gemm
-    compute_allocation_gemm_down = [26, 27, 28, 29]
-    gemm_down = {
-        "name": "Gemm_Down",
-        "core_allocation": copy.deepcopy(compute_allocation_gemm_down),
-        "intra_core_tiling": copy.deepcopy(intra_core_tiling_gemm),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm),
-        "kernel": copy.deepcopy(kernel_gemm),
+    if last_gemm_down:
+        inter_core_tiling_gemm_down = [{"dim": "D1", "split": 4}]
+        compute_allocation_gemm_down = [26, 27, 28, 29]
+        gemm_down = {
+            "name": "Gemm_Down",
+            "core_allocation": copy.deepcopy(compute_allocation_gemm_down),
+            "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm_down),
+            "kernel": copy.deepcopy(kernel_gemm),
+        }
+        layers = [gemm_left, gemm_right, silu, mul, gemm_down]
+        runtime_args = {
+            "input": {},
+            "weights_1": {"layout": "(d0, d1) -> (d1, d0)"},
+            "weights_2": {"layout": "(d0, d1) -> (d1, d0)"},
+            "weights_3": {"layout": "(d0, d1) -> (d1, d0)"},
+            "output": {},
+        }
+    else:
+        layers = [gemm_left, gemm_right, silu, mul]
+        runtime_args = {
+            "input": {},
+            "weights_1": {"layout": "(d0, d1) -> (d1, d0)"},
+            "weights_2": {"layout": "(d0, d1) -> (d1, d0)"},
+            "output": {},
+        }
+
+    # Fused groups; Only one group of all operators with Gemm_Left.D0 dimension
+    fused_groups = {
+        "name": "Fused_Group_1",
+        "layers": [layer["name"] for layer in layers],
+        "intra_core_tiling": [
+            {"dim": "Gemm_Left.D0", "tile": SEQ_LEN_TILE_SIZE},
+            {"dim": "Gemm_Left.D2", "tile": CHANNEL_TILE_SIZE},
+        ],
     }
 
-    # Default specific mapping entries
-    default = {
-        "name": "default",
+    mapping = {
+        "layers": layers,
+        "fused_groups": [fused_groups],
+        "runtime_args": runtime_args,
+    }
+
+    with open(output_file, "w") as f:
+        yaml.dump(mapping, f, default_flow_style=False, sort_keys=False)
+    print(f"SWIGLU mapping file created: {output_file}")
+    return output_file
+
+
+def make_swiglu_mapping2(seq_len, embedding_dim, hidden_dim, last_gemm_down):  # noqa: N803
+    """
+    This mapping assumes that m rows are computed for each Gemm in a pipelined fashion.
+    Each layer is partitioned across four rows of compute tiles with inter_core_tiling in the m dimension
+    It also assumes that line_size columns are computed in a pipelined fashion."""
+    name = f"swiglu_{seq_len}_{embedding_dim}_{hidden_dim}"
+    output_file = os.path.join(os.path.dirname(__file__), f"{name}_v2.yaml")
+
+    SEQ_LEN_TILE_SIZE = 1  # per core
+    assert seq_len % 4 == 0, "seq_len must be divisible by 4 for this mapping"
+    assert seq_len >= SEQ_LEN_TILE_SIZE * 4, f"seq_len must be at least {SEQ_LEN_TILE_SIZE * 4} for this mapping"
+    CHANNEL_TILE_SIZE = 32
+
+    # Left Gemm
+    inter_core_tiling_gemm_left = [{"dim": "D2", "split": 2}, {"dim": "D0", "split": 4}]
+    kernel_gemm = {"name": "matvec", "kwargs": {"utilization": 61.8}}
+    compute_allocation_gemm_left = [2, 3, 4, 5, 8, 9, 10, 11]
+    gemm_left = {
+        "name": "Gemm_Left",
         "core_allocation": copy.deepcopy(compute_allocation_gemm_left),
-        "intra_core_tiling": copy.deepcopy(intra_core_tiling_gemm),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm),
+        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm_left),
         "kernel": copy.deepcopy(kernel_gemm),
     }
+    # Right Gemm
+    inter_core_tiling_gemm_right = [{"dim": "D2", "split": 2}, {"dim": "D0", "split": 4}]
+    compute_allocation_gemm_right = [14, 15, 16, 17, 20, 21, 22, 23]
+    gemm_right = {
+        "name": "Gemm_Right",
+        "core_allocation": copy.deepcopy(compute_allocation_gemm_right),
+        "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm_right),
+        "kernel": copy.deepcopy(kernel_gemm),
+    }
+    # SiLU specific mapping entries. SiLU uses SIMDParser which for two dims goes to (B, H)
+    compute_allocation_silu = [26, 27, 28, 29]
+    inter_core_tiling_silu = [{"dim": "D0", "split": 4}]
+    kernel_silu = {"name": "silu", "kwargs": {"utilization": 50.0}}  # TODO: utilization
+    silu = {
+        "name": "Silu",
+        "core_allocation": copy.deepcopy(compute_allocation_silu),
+        "inter_core_tiling": copy.deepcopy(inter_core_tiling_silu),
+        "kernel": copy.deepcopy(kernel_silu),
+    }
 
-    mapping = [gemm_left, gemm_right, silu, mul, gemm_down, default]
+    # Elementwise Mul specific mapping entries
+    compute_allocation_mul = [32, 33, 34, 35]
+    inter_core_tiling_mul = [{"dim": "D0", "split": 4}]
+    kernel_mul = {"name": "eltwise_mul", "kwargs": {"utilization": 50.0}}  # TODO: utilization
+    mul = {
+        "name": "Elt_Mul",
+        "core_allocation": copy.deepcopy(compute_allocation_mul),
+        "inter_core_tiling": copy.deepcopy(inter_core_tiling_mul),
+        "kernel": copy.deepcopy(kernel_mul),
+    }
+
+    # Final down projection Gemm
+    if last_gemm_down:
+        inter_core_tiling_gemm_down = [{"dim": "D1", "split": 2}, {"dim": "D0", "split": 4}]
+        compute_allocation_gemm_down = [38, 39, 40, 41, 44, 45, 46, 47]
+        gemm_down = {
+            "name": "Gemm_Down",
+            "core_allocation": copy.deepcopy(compute_allocation_gemm_down),
+            "inter_core_tiling": copy.deepcopy(inter_core_tiling_gemm_down),
+            "kernel": copy.deepcopy(kernel_gemm),
+        }
+        layers = [gemm_left, gemm_right, silu, mul, gemm_down]
+        runtime_args = {
+            "input": {},
+            "weights_1": {"layout": "(d0, d1) -> (d1, d0)"},
+            "weights_2": {"layout": "(d0, d1) -> (d1, d0)"},
+            "weights_3": {"layout": "(d0, d1) -> (d1, d0)"},
+            "output": {},
+        }
+    else:
+        layers = [gemm_left, gemm_right, silu, mul]
+        runtime_args = {
+            "input": {},
+            "weights_1": {"layout": "(d0, d1) -> (d1, d0)"},
+            "weights_2": {"layout": "(d0, d1) -> (d1, d0)"},
+            "output": {},
+        }
+
+    # Fused groups; Only one group of all operators with Gemm_Left.D0 dimension
+    fused_groups = {
+        "name": "Fused_Group_1",
+        "layers": [layer["name"] for layer in layers],
+        "intra_core_tiling": [
+            {"dim": "Gemm_Left.D0", "tile": SEQ_LEN_TILE_SIZE},
+            {"dim": "Gemm_Left.D2", "tile": CHANNEL_TILE_SIZE},
+        ],
+    }
+
+    mapping = {
+        "layers": layers,
+        "fused_groups": [fused_groups],
+        "runtime_args": runtime_args,
+    }
 
     with open(output_file, "w") as f:
         yaml.dump(mapping, f, default_flow_style=False, sort_keys=False)

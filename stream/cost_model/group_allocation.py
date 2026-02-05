@@ -5,8 +5,6 @@ from zigzag.datatypes import LayerDim
 from zigzag.workload.layer_attributes import LayerDimSizes
 
 from stream.utils import contains_wildcard
-from stream.workload.computation.computation_node import LOOP_RANGES_T
-from stream.workload.mapping import TILING_T
 
 logger = logging.getLogger(__name__)
 
@@ -22,8 +20,8 @@ class GroupIdManager:
     def __init__(
         self,
         layer_dim_sizes: LayerDimSizes,
-        intra_core_tiling: TILING_T,
-        inter_core_tiling: TILING_T,
+        intra_core_tiling,
+        inter_core_tiling,
     ):
         self.__id_count = 0
         self.groups: GroupAllocation = {}
@@ -32,7 +30,7 @@ class GroupIdManager:
         self.inter_core_tiling = inter_core_tiling
         self.inter_core_tiled_dims = [layer_dim for layer_dim, _ in inter_core_tiling]
 
-    def __get_range_identifier(self, tile_loop_ranges: LOOP_RANGES_T):
+    def __get_range_identifier(self, tile_loop_ranges):
         """
         Returns a tuple identifier for the tile's inter-core loop ranges.
         Raises ValueError if required dimensions are missing.
@@ -48,7 +46,7 @@ class GroupIdManager:
             for layer_dim, _ in self.inter_core_tiling
         )
 
-    def get_group_id(self, tile_loop_ranges: LOOP_RANGES_T) -> int:
+    def get_group_id(self, tile_loop_ranges) -> int:
         """
         Returns the group ID for a tile, based on its loop ranges and the current tiling.
         If there is no constant operand, returns 0 (all nodes share the same group).

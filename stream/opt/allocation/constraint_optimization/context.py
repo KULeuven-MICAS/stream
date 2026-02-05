@@ -8,7 +8,6 @@ from gurobipy import GRB
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.config import (
-    ComputeMilpConfig,
     ConstraintOptStageConfig,
     CoreConstraintProfile,
     CoreRole,
@@ -33,20 +32,8 @@ class ConstraintContext:
         return sorted(c.id for c in self.compute_cores)
 
 
-def _capacity_for_core(
-    core: Core, profile: CoreConstraintProfile, compute_cfg: ComputeMilpConfig, accelerator: Accelerator
-) -> float:
-    mem_op = compute_cfg.capacity_operand_override or profile.capacity_operand
-    if mem_op is None:
-        return float("inf")
-    return accelerator.get_top_instance_of_core(core, mem_op).size
-
-
-def build_constraint_context(
-    accelerator: Accelerator, cfg: ConstraintOptStageConfig, compute_cfg_override: ComputeMilpConfig | None = None
-) -> ConstraintContext:
+def build_constraint_context(accelerator: Accelerator, cfg: ConstraintOptStageConfig) -> ConstraintContext:
     profiles_registry = ensure_profile_registry(cfg.profiles)
-    compute_cfg = compute_cfg_override or cfg.compute
 
     core_profiles: dict[Core, CoreConstraintProfile] = {}
     for core in accelerator.core_list:
@@ -57,7 +44,7 @@ def build_constraint_context(
 
     def _eligible_for_compute(core: Core) -> bool:
         profile = core_profiles[core]
-        return bool(profile.roles & compute_cfg.eligible_roles)
+        return bool(profile.roles)
 
     compute_cores = [
         c
@@ -67,9 +54,7 @@ def build_constraint_context(
     cache_cores = _cores_with(CoreRole.CACHE)
     io_cores = _cores_with(CoreRole.IO) + _cores_with(CoreRole.SHIM)
 
-    capacities: dict[Core, float] = {
-        c: _capacity_for_core(c, core_profiles[c], compute_cfg, accelerator) for c in compute_cores
-    }
+    capacities: dict[Core, float] = {c: c.get_memory_capacity() for c in compute_cores}
 
     return ConstraintContext(
         core_profiles=core_profiles,
@@ -91,7 +76,7 @@ class TransferAndTensorContext:
     max_shim_tile_dma_channels: int
     object_fifo_cores: set[Core]
 
-    def add_object_fifo_constraints(self, model, object_fifo_depth: dict[Core, gp.LinExpr]) -> None:
+    def add_object_fifo_constraints(self, model: gp.Model, object_fifo_depth: dict[Core, gp.LinExpr]) -> None:
         for core, expr in object_fifo_depth.items():
             if core not in self.object_fifo_cores:
                 continue
