@@ -130,7 +130,7 @@ class SteadyStateScheduler:
         # Check that all nodes in the steady state workload have a chosen resource allocation
         # self.check_steady_state_workload_allocations(ssw)
         self.update_mapping_with_allocations(ssw, tensor_allocations, transfer_allocations, memory_allocations)
-        ssw.visualize(os.path.join(self.output_path, "steady_state_workload_final.png"), self.mapping)
+        ssw.visualize(os.path.join(self.output_path, "steady_state_workload_final.png"), self.mapping, self.ssis)
         # tla = TensorLifetimeAnalyzer(ssw)
         self.steady_state_workload = ssw
         return ssw

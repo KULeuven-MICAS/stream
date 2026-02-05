@@ -82,6 +82,14 @@ class TransferAndTensorContext:
                 continue
             model.addConstr(expr <= core.max_object_fifo_depth, name=f"obj_fifo_depth_Core {core.id}")
 
+    def add_buffer_descriptor_constraints(
+        self, model: gp.Model, buffer_descriptor_depth: dict[Core, gp.LinExpr]
+    ) -> None:
+        for core, expr in buffer_descriptor_depth.items():
+            if core not in self.object_fifo_cores:
+                continue
+            model.addConstr(expr <= core.max_object_fifo_depth, name=f"obj_fifo_depth_Core {core.id}")
+
     def add_dma_usage_constraints(
         self,
         model,

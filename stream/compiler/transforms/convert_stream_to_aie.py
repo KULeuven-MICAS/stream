@@ -1897,7 +1897,9 @@ class RealizeLayoutCats(RewritePattern):
         chain = self.of_manager.get_of_chain(of_acquire.objFifo_name.root_reference.data)
 
         # get the hop starting from a memtile:
-        hop = chain.hops[1]
+        # if len(chain.hops) != 2:
+        #     pass
+        hop = chain.hops[-1]
 
         # get the element_type
         element_type = cast(MemRefType[Attribute], hop.fifos[0].elemType.buffer)
@@ -1915,7 +1917,7 @@ class RealizeLayoutCats(RewritePattern):
 
         # calculate transform
 
-        # check if producer on consumer
+        # check if producer or consumer
         if port == ObjectFifoPortEnum.Consume:
             sizes, strides = get_transform(tsl_in, tsl_out)
         else:  # Produce

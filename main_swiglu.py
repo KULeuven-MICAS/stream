@@ -21,6 +21,9 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     rows,
     cols,
     npu,
+    seq_len_tile_size=32,
+    embeddging_tile_size=128,
+    hidden_tile_size=64,
     last_gemm_down: bool = False,
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
@@ -29,7 +32,9 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     workload_path = make_swiglu_workload(
         seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down=last_gemm_down
     )
-    mapping_path = make_swiglu_mapping2(seq_len, embedding_dim, hidden_dim, last_gemm_down)
+    mapping_path = make_swiglu_mapping2(
+        seq_len, embedding_dim, hidden_dim, last_gemm_down, seq_len_tile_size, embeddging_tile_size, hidden_tile_size
+    )
     ##############################################################################################
 
     ################################PARSING###############################
@@ -110,6 +115,13 @@ if __name__ == "__main__":
     parser.add_argument("--cols", type=int, default=1, help="Number of AIE columns to use (default: 1)")
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
     parser.add_argument(
+        "--seq_len_tile_size", type=int, default=32, help="Tile size for seq_len dimension (default: 32)"
+    )
+    parser.add_argument(
+        "--embedding_tile_size", type=int, default=128, help="Tile size for embedding dimension (default: 128)"
+    )
+    parser.add_argument("--hidden_tile_size", type=int, default=64, help="Tile size for hidden dimension (default: 64)")
+    parser.add_argument(
         "--no_last_gemm_down",
         dest="last_gemm_down",
         action="store_false",
@@ -127,6 +139,9 @@ if __name__ == "__main__":
         args.rows,
         args.cols,
         args.npu,
+        args.seq_len_tile_size,
+        args.embedding_tile_size,
+        args.hidden_tile_size,
         last_gemm_down=args.last_gemm_down,
     )
     save_path = f"outputs/swiglu_module_{args.seq_len}_{args.embedding_dim}_{args.hidden_dim}.mlir"

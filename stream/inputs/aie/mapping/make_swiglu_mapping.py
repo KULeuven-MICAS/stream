@@ -107,7 +107,9 @@ def make_swiglu_mapping(seq_len, embedding_dim, hidden_dim, last_gemm_down):  # 
     return output_file
 
 
-def make_swiglu_mapping2(seq_len, embedding_dim, hidden_dim, last_gemm_down):  # noqa: N803
+def make_swiglu_mapping2(
+    seq_len, embedding_dim, hidden_dim, last_gemm_down, seq_len_tile_size, embedding_tile_size, hidden_tile_size
+):  # noqa: N803
     """
     This mapping assumes that m rows are computed for each Gemm in a pipelined fashion.
     Each layer is partitioned across four rows of compute tiles with inter_core_tiling in the m dimension
@@ -115,9 +117,9 @@ def make_swiglu_mapping2(seq_len, embedding_dim, hidden_dim, last_gemm_down):  #
     name = f"swiglu_{seq_len}_{embedding_dim}_{hidden_dim}"
     output_file = os.path.join(os.path.dirname(__file__), f"{name}_v2.yaml")
 
-    SEQ_LEN_TILE_SIZE = 1  # per core
-    INPUT_CHANNEL_TILE_SIZE = 512
-    OUTPUT_CHANNEL_TILE_SIZE = 32
+    SEQ_LEN_TILE_SIZE = seq_len_tile_size
+    INPUT_CHANNEL_TILE_SIZE = embedding_tile_size
+    OUTPUT_CHANNEL_TILE_SIZE = hidden_tile_size
     assert seq_len % 4 == 0, "seq_len must be divisible by 4 for this mapping"
     assert seq_len >= SEQ_LEN_TILE_SIZE * 4, f"seq_len must be at least {SEQ_LEN_TILE_SIZE * 4} for this mapping"
     assert embedding_dim % INPUT_CHANNEL_TILE_SIZE == 0, (
@@ -128,8 +130,19 @@ def make_swiglu_mapping2(seq_len, embedding_dim, hidden_dim, last_gemm_down):  #
     )
 
     # Left Gemm
+    if seq_len_tile_size == 1:
+        kernel_gemm = {"name": "matvec", "kwargs": {"utilization": 61.8}}
+    else:
+        kernel_gemm = {
+            "name": "gemm",
+            "kwargs": {
+                "utilization": 61.8,
+                "m": seq_len_tile_size,
+                "k": INPUT_CHANNEL_TILE_SIZE,
+                "n": OUTPUT_CHANNEL_TILE_SIZE,
+            },
+        }
     inter_core_tiling_gemm_left = [{"dim": "D2", "split": 2}, {"dim": "D0", "split": 4}]
-    kernel_gemm = {"name": "matvec", "kwargs": {"utilization": 61.8}}
     compute_allocation_gemm_left = [2, 3, 4, 5, 8, 9, 10, 11]
     gemm_left = {
         "name": "Gemm_Left",
