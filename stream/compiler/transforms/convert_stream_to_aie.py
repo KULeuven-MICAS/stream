@@ -238,7 +238,6 @@ class ObjectFifoHop:
                 referenced_type=memref_type.get_element_type(),
                 shape=memref_type.get_shape(),
                 name=of_name,
-                repeat_count=producers[0].ssis.data.reuse_factor_compute(),
             )
             assert isinstance(object_fifo.repeat_count, IntegerAttr)
             if object_fifo.repeat_count.value.data == 1:
