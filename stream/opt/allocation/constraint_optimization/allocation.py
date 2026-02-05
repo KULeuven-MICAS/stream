@@ -185,7 +185,6 @@ class ComputeAllocator:
             self.accelerator,
             self.cost_lut,
             impossible_lat=0,
-            latency_attr=self.compute_cfg.latency_attr,
         )
         lat: LatDict = {(ids[n], c, k): v for (n, c, k), v in raw_lat.items()}
         split: SplitDict = {ids[n]: {c: {k: raw_split[n][c][k] for k in raw_split[n][c]} for c in cores} for n in nodes}

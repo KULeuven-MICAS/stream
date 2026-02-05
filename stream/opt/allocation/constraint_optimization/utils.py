@@ -45,7 +45,6 @@ def get_latencies(
     accelerator: Accelerator,
     cost_lut: CoreCostLUT,
     impossible_lat: float = 1e11,
-    latency_attr: str = "latency_total1",
 ) -> tuple[dict[tuple[ComputationNode, Core, int], int], dict]:
     cores = [accelerator.get_core(core_id) for core_id in core_ids]
     latencies = {(node, core): impossible_lat for node in nodes for core in cores}

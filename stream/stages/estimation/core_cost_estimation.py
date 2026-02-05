@@ -67,6 +67,7 @@ class CoreCostEstimationStage(Stage):
         self.mapping: Mapping = self.ctx.get("mapping")
         self.loma_lpf_limit = self.ctx.get("loma_lpf_limit")
         self.output_path = self.ctx.get("output_path")
+        self.nb_spatial_mappings_generated: int = self.ctx.get("nb_spatial_mappings_generated", 1)
         self.temporal_mapping_type: TemporalMappingType = self.ctx.get("temporal_mapping_type")
         self.loma_show_progress_bar: bool = self.ctx.get("loma_show_progress_bar", False)
         self.cost_lut_path: str = os.path.join(self.output_path, "core_cost_lut.pickle")
@@ -114,6 +115,9 @@ class CoreCostEstimationStage(Stage):
             workload=self.workload,
             accelerator=self.accelerator,
             mapping=self.mapping,
+            temporal_mapping_type=self.temporal_mapping_type,
+            loma_lpf_limit=self.loma_lpf_limit,
+            nb_spatial_mappings_generated=self.nb_spatial_mappings_generated,
         )
 
     def is_aie_compute_core(self, core: Core) -> bool:
