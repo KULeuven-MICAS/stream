@@ -237,7 +237,7 @@ class SteadyStateIterationSpace:
         local_tensors = self.nb_local_tensors_mem()
         if local_tensors > 1:
             if len(spatial_shape) > 0:
-                warn("mixing spatial and temporal reuse, which seems to be unsupported")
+                warn("mixing spatial and temporal reuse, which seems to be unsupported", stacklevel=1)
             else:
                 shape = (local_tensors,) + shape
 

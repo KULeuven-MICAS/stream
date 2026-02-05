@@ -75,7 +75,7 @@ class AIECodeGenerationStage(Stage):
             self.ctx.set(module=self.module)
             yield self.ctx
 
-    def create_transfer_op(  # noqa: PLR0915
+    def create_transfer_op(  # noqa: PLR0912, PLR0915
         self,
         node: TransferNode,
         mapping: NodeMapping,

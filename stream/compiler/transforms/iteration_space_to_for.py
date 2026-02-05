@@ -39,7 +39,7 @@ def iteration_space_to_for(block: Block, rewriter: Rewriter):  # noqa: PLR0912, 
             continue
         vars.append(var)
         ub = ConstantOp.from_int_and_width(var.size, IndexType())
-        for_op = ForOp(lb, ub, step, [], Block([*for_ops, yield_op := YieldOp()], arg_types=[IndexType()]))
+        for_op = ForOp(lb, ub, step, [], Block([*for_ops, YieldOp()], arg_types=[IndexType()]))
         for_op.attributes["layer_dim"] = StringAttr(str(var.dimension))
         for_ops = [ub, for_op]
         for_dict[var] = for_op
