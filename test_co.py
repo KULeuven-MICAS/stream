@@ -3,6 +3,7 @@ import re
 
 from stream.api import optimize_allocation_co
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
+from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 
 _logging_level = _logging.INFO
@@ -23,11 +24,7 @@ workload_config = TwoConvWorkloadConfig(
     weight_dtype="bf16",
 )
 workload_path = make_2_conv_workload(workload_config)
-mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
-mode = "fused"
-layer_stacks = [
-    (0, 1),
-]  # Single layer stack for the two conv layers
+mapping_path = make_2_conv_mapping(workload_config)
 ##############################################################################################
 
 ################################PARSING###############################
@@ -35,15 +32,13 @@ hw_name = accelerator.split("/")[-1].split(".")[0]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
     wl_name = re.split(r"/|\.", workload_path)[-2]
-experiment_id = f"{hw_name}-{wl_name}-{mode}-constraint_optimization"
+experiment_id = f"{hw_name}-{wl_name}-constraint_optimization"
 ######################################################################
 
 ctx = optimize_allocation_co(
     hardware=accelerator,
     workload=workload_path,
     mapping=mapping_path,
-    mode=mode,
-    layer_stacks=layer_stacks,
     experiment_id=experiment_id,
     output_path="outputs",
     skip_if_exists=False,

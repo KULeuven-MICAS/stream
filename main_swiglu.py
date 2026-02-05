@@ -24,14 +24,12 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     last_gemm_down: bool = False,
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
+    accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
     # CREATE THE SWIGLU ONNX MODEL AND MAPPING
     workload_path = make_swiglu_workload(
         seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down=last_gemm_down
     )
-    accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
     mapping_path = make_swiglu_mapping2(seq_len, embedding_dim, hidden_dim, last_gemm_down)
-    # mapping_path = make_swiglu_mapping2(seq_len, embedding_dim, hidden_dim, last_gemm_down)
-    mode = "fused"
     ##############################################################################################
 
     ################################PARSING###############################
@@ -72,7 +70,6 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         hardware=accelerator,
         workload=workload_path,
         mapping=mapping_path,
-        mode=mode,
         experiment_id=experiment_id,
         output_path="outputs",
         skip_if_exists=False,

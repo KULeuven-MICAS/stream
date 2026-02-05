@@ -29,13 +29,10 @@ _logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(me
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
-def _sanity_check_inputs(
-    hardware: str, workload: str, mapping: str, mode: Literal["lbl"] | Literal["fused"], output_path: str
-):
+def _sanity_check_inputs(hardware: str, workload: str, mapping: str, output_path: str):
     assert os.path.exists(hardware), f"Hardware file {hardware} does not exist"
     assert isinstance(workload, ModelProto) or os.path.exists(workload), f"Workload file {workload} does not exist"
     assert os.path.exists(mapping), f"Mapping file {mapping} does not exist"
-    assert mode in ["lbl", "fused"], "Mode must be either 'lbl' or 'fused'"
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
@@ -132,7 +129,6 @@ def optimize_allocation_co(  # noqa: PLR0913
     hardware: str,
     workload: str,
     mapping: str,
-    mode: Literal["lbl"] | Literal["fused"],
     experiment_id: str,
     output_path: str,
     skip_if_exists: bool = False,
@@ -142,7 +138,7 @@ def optimize_allocation_co(  # noqa: PLR0913
     nb_cols_to_use: int = 4,
     npu: str = "npu2",
 ) -> StreamCostModelEvaluation:
-    _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
+    _sanity_check_inputs(hardware, workload, mapping, output_path)
     _sanity_check_gurobi_license()
 
     # Create experiment_id path
