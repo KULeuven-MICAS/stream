@@ -23,12 +23,11 @@ class GemmKernel(AIEKernelWithZeroing):
 
     @property
     def zero_name(self) -> str:
-        return f"zero_{self.element_type}"
+        return f"zero_scalar_{self.element_type}"
 
     def zero_type(self, op: ComputationNodeOp) -> FunctionType:
         assert op.output is not None
         return FunctionType.from_lists(inputs=[op.output.type], outputs=[])
-
 
     @property
     def linkwith_name(self) -> str:
@@ -74,8 +73,8 @@ class GemmKernel(AIEKernelWithZeroing):
     def function_type(self, op: ComputationNodeOp) -> FunctionType:
         assert op.output is not None
         return FunctionType.from_lists(
-            inputs=[op.inputs[1].type]  # A
-            + [op.inputs[0].type]  # b
+            inputs=[op.inputs[0].type]  # A
+            + [op.inputs[1].type]  # b
             + [op.output.type],  # c
             outputs=[],
         )
@@ -83,5 +82,5 @@ class GemmKernel(AIEKernelWithZeroing):
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         assert op.output is not None
         return [
-            CallOp(self.function_name, [op.inputs[1], op.inputs[0], op.output], []),
+            CallOp(self.function_name, [op.inputs[0], op.inputs[1], op.output], []),
         ]

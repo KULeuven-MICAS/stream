@@ -363,12 +363,12 @@ class TransferAndTensorAllocator:
                 self.model.addConstr(cumC <= cumM, name=f"nest_{tr.name}_L{s}")
 
             # Enforce max one more loop mem reuse than compute reuse
-            # chosen_compute_idx = quicksum(self.z_stopC[(tr, i)] * i for i in range(-1, len(sizes)))
-            # chosen_mem_idx = quicksum(self.z_stopM[(tr, i)] * i for i in range(-1, len(sizes)))
-            # self.model.addConstr(
-            #     chosen_mem_idx <= chosen_compute_idx + 1,
-            #     name=f"max_one_more_{tr.name}_idx",
-            # )
+            chosen_compute_idx = quicksum(self.z_stopC[(tr, i)] * i for i in range(-1, len(sizes)))
+            chosen_mem_idx = quicksum(self.z_stopM[(tr, i)] * i for i in range(-1, len(sizes)))
+            self.model.addConstr(
+                chosen_mem_idx <= chosen_compute_idx + 1,
+                name=f"max_one_more_{tr.name}_idx",
+            )
 
     def __create_transfer_mem_core_vars(self):
         self.m_store: dict[tuple[TransferNode, Core], gp.Var] = {}
