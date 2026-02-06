@@ -56,8 +56,8 @@ class GemmKernel(AIEKernel):
             # C: mxn, tiles of rxt
             TiledStridedLayout(
                 [
-                    TiledStride([Stride(r * t * nt, mt), Stride(t, r)]),
-                    TiledStride([Stride(r * t, nt), Stride(1, t)]),
+                    TiledStride([Stride(r * t * nt, mt), Stride(nt * t, r)]),
+                    TiledStride([Stride(t, nt), Stride(1, t)]),
                 ]
             ),
         ]

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from math import prod
 from typing import cast
 
+from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.dialects.arith import ConstantOp
 from xdsl.dialects.builtin import (
     AnyDenseElement,

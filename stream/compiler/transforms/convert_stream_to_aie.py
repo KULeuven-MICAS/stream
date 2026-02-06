@@ -1948,6 +1948,8 @@ class RealizeLayoutCats(RewritePattern):
         else:  # Produce
             sizes, strides = get_transform(tsl_out, tsl_in)
 
+        transform_is_null = len(sizes) == 1 and strides == [1]
+
         # create BDDimlayout
         bd_layout = BDDimLayoutArrayAttr(
             BDDimLayoutArray([BDDimLayout((size, stride)) for size, stride in zip(sizes, strides, strict=False)])
@@ -1955,7 +1957,8 @@ class RealizeLayoutCats(RewritePattern):
 
         for fifo in hop.fifos:
             fifo.elemType = ObjectFIFO([MemRefType(element_type.element_type, element_type.shape, dest_type.layout)])
-            fifo.dimensionsToStream = bd_layout
+            if not transform_is_null:
+                fifo.dimensionsToStream = bd_layout
 
         element_type = cast(MemRefType[Attribute], hop.fifos[0].elemType.buffer)
 
@@ -2151,6 +2154,8 @@ class ConvertStreamToAIEPass(ModulePass):
         # Use the new convert aie kernels operation:
         assert npu is AIEDeviceEnum.npu2
         PatternRewriteWalker(SetKernelLayouts(self.aie_kernels)).rewrite_module(op)
+        with open("test4.mlir", "w") as f:
+            f.write(str(op))
         PatternRewriteWalker(ConvertAIEKernels(self.aie_kernels)).rewrite_module(op)
 
         # handle layouts
