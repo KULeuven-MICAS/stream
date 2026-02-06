@@ -2,14 +2,16 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from snaxc.dialects.snax import LayoutCast
 from snaxc.ir.tsl import TiledStridedLayout
 from xdsl.dialects.builtin import FunctionType, StringAttr
 from xdsl.dialects.func import CallOp, FuncOp
+from xdsl.dialects.scf import IndexSwitchOp, YieldOp
 from xdsl.ir import Operation, OpResult, Region
 from xdsl.pattern_rewriter import PatternRewriter
 from xdsl.rewriter import InsertPoint
 from xdsl.traits import SymbolTable
-from xdsl_aie.dialects.aie import CoreOp, DeviceOp
+from xdsl_aie.dialects.aie import CoreOp, DeviceOp, ObjectFIFOSubviewAccessOp
 
 from stream.compiler.dialects.stream import ComputationNodeOp
 
@@ -69,7 +71,7 @@ class AIEKernelWithZeroing(AIEKernel, ABC):
     @abstractmethod
     def zero_type(self, op: ComputationNodeOp) -> FunctionType: ...
 
-    def zero_call(self, op: ComputationNodeOp) -> Operation:
+    def zero_call(self, op: ObjectFIFOSubviewAccessOp) -> Operation:
         assert op.output is not None
         return CallOp(self.zero_name, [op.output], [])
 
@@ -84,7 +86,26 @@ class AIEKernelWithZeroing(AIEKernel, ABC):
 
         # Insert zeroing after definition of output
         assert isinstance(op.output, OpResult)
-        rewriter.insert_op(self.zero_call(op), InsertPoint.after(op.output.op))
+        first_def: Operation = op.output.op
+
+        # get rid of layout casts
+        while isinstance(first_def, LayoutCast):
+            assert isinstance(first_def.source, OpResult)
+            first_def = first_def.source.op
+
+        # handle index switch statements
+        if isinstance(first_def, IndexSwitchOp):
+            for case_region in first_def.case_regions:
+                yield_op = case_region.block.last_op
+                assert isinstance(yield_op, YieldOp)
+                case_def = yield_op.arguments[0]
+                assert isinstance(case_def, OpResult)
+                case_def = case_def.op
+                assert isinstance(case_def, ObjectFIFOSubviewAccessOp)
+                rewriter.insert_op(self.zero_call(case_def), InsertPoint.after(case_def))
+        else:
+            assert isinstance(first_def, ObjectFIFOSubviewAccessOp)
+            rewriter.insert_op(self.zero_call(first_def), InsertPoint.after(first_def))
 
         # Then, rewrite op as before:
         AIEKernel.rewrite(self, op, rewriter)
