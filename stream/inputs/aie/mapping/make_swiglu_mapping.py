@@ -195,17 +195,17 @@ def make_swiglu_mapping2(
         layers = [gemm_left, gemm_right, silu, mul, gemm_down]
         runtime_args = {
             "input": {},
-            "weights_1": {"layout": "(d0, d1) -> (d1, d0)"},
-            "weights_2": {"layout": "(d0, d1) -> (d1, d0)"},
-            "weights_3": {"layout": "(d0, d1) -> (d1, d0)"},
+            "weights_1": {},
+            "weights_2": {},
+            "weights_3": {},
             "output": {},
         }
     else:
         layers = [gemm_left, gemm_right, silu, mul]
         runtime_args = {
             "input": {},
-            "weights_1": {"layout": "(d0, d1) -> (d1, d0)"},
-            "weights_2": {"layout": "(d0, d1) -> (d1, d0)"},
+            "weights_1": {},
+            "weights_2": {},
             "output": {},
         }
 
