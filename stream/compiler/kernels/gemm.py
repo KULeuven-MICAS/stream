@@ -10,16 +10,25 @@ from xdsl.dialects.func import CallOp
 from xdsl.irdl import Operation
 
 from stream.compiler.dialects.stream import ComputationNodeOp
-from stream.compiler.kernels.aie_kernel import AIEKernel
+from stream.compiler.kernels.aie_kernel import AIEKernelWithZeroing
 
 
 @dataclass
-class GemmKernel(AIEKernel):
+class GemmKernel(AIEKernelWithZeroing):
     element_type: AnyDenseElement
     m: int
     k: int
     n: int
     layout: str
+
+    @property
+    def zero_name(self) -> str:
+        return f"zero_{self.element_type}"
+
+    def zero_type(self, op: ComputationNodeOp) -> FunctionType:
+        assert op.output is not None
+        return FunctionType.from_lists(inputs=[op.output.type], outputs=[])
+
 
     @property
     def linkwith_name(self) -> str:

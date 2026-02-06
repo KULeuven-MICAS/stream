@@ -28,7 +28,7 @@ class EltwiseMulKernel(AIEKernel):
 
     @property
     def function_name(self) -> str:
-        return f"eltwise_mul_{self.element_type}_vector"
+        return f"eltwise_mul_{self.element_type}_scalar"
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         # Intrinsic dimensions:
