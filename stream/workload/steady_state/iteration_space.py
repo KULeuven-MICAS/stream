@@ -318,16 +318,10 @@ class SteadyStateIterationSpace:
     def get_spatio_temporal_variables(self) -> list[IterationVariable]:
         return [iv for iv in self.variables if iv.type == IterationVariableType.SPATIOTEMPORAL]
 
-    def get_temporal_variables(self, include_spatio_temporal=False) -> list[IterationVariable]:
+    def get_temporal_variables(self) -> list[IterationVariable]:
         """
         Returns the list of temporal iteration variables (i.e. those that are not spatial).
         """
-        if include_spatio_temporal:
-            return [
-                iv
-                for iv in self.variables
-                if iv.type in (IterationVariableType.TEMPORAL, IterationVariableType.SPATIOTEMPORAL)
-            ]
         return [iv for iv in self.variables if iv.type == IterationVariableType.TEMPORAL]
 
     def get_temporal_dimensions(self) -> list[LayerDim]:
