@@ -832,10 +832,10 @@ class TransferToObjectFIFOPattern(RewritePattern):
             return
 
         # otherwise, default flow with one objectfifo:
-        assert of is not None
-        if "of_11" in of.sym_name.data:
-            print([(str(v), v.compute_tile_reuse) for v in op.ssis.data.variables])
-            breakpoint()
+        # assert of is not None
+        # if "of_11" in of.sym_name.data:
+        #     print([(str(v), v.compute_tile_reuse) for v in op.ssis.data.variables])
+        #     breakpoint()
 
         first_relevant_iter = next(iv for iv in op.ssis.data.get_temporal_variables() if iv.relevant)
         first_relevant_index = op.ssis.data.get_temporal_variables().index(first_relevant_iter)
