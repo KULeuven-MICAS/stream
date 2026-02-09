@@ -1,10 +1,10 @@
 import string
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
+from copy import deepcopy
 from dataclasses import dataclass, field
 from math import prod
 from typing import Self, cast
-from copy import deepcopy
 
 from networkx.algorithms.tree.branchings import STYLES
 from snaxc.dialects.snax import LayoutCast
@@ -833,23 +833,22 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
         # otherwise, default flow with one objectfifo:
         assert of is not None
-        # if "of_11" in of.sym_name.data:
-        #     breakpoint()
+        if "of_11" in of.sym_name.data:
+            print([(str(v), v.compute_tile_reuse) for v in op.ssis.data.variables])
+            breakpoint()
 
-        first_relevant_iter = next(iv for iv in op.ssis.data.get_temporal_variables(True) if iv.relevant)
-        first_relevant_index = op.ssis.data.get_temporal_variables(True).index(first_relevant_iter)
+        first_relevant_iter = next(iv for iv in op.ssis.data.get_temporal_variables() if iv.relevant)
+        first_relevant_index = op.ssis.data.get_temporal_variables().index(first_relevant_iter)
 
-        last_reuse = next(
-            (
-                iv
-                for iv in op.ssis.data.get_temporal_variables(True)[::-1]
-                if iv.compute_tile_reuse == ComputeTileReuse.REUSE
-            ),
-            None,
-        )
+        last_reuse = None
+        for var in op.ssis.data.get_temporal_variables():
+            if var.compute_tile_reuse == ComputeTileReuse.REUSE:
+                last_reuse = var
+            else:
+                break
         if last_reuse:
-            last_reuse_index = op.ssis.data.get_temporal_variables(True).index(last_reuse)
-            reuse_iters = op.ssis.data.get_temporal_variables(True)[first_relevant_index : last_reuse_index + 1]
+            last_reuse_index = op.ssis.data.get_temporal_variables().index(last_reuse)
+            reuse_iters = op.ssis.data.get_temporal_variables()[first_relevant_index : last_reuse_index + 1]
         else:
             reuse_iters = []
 

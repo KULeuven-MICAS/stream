@@ -165,14 +165,18 @@ class AIECodeGenerationStage(Stage):
         ordered_strides = sorted(filtered_vars, key=lambda x: x[1])
         ordered_strides = [ordered_strides[i] for i in index_order]
         all_vars.extend(kernel_var_dict[dim] for dim, _ in ordered_strides)
+
+        # First, we should go over the temporal vars that are kept local in mem tile:
+        all_vars.extend(
+            var for var in ssis.get_temporal_variables() if var.relevant and var.mem_tile_reuse == MemTileReuse.REUSE
+        )
         # Then, iterate over relevant spatial vars:
         all_vars.extend(var for var in ssis.get_spatial_variables() if var.relevant)
         # This is only relevant for first and last ops, which should not have spatio-temporal vars.
         # After that, go over the temporal strides (both relevant and irellevant)
         # that aren't kept local in memtiles.
-        all_vars.extend(
-            var for var in ssis.get_temporal_variables() if var.relevant or var.mem_tile_reuse != MemTileReuse.REUSE
-        )
+        # Then, add all remaining temporal variables that aren't kept local in the memtile
+        all_vars.extend(var for var in ssis.get_temporal_variables() if var.mem_tile_reuse != MemTileReuse.REUSE)
 
         # I dont' think offsets are relevant anymore with the new representation
         offsets = [0]
