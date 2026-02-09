@@ -4,7 +4,9 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from math import prod
 from typing import Self, cast
+from copy import deepcopy
 
+from networkx.algorithms.tree.branchings import STYLES
 from snaxc.dialects.snax import LayoutCast
 from snaxc.dialects.tsl import TiledStridedLayoutAttr
 from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
@@ -73,12 +75,18 @@ from stream.compiler.dialects.stream import (
     OutEdgeOp,
     PullOp,
     PushOp,
+    SteadyStateIterationSpaceAttr,
     TransferOp,
 )
 from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.compiler.transforms.convert_aie_kernels import ConvertAIEKernels
 from stream.compiler.transforms.iteration_space_to_for import iteration_space_to_for
-from stream.workload.steady_state.iteration_space import ComputeTileReuse
+from stream.workload.steady_state.iteration_space import (
+    ComputeTileReuse,
+    IterationVariable,
+    IterationVariableType,
+    SteadyStateIterationSpace,
+)
 
 
 def get_of_name(source: TileOp, dest: TileOp, operand: str) -> str:
@@ -732,7 +740,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: PushOp | PullOp, rewriter: PatternRewriter):  # noqa: PLR0912, PLR0915
-        # do the runtime sequence thing elsewhere, must have a core_op parent
+        # Only handle pull/push ops in core ops, which should be converted to object fifos
         parent = op
         while True:
             if isinstance(parent, CoreOp):
@@ -747,12 +755,6 @@ class TransferToObjectFIFOPattern(RewritePattern):
             memref_type = op.output.type
         assert isinstance(memref_type, MemRefType)
         of_chain = self.object_fifo_manager.insert_or_update(op.channel, memref_type)
-
-        # get spatial offset to fetch from correct object fifo
-        # offset = 0
-        # for size, spatial_stride in zip(op.sizes.get_values(), op.spatial_strides.get_values(), strict=True):
-        #     if spatial_stride != 0:
-        #         offset += int((spatial_stride // size) * prod(op.sizes.get_values()))
 
         # decide whether to consume or produce
         join_ofs: Sequence[ObjectFifoOp] = []
@@ -780,12 +782,11 @@ class TransferToObjectFIFOPattern(RewritePattern):
             # custom handling for programmatic join here:
 
             # multiple spatio-temporal variables get very complex, handle just one
-            # for now:
+            # for now (unfortunately, there is no way to check this anymore)
             use_op = next(x for x in op.results[0].uses).operation
             assert isinstance(use_op, ComputationNodeOp)
             ssis_dest = use_op.ssis.data
-            assert len(ssis_dest.get_spatio_temporal_variables()) == 1
-            st_var = ssis_dest.get_spatio_temporal_variables()[0]
+            st_var = ssis_dest.get_temporal_variables()[0]
             for_op = op.parent_op()
             assert isinstance(for_op, ForOp)
             assert for_op.attributes.get("layer_dim") == StringAttr(str(st_var.dimension))
@@ -832,21 +833,23 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
         # otherwise, default flow with one objectfifo:
         assert of is not None
+        # if "of_11" in of.sym_name.data:
+        #     breakpoint()
 
-        first_relevant_iter = next(iv for iv in op.ssis.data.get_temporal_variables() if iv.relevant)
-        first_relevant_index = op.ssis.data.get_temporal_variables().index(first_relevant_iter)
+        first_relevant_iter = next(iv for iv in op.ssis.data.get_temporal_variables(True) if iv.relevant)
+        first_relevant_index = op.ssis.data.get_temporal_variables(True).index(first_relevant_iter)
 
         last_reuse = next(
             (
                 iv
-                for iv in op.ssis.data.get_temporal_variables()[::-1]
+                for iv in op.ssis.data.get_temporal_variables(True)[::-1]
                 if iv.compute_tile_reuse == ComputeTileReuse.REUSE
             ),
             None,
         )
         if last_reuse:
-            last_reuse_index = op.ssis.data.get_temporal_variables().index(last_reuse)
-            reuse_iters = op.ssis.data.get_temporal_variables()[first_relevant_index : last_reuse_index + 1]
+            last_reuse_index = op.ssis.data.get_temporal_variables(True).index(last_reuse)
+            reuse_iters = op.ssis.data.get_temporal_variables(True)[first_relevant_index : last_reuse_index + 1]
         else:
             reuse_iters = []
 
@@ -1993,6 +1996,55 @@ class OrderCoreOps(RewritePattern):
 
 
 @dataclass
+class RemoveSpatioTemporality(RewritePattern):
+    # Complete a bubble-type sorting of core ops for a more deterministic output
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, core_op: CoreOp, rewriter: PatternRewriter):
+        block = core_op.region.block
+        ops: Sequence[PushOp | PullOp | ComputationNodeOp] = []
+        ssis = None
+
+        # First, gather ops
+        for op in block.ops:
+            if isinstance(op, ComputationNodeOp):
+                ssis = op.ssis.data
+            if isinstance(op, PushOp | PullOp | ComputationNodeOp):
+                ops.append(op)
+            elif isinstance(op, EndOp):
+                pass
+            else:
+                raise RuntimeError("non-steady state op encountered")
+
+        assert ssis is not None
+
+        # this only makes sense if there are spatio-teporal things still present:
+        if not len(ssis.get_spatio_temporal_variables()):
+            return
+
+        new_ssis_vars: list[list[IterationVariable]] = [[] for _ in range(len(ops))]
+        new_ssis_tvars: list[list[IterationVariable]] = [[] for _ in range(len(ops))]
+        for i, var in enumerate(ssis.variables):
+            for j, op in enumerate(ops):
+                opvar = deepcopy(op.ssis.data.variables[i])
+                assert var.dimension == opvar.dimension
+                assert var.size == opvar.size
+
+                if var.type in (IterationVariableType.KERNEL, IterationVariableType.SPATIAL):
+                    new_ssis_vars[j].append(opvar)
+                elif var.type == IterationVariableType.SPATIOTEMPORAL:
+                    opvar.type = IterationVariableType.TEMPORAL
+                    new_ssis_tvars[j].append(opvar)
+                else:
+                    new_ssis_tvars[j].append(opvar)
+        # merge vars again:
+        new_ssis_vars = [x + y for x, y in zip(new_ssis_vars, new_ssis_tvars, strict=True)]
+        new_ssis = [SteadyStateIterationSpace(vars) for vars in new_ssis_vars]
+
+        for op, ssis in zip(ops, new_ssis, strict=True):
+            op.properties["ssis"] = SteadyStateIterationSpaceAttr(ssis)
+
+
+@dataclass
 class WrapInCoreOps(RewritePattern):
     tile_op_manager: TileOpManager
     of_manager: ObjectFifoManager
@@ -2125,11 +2177,19 @@ class ConvertStreamToAIEPass(ModulePass):
         ).rewrite_module(op)
 
         PatternRewriteWalker(OrderCoreOps()).rewrite_module(op)
+        with open("test5.mlir", "w") as f:
+            f.write(str(op))
+        PatternRewriteWalker(RemoveSpatioTemporality()).rewrite_module(op)
+        with open("test6.mlir", "w") as f:
+            f.write(str(op))
 
         for core_op in device_op.region.block.ops:
             if isinstance(core_op, CoreOp):
                 # insert runtime sequence op
                 iteration_space_to_for(core_op.region.block, rewriter)
+
+        with open("test7.mlir", "w") as f:
+            f.write(str(op))
 
         PatternRewriteWalker(
             TransferToObjectFIFOPattern(object_fifo_manager),
