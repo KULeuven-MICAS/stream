@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from math import prod
 from typing import Self, cast
 
-from networkx.algorithms.tree.branchings import STYLES
 from snaxc.dialects.snax import LayoutCast
 from snaxc.dialects.tsl import TiledStridedLayoutAttr
 from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
@@ -1999,12 +1998,11 @@ class OrderCoreOps(RewritePattern):
 class RemoveSpatioTemporality(RewritePattern):
     # Complete a bubble-type sorting of core ops for a more deterministic output
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, core_op: CoreOp, rewriter: PatternRewriter):
+    def match_and_rewrite(self, core_op: CoreOp, rewriter: PatternRewriter):  # noqa: PLR0912
         block = core_op.region.block
         ops: Sequence[PushOp | PullOp | ComputationNodeOp] = []
         ssis = None
 
-        breakvar = False
         # First, gather ops
         for op in block.ops:
             if isinstance(op, ComputationNodeOp):

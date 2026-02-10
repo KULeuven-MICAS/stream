@@ -33,7 +33,7 @@ class EltwiseMulKernel(AIEKernel):
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         # Intrinsic dimensions:
         r = 4  # ~m
-        s = 8  # ~k
+        s = 8  # ~k  # noqa: F841
         t = 8  # ~n
         # Tiled kernel dimensions:
         mt = 32 // r
