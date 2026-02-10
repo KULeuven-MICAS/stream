@@ -6,10 +6,11 @@ import sympy as sp
 from xdsl.ir.affine import AffineConstantExpr, AffineDimExpr, AffineExpr
 
 from stream.datatypes import InterCoreTiling, LayerDim
-from stream.workload.node import TransferNode
+from stream.workload.node import ComputationNode, TransferNode
 from stream.workload.steady_state.iteration_space import (
     IterationVariable,
     IterationVariableType,
+    LoopEffect,
     SteadyStateIterationSpace,
 )
 
@@ -83,9 +84,20 @@ def _add_temporal_iteration_variables(
     for node in workload.get_iteration_space_nodes():
         for temporal_unrolling in temporal_unrollings:
             dim, size = temporal_unrolling
-            relevant = dim in workload.get_dims(node)
+            if isinstance(node, ComputationNode):
+                effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.ABSENT
+            elif isinstance(node, TransferNode):
+                preds = workload.predecessors(node)
+                succs = workload.successors(node)
+                compute_preds_succs = [n for n in (*preds, *succs) if isinstance(n, ComputationNode)]
+                if dim in workload.get_dims(node):
+                    effect = LoopEffect.VARYING
+                elif any(dim in workload.get_dims(n) for n in compute_preds_succs):
+                    effect = LoopEffect.INVARIANT
+                else:
+                    effect = LoopEffect.ABSENT
             iteration_variables[node].append(
-                IterationVariable(dim, size, relevant, type=IterationVariableType.TEMPORAL)
+                IterationVariable(dimension=dim, size=size, effect=effect, type=IterationVariableType.TEMPORAL)
             )
     return iteration_variables
 
@@ -117,13 +129,13 @@ def _insert_kernel_iteration_variables(
             assert rem == 0, (
                 f"Dim size {workload.get_dimension_size(dim)} not divisible by spatial unrolling {spatial_unrolling}"
             )
-            relevant = dim in workload.get_dims(node)
+            effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.INVARIANT
             iteration_variables[node].insert(
                 0,
                 IterationVariable(
                     dimension=dim,
                     size=size,
-                    relevant=relevant,
+                    effect=effect,
                     type=IterationVariableType.KERNEL,
                 ),
             )
@@ -143,7 +155,7 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                     IterationVariable(
                         dimension=dim,
                         size=unrolling,
-                        relevant=True,
+                        effect=LoopEffect.VARYING,
                         type=IterationVariableType.SPATIAL,
                     )
                 )
@@ -154,11 +166,12 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                 remaining_size, rem = divmod(unrolling, spatial_size)
                 assert rem == 0, f"Unrolling size {unrolling} not divisible by spatial size {spatial_size}"
                 # First add the spatiotemporal variable
+                effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.INVARIANT
                 iteration_variables[node].append(
                     IterationVariable(
                         dimension=dim,
                         size=remaining_size,
-                        relevant=True,
+                        effect=effect,
                         type=IterationVariableType.SPATIOTEMPORAL,
                     )
                 )
@@ -167,7 +180,7 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                     IterationVariable(
                         dimension=dim,
                         size=spatial_size,
-                        relevant=True,
+                        effect=effect,
                         type=IterationVariableType.SPATIAL,
                     )
                 )
@@ -177,12 +190,12 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                 else:
                     type = IterationVariableType.SPATIOTEMPORAL
                 # Create a replacement temporal variable
-                relevant = dim in workload.get_dims(node)
+                effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.INVARIANT
                 iteration_variables[node].append(
                     IterationVariable(
                         dimension=dim,
                         size=unrolling,
-                        relevant=relevant,
+                        effect=effect,
                         type=type,
                     )
                 )

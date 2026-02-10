@@ -1,9 +1,9 @@
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
+from copy import deepcopy
 from itertools import product
 from math import prod
 from typing import cast
-from copy import deepcopy
 
 from snaxc.dialects.snax import NoneAttr
 from snaxc.dialects.tsl import TSL

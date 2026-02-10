@@ -6,7 +6,6 @@ from __future__ import annotations
 from collections.abc import Iterable
 from enum import Enum, auto
 from math import prod
-from warnings import warn
 
 from zigzag.datatypes import LayerOperand
 from zigzag.workload.layer_node import LoopRelevancyInfo
@@ -48,6 +47,30 @@ class MemTileReuse(Enum):
         return str(self)
 
 
+class LoopEffect(Enum):
+    """
+    Captures how a loop dimension affects a given node/operand's tensor semantics.
+
+    - ABSENT:    This dimension is not part of the operand's logical index space.
+                 The loop may exist only to align with a global iteration space.
+    - INVARIANT: This dimension exists for the operand, but does not change which
+                 element/slice is addressed across iterations of this loop
+                 (loop-invariant for this operand).
+    - VARYING:   This dimension exists for the operand and changes the addressed
+                 element/slice across iterations of this loop.
+    """
+
+    ABSENT = auto()
+    INVARIANT = auto()
+    VARYING = auto()
+
+    def __str__(self) -> str:
+        return self.name
+
+    def __repr__(self) -> str:
+        return str(self)
+
+
 class IterationVariableType(Enum):
     KERNEL = auto()
     SPATIAL = auto()
@@ -56,43 +79,78 @@ class IterationVariableType(Enum):
 
 
 # --------------------------------------------------------------------------- #
-# 1.  IterationVariable – one intra-core tiling loop                          #
+#  1. IterationVariable – one tiling loop                                     #
 # --------------------------------------------------------------------------- #
 class IterationVariable:
     """
-    Represents a single intra-core tiling loop (innermost → outermost order).
+    Represents a single steady state tiling loop.
 
     Parameters
     ----------
     dimension : LayerDim
         Which logical loop dimension (e.g. `LayerDim.H`).
-    size      : int
+    size : int
         Loop trip-count **within a single steady-state slice**.
-    relevant  : bool
-        *True* ⇢ this loop varies between consecutive steady-state iterations
-        (R/PR in ZigZag terminology); once a relevant loop is encountered,
-        every **outer** loop is marked relevant as well.
+    effect : LoopEffect
+        How this loop dimension affects the node/operand tensor being analyzed.
+
+        - LoopEffect.VARYING   ⇢ this loop changes the addressed element/slice.
+        - LoopEffect.INVARIANT ⇢ loop exists but does not change the addressed element/slice.
+        - LoopEffect.ABSENT    ⇢ this dimension is not part of the operand's logical index space
+                                 (kept only for global iteration-space alignment).
+    type : IterationVariableType
+        Whether this is a spatial, temporal, kernel, or spatiotemporal loop.
+
+    Notes
+    -----
+    Historically, ZigZag-style "relevant" vs "irrelevant" (R/PR vs IR) was sufficient
+    to express whether an operand varies between steady-state iterations.
+    In a global iteration-space setting, we also need to represent loop dimensions
+    that do not apply to an operand at all (ABSENT), while still keeping the loop
+    around for uniformity across nodes.
     """
 
     def __init__(
         self,
         dimension: LayerDim,
         size: int,
-        relevant: bool,
+        effect: LoopEffect,
         type: IterationVariableType = IterationVariableType.TEMPORAL,
     ) -> None:
         self.dimension: LayerDim = dimension
         self.size: int = int(size)
-        self.relevant: bool = bool(relevant)
+        self.effect: LoopEffect = effect
         self._compute_tile_reuse: ComputeTileReuse = ComputeTileReuse.NOT_SET
         self._mem_tile_reuse: MemTileReuse = MemTileReuse.NOT_SET
         self.type: IterationVariableType = type
 
+    # ---------- derived convenience ----------------------------------------
+    @property
+    def relevant(self) -> bool:
+        """
+        Backward-compatible alias.
+
+        True iff this loop affects the addressed element/slice for this operand.
+        """
+        return self.effect == LoopEffect.VARYING
+
+    @property
+    def applicable(self) -> bool:
+        """True iff this loop dimension is part of the operand's logical index space."""
+        return self.effect != LoopEffect.ABSENT
+
     # ---------- nice aliases ------------------------------------------------
     def __iter__(self):
-        yield from (self.dimension, self.size, self.relevant, self.compute_tile_reuse, self.mem_tile_reuse, self.type)
+        yield from (
+            self.dimension,
+            self.size,
+            self.effect,
+            self.compute_tile_reuse,
+            self.mem_tile_reuse,
+            self.type,
+        )
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         if self.type == IterationVariableType.SPATIAL:
             prefix = "S"
         elif self.type == IterationVariableType.KERNEL:
@@ -101,25 +159,32 @@ class IterationVariable:
             prefix = "ST"
         else:
             prefix = "T"
-        tag = "R" if self.relevant else "IR"
+
+        if self.effect == LoopEffect.VARYING:
+            tag = "V"
+        elif self.effect == LoopEffect.INVARIANT:
+            tag = "I"
+        else:
+            tag = "A"  # absent
+
         return f"{prefix}({self.dimension},{self.size},{tag})"
 
-    def __eq__(self, other):
+    def __eq__(self, other) -> bool:
         if not isinstance(other, IterationVariable):
             return NotImplemented
         return (
             self.dimension == other.dimension
             and self.size == other.size
-            and self.relevant == other.relevant
+            and self.effect == other.effect
             and self.compute_tile_reuse == other.compute_tile_reuse
             and self.mem_tile_reuse == other.mem_tile_reuse
             and self.type == other.type
         )
 
-    def __hash__(self):
-        return hash((self.dimension, self.size, self.relevant, self.compute_tile_reuse, self.mem_tile_reuse, self.type))
+    def __hash__(self) -> int:
+        return hash((self.dimension, self.size, self.effect, self.compute_tile_reuse, self.mem_tile_reuse, self.type))
 
-    # Getter and setter for compute and mem tile reuse attribute
+    # ---------- compute/mem reuse ------------------------------------------
     @property
     def compute_tile_reuse(self) -> ComputeTileReuse:
         return self._compute_tile_reuse
@@ -289,7 +354,7 @@ class SteadyStateIterationSpace:
         # only look up to first non reuse:
         reuse_vars = []
         for var in self.get_temporal_variables():
-            if var.mem_tile_reuse == MemTileReuse:
+            if var.mem_tile_reuse == MemTileReuse.REUSE:
                 reuse_vars.append(var)
             else:
                 break
