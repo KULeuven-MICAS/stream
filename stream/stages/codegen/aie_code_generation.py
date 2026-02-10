@@ -3,6 +3,7 @@ from collections.abc import Iterator, Sequence
 from itertools import product
 from math import prod
 from typing import cast
+from copy import deepcopy
 
 from snaxc.dialects.snax import NoneAttr
 from snaxc.dialects.tsl import TSL
@@ -27,6 +28,7 @@ from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.iteration_space import (
     IterationVariable,
+    IterationVariableType,
     MemTileReuse,
     SteadyStateIterationSpace,
 )
@@ -157,6 +159,24 @@ class AIECodeGenerationStage(Stage):
         seen_dims = defaultdict(lambda: 1)
         # this assumes that each resulting tile after tiling to be in row-major layout
         # this could probably benefit from a more holistic view of layout transformation
+        #
+        if is_out_transfer:
+            ssis_prev = ssis_dict[next(workload.predecessors(node))]
+            new_ssis = []
+            new_ssis_tvars = []
+            for cur, prev in zip(ssis.variables, ssis_prev.variables, strict=True):
+                if cur.type == prev.type:
+                    if cur.type == IterationVariableType.TEMPORAL:
+                        new_ssis_tvars.append(deepcopy(cur))
+                    else:
+                        new_ssis.append(deepcopy(cur))
+                else:
+                    assert cur.type == IterationVariableType.SPATIAL
+                    assert prev.type == IterationVariableType.SPATIOTEMPORAL
+                    new_var = deepcopy(cur)
+                    new_var.type = IterationVariableType.TEMPORAL
+                    new_ssis_tvars.append(new_var)
+            ssis = SteadyStateIterationSpace([*new_ssis, *new_ssis_tvars])
 
         all_vars: Sequence[IterationVariable] = []
         # First, iterate over kenrel dimensions in row-major order:
@@ -167,16 +187,27 @@ class AIECodeGenerationStage(Stage):
         all_vars.extend(kernel_var_dict[dim] for dim, _ in ordered_strides)
 
         # First, we should go over the temporal vars that are kept local in mem tile:
-        all_vars.extend(
-            var for var in ssis.get_temporal_variables() if var.relevant and var.mem_tile_reuse == MemTileReuse.REUSE
-        )
+        reuse_tvars = []
+        for var in ssis.get_temporal_variables():
+            if var.mem_tile_reuse == MemTileReuse.REUSE:
+                reuse_tvars.append(var)
+            else:
+                break
+        non_reuse_tvars = ssis.get_temporal_variables()[len(reuse_tvars) :]
+        all_vars.extend(var for var in reuse_tvars if var.relevant)
         # Then, iterate over relevant spatial vars:
         all_vars.extend(var for var in ssis.get_spatial_variables() if var.relevant)
         # This is only relevant for first and last ops, which should not have spatio-temporal vars.
         # After that, go over the temporal strides (both relevant and irellevant)
         # that aren't kept local in memtiles.
         # Then, add all remaining temporal variables that aren't kept local in the memtile
-        all_vars.extend(var for var in ssis.get_temporal_variables() if var.mem_tile_reuse != MemTileReuse.REUSE)
+        # FIXME: hack for swiglu output, we need more info than just irrelevant / relevant:
+        # maybe another type that signals "out of scope", ignore this iteration variable
+        # entirely
+        if is_out_transfer:
+            all_vars.extend(var for var in non_reuse_tvars if var.relevant)
+        else:
+            all_vars.extend(var for var in non_reuse_tvars)
 
         # I dont' think offsets are relevant anymore with the new representation
         offsets = [0]
