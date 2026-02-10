@@ -1,7 +1,8 @@
-from typing import Any
+from typing import Any, Literal
 
 from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.accelerator import Accelerator as ZigZagCore
+from zigzag.hardware.architecture.memory_port import MemoryPortType
 
 
 class Core(ZigZagCore):
@@ -45,3 +46,16 @@ class Core(ZigZagCore):
         """
         memory_operand = MemoryOperand("I1")  # Assuming 'I1' is the top level memory operand
         return self.get_top_memory_instance(memory_operand).size
+
+    def get_max_memory_bandwidth(self, type: Literal["read"] | Literal["write"]) -> int:
+        """
+        Get the top level memory read/write bandwidth of the core in bits/cycle.
+        NOTE that this assumes the core has a single top level memory shared across operands.
+        NOTE that this uses the first read/write port it finds.
+        """
+        wanted_type = MemoryPortType.READ if type == "read" else MemoryPortType.WRITE
+        memory_operand = MemoryOperand("I1")  # Assuming 'I1' is the top level memory operand
+        ports = self.get_top_memory_instance(memory_operand).ports
+        first_port = next((port for port in ports if port.type in (wanted_type, MemoryPortType.READ_WRITE)), None)
+        assert first_port is not None, f"{self} does not have a top level memory {type} port."
+        return first_port.bw_max

@@ -17,14 +17,17 @@ class ComputeTileReuse(Enum):
     NOT_SET = auto()
     REUSE = auto()
     NO_REUSE = auto()
+    NOT_APPLICABLE = auto()
 
     def __str__(self):
         if self == ComputeTileReuse.NOT_SET:
             return "Not Set"
         elif self == ComputeTileReuse.REUSE:
             return "Reuse"
-        else:
+        elif self == ComputeTileReuse.NO_REUSE:
             return "No Reuse"
+        else:
+            return "Not Applicable"
 
     def __repr__(self):
         return str(self)
@@ -34,14 +37,17 @@ class MemTileReuse(Enum):
     NOT_SET = auto()
     REUSE = auto()
     NO_REUSE = auto()
+    NOT_APPLICABLE = auto()
 
     def __str__(self):
         if self == MemTileReuse.NOT_SET:
             return "Not Set"
         elif self == MemTileReuse.REUSE:
             return "Reuse"
-        else:
+        elif self == MemTileReuse.NO_REUSE:
             return "No Reuse"
+        else:
+            return "Not Applicable"
 
     def __repr__(self):
         return str(self)
@@ -120,8 +126,12 @@ class IterationVariable:
         self.dimension: LayerDim = dimension
         self.size: int = int(size)
         self.effect: LoopEffect = effect
-        self._compute_tile_reuse: ComputeTileReuse = ComputeTileReuse.NOT_SET
-        self._mem_tile_reuse: MemTileReuse = MemTileReuse.NOT_SET
+        if effect == LoopEffect.ABSENT:
+            self._compute_tile_reuse = ComputeTileReuse.NOT_APPLICABLE
+            self._mem_tile_reuse = MemTileReuse.NOT_APPLICABLE
+        else:
+            self._compute_tile_reuse: ComputeTileReuse = ComputeTileReuse.NOT_SET
+            self._mem_tile_reuse: MemTileReuse = MemTileReuse.NOT_SET
         self.type: IterationVariableType = type
 
     # ---------- derived convenience ----------------------------------------
@@ -417,6 +427,24 @@ class SteadyStateIterationSpace:
         Returns the list of reuses of temporal iteration variables.
         """
         return [iv.mem_tile_reuse for iv in self.get_temporal_variables()]
+
+    def get_applicable_temporal_variables(self) -> list[IterationVariable]:
+        """
+        Returns the list of temporal iteration variables that are applicable to the operand (i.e. not absent).
+        """
+        return [iv for iv in self.get_temporal_variables() if iv.applicable]
+
+    def get_applicable_temporal_dimensions(self) -> list[LayerDim]:
+        """
+        Returns the list of temporal loop dimensions that are applicable to the operand (i.e. not absent).
+        """
+        return [iv.dimension for iv in self.get_temporal_variables() if iv.applicable]
+
+    def get_applicable_temporal_sizes(self) -> list[int]:
+        """
+        Returns the list of sizes of temporal iteration variables that are applicable to the operand (i.e. not absent).
+        """
+        return [iv.size for iv in self.get_temporal_variables() if iv.applicable]
 
     # ..................................................................... #
     # ── Iteration / pretty printing                                         #
