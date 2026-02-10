@@ -234,9 +234,9 @@ class Workload(DiGraphWrapper[Node]):
         new_shape = self.get_tensor_shape_with_dimension_sizes(tensor, dim_sizes)
         return new_shape
 
-    def get_tensor_shape_of_transfer_to_single_core(
+    def get_tensor_of_transfer_to_single_core(
         self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping"
-    ) -> tuple[int, ...]:
+    ) -> Tensor:
         succ_idx = transfer.outputs.index(tensor)
         succ = list(self.successors(transfer))[succ_idx]
         if isinstance(succ, OutEdge):
@@ -245,7 +245,44 @@ class Workload(DiGraphWrapper[Node]):
             assert isinstance(succ, ComputationNode), f"Expected ComputationNode, got {type(succ)}"
             succ_tiling = self.get_unique_dims_inter_core_tiling(succ, mapping)
         new_shape = self.get_tensor_shape_with_tiling(tensor, succ_tiling)
-        return new_shape
+        new_subview = SubviewOp.from_static_parameters(
+            source=tensor.subview.source,
+            source_type=tensor.subview.source.type,
+            offsets=[0 for _ in new_shape],
+            sizes=new_shape,
+            strides=[1 for _ in new_shape],
+        )
+        return Tensor(
+            name=tensor.name,
+            operand_type=tensor.operand_type,
+            shape=new_shape,
+            subview=new_subview,
+        )
+
+    def get_tensor_of_transfer_from_single_core(
+        self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping"
+    ) -> Tensor:
+        pred_idx = transfer.inputs.index(tensor)
+        pred = list(self.predecessors(transfer))[pred_idx]
+        if isinstance(pred, InEdge):
+            pred_tiling = tuple()
+        else:
+            assert isinstance(pred, ComputationNode), f"Expected ComputationNode, got {type(pred)}"
+            pred_tiling = self.get_unique_dims_inter_core_tiling(pred, mapping)
+        new_shape = self.get_tensor_shape_with_tiling(tensor, pred_tiling)
+        new_subview = SubviewOp.from_static_parameters(
+            source=tensor.subview.source,
+            source_type=tensor.subview.source.type,
+            offsets=[0 for _ in new_shape],
+            sizes=new_shape,
+            strides=[1 for _ in new_shape],
+        )
+        return Tensor(
+            name=tensor.name,
+            operand_type=tensor.operand_type,
+            shape=new_shape,
+            subview=new_subview,
+        )
 
     def with_modified_dimension_sizes(self, new_sizes: dict[LayerDim, int]) -> "Workload":
         """Create a new workload where the dimension sizes of the given global dimension indices are modified to the new

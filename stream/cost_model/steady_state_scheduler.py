@@ -210,11 +210,16 @@ class SteadyStateScheduler:
     ):
         assert len(tensor_allocations) == 0, "Variable tensor allocation setting not implemented yet."
         for tr, alloc in transfer_allocations.items():
+            if tr in memory_allocations:
+                assert isinstance(memory_allocations[tr], Core)
+                memory_allocation = (memory_allocations[tr],)
+            else:
+                memory_allocation = tuple()
             self.mapping.set_for_node(
                 tr,
                 resource_allocation=(alloc,),
                 inter_core_tiling=tuple(),
-                memory_allocation=memory_allocations.get(tr, ()),
+                memory_allocation=memory_allocation,
             )
         for tr in ssw.get_transfer_nodes():
             assert len(self.mapping.get(tr).resource_allocation) == 1, (

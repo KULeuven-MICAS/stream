@@ -188,7 +188,7 @@ class TransferAndTensorAllocator:
 
     def _init_transfer_fire_helpers(self) -> None:
         for tr in self.transfer_nodes:  # only the movable tensors
-            ssis = self.ssis[tr].get_temporal_variables()  # e.g. [Nk, Nk-1, …, N0]
+            ssis = self.ssis[tr].get_applicable_temporal_variables()  # e.g. [Nk, Nk-1, …, N0]
             sizes = [iter_var.size for iter_var in ssis]
             relevancies = [iter_var.relevant for iter_var in ssis]
             reuses = [iter_var.compute_tile_reuse for iter_var in ssis]
@@ -310,7 +310,7 @@ class TransferAndTensorAllocator:
     def __create_compute_core_reuse_vars(self):
         self.z_stopC: dict[tuple[TransferNode, int], gp.Var] = {}
         for tr in self.transfer_nodes:
-            sizes = self.ssis[tr].get_temporal_sizes()
+            sizes = self.ssis[tr].get_applicable_temporal_sizes()
             for stop in range(-1, len(sizes)):  # -1 .. K-1
                 v = self.model.addVar(vtype=GRB.BINARY, name=f"zStopC_{tr.name}_L{stop}")
                 self.z_stopC[(tr, stop)] = v
@@ -339,7 +339,7 @@ class TransferAndTensorAllocator:
         self.z_stopM: dict[tuple[TransferNode, int], gp.Var] = {}
 
         for tr in self.transfer_nodes:
-            sizes = self.ssis[tr].get_temporal_sizes()
+            sizes = self.ssis[tr].get_applicable_temporal_sizes()
             for stop in range(-1, len(sizes)):
                 v = self.model.addVar(vtype=GRB.BINARY, name=f"zStopM_{tr.name}_L{stop}")
                 self.z_stopM[(tr, stop)] = v
@@ -434,7 +434,7 @@ class TransferAndTensorAllocator:
                 fires_c
                 == quicksum(
                     self.reuse_levels[(tr, s)][0] * self.z_stopC[(tr, s)]
-                    for s in range(-1, len(self.ssis[tr].get_temporal_variables()))
+                    for s in range(-1, len(self.ssis[tr].get_applicable_temporal_variables()))
                 ),
                 name=f"firesC_def_{tr.name}",
             )
@@ -442,7 +442,7 @@ class TransferAndTensorAllocator:
                 fires_m
                 == quicksum(
                     self.reuse_levels[(tr, s)][0] * self.z_stopM[(tr, s)]
-                    for s in range(-1, len(self.ssis[tr].get_temporal_variables()))
+                    for s in range(-1, len(self.ssis[tr].get_applicable_temporal_variables()))
                 ),
                 name=f"firesM_def_{tr.name}",
             )
@@ -572,10 +572,10 @@ class TransferAndTensorAllocator:
             for t in tr.outputs:
                 assert t in self.tensor_fixed, "Transfer tensors must be fixed (for now)."
                 for c in self.possible_tensor_allocations[t]:
-                    tensor_shape = self.workload.get_tensor_shape_of_transfer_to_single_core(t, tr, self.mapping)
-                    tensor_size = t.size_bits(shape=tensor_shape)
+                    t_core = self.workload.get_tensor_of_transfer_to_single_core(t, tr, self.mapping)
+                    tensor_size = t_core.size_bits()
                     assert isinstance(c, Core), f"Expected {c} to be a Core, got {type(c)}"
-                    for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
+                    for stop in range(-1, len(self.ssis[tr].get_applicable_temporal_variables())):
                         _, size_factor = self.reuse_levels[(tr, stop)]
                         req_size = ceil(size_factor * tensor_size)
                         self.core_load[c] += req_size * self.z_stopC[(tr, stop)]
@@ -585,7 +585,7 @@ class TransferAndTensorAllocator:
             memory_allocation = self.mapping.get(tr).memory_allocation
             if not memory_allocation:
                 continue
-            for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
+            for stop in range(-1, len(self.ssis[tr].get_applicable_temporal_variables())):
                 _, size_factor = self.reuse_levels[(tr, stop)]
                 assert len(tr.inputs) == 1, "Only single-input transfers are supported for memory capacity calculation."
                 tensor = tr.inputs[0]
@@ -609,7 +609,7 @@ class TransferAndTensorAllocator:
                 if c.id == self.offchip_core_id:
                     continue  # off-chip has no FIFO depth limit
                 assert isinstance(c, Core), f"Expected {c} to be a Core, got {type(c)}"
-                for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
+                for stop in range(-1, len(self.ssis[tr].get_applicable_temporal_variables())):
                     tiles_needed = self.tiles_needed_levels[(tr, stop)]
                     tiles_needed += 1 if self.force_double_buffering else 0
                     self.object_fifo_depth[c] += tiles_needed * self.z_stopC[(tr, stop)]
@@ -619,7 +619,7 @@ class TransferAndTensorAllocator:
                 if mc.id == self.offchip_core_id:
                     continue  # off-chip has no FIFO depth limit
                 assert isinstance(mc, Core), f"Expected {mc} to be a Core, got {type(mc)}"
-                for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
+                for stop in range(-1, len(self.ssis[tr].get_applicable_temporal_variables())):
                     tiles_needed = self.tiles_needed_levels[(tr, stop)]
                     tiles_needed += 1 if self.force_double_buffering else 0
                     self.object_fifo_depth[mc] += tiles_needed * self.m_store[(tr, mc)] * self.z_stopM[(tr, stop)]
@@ -636,7 +636,7 @@ class TransferAndTensorAllocator:
             #     if c.id == self.offchip_core_id:
             #         continue  # off-chip has no BD limit
             #     assert isinstance(c, Core), f"Expected {c} to be a Core, got {type(c)}"
-            #     for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
+            #     for stop in range(-1, len(self.ssis[tr].get_applicable_temporal_variables())):
             #         tiles_needed = self.tiles_needed_levels[(tr, stop)]
             #         tiles_needed += 1 if self.force_double_buffering else 0
             #         self.object_fifo_depth[c] += tiles_needed * self.z_stopC[(tr, stop)]
@@ -646,7 +646,7 @@ class TransferAndTensorAllocator:
                 if mc.id == self.offchip_core_id:
                     continue  # off-chip has no FIFO depth limit
                 assert isinstance(mc, Core), f"Expected {mc} to be a Core, got {type(mc)}"
-                for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
+                for stop in range(-1, len(self.ssis[tr].get_applicable_temporal_variables())):
                     bds_needed = self.bds_needed_levels[(tr, stop)]
                     self.bd_depth[mc] += bds_needed * self.m_store[(tr, mc)] * self.z_stopM[(tr, stop)]
         self.context.add_object_fifo_constraints(self.model, self.object_fifo_depth)
@@ -876,7 +876,7 @@ class TransferAndTensorAllocator:
         tensor_alloc = self.get_tensor_allocations()
         routing = self.get_transfer_routing()
         chosen_memory_cores = self.get_chosen_memory_cores()
-        self.update_transfer_reuse_levels()
+        self.update_transfer_reuse_levels(chosen_memory_cores)
 
         assert self.total_latency is not None, "Total latency variable was not created."
         total_latency = int(self.total_latency.X)
@@ -886,11 +886,12 @@ class TransferAndTensorAllocator:
 
     def update_transfer_reuse_levels(  # noqa: PLR0912
         self,
+        chosen_memory_cores: MemoryAlloc,
     ) -> None:
         compute_tile_reuse_levels: dict[TransferNode, int] = {}
         mem_tile_reuse_levels: dict[TransferNode, int] = {}
         for tr in self.transfer_nodes:
-            for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
+            for stop in range(-1, len(self.ssis[tr].get_applicable_temporal_variables())):
                 if self.z_stopC[(tr, stop)].X > self.VAR_THRESHOLD:
                     compute_tile_reuse_levels[tr] = stop
                 if self.z_stopM[(tr, stop)].X > self.VAR_THRESHOLD:
@@ -899,24 +900,27 @@ class TransferAndTensorAllocator:
         for tr in self.transfer_nodes:
             stop = compute_tile_reuse_levels[tr]
             # Set all iteration variables to REUSE flag
-            for i, iter_var in enumerate(self.ssis[tr].get_temporal_variables()):
+            for i, iter_var in enumerate(self.ssis[tr].get_applicable_temporal_variables()):
                 if i <= stop:
                     flag = ComputeTileReuse.REUSE
                 else:
                     flag = ComputeTileReuse.NO_REUSE
                 iter_var.compute_tile_reuse = flag
-            for i, iter_var in enumerate(self.ssis[tr].get_temporal_variables()):
-                if i <= mem_tile_reuse_levels[tr]:
-                    flag = MemTileReuse.REUSE
+            for i, iter_var in enumerate(self.ssis[tr].get_applicable_temporal_variables()):
+                if tr in chosen_memory_cores:
+                    if i <= mem_tile_reuse_levels[tr]:
+                        flag = MemTileReuse.REUSE
+                    else:
+                        flag = MemTileReuse.NO_REUSE
                 else:
-                    flag = MemTileReuse.NO_REUSE
+                    flag = MemTileReuse.NOT_SET
                 iter_var.mem_tile_reuse = flag  # append the memory reuse flag
         # # Print the updated reuse levels for debugging
         # for tr in self.transfer_nodes:
         #     compute_stop = compute_tile_reuse_levels.get(tr, -1)
         #     mem_stop = mem_tile_reuse_levels.get(tr, -1)
         #     print(f"Transfer {tr.node_name}: Compute Stop = {compute_stop}, Mem Stop = {mem_stop}")
-        #     for i, iter_var in enumerate(tr.steady_state_iteration_space.get_temporal_variables()):
+        #     for i, iter_var in enumerate(tr.steady_state_iteration_space.get_applicable_temporal_variables()):
         #         print(f"  Iter {i}: Reuse = {iter_var.reuse.name}, Size = {iter_var.size}")
 
     def get_transfer_routing(
@@ -935,9 +939,9 @@ class TransferAndTensorAllocator:
 
     def get_chosen_memory_cores(
         self,
-    ) -> dict[TransferNode, Core]:
+    ) -> MemoryAlloc:
         # --- which MemC was selected
-        chosen_memory_cores: dict[TransferNode, Core] = {}
+        chosen_memory_cores: MemoryAlloc = {}
         for tr in self.transfer_nodes:
             for mc in self.mem_cores:
                 if self.m_store.get((tr, mc), None) and self.m_store[(tr, mc)].X > self.VAR_THRESHOLD:
@@ -972,7 +976,7 @@ class TransferAndTensorAllocator:
             assert self.firesC[tr].X >= self.firesM[tr].X - 1e-6
         # chosen stopM ≥ stopC
         for tr in self.transfer_nodes:
-            stop_max = len(self.ssis[tr].get_temporal_variables())
+            stop_max = len(self.ssis[tr].get_applicable_temporal_variables())
             stopC = next(s for s in range(-1, stop_max) if self.z_stopC[(tr, s)].X > self.VAR_THRESHOLD)
             stopM = next(s for s in range(-1, stop_max) if self.z_stopM[(tr, s)].X > self.VAR_THRESHOLD)
             assert stopM >= stopC
