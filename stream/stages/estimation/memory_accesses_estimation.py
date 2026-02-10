@@ -75,8 +75,7 @@ class MemoryAccessesEstimationStage(Stage):
             self.get_mem_core_accesses(tn, ssis)
             # Memory writes happen on consumer cores
             self.get_destination_accesses(tn, ssis)
-            print(tn, ssis.reuse_factor_mem(), ssis.reuse_factor_compute())
-        print(self.core_memory_accesses)
+        # print(self.core_memory_accesses)
 
     def get_source_accesses(self, tn: TransferNode, ssis: SteadyStateIterationSpace):
         nb_temporal_iterations = prod(ssis.get_applicable_temporal_sizes())
