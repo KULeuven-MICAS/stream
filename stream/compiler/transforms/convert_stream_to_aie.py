@@ -21,6 +21,7 @@ from xdsl.dialects.builtin import (
     IntegerType,
     MemRefType,
     ModuleOp,
+    NoneAttr,
     ShapedType,
     StringAttr,
     SymbolRefAttr,
@@ -833,7 +834,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
         # otherwise, default flow with one objectfifo:
         # assert of is not None
-        # if "of_15" in of.sym_name.data:
+        # if "of_11" in of.sym_name.data:
         #     print([(str(v), v.compute_tile_reuse) for v in op.ssis.data.variables])
         #     breakpoint()
 
@@ -2003,12 +2004,22 @@ class RemoveSpatioTemporality(RewritePattern):
         ops: Sequence[PushOp | PullOp | ComputationNodeOp] = []
         ssis = None
 
+        breakvar = False
         # First, gather ops
         for op in block.ops:
             if isinstance(op, ComputationNodeOp):
                 ssis = op.ssis.data
+                # if "silu" in op.kernel.data:
+                #     breakvar = True
+                #     breakpoint()
             if isinstance(op, PushOp | PullOp | ComputationNodeOp):
-                if len(op.ssis.data.get_spatio_temporal_variables()):
+                # FIXME: hack, upon hack, upon hack:
+                # this is for the output, which we fixed a while back
+                # this op is already in the clear, we should not change the
+                # ssis anymore
+                if isinstance(op, PushOp) and not isinstance(op.memtile, NoneAttr):
+                    pass
+                else:
                     ops.append(op)
             elif isinstance(op, EndOp):
                 pass
@@ -2017,11 +2028,17 @@ class RemoveSpatioTemporality(RewritePattern):
 
         assert ssis is not None
 
+        if not len(ssis.get_spatio_temporal_variables()):
+            return
+
         new_ssis_vars: list[list[IterationVariable]] = [[] for _ in range(len(ops))]
         new_ssis_tvars: list[list[IterationVariable]] = [[] for _ in range(len(ops))]
         for i, var in enumerate(ssis.variables):
             for j, op in enumerate(ops):
                 opvar = deepcopy(op.ssis.data.variables[i])
+                if var.dimension != opvar.dimension:
+                    # FIXME: hare
+                    breakpoint()
                 assert var.dimension == opvar.dimension
                 assert var.size == opvar.size
 
