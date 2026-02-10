@@ -25,18 +25,6 @@ from stream.workload.workload import ComputationNode, Workload
 logger = logging.getLogger(__name__)
 
 
-class _KwargsMainStage:
-    def __init__(self, list_of_callables, **kwargs: Any):
-        self.kwargs = kwargs
-        self.list_of_callables = list_of_callables
-
-    def run(self):
-        answers = []
-        for cme, extra_info in self.list_of_callables[0](self.list_of_callables[1:], **self.kwargs).run():
-            answers.append((cme, extra_info))
-        return answers
-
-
 class CoreCostEstimationStage(Stage):
     """
     Stage that computes and caches core cost entries for each valid node-core allocation.

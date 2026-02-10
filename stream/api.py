@@ -13,6 +13,7 @@ from stream.stages.allocation.constraint_optimization_allocation import Constrai
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.context import StageContext
 from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
+from stream.stages.estimation.memory_accesses_estimation import MemoryAccessesEstimationStage
 
 # from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
 # from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
@@ -169,6 +170,7 @@ def optimize_allocation_co(  # noqa: PLR0913
             TilingGenerationStage,
             CoreCostEstimationStage,
             ConstraintOptimizationAllocationStage,
+            MemoryAccessesEstimationStage,
         ]
         ctx = StageContext.from_kwargs(
             accelerator=hardware,  # required by AcceleratorParserStage
