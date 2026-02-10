@@ -286,9 +286,14 @@ class SteadyStateIterationSpace:
         """
         Returns the number of tensors that are kept local in a mem tile.
         """
-        return prod(
-            iv.size for iv in self.get_temporal_variables() if iv.relevant and iv.mem_tile_reuse == MemTileReuse.REUSE
-        )
+        # only look up to first non reuse:
+        reuse_vars = []
+        for var in self.get_temporal_variables():
+            if var.mem_tile_reuse == MemTileReuse:
+                reuse_vars.append(var)
+            else:
+                break
+        return prod(iv.size for iv in reuse_vars if iv.relevant)
 
     def reuse_factor_mem(self) -> int:
         """

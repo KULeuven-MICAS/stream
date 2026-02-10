@@ -833,7 +833,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
         # otherwise, default flow with one objectfifo:
         # assert of is not None
-        # if "of_11" in of.sym_name.data:
+        # if "of_15" in of.sym_name.data:
         #     print([(str(v), v.compute_tile_reuse) for v in op.ssis.data.variables])
         #     breakpoint()
 
@@ -2008,17 +2008,14 @@ class RemoveSpatioTemporality(RewritePattern):
             if isinstance(op, ComputationNodeOp):
                 ssis = op.ssis.data
             if isinstance(op, PushOp | PullOp | ComputationNodeOp):
-                ops.append(op)
+                if len(op.ssis.data.get_spatio_temporal_variables()):
+                    ops.append(op)
             elif isinstance(op, EndOp):
                 pass
             else:
                 raise RuntimeError("non-steady state op encountered")
 
         assert ssis is not None
-
-        # this only makes sense if there are spatio-teporal things still present:
-        if not len(ssis.get_spatio_temporal_variables()):
-            return
 
         new_ssis_vars: list[list[IterationVariable]] = [[] for _ in range(len(ops))]
         new_ssis_tvars: list[list[IterationVariable]] = [[] for _ in range(len(ops))]
