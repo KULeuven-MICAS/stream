@@ -743,33 +743,31 @@ class TransferToRuntimeSequence(RewritePattern):
             for x in combined_ranges
         ]
 
-        print("Op we are transforming:")
-        print(op)
-        print()
-
-        print("Op SSIS:")
-        print(op.ssis)
-        print()
-
-        print("Hardware Strides Found:")
-        for stride in hardware_strides[::-1]:
-            print(f"<size={stride.size}, stride={stride.stride}>", end=" ")
-        print()
-        print()
-
-        print("Software Strides Found:")
-        for stride in software_strides[::-1]:
-            print(f"<size={stride.size}, stride={stride.stride}>", end=" ")
-        print()
-        print()
-
-        print("Unrolled software strides:")
-        for i, stride in enumerate(reduced_ranges):
-            print(f"iteration {i}: offset {stride.stride} at steady-state iteration {stride.iteration_t}")
-        print()
-        print()
-
-        breakpoint()
+        # print("Op we are transforming:")
+        # print(op)
+        # print()
+        #
+        # print("Op SSIS:")
+        # print(op.ssis)
+        # print()
+        #
+        # print("Hardware Strides Found:")
+        # for stride in hardware_strides[::-1]:
+        #     print(f"<size={stride.size}, stride={stride.stride}>", end=" ")
+        # print()
+        # print()
+        #
+        # print("Software Strides Found:")
+        # for stride in software_strides[::-1]:
+        #     print(f"<size={stride.size}, stride={stride.stride}>", end=" ")
+        # print()
+        # print()
+        #
+        # print("Unrolled software strides:")
+        # for i, stride in enumerate(reduced_ranges):
+        #     print(f"iteration {i}: offset {stride.stride} at steady-state iteration {stride.iteration_t}")
+        # print()
+        # print()
 
         for r in reduced_ranges:
             bd_dimensions = BDDimLayoutArrayAttr(
@@ -2280,13 +2278,9 @@ class ConvertStreamToAIEPass(ModulePass):
             apply_recursively=False,
         ).rewrite_module(op)
 
-        breakpoint()
         PatternRewriteWalker(OrderDMAs()).rewrite_module(op)
-        breakpoint()
         PatternRewriteWalker(SyncDMAs(), apply_recursively=False).rewrite_module(op)
-        breakpoint()
         PatternRewriteWalker(StartDMAs(), apply_recursively=False).rewrite_module(op)
-        breakpoint()
 
         ## lower computation node ops for known kernels
 
