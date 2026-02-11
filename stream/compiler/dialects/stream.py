@@ -15,10 +15,10 @@ from xdsl.irdl import (
     var_operand_def,
     var_result_def,
 )
-from xdsl.parser import AttrParser, DenseArrayBase, MemRefType
+from xdsl.parser import ArrayAttr, AttrParser, DenseArrayBase, MemRefType
 from xdsl.printer import Printer
-from zigzag.datatypes import LayerDim
 
+from stream.datatypes import LayerDim
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 from stream.workload.workload import InEdge, OutEdge
 
@@ -26,6 +26,18 @@ from stream.workload.workload import InEdge, OutEdge
 @irdl_attr_definition
 class Channel(ParametrizedAttribute, TypeAttribute):
     name = "channel"
+
+
+@irdl_attr_definition
+class LayerDimAttr(Data[LayerDim]):
+    name = "layer_dim"
+
+    @classmethod
+    def parse_parameter(cls, parser: AttrParser) -> LayerDim:
+        raise NotImplementedError()
+
+    def print_parameter(self, printer: Printer) -> None:
+        printer.print_string(str(self.data))
 
 
 @irdl_attr_definition
@@ -112,6 +124,7 @@ class TransferOp(IRDLOperation):
     sizes = prop_def(DenseArrayBase)
     strides = prop_def(DenseArrayBase)
     spatial_strides = prop_def(DenseArrayBase)
+    operand_indeces = prop_def(ArrayAttr[LayerDimAttr])
     memtile = prop_def(Attribute)
 
     ssis = prop_def(SteadyStateIterationSpaceAttr)
@@ -126,6 +139,7 @@ class TransferOp(IRDLOperation):
         strides: DenseArrayBase | Sequence[int],
         spatial_strides: DenseArrayBase | Sequence[int],
         memtile: Attribute,
+        operand_indeces: ArrayAttr[LayerDimAttr],
     ) -> None:
         if not isinstance(offsets, DenseArrayBase):
             offsets = DenseArrayBase.create_dense_int(i64, offsets)
@@ -145,6 +159,7 @@ class TransferOp(IRDLOperation):
                 "strides": strides,
                 "spatial_strides": spatial_strides,
                 "memtile": memtile,
+                "operand_indeces": operand_indeces,
             },
         )
 
@@ -187,6 +202,7 @@ class PushOp(IRDLOperation):
     sizes = prop_def(DenseArrayBase)
     strides = prop_def(DenseArrayBase)
     memtile = prop_def(Attribute)
+    operand_indeces = prop_def(ArrayAttr[LayerDimAttr])
 
     ssis = prop_def(SteadyStateIterationSpaceAttr)
 
@@ -199,6 +215,7 @@ class PushOp(IRDLOperation):
         sizes: DenseArrayBase | Sequence[int],
         strides: DenseArrayBase | Sequence[int],
         memtile: Attribute,
+        operand_indeces: ArrayAttr[LayerDimAttr],
     ) -> None:
         if not isinstance(offsets, DenseArrayBase):
             offsets = DenseArrayBase.create_dense_int(i64, offsets)
@@ -217,6 +234,7 @@ class PushOp(IRDLOperation):
                 "sizes": sizes,
                 "strides": strides,
                 "memtile": memtile,
+                "operand_indeces": operand_indeces,
             },
         )
 
@@ -233,6 +251,7 @@ class PullOp(IRDLOperation):
     strides = prop_def(DenseArrayBase)
     memtile = prop_def(Attribute)
     operand = prop_def(IntegerAttr[IndexType])
+    operand_indeces = prop_def(ArrayAttr[LayerDimAttr])
 
     ssis = prop_def(SteadyStateIterationSpaceAttr)
 
@@ -245,6 +264,7 @@ class PullOp(IRDLOperation):
         sizes: DenseArrayBase | Sequence[int],
         strides: DenseArrayBase | Sequence[int],
         memtile: Attribute,
+        operand_indeces: ArrayAttr[LayerDimAttr],
     ) -> None:
         if not isinstance(offsets, DenseArrayBase):
             offsets = DenseArrayBase.create_dense_int(i64, offsets)
@@ -261,6 +281,7 @@ class PullOp(IRDLOperation):
                 "sizes": sizes,
                 "strides": strides,
                 "memtile": memtile,
+                "operand_indeces": operand_indeces,
             },
         )
 
@@ -279,5 +300,6 @@ Stream = Dialect(
     [
         Channel,
         SteadyStateIterationSpaceAttr,
+        LayerDimAttr,
     ],
 )
