@@ -228,8 +228,8 @@ class AIECodeGenerationStage(Stage):
 
         sizes, strides = canonicalize_transformation(sizes, strides)
 
-        if isinstance(mapping.memory_allocation, Core):
-            row, col = mapping.memory_allocation.row_id, mapping.memory_allocation.col_id
+        if len(mapping.memory_allocation):
+            row, col = mapping.memory_allocation[0].row_id, mapping.memory_allocation[0].col_id
             assert row is not None
             assert col is not None
             memtile = ArrayAttr([IntegerAttr.from_index_int_value(x) for x in (col, row)])
