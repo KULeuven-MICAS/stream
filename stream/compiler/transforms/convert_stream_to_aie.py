@@ -636,6 +636,15 @@ class TransferToRuntimeSequence(RewritePattern):
         # step 1: calculate sizes / strides
         ssis = op.ssis.data
 
+        # calculate iteration multipliers for every var in the transfer:
+        iteration_mults: dict[IterationVariable, int] = defaultdict(lambda: 1)
+        iteration_mult = 1
+        for var in ssis.variables:
+            if var.type == IterationVariableType.KERNEL:
+                continue
+            iteration_mults[var] = iteration_mult
+            iteration_mult *= var.size
+
         # gather all vars to iterate in the dma call:
         all_vars: Sequence[IterationVariable] = []
 
@@ -712,7 +721,6 @@ class TransferToRuntimeSequence(RewritePattern):
                 return type(self)(tuple(new_strides))
 
         strides: list[Stride] = []
-        iteration_t = 1
 
         for var in all_vars:
             # multiply the stride by previous iteration vars
@@ -721,9 +729,7 @@ class TransferToRuntimeSequence(RewritePattern):
                 seen_dims[var.dimension] *= var.size
             else:
                 stride = 0
-            strides.append(Stride(var.size, stride, iteration_t))
-            if var.type == IterationVariableType.TEMPORAL:
-                iteration_t *= var.size
+            strides.append(Stride(var.size, stride, iteration_mults[var]))
 
         stride_set = StrideSet(tuple(strides)).canonicalize().legalize()
 
