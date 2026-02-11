@@ -1,10 +1,10 @@
-from functools import reduce
-from itertools import product
 import string
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
+from functools import reduce
+from itertools import product
 from math import prod
 from sys import activate_stack_trampoline
 from typing import Self, cast
@@ -720,6 +720,12 @@ class TransferToRuntimeSequence(RewritePattern):
                     new_strides.append(Stride(1, 0, self.strides[-1].iteration_t))
                 return type(self)(tuple(new_strides))
 
+            def squash(self) -> Self:
+                # Remove all transormations, reduce to 1D transfer
+                total_size = prod(var.size for var in self.strides if var.stride)
+                repeat_size = prod(var.size for var in self.strides if not var.stride)
+                return type(self)((Stride(total_size, 1, 0), Stride(repeat_size, 0, 0)))
+
         strides: list[Stride] = []
 
         for var in all_vars:
@@ -731,7 +737,7 @@ class TransferToRuntimeSequence(RewritePattern):
                 stride = 0
             strides.append(Stride(var.size, stride, iteration_mults[var]))
 
-        stride_set = StrideSet(tuple(strides)).canonicalize().legalize()
+        stride_set = StrideSet(tuple(strides)).canonicalize().squash().legalize()
 
         hardware_strides = stride_set.strides[:4]
         # Perform software for loop unrolling:
