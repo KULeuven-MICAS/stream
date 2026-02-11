@@ -1,9 +1,12 @@
+from functools import reduce
+from itertools import product
 import string
 from collections import defaultdict
 from collections.abc import Iterable, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from math import prod
+from sys import activate_stack_trampoline
 from typing import Self, cast
 
 from snaxc.dialects.snax import LayoutCast
@@ -85,6 +88,7 @@ from stream.workload.steady_state.iteration_space import (
     ComputeTileReuse,
     IterationVariable,
     IterationVariableType,
+    MemTileReuse,
     SteadyStateIterationSpace,
 )
 
@@ -629,102 +633,162 @@ class TransferToRuntimeSequence(RewritePattern):
         arg = runtime_sequence.body.block.args[arg_index]
         assert isinstance(arg.type, MemRefType)
 
-        # offsets = cast(tuple[int, ...], op.offsets.get_values()[-4:])
-        # sizes = cast(tuple[int, ...], op.sizes.get_values()[-4:])
-        # strides = cast(tuple[int, ...], op.strides.get_values()[-4:])
+        # step 1: calculate sizes / strides
+        ssis = op.ssis.data
 
-        # assume default layout here:
-        # static_strides = []
-        # current_stride = 1
-        total_offset = 0
-        # for shape, offset in zip(reversed(shapes), reversed(offsets), strict=False):
-        #     static_strides.insert(0, current_stride)
-        #     total_offset += current_stride * offset
-        #     current_stride *= shape
+        # gather all vars to iterate in the dma call:
+        all_vars: Sequence[IterationVariable] = []
 
-        static_sizes = cast(list[int], list(op.sizes.get_values()))
-        static_strides = cast(list[int], list(op.strides.get_values()))
+        # First, iterate over kernel dimensions in the order of operand indeces:
+        operand_indeces = [x.data for x in op.operand_indeces]
+        for index in operand_indeces[::-1]:  # in reverse for row-major fashion
+            kernel_var = next(var for var in ssis.get_kernel_variables() if var.dimension == index)
+            all_vars.append(kernel_var)
 
-        static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
-
-        # only the 4th stride is allowed to be zero
-        # if this is not the case, we must insert empty sets
-        # of (size=1, stride=0) pairs
-        min_successors = 3
-        n = len(static_strides)
-        for i in range(max(0, n - min_successors - 1), n):
-            if static_strides[i] == 0 and static_sizes[i] > 1:
-                needed = min_successors - (n - i - 1)
-                for _ in range(max(0, needed)):
-                    static_sizes.insert(i + 1, 1)
-                    static_strides.insert(i + 1, 0)
+        # Next, iterate temporal vars kept local in a memtile
+        reuse_tvars = []
+        for var in ssis.get_temporal_variables():
+            if var.mem_tile_reuse == MemTileReuse.REUSE:
+                reuse_tvars.append(var)
+            else:
                 break
+        non_reuse_tvars = ssis.get_temporal_variables()[len(reuse_tvars) :]
+        all_vars.extend(var for var in reuse_tvars if var.relevant)
 
-        # iteration_strides = [1] * len(static_sizes)
+        # Then, iterate the relevant spatial vars:
+        all_vars.extend(var for var in ssis.get_spatial_variables() if var.relevant)
 
-        # # add the repeating pattern
-        # # offset is definitely zero for now
-        # iteration_stride = 1
-        # for iter_var in op.ssis.data.variables:
-        #     if (iter_var.relevant or MemTileReuse.NO_REUSE in iter_var.mem_tile_reuse) and iter_var.size > 1:
-        #         # sptial dims must only emit extra sizes and strides if they are used as spatial strides
-        #         if iter_var.spatial:
-        #             iteration_stride *= iter_var.size
-        #         if str(iter_var.dimension) in loop_dimensions:
-        #             index = loop_dimensions.index(str(iter_var.dimension))
-        #             temporal_stride = op.strides.get_values()[index] if not iter_var.spatial else 1
-        #             stride = prod(memref_type.get_shape()[index + 1 :]) *
-        #                       op.sizes.get_values()[index] * temporal_stride
-        #             # stride = prod(op.sizes.get_values()[index:])
-        #             assert isinstance(stride, int)
-        #         else:
-        #             # repeat
-        #             stride = 0
-        #         static_sizes.insert(0, iter_var.size)
-        #         static_strides.insert(0, stride)
-        #         iteration_strides.insert(0, iteration_stride)
-        #     iteration_stride *= iter_var.size
+        # Finally, remaining applicable temporal dims
+        all_vars.extend(var for var in non_reuse_tvars if var.applicable)
 
-        # canonicalize transformation
-        # if i were to re-enable this, make sure iteration strides are also included
-        # static_sizes, static_strides = canonicalize_transformation(static_sizes, static_strides)
-        MAX_STATIC_SIZE_LEN = 5
-        if len(static_sizes) > MAX_STATIC_SIZE_LEN:
-            raise RuntimeError()
-        if len(static_sizes) == MAX_STATIC_SIZE_LEN:
-            software_size = static_sizes.pop(0)
-            software_stride = static_strides.pop(0)
-        else:
-            software_size = 1
-            software_stride = 0
+        # Calculate strides along with these iteration vars:
+        seen_dims = defaultdict(lambda: 1)
+        all_strides: dict[IterationVariable, int] = {}
 
-        static_sizes = (1,) * (4 - len(static_sizes)) + tuple(static_sizes)
-        static_strides = (0,) * (4 - len(static_strides)) + tuple(static_strides)
+        arg_strides = arg.type.get_strides()
+        assert isa(arg_strides, Sequence[int])
+        arg_strides = {x: y for x, y in zip(operand_indeces, arg_strides, strict=True)}
 
-        for i in range(software_size):
-            software_offset = i * software_stride
-            # iteration_t = i * iteration_strides[0]
-            iteration_t = 0
-            # static_offsets = (0, 0, 0, total_offset + software_offset)
+        @dataclass(frozen=True)
+        class Stride:
+            size: int
+            stride: int
+            iteration_t: int
+
+        @dataclass(frozen=True)
+        class StrideSet:
+            strides: tuple[Stride, ...]
+
+            def canonicalize(self) -> Self:
+                new_strides: list[Stride] = []
+                for var in self.strides:
+                    assert var.size != 0
+                    if var.size == 1:
+                        continue
+                    if not new_strides:
+                        new_strides.append(var)
+                    # check for possible squash
+                    elif var.stride == new_strides[-1].size * new_strides[-1].stride:
+                        new_strides[-1] = Stride(
+                            var.size * new_strides[-1].size,
+                            new_strides[-1].stride,
+                            new_strides[-1].iteration_t,
+                        )
+                    else:
+                        new_strides.append(var)
+                return type(self)(tuple(new_strides))
+
+            def legalize(self) -> Self:
+                new_strides: list[Stride] = []
+                # make sure the inner 3 most strides are nonzero
+                for var in self.strides:
+                    if var.stride == 0:
+                        while len(new_strides) < 3:
+                            new_strides.append(Stride(1, 0, var.iteration_t))
+                    new_strides.append(var)
+                # make sure the transform is at least 4 strides long
+                while len(new_strides) < 4:
+                    new_strides.append(Stride(1, 0, self.strides[-1].iteration_t))
+                return type(self)(tuple(new_strides))
+
+        strides: list[Stride] = []
+        iteration_t = 1
+
+        for var in all_vars:
+            # multiply the stride by previous iteration vars
+            if var.dimension in arg_strides:
+                stride = seen_dims[var.dimension] * arg_strides[var.dimension]
+                seen_dims[var.dimension] *= var.size
+            else:
+                stride = 0
+            strides.append(Stride(var.size, stride, iteration_t))
+            if var.type == IterationVariableType.TEMPORAL:
+                iteration_t *= var.size
+
+        stride_set = StrideSet(tuple(strides)).canonicalize().legalize()
+
+        hardware_strides = stride_set.strides[:4]
+        # Perform software for loop unrolling:
+        software_strides = stride_set.strides[4:]
+        software_strides_ranges = [
+            [Stride(1, var.stride * i, var.iteration_t * i) for i in range(var.size)] for var in software_strides
+        ]
+        combined_ranges = list(product(*software_strides_ranges))
+        reduced_ranges = [
+            reduce(
+                lambda x, y: Stride(1, x.stride + y.stride, x.iteration_t + y.iteration_t),
+                x,
+                Stride(1, 0, 0),
+            )
+            for x in combined_ranges
+        ]
+
+        print("Op we are transforming:")
+        print(op)
+        print()
+
+        print("Op SSIS:")
+        print(op.ssis)
+        print()
+
+        print("Hardware Strides Found:")
+        for stride in hardware_strides[::-1]:
+            print(f"<size={stride.size}, stride={stride.stride}>", end=" ")
+        print()
+        print()
+
+        print("Software Strides Found:")
+        for stride in software_strides[::-1]:
+            print(f"<size={stride.size}, stride={stride.stride}>", end=" ")
+        print()
+        print()
+
+        print("Unrolled software strides:")
+        for i, stride in enumerate(reduced_ranges):
+            print(f"iteration {i}: offset {stride.stride} at steady-state iteration {stride.iteration_t}")
+        print()
+        print()
+
+        breakpoint()
+
+        for r in reduced_ranges:
             bd_dimensions = BDDimLayoutArrayAttr(
-                BDDimLayoutArray(
-                    [BDDimLayout((size, stride)) for size, stride in zip(static_sizes, static_strides, strict=False)]
-                )
+                BDDimLayoutArray([BDDimLayout((var.size, var.stride)) for var in hardware_strides[::-1]])
             )
 
             dma_bd = DMABDOp(
                 arg,
-                offset=total_offset + software_offset,
-                len=prod(static_sizes[1:]),
+                offset=r.stride,
+                len=prod(var.size for var in hardware_strides[:3]),
                 dimensions=bd_dimensions,
             )
 
             # configure task
             task = DmaConfigureTaskForOp(
-                of_name, Region(Block([dma_bd, EndOp()])), issue_token=False, repeat_count=static_sizes[0] - 1
+                of_name, Region(Block([dma_bd, EndOp()])), issue_token=False, repeat_count=hardware_strides[3].size - 1
             )
 
-            task.attributes["iteration_t"] = IntegerAttr.from_index_int_value(iteration_t)
+            task.attributes["iteration_t"] = IntegerAttr.from_index_int_value(r.iteration_t)
 
             rewriter.insert_op([task], InsertPoint.before(op))
 
@@ -1629,9 +1693,15 @@ class OrderDMAs(RewritePattern):
 
 @dataclass
 class SyncDMAs(RewritePattern):
+    """
+    This pass will synchronize dma configure taks ops, inserting wait statements where needed.
+    We only allocate one bd per object fifo, and will wait for it to finish every time
+    a new transfer for that object fifo is initiated.
+    """
+
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter):
-        active_tasks: dict[Attribute, tuple[DmaConfigureTaskForOp | None, DmaConfigureTaskForOp]] = {}
+        active_tasks: dict[Attribute, DmaConfigureTaskForOp] = {}
 
         for dma in op.walk():
             if not isinstance(dma, DmaConfigureTaskForOp):
@@ -1639,16 +1709,14 @@ class SyncDMAs(RewritePattern):
 
             # update active tasks list and potentionaly sync on previous one
             if dma.alloc not in active_tasks:
-                active_tasks[dma.alloc] = (None, dma)
+                active_tasks[dma.alloc] = dma
             else:
-                if (wait_for := active_tasks[dma.alloc][0]) is not None:
-                    # issue token if we are going to wait for it
-                    wait_for.issue_token = IntegerAttr.from_int_and_width(1, 1)
-                    rewriter.insert_op(DmaAwaitTaskOp(wait_for), InsertPoint.before(dma))
-                active_tasks[dma.alloc] = (active_tasks[dma.alloc][1], dma)
+                active_tasks[dma.alloc].issue_token = IntegerAttr.from_int_and_width(1, 1)
+                rewriter.insert_op(DmaAwaitTaskOp(active_tasks[dma.alloc]), InsertPoint.before(dma))
+                active_tasks[dma.alloc] = dma
 
         # at the end, wait for all latest tasks
-        for _, task in active_tasks.values():
+        for task in active_tasks.values():
             task.issue_token = IntegerAttr.from_int_and_width(1, 1)
             rewriter.insert_op(DmaAwaitTaskOp(task), InsertPoint.at_end(op.body.block))
 
@@ -2212,10 +2280,13 @@ class ConvertStreamToAIEPass(ModulePass):
             apply_recursively=False,
         ).rewrite_module(op)
 
-        # insert dma wait statements for bd collisions
+        breakpoint()
         PatternRewriteWalker(OrderDMAs()).rewrite_module(op)
+        breakpoint()
         PatternRewriteWalker(SyncDMAs(), apply_recursively=False).rewrite_module(op)
+        breakpoint()
         PatternRewriteWalker(StartDMAs(), apply_recursively=False).rewrite_module(op)
+        breakpoint()
 
         ## lower computation node ops for known kernels
 

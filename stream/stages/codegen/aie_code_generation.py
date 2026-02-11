@@ -14,7 +14,7 @@ from xdsl.ir.affine import AffineDimExpr
 from xdsl.parser import AffineMap
 from xdsl_aie.dialects.aie import AIEDeviceEnum
 
-from stream.compiler.dialects.stream import ComputationNodeOp, InEdgeOp, OutEdgeOp, Stream, TransferOp
+from stream.compiler.dialects.stream import ComputationNodeOp, InEdgeOp, LayerDimAttr, OutEdgeOp, Stream, TransferOp
 
 # from stream.compiler.transforms.aie_add_tracing_script import AIEAddTracingScript
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
@@ -178,8 +178,15 @@ class AIECodeGenerationStage(Stage):
                     new_ssis_tvars.append(new_var)
             ssis = SteadyStateIterationSpace([*new_ssis, *new_ssis_tvars])
 
+        # Move determination of sizes/strides for runtime compies over to lowering logic,
+        # here, just set sizes and strides to the input layout such that correct calculations can be made.
+        operand_index_dims = [
+            x[0] for x in sorted(workload_strides.items(), key=lambda x: x[1], reverse=True) if any(x[1])
+        ]
+        operand_attr = ArrayAttr([LayerDimAttr(x) for x in operand_index_dims])
+
         all_vars: Sequence[IterationVariable] = []
-        # First, iterate over kenrel dimensions in row-major order:
+        # First, iterate over kernel dimensions in row-major order:
         kernel_var_dict = {v.dimension: v for v in ssis.get_kernel_variables()}
         filtered_vars = [(dim, strides) for dim, strides in workload_strides.items() if any(strides)]
         ordered_strides = sorted(filtered_vars, key=lambda x: x[1])
@@ -201,13 +208,7 @@ class AIECodeGenerationStage(Stage):
         # After that, go over the temporal strides (both relevant and irellevant)
         # that aren't kept local in memtiles.
         # Then, add all remaining temporal variables that aren't kept local in the memtile
-        # FIXME: hack for swiglu output, we need more info than just irrelevant / relevant:
-        # maybe another type that signals "out of scope", ignore this iteration variable
-        # entirely
-        if is_out_transfer:
-            all_vars.extend(var for var in non_reuse_tvars if var.relevant)
-        else:
-            all_vars.extend(var for var in non_reuse_tvars)
+        all_vars.extend(var for var in non_reuse_tvars if var.applicable)
 
         # I dont' think offsets are relevant anymore with the new representation
         offsets = [0]
@@ -244,6 +245,7 @@ class AIECodeGenerationStage(Stage):
             strides,
             spatial_strides,
             memtile,
+            operand_attr,
         )
 
         return op
