@@ -688,6 +688,15 @@ class TransferToRuntimeSequence(RewritePattern):
         class StrideSet:
             strides: tuple[Stride, ...]
 
+            def repeats(self) -> int:
+                return prod(var.size for var in self.strides if not var.stride)
+
+            def size(self) -> int:
+                return prod(var.size for var in self.strides if var.stride)
+
+            def total_size(self) -> int:
+                return self.repeats() * self.size()
+
             def canonicalize(self) -> Self:
                 new_strides: list[Stride] = []
                 for var in self.strides:
@@ -720,7 +729,7 @@ class TransferToRuntimeSequence(RewritePattern):
                     new_strides.append(Stride(1, 0, self.strides[-1].iteration_t))
                 return type(self)(tuple(new_strides))
 
-            def squash(self) -> Self:
+            def force_squash(self) -> Self:
                 # Remove all transormations, reduce to 1D transfer
                 total_size = prod(var.size for var in self.strides if var.stride)
                 repeat_size = prod(var.size for var in self.strides if not var.stride)
@@ -737,7 +746,7 @@ class TransferToRuntimeSequence(RewritePattern):
                 stride = 0
             strides.append(Stride(var.size, stride, iteration_mults[var]))
 
-        stride_set = StrideSet(tuple(strides)).canonicalize().squash().legalize()
+        stride_set = StrideSet(tuple(strides)).canonicalize().legalize()
 
         hardware_strides = stride_set.strides[:4]
         # Perform software for loop unrolling:
