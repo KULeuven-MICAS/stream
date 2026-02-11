@@ -215,8 +215,8 @@ def make_swiglu_mapping2(
         "layers": [layer["name"] for layer in layers],
         "intra_core_tiling": [
             {"dim": "Gemm_Left.D1", "tile": INPUT_CHANNEL_TILE_SIZE},
-            {"dim": "Gemm_Left.D0", "tile": SEQ_LEN_TILE_SIZE},
             {"dim": "Gemm_Left.D2", "tile": OUTPUT_CHANNEL_TILE_SIZE},
+            {"dim": "Gemm_Left.D0", "tile": SEQ_LEN_TILE_SIZE},
         ],
     }
 

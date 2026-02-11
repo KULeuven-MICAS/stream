@@ -920,7 +920,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
                 last_reuse = var
             else:
                 break
-        if last_reuse:
+        if last_reuse and False:
             last_reuse_index = op.ssis.data.get_temporal_variables().index(last_reuse)
             reuse_iters = op.ssis.data.get_temporal_variables()[first_relevant_index : last_reuse_index + 1]
         else:

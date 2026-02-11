@@ -351,6 +351,7 @@ class SteadyStateIterationSpace:
         """
         Returns the number of tensors that are kept local in a compute tile.
         """
+        return 1
         return prod(
             iv.size
             for iv in self.get_temporal_variables()
