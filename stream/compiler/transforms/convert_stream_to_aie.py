@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import reduce
 from itertools import product
-from math import prod
+from math import ceil, isqrt, prod
 from sys import activate_stack_trampoline
 from typing import Self, cast
 
@@ -718,6 +718,26 @@ class TransferToRuntimeSequence(RewritePattern):
 
             def legalize(self) -> Self:
                 new_strides: list[Stride] = []
+                # make sure that no bound limits are exceeded
+                # FIXME: figure out actual limits
+                bound_limits = (1023, 1023, 1023, 1023)
+                for i, (stride, bound_limit) in enumerate(zip(self.strides, bound_limits, strict=False)):
+                    if stride.size > bound_limit:
+                        # find largest number under bound that is a divisor of the size:
+                        divider = None
+                        for d in reversed(range(min(bound_limit, isqrt(stride.size) + 1))):
+                            if stride.size % d == 0:
+                                divider = d
+                                break
+                        if divider is None:
+                            raise RuntimeError("Could not find legalized transfer for the runtime sequence.")
+                        tiled_size = stride.size // divider
+                        tiled_stride = Stride(tiled_size, stride.stride, stride.iteration_t)
+                        tiling_stride = Stride(divider, stride.stride * tiled_size, stride.iteration_t * tiled_size)
+                        # tile and legalize recursively
+                        return type(self)(
+                            (*self.strides[:i], tiled_stride, tiling_stride, *self.strides[i + 1 :])
+                        ).legalize()
                 # make sure the inner 3 most strides are nonzero
                 for var in self.strides:
                     if var.stride == 0:
