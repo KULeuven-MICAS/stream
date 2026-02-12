@@ -3,6 +3,8 @@ import os
 from collections import defaultdict
 from math import ceil, prod
 from typing import Any, TypeAlias
+import os
+from typing import TypeAlias
 
 import gurobipy as gp
 import matplotlib.pyplot as plt
@@ -69,6 +71,7 @@ class TransferAndTensorAllocator:
         big_m: int | None = None,
         gurobi_verbosity: int = 1,
         nb_cols_to_use: int = 4,
+        output_path: str = "",
         context: TransferAndTensorContext | None = None,
         output_path: str | None = "",
     ):
@@ -90,8 +93,10 @@ class TransferAndTensorAllocator:
         self.big_m = big_m or len(workload.nodes()) + 5
         self.force_io_transfers_on_mem_tile = self.context.force_io_transfers_on_mem_tile
 
-        self.ssc_nodes: tuple[ComputationNode, ...] = workload.get_computation_nodes()
-        self.transfer_nodes: tuple[TransferNode, ...] = workload.get_transfer_nodes()
+
+        # ------------------- categorise nodes -------------------- #
+        self.ssc_nodes: tuple[ComputationNode, ...] = tuple(workload.get_computation_nodes())
+        self.transfer_nodes: tuple[TransferNode, ...] = tuple(workload.get_transfer_nodes())
 
         self.force_double_buffering = self.context.force_double_buffering
         self.mem_cores = list(self.context.mem_cores)
@@ -1056,8 +1061,10 @@ class TransferAndTensorAllocator:
         self.model.optimize(self._mip_progress_callback)
         if self.model.Status != GRB.OPTIMAL:
             self.model.computeIIS()
-            self.model.write(os.path.join(self.output_path, "model.ilp"))
-            raise RuntimeError("Gurobi did not find an optimal solution. IIS written to model.ilp")
+
+            ilp_path = os.path.join(self.output_path, "model.ilp")
+            self.model.write(ilp_path)
+            raise RuntimeError(f"Gurobi did not find an optimal solution. IIS written to {ilp_path}")
 
         tensor_alloc = self.get_tensor_allocations()
         routing = self.get_transfer_routing()

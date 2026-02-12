@@ -17,6 +17,7 @@ from stream.stages.estimation.memory_accesses_estimation import MemoryAccessesEs
 
 # from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
 # from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
+from stream.stages.generation.mapping_generation import MappingGenerationStage
 from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.mapping_parser import MappingParserStage
@@ -199,6 +200,84 @@ def optimize_allocation_co(  # noqa: PLR0913
         # pickle_save(scme, scme_path)  # type: ignore
     return ctx
 
+def optimize_mapping(  # noqa: PLR0913
+    hardware: str,
+    workload: str,
+    experiment_id: str,
+    output_path: str,
+    skip_if_exists: bool = False,
+    temporal_mapping_type: str = "uneven",
+    enable_codegen: bool = False,
+    trace_size: int = 1048576,
+    nb_cols_to_use: int = 4,
+    seq_len_tile_size: int = 32,
+    embedding_tile_size: int = 128,
+    hidden_tile_size: int = 64,
+    last_gemm_down: bool = False,
+    npu: str = "npu2",
+) -> StreamCostModelEvaluation:
+    _sanity_check_gurobi_license()
+
+    # Create experiment_id path
+    output_path = f"{output_path}/{experiment_id}"
+    os.makedirs(output_path, exist_ok=True)
+
+    # Get logger
+    logger = _logging.getLogger(__name__)
+
+    # Determine temporal mapping type for ZigZag
+    if temporal_mapping_type == "uneven":
+        temporal_mapping_type = TemporalMappingType.UNEVEN
+    elif temporal_mapping_type == "even":
+        temporal_mapping_type = TemporalMappingType.EVEN
+    else:
+        raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
+
+    # Load final resulting context if it exists and skip_if_exists is True
+    ctx_path = f"{output_path}/ctx.pickle"
+    if os.path.exists(ctx_path) and skip_if_exists:
+        ctx = pickle_load(ctx_path)
+        logger.info(f"Loaded context from {ctx_path}")
+    else:
+        stages: list[StageCallable] = [  # Initializes the MainStage as entry point
+            AcceleratorParserStage,  # Parses the accelerator
+            StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+            MappingGenerationStage,
+            MappingParserStage, 
+            TilingGenerationStage,
+            CoreCostEstimationStage,
+            ConstraintOptimizationAllocationStage,
+            MemoryAccessesEstimationStage,
+        ]
+        ctx = StageContext.from_kwargs(
+            accelerator=hardware,  # required by AcceleratorParserStage
+            workload_path=workload,  # required by ModelParserStage
+            loma_lpf_limit=6,  # required by LomaEngine
+            output_path=output_path,
+            temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
+            trace_size=trace_size,
+            nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
+            seq_len_tile_size=seq_len_tile_size,
+            embedding_tile_size=embedding_tile_size,
+            hidden_tile_size=hidden_tile_size,
+            last_gemm_down=last_gemm_down,
+        )
+        # optionally add code generation stage
+        if enable_codegen:
+            from stream.stages.codegen.aie_code_generation import AIECodeGenerationStage  # noqa: PLC0415
+
+            stages = [AIECodeGenerationStage] + stages
+            ctx.set(
+                npu=npu,  # required by AIECodeGenerationStage
+            )
+
+        mainstage = MainStage(stages, ctx)
+        # Launch the MainStage
+        answers = mainstage.run()
+        assert len(answers) == 1, "Expected a single result from the optimization."
+        ctx = answers[0]
+        # pickle_save(scme, scme_path)  # type: ignore
+    return ctx
 
 def parse_workload_ir(
     workload_path: str,

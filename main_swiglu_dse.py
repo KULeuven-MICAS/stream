@@ -3,8 +3,7 @@ import logging as _logging
 import os
 import re
 
-from stream.api import optimize_allocation_co
-from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping, make_swiglu_mapping2
+from stream.api import optimize_mapping
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 
 _logging_level = _logging.INFO
@@ -31,10 +30,6 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     # CREATE THE SWIGLU ONNX MODEL AND MAPPING
     workload_path = make_swiglu_workload(
         seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down=last_gemm_down
-    )
-    # mapping_path = make_swiglu_mapping(seq_len, embedding_dim, hidden_dim, last_gemm_down)
-    mapping_path = make_swiglu_mapping2(
-        seq_len, embedding_dim, hidden_dim, last_gemm_down, seq_len_tile_size, embedding_tile_size, hidden_tile_size
     )
     ##############################################################################################
 
@@ -72,17 +67,20 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     # json_path = f"outputs/{experiment_id}/scme.json"
     #####################################################################
 
-    ctx = optimize_allocation_co(
+    ctx = optimize_mapping(
         hardware=accelerator,
         workload=workload_path,
-        mapping=mapping_path,
         experiment_id=experiment_id,
         output_path="outputs",
         skip_if_exists=False,
-        enable_codegen=True,
+        enable_codegen=False,
         trace_size=trace_size,
         nb_cols_to_use=cols,
         npu=npu,
+        seq_len_tile_size=seq_len_tile_size,
+        embedding_tile_size=embedding_tile_size,
+        hidden_tile_size=hidden_tile_size,
+        last_gemm_down=last_gemm_down,
     )
 
     # #####################CostModelEvaluationLUT LOAD#############################
@@ -113,7 +111,7 @@ if __name__ == "__main__":
     parser.add_argument("--out_dtype", type=str, default="bf16", help="Output data type (default: bf16)")
     parser.add_argument("--trace_size", type=int, default=1048576, help="Size of the trace buffer (default: 1048576)")
     parser.add_argument("--rows", type=int, default=4, help="Number of AIE rows to use (has to be 4)")
-    parser.add_argument("--cols", type=int, default=8, help="Number of AIE columns to use (default: 8)")
+    parser.add_argument("--cols", type=int, default=1, help="Number of AIE columns to use (default: 1)")
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
     parser.add_argument(
         "--seq_len_tile_size", type=int, default=32, help="Tile size for seq_len dimension (default: 32)"
