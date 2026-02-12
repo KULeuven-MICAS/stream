@@ -3,7 +3,7 @@ type: aie2.memory
 
 memories:
   dram:
-    size: 2097151  # 2097152 - 1 for no mem tile reuse test  # 256 KB
+    size: 2097152  # 256 KB
     r_cost: 4
     w_cost: 4
     area: 0
