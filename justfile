@@ -5,4 +5,4 @@ swiglu2:
     python main_swiglu.py --seq_len 32 --embedding_dim 32 --hidden_dim 32 --line_size 32 --m 1 --k 32 --n 32 --in_dtype bf16 --out_dtype bf16 --trace_size 1048576 --rows 4 --cols 4 --npu npu2 --mapping_version 2
 
 swiglu3:
-    python main_swiglu.py --seq_len 256 --embedding_dim 1024 --hidden_dim 128 --in_dtype bf16 --out_dtype bf16 --trace_size 1048576 --rows 4 --cols 4 --npu npu2 --no_last_gemm_down
+    python main_swiglu.py --seq_len 256 --embedding_dim 512 --hidden_dim 2048 --in_dtype bf16 --out_dtype bf16 --trace_size 1048576 --rows 4 --cols 4 --npu npu2 --embedding_tile_size 32 --hidden_tile_size 64
