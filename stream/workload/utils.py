@@ -57,12 +57,11 @@ def get_equivalent_dimension(old_workload: "Workload", new_workload: "Workload",
 
 
 def generate_steady_state_iteration_spaces(
-    workload: "Workload", mapping: "Mapping", split_factors: dict[LayerDim, int]
+    workload: "Workload", mapping: "Mapping", fusion_splits: dict[LayerDim, int]
 ) -> dict["HasIterationSpace", SteadyStateIterationSpace]:
     spatial_unrollings, unique_spatial_unrollings = collect_spatial_unrollings(workload, mapping)
     iteration_variables = _create_spatial_iteration_variables(workload, spatial_unrollings, unique_spatial_unrollings)
-    temporal_unrollings = _derive_temporal_unrollings(workload, unique_spatial_unrollings, split_factors)
-    iteration_variables = _add_temporal_iteration_variables(iteration_variables, temporal_unrollings, workload)
+    iteration_variables = _add_temporal_iteration_variables(iteration_variables, fusion_splits, workload)
     iteration_variables = _insert_kernel_iteration_variables(iteration_variables, workload, unique_spatial_unrollings)
     ssis_dict = _create_steady_state_iteration_spaces(iteration_variables, workload)
     return ssis_dict
@@ -78,12 +77,13 @@ def _create_steady_state_iteration_spaces(iteration_variables, workload: "Worklo
 
 
 def _add_temporal_iteration_variables(
-    iteration_variables: dict["HasIterationSpace", list[IterationVariable]], temporal_unrollings, workload: "Workload"
+    iteration_variables: dict["HasIterationSpace", list[IterationVariable]],
+    fusion_splits: dict[LayerDim, int],
+    workload: "Workload",
 ) -> dict["HasIterationSpace", list[IterationVariable]]:
     """Iterate through all computation nodes and add the temporal iteration variables."""
     for node in workload.get_iteration_space_nodes():
-        for temporal_unrolling in temporal_unrollings:
-            dim, size = temporal_unrolling
+        for dim, size in fusion_splits.items():
             if isinstance(node, ComputationNode):
                 effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.ABSENT
             elif isinstance(node, TransferNode):
@@ -100,19 +100,6 @@ def _add_temporal_iteration_variables(
                 IterationVariable(dimension=dim, size=size, effect=effect, type=IterationVariableType.TEMPORAL)
             )
     return iteration_variables
-
-
-def _derive_temporal_unrollings(workload: "Workload", unique_spatial_unrollings, fusion_splits: dict[LayerDim, int]):
-    """Iterate through the unique workload dimensions and get temporal unrollings"""
-    temporal_unrollings: list[tuple[LayerDim, int]] = []  # list because order matters
-    unique_dims, _ = workload.unique_dimensions()
-    for dim in unique_dims:  # iterate in different order here if needed
-        if dim not in fusion_splits:
-            size = 1
-        else:
-            size = fusion_splits[dim]
-        temporal_unrollings.append((dim, size))
-    return temporal_unrollings
 
 
 def _insert_kernel_iteration_variables(
@@ -160,7 +147,15 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                     )
                 )
             elif dim not in workload.get_dims(node):
-                continue  # no variable needed for this dimension since it's not present in this node
+                # This dimension is not present, so add an absent spatial var
+                iteration_variables[node].append(
+                    IterationVariable(
+                        dimension=dim,
+                        size=unrolling,
+                        effect=LoopEffect.ABSENT,
+                        type=IterationVariableType.SPATIAL,
+                    )
+                )
             elif any(dim == su[0] for su in spatial_unrollings[node]):
                 # This node has a different unrolling size for the unique dim
                 # Create a hybrid of both spatial and temporal iteration variables

@@ -222,6 +222,7 @@ def make_swiglu_mapping2(
     if last_gemm_down:
         fused_groups["intra_core_tiling"].insert(1, {"dim": "Gemm_Down.D2", "tile": INPUT_CHANNEL_TILE_SIZE})
 
+    print(fused_groups["intra_core_tiling"])
     mapping = {
         "layers": layers,
         "fused_groups": [fused_groups],
