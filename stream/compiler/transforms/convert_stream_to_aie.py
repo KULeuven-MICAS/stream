@@ -5,8 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import reduce
 from itertools import product
-from math import ceil, isqrt, prod
-from sys import activate_stack_trampoline
+from math import isqrt, prod
 from typing import Self, cast
 
 from snaxc.dialects.snax import LayoutCast
