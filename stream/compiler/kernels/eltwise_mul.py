@@ -39,24 +39,13 @@ class EltwiseMulKernel(AIEKernel):
         mt = 32 // r
         nt = 64 // t
         return [
-            TiledStridedLayout(  # default input
-                [
-                    TiledStride([Stride(r * t * nt, mt), Stride(nt * t, r)]),
-                    TiledStride([Stride(t, nt), Stride(1, t)]),
-                ]
-            ),
-            TiledStridedLayout(  # default input
-                [
-                    TiledStride([Stride(r * t * nt, mt), Stride(nt * t, r)]),
-                    TiledStride([Stride(t, nt), Stride(1, t)]),
-                ]
-            ),
-            TiledStridedLayout(  # tiled output
+            TiledStridedLayout(
                 [
                     TiledStride([Stride(r * t * nt, mt), Stride(t, r)]),
                     TiledStride([Stride(r * t, nt), Stride(1, t)]),
                 ]
-            ),
+            )
+            for _ in range(3)
         ]
 
     def function_type(self, op: ComputationNodeOp) -> FunctionType:
