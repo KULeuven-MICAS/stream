@@ -159,6 +159,8 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                         type=IterationVariableType.SPATIAL,
                     )
                 )
+            elif dim not in workload.get_dims(node):
+                continue  # no variable needed for this dimension since it's not present in this node
             elif any(dim == su[0] for su in spatial_unrollings[node]):
                 # This node has a different unrolling size for the unique dim
                 # Create a hybrid of both spatial and temporal iteration variables
