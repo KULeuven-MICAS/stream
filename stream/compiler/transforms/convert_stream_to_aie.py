@@ -1790,6 +1790,51 @@ class SetKernelLayouts(RewritePattern):
 
 
 @dataclass
+class HoistLayoutCasts(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: LayoutCast, rewriter: PatternRewriter) -> None:
+        assert isinstance(op.source, OpResult)
+        if isinstance(op.source.op, ObjectFIFOSubviewAccessOp):
+            # good, this is what we want
+            return
+        elif isinstance(switch := op.source.op, IndexSwitchOp):
+            # push up layout cast
+            new_casts: list[Operation] = []
+            for case in (switch.default_region, *switch.case_regions):
+                yield_op = case.block.last_op
+                assert isinstance(yield_op, YieldOp)
+                yielded = yield_op.arguments[0]
+                assert isa(op.dest.type, MemRefType[FixedBitwidthType])
+                new_cast = LayoutCast(yielded, op.dest.type)
+                new_casts.append(new_cast)
+                yield_op.operands[0] = new_cast.dest
+            new_switch = IndexSwitchOp(
+                switch.arg,
+                switch.cases,
+                rewriter.move_region_contents_to_new_regions(switch.default_region),
+                [rewriter.move_region_contents_to_new_regions(case_region) for case_region in switch.case_regions],
+                [op.dest.type],
+            )
+            rewriter.insert_op([*new_casts, new_switch], InsertPoint.before(op))
+            op.dest.replace_by(new_switch.output[0])
+            rewriter.erase_op(op)
+            rewriter.erase_op(switch)
+
+
+@dataclass
+class SquashLayoutCasts(RewritePattern):
+    @op_type_rewrite_pattern
+    def match_and_rewrite(self, op: LayoutCast, rewriter: PatternRewriter) -> None:
+        layout_casts = [use.operation for use in op.source.uses if isinstance(use.operation, LayoutCast)]
+        # all dest types must be equal
+        assert all(op.dest.type == cast.dest.type for cast in layout_casts)
+        # keep only this one
+        for cast_to_remove in filter(lambda x: x is not op, layout_casts):
+            cast_to_remove.dest.replace_by(op.dest)
+            rewriter.erase_op(cast_to_remove)
+
+
+@dataclass
 class SetKernelLayoutsNPU1(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: CallOp, rewriter: PatternRewriter):
@@ -2330,6 +2375,8 @@ class ConvertStreamToAIEPass(ModulePass):
         # Use the new convert aie kernels operation:
         assert npu is AIEDeviceEnum.npu2
         PatternRewriteWalker(SetKernelLayouts(self.aie_kernels)).rewrite_module(op)
+        PatternRewriteWalker(HoistLayoutCasts()).rewrite_module(op)
+        PatternRewriteWalker(SquashLayoutCasts()).rewrite_module(op)
         with open("test4.mlir", "w") as f:
             f.write(str(op))
         PatternRewriteWalker(ConvertAIEKernels(self.aie_kernels)).rewrite_module(op)

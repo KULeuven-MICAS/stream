@@ -279,7 +279,11 @@ class AIECodeGenerationStage(Stage):
         workload.global_mapping(node, node.operand_mapping[-1])
         # Spatial: (m, 4), (n, 4)
         # step 1: get iterable over all combinations with [(LayerDim, value), (LayerDim, value)] as data
-        ranges = [[(spat_var.dimension, x) for x in range(spat_var.size)] for spat_var in ssis.get_spatial_variables()]
+        ranges = [
+            [(spat_var.dimension, x) for x in range(spat_var.size)]
+            for spat_var in ssis.get_spatial_variables()
+            if spat_var.applicable
+        ]
         # step 2:
         combined_ranges = list(product(*ranges))
         for core, comb_ran in zip(mapping.resource_allocation, combined_ranges, strict=True):

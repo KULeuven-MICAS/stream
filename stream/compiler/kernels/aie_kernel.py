@@ -101,6 +101,10 @@ class AIEKernelWithZeroing(AIEKernel, ABC):
                 case_def = yield_op.arguments[0]
                 assert isinstance(case_def, OpResult)
                 case_def = case_def.op
+                # again, get rid of layout casts:
+                while isinstance(case_def, LayoutCast):
+                    assert isinstance(case_def.source, OpResult)
+                    case_def = case_def.source.op
                 assert isinstance(case_def, ObjectFIFOSubviewAccessOp)
                 rewriter.insert_op(self.zero_call(case_def), InsertPoint.after(case_def))
         else:
