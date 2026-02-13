@@ -112,7 +112,7 @@ if __name__ == "__main__":
     parser.add_argument("--out_dtype", type=str, default="bf16", help="Output data type (default: bf16)")
     parser.add_argument("--trace_size", type=int, default=1048576, help="Size of the trace buffer (default: 1048576)")
     parser.add_argument("--rows", type=int, default=4, help="Number of AIE rows to use (has to be 4)")
-    parser.add_argument("--cols", type=int, default=1, help="Number of AIE columns to use (default: 1)")
+    parser.add_argument("--cols", type=int, default=8, help="Number of AIE columns to use (default: 8)")
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
     parser.add_argument(
         "--seq_len_tile_size", type=int, default=32, help="Tile size for seq_len dimension (default: 32)"

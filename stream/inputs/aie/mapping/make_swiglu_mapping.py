@@ -184,7 +184,7 @@ def make_swiglu_mapping2(
 
     # Final down projection Gemm
     if last_gemm_down:
-        inter_core_tiling_gemm_down = [{"dim": "D1", "split": 2}, {"dim": "D0", "split": 4}]
+        inter_core_tiling_gemm_down = [{"dim": "D2", "split": 2}, {"dim": "D0", "split": 4}]
         compute_allocation_gemm_down = [38, 39, 40, 41, 44, 45, 46, 47]
         gemm_down = {
             "name": "Gemm_Down",
@@ -219,6 +219,8 @@ def make_swiglu_mapping2(
             {"dim": "Gemm_Left.D0", "tile": SEQ_LEN_TILE_SIZE},
         ],
     }
+    if last_gemm_down:
+        fused_groups["intra_core_tiling"].insert(1, {"dim": "Gemm_Down.D2", "tile": INPUT_CHANNEL_TILE_SIZE})
 
     mapping = {
         "layers": layers,
