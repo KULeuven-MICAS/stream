@@ -123,7 +123,7 @@ class CoalaScheduler:
         """
         for n in self.G.node_list:
             for tensor in n.operand_tensors.values():
-                tensor.initialize_instance_priorities(self.G, n, self.accelerator)
+                tensor.initialize_tensor_priority(self.G, n)
 
     def initialize_offchip_tensors(self):
         """
@@ -248,7 +248,7 @@ class CoalaScheduler:
             timestep = node_end_timestep
 
             # Step 6: manage memory usage when the node ends
-            self.decrease_priority(full_tensors_this_candidate_needs, tensors_operands, best_candidate)
+            self.decrease_priority(full_tensors_this_candidate_needs)
             self.check_for_removal(full_tensors_this_candidate_needs, timestep, transfer_bw_fraction)
             self.remove_sub_tensors(
                 core,
@@ -743,15 +743,11 @@ class CoalaScheduler:
     def decrease_priority(
         self,
         tensors: list[Tensor],
-        tensors_operands: list[MemoryOperand],
-        node: ComputationNode,
     ):
-        for tensor_used_by_node, tensor_memory_operand in zip(tensors, tensors_operands, strict=False):
+        for tensor_used_by_node in tensors:
             # TODO: tensor_memory_operand will be 'O' for activation tensors.
             # TODO: If the memory between input and output is not shared, this will give a wrong instance.
-            assert node.chosen_core_allocation is not None
-            top_instance = self.accelerator.get_top_instance_of_core(node.chosen_core_allocation, tensor_memory_operand)
-            tensor_used_by_node.instance_priorities[top_instance] -= 1
+            tensor_used_by_node.decrement_tensor_priority()
 
     def check_for_removal(
         self,
@@ -761,7 +757,7 @@ class CoalaScheduler:
     ):
         """Remove the tensor from the core if its priority is zero."""
         for tensor_used_by_node in tensors:
-            if tensor_used_by_node.get_total_priority() == 0:
+            if tensor_used_by_node.get_tensor_priority() == 0:
                 instances_storing_tensor, _ = self.accelerator.memory_manager.find_tensor_in_top_instances(
                     tensor_used_by_node
                 )

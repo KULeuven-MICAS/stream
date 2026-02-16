@@ -215,7 +215,7 @@ class MemoryManager:
         evictable_tensors = [tensor for tensor in stored_tensors if tensor not in relevant_exceptions]
         evictable_tensors_priority_size: list[int] = []
         for tensor in evictable_tensors:
-            instance_priority = tensor.get_instance_priority(top_instance, self)
+            instance_priority = tensor.get_tensor_priority()
             importance = instance_priority * tensor.size
             evictable_tensors_priority_size.append(importance)
         evictable_tensors_priority_size_tuple, evictable_tensors_tuple = zip(

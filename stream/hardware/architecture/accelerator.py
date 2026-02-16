@@ -253,8 +253,7 @@ class Accelerator:
         # Remove from sending core (except if it is offchip)
         if sending_core.id != self.offchip_core_id:
             not_on_producing_core = sending_core.id != tensor.origin.chosen_core_allocation
-            storing_instance = self.get_storing_memory_instance(tensor, sending_core)
-            tensor_priority = tensor.get_instance_priority(storing_instance, self.memory_manager)
+            tensor_priority = tensor.get_tensor_priority()
             if not_on_producing_core and tensor_priority == 0:
                 self.remove_tensor(tensor, sending_core, memory_op=tensor.memory_operand, timestep=transfer_end)
 
