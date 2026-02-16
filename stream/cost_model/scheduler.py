@@ -558,6 +558,7 @@ class CoalaScheduler:
                 tensor=tensor_to_remove,
                 receiving_core=self.offchip_core,
                 tensor_operand=memory_op,
+                earliest_t=timestep,
                 sending_core=core_to_remove_from,
                 transfer_bandwidth_fraction=transfer_bandwidth_fraction,
                 transfer_cause=transfer_cause,
