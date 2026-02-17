@@ -1,10 +1,8 @@
 import math
-import os
 from collections import defaultdict
 from math import ceil, prod
 from typing import Any, TypeAlias
 import os
-from typing import TypeAlias
 
 import gurobipy as gp
 import matplotlib.pyplot as plt

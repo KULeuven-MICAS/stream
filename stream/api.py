@@ -200,6 +200,7 @@ def optimize_allocation_co(  # noqa: PLR0913
         # pickle_save(scme, scme_path)  # type: ignore
     return ctx
 
+
 def optimize_mapping(  # noqa: PLR0913
     hardware: str,
     workload: str,
@@ -243,7 +244,7 @@ def optimize_mapping(  # noqa: PLR0913
             AcceleratorParserStage,  # Parses the accelerator
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
             MappingGenerationStage,
-            MappingParserStage, 
+            MappingParserStage,
             TilingGenerationStage,
             CoreCostEstimationStage,
             ConstraintOptimizationAllocationStage,
@@ -278,6 +279,7 @@ def optimize_mapping(  # noqa: PLR0913
         ctx = answers[0]
         # pickle_save(scme, scme_path)  # type: ignore
     return ctx
+
 
 def parse_workload_ir(
     workload_path: str,
