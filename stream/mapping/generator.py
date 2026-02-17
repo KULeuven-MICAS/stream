@@ -2,18 +2,17 @@ from __future__ import annotations
 
 import copy
 import os
+import random
+import time
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from itertools import product
-import random
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any
 
 import yaml
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.workload.workload import Workload
-
-from stream.workload.workload import Workload
-from stream.hardware.architecture.accelerator import Accelerator
 
 
 @dataclass(frozen=True)
@@ -23,11 +22,12 @@ class SplitSpec:
     dim: dimension name WITHOUT changing it (ex: "D0", "D1", "D2")
     split: number of splits along that dim (must be >= 1)
     """
+
     dim: str
     split: int
 
 
-def _divisors(n: int) -> List[int]:
+def _divisors(n: int) -> list[int]:
     ds = []
     for d in range(1, n + 1):
         if n % d == 0:
@@ -58,10 +58,10 @@ class MappingGenerator:
         embedding_tile_size: int,
         hidden_tile_size: int,
         # How many variants to emit (None means "all")
-        max_variants: Optional[int] = None,
+        max_variants: int | None = None,
         # If True, require all layers to use disjoint cores in each mapping.
         disjoint_cores_per_layer: bool = True,
-        layer_core_splits: Optional[Dict[str, List[int]]] = None,
+        layer_core_splits: dict[str, list[int]] | None = None,
     ) -> None:
         self.accelerator = accelerator
         self.workload = workload
@@ -70,10 +70,14 @@ class MappingGenerator:
         self.rng = random.Random(42)
 
         input_tensor = workload.tensors[0]
-        assert 'input' in input_tensor.name.lower(), "Expected workload to have an input tensor with 'input' in its name."
+        assert "input" in input_tensor.name.lower(), (
+            "Expected workload to have an input tensor with 'input' in its name."
+        )
         seq_len, embedding_dim = input_tensor.shape
         output_tensor = workload.tensors[-1]
-        assert 'output' in output_tensor.name.lower(), "Expected workload to have an output tensor with 'output' in its name."
+        assert "output" in output_tensor.name.lower(), (
+            "Expected workload to have an output tensor with 'output' in its name."
+        )
         hidden_dim = output_tensor.shape[1]  # Assuming output tensor
         self.seq_len = seq_len
         self.embedding_dim = embedding_dim
@@ -98,48 +102,34 @@ class MappingGenerator:
     # -------------------------
     # Public API
     # -------------------------
-    def run(self) -> List[str]:
+    def run(self) -> Iterator[tuple[int, list[tuple[str, list[SplitSpec]]], dict[str, Any]]]:
         """
-        Generate mapping YAMLs and return a list of output file paths.
-
-        If max_variants is set:
-        - we keep trying (in shuffled order) until we have written exactly max_variants *valid* mappings
-        - invalid variants (allocation impossible etc.) are discarded and do NOT count towards max_variants
+        Yields (idx, variant, mapping_dict) for VALID mappings only.
+        idx is contiguous over valid mappings: 0..N-1.
         """
         layer_templates = self._build_layer_templates()
         per_layer_split_options = self._enumerate_inter_core_split_options(layer_templates)
 
-        # If any layer has zero options, no variants exist.
         if any(len(opts) == 0 for opts in per_layer_split_options):
-            return []
+            return
 
-        # Materialize and shuffle all candidates (better mix)
         all_variants = list(product(*per_layer_split_options))
         self.rng.shuffle(all_variants)
 
-        output_paths: List[str] = []
         emitted = 0
-
-        # If max_variants is None, we try them all and emit all valid ones.
         target = self.max_variants if self.max_variants is not None else float("inf")
 
-        for attempt_idx, combo in enumerate(all_variants):
+        for combo in all_variants:
             if emitted >= target:
                 break
 
             variant = list(combo)
             mapping = self._assemble_mapping(layer_templates, variant)
             if mapping is None:
-                # invalid: discard, do not count towards emitted
                 continue
 
-            # IMPORTANT: use `emitted` as the stable index for filenames, not attempt_idx
-            out_path = self._write_mapping_yaml(mapping, variant, emitted)
-            output_paths.append(out_path)
+            yield emitted, variant, mapping
             emitted += 1
-
-        return output_paths
-
 
     # -------------------------
     # Core building blocks
@@ -148,26 +138,19 @@ class MappingGenerator:
         if self.seq_len % 4 != 0:
             raise AssertionError("seq_len must be divisible by 4 for these mappings.")
         if self.seq_len < self.seq_len_tile_size * 4:
-            raise AssertionError(
-                f"seq_len must be at least {self.seq_len_tile_size * 4} for this mapping."
-            )
+            raise AssertionError(f"seq_len must be at least {self.seq_len_tile_size * 4} for this mapping.")
         if self.embedding_dim % self.embedding_tile_size != 0:
-            raise AssertionError(
-                f"embedding_dim must be divisible by {self.embedding_tile_size}."
-            )
+            raise AssertionError(f"embedding_dim must be divisible by {self.embedding_tile_size}.")
         if self.hidden_dim % self.hidden_tile_size != 0:
-            raise AssertionError(
-                f"hidden_dim must be divisible by {self.hidden_tile_size}."
-            )
+            raise AssertionError(f"hidden_dim must be divisible by {self.hidden_tile_size}.")
 
-    def _get_compute_core_ids(self, accelerator: Accelerator) -> List[int]:
+    def _get_compute_core_ids(self, accelerator: Accelerator) -> list[int]:
         """
-        Tries a few common patterns to extract compute core ids from 'accelerator'.
-        Edit this in one place if your accelerator API differs.
+        Get the available compute cores from the accelerator object.
         """
         return [core.id for core in accelerator.core_list if core.type == "compute"]
 
-    def _kernel_gemm(self) -> Dict[str, Any]:
+    def _kernel_gemm(self) -> dict[str, Any]:
         if self.seq_len_tile_size == 1:
             return {"name": "matvec", "kwargs": {"utilization": 61.8, "layout": "default"}}
 
@@ -182,18 +165,18 @@ class MappingGenerator:
             },
         }
 
-    def _kernel_silu(self) -> Dict[str, Any]:
+    def _kernel_silu(self) -> dict[str, Any]:
         return {"name": "silu", "kwargs": {"utilization": 50.0, "layout": "default"}}
 
-    def _kernel_mul(self) -> Dict[str, Any]:
+    def _kernel_mul(self) -> dict[str, Any]:
         return {"name": "eltwise_mul", "kwargs": {"utilization": 50.0, "layout": "default"}}
 
-    def _build_layer_templates(self) -> List[Dict[str, Any]]:
+    def _build_layer_templates(self) -> list[dict[str, Any]]:
         """
         Defines layer names, kernels, and the inter-core dimension order that must NOT change.
         Only split sizes will vary.
         """
-        layers: List[Dict[str, Any]] = []
+        layers: list[dict[str, Any]] = []
 
         # Gemm_Left (keep dims D2 then D0, only split values vary)
         layers.append(
@@ -251,8 +234,8 @@ class MappingGenerator:
         return layers
 
     def _enumerate_inter_core_split_options(
-        self, layer_templates: Sequence[Dict[str, Any]]
-    ) -> List[List[Tuple[str, List[SplitSpec]]]]:
+        self, layer_templates: Sequence[dict[str, Any]]
+    ) -> list[list[tuple[str, list[SplitSpec]]]]:
         """
         For each layer, produce candidate inter_core_tiling specs, but constrained by:
         - per-dim split must divide the dim size
@@ -260,12 +243,12 @@ class MappingGenerator:
         - total cores must be <= available compute cores
         """
         max_cores = len(self.compute_core_ids)
-        per_layer_options: List[List[Tuple[str, List[SplitSpec]]]] = []
+        per_layer_options: list[list[tuple[str, list[SplitSpec]]]] = []
 
         for tpl in layer_templates:
             lname = tpl["name"]
-            dims: List[str] = list(tpl["inter_core_dims"])
-            dim_sizes: Dict[str, int] = dict(tpl["dim_sizes"])
+            dims: list[str] = list(tpl["inter_core_dims"])
+            dim_sizes: dict[str, int] = dict(tpl["dim_sizes"])
 
             # Allowed totals for this layer (if not specified, fall back to "anything up to max_cores")
             allowed_totals = self.layer_core_splits.get(lname, None)
@@ -278,13 +261,13 @@ class MappingGenerator:
                     continue
 
             # split choices per dim must be divisors and <= max_cores
-            split_choices_per_dim: List[List[int]] = []
+            split_choices_per_dim: list[list[int]] = []
             for d in dims:
                 size = int(dim_sizes[d])
                 choices = [x for x in _divisors(size) if x <= max_cores]
                 split_choices_per_dim.append(choices)
 
-            options_for_layer: List[Tuple[str, List[SplitSpec]]] = []
+            options_for_layer: list[tuple[str, list[SplitSpec]]] = []
             for splits in product(*split_choices_per_dim):
                 needed = 1
                 for s in splits:
@@ -304,9 +287,9 @@ class MappingGenerator:
 
     def _assemble_mapping(
         self,
-        layer_templates: Sequence[Dict[str, Any]],
-        variant: Sequence[Tuple[str, List[SplitSpec]]],
-    ) -> Optional[Dict[str, Any]]:
+        layer_templates: Sequence[dict[str, Any]],
+        variant: Sequence[tuple[str, list[SplitSpec]]],
+    ) -> dict[str, Any] | None:
         """
         Given a variant (layer_name -> split specs), allocate cores and construct the mapping dict.
         Returns None if allocation is impossible.
@@ -316,7 +299,7 @@ class MappingGenerator:
 
         # Allocate cores
         remaining = list(self.compute_core_ids)
-        core_alloc_by_name: Dict[str, List[int]] = {}
+        core_alloc_by_name: dict[str, list[int]] = {}
 
         for tpl in layer_templates:
             lname = tpl["name"]
@@ -334,7 +317,7 @@ class MappingGenerator:
                 core_alloc_by_name[lname] = self.compute_core_ids[:needed]
 
         # Build layers list in template order
-        layers: List[Dict[str, Any]] = []
+        layers: list[dict[str, Any]] = []
         for tpl in layer_templates:
             lname = tpl["name"]
             specs = splits_by_name[lname]
@@ -361,7 +344,7 @@ class MappingGenerator:
             n *= int(s.split)
         return n
 
-    def _build_fused_groups(self, layer_names: List[str]) -> Dict[str, Any]:
+    def _build_fused_groups(self, layer_names: list[str]) -> dict[str, Any]:
         """
         Kept identical to your original fused group tiling (intra-core tiling),
         since you asked to vary inter-core tiling first.
@@ -376,7 +359,7 @@ class MappingGenerator:
             ],
         }
 
-    def _build_runtime_args(self) -> Dict[str, Any]:
+    def _build_runtime_args(self) -> dict[str, Any]:
         if self.last_gemm_down:
             return {
                 "input": {},
@@ -392,17 +375,19 @@ class MappingGenerator:
             "output": {},
         }
 
-    def _write_mapping_yaml(
+    def save_mapping(
         self,
-        mapping: Dict[str, Any],
-        variant: Sequence[Tuple[str, List[SplitSpec]]],
+        mapping: dict[str, Any],
+        variant: Sequence[tuple[str, list[SplitSpec]]],
         idx: int,
+        output_dir: str,
     ) -> str:
         """
-        File name encodes per-layer split counts in a readable way.
+        Save mapping YAML into `output_dir` and return the full path.
         """
-        def fmt_layer(layer_name: str, specs: List[SplitSpec]) -> str:
-            # Example: Gemm_Left_D2x2_D0x4
+        os.makedirs(output_dir, exist_ok=True)
+
+        def fmt_layer(layer_name: str, specs: list[SplitSpec]) -> str:
             parts = [layer_name]
             for s in specs:
                 parts.append(f"{s.dim}x{s.split}")
@@ -411,11 +396,30 @@ class MappingGenerator:
         tag = "__".join(fmt_layer(n, specs) for (n, specs) in variant)
 
         base = f"swiglu_{self.seq_len}_{self.embedding_dim}_{self.hidden_dim}"
-        filename = f"{base}__{tag}__{idx}.yaml"
-        out_path = os.path.join(self.output_dir, filename)
+        filename = f"{base}_mapping.yaml"
+        out_path = os.path.join(output_dir, filename)
 
-        with open(out_path, "w") as f:
+        mapping = dict(mapping)
+        mapping["meta"] = {
+            "idx": idx,
+            "variant_tag": tag,
+            "asctime": time.asctime(),
+            "seq_len": self.seq_len,
+            "embedding_dim": self.embedding_dim,
+            "hidden_dim": self.hidden_dim,
+            "seq_len_tile_size": self.seq_len_tile_size,
+            "embedding_tile_size": self.embedding_tile_size,
+            "hidden_tile_size": self.hidden_tile_size,
+            "last_gemm_down": self.last_gemm_down,
+            "disjoint_cores_per_layer": self.disjoint_cores_per_layer,
+            "layer_core_splits": getattr(self, "layer_core_splits", {}),
+        }
+
+        # Atomic write
+        tmp_path = out_path + ".tmp"
+        with open(tmp_path, "w") as f:
             yaml.safe_dump(mapping, f, default_flow_style=False, sort_keys=False)
+        os.replace(tmp_path, out_path)
 
         return out_path
 

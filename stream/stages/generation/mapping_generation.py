@@ -4,7 +4,6 @@ import os
 import yaml
 
 from stream.mapping.generator import MappingGenerator
-from stream.parser.mapping_parser import MappingParser
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 
@@ -41,7 +40,7 @@ class MappingGenerationStage(Stage):
                 "Gemm_Right": [4, 8, 16],
                 "Silu": [1, 4, 8],
                 "Elt_Mul": [1, 4, 8],
-                "Gemm_Down": [4, 8, 16],   # only used if last_gemm_down=True
+                "Gemm_Down": [4, 8, 16],  # only used if last_gemm_down=True
             },
         )
 
@@ -49,9 +48,18 @@ class MappingGenerationStage(Stage):
         best_mapping_path = None
         best_context = None
         best_latency = float("inf")
-        for i, mapping_path in enumerate(self.mapping_generator.run()):
+        for i, variant, mapping in self.mapping_generator.run():
             output_path_i = os.path.join(self.output_path, f"{i}")
             os.makedirs(output_path_i, exist_ok=True)
+
+            # Save mapping into the same folder passed onward to substages
+            mapping_path = self.mapping_generator.save_mapping(
+                mapping=mapping,
+                variant=variant,
+                idx=i,
+                output_dir=output_path_i,
+            )
+
             self.ctx.set(
                 workload=self.workload,
                 mapping_path=mapping_path,
