@@ -281,6 +281,44 @@ def optimize_mapping(  # noqa: PLR0913
     return ctx
 
 
+def parse_accelerator_ir(
+    hardware: str,
+    arch_ir_path: str,
+) -> str:
+    """Parse a hardware definition into an accelerator IR YAML file.
+
+    Instantiates the :class:`~stream.hardware.architecture.accelerator.Accelerator`
+    from the given hardware YAML, calls its :meth:`~stream.hardware.architecture.accelerator.Accelerator.get_ir`
+    method, and writes the result to *arch_ir_path*.
+
+    Args:
+        hardware: Path to the hardware definition YAML file.
+        arch_ir_path: Destination path for the accelerator IR YAML.
+
+    Returns:
+        The path to the saved IR file (*arch_ir_path*).
+    """
+    base_output_path = os.path.dirname(os.path.abspath(arch_ir_path))
+    os.makedirs(base_output_path, exist_ok=True)
+    ctx = StageContext.from_kwargs(
+        accelerator=hardware,
+        output_path=base_output_path,
+    )
+    stages: list[StageCallable] = [
+        AcceleratorParserStage,
+        LeafStage,
+    ]
+    mainstage = MainStage(stages, ctx)
+    ctxs = mainstage.run()
+    assert len(ctxs) == 1, "Expected a single result from the accelerator parsing"
+    ctx: StageContext = ctxs[0]  # type: ignore[no-redef]
+    accelerator = ctx.get("accelerator")
+    arch_ir = accelerator.get_ir()
+    with open(arch_ir_path, "w") as f:
+        yaml.dump(arch_ir, f, sort_keys=False)
+    return arch_ir_path
+
+
 def parse_workload_ir(
     workload_path: str,
     arch_ir_path: str,

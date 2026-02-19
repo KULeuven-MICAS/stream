@@ -46,7 +46,7 @@ class MappingGenerator:
       - Must be compute core ids from the provided 'accelerator' object.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         accelerator: Accelerator,
         workload: Workload,
@@ -329,7 +329,7 @@ class MappingGenerator:
             }
             layers.append(layer_entry)
 
-        fused_groups = self._build_fused_groups([l["name"] for l in layers])
+        fused_groups = self._build_fused_groups([layer["name"] for layer in layers])
         runtime_args = self._build_runtime_args()
 
         return {

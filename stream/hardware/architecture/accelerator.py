@@ -87,6 +87,68 @@ class Accelerator:
     def core_list(self) -> list[Core]:
         return list(self.cores.node_list)
 
+    def get_ir(self) -> dict:
+        """Return a dictionary representation of the accelerator for serialization.
+
+        Captures:
+        - Top-level accelerator metadata (name, offchip core, shared memory groups).
+        - Per-core IR produced by :meth:`~stream.hardware.architecture.core.Core.get_ir`,
+          which includes type-specific fields keyed by ``core_type`` namespace.
+        - Core connectivity expressed as a list of ``bus`` or directed ``link`` entries,
+          mirroring the structure of the hardware YAML input.
+        """
+        # --- cores ---
+        cores_ir: list[dict] = [core.get_ir() for core in self.cores.node_list]
+
+        # --- connectivity ---
+        # Buses: all edges that share the same CommunicationLink object (bidirectional=True)
+        # are collected into a single bus entry listing every participating core.
+        # Point-to-point links (bidirectional=False) are emitted as directed pairs.
+        links_ir: list[dict] = []
+        seen_bus_ids: set[int] = set()
+        for src, dst, data in self.cores.edges(data=True):
+            cl = data.get("cl")
+            if cl is None:
+                continue
+            if cl.bidirectional:
+                bus_id = id(cl)
+                if bus_id in seen_bus_ids:
+                    continue
+                seen_bus_ids.add(bus_id)
+                # Collect every core that participates in this shared bus instance
+                connected_ids: set[int] = set()
+                for u, v, edge_data in self.cores.edges(data=True):
+                    if edge_data.get("cl") is cl:
+                        connected_ids.add(u.id)
+                        connected_ids.add(v.id)
+                links_ir.append(
+                    {
+                        "type": "bus",
+                        "cores": sorted(connected_ids),
+                        "bandwidth": cl.bandwidth,
+                        "unit_energy_cost": cl.unit_energy_cost,
+                    }
+                )
+            else:
+                links_ir.append(
+                    {
+                        "type": "link",
+                        "from_core": src.id,
+                        "to_core": dst.id,
+                        "bandwidth": cl.bandwidth,
+                        "unit_energy_cost": cl.unit_energy_cost,
+                    }
+                )
+
+        return {
+            "name": self.name,
+            "num_cores": len(list(self.cores.nodes)),
+            "offchip_core_id": self.offchip_core_id,
+            "nb_shared_mem_groups": self.nb_shared_mem_groups,
+            "cores": cores_ir,
+            "core_connectivity": links_ir,
+        }
+
     def __str__(self) -> str:
         return f"Accelerator({self.name})"
 
