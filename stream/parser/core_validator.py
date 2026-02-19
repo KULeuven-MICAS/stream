@@ -7,8 +7,33 @@ from zigzag.parser.accelerator_validator import AcceleratorValidator as ZigZagAc
 logger = logging.getLogger(__name__)
 
 
+# =============================================================================
+# Allowed namespaces and kinds
+# =============================================================================
+
+ALLOWED_NAMESPACES: frozenset[str] = frozenset({"zigzag", "aie2"})
+"""Namespace prefixes recognised by the core type system (e.g. ``"zigzag"``, ``"aie2"``)."""
+
+ALLOWED_KINDS: frozenset[str] = frozenset({"compute", "memory", "shim", "offchip"})
+"""Core kind suffixes recognised by the core type system.
+
+* ``compute`` — processing tile (systolic array, SIMD, …)
+* ``memory``  — on-chip memory / cache tile
+* ``shim``    — interface / DMA tile (e.g. AIE2 shim-DMA)
+* ``offchip`` — off-chip DRAM or external memory controller
+"""
+
+
 def core_kind_from_type(core_type: str | None) -> str:
-    """Extracts the high-level kind (compute/memory) from a core type string."""
+    """Extract the kind suffix from a fully-qualified core type string.
+
+    >>> core_kind_from_type("aie2.compute")
+    'compute'
+    >>> core_kind_from_type("memory")
+    'memory'
+    >>> core_kind_from_type(None)
+    ''
+    """
     if core_type is None:
         return ""
     if "." not in core_type:
@@ -17,29 +42,26 @@ def core_kind_from_type(core_type: str | None) -> str:
 
 
 # =============================================================================
-# Per-namespace core schema extensions
+# Per-namespace / per-kind core schema extensions
 # -----------------------------------------------------------------------------
-# _BASE_CORE_SCHEMA    — fields that every core YAML may carry, regardless of
-#                        namespace (type declaration, utilization override).
-# _<NS>_EXTRA_SCHEMA  — fields required or optional only for cores in a
-#                        specific namespace.  Merged on top of the base schema
-#                        when building the per-type validator schema.
+# _BASE_CORE_SCHEMA       — fields every core YAML may carry (type string).
+# _<NS>_EXTRA_SCHEMA      — namespace-level additions (e.g. max_object_fifo_depth
+#                            for aie2).
+# _<NS>_<KIND>_EXTRA_SCHEMA — kind-specific overrides within a namespace.
 #
 # HOW TO ADD A NEW NAMESPACE
 # --------------------------
-#   1. Define _<NS>_EXTRA_SCHEMA here with any namespace-specific fields.
-#   2. Create a <NS>BaseCoreValidator class in the section below and set
-#      EXTRA_SCHEMA = _<NS>_EXTRA_SCHEMA.
-#   3. For each core kind in that namespace create a leaf class that sets
-#      CORE_KIND and is decorated with @CoreValidatorRegistry.register.
+#   1. Add the namespace string to ALLOWED_NAMESPACES.
+#   2. Define _<NS>_EXTRA_SCHEMA here with namespace-wide fields.
+#   3. (Optional) Define _<NS>_<KIND>_EXTRA_SCHEMA for kind-specific fields.
+#   4. Create a <NS>BaseCoreValidator that sets EXTRA_SCHEMA.
+#   5. For each kind, create a leaf class with CORE_KIND and register it.
 # =============================================================================
 
 _BASE_CORE_SCHEMA: dict[str, Any] = {
     # Fully-qualified core type string (e.g. "aie2.compute").  Defaults to
     # "<namespace>.<kind>" inferred from the validator class used.
     "type": {"type": "string", "required": False},
-    # Optional execution-utilization override (0–100 %).
-    "utilization": {"type": "float", "required": False},
 }
 
 # ZigZag cores need nothing beyond the base schema.
@@ -52,6 +74,17 @@ _AIE2_EXTRA_SCHEMA: dict[str, Any] = {
         "type": "integer",
         "required": True,
         "min": 1,
+    },
+}
+
+# AIE2 *compute* tiles additionally carry a utilization percentage that
+# captures the fraction of peak throughput achievable on this tile.
+_AIE2_COMPUTE_EXTRA_SCHEMA: dict[str, Any] = {
+    **_AIE2_EXTRA_SCHEMA,
+    "utilization": {
+        "type": "float",
+        "required": False,
+        "default": 100,
     },
 }
 
@@ -69,10 +102,10 @@ class CoreValidatorRegistry:
 
     @classmethod
     def normalize_core_type(cls, raw_type: str | None, *, default_namespace: str, default_kind: str) -> str:
-        """Normalize legacy type strings (e.g., `compute`) into a fully-qualified type."""
+        """Normalize legacy type strings (e.g., ``"compute"``) into a fully-qualified ``"<ns>.<kind>"``."""
         if raw_type is None:
             return f"{default_namespace}.{default_kind}"
-        if "." not in raw_type and raw_type in {"compute", "memory"}:
+        if "." not in raw_type and raw_type in ALLOWED_KINDS:
             return f"{default_namespace}.{raw_type}"
         return raw_type
 
@@ -171,7 +204,7 @@ class BaseCoreValidator(ZigZagAcceleratorValidator):
 
 
 class ZigZagBaseCoreValidator(BaseCoreValidator):
-    """Shared base for all zigzag.* cores.  No namespace-specific fields required."""
+    """Shared base for all ``zigzag.*`` cores.  No extra fields required."""
 
     CORE_NAMESPACE = "zigzag"
     EXTRA_SCHEMA = _ZIGZAG_EXTRA_SCHEMA
@@ -187,19 +220,32 @@ class ZigZagMemoryCoreValidator(ZigZagBaseCoreValidator):
     CORE_KIND = "memory"
 
 
+@CoreValidatorRegistry.register
+class ZigZagShimCoreValidator(ZigZagBaseCoreValidator):
+    CORE_KIND = "shim"
+
+
+@CoreValidatorRegistry.register
+class ZigZagOffchipCoreValidator(ZigZagBaseCoreValidator):
+    CORE_KIND = "offchip"
+
+
 # =============================================================================
 # AIE2 namespace cores
 # =============================================================================
 
 
 class AIE2BaseCoreValidator(BaseCoreValidator):
-    """Shared base for all aie2.* cores.
+    """Shared base for all ``aie2.*`` cores.
 
     Extra required field: ``max_object_fifo_depth`` (positive integer) —
-    the maximum number of object-FIFO slots available in this tile's L1
+    the maximum number of object-FIFO slots available in this tile's
     memory.  Defined at core level so each tile type can carry its own
     hardware-imposed limit, allowing mixed-depth arrays without any
     accelerator-level dispatch table.
+
+    Individual kinds may add further fields by overriding
+    :attr:`EXTRA_SCHEMA` (see :class:`AIE2ComputeCoreValidator`).
     """
 
     CORE_NAMESPACE = "aie2"
@@ -208,9 +254,29 @@ class AIE2BaseCoreValidator(BaseCoreValidator):
 
 @CoreValidatorRegistry.register
 class AIE2ComputeCoreValidator(AIE2BaseCoreValidator):
+    """AIE2 compute tile.
+
+    In addition to the base AIE2 fields (``max_object_fifo_depth``), compute
+    tiles carry an optional ``utilization`` percentage (0–100 %) that captures
+    the fraction of peak throughput achievable on this tile.
+    """
+
     CORE_KIND = "compute"
+    EXTRA_SCHEMA = _AIE2_COMPUTE_EXTRA_SCHEMA
 
 
 @CoreValidatorRegistry.register
 class AIE2MemoryCoreValidator(AIE2BaseCoreValidator):
     CORE_KIND = "memory"
+
+
+@CoreValidatorRegistry.register
+class AIE2ShimCoreValidator(AIE2BaseCoreValidator):
+    """AIE2 shim / DMA interface tile (row 0 of the AIE array)."""
+
+    CORE_KIND = "shim"
+
+
+@CoreValidatorRegistry.register
+class AIE2OffchipCoreValidator(AIE2BaseCoreValidator):
+    CORE_KIND = "offchip"

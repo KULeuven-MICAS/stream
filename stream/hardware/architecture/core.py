@@ -16,6 +16,20 @@ class Core(ZigZagCore):
         self.row_id: int | None = None
         self.col_id: int | None = None
 
+    # ------------------------------------------------------------------ #
+    # Namespace / kind helpers                                           #
+    # ------------------------------------------------------------------ #
+
+    @property
+    def namespace(self) -> str:
+        """The namespace prefix of ``core_type`` (e.g. ``'aie2'``, ``'zigzag'``)."""
+        return self.core_type.split(".")[0] if "." in self.core_type else ""
+
+    @property
+    def kind(self) -> str:
+        """The core kind suffix of ``core_type`` (e.g. ``'compute'``, ``'memory'``)."""
+        return self.core_type.split(".")[-1] if "." in self.core_type else self.core_type
+
     def __eq__(self, other: object) -> bool:
         return (
             isinstance(other, Core)
@@ -69,8 +83,7 @@ class Core(ZigZagCore):
         extensions should override or extend this method to expose additional
         per-namespace attributes.
         """
-        namespace = self.core_type.split(".")[0] if "." in self.core_type else ""
-        if namespace == "aie2":
+        if self.namespace == "aie2":
             return {"max_object_fifo_depth": self.max_object_fifo_depth}
         return {}
 

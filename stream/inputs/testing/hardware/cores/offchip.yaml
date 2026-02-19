@@ -1,5 +1,5 @@
 name: offchip
-type: memory
+type: offchip
 
 memories:
   dram:

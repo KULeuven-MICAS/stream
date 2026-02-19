@@ -7,7 +7,7 @@ from typing import Any
 from cerberus import Validator
 from zigzag.utils import open_yaml
 
-from stream.parser.core_validator import CoreValidatorRegistry
+from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -187,10 +187,23 @@ class AcceleratorValidator:
                 self.invalidate(
                     f"Core {core_id} has type '{core_type}' without a namespace prefix. "
                     "All core types must follow the '<namespace>.<kind>' format "
-                    "(e.g. 'zigzag.compute', 'aie2.compute')."
+                    f"(e.g. 'zigzag.compute', 'aie2.compute'). "
+                    f"Allowed namespaces: {sorted(ALLOWED_NAMESPACES)}, "
+                    f"allowed kinds: {sorted(ALLOWED_KINDS)}."
                 )
             else:
-                namespaces.add(core_type.split(".")[0])
+                ns = core_type.split(".")[0]
+                kind = core_type.split(".")[-1]
+                if ns not in ALLOWED_NAMESPACES:
+                    self.invalidate(
+                        f"Core {core_id} has unknown namespace '{ns}'. "
+                        f"Allowed namespaces: {sorted(ALLOWED_NAMESPACES)}."
+                    )
+                if kind not in ALLOWED_KINDS:
+                    self.invalidate(
+                        f"Core {core_id} has unknown kind '{kind}'. Allowed kinds: {sorted(ALLOWED_KINDS)}."
+                    )
+                namespaces.add(ns)
 
         if len(namespaces) > 1:
             self.invalidate(
@@ -223,11 +236,11 @@ class AcceleratorValidator:
             return
 
         raw_type = core_data.get("type")
-        default_kind = raw_type if raw_type in {"compute", "memory"} else "compute"
+        default_kind = raw_type if raw_type in ALLOWED_KINDS else "compute"
         normalized_type = CoreValidatorRegistry.normalize_core_type(
             raw_type,
             default_namespace=CoreValidatorRegistry.default_namespace,
-            default_kind=str(default_kind),
+            default_kind=default_kind,
         )
         validator_cls = CoreValidatorRegistry.get_validator(normalized_type)
         if validator_cls is None:
