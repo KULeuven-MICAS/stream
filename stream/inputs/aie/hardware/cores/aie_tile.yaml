@@ -1,5 +1,6 @@
 name: aie_tile
 type: aie2.compute
+max_object_fifo_depth: 6
 
 memories:
   rf_iw:

@@ -16,6 +16,46 @@ def core_kind_from_type(core_type: str | None) -> str:
     return core_type.split(".")[-1]
 
 
+# =============================================================================
+# Per-namespace core schema extensions
+# -----------------------------------------------------------------------------
+# _BASE_CORE_SCHEMA    — fields that every core YAML may carry, regardless of
+#                        namespace (type declaration, utilization override).
+# _<NS>_EXTRA_SCHEMA  — fields required or optional only for cores in a
+#                        specific namespace.  Merged on top of the base schema
+#                        when building the per-type validator schema.
+#
+# HOW TO ADD A NEW NAMESPACE
+# --------------------------
+#   1. Define _<NS>_EXTRA_SCHEMA here with any namespace-specific fields.
+#   2. Create a <NS>BaseCoreValidator class in the section below and set
+#      EXTRA_SCHEMA = _<NS>_EXTRA_SCHEMA.
+#   3. For each core kind in that namespace create a leaf class that sets
+#      CORE_KIND and is decorated with @CoreValidatorRegistry.register.
+# =============================================================================
+
+_BASE_CORE_SCHEMA: dict[str, Any] = {
+    # Fully-qualified core type string (e.g. "aie2.compute").  Defaults to
+    # "<namespace>.<kind>" inferred from the validator class used.
+    "type": {"type": "string", "required": False},
+    # Optional execution-utilization override (0–100 %).
+    "utilization": {"type": "float", "required": False},
+}
+
+# ZigZag cores need nothing beyond the base schema.
+_ZIGZAG_EXTRA_SCHEMA: dict[str, Any] = {}
+
+# AIE2 cores carry the object-FIFO depth as a tile-level hardware property.
+# Each tile type specifies its own limit so mixed-depth arrays are supported.
+_AIE2_EXTRA_SCHEMA: dict[str, Any] = {
+    "max_object_fifo_depth": {
+        "type": "integer",
+        "required": True,
+        "min": 1,
+    },
+}
+
+
 class CoreValidatorRegistry:
     """Registry that maps a core type string to its validator class."""
 
@@ -46,10 +86,19 @@ class CoreValidatorRegistry:
 
 
 class BaseCoreValidator(ZigZagAcceleratorValidator):
-    """Base class for all core validators with common schema and error collection."""
+    """Base class for all core validators.
 
-    CORE_NAMESPACE = CoreValidatorRegistry.default_namespace
-    CORE_KIND = "compute"
+    Subclasses should not be registered directly.  Instead:
+      - Create a namespace-specific intermediate class (e.g.
+        ``AIE2BaseCoreValidator``) that sets ``EXTRA_SCHEMA``.
+      - For each core kind in that namespace, subclass the intermediate class,
+        set ``CORE_KIND``, and decorate with ``@CoreValidatorRegistry.register``.
+    """
+
+    CORE_NAMESPACE: str = CoreValidatorRegistry.default_namespace
+    CORE_KIND: str = "compute"
+    #: Per-namespace schema additions — see module-level _*_EXTRA_SCHEMA dicts.
+    EXTRA_SCHEMA: dict[str, Any] = {}
 
     def __init__(self, data: Any):
         self.errors: list[str] = []
@@ -69,13 +118,14 @@ class BaseCoreValidator(ZigZagAcceleratorValidator):
 
     @classmethod
     def _build_schema(cls) -> dict[str, Any]:
+        """Compose the full schema: ZigZag base + universal Stream fields + namespace extras."""
         schema = copy.deepcopy(ZigZagAcceleratorValidator.SCHEMA)
-        schema.update(
-            {
-                "type": {"type": "string", "required": False, "default": cls.core_type()},
-                "utilization": {"type": "float", "required": False},
-            }
-        )
+        # Deep-copy the module-level constants before mutating so repeated calls
+        # across different cls values never clobber the originals.
+        base = copy.deepcopy(_BASE_CORE_SCHEMA)
+        base["type"]["default"] = cls.core_type()
+        schema.update(base)
+        schema.update(copy.deepcopy(cls.EXTRA_SCHEMA))
         return schema
 
     def invalidate(self, extra_msg: str):
@@ -115,25 +165,52 @@ class BaseCoreValidator(ZigZagAcceleratorValidator):
         return self.data
 
 
-@CoreValidatorRegistry.register
-class ZigZagComputeCoreValidator(BaseCoreValidator):
-    CORE_KIND = "compute"
+# =============================================================================
+# ZigZag namespace cores
+# =============================================================================
+
+
+class ZigZagBaseCoreValidator(BaseCoreValidator):
+    """Shared base for all zigzag.* cores.  No namespace-specific fields required."""
+
     CORE_NAMESPACE = "zigzag"
+    EXTRA_SCHEMA = _ZIGZAG_EXTRA_SCHEMA
 
 
 @CoreValidatorRegistry.register
-class ZigZagMemoryCoreValidator(BaseCoreValidator):
-    CORE_KIND = "memory"
-    CORE_NAMESPACE = "zigzag"
-
-
-@CoreValidatorRegistry.register
-class AIE2ComputeCoreValidator(BaseCoreValidator):
+class ZigZagComputeCoreValidator(ZigZagBaseCoreValidator):
     CORE_KIND = "compute"
-    CORE_NAMESPACE = "aie2"
 
 
 @CoreValidatorRegistry.register
-class AIE2MemoryCoreValidator(BaseCoreValidator):
+class ZigZagMemoryCoreValidator(ZigZagBaseCoreValidator):
     CORE_KIND = "memory"
+
+
+# =============================================================================
+# AIE2 namespace cores
+# =============================================================================
+
+
+class AIE2BaseCoreValidator(BaseCoreValidator):
+    """Shared base for all aie2.* cores.
+
+    Extra required field: ``max_object_fifo_depth`` (positive integer) —
+    the maximum number of object-FIFO slots available in this tile's L1
+    memory.  Defined at core level so each tile type can carry its own
+    hardware-imposed limit, allowing mixed-depth arrays without any
+    accelerator-level dispatch table.
+    """
+
     CORE_NAMESPACE = "aie2"
+    EXTRA_SCHEMA = _AIE2_EXTRA_SCHEMA
+
+
+@CoreValidatorRegistry.register
+class AIE2ComputeCoreValidator(AIE2BaseCoreValidator):
+    CORE_KIND = "compute"
+
+
+@CoreValidatorRegistry.register
+class AIE2MemoryCoreValidator(AIE2BaseCoreValidator):
+    CORE_KIND = "memory"

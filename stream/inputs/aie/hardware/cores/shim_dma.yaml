@@ -1,5 +1,6 @@
 name: shim_dma
 type: aie2.memory
+max_object_fifo_depth: 48
 
 memories:
   dram:

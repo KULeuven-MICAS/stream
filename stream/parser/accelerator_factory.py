@@ -12,8 +12,6 @@ from stream.parser.core_validator import CoreValidatorRegistry, core_kind_from_t
 class AcceleratorFactory:
     """! Converts valid user-provided accelerator data into an `Accelerator` instance"""
 
-    STANDARD_MAX_OBJECT_FIFO_DEPTH = {"compute": 16, "memory": 48}
-
     def __init__(self, data: dict[str, Any]):
         """! Generate an `Accelerator` instance from the validated user-provided data."""
         self.data = data
@@ -23,13 +21,10 @@ class AcceleratorFactory:
         cores: list[Core] = []
         unique_shared_mem_group_ids: set[int] = set()
 
-        # Get the max object fifo depth for the types of cores
-        max_object_fifo_depth = self.data["max_object_fifo_depth"]
-
         for core_id, core_data in self.data["cores"].items():
             shared_mem_group_id = self.get_shared_mem_group_id(core_id)
-            coordinates = self.data["core_coordinates"].get(core_id)
-            core = self.create_core(core_data, core_id, shared_mem_group_id, coordinates, max_object_fifo_depth)
+            coordinates = self.data.get("core_coordinates", {}).get(core_id)
+            core = self.create_core(core_data, core_id, shared_mem_group_id, coordinates)
             cores.append(core)
             unique_shared_mem_group_ids.add(shared_mem_group_id)
 
@@ -61,10 +56,7 @@ class AcceleratorFactory:
         core_id: int,
         shared_mem_group_id: int | None = None,
         coordinates: list[int] | None = None,
-        max_object_fifo_depth: dict[str, int] | None = None,
     ) -> Core:
-        if max_object_fifo_depth is None:
-            max_object_fifo_depth = self.STANDARD_MAX_OBJECT_FIFO_DEPTH
         core_factory = ZigZagCoreFactory(core_data)
         core = core_factory.create(core_id, shared_mem_group_id=shared_mem_group_id)
         # Typecast
@@ -75,11 +67,6 @@ class AcceleratorFactory:
             default_kind="compute",
         )
         core.type = core_kind_from_type(core.core_type) or "compute"
-        if core.type not in max_object_fifo_depth:
-            raise ValueError(
-                f"max_object_fifo_depth is missing an entry for core kind '{core.type}'. "
-                f"Available kinds: {list(max_object_fifo_depth.keys())}"
-            )
         core.utilization = core_data.get("utilization", 100)
         core.max_object_fifo_depth = max_object_fifo_depth[core.type]
         core.max_buffer_descriptor_depth = core.max_object_fifo_depth + 4  # TODO: Fix this creation abomination
