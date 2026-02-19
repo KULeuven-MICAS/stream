@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -16,6 +17,13 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import _r
 
 if TYPE_CHECKING:
     import gurobipy as gp
+
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# ConstraintContext – used by the *timeslot* allocation stage
+# ============================================================================
 
 
 @dataclass(frozen=True)
@@ -65,57 +73,232 @@ def build_constraint_context(accelerator: Accelerator, cfg: ConstraintOptStageCo
     )
 
 
-@dataclass(frozen=True)
-class TransferAndTensorContext:
-    offchip_core_id: int | None
-    mem_cores: list[Core]
-    force_double_buffering: bool
-    force_io_transfers_on_mem_tile: bool
-    max_compute_tile_dma_channels: int
-    max_mem_tile_dma_channels: int
-    max_shim_tile_dma_channels: int
-    object_fifo_cores: set[Core]
+# ============================================================================
+# Namespace-specific MILP constraint strategies
+# ----------------------------------------------------------------------------
+# Every core namespace (e.g. "aie2", "zigzag") may impose additional
+# hardware-specific constraints on the transfer / tensor allocation MILP.
+#
+# HOW TO ADD A NEW NAMESPACE
+# --------------------------
+#   1. Subclass NamespaceConstraints below.
+#   2. Override any of the add_*_constraints methods you need.
+#   3. In build_transfer_context(), detect when the namespace is present
+#      in the accelerator and instantiate your strategy with appropriate
+#      parameters.
+# ============================================================================
 
-    def add_object_fifo_constraints(self, model: gp.Model, object_fifo_depth: dict[Core, gp.QuadExpr]) -> None:
-        for core, expr in object_fifo_depth.items():
-            if core not in self.object_fifo_cores:
-                continue
-            model.addConstr(expr <= core.max_object_fifo_depth, name=f"obj_fifo_depth_Core {core.id}")
+
+class NamespaceConstraints:
+    """Base class for namespace-specific MILP constraints.
+
+    Subclasses set :attr:`NAMESPACE` and override the ``add_*_constraints``
+    methods they need.  Methods that are *not* overridden default to a no-op,
+    so only the constraints relevant to a namespace are ever emitted.
+    """
+
+    NAMESPACE: str = ""
+
+    def applies_to(self, core: Core) -> bool:
+        """Return ``True`` if *core* belongs to this namespace."""
+        return core.namespace == self.NAMESPACE
+
+    # ---- object-FIFO depth ----
+
+    def add_object_fifo_constraints(
+        self,
+        model: gp.Model,
+        object_fifo_depth: dict[Core, gp.LinExpr],
+    ) -> None:
+        """Enforce FIFO-depth limits for cores in this namespace."""
+
+    # ---- buffer descriptors ----
 
     def add_buffer_descriptor_constraints(
-        self, model: gp.Model, buffer_descriptor_depth: dict[Core, gp.QuadExpr]
+        self,
+        model: gp.Model,
+        buffer_descriptor_depth: dict[Core, gp.LinExpr],
     ) -> None:
-        for core, expr in buffer_descriptor_depth.items():
-            if core not in self.object_fifo_cores:
-                continue
-            model.addConstr(expr <= core.max_buffer_descriptor_depth, name=f"bd_depth_Core {core.id}")
+        """Enforce buffer-descriptor limits for cores in this namespace."""
 
-    def get_max_dma_channels(self, core: Core) -> int:
-        if core.id == self.offchip_core_id:
-            return self.max_shim_tile_dma_channels
-        elif core.type == "memory":
-            return self.max_mem_tile_dma_channels
-        elif core.type == "compute":
-            return self.max_compute_tile_dma_channels
-        else:
-            raise ValueError(f"Unexpected core type for DMA channel constraint: {core.type}")
+    # ---- DMA channel usage ----
 
     def add_dma_usage_constraints(
         self,
         model: gp.Model,
-        core_dma_in: dict[Core, gp.Var],
-        core_dma_out: dict[Core, gp.Var],
-    ):
-        """
-        Add hard incoming/outgoing DMA channel constraints per core.
-        """
-        for core, v_in in core_dma_in.items():
-            max_in = self.get_max_dma_channels(core)
-            model.addConstr(v_in <= max_in, name=f"dma_in_cap_{_resource_key(core)}")
+        mem_core_usage_s2mm: dict[Core, gp.Var],
+        mem_core_usage_mm2s: dict[Core, gp.Var],
+        shim_core_usage_s2mm: dict[Core, gp.Var],
+        shim_core_usage_mm2s: dict[Core, gp.Var],
+    ) -> list[gp.Var]:
+        """Enforce DMA channel limits.
 
-        for core, v_out in core_dma_out.items():
-            max_out = self.get_max_dma_channels(core)
-            model.addConstr(v_out <= max_out, name=f"dma_out_cap_{_resource_key(core)}")
+        Returns a (possibly empty) list of Gurobi variables representing
+        penalty terms that the caller should include in the MILP objective.
+        """
+        return []
+
+
+class AIE2Constraints(NamespaceConstraints):
+    """Hardware constraints specific to the AIE2 tile array.
+
+    * Object-FIFO depth: each tile has a per-core ``max_object_fifo_depth``.
+    * DMA channels: the mem-tile and shim-tile have a finite number of S2MM /
+      MM2S DMA channels.  The peak usage across all tiles of each kind is
+      constrained to the respective hardware limit.
+    """
+
+    NAMESPACE = "aie2"
+
+    def __init__(
+        self,
+        *,
+        max_mem_tile_dma_channels: int = 6,
+        max_shim_tile_dma_channels: int = 2,
+    ) -> None:
+        self.max_mem_tile_dma_channels = max_mem_tile_dma_channels
+        self.max_shim_tile_dma_channels = max_shim_tile_dma_channels
+
+    # ---- object-FIFO depth ----
+
+    def add_object_fifo_constraints(
+        self,
+        model: gp.Model,
+        object_fifo_depth: dict[Core, gp.LinExpr],
+    ) -> None:
+        for core, expr in object_fifo_depth.items():
+            if not self.applies_to(core):
+                continue
+            model.addConstr(
+                expr <= core.max_object_fifo_depth,
+                name=f"aie2_obj_fifo_depth_Core_{core.id}",
+            )
+
+    # ---- buffer descriptors ----
+
+    def add_buffer_descriptor_constraints(
+        self,
+        model: gp.Model,
+        buffer_descriptor_depth: dict[Core, gp.LinExpr],
+    ) -> None:
+        for core, expr in buffer_descriptor_depth.items():
+            if not self.applies_to(core):
+                continue
+            model.addConstr(
+                expr <= core.max_object_fifo_depth,
+                name=f"aie2_bd_depth_Core_{core.id}",
+            )
+
+    # ---- DMA channel usage ----
+
+    def add_dma_usage_constraints(
+        self,
+        model: gp.Model,
+        mem_core_usage_s2mm: dict[Core, gp.Var],
+        mem_core_usage_mm2s: dict[Core, gp.Var],
+        shim_core_usage_s2mm: dict[Core, gp.Var],
+        shim_core_usage_mm2s: dict[Core, gp.Var],
+    ) -> list[gp.Var]:
+        # Filter to aie2 cores only
+        aie2_mem_s2mm = {c: v for c, v in mem_core_usage_s2mm.items() if self.applies_to(c)}
+        aie2_mem_mm2s = {c: v for c, v in mem_core_usage_mm2s.items() if self.applies_to(c)}
+        aie2_shim_s2mm = {c: v for c, v in shim_core_usage_s2mm.items() if self.applies_to(c)}
+        aie2_shim_mm2s = {c: v for c, v in shim_core_usage_mm2s.items() if self.applies_to(c)}
+
+        objective_penalties: list[gp.Var] = []
+
+        # --- mem-tile DMA channels ---
+        if aie2_mem_s2mm or aie2_mem_mm2s:
+            max_mem_core_usage = model.addVar(vtype=GRB.INTEGER, name="aie2_maxMemCoreUsage")
+            for i, usage in enumerate(aie2_mem_s2mm.values()):
+                model.addConstr(max_mem_core_usage >= usage, name=f"aie2_maxMemCoreUsageS2MM_le_{i}")
+            for i, usage in enumerate(aie2_mem_mm2s.values()):
+                model.addConstr(max_mem_core_usage >= usage, name=f"aie2_maxMemCoreUsageMM2S_le_{i}")
+            model.addConstr(
+                max_mem_core_usage <= self.max_mem_tile_dma_channels,
+                name=f"aie2_maxMemCoreUsage_le_{self.max_mem_tile_dma_channels}",
+            )
+            objective_penalties.append(max_mem_core_usage)
+
+        # --- shim-tile DMA channels ---
+        if aie2_shim_s2mm or aie2_shim_mm2s:
+            max_shim_core_usage = model.addVar(vtype=GRB.INTEGER, name="aie2_maxShimCoreUsage")
+            for i, usage in enumerate(aie2_shim_s2mm.values()):
+                model.addConstr(max_shim_core_usage >= usage, name=f"aie2_maxShimCoreUsageS2MM_le_{i}")
+            for i, usage in enumerate(aie2_shim_mm2s.values()):
+                model.addConstr(max_shim_core_usage >= usage, name=f"aie2_maxShimCoreUsageMM2S_le_{i}")
+            model.addConstr(
+                max_shim_core_usage <= self.max_shim_tile_dma_channels,
+                name=f"aie2_maxShimCoreUsage_le_{self.max_shim_tile_dma_channels}",
+            )
+
+        return objective_penalties
+
+
+# ============================================================================
+# TransferAndTensorContext – used by the *transfer / tensor* allocation stage
+# ============================================================================
+
+
+@dataclass(frozen=True)
+class TransferAndTensorContext:
+    """Shared context for the transfer and tensor allocation MILP.
+
+    Contains universal topology information and a list of
+    :class:`NamespaceConstraints` strategies that add hardware-specific
+    constraints to the model.
+    """
+
+    offchip_core_id: int | None
+    mem_cores: list[Core]
+    force_double_buffering: bool
+    force_io_transfers_on_mem_tile: bool
+    namespace_constraints: tuple[NamespaceConstraints, ...] = ()
+
+    # ---- dispatch helpers ----
+
+    def add_object_fifo_constraints(
+        self,
+        model: gp.Model,
+        object_fifo_depth: dict[Core, gp.LinExpr],
+    ) -> None:
+        """Dispatch object-FIFO depth constraints to all namespace strategies."""
+        for ns in self.namespace_constraints:
+            ns.add_object_fifo_constraints(model, object_fifo_depth)
+
+    def add_buffer_descriptor_constraints(
+        self,
+        model: gp.Model,
+        buffer_descriptor_depth: dict[Core, gp.LinExpr],
+    ) -> None:
+        """Dispatch buffer-descriptor constraints to all namespace strategies."""
+        for ns in self.namespace_constraints:
+            ns.add_buffer_descriptor_constraints(model, buffer_descriptor_depth)
+
+    def add_dma_usage_constraints(
+        self,
+        model: gp.Model,
+        mem_core_usage_s2mm: dict[Core, gp.Var],
+        mem_core_usage_mm2s: dict[Core, gp.Var],
+        shim_core_usage_s2mm: dict[Core, gp.Var],
+        shim_core_usage_mm2s: dict[Core, gp.Var],
+    ) -> list[gp.Var]:
+        """Dispatch DMA-usage constraints to all namespace strategies.
+
+        Returns the union of objective-penalty variables from every strategy.
+        """
+        objective_penalties: list[gp.Var] = []
+        for ns in self.namespace_constraints:
+            objective_penalties.extend(
+                ns.add_dma_usage_constraints(
+                    model,
+                    mem_core_usage_s2mm,
+                    mem_core_usage_mm2s,
+                    shim_core_usage_s2mm,
+                    shim_core_usage_mm2s,
+                )
+            )
+        return objective_penalties
 
 
 def build_transfer_context(
@@ -129,30 +312,37 @@ def build_transfer_context(
     max_shim_tile_dma_channels: int = 2,
 ) -> TransferAndTensorContext:
     offchip_core_id = accelerator.offchip_core_id
+
+    # Memory cores eligible for on-chip caching (not off-chip, memory kind,
+    # with known coordinates inside the column budget).
     mem_cores: list[Core] = [
         c
         for c in accelerator.core_list
         if isinstance(c, Core)
         and c.id != offchip_core_id
-        and c.type == "memory"
+        and c.kind == "memory"
         and c.col_id is not None
         and c.col_id < nb_cols_to_use
     ]
-    object_fifo_cores = {
-        c
-        for c in accelerator.core_list
-        if isinstance(c, Core)
-        and c.type in {"compute", "memory"}
-        and isinstance(getattr(c, "core_type", ""), str)
-        and c.core_type.startswith("aie")
-    }
+
+    # Detect which namespaces are present and instantiate their constraint
+    # strategies.  Each namespace appears at most once.
+    namespaces: set[str] = {c.namespace for c in accelerator.core_list if isinstance(c, Core) and c.namespace}
+
+    ns_constraints: list[NamespaceConstraints] = []
+    if "aie2" in namespaces:
+        ns_constraints.append(
+            AIE2Constraints(
+                max_mem_tile_dma_channels=max_mem_tile_dma_channels,
+                max_shim_tile_dma_channels=max_shim_tile_dma_channels,
+            )
+        )
+    # Future namespaces: add elif / append blocks here.
+
     return TransferAndTensorContext(
         offchip_core_id=offchip_core_id,
         mem_cores=mem_cores,
         force_double_buffering=force_double_buffering,
         force_io_transfers_on_mem_tile=force_io_transfers_on_mem_tile,
-        max_compute_tile_dma_channels=max_compute_tile_dma_channels,
-        max_mem_tile_dma_channels=max_mem_tile_dma_channels,
-        max_shim_tile_dma_channels=max_shim_tile_dma_channels,
-        object_fifo_cores=object_fifo_cores,
+        namespace_constraints=tuple(ns_constraints),
     )

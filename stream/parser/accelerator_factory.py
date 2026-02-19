@@ -6,7 +6,7 @@ from zigzag.parser.accelerator_factory import AcceleratorFactory as ZigZagCoreFa
 from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
-from stream.parser.core_validator import CoreValidatorRegistry, core_kind_from_type
+from stream.parser.core_validator import ALLOWED_KINDS, CoreValidatorRegistry, core_kind_from_type
 
 
 class AcceleratorFactory:
@@ -59,14 +59,21 @@ class AcceleratorFactory:
     ) -> Core:
         core_factory = ZigZagCoreFactory(core_data)
         core = core_factory.create(core_id, shared_mem_group_id=shared_mem_group_id)
-        # Typecast
         core = Core.from_zigzag_core(core)
+
+        # Resolve the fully-qualified core type (e.g. "aie2.compute")
+        raw_type = core_data.get("type")
+        default_kind = raw_type if raw_type in ALLOWED_KINDS else "compute"
         core.core_type = CoreValidatorRegistry.normalize_core_type(
-            core_data.get("type"),
+            raw_type,
             default_namespace=CoreValidatorRegistry.default_namespace,
-            default_kind="compute",
+            default_kind=default_kind,
         )
-        core.type = core_kind_from_type(core.core_type) or "compute"
+        # The "kind" is the suffix after the namespace dot (compute / memory / shim / offchip).
+        core.type = core_kind_from_type(core.core_type)
+
+        # utilization: only aie2.compute cores carry this in their schema;
+        # all other cores default to 100 %.
         core.utilization = core_data.get("utilization", 100)
         core.max_object_fifo_depth = max_object_fifo_depth[core.type]
         core.max_buffer_descriptor_depth = core.max_object_fifo_depth + 4  # TODO: Fix this creation abomination

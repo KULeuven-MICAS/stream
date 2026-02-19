@@ -3,7 +3,7 @@ from pathlib import Path
 from zigzag.utils import open_yaml
 
 from stream.parser.accelerator_validator import AcceleratorValidator
-from stream.parser.core_validator import core_kind_from_type
+from stream.parser.core_validator import ALLOWED_KINDS, core_kind_from_type
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,7 +23,7 @@ def _assert_core_namespace(normalized_data: dict, expected_namespace: str):
     types = [core["type"] for core in cores]
     assert all(t.startswith(f"{expected_namespace}.") for t in types)
     kinds = {core_kind_from_type(t) for t in types}
-    assert kinds.issubset({"compute", "memory"})
+    assert kinds.issubset(ALLOWED_KINDS)
 
 
 def test_zigzag_tpu_like_quad_core_parses():

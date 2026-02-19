@@ -15,6 +15,7 @@ from stream.api import parse_accelerator_ir
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
+from stream.parser.core_validator import ALLOWED_KINDS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -130,7 +131,7 @@ def test_get_ir_cores_structure(hardware_path, expected):
         assert core["core_type"].startswith(expected["expected_namespace"] + "."), (
             f"Core {core['id']} has unexpected namespace in core_type '{core['core_type']}'"
         )
-        assert core["type"] in {"compute", "memory"}, f"Core {core['id']} has unexpected type '{core['type']}'"
+        assert core["type"] in ALLOWED_KINDS, f"Core {core['id']} has unexpected type '{core['type']}'"
 
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
