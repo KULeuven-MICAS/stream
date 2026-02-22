@@ -301,7 +301,7 @@ class ZigZagCostEstimator:
                 CostModelStage,  # Evaluates generated SM and TM through cost model
             ],
             layer=node,
-            accelerator=core,  # Accelerator in zigzag corresponds to Core in stream
+            accelerator=core.to_zigzag_core(),  # Pass the inner ZigZag core to ZigZag stages
             loma_lpf_limit=self.loma_lpf_limit,  # required by LomaEngine
             loma_show_progress_bar=self.loma_show_progress_bar,
             temporal_mapping_type=self.temporal_mapping_type,

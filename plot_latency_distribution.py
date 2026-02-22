@@ -235,6 +235,7 @@ def _plot_best_so_far(idx_latency_pairs, out_path: str, units: str = "") -> None
     Saves a single plot showing:
       - scatter of all latencies
       - line of best-so-far (running minimum)
+      - idx labels next to each "new best" point
     """
     if not idx_latency_pairs:
         return
@@ -249,9 +250,27 @@ def _plot_best_so_far(idx_latency_pairs, out_path: str, units: str = "") -> None
 
     best_so_far = np.minimum.accumulate(lats)
 
+    # Points where we actually improved the running minimum ("best so far" dots)
+    is_new_best = np.r_[True, best_so_far[1:] < best_so_far[:-1]]
+    best_idxs = idxs[is_new_best]
+    best_lats = best_so_far[is_new_best]
+
     plt.figure(figsize=(10, 6))
     plt.scatter(idxs, lats, s=10, alpha=0.35, label="latency (each mapping)")
     plt.plot(idxs, best_so_far, linewidth=2.0, label="best-so-far (running min)")
+
+    # Highlight and label new-best points
+    plt.scatter(best_idxs, best_lats, s=22, alpha=0.9, zorder=3)
+    for x, y in zip(best_idxs, best_lats, strict=False):
+        plt.annotate(
+            str(int(x)),
+            (x, y),
+            textcoords="offset points",
+            xytext=(6, 4),
+            ha="left",
+            va="bottom",
+            fontsize=8,
+        )
 
     u = f" ({units})" if units else ""
     plt.title(f"Best latency found vs evaluated mappings{u}")

@@ -1,12 +1,12 @@
 from typing import Any
 
-from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.parser.accelerator_factory import AcceleratorFactory as ZigZagCoreFactory
 
 from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
+from stream.hardware.architecture.backends import AIE2CoreBackend, ZigZagCoreBackend
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
-from stream.parser.core_validator import ALLOWED_KINDS, CoreValidatorRegistry, core_kind_from_type
+from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 
 class AcceleratorFactory:
@@ -57,30 +57,61 @@ class AcceleratorFactory:
         shared_mem_group_id: int | None = None,
         coordinates: list[int] | None = None,
     ) -> Core:
-        core_factory = ZigZagCoreFactory(core_data)
-        core = core_factory.create(core_id, shared_mem_group_id=shared_mem_group_id)
-        core = Core.from_zigzag_core(core)
-
         # Resolve the fully-qualified core type (e.g. "aie2.compute")
         raw_type = core_data.get("type")
         default_kind = raw_type if raw_type in ALLOWED_KINDS else "compute"
-        core.core_type = CoreValidatorRegistry.normalize_core_type(
+        core_type = CoreValidatorRegistry.normalize_core_type(
             raw_type,
             default_namespace=CoreValidatorRegistry.default_namespace,
             default_kind=default_kind,
         )
-        # The "kind" is the suffix after the namespace dot (compute / memory / shim / offchip).
-        core.type = core_kind_from_type(core.core_type)
+        namespace = core_type.split(".")[0] if "." in core_type else ""
 
-        # utilization: only aie2.compute cores carry this in their schema;
-        # all other cores default to 100 %.
-        core.utilization = core_data.get("utilization", 100)
-        core.max_object_fifo_depth = max_object_fifo_depth[core.type]
-        core.max_buffer_descriptor_depth = core.max_object_fifo_depth + 4  # TODO: Fix this creation abomination
-        if coordinates:
-            core.col_id = coordinates[0]
-            core.row_id = coordinates[1]
-        return core
+        col_id = coordinates[0] if coordinates else None
+        row_id = coordinates[1] if coordinates else None
+
+        if namespace == "aie2":
+            # ---- AIE2 native path: lightweight backend ----
+            mem = core_data["memory"]
+            backend = AIE2CoreBackend(
+                memory_capacity_bits=mem["capacity"],
+                bandwidth_min=mem.get("bandwidth_min", 0),
+                bandwidth_max=mem.get("bandwidth_max", 0),
+            )
+            return Core(
+                backend=backend,
+                core_id=core_id,
+                name=core_data.get("name", f"core_{core_id}"),
+                core_type=core_type,
+                utilization=core_data.get("utilization", 100),
+                max_object_fifo_depth=core_data.get("max_object_fifo_depth", 0),
+                col_id=col_id,
+                row_id=row_id,
+            )
+
+        if namespace == "zigzag":
+            # ---- ZigZag path: full hierarchy via ZigZagCoreFactory ----
+            zigzag_core = ZigZagCoreFactory(core_data).create(core_id, shared_mem_group_id=shared_mem_group_id)
+            # ZigZagCoreFactory returns a raw zigzag Accelerator — upgrade to
+            # our ZigZagCoreBackend subclass so the backend protocol methods
+            # (get_memory_capacity, get_max_memory_bandwidth, get_ir) are available.
+            zigzag_core.__class__ = ZigZagCoreBackend
+
+            return Core(
+                backend=zigzag_core,
+                core_id=zigzag_core.id,
+                name=zigzag_core.name,
+                core_type=core_type,
+                utilization=core_data.get("utilization", 100),
+                max_object_fifo_depth=core_data.get("max_object_fifo_depth", 0),
+                col_id=col_id,
+                row_id=row_id,
+            )
+
+        raise ValueError(
+            f"Unknown core namespace '{namespace}' in core type '{core_type}'. "
+            f"Supported namespaces: {', '.join(sorted(ALLOWED_NAMESPACES))}"
+        )
 
     def get_shared_mem_group_id(self, core_id: int):
         """Calculate the memory group id for the given core. If the core shares the top level memory with other cores,
@@ -109,21 +140,7 @@ class AcceleratorFactory:
     def have_non_identical_top_memory(self, core_a: Core, core_b: Core):
         """Check wether the top level memories of two cores is exactly the same. This should be the case when the user
         has specified the cores share memory"""
-
-        top_levels_a: list[MemoryLevel] = list(
-            (level for level, out_degree in core_a.memory_hierarchy.out_degree() if out_degree == 0)
-        )
-        top_levels_b: list[MemoryLevel] = list(
-            (level for level, out_degree in core_b.memory_hierarchy.out_degree() if out_degree == 0)
-        )
-        top_instances_a = [level.memory_instance for level in top_levels_a]
-        top_instances_b = [level.memory_instance for level in top_levels_b]
-        if len(top_instances_a) != len(top_instances_b):
-            return True
-        for instance_a, instance_b in zip(top_instances_a, top_instances_b, strict=False):
-            if frozenset(instance_a.__dict__.values()) != frozenset(instance_b.__dict__.values()):
-                return True
-        return False
+        return core_a.get_memory_capacity() != core_b.get_memory_capacity()
 
     def create_core_graph(self, cores: list[Core]):
         assert all(core.id == i for i, core in enumerate(cores))

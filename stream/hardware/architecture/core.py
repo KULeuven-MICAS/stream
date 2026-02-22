@@ -1,20 +1,79 @@
-from typing import Any, Literal
+from __future__ import annotations
 
-from zigzag.datatypes import MemoryOperand
-from zigzag.hardware.architecture.accelerator import Accelerator as ZigZagCore
-from zigzag.hardware.architecture.memory_port import MemoryPortType
+from typing import Any
+
+from stream.hardware.architecture.backends import AnyBackend, ZigZagCoreBackend
 
 
-class Core(ZigZagCore):
-    def __init__(self, args: Any):
-        super().__init__(**args)
-        self.core_type: str = "zigzag.compute"
-        self.type: str = "compute"  # default type for a core
-        self.max_object_fifo_depth: int = 16  # default max object FIFO depth for compute
-        self.max_buffer_descriptor_depth: int = self.max_object_fifo_depth + 4  # TODO: Define in hardware
-        self.utilization: int = 100
-        self.row_id: int | None = None
-        self.col_id: int | None = None
+class Core:
+    """A single hardware core in the Stream accelerator model.
+
+    ``Core`` is a **thin identity object** with pluggable backend.  All
+    hardware-specific details live inside a *backend* object that implements
+    the backend protocol (``get_memory_capacity``, ``get_max_memory_bandwidth``,
+    ``get_ir``).
+
+    Access to backend attributes is transparent: ``core.operational_array``
+    or ``core.mem_hierarchy_dict`` are resolved through ``__getattr__``
+    delegation to the backend.
+    """
+
+    def __init__(
+        self,
+        *,
+        core_id: int,
+        name: str,
+        core_type: str,
+        backend: AnyBackend | None = None,
+        utilization: int = 100,
+        max_object_fifo_depth: int = 0,
+        col_id: int | None = None,
+        row_id: int | None = None,
+    ):
+        # ---- identity ----
+        self.id: int = core_id
+        self.name: str = name
+
+        # ---- namespace / kind ----
+        self.core_type: str = core_type
+        self.type: str = self.core_type.split(".")[-1] if "." in self.core_type else self.core_type
+
+        # ---- stream-specific attributes ----
+        self.utilization: int = utilization
+        self.max_object_fifo_depth: int = max_object_fifo_depth
+        self.col_id: int | None = col_id
+        self.row_id: int | None = row_id
+
+        # ---- pluggable backend ----
+        self._backend: AnyBackend | None = backend
+
+    # ------------------------------------------------------------------ #
+    # Backend access                                                     #
+    # ------------------------------------------------------------------ #
+
+    def to_zigzag_core(self) -> ZigZagCoreBackend:
+        """Return the ZigZag backend.
+
+        Use this when passing a core to ZigZag stages or cost models that
+        expect a ``zigzag.hardware.architecture.accelerator.Accelerator``.
+
+        Raises ``TypeError`` if the core has no ZigZag backend.
+        """
+        if not isinstance(self._backend, ZigZagCoreBackend):
+            raise TypeError(f"{self} is not backed by a ZigZag core")
+        return self._backend
+
+    def __getattr__(self, name: str) -> Any:
+        """Delegate unknown attribute look-ups to the backend."""
+        if name.startswith("_"):
+            raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
+        backend = self.__dict__.get("_backend")
+        if backend is not None:
+            try:
+                return getattr(backend, name)
+            except AttributeError:
+                pass
+        raise AttributeError(f"'{type(self).__name__}' has no attribute '{name}'")
 
     # ------------------------------------------------------------------ #
     # Namespace / kind helpers                                           #
@@ -30,116 +89,86 @@ class Core(ZigZagCore):
         """The core kind suffix of ``core_type`` (e.g. ``'compute'``, ``'memory'``)."""
         return self.core_type.split(".")[-1] if "." in self.core_type else self.core_type
 
-    def __eq__(self, other: object) -> bool:
-        return (
-            isinstance(other, Core)
-            and self.id == other.id
-            and self.operational_array == other.operational_array
-            and self.memory_hierarchy == other.memory_hierarchy
-            and self.dataflows == other.dataflows
-        )
+    # ------------------------------------------------------------------ #
+    # Equality / hashing                                                 #
+    # ------------------------------------------------------------------ #
 
-    def has_same_performance(self, other: "Core") -> bool:  # type: ignore
-        return (
-            self.operational_array == other.operational_array
-            and self.memory_hierarchy.has_same_performance(other.memory_hierarchy)
-            and self.dataflows == other.dataflows
-        )
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Core):
+            return NotImplemented
+        if self.id != other.id:
+            return False
+        if self._backend is not None and other._backend is not None:
+            if type(self._backend) is not type(other._backend):
+                return False
+            if isinstance(self._backend, ZigZagCoreBackend):
+                return (
+                    self._backend.operational_array == other._backend.operational_array
+                    and self._backend.memory_hierarchy == other._backend.memory_hierarchy
+                    and self._backend.dataflows == other._backend.dataflows
+                )
+            # For AIE2 and any future frozen-dataclass backends, __eq__ is auto-generated
+            return self._backend == other._backend
+        return True
+
+    def has_same_performance(self, other: Core) -> bool:
+        if self._backend is None or other._backend is None:
+            return self.id == other.id
+        if type(self._backend) is not type(other._backend):
+            return False
+        if isinstance(self._backend, ZigZagCoreBackend):
+            return (
+                self._backend.operational_array == other._backend.operational_array
+                and self._backend.memory_hierarchy.has_same_performance(other._backend.memory_hierarchy)
+                and self._backend.dataflows == other._backend.dataflows
+            )
+        return self._backend == other._backend
 
     def __hash__(self) -> int:
         return self.id
 
-    @staticmethod
-    def from_zigzag_core(core: ZigZagCore) -> "Core":
-        core.__class__ = Core
-        return core  # type: ignore
+    def __str__(self) -> str:
+        return f"Core({self.id}, {self.core_type})"
+
+    def __repr__(self) -> str:
+        return str(self)
+
+    # ------------------------------------------------------------------ #
+    # Pickle support                                                     #
+    # ------------------------------------------------------------------ #
+
+    def __setstate__(self, state: dict) -> None:
+        """Restore from pickle, migrating old layouts if necessary."""
+        if "_zigzag_core" in state and "_backend" not in state:
+            state["_backend"] = state.pop("_zigzag_core")
+        self.__dict__.update(state)
+
+    # ------------------------------------------------------------------ #
+    # Stream-level memory interface  (delegates to backend)              #
+    # ------------------------------------------------------------------ #
 
     def get_memory_capacity(self) -> int:
-        """
-        Get the total memory capacity of the core in bits.
-        NOTE that this assumes the core has a single top level memory shared across operands.
-        """
-        memory_operand = MemoryOperand("I1")  # Assuming 'I1' is the top level memory operand
-        return self.get_top_memory_instance(memory_operand).size
+        """Total top-level memory capacity in bits."""
+        assert self._backend is not None, f"{self} has no backend"
+        return self._backend.get_memory_capacity()
 
-    def get_max_memory_bandwidth(self, type: Literal["read"] | Literal["write"]) -> int:
-        """
-        Get the top level memory read/write bandwidth of the core in bits/cycle.
-        NOTE that this assumes the core has a single top level memory shared across operands.
-        NOTE that this uses the first read/write port it finds.
-        """
-        wanted_type = MemoryPortType.READ if type == "read" else MemoryPortType.WRITE
-        memory_operand = MemoryOperand("I1")  # Assuming 'I1' is the top level memory operand
-        ports = self.get_top_memory_instance(memory_operand).ports
-        first_port = next((port for port in ports if port.type in (wanted_type, MemoryPortType.READ_WRITE)), None)
-        assert first_port is not None, f"{self} does not have a top level memory {type} port."
-        return first_port.bw_max
+    def get_max_memory_bandwidth(self, type: str) -> int:
+        """Top-level memory read/write bandwidth in bits/cycle."""
+        assert self._backend is not None, f"{self} has no backend"
+        return self._backend.get_max_memory_bandwidth(type)  # type: ignore[arg-type]
+
+    # ------------------------------------------------------------------ #
+    # Serialization                                                      #
+    # ------------------------------------------------------------------ #
 
     def _get_type_specific_ir(self) -> dict:
-        """Return type-specific IR attributes based on ``core_type`` namespace.
-
-        The namespace is the prefix before the first dot in ``core_type``
-        (e.g. ``"aie2"`` for ``"aie2.compute"``).  Subclasses or future
-        extensions should override or extend this method to expose additional
-        per-namespace attributes.
-        """
+        """Return type-specific IR attributes based on the namespace."""
         if self.namespace == "aie2":
             return {"max_object_fifo_depth": self.max_object_fifo_depth}
         return {}
 
     def get_ir(self) -> dict:
-        """Return a dictionary representation of this core for serialization.
-
-        The dictionary always contains common fields (id, name, core_type,
-        operational array, memory hierarchy, …) and is extended with
-        type-specific fields produced by :meth:`_get_type_specific_ir`.
-        """
-        # --- memory hierarchy ---
-        mem_levels: list[dict] = []
-        for ml in self.memory_hierarchy.topological_sort():
-            bw_max: dict[str, dict[str, int | None]] = {}
-            bw_min: dict[str, dict[str, int | None]] = {}
-            for op in ml.operands:
-                bw_max[str(op)] = {
-                    str(direction): bw for direction, bw in ml.bandwidths_max[op].items() if bw is not None
-                }
-                bw_min[str(op)] = {
-                    str(direction): bw for direction, bw in ml.bandwidths_min[op].items() if bw is not None
-                }
-            mem_levels.append(
-                {
-                    "name": ml.memory_instance.name,
-                    "size_bits": ml.memory_instance.size,
-                    "read_cost": ml.memory_instance.r_cost,
-                    "write_cost": ml.memory_instance.w_cost,
-                    "area": ml.memory_instance.area,
-                    "latency": ml.memory_instance.latency,
-                    "operands": [str(op) for op in ml.operands],
-                    "level_per_operand": {str(k): v for k, v in ml.mem_level_of_operands.items()},
-                    "served_dimensions": [str(dim) for dim in ml.served_dimensions],
-                    "bandwidths_max": bw_max,
-                    "bandwidths_min": bw_min,
-                }
-            )
-
-        # --- operational array ---
-        oa = self.operational_array
-        oa_data: dict = {
-            "dimension_sizes": {str(k): v for k, v in oa.dimension_sizes.items()},
-            "total_unit_count": oa.total_unit_count,
-        }
-        if hasattr(oa, "unit"):
-            oa_data["unit_energy_cost"] = oa.unit.energy_cost
-            oa_data["unit_area"] = oa.unit.area
-
-        # --- dataflows ---
-        dataflows_ir: dict | None = None
-        if self.dataflows is not None:
-            dataflows_ir = {
-                str(oa_dim): {str(layer_dim): int(factor) for layer_dim, factor in layer_attr.items()}
-                for oa_dim, layer_attr in self.dataflows.items()
-            }
-
+        """Return a dictionary representation of this core for serialization."""
         d: dict = {
             "id": self.id,
             "name": self.name,
@@ -148,11 +177,12 @@ class Core(ZigZagCore):
             "row_id": self.row_id,
             "col_id": self.col_id,
             "utilization": self.utilization,
-            "operational_array": oa_data,
-            "memory_hierarchy": mem_levels,
-            "dataflows": dataflows_ir,
         }
 
-        # Merge type-specific attributes last so they can be easily identified
+        # Merge backend-specific fields (uniform protocol)
+        if self._backend is not None:
+            d.update(self._backend.get_ir())
+
+        # Merge type-specific attributes last
         d.update(self._get_type_specific_ir())
         return d

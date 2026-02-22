@@ -79,7 +79,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         experiment_id=experiment_id,
         output_path="outputs",
         skip_if_exists=False,
-        enable_codegen=True,
+        enable_codegen=False,
         trace_size=trace_size,
         nb_cols_to_use=cols,
         npu=npu,

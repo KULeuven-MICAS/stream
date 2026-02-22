@@ -1,6 +1,5 @@
 from typing import Any
 
-from zigzag.datatypes import MemoryOperand
 from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.utils import DiGraphWrapper
 
@@ -55,33 +54,6 @@ class Accelerator:
             return some_dataflow
 
         raise ValueError("Unclear which dataflow to return or no valid dataflow found.")
-
-    def has_shared_memory(self, core_id_a: int, core_id_b: int, mem_op_a: MemoryOperand, mem_op_b: MemoryOperand):
-        """Check whether two cores have a shared top level memory instance for a given memory operand.
-
-        Args:
-            core_id_a : The first core id.
-            core_id_b : The second core id.
-            mem_op_a : The memory operand for the tensor in core a.
-            mem_op_b : The memory operand for the tensor in core b.
-        """
-        core_a = self.get_core(core_id_a)
-        core_b = self.get_core(core_id_b)
-        top_memory_instance_a = next(
-            (
-                ml.memory_instance
-                for ml, out_degree in core_a.memory_hierarchy.out_degree()
-                if out_degree == 0 and mem_op_a in ml.operands
-            )
-        )
-        top_memory_instance_b = next(
-            (
-                ml.memory_instance
-                for ml, out_degree in core_b.memory_hierarchy.out_degree()
-                if out_degree == 0 and mem_op_b in ml.operands
-            )
-        )
-        return top_memory_instance_a is top_memory_instance_b
 
     @property
     def core_list(self) -> list[Core]:

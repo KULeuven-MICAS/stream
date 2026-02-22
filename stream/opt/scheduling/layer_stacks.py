@@ -71,8 +71,7 @@ def get_layer_stacks_occupation_based(
         set(n.chosen_core_allocation for n in workload.node_list if n.chosen_core_allocation is not None)
     )
     core_capacities: dict[int, int] = {
-        core_id: accelerator.get_core(core_id).get_top_memory_instance(Constants.MEM_OP_2).size
-        for core_id in active_core_ids
+        core_id: accelerator.get_core(core_id).get_memory_capacity() for core_id in active_core_ids
     }
 
     all_stacks: list[list[int]] = []
