@@ -58,7 +58,11 @@ def plot_work_done(
             acc_names_ideal = []
             types_ideal = []
             ideal_ops_per_cycle = sum(
-                [scme.accelerator.get_core(core_id).operational_array.total_unit_count for core_id in for_ideal]
+                [
+                    getattr(scme.accelerator.get_core(core_id), "operational_array", None).total_unit_count
+                    for core_id in for_ideal
+                    if getattr(scme.accelerator.get_core(core_id), "operational_array", None) is not None
+                ]
             )
             for timestep in all_timesteps:
                 ops = ideal_ops_per_cycle * timestep

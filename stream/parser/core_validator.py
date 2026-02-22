@@ -2,6 +2,7 @@ import copy
 import logging
 from typing import Any
 
+from cerberus import Validator
 from zigzag.parser.accelerator_validator import AcceleratorValidator as ZigZagAcceleratorValidator
 
 logger = logging.getLogger(__name__)
@@ -93,10 +94,10 @@ class CoreValidatorRegistry:
     """Registry that maps a core type string to its validator class."""
 
     default_namespace = "zigzag"
-    _registry: dict[str, type["BaseCoreValidator"]] = {}
+    _registry: dict[str, type] = {}
 
     @classmethod
-    def register(cls, validator_cls: type["BaseCoreValidator"]):
+    def register(cls, validator_cls: type):
         cls._registry[validator_cls.core_type()] = validator_cls
         return validator_cls
 
@@ -110,7 +111,7 @@ class CoreValidatorRegistry:
         return raw_type
 
     @classmethod
-    def get_validator(cls, core_type: str) -> type["BaseCoreValidator"] | None:
+    def get_validator(cls, core_type: str) -> type | None:
         return cls._registry.get(core_type)
 
     @classmethod
@@ -118,20 +119,24 @@ class CoreValidatorRegistry:
         return sorted(cls._registry.keys())
 
 
-class BaseCoreValidator(ZigZagAcceleratorValidator):
-    """Base class for all core validators.
+# =============================================================================
+# ZigZag namespace validators  (inherit from ZigZagAcceleratorValidator)
+# =============================================================================
 
-    Subclasses should not be registered directly.  Instead:
-      - Create a namespace-specific intermediate class (e.g.
-        ``AIE2BaseCoreValidator``) that sets ``EXTRA_SCHEMA``.
-      - For each core kind in that namespace, subclass the intermediate class,
-        set ``CORE_KIND``, and decorate with ``@CoreValidatorRegistry.register``.
+
+class ZigZagBaseCoreValidator(ZigZagAcceleratorValidator):
+    """Base class for all ``zigzag.*`` core validators.
+
+    These validators inherit from ``ZigZagAcceleratorValidator`` and expect
+    the full ZigZag YAML format (``memories``, ``operational_array``, …).
+
+    For each core kind, subclass this, set ``CORE_KIND``, and decorate
+    with ``@CoreValidatorRegistry.register``.
     """
 
-    CORE_NAMESPACE: str = CoreValidatorRegistry.default_namespace
+    CORE_NAMESPACE: str = "zigzag"
     CORE_KIND: str = "compute"
-    #: Per-namespace schema additions — see module-level _*_EXTRA_SCHEMA dicts.
-    EXTRA_SCHEMA: dict[str, Any] = {}
+    EXTRA_SCHEMA: dict[str, Any] = _ZIGZAG_EXTRA_SCHEMA
 
     def __init__(self, data: Any):
         self.errors: list[str] = []
@@ -153,8 +158,6 @@ class BaseCoreValidator(ZigZagAcceleratorValidator):
     def _build_schema(cls) -> dict[str, Any]:
         """Compose the full schema: ZigZag base + universal Stream fields + namespace extras."""
         schema = copy.deepcopy(ZigZagAcceleratorValidator.SCHEMA)
-        # Deep-copy the module-level constants before mutating so repeated calls
-        # across different cls values never clobber the originals.
         base = copy.deepcopy(_BASE_CORE_SCHEMA)
         base["type"]["default"] = cls.core_type()
         schema.update(base)
@@ -167,7 +170,6 @@ class BaseCoreValidator(ZigZagAcceleratorValidator):
         logger.critical("User-defined core is invalid. %s", extra_msg)
 
     def validate(self) -> bool:
-        # Normalize and verify the core type before running the ZigZag validation
         self.data["type"] = CoreValidatorRegistry.normalize_core_type(
             self.data.get("type"),
             default_namespace=self.CORE_NAMESPACE,
@@ -186,28 +188,11 @@ class BaseCoreValidator(ZigZagAcceleratorValidator):
 
         parent_valid = super().validate()
         self.is_valid = self.is_valid and parent_valid
-        self.post_validate()
         return self.is_valid
-
-    def post_validate(self) -> None:
-        """Optional hook for subclasses to add extra validation."""
-        return
 
     @property
     def normalized_data(self) -> dict[str, Any]:
         return self.data
-
-
-# =============================================================================
-# ZigZag namespace cores
-# =============================================================================
-
-
-class ZigZagBaseCoreValidator(BaseCoreValidator):
-    """Shared base for all ``zigzag.*`` cores.  No extra fields required."""
-
-    CORE_NAMESPACE = "zigzag"
-    EXTRA_SCHEMA = _ZIGZAG_EXTRA_SCHEMA
 
 
 @CoreValidatorRegistry.register
@@ -231,25 +216,95 @@ class ZigZagOffchipCoreValidator(ZigZagBaseCoreValidator):
 
 
 # =============================================================================
-# AIE2 namespace cores
+# AIE2 namespace validators  (standalone cerberus — no ZigZag inheritance)
 # =============================================================================
+# AIE2 core YAMLs use a simplified format:
+#     name, type, max_object_fifo_depth, memory.capacity
+# They do NOT carry ZigZag memories / operational_array / dataflows.
+
+_AIE2_NATIVE_SCHEMA: dict[str, Any] = {
+    "name": {"type": "string", "required": True},
+    "type": {"type": "string", "required": False},
+    "max_object_fifo_depth": {
+        "type": "integer",
+        "required": True,
+        "min": 1,
+    },
+    "memory": {
+        "type": "dict",
+        "required": True,
+        "schema": {
+            "capacity": {"type": "integer", "required": True, "min": 0},
+            "bandwidth_min": {"type": "integer", "required": True, "min": 0},
+            "bandwidth_max": {"type": "integer", "required": True, "min": 0},
+        },
+    },
+}
 
 
-class AIE2BaseCoreValidator(BaseCoreValidator):
-    """Shared base for all ``aie2.*`` cores.
+class AIE2BaseCoreValidator:
+    """Standalone cerberus-based validator for ``aie2.*`` cores.
 
-    Extra required field: ``max_object_fifo_depth`` (positive integer) —
-    the maximum number of object-FIFO slots available in this tile's
-    memory.  Defined at core level so each tile type can carry its own
-    hardware-imposed limit, allowing mixed-depth arrays without any
-    accelerator-level dispatch table.
-
-    Individual kinds may add further fields by overriding
-    :attr:`EXTRA_SCHEMA` (see :class:`AIE2ComputeCoreValidator`).
+    Unlike the ZigZag validators, this does **not** inherit from
+    ``ZigZagAcceleratorValidator``.  AIE2 core YAMLs use a simplified
+    schema that only carries ``name``, ``type``, ``max_object_fifo_depth``,
+    and ``memory.capacity``.
     """
 
-    CORE_NAMESPACE = "aie2"
-    EXTRA_SCHEMA = _AIE2_EXTRA_SCHEMA
+    CORE_NAMESPACE: str = "aie2"
+    CORE_KIND: str = "compute"
+    #: Cerberus schema for this validator (may be overridden by subclasses).
+    SCHEMA: dict[str, Any] = _AIE2_NATIVE_SCHEMA
+
+    def __init__(self, data: Any):
+        self.data: dict[str, Any] = data if isinstance(data, dict) else {}
+        self.errors: list[str] = []
+        self.is_valid: bool = True
+
+        # Build a cerberus Validator with the (possibly extended) schema
+        schema = copy.deepcopy(self.SCHEMA)
+        schema.setdefault("type", {})
+        schema["type"]["default"] = self.core_type()
+        self._validator = Validator(schema, allow_unknown=False)
+
+    @classmethod
+    def core_type(cls) -> str:
+        return f"{cls.CORE_NAMESPACE}.{cls.CORE_KIND}"
+
+    def invalidate(self, extra_msg: str):
+        self.errors.append(extra_msg)
+        self.is_valid = False
+        logger.critical("User-defined core is invalid. %s", extra_msg)
+
+    def validate(self) -> bool:
+        # Normalize the type field
+        self.data["type"] = CoreValidatorRegistry.normalize_core_type(
+            self.data.get("type"),
+            default_namespace=self.CORE_NAMESPACE,
+            default_kind=self.CORE_KIND,
+        )
+
+        if not CoreValidatorRegistry.get_validator(self.data["type"]):
+            supported = ", ".join(CoreValidatorRegistry.supported_types())
+            self.invalidate(f"Unsupported core type '{self.data['type']}'. Supported types: {supported}")
+
+        if core_kind_from_type(self.data["type"]) != self.CORE_KIND:
+            self.invalidate(
+                f"Core type '{self.data['type']}' must map to kind '{self.CORE_KIND}' "
+                f"(found '{core_kind_from_type(self.data['type'])}')."
+            )
+
+        if not self._validator.validate(self.data):
+            for field, msgs in self._validator.errors.items():
+                self.invalidate(f"Field '{field}': {msgs}")
+
+        # Apply cerberus defaults / coercions
+        self.data = self._validator.document or self.data
+        return self.is_valid
+
+    @property
+    def normalized_data(self) -> dict[str, Any]:
+        return self.data
 
 
 @CoreValidatorRegistry.register
@@ -262,7 +317,14 @@ class AIE2ComputeCoreValidator(AIE2BaseCoreValidator):
     """
 
     CORE_KIND = "compute"
-    EXTRA_SCHEMA = _AIE2_COMPUTE_EXTRA_SCHEMA
+    SCHEMA: dict[str, Any] = {
+        **_AIE2_NATIVE_SCHEMA,
+        "utilization": {
+            "type": "float",
+            "required": False,
+            "default": 100,
+        },
+    }
 
 
 @CoreValidatorRegistry.register

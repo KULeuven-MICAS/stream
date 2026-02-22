@@ -112,7 +112,8 @@ def test_get_ir_cores_structure(hardware_path, expected):
     ir = accel.get_ir()
     cores = ir["cores"]
     assert len(cores) == expected["expected_num_cores"]
-    required_core_keys = {
+    # Keys shared by all cores regardless of backend
+    common_core_keys = {
         "id",
         "name",
         "core_type",
@@ -120,14 +121,23 @@ def test_get_ir_cores_structure(hardware_path, expected):
         "row_id",
         "col_id",
         "utilization",
-        "operational_array",
-        "memory_hierarchy",
-        "dataflows",
     }
+    # Backend-specific keys
+    zigzag_extra_keys = {"operational_array", "memory_hierarchy", "dataflows"}
+    aie2_extra_keys = {"memory", "max_object_fifo_depth"}
     for core in cores:
-        assert required_core_keys.issubset(core.keys()), (
-            f"Core {core.get('id')} is missing keys: {required_core_keys - core.keys()}"
+        assert common_core_keys.issubset(core.keys()), (
+            f"Core {core.get('id')} is missing common keys: {common_core_keys - core.keys()}"
         )
+        ns = core["core_type"].split(".")[0] if "." in core["core_type"] else ""
+        if ns == "aie2":
+            assert aie2_extra_keys.issubset(core.keys()), (
+                f"AIE2 core {core.get('id')} is missing keys: {aie2_extra_keys - core.keys()}"
+            )
+        else:
+            assert zigzag_extra_keys.issubset(core.keys()), (
+                f"ZigZag core {core.get('id')} is missing keys: {zigzag_extra_keys - core.keys()}"
+            )
         assert core["core_type"].startswith(expected["expected_namespace"] + "."), (
             f"Core {core['id']} has unexpected namespace in core_type '{core['core_type']}'"
         )
@@ -152,10 +162,18 @@ def test_get_ir_core_ids_are_unique(hardware_path, expected):
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
 def test_get_ir_operational_array(hardware_path, expected):
-    """Every core's operational_array must have dimension_sizes and total_unit_count."""
+    """Every ZigZag-backed core's operational_array must have dimension_sizes and total_unit_count.
+    AIE2 cores do not have an operational_array."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
     for core in ir["cores"]:
+        ns = core["core_type"].split(".")[0] if "." in core["core_type"] else ""
+        if ns == "aie2":
+            # AIE2 cores must have memory.capacity_bits instead
+            assert "memory" in core, f"AIE2 core {core['id']} missing 'memory' key"
+            assert "capacity_bits" in core["memory"], f"AIE2 core {core['id']} memory missing 'capacity_bits'"
+            assert core["memory"]["capacity_bits"] >= 0
+            continue
         oa = core["operational_array"]
         assert "dimension_sizes" in oa, f"Core {core['id']} oa missing 'dimension_sizes'"
         assert "total_unit_count" in oa, f"Core {core['id']} oa missing 'total_unit_count'"
@@ -165,7 +183,8 @@ def test_get_ir_operational_array(hardware_path, expected):
 
 @pytest.mark.parametrize("hardware_path, expected", HARDWARE_CASES)
 def test_get_ir_memory_hierarchy(hardware_path, expected):
-    """Every core must have at least one memory level with required fields."""
+    """Every ZigZag-backed core must have at least one memory level with required fields.
+    AIE2 cores use a flat memory.capacity_bits field instead."""
     accel = _build_accelerator(hardware_path)
     ir = accel.get_ir()
     required_mem_keys = {
@@ -182,6 +201,11 @@ def test_get_ir_memory_hierarchy(hardware_path, expected):
         "bandwidths_min",
     }
     for core in ir["cores"]:
+        ns = core["core_type"].split(".")[0] if "." in core["core_type"] else ""
+        if ns == "aie2":
+            # AIE2 cores only carry flat memory capacity
+            assert "memory" in core, f"AIE2 core {core['id']} missing 'memory'"
+            continue
         mem_hierarchy = core["memory_hierarchy"]
         assert len(mem_hierarchy) >= 1, f"Core {core['id']} has no memory levels"
         for level in mem_hierarchy:
