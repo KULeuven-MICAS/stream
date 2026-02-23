@@ -26,6 +26,7 @@ class MappingGenerationStage(Stage):
         embedding_tile_size = self.ctx.get("embedding_tile_size", 128)
         hidden_tile_size = self.ctx.get("hidden_tile_size", 64)
         last_gemm_down = self.ctx.get("last_gemm_down", False)
+        max_nb_mappings = self.ctx.get("max_nb_mappings", 200)
         self.mapping_generator = MappingGenerator(
             accelerator=self.accelerator,
             workload=self.workload,
@@ -34,7 +35,7 @@ class MappingGenerationStage(Stage):
             embedding_tile_size=embedding_tile_size,
             hidden_tile_size=hidden_tile_size,
             last_gemm_down=last_gemm_down,
-            max_variants=200,
+            max_variants=max_nb_mappings,
             layer_core_splits={
                 "Gemm_Left": [4, 8, 16],
                 "Gemm_Right": [4, 8, 16],

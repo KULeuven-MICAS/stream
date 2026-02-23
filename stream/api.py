@@ -206,6 +206,7 @@ def optimize_mapping(  # noqa: PLR0913
     workload: str,
     experiment_id: str,
     output_path: str,
+    max_nb_mappings: int = 20,
     skip_if_exists: bool = False,
     temporal_mapping_type: str = "uneven",
     enable_codegen: bool = False,
@@ -216,7 +217,7 @@ def optimize_mapping(  # noqa: PLR0913
     hidden_tile_size: int = 64,
     last_gemm_down: bool = False,
     npu: str = "npu2",
-) -> StreamCostModelEvaluation:
+) -> StageContext:
     _sanity_check_gurobi_license()
 
     # Create experiment_id path
@@ -262,6 +263,7 @@ def optimize_mapping(  # noqa: PLR0913
             embedding_tile_size=embedding_tile_size,
             hidden_tile_size=hidden_tile_size,
             last_gemm_down=last_gemm_down,
+            max_nb_mappings=max_nb_mappings,
         )
         # optionally add code generation stage
         if enable_codegen:
