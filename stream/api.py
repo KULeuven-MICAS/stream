@@ -18,6 +18,7 @@ from stream.stages.estimation.memory_accesses_estimation import MemoryAccessesEs
 # from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
 # from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
 from stream.stages.generation.mapping_generation import MappingGenerationStage
+from stream.stages.generation.mapping_generation_multi import MappingGenerationMultiThreadedStage
 from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.mapping_parser import MappingParserStage
@@ -211,12 +212,13 @@ def optimize_mapping(  # noqa: PLR0913
     temporal_mapping_type: str = "uneven",
     enable_codegen: bool = False,
     trace_size: int = 1048576,
-    nb_cols_to_use: int = 4,
+    nb_cols_to_use: int = 8,
     seq_len_tile_size: int = 32,
     embedding_tile_size: int = 128,
     hidden_tile_size: int = 64,
     last_gemm_down: bool = False,
     npu: str = "npu2",
+    nb_workers: int = 1,
 ) -> StageContext:
     _sanity_check_gurobi_license()
 
@@ -235,6 +237,11 @@ def optimize_mapping(  # noqa: PLR0913
     else:
         raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
 
+    if nb_workers > 1:
+        mapping_generation_stage = MappingGenerationMultiThreadedStage
+    else:
+        mapping_generation_stage = MappingGenerationStage
+
     # Load final resulting context if it exists and skip_if_exists is True
     ctx_path = f"{output_path}/ctx.pickle"
     if os.path.exists(ctx_path) and skip_if_exists:
@@ -244,7 +251,7 @@ def optimize_mapping(  # noqa: PLR0913
         stages: list[StageCallable] = [  # Initializes the MainStage as entry point
             AcceleratorParserStage,  # Parses the accelerator
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-            MappingGenerationStage,
+            mapping_generation_stage,
             MappingParserStage,
             TilingGenerationStage,
             CoreCostEstimationStage,
@@ -272,6 +279,10 @@ def optimize_mapping(  # noqa: PLR0913
             stages = [AIECodeGenerationStage] + stages
             ctx.set(
                 npu=npu,  # required by AIECodeGenerationStage
+            )
+        if nb_workers > 1:
+            ctx.set(
+                max_workers=nb_workers,
             )
 
         mainstage = MainStage(stages, ctx)
