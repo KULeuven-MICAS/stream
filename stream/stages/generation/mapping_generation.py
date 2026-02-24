@@ -70,13 +70,13 @@ class MappingGenerationStage(Stage):
             sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
             try:
                 ctxs = list(sub_stage.run())
+                ctx = ctxs[0]
+                scheduler = ctx.get("scheduler", None)
+                latency = scheduler.latency_total
             except RuntimeError as e:
                 logger.error(f"Error evaluating mapping {mapping_path}: {e}")
-                continue
+                latency = float("inf")  # treat errors as infinite latency
             assert len(ctxs) == 1, f"Expected exactly one context, but got {len(ctxs)}"
-            ctx = ctxs[0]
-            scheduler = ctx.get("scheduler", None)
-            latency = scheduler.latency_total
             if best_latency is None or latency < best_latency:
                 best_latency = latency
                 best_mapping_path = mapping_path

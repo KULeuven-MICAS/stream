@@ -1,3 +1,4 @@
+import logging
 import os
 from itertools import combinations
 from math import ceil, prod
@@ -19,6 +20,7 @@ from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocatio
     TransferAlloc,
     TransferAndTensorAllocator,
 )
+from stream.visualization.steady_state_trace import export_steady_state_trace
 from stream.workload.node import (
     ComputationNode,
     HasInputs,
@@ -35,6 +37,8 @@ from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.iteration_space import Reuse, SteadyStateIterationSpace
 from stream.workload.utils import generate_steady_state_iteration_spaces, get_equivalent_dimension
 from stream.workload.workload import Workload
+
+logger = logging.getLogger(__name__)
 
 
 class SteadyStateScheduler:
@@ -135,6 +139,18 @@ class SteadyStateScheduler:
             latency_per_iteration,
             overlap,
         )
+        # Export Perfetto-compatible JSON trace of the solved schedule
+        try:
+            trace_path = export_steady_state_trace(
+                tta=tta,
+                iterations=self.iterations,
+                overlap=overlap,
+                latency_per_iteration=latency_per_iteration,
+                output_path=self.output_path,
+            )
+            logger.info("Steady-state schedule trace: %s", trace_path)
+        except Exception as exc:  # never let a visualisation failure abort the run
+            logger.warning("Failed to export steady-state trace: %s", exc)
         # Check that all nodes in the steady state workload have a chosen resource allocation
         # self.check_steady_state_workload_allocations(ssw)
         self.update_tensor_steady_state_iteration_spaces(ssw, tensor_reuse_levels)
