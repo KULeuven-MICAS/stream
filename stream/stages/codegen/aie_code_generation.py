@@ -1,3 +1,4 @@
+import time
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
 from copy import deepcopy
@@ -72,7 +73,10 @@ class AIECodeGenerationStage(Stage):
 
         for ctx in sub_stage.run():
             self.ctx = ctx
+            start = time.time()
             self.codegen_main()
+            end = time.time()
+            print(f"code generation took {end - start} seconds")
             assert self.module is not None
             self.ctx.set(module=self.module)
             yield self.ctx
