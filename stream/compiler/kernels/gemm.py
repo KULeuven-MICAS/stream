@@ -31,11 +31,11 @@ class GemmKernel(AIEKernelWithZeroing):
 
     @property
     def linkwith_name(self) -> str:
-        return "mm.o"
+        return f"mm_{self.m}_{self.k}_{self.n}.o"
 
     @property
     def function_name(self) -> str:
-        return f"matmul_{self.element_type}_{self.element_type}"
+        return f"matmul_{self.element_type}_{self.element_type}_{self.m}_{self.k}_{self.n}"
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         # Intrinsic dimensions:

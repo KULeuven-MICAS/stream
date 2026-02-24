@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from functools import reduce
 from itertools import product
 from math import isqrt, prod
-from typing import Self, cast
+from typing import Iterator, Self, cast
 
 from snaxc.dialects.snax import LayoutCast
 from snaxc.dialects.tsl import TiledStridedLayoutAttr
@@ -530,6 +530,11 @@ class ObjectFifoManager:
             elif isinstance(op, ObjectFIFOReleaseOp):
                 of_name = op.objFifo_name.root_reference.data
                 current_fifo_depth[of_name] -= 1
+
+    def all_acquires(self, of_name: str) -> Iterator[ObjectFifoAcquireOp]:
+        for op in self.device_op.walk():
+            if isinstance(op, ObjectFifoAcquireOp) and op.objFifo_name.string_value() == of_name:
+                yield op
 
 
 def canonicalize_transformation(sizes: Sequence[int], strides: Sequence[int]) -> tuple[list[int], list[int]]:
@@ -1799,26 +1804,18 @@ class HoistLayoutCasts(RewritePattern):
             return
         elif isinstance(switch := op.source.op, IndexSwitchOp):
             # push up layout cast
-            new_casts: list[Operation] = []
             for case in (switch.default_region, *switch.case_regions):
                 yield_op = case.block.last_op
                 assert isinstance(yield_op, YieldOp)
                 yielded = yield_op.arguments[0]
                 assert isa(op.dest.type, MemRefType[FixedBitwidthType])
                 new_cast = LayoutCast(yielded, op.dest.type)
-                new_casts.append(new_cast)
                 yield_op.operands[0] = new_cast.dest
-            new_switch = IndexSwitchOp(
-                switch.arg,
-                switch.cases,
-                rewriter.move_region_contents_to_new_regions(switch.default_region),
-                [rewriter.move_region_contents_to_new_regions(case_region) for case_region in switch.case_regions],
-                [op.dest.type],
-            )
-            rewriter.insert_op([*new_casts, new_switch], InsertPoint.before(op))
-            op.dest.replace_by(new_switch.output[0])
+                assert isinstance(yielded.owner, Operation)
+                rewriter.insert_op(new_cast, InsertPoint.after(yielded.owner))
+            switch.results[0].type = op.dest.type
+            op.dest.replace_by(switch.output[0])
             rewriter.erase_op(op)
-            rewriter.erase_op(switch)
 
 
 @dataclass
@@ -2057,10 +2054,7 @@ class RealizeLayoutCats(RewritePattern):
     def match_and_rewrite(self, op: LayoutCast, rewriter: PatternRewriter):
         # gather some variables
         assert isinstance(op.source, OpResult)
-        assert isinstance(index_op := op.source.op, IndexSwitchOp)
-        assert isinstance(
-            subview_access := index_op.default_region.block.last_op.operands[0].op, ObjectFIFOSubviewAccessOp
-        )
+        assert isinstance(subview_access := op.source.op, ObjectFIFOSubviewAccessOp)
         # assert isinstance(subview_access := op.source.op, ObjectFIFOSubviewAccessOp)
         assert isinstance(subview_access.subview, OpResult)
         assert isinstance(of_acquire := subview_access.subview.op, ObjectFifoAcquireOp)
@@ -2074,57 +2068,94 @@ class RealizeLayoutCats(RewritePattern):
         # get the chain:
         chain = self.of_manager.get_of_chain(of_acquire.objFifo_name.root_reference.data)
 
-        # get the hop starting from a memtile:
-        # if len(chain.hops) != 2:
-        #     pass
-        hop = chain.hops[-1]
+        # get all acquires and releases
+        consumers: list[ObjectFifoAcquireOp] = []
+        producers: list[ObjectFifoAcquireOp] = []
+        for hop in chain.hops:
+            for fifo in hop.fifos:
+                for acquire in self.of_manager.all_acquires(fifo.sym_name.data):
+                    match ObjectFifoPortEnum.from_int(acquire.port.value.data):
+                        case ObjectFifoPortEnum.Consume:
+                            consumers.append(acquire)
+                        case ObjectFifoPortEnum.Produce:
+                            producers.append(acquire)
 
-        # get the element_type
-        element_type = cast(MemRefType[Attribute], hop.fifos[0].elemType.buffer)
+        def gather_layout(acquires: Sequence[ObjectFifoAcquireOp]) -> MemRefType[FixedBitwidthType] | None:
+            result = []
+            for acquire in acquires:
+                for subview in acquire.result.uses:
+                    if isinstance(subview.operation, ObjectFIFOSubviewAccessOp):
+                        for cast in subview.operation.output.uses:
+                            if isinstance(cast.operation, LayoutCast):
+                                dest_type = cast.operation.dest.type
+                                assert isa(dest_type, MemRefType[FixedBitwidthType])
+                                result.append(dest_type)
+            if len(result) == 0:
+                return None
+            else:
+                assert all([x == result[0] for x in result])
+                return result[0]
 
-        tsl_dest = cast(TiledStridedLayoutAttr, dest_type.layout).data
+        consumer_type = gather_layout(consumers)
+        producer_type = gather_layout(producers)
 
-        # create default tsl layout for source:
-        strides = [1]
-        for size in reversed(dest_type.shape.data[1:]):
-            strides = [size.data * strides[0]] + strides
-        tile_bounds = tsl_dest.tile_bounds()
+        # create row-major layouts for those without explicit casts:
 
-        tsl_in = TiledStridedLayout.from_strides(strides, tile_bounds)  # pyright: ignore
-        tsl_out = cast(TiledStridedLayoutAttr, dest_type.layout).data
+        if consumer_type is None:
+            assert producer_type is not None
+            assert isinstance(producer_type.layout, TiledStridedLayoutAttr)
+            producer_layout = producer_type.layout.data
+            strides = [1]
+            for size in reversed(producer_type.shape.data[1:]):
+                strides = [size.data * strides[0]] + strides
+            assert isinstance(producer_type.layout, TiledStridedLayoutAttr)
+            tile_bounds = producer_type.layout.data.tile_bounds()
+            consumer_layout = TiledStridedLayout.from_strides(strides, tile_bounds)  # pyright: ignore
+        elif producer_type is None:
+            assert consumer_type is not None
+            assert isinstance(consumer_type.layout, TiledStridedLayoutAttr)
+            consumer_layout = consumer_type.layout.data
+            strides = [1]
+            for size in reversed(consumer_type.shape.data[1:]):
+                strides = [size.data * strides[0]] + strides
+            assert isinstance(consumer_type.layout, TiledStridedLayoutAttr)
+            tile_bounds = consumer_type.layout.data.tile_bounds()
+            producer_layout = TiledStridedLayout.from_strides(strides, tile_bounds)  # pyright: ignore
+        else:
+            assert isinstance(consumer_type.layout, TiledStridedLayoutAttr)
+            consumer_layout = consumer_type.layout.data
+            assert isinstance(producer_type.layout, TiledStridedLayoutAttr)
+            producer_layout = producer_type.layout.data
 
-        # calculate transform
-
-        # check if producer or consumer
-        if port == ObjectFifoPortEnum.Consume:
-            sizes, strides = get_transform(tsl_in, tsl_out)
-        else:  # Produce
-            sizes, strides = get_transform(tsl_out, tsl_in)
+        sizes, strides = get_transform(consumer_layout, producer_layout)
 
         transform_is_null = len(sizes) == 1 and strides == [1]
 
         # create BDDimlayout
         bd_layout = BDDimLayoutArrayAttr(
-            BDDimLayoutArray([BDDimLayout((size, stride)) for size, stride in zip(sizes, strides, strict=False)])
+            BDDimLayoutArray([BDDimLayout((size, stride)) for size, stride in zip(sizes, strides, strict=True)])
         )
 
+        # take last fifo in the chain (starting form memtile i)
+        hop = chain.hops[-1]
         for fifo in hop.fifos:
-            fifo.elemType = ObjectFIFO([MemRefType(element_type.element_type, element_type.shape, dest_type.layout)])
+            # fifo.elemType = ObjectFIFO([MemRefType(element_type.element_type, element_type.shape, dest_type.layout)])
             if not transform_is_null:
                 fifo.dimensionsToStream = bd_layout
 
-        element_type = cast(MemRefType[Attribute], hop.fifos[0].elemType.buffer)
+        if consumer_type is not None:
+            for consumer in consumers:
+                consumer.result.type = ObjectFIFOSubview([consumer_type])
+                for use in consumer.result.uses:
+                    if isinstance(use.operation, ObjectFIFOSubviewAccessOp):
+                        use.operation.output.type = consumer_type
 
-        of_layout = element_type.layout
-
-        assert of_layout == dest_type.layout
-        # transform has already been applied to ObjectFIFO
-        of_acquire.results[0].type = ObjectFIFOSubview([dest_type])
-        subview_access.results[0].type = dest_type
-        index_op.results[0].type = dest_type
-        assert op.source.type == op.dest.type
-        op.dest.replace_by(op.source)
-        rewriter.erase_matched_op()
+        if producer_type is not None:
+            for producer in producers:
+                producer.result.type = ObjectFIFOSubview([producer_type])
+                for use in producer.result.uses:
+                    if isinstance(use.operation, ObjectFIFOSubviewAccessOp):
+                        use.operation.output.type = producer_type
 
 
 @dataclass
@@ -2187,7 +2218,7 @@ class RemoveSpatioTemporality(RewritePattern):
                 opvar = deepcopy(op.ssis.data.variables[i])
                 if var.dimension != opvar.dimension:
                     # FIXME: hare
-                    breakpoint()
+                    raise RuntimeError()
                 assert var.dimension == opvar.dimension
                 assert var.size == opvar.size
 

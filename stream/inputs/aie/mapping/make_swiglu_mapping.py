@@ -186,6 +186,16 @@ def make_swiglu_mapping2(
     if last_gemm_down:
         inter_core_tiling_gemm_down = [{"dim": "D2", "split": 2}, {"dim": "D0", "split": 4}]
         compute_allocation_gemm_down = [38, 39, 40, 41, 44, 45, 46, 47]
+        kernel_gemm = {
+            "name": "gemm",
+            "kwargs": {
+                "utilization": 61.8,
+                "m": seq_len_tile_size,
+                "k": OUTPUT_CHANNEL_TILE_SIZE,
+                "n": INPUT_CHANNEL_TILE_SIZE,
+                "layout": "default",
+            },
+        }
         gemm_down = {
             "name": "Gemm_Down",
             "core_allocation": copy.deepcopy(compute_allocation_gemm_down),
