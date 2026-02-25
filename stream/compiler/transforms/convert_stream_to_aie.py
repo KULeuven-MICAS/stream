@@ -139,8 +139,9 @@ class TileOpManager:
             if isinstance(parent, RuntimeSequenceOp):
                 if isinstance(operation, PushOp | PullOp):
                     if isinstance(attr := operation.memtile, ArrayAttr):
-                        memtile_idx = cast(tuple[IntegerAttr[IndexType], ...], attr.data)
-                        return self.insert_or_update(memtile_idx[0].value.data, 0)
+                        if isinstance(attr := attr.data[0], ArrayAttr):
+                            memtile_idx = cast(tuple[IntegerAttr[IndexType], ...], attr.data)
+                            return self.insert_or_update(memtile_idx[0].value.data, 0)
                     return self.insert_or_update(0, 0)
             parent = parent.parent_op()
             if parent is None:
@@ -200,22 +201,22 @@ class ObjectFifoHop:
 
     @classmethod
     def to_memtile(
-        cls, producers: Sequence[PushOp], memtile: TileOp, tile_op_manager: TileOpManager, name_base: str
+        cls, producers: Sequence[PushOp], memtiles: Sequence[TileOp], tile_op_manager: TileOpManager, name_base: str
     ) -> Self:
         # when coming from shim, send to custom handler for memtile reuse
         if is_shim(tile_op_manager.get_tile(producers[0])):
-            return cls.shim_to_mem(producers[0], memtile, tile_op_manager, name_base)
+            return cls.shim_to_mem(producers[0], memtiles, tile_op_manager, name_base)
         else:
-            return cls.compute_to_mem(producers, memtile, tile_op_manager, name_base)
+            return cls.compute_to_mem(producers, memtiles, tile_op_manager, name_base)
 
     @classmethod
     def from_memtile(
-        cls, consumers: Sequence[PullOp], memtile: TileOp, tile_op_manager: TileOpManager, name_base: str
+        cls, consumers: Sequence[PullOp], memtiles: Sequence[TileOp], tile_op_manager: TileOpManager, name_base: str
     ) -> Self:
         if is_shim(tile_op_manager.get_tile(consumers[0])):
-            return cls.mem_to_shim(consumers[0], memtile, tile_op_manager, name_base)
+            return cls.mem_to_shim(consumers[0], memtiles, tile_op_manager, name_base)
         else:
-            return cls.mem_to_compute(consumers, memtile, tile_op_manager, name_base)
+            return cls.mem_to_compute(consumers, memtiles, tile_op_manager, name_base)
 
     @classmethod
     def compute_to_compute(
@@ -260,7 +261,7 @@ class ObjectFifoHop:
 
     @classmethod
     def compute_to_mem(
-        cls, producers: Sequence[PushOp], memtile: TileOp, tile_op_manager: TileOpManager, name_base: str
+        cls, producers: Sequence[PushOp], memtiles: Sequence[TileOp], tile_op_manager: TileOpManager, name_base: str
     ) -> Self:
         assert isinstance(memref_type := producers[0].input.type, MemRefType)
         if len(producers) > 1:
@@ -270,6 +271,20 @@ class ObjectFifoHop:
         producers = sorted(producers, key=lambda op: SortPullPushOp(op, tile_op_manager))
         producer_tiles = [tile_op_manager.get_tile(producer) for producer in producers]
         object_fifos: list[ObjectFifoOp] = []
+
+        def memtile_selector(i: int):
+            if len(memtiles) == 1:
+                return memtiles[0]
+            spat_vars = producers[0].ssis.data.get_spatial_variables()
+            spat_vars = [x for x in spat_vars if x.applicable]
+            used_vars = [var for var in spat_vars if var.size == len(memtiles)]
+            assert len(used_vars) == 1
+            used_var = used_vars[0]
+            other_vars = spat_vars[spat_vars.index(used_var) + 1 :]
+            div = prod(x.size for x in other_vars)
+            mod = len(memtiles)
+            return memtiles[(i // div) % mod]
+
         for i, of_producer in enumerate(producer_tiles):
             if len(producers) > 1:
                 of_name = name_base + "_" + of_type + "_" + string.ascii_lowercase[i]
@@ -278,7 +293,7 @@ class ObjectFifoHop:
             object_fifo = ObjectFifoOp.from_referenced_type(
                 elemNumber=(producers[0].ssis.data.nb_local_tensors_compute() + cls.DB_EXTRA,) * 2,
                 producerTile=of_producer,
-                consumerTiles=[memtile],
+                consumerTiles=[memtile_selector(i)],
                 referenced_type=memref_type.get_element_type(),
                 shape=memref_type.get_shape(),
                 name=of_name,
@@ -289,7 +304,7 @@ class ObjectFifoHop:
 
     @classmethod
     def mem_to_compute(  # noqa: PLR0912
-        cls, consumers: Sequence[PullOp], memtile: TileOp, tile_op_manager: TileOpManager, name_base: str
+        cls, consumers: Sequence[PullOp], memtiles: Sequence[TileOp], tile_op_manager: TileOpManager, name_base: str
     ) -> Self:
         assert isinstance(memref_type := consumers[0].output.type, MemRefType)
         unique_consumers = len(set(x.offsets for x in consumers))
@@ -305,16 +320,31 @@ class ObjectFifoHop:
             of_type = "unicast"
         consumers = sorted(consumers, key=lambda op: SortPullPushOp(op, tile_op_manager))
         consumer_tiles = [tile_op_manager.get_tile(consumer) for consumer in consumers]
+
+        def memtile_selector(i: int):
+            if len(memtiles) == 1:
+                return memtiles[0]
+            spat_vars = consumers[0].ssis.data.get_spatial_variables()
+            spat_vars = [x for x in spat_vars if x.applicable]
+            used_vars = [var for var in spat_vars if var.size == len(memtiles)]
+            assert len(used_vars) == 1
+            used_var = used_vars[0]
+            other_vars = spat_vars[spat_vars.index(used_var) + 1 :]
+            div = prod(x.size for x in other_vars)
+            mod = len(memtiles)
+            return memtiles[(i // div) % mod]
+
         if of_type == "distribute":
-            fifos = [(memtile, [tile]) for tile in consumer_tiles]
+            fifos = [(memtile_selector(i), [tile]) for i, tile in enumerate(consumer_tiles)]
         elif of_type == "distribroad":
             # gather unique consumer tiles
             unique_consumer_tiles = defaultdict(list)
             for consumer in consumers:
                 unique_consumer_tiles[consumer.offsets].append(tile_op_manager.get_tile(consumer))
-            fifos = [(memtile, tiles) for tiles in unique_consumer_tiles.values()]
-        else:
-            fifos = [(memtile, consumer_tiles)]
+            fifos = [(memtile_selector(i), tiles) for i, tiles in enumerate(unique_consumer_tiles.values())]
+        else:  # broadcast or unicast
+            assert len(memtiles) == 1
+            fifos = [(memtiles[0], consumer_tiles)]
         object_fifos: list[ObjectFifoOp] = []
         for i, (of_producer, of_consumers) in enumerate(fifos):
             if of_type in ("distribute", "distribroad"):
@@ -338,36 +368,46 @@ class ObjectFifoHop:
         return cls(object_fifos)
 
     @classmethod
-    def shim_to_mem(cls, producer: PushOp, memtile: TileOp, tile_op_manager: TileOpManager, name_base: str) -> Self:
+    def shim_to_mem(
+        cls, producer: PushOp, memtiles: Sequence[TileOp], tile_op_manager: TileOpManager, name_base: str
+    ) -> Self:
         assert isinstance(memref_type := producer.input.type, MemRefType)
-        object_fifo = ObjectFifoOp.from_referenced_type(
-            elemNumber=(1 + cls.DB_EXTRA, 1 + cls.DB_EXTRA),
-            producerTile=tile_op_manager.get_tile(producer),
-            consumerTiles=[memtile],
-            referenced_type=memref_type.get_element_type(),
-            shape=producer.ssis.data.shape_mem(),
-            name=name_base + "mem",
-            repeat_count=1,
-        )
-        del object_fifo.properties["repeat_count"]
-
-        if object_fifo.repeat_count is not None and object_fifo.repeat_count.value.data == 1:
+        fifos = []
+        for i, memtile in enumerate(memtiles):
+            object_fifo = ObjectFifoOp.from_referenced_type(
+                elemNumber=(1 + cls.DB_EXTRA, 1 + cls.DB_EXTRA),
+                producerTile=tile_op_manager.insert_or_update(memtile.col.value.data, 0),
+                consumerTiles=[memtile],
+                referenced_type=memref_type.get_element_type(),
+                shape=producer.ssis.data.shape_mem(),
+                name=name_base + "mem" + "_" + string.ascii_lowercase[i],
+                repeat_count=1,
+            )
             del object_fifo.properties["repeat_count"]
-        return cls([object_fifo])
+
+            if object_fifo.repeat_count is not None and object_fifo.repeat_count.value.data == 1:
+                del object_fifo.properties["repeat_count"]
+            fifos.append(object_fifo)
+        return cls(fifos)
 
     @classmethod
-    def mem_to_shim(cls, consumer: PullOp, memtile: TileOp, tile_op_manager: TileOpManager, name_base: str) -> Self:
+    def mem_to_shim(
+        cls, consumer: PullOp, memtiles: Sequence[TileOp], tile_op_manager: TileOpManager, name_base: str
+    ) -> Self:
         assert isinstance(memref_type := consumer.output.type, MemRefType)
-        object_fifo = ObjectFifoOp.from_referenced_type(
-            elemNumber=(1 + cls.DB_EXTRA, 1 + cls.DB_EXTRA),
-            producerTile=memtile,
-            consumerTiles=[tile_op_manager.get_tile(consumer)],
-            referenced_type=memref_type.get_element_type(),
-            shape=consumer.ssis.data.shape_mem(),
-            name=name_base + "mem",
-        )
-        del object_fifo.properties["repeat_count"]
-        return cls([object_fifo])
+        fifos = []
+        for i, memtile in enumerate(memtiles):
+            object_fifo = ObjectFifoOp.from_referenced_type(
+                elemNumber=(1 + cls.DB_EXTRA, 1 + cls.DB_EXTRA),
+                producerTile=memtile,
+                consumerTiles=[tile_op_manager.insert_or_update(memtile.col.value.data, 0)],
+                referenced_type=memref_type.get_element_type(),
+                shape=consumer.ssis.data.shape_mem(),
+                name=name_base + "mem" + "_" + string.ascii_lowercase[i],
+            )
+            del object_fifo.properties["repeat_count"]
+            fifos.append(object_fifo)
+        return cls(fifos)
 
 
 @dataclass
@@ -397,12 +437,15 @@ class ObjectFifoChain:
         hops: Sequence[ObjectFifoHop]
         if is_shim(consumer_tiles[0]) or is_shim(producer_tiles[0]):
             # pass through the memtile
-            assert isinstance(attr := producers[0].memtile, ArrayAttr)
-            memtile_idx = cast(tuple[IntegerAttr[IndexType], ...], attr.data)
-            memtile = tile_op_manager.insert_or_update(memtile_idx[0].value.data, memtile_idx[1].value.data)
+            assert isa(attr := producers[0].memtile, ArrayAttr[ArrayAttr[IntegerAttr[IndexType]]])
+            memtile_idxs = [subattr.data for subattr in attr.data]
+            memtiles = [
+                tile_op_manager.insert_or_update(memtile_idx[0].value.data, memtile_idx[1].value.data)
+                for memtile_idx in memtile_idxs
+            ]
             hops = [
-                ObjectFifoHop.to_memtile(producers, memtile, tile_op_manager, name_base),
-                ObjectFifoHop.from_memtile(consumers, memtile, tile_op_manager, name_base),
+                ObjectFifoHop.to_memtile(producers, memtiles, tile_op_manager, name_base),
+                ObjectFifoHop.from_memtile(consumers, memtiles, tile_op_manager, name_base),
             ]
         else:
             hops = [ObjectFifoHop.compute_to_compute(producers, consumers, tile_op_manager, name_base)]
@@ -410,13 +453,13 @@ class ObjectFifoChain:
         # generate links for every hop
         links: Sequence[ObjectFifoLinkOp] = []
         for i in range(len(hops) - 1):
-            link = cls.get_link(hops[i], hops[i + 1])
-            links.append(link)
+            links.extend(cls.get_links(hops[i], hops[i + 1]))
 
         return cls(hops, links)
 
     @staticmethod
-    def get_link(hop_in: ObjectFifoHop, hop_out: ObjectFifoHop) -> ObjectFifoLinkOp:
+    def get_links(hop_in: ObjectFifoHop, hop_out: ObjectFifoHop) -> Sequence[ObjectFifoLinkOp]:
+        links = []
         if len(hop_in.fifos) > 1:
             # determine src offsets
             assert isinstance(memref_out := hop_out.fifos[0].elemType.buffer, MemRefType)
@@ -430,12 +473,45 @@ class ObjectFifoChain:
             dst_offsets = [i * offset for i in range(len(hop_out.fifos))]
         else:
             dst_offsets = []
-        return ObjectFifoLinkOp(
-            [fifo.sym_name.data for fifo in hop_in.fifos],
-            [fifo.sym_name.data for fifo in hop_out.fifos],
-            src_offsets,
-            dst_offsets,
-        )
+        if len(hop_in.fifos) > 1 and len(hop_out.fifos) > 1:
+            # join split over multiple memtile and objectfifos:
+            if len(hop_in.fifos) > len(hop_out.fifos):
+                factor = len(hop_in.fifos) // len(hop_out.fifos)
+                # output fifo (compute -> mem)
+                return [
+                    ObjectFifoLinkOp(
+                        [fifin.sym_name.data for fifin in hop_in.fifos if fifout.producerTile in fifin.consumerTiles],
+                        [fifout.sym_name.data],
+                        src_offsets[:factor],
+                        [],
+                    )
+                    for fifout in hop_out.fifos
+                ]
+            else:
+                factor = len(hop_out.fifos) // len(hop_in.fifos)
+                # output fifo (compute -> mem)
+                return [
+                    ObjectFifoLinkOp(
+                        [fifin.sym_name.data],
+                        [
+                            fifout.sym_name.data
+                            for fifout in hop_out.fifos
+                            if fifout.producerTile in fifin.consumerTiles
+                        ],
+                        [],
+                        dst_offsets[:factor],
+                    )
+                    for fifin in hop_in.fifos
+                ]
+        else:
+            return [
+                ObjectFifoLinkOp(
+                    [fifo.sym_name.data for fifo in hop_in.fifos],
+                    [fifo.sym_name.data for fifo in hop_out.fifos],
+                    src_offsets,
+                    dst_offsets,
+                )
+            ]
 
     def get_of(self, op: PullOp | PushOp, tile_op_manager: TileOpManager):
         """
@@ -617,21 +693,13 @@ class TransferToRuntimeSequence(RewritePattern):
         if isinstance(op, PushOp):
             assert isinstance(op.input, OpResult)
             edge = op.input.op
-            ofs = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
-            assert len(ofs) == 1
-            of = ofs[0]
         else:
             edge = next((use.operation for use in op.output.uses), None)
             if edge is None:
                 # TODO: this transfer should not be present anymore
                 rewriter.erase_matched_op()
                 return
-            ofs = of_chain.get_of(op, self.object_fifo_manager.tile_op_manager)
-            assert len(ofs) == 1
-            of = ofs[0]
         assert isinstance(edge, OutEdgeOp | InEdgeOp)
-
-        of_name = of.sym_name.data
 
         arg_index = self.arg_order.index(edge.tensor.data)
         arg = runtime_sequence.body.block.args[arg_index]
@@ -687,6 +755,7 @@ class TransferToRuntimeSequence(RewritePattern):
             size: int
             stride: int
             iteration_t: int
+            spatial: bool = False
 
         @dataclass(frozen=True)
         class StrideSet:
@@ -701,7 +770,22 @@ class TransferToRuntimeSequence(RewritePattern):
             def total_size(self) -> int:
                 return self.repeats() * self.size()
 
+            def split(self) -> dict[int, Self]:
+                spatial_strides = [s for s in self.strides if s.spatial]
+                if len(spatial_strides) == 0:
+                    return {0: self}
+                assert len(spatial_strides) == 1
+                spatial_stride = spatial_strides[0]
+                idx = self.strides.index(spatial_stride)
+                new_strides = self.strides[:idx] + self.strides[idx + 1 :]
+                result = {}
+                for i in range(spatial_stride.size):
+                    result[i * spatial_stride.stride] = type(self)(new_strides)
+                return result
+
             def canonicalize(self) -> Self:
+                if any(s.spatial for s in self.strides):
+                    raise RuntimeError("cannot canonicalize strideset with spatial strides")
                 new_strides: list[Stride] = []
                 for var in self.strides:
                     assert var.size != 0
@@ -721,6 +805,8 @@ class TransferToRuntimeSequence(RewritePattern):
                 return type(self)(tuple(new_strides))
 
             def legalize(self) -> Self:
+                if any(s.spatial for s in self.strides):
+                    raise RuntimeError("cannot legalize strideset with spatial strides")
                 new_strides: list[Stride] = []
                 # make sure that no bound limits are exceeded
                 # FIXME: figure out actual limits
@@ -768,72 +854,60 @@ class TransferToRuntimeSequence(RewritePattern):
                 seen_dims[var.dimension] *= var.size
             else:
                 stride = 0
-            strides.append(Stride(var.size, stride, iteration_mults[var]))
+            assert isinstance(op.memtile, ArrayAttr)
+            spatial = len(op.memtile) > 1 and var.type == IterationVariableType.SPATIAL and var.size == len(op.memtile)
+            strides.append(Stride(var.size, stride, iteration_mults[var], spatial))
 
-        stride_set = StrideSet(tuple(strides)).canonicalize().legalize()
+        breakpoint()
+        stride_dict = StrideSet(tuple(strides)).split()
+        stride_dict = {x: y.canonicalize().legalize() for x, y in stride_dict.items()}
 
-        hardware_strides = stride_set.strides[:4]
-        # Perform software for loop unrolling:
-        software_strides = stride_set.strides[4:]
-        software_strides_ranges = [
-            [Stride(1, var.stride * i, var.iteration_t * i) for i in range(var.size)] for var in software_strides
-        ]
-        combined_ranges = list(product(*software_strides_ranges))
-        reduced_ranges = [
-            reduce(
-                lambda x, y: Stride(1, x.stride + y.stride, x.iteration_t + y.iteration_t),
-                x,
-                Stride(1, 0, 0),
-            )
-            for x in combined_ranges
-        ]
+        # select correct hop for fifo:
+        if isinstance(op, PullOp):
+            hop = of_chain.hops[1]
+        else:
+            hop = of_chain.hops[0]
 
-        # print("Op we are transforming:")
-        # print(op)
-        # print()
-        #
-        # print("Op SSIS:")
-        # print(op.ssis)
-        # print()
-        #
-        # print("Hardware Strides Found:")
-        # for stride in hardware_strides[::-1]:
-        #     print(f"<size={stride.size}, stride={stride.stride}>", end=" ")
-        # print()
-        # print()
-        #
-        # print("Software Strides Found:")
-        # for stride in software_strides[::-1]:
-        #     print(f"<size={stride.size}, stride={stride.stride}>", end=" ")
-        # print()
-        # print()
-        #
-        # print("Unrolled software strides:")
-        # for i, stride in enumerate(reduced_ranges):
-        #     print(f"iteration {i}: offset {stride.stride} at steady-state iteration {stride.iteration_t}")
-        # print()
-        # print()
+        for i, (spatial_offset, stride_set) in enumerate(stride_dict.items()):
+            hardware_strides = stride_set.strides[:4]
+            # Perform software for loop unrolling:
+            software_strides = stride_set.strides[4:]
+            software_strides_ranges = [
+                [Stride(1, var.stride * i, var.iteration_t * i) for i in range(var.size)] for var in software_strides
+            ]
+            combined_ranges = list(product(*software_strides_ranges))
+            reduced_ranges = [
+                reduce(
+                    lambda x, y: Stride(1, x.stride + y.stride, x.iteration_t + y.iteration_t),
+                    x,
+                    Stride(1, 0, 0),
+                )
+                for x in combined_ranges
+            ]
 
-        for r in reduced_ranges:
-            bd_dimensions = BDDimLayoutArrayAttr(
-                BDDimLayoutArray([BDDimLayout((var.size, var.stride)) for var in hardware_strides[::-1]])
-            )
+            for r in reduced_ranges:
+                bd_dimensions = BDDimLayoutArrayAttr(
+                    BDDimLayoutArray([BDDimLayout((var.size, var.stride)) for var in hardware_strides[::-1]])
+                )
 
-            dma_bd = DMABDOp(
-                arg,
-                offset=r.stride,
-                len=prod(var.size for var in hardware_strides[:3]),
-                dimensions=bd_dimensions,
-            )
+                dma_bd = DMABDOp(
+                    arg,
+                    offset=spatial_offset + r.stride,
+                    len=prod(var.size for var in hardware_strides[:3]),
+                    dimensions=bd_dimensions,
+                )
 
-            # configure task
-            task = DmaConfigureTaskForOp(
-                of_name, Region(Block([dma_bd, EndOp()])), issue_token=False, repeat_count=hardware_strides[3].size - 1
-            )
+                # configure task
+                task = DmaConfigureTaskForOp(
+                    hop.fifos[i].sym_name.data,
+                    Region(Block([dma_bd, EndOp()])),
+                    issue_token=False,
+                    repeat_count=hardware_strides[3].size - 1,
+                )
 
-            task.attributes["iteration_t"] = IntegerAttr.from_index_int_value(r.iteration_t)
+                task.attributes["iteration_t"] = IntegerAttr.from_index_int_value(r.iteration_t)
 
-            rewriter.insert_op([task], InsertPoint.before(op))
+                rewriter.insert_op([task], InsertPoint.before(op))
 
         # remove output from edge op operands
         rewriter.erase_matched_op(safe_erase=False)
@@ -2059,11 +2133,10 @@ class RealizeLayoutCats(RewritePattern):
         assert isinstance(subview_access.subview, OpResult)
         assert isinstance(of_acquire := subview_access.subview.op, ObjectFifoAcquireOp)
 
-        dest_type = cast(MemRefType[Attribute], op.dest.type)
-
-        # get the objectfifo
-        # check if producer or consumer
-        port = ObjectFifoPortEnum.from_int(of_acquire.port.value.data)
+        if op.dest.type == op.source.type:
+            op.dest.replace_by(op.source)
+            rewriter.erase_matched_op()
+            return
 
         # get the chain:
         chain = self.of_manager.get_of_chain(of_acquire.objFifo_name.root_reference.data)
@@ -2388,6 +2461,9 @@ class ConvertStreamToAIEPass(ModulePass):
             TransferToObjectFIFOPattern(object_fifo_manager),
             apply_recursively=False,
         ).rewrite_module(op)
+
+        with open("test8.mlir", "w") as f:
+            f.write(str(op))
 
         PatternRewriteWalker(
             TransferToRuntimeSequence(object_fifo_manager, arg_order),

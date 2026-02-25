@@ -169,7 +169,7 @@ class TransferOp(IRDLOperation):
         result = 0
         mult = 1
         for spat_var in self.ssis.data.get_spatial_variables():
-            if spat_var.relevant and spat_var.dimension not in spatio_temporal_vars:
+            if spat_var.applicable and spat_var.dimension not in spatio_temporal_vars:
                 for dim, dim_val in spatial_vars:
                     if dim == spat_var.dimension:
                         result += dim_val * mult

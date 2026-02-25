@@ -23,7 +23,7 @@ class GemmKernel(AIEKernelWithZeroing):
 
     @property
     def zero_name(self) -> str:
-        return f"zero_{self.element_type}"
+        return f"zero_{self.element_type}_{self.m}_{self.k}_{self.n}"
 
     def zero_type(self, op: ComputationNodeOp) -> FunctionType:
         assert op.output is not None
