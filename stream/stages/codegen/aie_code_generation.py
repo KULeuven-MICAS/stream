@@ -137,6 +137,13 @@ class AIECodeGenerationStage(Stage):
         ]
         num_spat_results = prod(v.size for v in relevant_spat_vars)
 
+        # Move determination of sizes/strides for runtime compies over to lowering logic,
+        # here, just set sizes and strides to the input layout such that correct calculations can be made.
+        operand_index_dims = [
+            x[0] for x in sorted(workload_strides.items(), key=lambda x: x[1], reverse=True) if any(x[1])
+        ]
+        operand_attr = ArrayAttr([LayerDimAttr(x) for x in operand_index_dims])
+
         # Determine the output type based on this:
         if is_out_transfer:
             result_type = node.outputs[0].subview.source.type
@@ -152,7 +159,6 @@ class AIECodeGenerationStage(Stage):
         transfer_elements = prod(transfer_shape)
         # spatio_temporal_elements = prod(v.size for v in ssis_dest.get_spatio_temporal_variables())
         # spatial_stride = transfer_elements * spatio_temporal_elements
-        # breakpoint()
         if is_out_transfer:
             st_factor = num_spat_results // len(inputs)
         else:
@@ -181,13 +187,6 @@ class AIECodeGenerationStage(Stage):
                     new_var.type = IterationVariableType.TEMPORAL
                     new_ssis_tvars.append(new_var)
             ssis = SteadyStateIterationSpace([*new_ssis, *new_ssis_tvars])
-
-        # Move determination of sizes/strides for runtime compies over to lowering logic,
-        # here, just set sizes and strides to the input layout such that correct calculations can be made.
-        operand_index_dims = [
-            x[0] for x in sorted(workload_strides.items(), key=lambda x: x[1], reverse=True) if any(x[1])
-        ]
-        operand_attr = ArrayAttr([LayerDimAttr(x) for x in operand_index_dims])
 
         all_vars: Sequence[IterationVariable] = []
         # First, iterate over kernel dimensions in row-major order:
@@ -236,7 +235,17 @@ class AIECodeGenerationStage(Stage):
             row, col = mapping.memory_allocation[0].row_id, mapping.memory_allocation[0].col_id
             assert row is not None
             assert col is not None
-            memtile = ArrayAttr([IntegerAttr.from_index_int_value(x) for x in (col, row)])
+            if is_out_transfer:
+                row = 1
+                col = 7
+                memtile = ArrayAttr(
+                    [
+                        ArrayAttr([IntegerAttr.from_index_int_value(6), IntegerAttr.from_index_int_value(1)]),
+                        ArrayAttr([IntegerAttr.from_index_int_value(7), IntegerAttr.from_index_int_value(1)]),
+                    ]
+                )
+            else:
+                memtile = ArrayAttr([ArrayAttr([IntegerAttr.from_index_int_value(x) for x in (col, row)])])
         else:
             memtile = NoneAttr()
 
@@ -288,6 +297,13 @@ class AIECodeGenerationStage(Stage):
             for spat_var in ssis.get_spatial_variables()
             if spat_var.applicable
         ]
+
+        # TODO:: caution the ordering of taking the product here:
+        # ususally, ssis is considered innermost to outermost.
+        # Here the conbined ranges are formed in an outermost to innermost fashion.
+        # By coincidence, this aligns with the resource allocation, which also
+        # seems to be this other way around
+
         # step 2:
         combined_ranges = list(product(*ranges))
         for core, comb_ran in zip(mapping.resource_allocation, combined_ranges, strict=True):
