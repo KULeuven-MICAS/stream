@@ -298,12 +298,6 @@ class AIECodeGenerationStage(Stage):
             if spat_var.applicable
         ]
 
-        # TODO:: caution the ordering of taking the product here:
-        # ususally, ssis is considered innermost to outermost.
-        # Here the conbined ranges are formed in an outermost to innermost fashion.
-        # By coincidence, this aligns with the resource allocation, which also
-        # seems to be this other way around
-
         # step 2:
         combined_ranges = list(product(*reversed(ranges)))
         for core, comb_ran in zip(mapping.resource_allocation, combined_ranges, strict=True):
