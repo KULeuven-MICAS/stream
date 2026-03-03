@@ -280,7 +280,7 @@ class ObjectFifoHop:
             used_vars = [var for var in spat_vars if var.size == len(memtiles)]
             assert len(used_vars) == 1
             used_var = used_vars[0]
-            other_vars = spat_vars[spat_vars.index(used_var) + 1 :]
+            other_vars = spat_vars[: spat_vars.index(used_var)]
             div = prod(x.size for x in other_vars)
             mod = len(memtiles)
             return memtiles[(i // div) % mod]
