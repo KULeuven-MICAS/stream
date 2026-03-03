@@ -328,6 +328,54 @@ class SteadyStateIterationSpace:
 
         return prod(iv.size for iv in reuse_iters if iv.relevant)
 
+    def reuse_summary(self) -> dict:
+        """
+        JSON-serializable summary of the compute- and mem-tile reuse decisions.
+
+        Should be called after the MILP solver has set all ``compute_tile_reuse``
+        and ``mem_tile_reuse`` flags via ``update_transfer_reuse_levels()``.
+
+        Returns
+        -------
+        dict with keys:
+          ``compute_reuse_factor``
+              Product of non-relevant loop sizes marked REUSE at the compute tile.
+              1 means no reuse (identity of multiplication).
+          ``mem_reuse_factor``
+              Analogous factor for the memory tile (divided by compute factor).
+              1 means no additional mem-tile reuse beyond the compute level.
+              NOT present in the dict when no memory tile is involved
+              (all mem_tile_reuse flags are NOT_SET or NOT_APPLICABLE).
+          ``loops``
+              Per-dimension breakdown of applicable temporal loops, innermost first:
+              ``dim``, ``size``, ``relevant``,
+              ``compute_tile_reuse`` (str), ``mem_tile_reuse`` (str or None).
+        """
+        applicable = self.get_applicable_temporal_variables()
+
+        has_mem_tile = any(
+            iv.mem_tile_reuse not in (MemTileReuse.NOT_SET, MemTileReuse.NOT_APPLICABLE) for iv in applicable
+        )
+
+        loops = [
+            {
+                "dim": str(iv.dimension),
+                "size": iv.size,
+                "relevant": iv.relevant,
+                "compute_tile_reuse": str(iv.compute_tile_reuse),
+                "mem_tile_reuse": str(iv.mem_tile_reuse) if has_mem_tile else None,
+            }
+            for iv in applicable
+        ]
+
+        result: dict = {
+            "compute_reuse_factor": self.reuse_factor_compute(),
+            "loops": loops,
+        }
+        if has_mem_tile:
+            result["mem_reuse_factor"] = self.reuse_factor_mem()
+        return result
+
     def get_kernel_variables(self) -> list[IterationVariable]:
         """
         Returns the list of kernel iteration variables.

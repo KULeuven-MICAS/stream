@@ -56,6 +56,8 @@ import os
 from math import ceil
 from typing import TYPE_CHECKING
 
+from stream.workload.node import ComputationNode as _ComputationNode
+
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
     from stream.hardware.architecture.noc.communication_link import CommunicationLink
@@ -288,17 +290,35 @@ def export_steady_state_trace(
                 )
 
     # ── 5.  Transfer node events ─────────────────────────────────────── #
-    # One bar per (node, iteration, link) — fires_per_iter is metadata only.
+    # The SSIS (Steady State Iteration Space) is a multi-dimensional loop nest
+    # with N_total = prod(sizes) iterations total.  firesC is the number of
+    # those iterations that need a fresh DMA transfer; the rest reuse cached
+    # data.  Each steady-state iteration in the trace corresponds to ONE
+    # iteration of that loop nest — it either fires (needs a transfer) or
+    # reuses.  The slot is allocated at slot_lat[s] >= one_transfer_lat to
+    # cover the case where a transfer does fire; in reuse iterations the link
+    # is idle during that slot.  firesC only appears in the objective as an
+    # energy/bandwidth cost across the full run, not as a timing multiplier.
     for node in tta.transfer_nodes:
         slot = tta.slot_of[node]
         chosen_path = path_of.get(node)
         if chosen_path is None:
             continue
 
-        single_fire_lat = float(tta._transfer_latency(node, chosen_path))
-        fires_per_iter = max(1, int(round(float(tta.firesC[node].X))))
-        is_const = tta._is_const_io(node)
-        cname = _CNAME_TRANSFER_CONST if is_const else _CNAME_TRANSFER
+        one_transfer_lat = float(tta._transfer_latency(node, chosen_path))
+        ssis = tta.ssis[node]
+        reuse_summary = ssis.reuse_summary()  # set by update_transfer_reuse_levels after solve
+
+        is_const_io = tta._is_const_io(node)
+        is_const_i = tta._is_const_i(node)
+        is_const_o = tta._is_const_o(node)
+        cname = _CNAME_TRANSFER_CONST if is_const_io else _CNAME_TRANSFER
+
+        # Computation nodes directly connected to this transfer in the workload
+        # graph.  An InEdge (constant weight/bias source) has no computation
+        # node predecessor; an OutEdge has no computation node successor.
+        input_of: list[str] = [n.name for n in tta.workload.successors(node) if isinstance(n, _ComputationNode)]
+        output_of: list[str] = [n.name for n in tta.workload.predecessors(node) if isinstance(n, _ComputationNode)]
 
         for rel_iter in shown_iterations:
             label = _ITER_LABEL[rel_iter]
@@ -309,7 +329,7 @@ def export_steady_state_trace(
                 trace_events.append(
                     {
                         "name": f"{node.name} [{label}]",
-                        "cat": "transfer_const" if is_const else "transfer",
+                        "cat": "transfer_const" if is_const_io else "transfer",
                         "ph": "X",
                         "ts": abs_start,
                         "dur": max(slot_lat[slot], 1.0),
@@ -319,13 +339,16 @@ def export_steady_state_trace(
                         "args": {
                             "iteration": label,
                             "slot": slot,
-                            "fires_per_iteration": fires_per_iter,
-                            "single_fire_latency_cycles": single_fire_lat,
-                            "total_transfer_cycles": single_fire_lat * fires_per_iter,
                             "slot_latency_cycles": slot_lat[slot],
-                            "is_const_io": is_const,
+                            "one_transfer_latency_cycles": one_transfer_lat,
+                            "is_const_io": is_const_io,
+                            "is_const_input": is_const_i,
+                            "is_const_output": is_const_o,
+                            "input_of": input_of,
+                            "output_of": output_of,
                             "full_path": _path_label(chosen_path),
                             "this_link": _link_label(link),
+                            "reuse": reuse_summary,
                         },
                     }
                 )
