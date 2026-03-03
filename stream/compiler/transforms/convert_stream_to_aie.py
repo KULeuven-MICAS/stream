@@ -740,7 +740,11 @@ class TransferToRuntimeSequence(RewritePattern):
         all_vars.extend(var for var in ssis.get_spatial_variables() if var.relevant)
 
         # Finally, remaining applicable temporal dims
-        all_vars.extend(var for var in non_reuse_tvars if var.applicable)
+        # assume output stationarity:
+        if isinstance(op, PushOp):
+            all_vars.extend(var for var in non_reuse_tvars if var.applicable)
+        else:  # pull op
+            all_vars.extend(var for var in non_reuse_tvars if var.relevant)
 
         # Calculate strides along with these iteration vars:
         seen_dims = defaultdict(lambda: 1)
