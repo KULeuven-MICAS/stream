@@ -305,7 +305,7 @@ class AIECodeGenerationStage(Stage):
         # seems to be this other way around
 
         # step 2:
-        combined_ranges = list(product(*ranges))
+        combined_ranges = list(product(*reversed(ranges)))
         for core, comb_ran in zip(mapping.resource_allocation, combined_ranges, strict=True):
             selected_inputs = []
             for input in inputs:
