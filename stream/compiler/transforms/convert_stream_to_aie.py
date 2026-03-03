@@ -858,7 +858,6 @@ class TransferToRuntimeSequence(RewritePattern):
             spatial = len(op.memtile) > 1 and var.type == IterationVariableType.SPATIAL and var.size == len(op.memtile)
             strides.append(Stride(var.size, stride, iteration_mults[var], spatial))
 
-        breakpoint()
         stride_dict = StrideSet(tuple(strides)).split()
         stride_dict = {x: y.canonicalize().legalize() for x, y in stride_dict.items()}
 
