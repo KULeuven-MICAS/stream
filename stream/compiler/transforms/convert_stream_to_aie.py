@@ -1,12 +1,12 @@
 import string
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import reduce
 from itertools import product
 from math import isqrt, prod
-from typing import Iterator, Self, cast
+from typing import Self, cast
 
 from snaxc.dialects.snax import LayoutCast
 from snaxc.dialects.tsl import TiledStridedLayoutAttr

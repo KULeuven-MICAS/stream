@@ -420,6 +420,7 @@ class TransferAndTensorAllocator:
         self._memory_capacity_constraints()
         self._object_fifo_depth_constraints()
         self._slot_latency_constraints()
+        self._force_nonconstant_reuse_levels()
 
     def _transfer_fire_rate_constraints(self):
         # firesC = Mem Core to Compute Core
@@ -665,6 +666,29 @@ class TransferAndTensorAllocator:
             s = self.slot_of[tr]
             lat = self._transfer_latency(tr, p)
             self.model.addConstr(self.slot_latency[s] >= lat * y, name=f"tr_lat_{tr.name}_{hash(p)}")
+
+    def _force_nonconstant_reuse_levels(self):
+        """
+        For transfer that are nonconstant (i.e. not constants coming from off-chip or going to off-chip),
+        and thus are not going through memtile (for now),
+        we need to force that there is reuse until the last irrelevant loop level
+        to ensure that this data is cached long enough to be reuse across the irrelevant loop.
+        """
+        for tr in self.transfer_nodes:
+            if self._is_const_io(tr):
+                continue
+            relevancies = self.ssis[tr].get_applicable_temporal_relevancies()
+            pass
+            last_irrelevant = -1
+            for i, r in enumerate(relevancies):
+                if r is False:
+                    last_irrelevant = i
+            if last_irrelevant >= 0:
+                # Enforce that atleast one of the vars from last_irrelevant to the end is set to reuse
+                self.model.addConstr(
+                    quicksum(self.z_stopC[(tr, s)] for s in range(last_irrelevant, len(relevancies))) >= 1,
+                    name=f"force_reuse_{tr.name}",
+                )
 
     # ...................... overlap + objective ................. #
     def _overlap_and_objective(self) -> None:
