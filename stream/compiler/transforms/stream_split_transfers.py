@@ -2,7 +2,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from xdsl.context import Context
-from xdsl.dialects.builtin import ArrayAttr, ModuleOp
+from xdsl.dialects.builtin import ModuleOp
 from xdsl.ir import Operation, OpResult
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (

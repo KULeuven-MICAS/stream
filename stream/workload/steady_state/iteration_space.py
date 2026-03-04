@@ -431,21 +431,27 @@ class SteadyStateIterationSpace:
 
     def get_applicable_temporal_variables(self) -> list[IterationVariable]:
         """
-        Returns the list of temporal iteration variables that are applicable to the operand (i.e. not absent).
+        Returns the list of temporal iteration variables that are applicable to the operand.
         """
         return [iv for iv in self.get_temporal_variables() if iv.applicable]
 
     def get_applicable_temporal_dimensions(self) -> list[LayerDim]:
         """
-        Returns the list of temporal loop dimensions that are applicable to the operand (i.e. not absent).
+        Returns the list of temporal loop dimensions that are applicable to the operand.
         """
         return [iv.dimension for iv in self.get_temporal_variables() if iv.applicable]
 
     def get_applicable_temporal_sizes(self) -> list[int]:
         """
-        Returns the list of sizes of temporal iteration variables that are applicable to the operand (i.e. not absent).
+        Returns the list of sizes of temporal iteration variables that are applicable to the operand.
         """
         return [iv.size for iv in self.get_temporal_variables() if iv.applicable]
+
+    def get_applicable_temporal_relevancies(self) -> list[bool]:
+        """
+        Returns the list of relevancies of temporal iteration variables that are applicable to the operand.
+        """
+        return [iv.relevant for iv in self.get_temporal_variables() if iv.applicable]
 
     # ..................................................................... #
     # ── Iteration / pretty printing                                         #
