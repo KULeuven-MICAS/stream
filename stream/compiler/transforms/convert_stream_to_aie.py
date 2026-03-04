@@ -1025,12 +1025,11 @@ class TransferToObjectFIFOPattern(RewritePattern):
         first_relevant_index = op.ssis.data.get_temporal_variables().index(first_relevant_iter)
 
         last_reuse = None
-        for var in op.ssis.data.get_temporal_variables():
+        for var in reversed(op.ssis.data.get_temporal_variables()):
             if var.compute_tile_reuse == ComputeTileReuse.REUSE:
                 last_reuse = var
-            else:
                 break
-        if last_reuse and False:
+        if last_reuse:
             last_reuse_index = op.ssis.data.get_temporal_variables().index(last_reuse)
             reuse_iters = op.ssis.data.get_temporal_variables()[first_relevant_index : last_reuse_index + 1]
         else:
