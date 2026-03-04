@@ -235,7 +235,7 @@ class AIECodeGenerationStage(Stage):
             row, col = mapping.memory_allocation[0].row_id, mapping.memory_allocation[0].col_id
             assert row is not None
             assert col is not None
-            if is_out_transfer:
+            if is_out_transfer and False:
                 row = 1
                 col = 7
                 memtile = ArrayAttr(
