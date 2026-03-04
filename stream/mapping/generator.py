@@ -6,6 +6,7 @@ import random
 import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
+from enum import Enum, auto
 from itertools import product
 from typing import Any
 
@@ -13,6 +14,17 @@ import yaml
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.workload.workload import Workload
+
+
+class MappingOrder(Enum):
+    """Ordering strategy applied to the enumerated mapping variants before emission."""
+
+    RANDOM = auto()
+    """Shuffle variants randomly (reproducible via the fixed RNG seed)."""
+
+    UTILIZATION = auto()
+    """Sort variants by total core utilisation (descending): variants that allocate more
+    cores across all layers come first."""
 
 
 @dataclass(frozen=True)
@@ -62,6 +74,7 @@ class MappingGenerator:
         # If True, require all layers to use disjoint cores in each mapping.
         disjoint_cores_per_layer: bool = True,
         layer_core_splits: dict[str, list[int]] | None = None,
+        ordering: MappingOrder = MappingOrder.RANDOM,
     ) -> None:
         self.accelerator = accelerator
         self.workload = workload
@@ -90,6 +103,7 @@ class MappingGenerator:
 
         self.max_variants = max_variants
         self.disjoint_cores_per_layer = disjoint_cores_per_layer
+        self.ordering = ordering
 
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -106,6 +120,10 @@ class MappingGenerator:
         """
         Yields (idx, variant, mapping_dict) for VALID mappings only.
         idx is contiguous over valid mappings: 0..N-1.
+
+        The order in which variants are visited is controlled by ``self.ordering``:
+        - ``MappingOrder.RANDOM``      – random shuffle (reproducible via the fixed seed)
+        - ``MappingOrder.UTILIZATION`` – descending total core count across all layers
         """
         layer_templates = self._build_layer_templates()
         per_layer_split_options = self._enumerate_inter_core_split_options(layer_templates)
@@ -114,7 +132,7 @@ class MappingGenerator:
             return
 
         all_variants = list(product(*per_layer_split_options))
-        self.rng.shuffle(all_variants)
+        all_variants = self._order_variants(all_variants)
 
         emitted = 0
         target = self.max_variants if self.max_variants is not None else float("inf")
@@ -130,6 +148,42 @@ class MappingGenerator:
 
             yield emitted, variant, mapping
             emitted += 1
+
+    # -------------------------
+    # Variant ordering strategies
+    # -------------------------
+    def _order_variants(
+        self,
+        variants: list[tuple[tuple[str, list[SplitSpec]], ...]],
+    ) -> list[tuple[tuple[str, list[SplitSpec]], ...]]:
+        """Dispatch to the appropriate ordering function based on ``self.ordering``."""
+        match self.ordering:
+            case MappingOrder.RANDOM:
+                return self._sort_variants_random(variants)
+            case MappingOrder.UTILIZATION:
+                return self._sort_variants_by_utilization(variants)
+
+    def _sort_variants_random(
+        self,
+        variants: list[tuple[tuple[str, list[SplitSpec]], ...]],
+    ) -> list[tuple[tuple[str, list[SplitSpec]], ...]]:
+        """Shuffle variants in-place using the seeded RNG and return them."""
+        self.rng.shuffle(variants)
+        return variants
+
+    def _sort_variants_by_utilization(
+        self,
+        variants: list[tuple[tuple[str, list[SplitSpec]], ...]],
+    ) -> list[tuple[tuple[str, list[SplitSpec]], ...]]:
+        """Sort variants by total cores allocated summed across all layers, descending.
+
+        A variant that allocates more cores in total (higher utilisation) appears first.
+        """
+
+        def _total_cores(variant: tuple[tuple[str, list[SplitSpec]], ...]) -> int:
+            return sum(self._num_cores_needed(specs) for (_, specs) in variant)
+
+        return sorted(variants, key=_total_cores, reverse=True)
 
     # -------------------------
     # Core building blocks
@@ -413,6 +467,7 @@ class MappingGenerator:
             "last_gemm_down": self.last_gemm_down,
             "disjoint_cores_per_layer": self.disjoint_cores_per_layer,
             "layer_core_splits": getattr(self, "layer_core_splits", {}),
+            "ordering": self.ordering.name,
         }
 
         # Atomic write
