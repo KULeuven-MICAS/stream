@@ -675,7 +675,7 @@ class TransferAndTensorAllocator:
         to ensure that this data is cached long enough to be reuse across the irrelevant loop.
         """
         for tr in self.transfer_nodes:
-            if self._is_const_io(tr):
+            if self._is_const_i(tr):
                 continue
             relevancies = self.ssis[tr].get_applicable_temporal_relevancies()
             pass
