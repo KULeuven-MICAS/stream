@@ -2202,7 +2202,7 @@ class RealizeLayoutCats(RewritePattern):
             assert isinstance(producer_type.layout, TiledStridedLayoutAttr)
             producer_layout = producer_type.layout.data
 
-        sizes, strides = get_transform(consumer_layout, producer_layout)
+        sizes, strides = get_transform(producer_layout, consumer_layout)
 
         transform_is_null = len(sizes) == 1 and strides == [1]
 
