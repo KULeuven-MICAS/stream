@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import reduce
 from itertools import product
-from math import isqrt, prod
+from math import dist, isqrt, prod
 from typing import Self, cast
 
 from snaxc.dialects.snax import LayoutCast
@@ -346,13 +346,15 @@ class ObjectFifoHop:
             assert len(memtiles) == 1
             fifos = [(memtiles[0], consumer_tiles)]
         object_fifos: list[ObjectFifoOp] = []
+        # FIXME: remove this stupid hardcoded factor:
+        distribroad_factor = 1 if of_type == "distribroad" else 0
         for i, (of_producer, of_consumers) in enumerate(fifos):
             if of_type in ("distribute", "distribroad"):
                 of_name = name_base + "_" + of_type + "_" + string.ascii_lowercase[i]
             else:
                 of_name = name_base + "_" + of_type
             object_fifo = ObjectFifoOp.from_referenced_type(
-                elemNumber=(consumers[0].ssis.data.nb_local_tensors_compute() + cls.DB_EXTRA,)
+                elemNumber=(consumers[0].ssis.data.nb_local_tensors_compute() + cls.DB_EXTRA + distribroad_factor,)
                 * (1 + len(of_consumers)),
                 producerTile=of_producer,
                 consumerTiles=of_consumers,
@@ -961,6 +963,9 @@ class TransferToObjectFIFOPattern(RewritePattern):
             operand = op.input
 
         assert isinstance(memref_type := operand.type, MemRefType)
+
+        # if of is not None and "15" in of.sym_name.data:
+        #     breakpoint()
 
         if len(join_ofs):
             # custom handling for programmatic join here:
