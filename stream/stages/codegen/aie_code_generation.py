@@ -159,9 +159,6 @@ class AIECodeGenerationStage(Stage):
         transfer_elements = prod(transfer_shape)
         # spatio_temporal_elements = prod(v.size for v in ssis_dest.get_spatio_temporal_variables())
         # spatial_stride = transfer_elements * spatio_temporal_elements
-        n = node
-        a = len(inputs)
-        b = num_spat_results
         if is_out_transfer:
             st_factor = num_spat_results // len(inputs)
             spatial_strides = tuple(range(0, transfer_elements * num_spat_results, transfer_elements * st_factor))
