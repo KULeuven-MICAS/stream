@@ -351,12 +351,18 @@ class SteadyStateIterationSpace:
         """
         Returns the number of tensors that are kept local in a compute tile.
         """
-        return 1
-        return prod(
-            iv.size
-            for iv in self.get_temporal_variables()
-            if iv.relevant and iv.compute_tile_reuse == ComputeTileReuse.REUSE
-        )
+        last_reuse = None
+        for var in reversed(self.get_temporal_variables()):
+            if var.compute_tile_reuse == ComputeTileReuse.REUSE:
+                last_reuse = var
+                break
+        if last_reuse:
+            last_reuse_index = self.get_temporal_variables().index(last_reuse)
+            reuse_iters = self.get_temporal_variables()[: last_reuse_index + 1]
+        else:
+            reuse_iters = []
+
+        return prod(iv.size for iv in reuse_iters if iv.relevant)
 
     def nb_local_tensors_mem(self) -> int:
         """
