@@ -159,11 +159,20 @@ class AIECodeGenerationStage(Stage):
         transfer_elements = prod(transfer_shape)
         # spatio_temporal_elements = prod(v.size for v in ssis_dest.get_spatio_temporal_variables())
         # spatial_stride = transfer_elements * spatio_temporal_elements
+        n = node
+        a = len(inputs)
+        b = num_spat_results
         if is_out_transfer:
             st_factor = num_spat_results // len(inputs)
+            spatial_strides = tuple(range(0, transfer_elements * num_spat_results, transfer_elements * st_factor))
+        elif len(inputs) == 1:
+            spatial_strides = tuple(range(0, transfer_elements * num_spat_results, transfer_elements))
+        elif num_spat_results == 1:
+            spatial_strides = tuple(range(0, transfer_elements * len(inputs), transfer_elements))
         else:
-            st_factor = 1
-        spatial_strides = tuple(range(0, transfer_elements * num_spat_results, transfer_elements * st_factor))
+            # FIXME: spatial strides can apply to both input and output but it is not very clear right now
+            spatial_strides = tuple(range(0, transfer_elements * num_spat_results, transfer_elements))
+            # raise NotImplementedError("The case with multiple inputs and multiple spatial results is not implemented yet")
 
         # Determine the temporal strides for this transfer:
         seen_dims = defaultdict(lambda: 1)
