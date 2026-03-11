@@ -404,7 +404,7 @@ class ObjectFifoHop:
                 producerTile=memtile,
                 consumerTiles=[tile_op_manager.insert_or_update(memtile.col.value.data, 0)],
                 referenced_type=memref_type.get_element_type(),
-                shape=consumer.ssis.data.shape_mem(),
+                shape=consumer.ssis.data.shape_mem(len(memtiles)),
                 name=name_base + "mem" + "_" + string.ascii_lowercase[i],
             )
             del object_fifo.properties["repeat_count"]
@@ -461,57 +461,42 @@ class ObjectFifoChain:
 
     @staticmethod
     def get_links(hop_in: ObjectFifoHop, hop_out: ObjectFifoHop) -> Sequence[ObjectFifoLinkOp]:
-        links = []
-        if len(hop_in.fifos) > 1:
+        if len(hop_in.fifos) > len(hop_out.fifos):
             # determine src offsets
             assert isinstance(memref_out := hop_out.fifos[0].elemType.buffer, MemRefType)
-            offset = prod(memref_out.get_shape()) // len(hop_in.fifos)
-            src_offsets = [i * offset for i in range(len(hop_in.fifos))]
-        else:
-            src_offsets = []
-        if len(hop_out.fifos) > 1:
-            assert isinstance(memref_in := hop_in.fifos[0].elemType.buffer, MemRefType)
-            offset = prod(memref_in.get_shape()) // len(hop_out.fifos)
-            dst_offsets = [i * offset for i in range(len(hop_out.fifos))]
-        else:
-            dst_offsets = []
-        if len(hop_in.fifos) > 1 and len(hop_out.fifos) > 1:
-            # join split over multiple memtile and objectfifos:
-            if len(hop_in.fifos) > len(hop_out.fifos):
-                factor = len(hop_in.fifos) // len(hop_out.fifos)
-                # output fifo (compute -> mem)
-                return [
-                    ObjectFifoLinkOp(
-                        [fifin.sym_name.data for fifin in hop_in.fifos if fifout.producerTile in fifin.consumerTiles],
-                        [fifout.sym_name.data],
-                        src_offsets[:factor],
-                        [],
-                    )
-                    for fifout in hop_out.fifos
-                ]
-            else:
-                factor = len(hop_out.fifos) // len(hop_in.fifos)
-                # output fifo (compute -> mem)
-                return [
-                    ObjectFifoLinkOp(
-                        [fifin.sym_name.data],
-                        [
-                            fifout.sym_name.data
-                            for fifout in hop_out.fifos
-                            if fifout.producerTile in fifin.consumerTiles
-                        ],
-                        [],
-                        dst_offsets[:factor],
-                    )
-                    for fifin in hop_in.fifos
-                ]
-        else:
+            offset = prod(memref_out.get_shape()) // (len(hop_in.fifos) // len(hop_out.fifos))
+            src_offsets = [i * offset for i in range(len(hop_in.fifos) // len(hop_out.fifos))]
             return [
                 ObjectFifoLinkOp(
-                    [fifo.sym_name.data for fifo in hop_in.fifos],
-                    [fifo.sym_name.data for fifo in hop_out.fifos],
+                    [fifin.sym_name.data for fifin in hop_in.fifos if fifout.producerTile in fifin.consumerTiles],
+                    [fifout.sym_name.data],
                     src_offsets,
+                    [],
+                )
+                for fifout in hop_out.fifos
+            ]
+        elif len(hop_out.fifos) > len(hop_in.fifos):
+            assert isinstance(memref_in := hop_in.fifos[0].elemType.buffer, MemRefType)
+            offset = prod(memref_in.get_shape()) // (len(hop_out.fifos) // len(hop_in.fifos))
+            dst_offsets = [i * offset for i in range(len(hop_out.fifos) // len(hop_in.fifos))]
+            return [
+                ObjectFifoLinkOp(
+                    [fifin.sym_name.data],
+                    [fifout.sym_name.data for fifout in hop_out.fifos if fifout.producerTile in fifin.consumerTiles],
+                    [],
                     dst_offsets,
+                )
+                for fifin in hop_in.fifos
+            ]
+        else:
+            assert len(hop_in.fifos) == 1
+            assert len(hop_out.fifos) == 1
+            return [
+                ObjectFifoLinkOp(
+                    [hop_in.fifos[0].sym_name.data],
+                    [hop_out.fifos[0].sym_name.data],
+                    [],
+                    [],
                 )
             ]
 

@@ -317,7 +317,7 @@ class SteadyStateIterationSpace:
         """Total elements/bits in *one* slice (product of *all* loop sizes)."""
         return prod(v.size for v in self.variables) if self.variables else 1
 
-    def shape_mem(self) -> tuple[int, ...]:
+    def shape_mem(self, num_memtiles: int = 1) -> tuple[int, ...]:
         """
         Returns the shape of the relevant iteration space kept local in a memtile.
         Kernel dimensions may be misordered.
@@ -327,7 +327,7 @@ class SteadyStateIterationSpace:
         shape = tuple(var.size for var in self.get_kernel_variables() if var.relevant)
 
         # add relevant spatial shape
-        spatial_shape = tuple(var.size for var in self.get_spatial_variables() if var.relevant)
+        spatial_shape = tuple(var.size for var in self.get_spatial_variables() if var.relevant and var.size != num_memtiles)
         shape = spatial_shape + shape
 
         # add dims reused in memtile
