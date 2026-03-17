@@ -1792,17 +1792,12 @@ class EraseEdges(RewritePattern):
 @dataclass
 class OrderDMAs(RewritePattern):
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: DmaConfigureTaskForOp, rewriter: PatternRewriter) -> None:
-        if not isinstance(next := op.next_op, DmaConfigureTaskForOp):
-            return
-        if "iteration_t" not in op.attributes or "iteration_t" not in next.attributes:
-            return
-        assert isa(iteration_t := op.attributes["iteration_t"], IntegerAttr[IndexType])
-        assert isa(next_iteration_t := next.attributes["iteration_t"], IntegerAttr[IndexType])
-        if iteration_t.value.data > next_iteration_t.value.data:
-            op.detach()
-            rewriter.insert_op(op, InsertPoint.after(next))
-
+    def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter) -> None:
+        dma_ops = [op for op in op.body.block.ops if isinstance(op, DmaConfigureTaskForOp)]
+        dma_ops = sorted(dma_ops, key=lambda op: op.attributes['iteration_t'].value.data)
+        for dma_op in dma_ops:
+            dma_op.detach()
+        rewriter.insert_op(dma_ops, InsertPoint.at_start(op.body.block))
 
 @dataclass
 class SyncDMAs(RewritePattern):
