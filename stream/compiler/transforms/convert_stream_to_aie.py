@@ -698,11 +698,6 @@ class TransferToRuntimeSequence(RewritePattern):
         # calculate iteration multipliers for every var in the transfer:
         iteration_mults: dict[IterationVariable, int] = defaultdict(lambda: 1)
         iteration_mult = 1
-        for var in ssis.variables:
-            if var.type == IterationVariableType.KERNEL:
-                continue
-            iteration_mults[var] = iteration_mult
-            iteration_mult *= var.size
 
         # gather all vars to iterate in the dma call:
         all_vars: Sequence[IterationVariable] = []
@@ -717,6 +712,8 @@ class TransferToRuntimeSequence(RewritePattern):
         reuse_tvars = []
         for var in ssis.get_temporal_variables():
             if var.mem_tile_reuse == MemTileReuse.REUSE:
+                iteration_mults[var] = iteration_mult
+                iteration_mult *= var.size
                 reuse_tvars.append(var)
             else:
                 break
@@ -724,10 +721,16 @@ class TransferToRuntimeSequence(RewritePattern):
         all_vars.extend(var for var in reuse_tvars if var.relevant)
 
         # Then, iterate the relevant spatial vars:
+        for var in ssis.get_spatial_variables():
+            iteration_mults[var] = iteration_mult
+            iteration_mult *= var.size
         all_vars.extend(var for var in ssis.get_spatial_variables() if var.relevant)
 
         # Finally, remaining applicable temporal dims
         # assume output stationarity:
+        for var in non_reuse_tvars:
+            iteration_mults[var] = iteration_mult
+            iteration_mult *= var.size
         if isinstance(op, PushOp):
             all_vars.extend(var for var in non_reuse_tvars if var.applicable)
         else:  # pull op
@@ -789,7 +792,7 @@ class TransferToRuntimeSequence(RewritePattern):
                         new_strides[-1] = Stride(
                             var.size * new_strides[-1].size,
                             new_strides[-1].stride,
-                            new_strides[-1].iteration_t,
+                            var.iteration_t // new_strides[-1].size,
                         )
                     else:
                         new_strides.append(var)
