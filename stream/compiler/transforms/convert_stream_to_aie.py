@@ -347,7 +347,7 @@ class ObjectFifoHop:
             fifos = [(memtiles[0], consumer_tiles)]
         object_fifos: list[ObjectFifoOp] = []
         # FIXME: remove this stupid hardcoded factor:
-        distribroad_factor = 1 if of_type == "distribroad" else 0
+        distribroad_factor = 0 if of_type == "distribroad" else 0
         for i, (of_producer, of_consumers) in enumerate(fifos):
             if of_type in ("distribute", "distribroad"):
                 of_name = name_base + "_" + of_type + "_" + string.ascii_lowercase[i]
