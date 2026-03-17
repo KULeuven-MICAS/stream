@@ -804,7 +804,8 @@ class TransferToRuntimeSequence(RewritePattern):
                 new_strides: list[Stride] = []
                 # make sure that no bound limits are exceeded
                 # FIXME: figure out actual limits
-                bound_limits = (1023, 1023, 1023, 1023)
+                # these are innermost to outermost:
+                bound_limits = (1024, 1024, 16384, 64)
                 for i, (stride, bound_limit) in enumerate(zip(self.strides, bound_limits, strict=False)):
                     if stride.size > bound_limit:
                         # find largest number under bound that is a divisor of the size:
