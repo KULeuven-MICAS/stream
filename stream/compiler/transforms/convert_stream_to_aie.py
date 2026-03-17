@@ -5,7 +5,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from functools import reduce
 from itertools import product
-from math import dist, isqrt, prod
+from math import isqrt, prod
 from typing import Self, cast
 
 from snaxc.dialects.snax import LayoutCast
@@ -1809,7 +1809,10 @@ class SyncDMAs(RewritePattern):
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter):
-        active_tasks: dict[Attribute, DmaConfigureTaskForOp] = {}
+        active_tasks: dict[Attribute, list[DmaConfigureTaskForOp]] = {}
+
+        # ping ponging between two bds per object fifo, so we can have at most one active task per object fifo at a time
+        nb_bds_per_of = 2
 
         for dma in op.walk():
             if not isinstance(dma, DmaConfigureTaskForOp):
@@ -1817,14 +1820,19 @@ class SyncDMAs(RewritePattern):
 
             # update active tasks list and potentionaly sync on previous one
             if dma.alloc not in active_tasks:
-                active_tasks[dma.alloc] = dma
+                active_tasks[dma.alloc] = [dma]
+            elif len(active_tasks[dma.alloc]) < nb_bds_per_of:
+                active_tasks[dma.alloc].append(dma)
             else:
-                active_tasks[dma.alloc].issue_token = IntegerAttr.from_int_and_width(1, 1)
-                rewriter.insert_op(DmaAwaitTaskOp(active_tasks[dma.alloc]), InsertPoint.before(dma))
-                active_tasks[dma.alloc] = dma
+                assert len(active_tasks[dma.alloc]) == nb_bds_per_of
+                to_sync = active_tasks[dma.alloc].pop(0)
+                to_sync.issue_token = IntegerAttr.from_int_and_width(1, 1)
+                rewriter.insert_op(DmaAwaitTaskOp(to_sync), InsertPoint.before(dma))
+                active_tasks[dma.alloc].append(dma)
 
         # at the end, wait for all latest tasks
-        for task in active_tasks.values():
+        for tasklist in active_tasks.values():
+            task = tasklist[-1]
             task.issue_token = IntegerAttr.from_int_and_width(1, 1)
             rewriter.insert_op(DmaAwaitTaskOp(task), InsertPoint.at_end(op.body.block))
 
@@ -2461,7 +2469,7 @@ class ConvertStreamToAIEPass(ModulePass):
             apply_recursively=False,
         ).rewrite_module(op)
 
-        PatternRewriteWalker(OrderDMAs()).rewrite_module(op)
+        PatternRewriteWalker(OrderDMAs(), apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(SyncDMAs(), apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(StartDMAs(), apply_recursively=False).rewrite_module(op)
 
