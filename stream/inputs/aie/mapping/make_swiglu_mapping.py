@@ -143,8 +143,12 @@ def make_swiglu_mapping2(
                 "layout": "default",
             },
         }
-    inter_core_tiling_gemm_left = [{"dim": "D0", "split": 4}, {"dim": "D2", "split": 2}]
-    compute_allocation_gemm_left = [2, 3, 4, 5, 8, 9, 10, 11]
+    inter_core_tiling_gemm_left = [
+        [{"dim": "D0", "split": 4}, {"dim": "D2", "split": 2}],
+    ]
+    compute_allocation_gemm_left = [
+        [2, 3, 4, 5, 8, 9, 10, 11],
+    ]
     # inter_core_tiling_gemm_left = [{"dim": "D2", "split": 2}]
     # compute_allocation_gemm_left = [2, 8]
     gemm_left = {
@@ -154,8 +158,12 @@ def make_swiglu_mapping2(
         "kernel": copy.deepcopy(kernel_gemm),
     }
     # Right Gemm
-    inter_core_tiling_gemm_right = [{"dim": "D0", "split": 4}, {"dim": "D2", "split": 2}]
-    compute_allocation_gemm_right = [14, 15, 16, 17, 20, 21, 22, 23]
+    inter_core_tiling_gemm_right = [
+        [{"dim": "D0", "split": 4}, {"dim": "D2", "split": 2}],
+    ]
+    compute_allocation_gemm_right = [
+        [14, 15, 16, 17, 20, 21, 22, 23],
+    ]
     # inter_core_tiling_gemm_right = [{"dim": "D2", "split": 2}]
     # compute_allocation_gemm_right = [14, 20]
     gemm_right = {
@@ -165,8 +173,12 @@ def make_swiglu_mapping2(
         "kernel": copy.deepcopy(kernel_gemm),
     }
     # SiLU specific mapping entries. SiLU uses SIMDParser which for two dims goes to (B, H)
-    compute_allocation_silu = [26, 27, 28, 29]
-    inter_core_tiling_silu = [{"dim": "D0", "split": 4}]
+    compute_allocation_silu = [
+        [26, 27, 28, 29],
+    ]
+    inter_core_tiling_silu = [
+        [{"dim": "D0", "split": 4}],
+    ]
     # compute_allocation_silu = [26]
     # inter_core_tiling_silu = []
     kernel_silu = {"name": "silu", "kwargs": {"utilization": 50.0, "layout": "default"}}  # TODO: utilization
@@ -178,8 +190,12 @@ def make_swiglu_mapping2(
     }
 
     # Elementwise Mul specific mapping entries
-    compute_allocation_mul = [32, 33, 34, 35]
-    inter_core_tiling_mul = [{"dim": "D0", "split": 4}]
+    compute_allocation_mul = [
+        [32, 33, 34, 35],
+    ]
+    inter_core_tiling_mul = [
+        [{"dim": "D0", "split": 4}],
+    ]
     # compute_allocation_mul = [32]
     # inter_core_tiling_mul = []
     kernel_mul = {"name": "eltwise_mul", "kwargs": {"utilization": 50.0, "layout": "default"}}  # TODO: utilization
@@ -192,8 +208,12 @@ def make_swiglu_mapping2(
 
     # Final down projection Gemm
     if last_gemm_down:
-        inter_core_tiling_gemm_down = [{"dim": "D0", "split": 4}, {"dim": "D2", "split": 2}]
-        compute_allocation_gemm_down = [38, 39, 40, 41, 44, 45, 46, 47]
+        inter_core_tiling_gemm_down = [
+            [{"dim": "D0", "split": 4}, {"dim": "D2", "split": 2}],
+        ]
+        compute_allocation_gemm_down = [
+            [38, 39, 40, 41, 44, 45, 46, 47],
+        ]
         # inter_core_tiling_gemm_down = [{"dim": "D2", "split": 2}]
         # compute_allocation_gemm_down = [38, 44]
         kernel_gemm = {

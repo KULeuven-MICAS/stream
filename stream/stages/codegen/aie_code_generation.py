@@ -30,7 +30,6 @@ from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.iteration_space import (
     IterationVariable,
     IterationVariableType,
-    MemTileReuse,
     SteadyStateIterationSpace,
 )
 from stream.workload.workload import (

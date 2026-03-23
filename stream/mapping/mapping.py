@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeAlias
 
 from stream.compiler.kernels.aie_kernel import AIEKernel
+from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.core import Core
-from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.workload.utils import get_equivalent_dimension
 from stream.workload.workload import Node, Workload
 
-Resource = Core | tuple[CommunicationLink, ...]
+Resource: TypeAlias = Core | MulticastPathPlan
 
 
 @dataclass(slots=True)
@@ -34,9 +34,9 @@ class FusedGroup:
 class NodeMapping:
     """Mapping attributes for a single workload Node. A Node can be either a ComputationNode or a TransferNode."""
 
-    resource_allocation: tuple[Resource, ...] = field(default_factory=tuple)
-    inter_core_tiling: InterCoreTiling = field(default_factory=tuple)
-    memory_allocation: tuple[Core, ...] = field(default_factory=tuple)
+    resource_allocation: tuple[tuple[Resource, ...], ...] = field(default_factory=tuple)
+    inter_core_tiling: tuple[InterCoreTiling, ...] = field(default_factory=tuple)
+    memory_allocation: tuple[tuple[Core, ...], ...] = field(default_factory=tuple)
     kernel: AIEKernel | None = None
 
     def __post_init__(self) -> None:
@@ -46,13 +46,14 @@ class NodeMapping:
         if not isinstance(self.inter_core_tiling, tuple):
             raise TypeError("inter_core_tiling must be a tuple of (dimension, factor) tuples")
 
-        for item in self.inter_core_tiling:
-            required_length = 2
-            if not (isinstance(item, tuple) and len(item) == required_length):
-                raise TypeError("inter_core_tiling entries must be tuples of length 2: (dim, factor)")
-            dim, factor = item
-            if not isinstance(factor, int) or factor <= 0:
-                raise ValueError(f"Tiling factor for '{dim}' must be a positive int, got {factor!r}.")
+        for entry in self.inter_core_tiling:
+            for item in entry:
+                required_length = 2
+                if not (isinstance(item, tuple) and len(item) == required_length):
+                    raise TypeError("inter_core_tiling entries must be tuples of length 2: (dim, factor)")
+                dim, factor = item
+                if not isinstance(factor, int) or factor <= 0:
+                    raise ValueError(f"Tiling factor for '{dim}' must be a positive int, got {factor!r}.")
 
         if self.kernel is not None:
             if not isinstance(self.kernel, AIEKernel):
@@ -85,12 +86,19 @@ class Mapping:
             raise TypeError("layer_mapping must be a NodeMapping instance")
         self._by_node[node] = layer_mapping
 
+    def update_memory_allocation_for_node(
+        self,
+        node: Node,
+        new_memory_allocation: tuple[tuple[Core, ...], ...],
+    ) -> None:
+        self._by_node[node].memory_allocation = new_memory_allocation
+
     def set_for_node(
         self,
         node: Node,
-        resource_allocation: tuple[Resource, ...],
-        inter_core_tiling: InterCoreTiling,
-        memory_allocation: tuple[Core, ...] = (),
+        resource_allocation: tuple[tuple[Resource, ...], ...],
+        inter_core_tiling: tuple[InterCoreTiling, ...],
+        memory_allocation: tuple[tuple[Core, ...], ...] = (),
         kernel: AIEKernel | None = None,
     ) -> None:
         self.set(
@@ -105,7 +113,8 @@ class Mapping:
 
     def get(self, node: Node) -> NodeMapping:
         layer_mapping = self._by_node.get(node)
-        assert layer_mapping is not None, f"No LayerMapping found for node {node}"
+        if layer_mapping is None:
+            raise KeyError(f"Node {node} not found in mapping")
         return layer_mapping
 
     def remove(self, node: Node) -> None:

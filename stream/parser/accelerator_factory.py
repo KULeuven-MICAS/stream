@@ -82,6 +82,7 @@ class AcceleratorFactory:
             )
         core.utilization = core_data.get("utilization", 100)
         core.max_object_fifo_depth = max_object_fifo_depth[core.type]
+        core.max_buffer_descriptor_depth = core.max_object_fifo_depth + 4  # TODO: Fix this creation abomination
         if coordinates:
             core.col_id = coordinates[0]
             core.row_id = coordinates[1]

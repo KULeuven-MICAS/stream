@@ -61,9 +61,16 @@ class CoreCostEstimationStage(Stage):
         self.cost_lut_path: str = os.path.join(self.output_path, "core_cost_lut.pickle")
         self.visualize_cost_lut_path: str = os.path.splitext(self.cost_lut_path)[0] + ".png"
 
-        self.valid_allocations: dict[ComputationNode, list[Core]] = {
-            node: self.mapping.get(node).resource_allocation for node in self.workload.get_computation_nodes()
-        }
+        self.valid_allocations: dict[ComputationNode, list[Core]] = {}
+        for node in self.workload.get_computation_nodes():
+            node_mapping = self.mapping.get(node)
+            if node_mapping is None:
+                raise ValueError(f"No mapping found for node {node.name}")
+            assert len(node_mapping.resource_allocation) == 1, (
+                "TODO: Support multiple resource allocation entries per node"
+            )
+            cores = node_mapping.resource_allocation[0]  # TODO: support multiple resource allocation entries
+            self.valid_allocations[node] = cores
         self.cost_lut: CoreCostLUT = CoreCostLUT(self.cost_lut_path)
 
     def run(self):

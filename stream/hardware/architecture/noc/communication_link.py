@@ -44,8 +44,8 @@ class CommunicationLink:
 
     def __init__(
         self,
-        sender: "Core | Literal['Any']",
-        receiver: "Core | Literal['Any']",
+        sender: "Core",
+        receiver: "Core",
         bandwidth: int | float,
         unit_energy_cost: float,
         bidirectional: bool = False,

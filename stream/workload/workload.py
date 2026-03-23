@@ -123,7 +123,7 @@ class Workload(DiGraphWrapper[Node]):
         return tuple(cast(HasIterationSpace, node) for node in self.nodes if isinstance(node, HasIterationSpace))
 
     def get_node_by_name(self, name: str) -> Node:
-        for node in self.nodes:
+        for node in self.node_list:
             if node.name == name:
                 return node
         raise KeyError(f"No node with name {name} found in workload.")
@@ -191,8 +191,9 @@ class Workload(DiGraphWrapper[Node]):
         node_mapping = mapping.get(node)
         assert node_mapping is not None, f"No mapping found for node {node.name}"
         unique_node_dims = self.get_dims(node)
-        converted_tiling: InterCoreTiling = []
-        for dim, factor in node_mapping.inter_core_tiling:
+        converted_tiling: list[InterCoreTiling] = []
+        assert len(node_mapping.inter_core_tiling) == 1, "TODO: Support multiple inter_core_tiling entries per node"
+        for dim, factor in node_mapping.inter_core_tiling[0]:
             dim_idx = dim.position
             unique_dim = unique_node_dims[dim_idx]
             converted_tiling.append((unique_dim, factor))
@@ -241,9 +242,13 @@ class Workload(DiGraphWrapper[Node]):
         succ = list(self.successors(transfer))[succ_idx]
         if isinstance(succ, OutEdge):
             succ_tiling = tuple()
-        else:
-            assert isinstance(succ, ComputationNode), f"Expected ComputationNode, got {type(succ)}"
+        elif isinstance(succ, TransferNode):
+            # Successor transfer node should have same tiling as current transfer since they are on the same core
             succ_tiling = self.get_unique_dims_inter_core_tiling(succ, mapping)
+        elif isinstance(succ, ComputationNode):
+            succ_tiling = self.get_unique_dims_inter_core_tiling(succ, mapping)
+        else:
+            raise TypeError(f"Unexpected successor type {type(succ)} for transfer node {transfer.name}")
         new_shape = self.get_tensor_shape_with_tiling(tensor, succ_tiling)
         new_subview = SubviewOp.from_static_parameters(
             source=tensor.subview.source,
@@ -283,6 +288,20 @@ class Workload(DiGraphWrapper[Node]):
             shape=new_shape,
             subview=new_subview,
         )
+
+    def replace_node(self, old_node: Node, new_node: Node) -> None:
+        """Replace a node in the workload with a new node, updating edges accordingly."""
+        if old_node not in self.node_list:
+            try:
+                old_node = self.get_node_by_name(old_node.name)
+            except KeyError as e:
+                raise KeyError(f"Node {old_node.name} not found in workload.") from e
+        self.add_node(new_node)
+        for pred in self.predecessors(old_node):
+            self.add_edge(pred, new_node)
+        for succ in self.successors(old_node):
+            self.add_edge(new_node, succ)
+        self.remove_node(old_node)
 
     def with_modified_dimension_sizes(self, new_sizes: dict[LayerDim, int]) -> "Workload":
         """Create a new workload where the dimension sizes of the given global dimension indices are modified to the new
@@ -474,14 +493,11 @@ class Workload(DiGraphWrapper[Node]):
         if ssis is not None:
             temporal_loop_dims = reversed(ssis.get_temporal_variables())
             temporal_loop_sizes = reversed(ssis.get_temporal_sizes())
-            compute_tile_reuses = reversed(ssis.get_temporal_compute_tile_reuses())
-            mem_tile_reuses = reversed(ssis.get_temporal_mem_tile_reuses())
+            reuses = reversed(ssis.get_temporal_reuses())
             label = "\nForLoops:"
             indent = ""
-            for dim, size, ctr, mtr in zip(
-                temporal_loop_dims, temporal_loop_sizes, compute_tile_reuses, mem_tile_reuses, strict=True
-            ):
-                label += f"\n{indent}{dim}: {size}; C={ctr}, M={mtr}"
+            for dim, size, reuse in zip(temporal_loop_dims, temporal_loop_sizes, reuses, strict=True):
+                label += f"\n{indent}{dim}: {size}; Reuse={reuse}"
                 indent += "  "
             label += "\n"
             return f"{label}"
