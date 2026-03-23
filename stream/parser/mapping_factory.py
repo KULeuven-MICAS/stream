@@ -29,8 +29,8 @@ class MappingFactory:
         # For each computation node in the graph set up mapping attributes
         for cn in self.workload.get_computation_nodes():
             mapping_data = self.get_mapping_data_for_node(cn)
-            resource_allocation = tuple(self.get_resource_allocation(mapping_data))
-            inter_core_tiling = self.create_inter_core_tiling(mapping_data, node=cn)
+            resource_allocation = self.get_resource_allocation(mapping_data)
+            inter_core_tiling = self.convert_inter_core_tiling(mapping_data, node=cn)
             kernel = self.create_kernel(mapping_data)
             mapping.set(
                 cn,
@@ -48,15 +48,17 @@ class MappingFactory:
                 return mapping_data
         raise ValueError(f"No mapping data found for node with name {node.name}")
 
-    def get_resource_allocation(self, mapping_data: dict[str, Any]) -> list["Core"]:
-        core_ids = mapping_data["core_allocation"]
+    def get_resource_allocation(self, mapping_data: dict[str, Any]) -> tuple[tuple["Core", ...], ...]:
         cores = []
-        for core_id in core_ids:
-            core = self.accelerator.get_core(core_id)
-            if core is None:
-                raise ValueError(f"Core with id {core_id} not found in accelerator.")
-            cores.append(core)
-        return cores
+        for core_ids in mapping_data["core_allocation"]:
+            core_group = []
+            for core_id in core_ids:
+                core = self.accelerator.get_core(core_id)
+                if core is None:
+                    raise ValueError(f"Core with id {core_id} not found in accelerator.")
+                core_group.append(core)
+            cores.append(tuple(core_group))
+        return tuple(cores)
 
     def kernel_args_match_kernel_signature(self, kernel, kwargs):
         try:
@@ -75,9 +77,15 @@ class MappingFactory:
             raise ValueError(f"Kernel arguments {kernel_kwargs} do not match kernel {kernel_name} signature.")
         return kernel(**kernel_kwargs)
 
-    def create_inter_core_tiling(self, mapping_data: dict[str, Any], node: ComputationNode) -> InterCoreTiling:
+    def convert_inter_core_tiling(
+        self, mapping_data: dict[str, Any], node: ComputationNode
+    ) -> tuple[InterCoreTiling, ...]:
         entries = mapping_data.get("inter_core_tiling", [])
-        return tuple(self._convert_inter_core_tiling_entry(entry, node) for entry in entries)
+        converted_entries = []
+        for entry in entries:
+            converted = tuple(self._convert_inter_core_tiling_entry(sub_entry, node) for sub_entry in entry)
+            converted_entries.append(converted)
+        return tuple(converted_entries)
 
     def _convert_inter_core_tiling_entry(self, entry: dict[str, Any], node: ComputationNode) -> tuple[LayerDim, int]:
         dim_str = entry["dim"]

@@ -3,8 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from gurobipy import GRB
-
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.config import (
@@ -14,6 +12,7 @@ from stream.opt.allocation.constraint_optimization.config import (
     ensure_profile_registry,
     pick_profile,
 )
+from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
 
 if TYPE_CHECKING:
     import gurobipy as gp
@@ -72,53 +71,51 @@ class TransferAndTensorContext:
     mem_cores: list[Core]
     force_double_buffering: bool
     force_io_transfers_on_mem_tile: bool
+    max_compute_tile_dma_channels: int
     max_mem_tile_dma_channels: int
     max_shim_tile_dma_channels: int
     object_fifo_cores: set[Core]
 
-    def add_object_fifo_constraints(self, model: gp.Model, object_fifo_depth: dict[Core, gp.LinExpr]) -> None:
+    def add_object_fifo_constraints(self, model: gp.Model, object_fifo_depth: dict[Core, gp.QuadExpr]) -> None:
         for core, expr in object_fifo_depth.items():
             if core not in self.object_fifo_cores:
                 continue
             model.addConstr(expr <= core.max_object_fifo_depth, name=f"obj_fifo_depth_Core {core.id}")
 
     def add_buffer_descriptor_constraints(
-        self, model: gp.Model, buffer_descriptor_depth: dict[Core, gp.LinExpr]
+        self, model: gp.Model, buffer_descriptor_depth: dict[Core, gp.QuadExpr]
     ) -> None:
         for core, expr in buffer_descriptor_depth.items():
             if core not in self.object_fifo_cores:
                 continue
-            model.addConstr(expr <= core.max_object_fifo_depth, name=f"obj_fifo_depth_Core {core.id}")
+            model.addConstr(expr <= core.max_buffer_descriptor_depth, name=f"bd_depth_Core {core.id}")
+
+    def get_max_dma_channels(self, core: Core) -> int:
+        if core.id == self.offchip_core_id:
+            return self.max_shim_tile_dma_channels
+        elif core.type == "memory":
+            return self.max_mem_tile_dma_channels
+        elif core.type == "compute":
+            return self.max_compute_tile_dma_channels
+        else:
+            raise ValueError(f"Unexpected core type for DMA channel constraint: {core.type}")
 
     def add_dma_usage_constraints(
         self,
-        model,
-        mem_core_usage_s2mm: dict[Core, gp.Var],
-        mem_core_usage_mm2s: dict[Core, gp.Var],
-        shim_core_usage_s2mm: dict[Core, gp.Var],
-        shim_core_usage_mm2s: dict[Core, gp.Var],
-    ) -> tuple[gp.Var, gp.Var]:
-        max_mem_core_usage = model.addVar(vtype=GRB.INTEGER, name="maxMemCoreUsage")
-        for i, usage in enumerate(mem_core_usage_s2mm.values()):
-            model.addConstr(max_mem_core_usage >= usage, name=f"maxMemCoreUsageS2MM_le_{i}")
-        for i, usage in enumerate(mem_core_usage_mm2s.values()):
-            model.addConstr(max_mem_core_usage >= usage, name=f"maxMemCoreUsageMM2S_le_{i}")
-        model.addConstr(
-            max_mem_core_usage <= self.max_mem_tile_dma_channels,
-            name=f"maxMemCoreUsage_le_{self.max_mem_tile_dma_channels}",
-        )
+        model: gp.Model,
+        core_dma_in: dict[Core, gp.Var],
+        core_dma_out: dict[Core, gp.Var],
+    ):
+        """
+        Add hard incoming/outgoing DMA channel constraints per core.
+        """
+        for core, v_in in core_dma_in.items():
+            max_in = self.get_max_dma_channels(core)
+            model.addConstr(v_in <= max_in, name=f"dma_in_cap_{_resource_key(core)}")
 
-        max_shim_core_usage = model.addVar(vtype=GRB.INTEGER, name="maxShimCoreUsage")
-        for i, usage in enumerate(shim_core_usage_s2mm.values()):
-            model.addConstr(max_shim_core_usage >= usage, name=f"maxShimCoreUsageS2MM_le_{i}")
-        for i, usage in enumerate(shim_core_usage_mm2s.values()):
-            model.addConstr(max_shim_core_usage >= usage, name=f"maxShimCoreUsageMM2S_le_{i}")
-        model.addConstr(
-            max_shim_core_usage <= self.max_shim_tile_dma_channels,
-            name=f"maxShimCoreUsage_le_{self.max_shim_tile_dma_channels}",
-        )
-
-        return max_mem_core_usage, max_shim_core_usage
+        for core, v_out in core_dma_out.items():
+            max_out = self.get_max_dma_channels(core)
+            model.addConstr(v_out <= max_out, name=f"dma_out_cap_{_resource_key(core)}")
 
 
 def build_transfer_context(
@@ -127,6 +124,7 @@ def build_transfer_context(
     nb_cols_to_use: int = 4,
     force_double_buffering: bool = True,
     force_io_transfers_on_mem_tile: bool = True,
+    max_compute_tile_dma_channels: int = 8,
     max_mem_tile_dma_channels: int = 6,
     max_shim_tile_dma_channels: int = 2,
 ) -> TransferAndTensorContext:
@@ -153,6 +151,7 @@ def build_transfer_context(
         mem_cores=mem_cores,
         force_double_buffering=force_double_buffering,
         force_io_transfers_on_mem_tile=force_io_transfers_on_mem_tile,
+        max_compute_tile_dma_channels=max_compute_tile_dma_channels,
         max_mem_tile_dma_channels=max_mem_tile_dma_channels,
         max_shim_tile_dma_channels=max_shim_tile_dma_channels,
         object_fifo_cores=object_fifo_cores,

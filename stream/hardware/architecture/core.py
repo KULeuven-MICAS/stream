@@ -11,6 +11,7 @@ class Core(ZigZagCore):
         self.core_type: str = "zigzag.compute"
         self.type: str = "compute"  # default type for a core
         self.max_object_fifo_depth: int = 16  # default max object FIFO depth for compute
+        self.max_buffer_descriptor_depth: int = self.max_object_fifo_depth + 4  # TODO: Define in hardware
         self.utilization: int = 100
         self.row_id: int | None = None
         self.col_id: int | None = None

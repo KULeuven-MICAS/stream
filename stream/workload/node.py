@@ -43,11 +43,12 @@ class TransferType(Flag):
     """Flags for different types of data transfer operations (can be combined)."""
 
     NONE = 0
-    UNICAST = 1
-    DISTRIBUTE = 2
-    BROADCAST = 3
-    JOIN = 4
-    REDUCE = 5
+    MEM_TO_MEM = 1
+    MEM_TO_COMPUTE = 2
+    COMPUTE_TO_MEM = 3
+    COMPUTE_TO_COMPUTE = 4
+    CONSTANT = 5
+    NONCONSTANT = 6
 
 
 @dataclass(frozen=True, repr=False)

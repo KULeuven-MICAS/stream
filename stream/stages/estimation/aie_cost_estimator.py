@@ -18,7 +18,10 @@ class AIECostEstimator:
 
     def estimate(self, node: ComputationNode, core: Core) -> CoreCostEntry:
         dim_sizes = [self.workload.get_dimension_size(dim) for dim in self.workload.get_dims(node)]
-        total_inter_core_tiling = prod(factor for _, factor in self.mapping.get(node).inter_core_tiling)
+        assert len(self.mapping.get(node).inter_core_tiling) == 1, (
+            "TODO: Make this work with more than one inter_core_tiling"
+        )
+        total_inter_core_tiling = prod(factor for _, factor in self.mapping.get(node).inter_core_tiling[0])
         macs = prod(dim_sizes) // total_inter_core_tiling
         kernel = self.mapping.get(node).kernel
         assert kernel is not None, "Kernel must be defined in mapping for AIE cost estimation."

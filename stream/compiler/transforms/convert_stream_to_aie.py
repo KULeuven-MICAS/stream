@@ -84,10 +84,9 @@ from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.compiler.transforms.convert_aie_kernels import ConvertAIEKernels
 from stream.compiler.transforms.iteration_space_to_for import iteration_space_to_for
 from stream.workload.steady_state.iteration_space import (
-    ComputeTileReuse,
     IterationVariable,
     IterationVariableType,
-    MemTileReuse,
+    Reuse,
     SteadyStateIterationSpace,
 )
 
@@ -245,8 +244,7 @@ class ObjectFifoHop:
             else:
                 of_name = name_base + "_" + of_type
             object_fifo = ObjectFifoOp.from_referenced_type(
-                elemNumber=(producers[0].ssis.data.nb_local_tensors_compute() + cls.DB_EXTRA,)
-                * (1 + len(consumer_tiles)),
+                elemNumber=(producers[0].ssis.data.nb_local_tensors() + cls.DB_EXTRA,) * (1 + len(consumer_tiles)),
                 producerTile=producer_tile,
                 consumerTiles=consumer_tiles,
                 referenced_type=memref_type.get_element_type(),
@@ -291,7 +289,7 @@ class ObjectFifoHop:
             else:
                 of_name = name_base + "_" + of_type
             object_fifo = ObjectFifoOp.from_referenced_type(
-                elemNumber=(producers[0].ssis.data.nb_local_tensors_compute() + cls.DB_EXTRA,) * 2,
+                elemNumber=(producers[0].ssis.data.nb_local_tensors() + cls.DB_EXTRA,) * 2,
                 producerTile=of_producer,
                 consumerTiles=[memtile_selector(i)],
                 referenced_type=memref_type.get_element_type(),
@@ -354,7 +352,7 @@ class ObjectFifoHop:
             else:
                 of_name = name_base + "_" + of_type
             object_fifo = ObjectFifoOp.from_referenced_type(
-                elemNumber=(consumers[0].ssis.data.nb_local_tensors_compute() + cls.DB_EXTRA + distribroad_factor,)
+                elemNumber=(consumers[0].ssis.data.nb_local_tensors() + cls.DB_EXTRA + distribroad_factor,)
                 * (1 + len(of_consumers)),
                 producerTile=of_producer,
                 consumerTiles=of_consumers,
@@ -777,6 +775,11 @@ class TransferToRuntimeSequence(RewritePattern):
                     result[i * spatial_stride.stride] = type(self)(new_strides)
                 return result
 
+            def force_squash(self) -> Self:
+                total_size = prod(var.size for var in self.strides if var.stride)
+                repeat = prod(var.size for var in self.strides if var.stride == 0)
+                return type(self)((Stride(total_size, 1, 0), Stride(repeat, 0, 0)))
+
             def canonicalize(self) -> Self:
                 if any(s.spatial for s in self.strides):
                     raise RuntimeError("cannot canonicalize strideset with spatial strides")
@@ -808,14 +811,17 @@ class TransferToRuntimeSequence(RewritePattern):
                 bound_limits = (1024, 1024, 16384, 64)
                 for i, (stride, bound_limit) in enumerate(zip(self.strides, bound_limits, strict=False)):
                     if stride.size > bound_limit:
-                        # find largest number under bound that is a divisor of the size:
-                        divider = None
-                        for d in reversed(range(min(bound_limit, isqrt(stride.size) + 1))):
-                            if stride.size % d == 0:
-                                divider = d
-                                break
-                        if divider is None:
-                            raise RuntimeError("Could not find legalized transfer for the runtime sequence.")
+                        if i < len(bound_limits) - 1:
+                            # find largest number under bound that is a divisor of the size:
+                            divider = None
+                            for d in reversed(range(min(bound_limit, isqrt(stride.size) + 1))):
+                                if stride.size % d == 0:
+                                    divider = d
+                                    break
+                            if divider is None:
+                                raise RuntimeError("Could not find legalized transfer for the runtime sequence.")
+                        else:
+                            divider = stride.size // bound_limit
                         tiled_size = stride.size // divider
                         tiled_stride = Stride(tiled_size, stride.stride, stride.iteration_t)
                         tiling_stride = Stride(divider, stride.stride * tiled_size, stride.iteration_t * tiled_size)
@@ -823,16 +829,23 @@ class TransferToRuntimeSequence(RewritePattern):
                         return type(self)(
                             (*self.strides[:i], tiled_stride, tiling_stride, *self.strides[i + 1 :])
                         ).legalize()
+                changed = False
                 # make sure the inner 3 most strides are nonzero
                 for var in self.strides:
-                    if var.stride == 0:
+                    if var.stride == 0 and var.size != 1:
                         while len(new_strides) < 3:
+                            changed = True
                             new_strides.append(Stride(1, 0, var.iteration_t))
                     new_strides.append(var)
                 # make sure the transform is at least 4 strides long
                 while len(new_strides) < 4:
+                    changed = True
                     new_strides.append(Stride(1, 0, self.strides[-1].iteration_t))
-                return type(self)(tuple(new_strides))
+                new = type(self)(tuple(new_strides))
+                if changed:
+                    return new.legalize()
+                else:
+                    return new
 
             def force_squash(self) -> Self:
                 # Remove all transormations, reduce to 1D transfer
@@ -854,7 +867,10 @@ class TransferToRuntimeSequence(RewritePattern):
             strides.append(Stride(var.size, stride, iteration_mults[var], spatial))
 
         stride_dict = StrideSet(tuple(strides)).split()
-        stride_dict = {x: y.canonicalize().legalize() for x, y in stride_dict.items()}
+        if "of_1" in of_chain.hops[1].fifos[0].sym_name.data or "of_20" in of_chain.hops[1].fifos[0].sym_name.data:
+            stride_dict = {x: y.canonicalize().legalize() for x, y in stride_dict.items()}
+        else:
+            stride_dict = {x: y.force_squash().legalize() for x, y in stride_dict.items()}
 
         # select correct hop for fifo:
         if isinstance(op, PullOp):
@@ -1020,7 +1036,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
         last_reuse = None
         for var in reversed(op.ssis.data.get_temporal_variables()):
-            if var.compute_tile_reuse == ComputeTileReuse.REUSE:
+            if var.reuse == Reuse.REUSE:
                 last_reuse = var
                 break
         if last_reuse:
@@ -1794,10 +1810,11 @@ class OrderDMAs(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter) -> None:
         dma_ops = [op for op in op.body.block.ops if isinstance(op, DmaConfigureTaskForOp)]
-        dma_ops = sorted(dma_ops, key=lambda op: op.attributes['iteration_t'].value.data)
+        dma_ops = sorted(dma_ops, key=lambda op: op.attributes["iteration_t"].value.data)
         for dma_op in dma_ops:
             dma_op.detach()
         rewriter.insert_op(dma_ops, InsertPoint.at_start(op.body.block))
+
 
 @dataclass
 class SyncDMAs(RewritePattern):

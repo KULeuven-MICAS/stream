@@ -56,7 +56,7 @@ class MemoryAccessesEstimationStage(Stage):
 
     def run(self):
         logger.info("Start MemoryAccessesEstimationStage.")
-        self.calculate_memory_accesses()
+        # self.calculate_memory_accesses()
         logger.info("Finished MemoryAccessesEstimationStage.")
 
         self.ctx.set(workload=self.workload, accelerator=self.accelerator, memory_accesses=self.core_memory_accesses)
@@ -79,13 +79,8 @@ class MemoryAccessesEstimationStage(Stage):
 
     def get_source_accesses(self, tn: TransferNode, ssis: SteadyStateIterationSpace):
         nb_temporal_iterations = prod(ssis.get_applicable_temporal_sizes())
-        mem_reuse = ssis.reuse_factor_mem()
-        compute_reuse = ssis.reuse_factor_compute()
-        if mem_reuse != 0:
-            total_reuse = mem_reuse * compute_reuse
-        else:
-            total_reuse = compute_reuse
-        nb_fires = nb_temporal_iterations // total_reuse
+        reuse = ssis.reuse_factor()
+        nb_fires = nb_temporal_iterations // reuse
         for tensor in tn.inputs:
             t_core = self.workload.get_tensor_of_transfer_from_single_core(tensor, tn, self.mapping)
             # Get the source core allocation
@@ -109,14 +104,11 @@ class MemoryAccessesEstimationStage(Stage):
         assert len(mem_cores) == 1, "Multiple memory cores allocated for a single transfer node is not supported yet."
         mem_core = mem_cores[0]
         nb_temporal_iterations = prod(ssis.get_applicable_temporal_sizes())
-        mem_reuse = ssis.reuse_factor_mem()
-        compute_reuse = ssis.reuse_factor_compute()
-        assert mem_reuse != 0, "Memory core reuse factor cannot be zero if memory core is chosen."
+        reuse = ssis.reuse_factor()
+        assert reuse != 0, "Memory core reuse factor cannot be zero if memory core is chosen."
         # For the mem tile we look at both inputs for writes and outputs for reads
         for tensor in tn.inputs:
-            # Number of times we write to mem core decreases by total reuse
-            total_reuse = mem_reuse * compute_reuse
-            nb_fires = nb_temporal_iterations // total_reuse
+            nb_fires = nb_temporal_iterations // reuse
             t_core = self.workload.get_tensor_of_transfer_from_single_core(tensor, tn, self.mapping)
             # Calculate the number of accesses per fire based on tensor size and bw on the core
             bandwidth = mem_core.get_max_memory_bandwidth(type="write")
@@ -125,7 +117,7 @@ class MemoryAccessesEstimationStage(Stage):
             self.core_memory_accesses.add_write(mem_core, t_core, total_accesses)
         for tensor in tn.outputs:
             # Number of times we read from the mem core decreases by compute reuse
-            nb_fires = nb_temporal_iterations // compute_reuse
+            nb_fires = nb_temporal_iterations // reuse
             t_core = self.workload.get_tensor_of_transfer_to_single_core(tensor, tn, self.mapping)
             # Calculate the number of accesses per fire based on tensor size and bw on the core
             bandwidth = mem_core.get_max_memory_bandwidth(type="read")
@@ -135,7 +127,7 @@ class MemoryAccessesEstimationStage(Stage):
 
     def get_destination_accesses(self, tn: TransferNode, ssis: SteadyStateIterationSpace):
         nb_temporal_iterations = prod(ssis.get_applicable_temporal_sizes())
-        compute_reuse = ssis.reuse_factor_compute()
+        compute_reuse = ssis.reuse_factor()
         assert compute_reuse != 0, "Compute tile reuse factor cannot be zero."
         nb_fires = nb_temporal_iterations // compute_reuse
         for tensor in tn.outputs:
