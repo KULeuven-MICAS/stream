@@ -109,6 +109,7 @@ class SteadyStateScheduler:
             mapping=self.mapping,
             cost_lut=self.cost_lut,
             nb_cols_to_use=self.nb_cols_to_use,
+            output_path=self.output_path,
         )
         (
             tensor_reuse_levels,
