@@ -26,8 +26,7 @@ class GemmKernel(AIEKernelWithZeroing):
         return f"zero_{self.element_type}_{self.m}_{self.k}_{self.n}"
 
     def zero_type(self, op: ComputationNodeOp) -> FunctionType:
-        assert op.output is not None
-        return FunctionType.from_lists(inputs=[op.output.type], outputs=[])
+        return FunctionType.from_lists(inputs=[op.inputs[2].type], outputs=[])
 
     @property
     def linkwith_name(self) -> str:
@@ -35,7 +34,9 @@ class GemmKernel(AIEKernelWithZeroing):
 
     @property
     def function_name(self) -> str:
-        return f"matmul_{self.element_type}_{self.element_type}_{self.m}_{self.k}_{self.n}"
+        return (
+            f"matmul_{self.element_type}_{self.element_type}_{self.m}_{self.k}_{self.n}"
+        )
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         # Intrinsic dimensions:
@@ -75,12 +76,12 @@ class GemmKernel(AIEKernelWithZeroing):
         return FunctionType.from_lists(
             inputs=[op.inputs[0].type]  # A
             + [op.inputs[1].type]  # b
-            + [op.output.type],  # c
+            + [op.inputs[2].type],  # c
             outputs=[],
         )
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         assert op.output is not None
         return [
-            CallOp(self.function_name, [op.inputs[0], op.inputs[1], op.output], []),
+            CallOp(self.function_name, [op.inputs[0], op.inputs[1], op.inputs[2]], []),
         ]

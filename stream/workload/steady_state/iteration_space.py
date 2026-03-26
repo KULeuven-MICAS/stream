@@ -195,8 +195,8 @@ class SteadyStateIterationSpace:
     """
 
     # ............................................... basic constructor ....
-    def __init__(self, variables: tuple[IterationVariable]) -> None:
-        self.variables: tuple[IterationVariable] = tuple(variables)
+    def __init__(self, variables: tuple[IterationVariable, ...]) -> None:
+        self.variables: tuple[IterationVariable, ...] = tuple(variables)
 
     def __eq__(self, other):
         if not isinstance(other, SteadyStateIterationSpace):

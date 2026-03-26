@@ -48,7 +48,10 @@ class AIEKernel(ABC):
             assert device_op.parent
             device_op = device_op.parent
 
-        SymbolTable.insert_or_update(device_op, FuncOp(self.function_name, self.function_type(op), Region(), "private"))
+        SymbolTable.insert_or_update(
+            device_op,
+            FuncOp(self.function_name, self.function_type(op), Region(), "private"),
+        )
 
         # find core op to set link_with attribute
         core_op = op
@@ -72,7 +75,6 @@ class AIEKernelWithZeroing(AIEKernel, ABC):
     def zero_type(self, op: ComputationNodeOp) -> FunctionType: ...
 
     def zero_call(self, op: ObjectFIFOSubviewAccessOp) -> Operation:
-        assert op.output is not None
         return CallOp(self.zero_name, [op.output], [])
 
     def rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
@@ -82,11 +84,13 @@ class AIEKernelWithZeroing(AIEKernel, ABC):
             assert device_op.parent
             device_op = device_op.parent
 
-        SymbolTable.insert_or_update(device_op, FuncOp(self.zero_name, self.zero_type(op), Region(), "private"))
+        SymbolTable.insert_or_update(
+            device_op, FuncOp(self.zero_name, self.zero_type(op), Region(), "private")
+        )
 
         # Insert zeroing after definition of output
-        assert isinstance(op.output, OpResult)
-        first_def: Operation = op.output.op
+        assert isinstance((last := op.inputs[-1]), OpResult)
+        first_def: Operation = last.op
 
         # get rid of layout casts
         while isinstance(first_def, LayoutCast):
@@ -106,7 +110,9 @@ class AIEKernelWithZeroing(AIEKernel, ABC):
                     assert isinstance(case_def.source, OpResult)
                     case_def = case_def.source.op
                 assert isinstance(case_def, ObjectFIFOSubviewAccessOp)
-                rewriter.insert_op(self.zero_call(case_def), InsertPoint.after(case_def))
+                rewriter.insert_op(
+                    self.zero_call(case_def), InsertPoint.after(case_def)
+                )
         else:
             assert isinstance(first_def, ObjectFIFOSubviewAccessOp)
             rewriter.insert_op(self.zero_call(first_def), InsertPoint.after(first_def))
