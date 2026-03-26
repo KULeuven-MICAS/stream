@@ -112,8 +112,8 @@ class MappingGenerationMultiThreadedStage(Stage):
             layer_core_splits={
                 "Gemm_Left": [4, 8, 16],
                 "Gemm_Right": [4, 8, 16],
-                "Silu": [1, 4, 8],
-                "Elt_Mul": [1, 4, 8],
+                "Silu": [1, 4],
+                "Elt_Mul": [1, 4],
                 "Gemm_Down": [4, 8, 16],  # only used if last_gemm_down=True
             },
         )

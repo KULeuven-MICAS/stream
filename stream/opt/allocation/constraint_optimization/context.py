@@ -126,10 +126,8 @@ class NamespaceConstraints:
     def add_dma_usage_constraints(
         self,
         model: gp.Model,
-        mem_core_usage_s2mm: dict[Core, gp.Var],
-        mem_core_usage_mm2s: dict[Core, gp.Var],
-        shim_core_usage_s2mm: dict[Core, gp.Var],
-        shim_core_usage_mm2s: dict[Core, gp.Var],
+        dma_usage_in: dict[Core, gp.Var],
+        dma_usage_out: dict[Core, gp.Var],
     ) -> list[gp.Var]:
         """Enforce DMA channel limits.
 
@@ -153,9 +151,13 @@ class AIE2Constraints(NamespaceConstraints):
     def __init__(
         self,
         *,
+        offchip_core_id: int | None,
+        max_compute_tile_dma_channels: int = 8,
         max_mem_tile_dma_channels: int = 6,
         max_shim_tile_dma_channels: int = 2,
     ) -> None:
+        self.offchip_core_id = offchip_core_id
+        self.max_compute_tile_dma_channels = max_compute_tile_dma_channels
         self.max_mem_tile_dma_channels = max_mem_tile_dma_channels
         self.max_shim_tile_dma_channels = max_shim_tile_dma_channels
 
@@ -190,49 +192,30 @@ class AIE2Constraints(NamespaceConstraints):
             )
 
     # ---- DMA channel usage ----
+    def get_max_dma_channels(self, core: Core) -> int:
+        if core.id == self.offchip_core_id:
+            return self.max_shim_tile_dma_channels
+        elif core.type == "memory":
+            return self.max_mem_tile_dma_channels
+        elif core.type == "compute":
+            return self.max_compute_tile_dma_channels
+        else:
+            raise ValueError(f"Unexpected core type for DMA channel constraint: {core.type}")
 
     def add_dma_usage_constraints(
         self,
         model: gp.Model,
-        mem_core_usage_s2mm: dict[Core, gp.Var],
-        mem_core_usage_mm2s: dict[Core, gp.Var],
-        shim_core_usage_s2mm: dict[Core, gp.Var],
-        shim_core_usage_mm2s: dict[Core, gp.Var],
+        dma_usage_in: dict[Core, gp.Var],
+        dma_usage_out: dict[Core, gp.Var],
     ) -> list[gp.Var]:
         # Filter to aie2 cores only
-        aie2_mem_s2mm = {c: v for c, v in mem_core_usage_s2mm.items() if self.applies_to(c)}
-        aie2_mem_mm2s = {c: v for c, v in mem_core_usage_mm2s.items() if self.applies_to(c)}
-        aie2_shim_s2mm = {c: v for c, v in shim_core_usage_s2mm.items() if self.applies_to(c)}
-        aie2_shim_mm2s = {c: v for c, v in shim_core_usage_mm2s.items() if self.applies_to(c)}
+        for core, v_in in dma_usage_in.items():
+            max_in = self.get_max_dma_channels(core)
+            model.addConstr(v_in <= max_in, name=f"dma_in_cap_{_resource_key(core)}")
 
-        objective_penalties: list[gp.Var] = []
-
-        # --- mem-tile DMA channels ---
-        if aie2_mem_s2mm or aie2_mem_mm2s:
-            max_mem_core_usage = model.addVar(vtype=GRB.INTEGER, name="aie2_maxMemCoreUsage")
-            for i, usage in enumerate(aie2_mem_s2mm.values()):
-                model.addConstr(max_mem_core_usage >= usage, name=f"aie2_maxMemCoreUsageS2MM_le_{i}")
-            for i, usage in enumerate(aie2_mem_mm2s.values()):
-                model.addConstr(max_mem_core_usage >= usage, name=f"aie2_maxMemCoreUsageMM2S_le_{i}")
-            model.addConstr(
-                max_mem_core_usage <= self.max_mem_tile_dma_channels,
-                name=f"aie2_maxMemCoreUsage_le_{self.max_mem_tile_dma_channels}",
-            )
-            objective_penalties.append(max_mem_core_usage)
-
-        # --- shim-tile DMA channels ---
-        if aie2_shim_s2mm or aie2_shim_mm2s:
-            max_shim_core_usage = model.addVar(vtype=GRB.INTEGER, name="aie2_maxShimCoreUsage")
-            for i, usage in enumerate(aie2_shim_s2mm.values()):
-                model.addConstr(max_shim_core_usage >= usage, name=f"aie2_maxShimCoreUsageS2MM_le_{i}")
-            for i, usage in enumerate(aie2_shim_mm2s.values()):
-                model.addConstr(max_shim_core_usage >= usage, name=f"aie2_maxShimCoreUsageMM2S_le_{i}")
-            model.addConstr(
-                max_shim_core_usage <= self.max_shim_tile_dma_channels,
-                name=f"aie2_maxShimCoreUsage_le_{self.max_shim_tile_dma_channels}",
-            )
-
-        return objective_penalties
+        for core, v_out in dma_usage_out.items():
+            max_out = self.get_max_dma_channels(core)
+            model.addConstr(v_out <= max_out, name=f"dma_out_cap_{_resource_key(core)}")
 
 
 # ============================================================================
@@ -278,27 +261,19 @@ class TransferAndTensorContext:
     def add_dma_usage_constraints(
         self,
         model: gp.Model,
-        mem_core_usage_s2mm: dict[Core, gp.Var],
-        mem_core_usage_mm2s: dict[Core, gp.Var],
-        shim_core_usage_s2mm: dict[Core, gp.Var],
-        shim_core_usage_mm2s: dict[Core, gp.Var],
-    ) -> list[gp.Var]:
+        dma_usage_in: dict[Core, gp.Var],
+        dma_usage_out: dict[Core, gp.Var],
+    ) -> None:
         """Dispatch DMA-usage constraints to all namespace strategies.
 
         Returns the union of objective-penalty variables from every strategy.
         """
-        objective_penalties: list[gp.Var] = []
         for ns in self.namespace_constraints:
-            objective_penalties.extend(
-                ns.add_dma_usage_constraints(
-                    model,
-                    mem_core_usage_s2mm,
-                    mem_core_usage_mm2s,
-                    shim_core_usage_s2mm,
-                    shim_core_usage_mm2s,
-                )
+            ns.add_dma_usage_constraints(
+                model,
+                dma_usage_in,
+                dma_usage_out,
             )
-        return objective_penalties
 
 
 def build_transfer_context(
@@ -333,6 +308,8 @@ def build_transfer_context(
     if "aie2" in namespaces:
         ns_constraints.append(
             AIE2Constraints(
+                offchip_core_id=offchip_core_id,
+                max_compute_tile_dma_channels=max_compute_tile_dma_channels,
                 max_mem_tile_dma_channels=max_mem_tile_dma_channels,
                 max_shim_tile_dma_channels=max_shim_tile_dma_channels,
             )

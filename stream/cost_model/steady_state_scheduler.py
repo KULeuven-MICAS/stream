@@ -540,11 +540,11 @@ class SteadyStateScheduler:
             )  # flatten the list of dst allocations
         if src_type == "compute" and dst_type == "compute":
             return TransferType.COMPUTE_TO_COMPUTE
-        elif src_type == "compute" and dst_type == "memory":
+        elif src_type == "compute" and dst_type in ("memory", "shim"):
             return TransferType.COMPUTE_TO_MEM
-        elif src_type == "memory" and dst_type == "compute":
+        elif src_type in ("memory", "shim") and dst_type == "compute":
             return TransferType.MEM_TO_COMPUTE
-        elif src_type == "memory" and dst_type == "memory":
+        elif src_type in ("memory", "shim") and dst_type in ("memory", "shim"):
             return TransferType.MEM_TO_MEM
         raise ValueError(f"Unsupported transfer type from {src_type} to {dst_type}")
 

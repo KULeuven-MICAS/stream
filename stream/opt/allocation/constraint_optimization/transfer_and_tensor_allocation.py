@@ -1,8 +1,8 @@
 import math
+import os
 from collections import defaultdict
 from math import ceil, prod
 from typing import Any, TypeAlias
-import os
 
 import gurobipy as gp
 import matplotlib.pyplot as plt
@@ -71,7 +71,6 @@ class TransferAndTensorAllocator:
         nb_cols_to_use: int = 4,
         output_path: str = "",
         context: TransferAndTensorContext | None = None,
-        output_path: str | None = "",
     ):
         self.workload = workload
         self.slot_of = timeslots
@@ -90,7 +89,6 @@ class TransferAndTensorAllocator:
         self.max_slot = max(timeslots.values()) if timeslots else 0
         self.big_m = big_m or len(workload.nodes()) + 5
         self.force_io_transfers_on_mem_tile = self.context.force_io_transfers_on_mem_tile
-
 
         # ------------------- categorise nodes -------------------- #
         self.ssc_nodes: tuple[ComputationNode, ...] = tuple(workload.get_computation_nodes())
@@ -1030,8 +1028,6 @@ class TransferAndTensorAllocator:
             )
 
         # Optional hard architectural constraints through the context
-        # Assumes your context can constrain incoming and outgoing channel usage separately.
-        # If your context method has a different name/signature, adapt this call only.
         self.context.add_dma_usage_constraints(
             self.model,
             self.core_dma_in,
@@ -1356,23 +1352,43 @@ class TransferAndTensorAllocator:
         return active_latency
 
     def _mip_progress_callback(self, model, where):
-        if where not in (GRB.Callback.MIP, GRB.Callback.MIPSOL):
+        if where not in (GRB.Callback.MIP, GRB.Callback.MIPSOL, GRB.Callback.PRESOLVE):
+            return
+
+        if where == GRB.Callback.PRESOLVE:
+            point = {
+                "event": "PRESOLVE",
+                "time": float(model.cbGet(GRB.Callback.RUNTIME)),
+                "work": float(model.cbGet(GRB.Callback.WORK)),
+                "rows_removed": int(model.cbGet(GRB.Callback.PRE_ROWDEL)),
+                "cols_removed": int(model.cbGet(GRB.Callback.PRE_COLDEL)),
+                "bound_changes": int(model.cbGet(GRB.Callback.PRE_BNDCHG)),
+                "coeff_changes": int(model.cbGet(GRB.Callback.PRE_COECHG)),
+            }
+            self.optimization_trace.append(point)
             return
 
         if where == GRB.Callback.MIP:
             best = model.cbGet(GRB.Callback.MIP_OBJBST)
             bound = model.cbGet(GRB.Callback.MIP_OBJBND)
             nodecnt = model.cbGet(GRB.Callback.MIP_NODCNT)
+            nodlft = model.cbGet(GRB.Callback.MIP_NODLFT)
+            itrcnt = model.cbGet(GRB.Callback.MIP_ITRCNT)
+            cutcnt = model.cbGet(GRB.Callback.MIP_CUTCNT)
             runtime = model.cbGet(GRB.Callback.RUNTIME)
+            work = model.cbGet(GRB.Callback.WORK)
             event = "MIP"
         else:
             best = model.cbGet(GRB.Callback.MIPSOL_OBJ)
             bound = model.cbGet(GRB.Callback.MIPSOL_OBJBND)
             nodecnt = model.cbGet(GRB.Callback.MIPSOL_NODCNT)
+            nodlft = None
+            itrcnt = None
+            cutcnt = None
             runtime = model.cbGet(GRB.Callback.RUNTIME)
+            work = model.cbGet(GRB.Callback.WORK)
             event = "MIPSOL"
 
-        # Filter Gurobi's large "no incumbent yet" value
         if not math.isfinite(best) or abs(best) >= 1e90:
             best = None
         else:
@@ -1385,49 +1401,60 @@ class TransferAndTensorAllocator:
 
         gap = None
         if best is not None and bound is not None:
-            denom = max(1.0, abs(best))
-            gap = abs(best - bound) / denom
+            gap = abs(best - bound) / max(1.0, abs(best))
 
         point = {
             "event": event,
             "time": float(runtime),
-            "nodecnt": float(nodecnt),
+            "work": float(work),
+            "nodecnt": float(nodecnt) if nodecnt is not None else None,
+            "nodlft": float(nodlft) if nodlft is not None else None,
+            "itrcnt": float(itrcnt) if itrcnt is not None else None,
+            "cutcnt": int(cutcnt) if cutcnt is not None else None,
             "best_obj": best,
             "best_bound": bound,
             "gap": gap,
         }
 
-        if not hasattr(self, "_last_trace_point"):
-            self._last_trace_point = None
-
-        if point != self._last_trace_point:
-            self.optimization_trace.append(point)
-            self._last_trace_point = point
+        self.optimization_trace.append(point)
 
     def plot_optimization_progress(
         self,
         *,
         save_path: str | None = None,
         show: bool = True,
-        figsize: tuple[float, float] = (9.0, 5.0),
+        figsize: tuple[float, float] = (10.0, 6),
+        show_work_subplot: bool = False,
     ) -> None:
         """
         Plot optimization progress recorded in self.optimization_trace.
+
+        Top subplot:
+        - best incumbent
+        - best bound
+        - relative gap (%) on a secondary y-axis
+
+        Bottom subplot (optional):
+        - solver work (if available)
+        - optionally explored nodes / cuts on a secondary y-axis
+
+        Args:
+            save_path: Path to save the figure. If None, figure is not saved.
+            show: Whether to display the figure.
+            figsize: Figure size as (width, height).
+            show_work_subplot: Whether to include the bottom work subplot.
 
         Expects callback records like:
             {
                 "event": "MIP" or "MIPSOL",
                 "time": float,
-                "nodecnt": float,
-                "best_obj": float,
-                "best_bound": float,
+                "nodecnt": float | None,
+                "best_obj": float | None,
+                "best_bound": float | None,
                 "gap": float | None,
+                "work": float | None,
+                "cutcnt": float | None,
             }
-
-        The plot shows:
-        - incumbent objective (best feasible solution so far)
-        - best bound
-        - relative gap on a secondary y-axis
         """
 
         if not hasattr(self, "optimization_trace") or not self.optimization_trace:
@@ -1444,6 +1471,9 @@ class TransferAndTensorAllocator:
                 _is_finite_number(rec.get("best_obj"))
                 or _is_finite_number(rec.get("best_bound"))
                 or _is_finite_number(rec.get("gap"))
+                or _is_finite_number(rec.get("work"))
+                or _is_finite_number(rec.get("nodecnt"))
+                or _is_finite_number(rec.get("cutcnt"))
             )
         ]
 
@@ -1457,9 +1487,16 @@ class TransferAndTensorAllocator:
         bound: list[float] = []
         gap_pct: list[float] = []
 
+        works: list[float] = []
+        nodes: list[float] = []
+        cuts: list[float] = []
+
         last_best_obj: float | None = None
         last_best_bound: float | None = None
         last_gap: float | None = None
+        last_work: float | None = None
+        last_nodecnt: float | None = None
+        last_cutcnt: float | None = None
 
         for rec in trace:
             t = float(rec["time"])
@@ -1471,28 +1508,81 @@ class TransferAndTensorAllocator:
             if _is_finite_number(rec.get("gap")):
                 last_gap = 100.0 * float(rec["gap"])
 
+            if _is_finite_number(rec.get("work")):
+                last_work = float(rec["work"])
+            if _is_finite_number(rec.get("nodecnt")):
+                last_nodecnt = float(rec["nodecnt"])
+            if _is_finite_number(rec.get("cutcnt")):
+                last_cutcnt = float(rec["cutcnt"])
+
             times.append(t)
             incumbent.append(float("nan") if last_best_obj is None else last_best_obj)
             bound.append(float("nan") if last_best_bound is None else last_best_bound)
             gap_pct.append(float("nan") if last_gap is None else last_gap)
 
-        fig, ax1 = plt.subplots(figsize=figsize)
+            works.append(float("nan") if last_work is None else last_work)
+            nodes.append(float("nan") if last_nodecnt is None else last_nodecnt)
+            cuts.append(float("nan") if last_cutcnt is None else last_cutcnt)
+
+        num_subplots = 2 if show_work_subplot else 1
+        height_ratios = [2.0, 1.2] if show_work_subplot else [1.0]
+
+        fig, axes = plt.subplots(
+            num_subplots,
+            1,
+            figsize=figsize,
+            sharex=True,
+            gridspec_kw={"height_ratios": height_ratios},
+        )
+
+        if num_subplots == 1:
+            ax1 = axes
+        else:
+            ax1, ax3 = axes
+
+        # Top subplot: original functionality unchanged
         ax2 = ax1.twinx()
 
         line_inc = ax1.step(times, incumbent, where="post", label="Best incumbent")
         line_bnd = ax1.step(times, bound, where="post", label="Best bound")
         line_gap = ax2.plot(times, gap_pct, label="Gap (%)", linestyle="--")
 
-        ax1.set_xlabel("Runtime (s)")
         ax1.set_ylabel("Objective")
         ax2.set_ylabel("Gap (%)")
         ax1.set_title("Gurobi optimization progress")
-
         ax1.grid(True, alpha=0.3)
 
-        handles = line_inc + line_bnd + line_gap
-        labels = [h.get_label() for h in handles]
-        ax1.legend(handles, labels, loc="best")
+        handles_top = line_inc + line_bnd + line_gap
+        labels_top = [h.get_label() for h in handles_top]
+        ax1.legend(handles_top, labels_top, loc="best")
+
+        # Bottom subplot: work done (optional)
+        if show_work_subplot:
+            ax4 = ax3.twinx()
+            handles_bottom = []
+
+            if any(not math.isnan(x) for x in works):
+                line_work = ax3.step(times, works, where="post", label="Solver work")
+                handles_bottom += line_work
+
+            if any(not math.isnan(x) for x in nodes):
+                line_nodes = ax4.step(times, nodes, where="post", label="Explored nodes", linestyle="--")
+                handles_bottom += line_nodes
+
+            if any(not math.isnan(x) for x in cuts):
+                line_cuts = ax4.step(times, cuts, where="post", label="Cuts applied", linestyle=":")
+                handles_bottom += line_cuts
+
+            ax3.set_xlabel("Runtime (s)")
+            ax3.set_ylabel("Work units")
+            ax4.set_ylabel("Nodes / cuts")
+            ax3.grid(True, alpha=0.3)
+
+            if handles_bottom:
+                labels_bottom = [h.get_label() for h in handles_bottom]
+                ax3.legend(handles_bottom, labels_bottom, loc="best")
+        else:
+            ax1.set_xlabel("Runtime (s)")
 
         fig.tight_layout()
 
