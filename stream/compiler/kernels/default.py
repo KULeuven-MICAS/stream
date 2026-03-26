@@ -32,14 +32,15 @@ class DefaultKernel(AIEKernel):
     def function_type(self, op: ComputationNodeOp) -> FunctionType:
         assert op.output is not None
         return FunctionType.from_lists(
-            inputs=[op.inputs[0].type, op.inputs[1].type, op.output.type, i32],
+            inputs=[op.inputs[0].type, op.inputs[1].type, op.inputs[2].type, i32],
             outputs=[],
         )
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         len = prod(cast(MemRefType[AnyDenseElement], op.inputs[0].type).get_shape())
-        assert op.output is not None
         return [
             len := ConstantOp.from_int_and_width(len, i32),
-            CallOp(self.function_name, [op.inputs[0], op.inputs[1], op.output, len], []),
+            CallOp(
+                self.function_name, [op.inputs[0], op.inputs[1], op.inputs[2], len], []
+            ),
         ]
