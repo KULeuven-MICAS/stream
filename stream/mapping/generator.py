@@ -74,7 +74,7 @@ class MappingGenerator:
         # If True, require all layers to use disjoint cores in each mapping.
         disjoint_cores_per_layer: bool = True,
         layer_core_splits: dict[str, list[int]] | None = None,
-        ordering: MappingOrder = MappingOrder.RANDOM,
+        ordering: MappingOrder = MappingOrder.UTILIZATION,
     ) -> None:
         self.accelerator = accelerator
         self.workload = workload
@@ -122,8 +122,8 @@ class MappingGenerator:
         idx is contiguous over valid mappings: 0..N-1.
 
         The order in which variants are visited is controlled by ``self.ordering``:
-        - ``MappingOrder.RANDOM``      – random shuffle (reproducible via the fixed seed)
-        - ``MappingOrder.UTILIZATION`` – descending total core count across all layers
+        - ``MappingOrder.RANDOM``      - random shuffle (reproducible via the fixed seed)
+        - ``MappingOrder.UTILIZATION`` - descending total core count across all layers
         """
         layer_templates = self._build_layer_templates()
         per_layer_split_options = self._enumerate_inter_core_split_options(layer_templates)
@@ -279,9 +279,9 @@ class MappingGenerator:
                 {
                     "name": "Gemm_Down",
                     "kernel": self._kernel_gemm(),
-                    "inter_core_dims": ["D1", "D0"],
+                    "inter_core_dims": ["D2", "D0"],
                     # If your Gemm_Down semantics differ, update these sizes.
-                    "dim_sizes": {"D0": self.seq_len, "D1": self.embedding_dim},
+                    "dim_sizes": {"D0": self.seq_len, "D2": self.embedding_dim},
                 }
             )
 
@@ -377,8 +377,12 @@ class MappingGenerator:
             specs = splits_by_name[lname]
             layer_entry = {
                 "name": lname,
-                "core_allocation": copy.deepcopy(core_alloc_by_name[lname]),
-                "inter_core_tiling": [{"dim": s.dim, "split": s.split} for s in specs],
+                "core_allocation": [
+                    copy.deepcopy(core_alloc_by_name[lname]),
+                ],
+                "inter_core_tiling": [
+                    [{"dim": s.dim, "split": s.split} for s in specs],
+                ],
                 "kernel": copy.deepcopy(tpl["kernel"]),
             }
             layers.append(layer_entry)
@@ -403,15 +407,18 @@ class MappingGenerator:
         Kept identical to your original fused group tiling (intra-core tiling),
         since you asked to vary inter-core tiling first.
         """
-        return {
+        fused_groups = {
             "name": "Fused_Group_1",
             "layers": layer_names,
             "intra_core_tiling": [
                 {"dim": "Gemm_Left.D1", "tile": self.embedding_tile_size},
-                {"dim": "Gemm_Left.D0", "tile": self.seq_len_tile_size},
                 {"dim": "Gemm_Left.D2", "tile": self.hidden_tile_size},
+                {"dim": "Gemm_Left.D0", "tile": self.seq_len_tile_size},
             ],
         }
+        if self.last_gemm_down:
+            fused_groups["intra_core_tiling"].insert(1, {"dim": "Gemm_Down.D2", "tile": self.embedding_tile_size})
+        return fused_groups
 
     def _build_runtime_args(self) -> dict[str, Any]:
         if self.last_gemm_down:

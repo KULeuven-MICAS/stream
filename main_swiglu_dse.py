@@ -39,7 +39,9 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     if wl_name == "onnx":
         wl_name = re.split(r"/|\.", workload_path)[-2]
     mapping_name = f"{rows}_row_{cols}_col"
-    experiment_id = f"dse-foo-{hw_name}-{wl_name}-{mapping_name}"
+    experiment_id = (
+        f"dse-tilesizes-{seq_len_tile_size}_{embedding_tile_size}_{hidden_tile_size}-{hw_name}-{wl_name}-{mapping_name}"
+    )
     ######################################################################
 
     ################################LOGGING###############################
@@ -81,7 +83,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         embedding_tile_size=embedding_tile_size,
         hidden_tile_size=hidden_tile_size,
         last_gemm_down=last_gemm_down,
-        nb_workers=16,
+        nb_workers=1,
         max_nb_mappings=100,
     )
 
