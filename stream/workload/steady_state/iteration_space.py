@@ -352,28 +352,19 @@ class SteadyStateIterationSpace:
               ``compute_tile_reuse`` (str), ``mem_tile_reuse`` (str or None).
         """
         applicable = self.get_applicable_temporal_variables()
-
-        has_mem_tile = any(
-            iv.mem_tile_reuse not in (MemTileReuse.NOT_SET, MemTileReuse.NOT_APPLICABLE) for iv in applicable
-        )
-
         loops = [
             {
                 "dim": str(iv.dimension),
                 "size": iv.size,
                 "relevant": iv.relevant,
-                "compute_tile_reuse": str(iv.compute_tile_reuse),
-                "mem_tile_reuse": str(iv.mem_tile_reuse) if has_mem_tile else None,
+                "reuse": str(iv.reuse),
             }
             for iv in applicable
         ]
-
         result: dict = {
-            "compute_reuse_factor": self.reuse_factor_compute(),
+            "reuse_factor": self.reuse_factor(),
             "loops": loops,
         }
-        if has_mem_tile:
-            result["mem_reuse_factor"] = self.reuse_factor_mem()
         return result
 
     def get_kernel_variables(self) -> list[IterationVariable]:

@@ -91,7 +91,7 @@ class MappingFactory:
         dim_str = entry["dim"]
         if not isinstance(dim_str, str) or not dim_str.startswith("D"):
             raise ValueError(f"Unsupported inter_core_tiling dimension format: {dim_str!r} for node {node.name}")
-        layer_dim = LayerDim(int(dim_str[1:]))
+        layer_dim = LayerDim(position=int(dim_str[1:]), prefix="d")
         split_val = int(entry["split"])
         return layer_dim, split_val
 

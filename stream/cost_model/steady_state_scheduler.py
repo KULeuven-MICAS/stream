@@ -9,13 +9,12 @@ from xdsl.ir.affine import AffineMap
 # if TYPE_CHECKING:
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.core_cost_lut import CoreCostLUT
-from stream.datatypes import LayerDim
+from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
 from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
     MemoryAlloc,
-    TensorAlloc,
     TensorReuseLevels,
     TransferAlloc,
     TransferAndTensorAllocator,
@@ -34,7 +33,12 @@ from stream.workload.node import (
     TransferType,
 )
 from stream.workload.steady_state.computation import SteadyStateComputation
-from stream.workload.steady_state.iteration_space import Reuse, SteadyStateIterationSpace
+from stream.workload.steady_state.iteration_space import (
+    IterationVariable,
+    LoopEffect,
+    Reuse,
+    SteadyStateIterationSpace,
+)
 from stream.workload.utils import generate_steady_state_iteration_spaces, get_equivalent_dimension
 from stream.workload.workload import Workload
 
@@ -65,6 +69,7 @@ class SteadyStateScheduler:
         self.cost_lut = cost_lut
         self.partitioned_nodes: dict[ComputationNode, list[SteadyStateComputation]] = {}
         self.constant_tensors: dict[int, InEdge | OutEdge] = {}
+        self.ssw: Workload | None = None
 
         # Cost model parameters
         self.latency_total = -1
@@ -85,26 +90,26 @@ class SteadyStateScheduler:
             TimeSlotAllocation: The scheduled workload.
         """
         # Update the workload graph to include transfer nodes
-        ssw = self.build_transfer_graph()
+        self.ssw = self.build_transfer_graph()
         # Update the fusion_splits based on the new workload with transfer nodes
-        self.fusion_splits = self.update_fusion_splits(ssw)
+        self.fusion_splits = self.update_fusion_splits()
         # Save the new workload with transfers
-        ssw.visualize(os.path.join(self.output_path, "tiled_workload_with_transfers.png"))
+        self.ssw.visualize(os.path.join(self.output_path, "tiled_workload_with_transfers.png"))
         # Update the mapping for the new workload graph
-        self.mapping = self.update_mapping(ssw)
+        self.mapping = self.update_mapping()
         # Update the cost lut for the new workload graph
-        self.cost_lut = self.update_cost_lut(ssw)
+        self.cost_lut = self.update_cost_lut()
         # Update the steady state iteration spaces to include transfer nodes and tensors
-        self.ssis = self.generate_ssis(ssw)
+        self.ssis = self.generate_ssis()
         # Calculate the number of iterations based on the steady state iteration spaces
         self.iterations = self.calculate_iterations()
         # Calculate the multiplicity of each node's execution in the steady state workload
         multiplicities = self.calculate_multiplicities()
         # Get the timeslots for all nodes
-        timeslots = ssw.get_timeslots()
+        timeslots = self.ssw.get_timeslots()
         # At this point, the only nodes without an allocation are the transfer nodes
         tta = TransferAndTensorAllocator(
-            ssw,
+            self.ssw,
             timeslots,
             accelerator=self.accelerator,
             iterations=self.iterations,
@@ -152,16 +157,16 @@ class SteadyStateScheduler:
         except Exception as exc:  # never let a visualisation failure abort the run
             logger.warning("Failed to export steady-state trace: %s", exc)
         # Check that all nodes in the steady state workload have a chosen resource allocation
-        # self.check_steady_state_workload_allocations(ssw)
-        self.update_tensor_steady_state_iteration_spaces(ssw, tensor_reuse_levels)
-        self.update_mapping_with_allocations(ssw, tensor_allocations, transfer_allocations, memory_allocations)
-        ssw.visualize(os.path.join(self.output_path, "steady_state_workload_final.png"), self.mapping, self.ssis)
-        # tla = TensorLifetimeAnalyzer(ssw)
-        self.steady_state_workload = ssw
-        return ssw
+        # self.check_steady_state_workload_allocations(self.ssw)
+        self.update_tensor_steady_state_iteration_spaces(tensor_reuse_levels)
+        self.update_mapping_with_allocations(transfer_allocations, memory_allocations)
+        self.ssw.visualize(os.path.join(self.output_path, "steady_state_workload_final.png"), self.mapping, self.ssis)
+        # tla = TensorLifetimeAnalyzer(self.ssw)
+        self.steady_state_workload = self.ssw
+        return self.ssw
 
-    def update_tensor_steady_state_iteration_spaces(self, ssw: Workload, tensor_reuse_levels: TensorReuseLevels):
-        for node in ssw.nodes:
+    def update_tensor_steady_state_iteration_spaces(self, tensor_reuse_levels: TensorReuseLevels):
+        for node in self.ssw.nodes:
             if isinstance(node, TransferNode):
                 for tensor in node.outputs:
                     reuse_level = tensor_reuse_levels[tensor]
@@ -242,8 +247,9 @@ class SteadyStateScheduler:
         else:
             raise ValueError(f"Unexpected dst node type: {type(dst_new)}")
         new_nodes[dst_new.name] = new_dst
-        # Update the mapping entry for this new_dst node to be the same as the original dst node and remove original dst node
+        # Update the mapping entry for this new_dst node to be the same as the original dst node
         self.mapping.set(new_dst, self.mapping.get(dst))
+        # Remove the original dst node from the mapping as it has been updated with new inputs
         self.mapping.remove(dst)
 
     def add_two_transfer_nodes_for_constant_output_transfer(
@@ -300,8 +306,9 @@ class SteadyStateScheduler:
             operand_mapping=src.operand_mapping,
         )
         new_nodes[new_src.name] = new_src
-        # Update the mapping entry for this new_src node to be the same as the original src node and remove original src node
+        # Update the mapping entry for this new_src node to be the same as the original src node
         self.mapping.set(new_src, self.mapping.get(src))
+        # Remove the original src node from the mapping as it has been updated with new outputs
         self.mapping.remove(src)
         return new_src
 
@@ -341,31 +348,30 @@ class SteadyStateScheduler:
             else:
                 raise ValueError(f"Unexpected dst node type: {type(dst_new)}")
             new_nodes[dst_new.name] = new_dst
-            # Update the mapping entry for this new_dst node to be the same as the original dst node and remove original dst node
+            # Update the mapping entry for this new_dst node to be the same as the original dst node
             self.mapping.set(new_dst, self.mapping.get(dst))
+            # Remove the original dst node from the mapping as it has been updated with new inputs
             self.mapping.remove(dst)
 
-    def update_fusion_splits(self, new_workload: Workload) -> dict[LayerDim, int]:
+    def update_fusion_splits(self) -> dict[LayerDim, int]:
         # Update the fusion_splits based on the new workload with transfer nodes
         updated_fusion_splits = {}
         for dim, size in self.fusion_splits.items():
-            new_dim = get_equivalent_dimension(self.workload, new_workload, dim)
+            new_dim = get_equivalent_dimension(self.workload, self.ssw, dim)
             updated_fusion_splits[new_dim] = size
         return updated_fusion_splits
 
-    def update_mapping(self, new_workload: Workload):
+    def update_mapping(self):
         # Add transfer node mappings
-        for node in new_workload.get_transfer_nodes():
+        for node in self.ssw.get_transfer_nodes():
             assert len(node.inputs) == 1, "Transfer node must have exactly one input tensor."
-            src = cast(HasOutputs, list(new_workload.predecessors(node))[0])
-            dsts = tuple(cast(HasInputs, n) for n in new_workload.successors(node))
+            src = cast(HasOutputs, list(self.ssw.predecessors(node))[0])
+            dsts = tuple(cast(HasInputs, n) for n in self.ssw.successors(node))
             self.update_mapping_for_transfer(node, src, dsts)
-        return self.mapping.with_updated_workload(new_workload, self.workload)  # updates FusedGroups
+        return self.mapping.with_updated_workload(self.ssw, self.workload)  # updates FusedGroups
 
     def update_mapping_with_allocations(
         self,
-        ssw: Workload,
-        tensor_allocations: TensorAlloc,
         transfer_allocations: TransferAlloc,
         memory_allocations: MemoryAlloc,
     ):
@@ -381,14 +387,14 @@ class SteadyStateScheduler:
                 inter_core_tiling=tuple(),
                 memory_allocation=memory_allocation,
             )
-        for tr in ssw.get_transfer_nodes():
+        for tr in self.ssw.get_transfer_nodes():
             assert len(self.mapping.get(tr).resource_allocation) == 1, (
                 f"Transfer node {tr.name} should have exactly one resource allocation after update."
             )
 
-    def update_cost_lut(self, new_workload: Workload):
+    def update_cost_lut(self):
         # The new workload contains same computation node names but with different input tensors
-        for new_node in new_workload.get_computation_nodes():
+        for new_node in self.ssw.get_computation_nodes():
             old_node = next(n for n in self.cost_lut.get_nodes() if n.name == new_node.name)
             self.cost_lut.replace_node(old_node, new_node)
         return self.cost_lut
@@ -432,33 +438,65 @@ class SteadyStateScheduler:
             transfer_outputs.append(transfer_output)
         return transfer_outputs
 
-    def generate_ssis(self, workload: Workload) -> dict[HasIterationSpace | Tensor, SteadyStateIterationSpace]:
+    def generate_ssis(self) -> dict[HasIterationSpace | Tensor, SteadyStateIterationSpace]:
         ssis = generate_steady_state_iteration_spaces(
-            workload,
+            self.ssw,
             self.mapping,
             self.fusion_splits,
         )
-        ssis = self.update_tensor_ssis(workload, ssis)
+        ssis = self.update_tensor_ssis(self.ssw, ssis)
         return ssis
 
     def update_tensor_ssis(
         self, workload: Workload, ssis: dict[HasIterationSpace | Tensor, SteadyStateIterationSpace]
     ) -> dict[HasIterationSpace | Tensor, SteadyStateIterationSpace]:
         # Generate the new tensors
-        for transfer in workload.get_transfer_nodes():
-            transfer_ssis = ssis[transfer]
-            for tensor in transfer.tensors:
-                # TODO: Change the transfer ssis depending on input/output tensor differences
-                ssis[tensor] = transfer_ssis
+        for node in workload.get_iteration_space_nodes():
+            for tensor in node.outputs:
+                assert tensor not in ssis, (
+                    f"Tensor {tensor.name} already has an SSIS, cannot assign the same tensor multiple SSIS."
+                )
+                tensor_ssis = self.generate_tensor_ssis(workload, tensor, node, ssis)
+                ssis[tensor] = tensor_ssis
         return ssis
+
+    def generate_tensor_ssis(
+        self,
+        workload: Workload,
+        tensor: Tensor,
+        node: HasIterationSpace,
+        ssis: dict[HasIterationSpace | Tensor, SteadyStateIterationSpace],
+    ) -> SteadyStateIterationSpace:
+        producer_ssis = ssis.get(node, None)
+        if producer_ssis is None:
+            raise KeyError(f"Producer node {node.name} does not have an SSIS.")
+        tensor_dims = workload.get_tensor_dimensions(tensor)
+        tensor_ivs = []
+        for prod_iv in producer_ssis.variables:
+            prod_iv_dim = prod_iv.dimension
+            if prod_iv_dim in tensor_dims:
+                tensor_effect = LoopEffect.VARYING
+            if prod_iv_dim not in tensor_dims:
+                tensor_effect = LoopEffect.ABSENT if prod_iv.effect == LoopEffect.ABSENT else LoopEffect.INVARIANT
+            tensor_ivs.append(
+                IterationVariable(
+                    dimension=prod_iv_dim,
+                    size=prod_iv.size,
+                    type=prod_iv.type,
+                    effect=tensor_effect,
+                )
+            )
+        tensor_ssis = SteadyStateIterationSpace(variables=tuple(tensor_ivs))
+        return tensor_ssis
 
     def update_mapping_for_transfer(self, node: TransferNode, src: HasOutputs, dsts: tuple[HasInputs, ...]) -> None:
         possible_dst_allocs = self.determine_possible_memory_allocations(node, src, dsts)
+        possible_inter_core_tiling = self.determine_possible_inter_core_tiling(node, possible_dst_allocs, dsts)
         possible_allocations = self.determine_possible_transfer_plans(src, possible_dst_allocs)
         self.mapping.set_for_node(
             node,
             resource_allocation=possible_allocations,
-            inter_core_tiling=((),),
+            inter_core_tiling=possible_inter_core_tiling,
             memory_allocation=possible_dst_allocs,
         )
 
@@ -485,6 +523,48 @@ class SteadyStateScheduler:
                 possible_memory_cores_set.update(self._retrieve_core_allocation(dst)[0])
             possible_memory_cores = (tuple(sorted(possible_memory_cores_set, key=lambda x: x.id)),)
         return possible_memory_cores
+
+    def determine_possible_inter_core_tiling(
+        self, node: TransferNode, possible_dst_allocs: tuple[tuple[Core, ...], ...], dsts: tuple[HasInputs, ...]
+    ) -> tuple[tuple[int, ...], ...]:
+        possible_inter_core_tiling = []
+        for dst_allocs in possible_dst_allocs:
+            nb_cores = len(dst_allocs)
+            if nb_cores == 1:
+                possible_inter_core_tiling.append(tuple())
+            else:
+                # For now, we only support a single destination with one tiling possibility
+                dst = dsts[0]
+                try:
+                    dst_tiling = tuple(self.ssw.get_unique_dims_inter_core_tiling(dst, self.mapping))
+                except KeyError:
+                    dst_tiling = self.get_inter_core_tiling_for_compute_to_mem(node, dst_allocs)
+                possible_inter_core_tiling.append(dst_tiling)
+        return tuple(possible_inter_core_tiling)
+
+    def get_inter_core_tiling_for_compute_to_mem(
+        self, node: TransferNode, memory_allocs: tuple[tuple[Core, ...], ...]
+    ) -> tuple[tuple[int, ...], ...]:
+        assert isinstance(node, TransferNode), "Node must be a TransferNode for inter-core tiling determination."
+        assert node.transfer_type in (TransferType.COMPUTE_TO_MEM,), (
+            "This function should only be called for compute to mem transfers."
+        )
+        # Get the predecessor compute and its tiling
+        src_compute = next(n for n in self.ssw.predecessors(node) if isinstance(n, ComputationNode))
+        try:
+            src_compute_tiling = self.ssw.get_unique_dims_inter_core_tiling(src_compute, self.mapping)
+        except KeyError as e:
+            raise KeyError(f"Source compute node {src_compute.name} does not have a tiling in the mapping.") from e
+        # From the compute tiling, gather the factor that matches in length with tmemory allocs
+        node_tiling = self.get_matching_tiling(src_compute_tiling, memory_allocs)
+        return (node_tiling,)
+
+    def get_matching_tiling(self, compute_tiling: InterCoreTiling, dst_allocs: tuple[Core, ...]) -> tuple[int, ...]:
+        for tiling_loop in compute_tiling:
+            _, size = tiling_loop
+            if size == len(dst_allocs):
+                return tiling_loop
+        raise ValueError(f"No matching tiling found for compute tiling {compute_tiling} and dst allocs {dst_allocs}")
 
     def determine_possible_transfer_plans(
         self, src: HasOutputs, possible_dst_allocs: tuple[tuple[Core, ...], ...]

@@ -182,10 +182,7 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                     )
                 )
             else:
-                if isinstance(node, TransferNode):
-                    type = IterationVariableType.SPATIAL
-                else:
-                    type = IterationVariableType.SPATIOTEMPORAL
+                type = IterationVariableType.SPATIOTEMPORAL
                 # Create a replacement temporal variable
                 effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.INVARIANT
                 iteration_variables[node].append(

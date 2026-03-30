@@ -589,7 +589,8 @@ class TransferAndTensorAllocator:
         self.fires: dict[TransferNode, gp.Var] = {}
         for tr in self.transfer_nodes:
             assert len(tr.inputs) == 1, (
-                f"Only single-input transfers are supported for fire rate constraints, but {tr.name} has inputs {tr.inputs}"
+                f"Only single-input transfers are supported for fire rate constraints, "
+                f"but {tr.name} has inputs {tr.inputs}."
             )
             t = tr.inputs[0]
             fires = self.model.addVar(vtype=GRB.INTEGER, name=f"fires_{tr.name}")
@@ -608,7 +609,8 @@ class TransferAndTensorAllocator:
         self.reuse_factors: dict[TransferNode, gp.Var] = {}
         for tr in self.transfer_nodes:
             assert len(tr.inputs) == 1, (
-                f"Only single-input transfers are supported for fire rate constraints, but {tr.name} has inputs {tr.inputs}"
+                f"Only single-input transfers are supported for fire rate constraints, "
+                f"but {tr.name} has inputs {tr.inputs}."
             )
             t = tr.inputs[0]
             reuse_factor = self.model.addVar(vtype=GRB.INTEGER, name=f"reuse_factor_{tr.name}")
@@ -764,8 +766,8 @@ class TransferAndTensorAllocator:
 
     def _buffer_descriptor_constraints(self):
         """
-        For compute tiles: use tiles_needed_levels to determine how many buffer descriptors are needed (relevancy).
-        For memory tiles: use bds_needed_levels to determine how many buffer descriptors are needed (irrelevancy/repeat).
+        For compute tiles: use tiles_needed_levels to determine how many buffer descriptors are needed (relevant).
+        For memory tiles: use bds_needed_levels to determine how many buffer descriptors are needed (irrelevant/repeat).
         """
         self.bd_depth: dict[Core, gp.LinExpr] = defaultdict(gp.LinExpr)
         for tr in self.transfer_nodes:
@@ -792,8 +794,8 @@ class TransferAndTensorAllocator:
 
     def _ensure_memory_and_compute_reuse_compatibility(self):
         """
-        Ensure that a COMPUTE_TO_MEM transfer's input reuse level is greater than or equal to its output reuse level.
-        Ensure that a MEM_TO_COMPUTE or COMPUTE_TO_COMPUTE transfer's output reuse level is greater than or equal to its input reuse level.
+        Ensure that a COMPUTE_TO_MEM transfer input reuse level >= output reuse level.
+        Ensure that a MEM_TO_COMPUTE or COMPUTE_TO_COMPUTE transfer output reuse level >= input reuse level.
         """
         for tr in self.transfer_nodes:
             inputs = tr.inputs
@@ -1389,12 +1391,13 @@ class TransferAndTensorAllocator:
             work = model.cbGet(GRB.Callback.WORK)
             event = "MIPSOL"
 
-        if not math.isfinite(best) or abs(best) >= 1e90:
+        max_val = 1e90
+        if not math.isfinite(best) or abs(best) >= max_val:
             best = None
         else:
             best = float(best)
 
-        if not math.isfinite(bound) or abs(bound) >= 1e90:
+        if not math.isfinite(bound) or abs(bound) >= max_val:
             bound = None
         else:
             bound = float(bound)
@@ -1418,7 +1421,7 @@ class TransferAndTensorAllocator:
 
         self.optimization_trace.append(point)
 
-    def plot_optimization_progress(
+    def plot_optimization_progress(  # noqa: PLR0912, PLR0915
         self,
         *,
         save_path: str | None = None,
@@ -1461,7 +1464,7 @@ class TransferAndTensorAllocator:
             raise ValueError("No optimization trace found. Run solve() with the progress callback enabled first.")
 
         def _is_finite_number(x) -> bool:
-            return x is not None and isinstance(x, (int, float)) and math.isfinite(x)
+            return x is not None and isinstance(x, int | float) and math.isfinite(x)
 
         trace = [
             rec

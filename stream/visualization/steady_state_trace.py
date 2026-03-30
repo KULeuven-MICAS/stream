@@ -56,6 +56,8 @@ import os
 from math import ceil
 from typing import TYPE_CHECKING
 
+from stream.hardware.architecture.core import Core
+from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.workload.node import ComputationNode as _ComputationNode
 
 if TYPE_CHECKING:
@@ -97,9 +99,6 @@ def _path_label(path: tuple) -> str:
 
 
 def _resource_label(res) -> str:
-    from stream.hardware.architecture.core import Core
-    from stream.hardware.architecture.noc.communication_link import CommunicationLink
-
     if isinstance(res, Core):
         return _core_label(res)
     if isinstance(res, CommunicationLink):
@@ -112,7 +111,6 @@ def _resource_sort_key(res) -> int:
     Cores before links; within cores, sort by (col, row) so the grid layout
     matches the chip topology left-to-right, bottom-to-top.
     """
-    from stream.hardware.architecture.core import Core
 
     if isinstance(res, Core):
         col = getattr(res, "col_id", 0) or 0
@@ -129,7 +127,7 @@ def _resource_sort_key(res) -> int:
 # ─────────────────────────────────────────────────── public API ──────────── #
 
 
-def export_steady_state_trace(
+def export_steady_state_trace(  # noqa: PLR0912, PLR0915
     tta: TransferAndTensorAllocator,
     iterations: int,
     overlap: int,
