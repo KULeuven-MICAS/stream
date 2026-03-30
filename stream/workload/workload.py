@@ -183,7 +183,7 @@ class Workload(DiGraphWrapper[Node]):
 
         dim_values = [sympy_to_xdsl(sp.simplify(expr)) for expr in x]
         # IMPORTANT: z dimensions are LayerDim, so expressions.index(LayerDim(i)) works
-        z = [LayerDim(i) for i in range(len(free_vars))]
+        z = [LayerDim(position=i, prefix="z") for i in range(len(free_vars))]
         return z, dim_values
 
     def get_unique_dims_inter_core_tiling(self, node: ComputationNode, mapping: "Mapping") -> InterCoreTiling:
@@ -192,10 +192,14 @@ class Workload(DiGraphWrapper[Node]):
         assert node_mapping is not None, f"No mapping found for node {node.name}"
         unique_node_dims = self.get_dims(node)
         converted_tiling: list[InterCoreTiling] = []
-        assert len(node_mapping.inter_core_tiling) == 1, "TODO: Support multiple inter_core_tiling entries per node"
+        all_tilings_equal = all(t == node_mapping.inter_core_tiling[0] for t in node_mapping.inter_core_tiling)
+        assert all_tilings_equal, f"Multiple different inter-core tilings for node {node.name} not supported for now."
         for dim, factor in node_mapping.inter_core_tiling[0]:
-            dim_idx = dim.position
-            unique_dim = unique_node_dims[dim_idx]
+            if "z" in str(dim):
+                unique_dim = dim
+            else:
+                dim_idx = dim.position
+                unique_dim = unique_node_dims[dim_idx]
             converted_tiling.append((unique_dim, factor))
         return converted_tiling
 
