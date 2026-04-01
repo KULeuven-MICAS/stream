@@ -15,6 +15,7 @@ from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
 from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
     MemoryAlloc,
+    TensorDepths,
     TensorReuseLevels,
     TransferAlloc,
     TransferAndTensorAllocator,
@@ -75,6 +76,7 @@ class SteadyStateScheduler:
         self.latency_total = -1
         self.latency_per_iteration = -1
         self.overlap_between_iterations = -1
+        self.tensor_depths: TensorDepths = {}
 
         self.nb_cols_to_use = nb_cols_to_use
 
@@ -122,6 +124,7 @@ class SteadyStateScheduler:
         )
         (
             tensor_reuse_levels,
+            tensor_depths,
             tensor_allocations,
             transfer_allocations,
             memory_allocations,
@@ -144,6 +147,7 @@ class SteadyStateScheduler:
             latency_per_iteration,
             overlap,
         )
+        self.tensor_depths = tensor_depths
         # Export Perfetto-compatible JSON trace of the solved schedule
         try:
             trace_path = export_steady_state_trace(
@@ -469,7 +473,7 @@ class SteadyStateScheduler:
     ) -> SteadyStateIterationSpace:
         producer_ssis = ssis.get(node, None)
         if producer_ssis is None:
-            raise KeyError(f"Producer node {node.name} does not have an SSIS.")
+            raise KeyError(f"Node {node.name} does not have a valid producer SSIS.")
         tensor_dims = workload.get_tensor_dimensions(tensor)
         tensor_ivs = []
         for prod_iv in producer_ssis.variables:
