@@ -37,6 +37,7 @@ from stream.workload.workload import (
 TensorPlacementChoice: TypeAlias = tuple[Core, ...]
 
 TensorReuseLevels: TypeAlias = dict[Tensor, int]
+TensorDepths: TypeAlias = dict[Tensor, int]
 TensorAlloc: TypeAlias = dict[Tensor, TensorPlacementChoice]
 TransferAlloc: TypeAlias = dict[TransferNode, MulticastPathPlan]
 MemoryAlloc: TypeAlias = dict[TransferNode, TensorPlacementChoice]
@@ -76,7 +77,7 @@ class TransferAndTensorAllocator:
         self.slot_of = timeslots
         self.accelerator = accelerator
         self.context = context or build_transfer_context(
-            accelerator, nb_cols_to_use=nb_cols_to_use, force_double_buffering=False
+            accelerator, nb_cols_to_use=nb_cols_to_use, force_double_buffering=True
         )
         self.offchip_core_id = self.context.offchip_core_id
         self.iterations = iterations
@@ -256,7 +257,7 @@ class TransferAndTensorAllocator:
             for t in tr.tensors:
                 fires = math.prod(sizes)
                 size_factor = 1
-                tiles_needed = 1
+                tiles_needed = 2 if self.force_double_buffering else 1
                 bds_needed = 1
                 self.reuse_levels[(t, -1)] = (fires, size_factor)
                 self.tiles_needed_levels[(t, -1)] = tiles_needed
@@ -754,7 +755,6 @@ class TransferAndTensorAllocator:
                     u = self._tensor_uses_core_var(t, c)
                     for stop in range(-1, len(self.ssis[tr].get_applicable_temporal_variables())):
                         tiles_needed = self.tiles_needed_levels[(t, stop)]
-                        tiles_needed += 1 if self.force_double_buffering else 0
 
                         uz = self._add_binary_product(
                             a=u,
@@ -1052,7 +1052,7 @@ class TransferAndTensorAllocator:
     # ------------------------------------------------------------------ #
     def solve(
         self, *, tee: bool = True
-    ) -> tuple[TensorReuseLevels, TensorAlloc, TransferAlloc, MemoryAlloc, int, int, int]:
+    ) -> tuple[TensorReuseLevels, TensorDepths, TensorAlloc, TransferAlloc, MemoryAlloc, int, int, int]:
         self.model.setParam("OutputFlag", 1 if tee else 0)
         self.model.optimize(self._mip_progress_callback)
         if self.model.Status != GRB.OPTIMAL:
@@ -1066,7 +1066,7 @@ class TransferAndTensorAllocator:
         routing = self.get_transfer_routing()
         chosen_memory_cores = self.get_chosen_memory_cores()
         tensor_reuse_levels = self.get_tensor_reuse_levels()
-        self.get_object_fifo_depths_per_transfer()
+        tensor_depths = self.get_tensor_depths()
 
         # Visualize the optimization progress
         self.plot_optimization_progress(
@@ -1079,6 +1079,7 @@ class TransferAndTensorAllocator:
         latency_per_iteration = sum(slot_lat.X for slot_lat in self.slot_latency.values())
         return (
             tensor_reuse_levels,
+            tensor_depths,
             tensor_alloc,
             routing,
             chosen_memory_cores,
@@ -1090,7 +1091,7 @@ class TransferAndTensorAllocator:
     def get_tensor_reuse_levels(
         self,
     ) -> TensorReuseLevels:
-        reuse_levels: dict[Tensor, int] = {}
+        reuse_levels: TensorReuseLevels = {}
         for tr in self.transfer_nodes:
             for t in tr.tensors:
                 if t in reuse_levels:
@@ -1099,6 +1100,19 @@ class TransferAndTensorAllocator:
                     if self.z_stop[(t, stop)].X > self.VAR_THRESHOLD:
                         reuse_levels[t] = stop
         return reuse_levels
+
+    def get_tensor_depths(
+        self,
+    ) -> TensorDepths:
+        tiles_needed: TensorDepths = {}
+        for tr in self.transfer_nodes:
+            for t in tr.tensors:
+                if t in tiles_needed or t not in self.ssis:
+                    continue
+                for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
+                    if self.z_stop[(t, stop)].X > self.VAR_THRESHOLD:
+                        tiles_needed[t] = self.tiles_needed_levels[(t, stop)]
+        return tiles_needed
 
     def get_transfer_routing(self) -> TransferAlloc:
         routing: TransferAlloc = {}
@@ -1146,14 +1160,6 @@ class TransferAndTensorAllocator:
                 raise ValueError(f"{t.node_name}: expected exactly one placement choice, got {chosen}")
             tensor_alloc[t] = chosen[0]
         return tensor_alloc
-
-    def get_object_fifo_depths_per_transfer(self) -> dict[TransferNode, int]:
-        fifo_depths: dict[TransferNode, int] = {}
-        for tr in self.transfer_nodes:
-            db_extra = 1 if self.force_double_buffering else 0
-            of_depth_compute = self.ssis[tr].nb_local_tensors() + db_extra
-            fifo_depths[tr] = int(of_depth_compute)
-        return fifo_depths
 
     def _check_io_transfers_firing_levels(self) -> None:
         for tr in self.transfer_nodes:
