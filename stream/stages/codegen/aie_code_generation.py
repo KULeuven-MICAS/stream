@@ -17,14 +17,16 @@ from xdsl.dialects.builtin import (
     ShapedType,
     TensorType,
 )
-from xdsl.ir import Operation, SSAValue
+from xdsl.ir import Block, Operation, Region, SSAValue
 from xdsl.ir.affine import AffineDimExpr
 from xdsl.parser import AffineMap, StringAttr
 from xdsl_aie.dialects.aie import AIEDeviceEnum
 
+from stream.compiler.context.aie_context import AIEContext
 from stream.compiler.dialects.stream import (
     ComputationNodeOp,
     CoreAttr,
+    FusionGroupOp,
     InEdgeOp,
     LayerDimAttr,
     OutEdgeOp,
@@ -34,7 +36,9 @@ from stream.compiler.dialects.stream import (
     StrensorVar,
     StrensorVarType,
     TransferOp,
+    YieldOp,
 )
+from stream.compiler.transforms.aie_convert_ofs import AIEConvertOfs
 
 # from stream.compiler.transforms.aie_add_tracing_script import AIEAddTracingScript
 from stream.compiler.transforms.aie_dispatch import AIEDispatchPass
@@ -56,6 +60,8 @@ from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.iteration_space import (
     IterationVariable,
     IterationVariableType,
+    LoopEffect,
+    Reuse,
     SteadyStateIterationSpace,
 )
 from stream.workload.tensor import Tensor
@@ -70,9 +76,6 @@ from stream.workload.workload import (
     TransferNode,
     Workload,
 )
-
-from stream.compiler.context.aie_context import AIEContext
-from stream.compiler.transforms.aie_convert_ofs import AIEConvertOfs
 
 
 class AIECodeGenerationStage(Stage):
@@ -119,6 +122,7 @@ class AIECodeGenerationStage(Stage):
         ssis_dict: dict[HasIterationSpace | Tensor, SteadyStateIterationSpace],
         workload: Workload,
         ss: StrensorSpace,
+        reuse_index: int,
     ) -> TransferOp:
         """
         Create a TransferOp for a given SteadyStateTransfer.
@@ -295,11 +299,28 @@ class AIECodeGenerationStage(Stage):
             assert target.row_id is not None
             assert target.col_id is not None
             cores.append(StringAttr(f"tile_{target.col_id}_{target.row_id}"))
-        result_type = StrensorType(
-            input_type.element_type,
-            ss,
-            cores,
-        )
+
+        if cores == [StringAttr("tile_0_0")]:
+            shape = cast(ShapedType, node.output.subview.source.type).get_shape()
+            layer_dims = (
+                x[0]
+                for x in sorted(workload.strides_for_tensor(node.outputs[0]).items(), key=lambda x: x[1], reverse=True)
+                if any(x[1])
+            )
+            result_type = StrensorType(
+                node.output.operand_type,
+                StrensorSpace(
+                    tuple(StrensorVar(StrensorVarType.CONSTANT, s, d) for (s, d) in zip(shape, layer_dims, strict=True))
+                ),
+                [StringAttr("tile_0_0")],
+            )
+        else:
+            result_type = StrensorType(
+                input_type.element_type,
+                ss,
+                cores,
+                reuse_index,
+            )
         op = TransferOp(
             inputs,
             [result_type],
@@ -324,6 +345,7 @@ class AIECodeGenerationStage(Stage):
         ssis_dict,
         workload: Workload,
         ss: StrensorSpace,
+        reuse_index: int,
     ) -> ComputationNodeOp:
         ops: list[ComputationNodeOp] = []
 
@@ -352,6 +374,7 @@ class AIECodeGenerationStage(Stage):
             node.output.operand_type,
             ss,
             cores_attrs,
+            reuse_index,
         )
         # workload.global_mapping(node, node.operand_mapping[-1])
         # # Spatial: (m, 4), (n, 4)
@@ -391,9 +414,6 @@ class AIECodeGenerationStage(Stage):
     ) -> ModuleOp:
         ops: dict[Node, Operation] = {}
 
-        # edge_ops: dict[SteadyStateTensor, InEdgeOp | OutEdgeOp] = {}
-        # transfer_ops: dict[SteadyStateTransfer, TransferOp] = {}
-        # compute_ops: dict[SteadyStateComputation, ComputationNodeOp] = {}
         def get_layer_dims(tensor: Tensor) -> Iterable[LayerDim]:
             strides = workload.strides_for_tensor(tensor)
             filtered = {y: x for x, y in strides.items() if any(y)}
@@ -407,22 +427,23 @@ class AIECodeGenerationStage(Stage):
                 shape.append(kernel_vars[dim].size)
             return shape
 
-        def ssis_to_strensorspace(tensor: Tensor) -> StrensorSpace:
+        def ssis_to_strensorspace(tensor: Tensor) -> tuple[int, StrensorSpace]:
             # kernel vars:
             vars: list[StrensorVar] = []
-            for size, dim in zip(get_kernel_size(tensor), get_layer_dims(tensor)):
+            for size, dim in zip(get_kernel_size(tensor), get_layer_dims(tensor), strict=True):
                 vars.insert(0, StrensorVar(StrensorVarType.KERNEL, size, dim))
-            for spat_var in ssis_dict[tensor].get_spatial_variables():
-                vars.insert(
-                    0,
-                    StrensorVar(StrensorVarType.SPATIAL, spat_var.size, spat_var.dimension),
-                )
-            for temp_var in ssis_dict[tensor].get_temporal_variables():
-                vars.insert(
-                    0,
-                    StrensorVar(StrensorVarType.TEMPORAL, temp_var.size, temp_var.dimension),
-                )
-            return StrensorSpace(tuple(vars))
+            reuse_index = 0
+            for var in ssis_dict[tensor].variables:
+                if var.effect == LoopEffect.ABSENT:
+                    vars.insert(0, StrensorVar(StrensorVarType.ABSENT, var.size, var.dimension))
+                elif var.type == IterationVariableType.SPATIAL:
+                    vars.insert(0, StrensorVar(StrensorVarType.SPATIAL, var.size, var.dimension))
+                elif var.type in (IterationVariableType.TEMPORAL, IterationVariableType.SPATIOTEMPORAL):
+                    vars.insert(0, StrensorVar(StrensorVarType.TEMPORAL, var.size, var.dimension))
+                if var.reuse == Reuse.REUSE:
+                    reuse_index = len(vars)
+
+            return reuse_index, StrensorSpace(tuple(vars))
 
         # all_ops: list[Operation] = []
         def inputs(node: HasInputs) -> Iterable[Operation]:
@@ -433,9 +454,20 @@ class AIECodeGenerationStage(Stage):
 
         for node in workload.topological_sort():
             if isinstance(node, InEdge):
+                shape = cast(ShapedType, node.output.subview.source.type).get_shape()
+                layer_dims = reversed(tuple(get_layer_dims([x for x in workload.successors(node)][0].output)))
                 ops[node] = InEdgeOp(
                     node.name,
-                    StrensorType(node.output.operand_type, ssis_to_strensorspace(node.output)),
+                    StrensorType(
+                        node.output.operand_type,
+                        StrensorSpace(
+                            tuple(
+                                StrensorVar(StrensorVarType.CONSTANT, s, d)
+                                for (s, d) in zip(shape, layer_dims, strict=True)
+                            )
+                        ),
+                        [StringAttr("tile_0_0")],
+                    ),
                 )
             if isinstance(node, OutEdge):
                 inps = tuple(inputs(node))
@@ -443,6 +475,7 @@ class AIECodeGenerationStage(Stage):
                 inp = inps[0]
                 ops[node] = OutEdgeOp(node, inp.results)
             if isinstance(node, TransferNode):
+                reuse_index, ss = ssis_to_strensorspace(node.outputs[0])
                 ops[node] = self.create_transfer_op(
                     node,
                     mapping.get(node),
@@ -450,9 +483,11 @@ class AIECodeGenerationStage(Stage):
                     tuple(inputs(node)),
                     ssis_dict,
                     workload,
-                    ssis_to_strensorspace(node.outputs[0]),
+                    ss,
+                    reuse_index,
                 )
             if isinstance(node, ComputationNode):
+                reuse_index, ss = ssis_to_strensorspace(node.outputs[0])
                 ops[node] = self.create_computation_node_op(
                     node,
                     mapping.get(node),
@@ -461,10 +496,24 @@ class AIECodeGenerationStage(Stage):
                     ssis_dict[node],
                     ssis_dict,
                     workload,
-                    ssis_to_strensorspace(node.outputs[0]),
+                    ss,
+                    reuse_index,
                 )
 
-        module = ModuleOp(list(ops.values()))
+        types = []
+        remaining_ops = []
+        for op in ops.values():
+            if isinstance(op, InEdgeOp):
+                types.append(op.output.type)
+            elif isinstance(op, OutEdgeOp):
+                types.append(op.inputs[0].type)
+                remaining_ops.append(YieldOp(*op.inputs))
+            else:
+                remaining_ops.append(op)
+
+        fusion_group = FusionGroupOp(Region(Block(remaining_ops, arg_types=types)))
+
+        module = ModuleOp([fusion_group])
 
         return module
 
@@ -475,10 +524,11 @@ class AIECodeGenerationStage(Stage):
         assert workload is not None
 
         mapping = self.ctx.get("scheduler").mapping
+        tensor_depths = self.ctx.get("scheduler").tensor_depths
         aie_kernels = {nm.kernel.unique_name: nm.kernel for nm in mapping.values() if nm.kernel is not None}
         # register kernels:
         for kernel in (nm.kernel for nm in mapping.values() if nm.kernel is not None):
-            self.ctx.registered_kernels[kernel.unique_name] = kernel
+            self.context.registered_kernels[kernel.unique_name] = kernel
 
         assert isinstance(mapping, Mapping)
 
@@ -503,6 +553,9 @@ class AIECodeGenerationStage(Stage):
 
         with open("test.mlir", "w") as f:
             f.write(str(module))
+
+        self.module = module
+        return
 
         # with open("test1.mlir", "w") as f:
         #     f.write(str(module))
