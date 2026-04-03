@@ -1,12 +1,11 @@
 from collections import defaultdict
-from math import prod
 from typing import TYPE_CHECKING
 
 import sympy as sp
 from xdsl.ir.affine import AffineConstantExpr, AffineDimExpr, AffineExpr
 
 from stream.datatypes import InterCoreTiling, LayerDim
-from stream.workload.node import ComputationNode, TransferNode
+from stream.workload.node import ComputationNode, Node, TransferNode
 from stream.workload.steady_state.iteration_space import (
     IterationVariable,
     IterationVariableType,
@@ -87,9 +86,7 @@ def _add_temporal_iteration_variables(
             if isinstance(node, ComputationNode):
                 effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.ABSENT
             elif isinstance(node, TransferNode):
-                preds = workload.predecessors(node)
-                succs = workload.successors(node)
-                compute_preds_succs = [n for n in (*preds, *succs) if isinstance(n, ComputationNode)]
+                compute_preds_succs = get_compute_predecessors_successors(node, workload)
                 if dim in workload.get_dims(node):
                     effect = LoopEffect.VARYING
                 elif any(dim in workload.get_dims(n) for n in compute_preds_succs):
@@ -147,12 +144,18 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                     )
                 )
             elif dim not in workload.get_dims(node):
+                if isinstance(node, ComputationNode):
+                    effect = LoopEffect.ABSENT
+                elif isinstance(node, TransferNode):
+                    compute_preds_succs = get_compute_predecessors_successors(node, workload)
+                    dim_not_in_any_compute = all(dim not in workload.get_dims(n) for n in compute_preds_succs)
+                    effect = LoopEffect.ABSENT if dim_not_in_any_compute else LoopEffect.INVARIANT
                 # This dimension is not present, so add an absent spatial var
                 iteration_variables[node].append(
                     IterationVariable(
                         dimension=dim,
                         size=unrolling,
-                        effect=LoopEffect.ABSENT,
+                        effect=effect,
                         type=IterationVariableType.SPATIAL,
                     )
                 )
@@ -219,12 +222,22 @@ def collect_spatial_unrollings(workload: "Workload", mapping: "Mapping"):
     return spatial_unrollings, unique_spatial_unrollings
 
 
-def _get_total_spatial_unrolling_for_dim(
-    dim: LayerDim,
-    spatial_unrollings: set[tuple[LayerDim, int]],
-) -> int:
-    total_unrolling = prod(su[1] for su in spatial_unrollings if su[0] == dim)
-    return total_unrolling
+def get_compute_predecessors_successors(tr: TransferNode, workload: "Workload") -> list[ComputationNode]:
+    """Iteratively go through all preds and succs until there are no more transfer nodes, and return the compute nodes found."""
+    compute_nodes: list[ComputationNode] = []
+    visited: set[Node] = set()
+    to_visit: list[Node] = [tr]
+    while to_visit:
+        current = to_visit.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        if isinstance(current, ComputationNode):
+            compute_nodes.append(current)
+        else:
+            to_visit.extend(workload.predecessors(current))
+            to_visit.extend(workload.successors(current))
+    return compute_nodes
 
 
 def sympy_to_xdsl(expr: sp.Expr) -> AffineExpr:
