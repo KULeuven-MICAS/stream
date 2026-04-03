@@ -40,10 +40,7 @@ def iterate_spat_vars(
     if len(spat_vars) == 0:
         yield tuple()
         return
-    vars = (
-        (StrensorVar(StrensorVarType.POINT, i, spat_vars[-1].dim),)
-        for i in range(spat_vars[-1].size)
-    )
+    vars = ((StrensorVar(StrensorVarType.POINT, i, spat_vars[-1].dim),) for i in range(spat_vars[-1].size))
     for var in vars:
         if len(spat_vars) == 1:
             yield var
@@ -55,9 +52,7 @@ def iterate_spat_vars(
 @dataclass
 class UnrollComputationNodes(RewritePattern):
     @op_type_rewrite_pattern
-    def match_and_rewrite(
-        self, op: ComputationNodeOp, rewriter: PatternRewriter
-    ) -> None:
+    def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
         if op.spatial_index is not None:
             # already spatially unrolled
             return
@@ -94,6 +89,8 @@ class UnrollComputationNodes(RewritePattern):
 class UnrollTransfers(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter) -> None:
+        if op.parent_op() is None:
+            breakpoint()
         ops: list[Operation] = []
         new_results: list[SSAValue] = []
         # create singular channel
@@ -115,7 +112,11 @@ class UnrollTransfers(RewritePattern):
             output_spat_vars = list(output.type.ssis.data.get_spatial_variables())
             pull_ops = []
             for core, var in zip(
-                output.type.core_allocation, iterate_spat_vars(output_spat_vars)
+                output.type.core_allocation,
+                iterate_spat_vars(
+                    output_spat_vars,
+                ),
+                strict=True,
             ):
                 result_type = StrensorType(
                     output.type.element_type,
@@ -142,25 +143,19 @@ class SquashGatherOps(RewritePattern):
         inputs: dict[StrensorSpace, SSAValue | Operation] = {}
         # gather mapping spatial index -> input
         for input in op.inputs:
-            assert isinstance(input, OpResult) and isinstance(
-                in_op := input.op, PullOp | ComputationNodeOp
-            )
+            assert isinstance(input, OpResult) and isinstance(in_op := input.op, PullOp | ComputationNodeOp)
             assert in_op.spatial_index is not None
             inputs[in_op.spatial_index.data] = input
         # rewire outputs to use correct input
         for output in op.output.uses.copy():
             if isinstance(output.operation, YieldOp):
                 assert len(inputs) == 1
-                output.operation.operands[output.index] = SSAValue.get(
-                    next(iter(inputs.values()))
-                )
+                output.operation.operands[output.index] = SSAValue.get(next(iter(inputs.values())))
                 continue
             assert isinstance(out_op := output.operation, PushOp | ComputationNodeOp)
             assert out_op.spatial_index is not None
             assert out_op.spatial_index.data in inputs
-            out_op.operands[output.index] = SSAValue.get(
-                inputs[out_op.spatial_index.data]
-            )
+            out_op.operands[output.index] = SSAValue.get(inputs[out_op.spatial_index.data])
         rewriter.erase_matched_op()
 
 

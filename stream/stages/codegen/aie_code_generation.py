@@ -1,3 +1,4 @@
+import os
 import time
 from collections import defaultdict
 from collections.abc import Iterator, Sequence
@@ -5,6 +6,7 @@ from copy import deepcopy
 from itertools import product
 from math import prod
 from typing import Iterable, cast
+from warnings import warn
 
 from snaxc.dialects.snax import NoneAttr
 from snaxc.dialects.tsl import TSL
@@ -127,169 +129,7 @@ class AIECodeGenerationStage(Stage):
         """
         Create a TransferOp for a given SteadyStateTransfer.
         """
-        # ssis = ssis_dict[node]
-        # if next_compute := next((n for n in workload.successors(node) if isinstance(n, ComputationNode)), None):
-        #     ssis_dest = ssis_dict[next_compute]
-        # else:
-        #     ssis_dest = ssis
-        # # The final transfer (pointing to an OutEdgeOp) requires special treatment
-        # is_out_transfer = any(isinstance(user, OutEdge) for user in workload.successors(node))
-        #
-        # # Get source and dest and convert to string for TransferOp creation which uses string
-        # # source = transfer.srcs[0]
-        # workload_strides = workload.strides_for_tensor(node.outputs[0])
-        #
-        # To determine transfer type, iterate over kernel ssis vars
-        # transfer_shape = [0] * len(node.outputs[0].shape)
-        # for kernel_var in ssis.get_kernel_variables():
-        #     for i, stride in enumerate(workload_strides[kernel_var.dimension]):
-        #         transfer_shape[i] += stride * kernel_var.size
-        #
-        # assert isinstance(node.outputs[0].subview.source.type, MemRefType)
-        #
-        # # Determine strides based on layout mapping:
-        # # ordering of indeces:
-        # # TODO: make this more robust
-        # num_dims = node.outputs[0].subview.source.type.get_num_dims()
-        # tensor_name = node.name[len("Transfer(") : -1]
-        # if tensor_name in full_mapping.runtime_args:
-        #     layout_mapping = cast(AffineMap, full_mapping.runtime_args[tensor_name])
-        # else:
-        #     layout_mapping = AffineMap.identity(num_dims)
-        # # index order is the order of dimensions in layout. The last element of this list
-        # # is unrolled first
-        # index_order = [layout_mapping.results.index(AffineDimExpr(i)) for i in range(num_dims)]
-        # source_shape = node.outputs[0].subview.source.type.get_shape()
-        # strides = ShapedType.strides_for_shape([source_shape[i] for i in index_order])
-        # shape_multiplier = [strides[::-1][i] for i in index_order[::-1]]
-        #
-        # # To determine the number of (spatially) parallel transfers, iterate over spatial ssis vars of destination
-        # # the spatial variables must not be a spatio-temporal variable of the desintation
-        # next_spatio_temporal_vars = [v.dimension for v in ssis_dest.get_spatio_temporal_variables()]
-        # relevant_spat_vars = [
-        #     v for v in ssis.get_spatial_variables() if v.relevant and v.dimension not in next_spatio_temporal_vars
-        # ]
-        # num_spat_results = prod(v.size for v in relevant_spat_vars)
-        #
-        # # Move determination of sizes/strides for runtime compies over to lowering logic,
-        # # here, just set sizes and strides to the input layout such that correct calculations can be made.
-        # operand_index_dims = [
-        #     x[0] for x in sorted(workload_strides.items(), key=lambda x: x[1], reverse=True) if any(x[1])
-        # ]
-        # operand_attr = ArrayAttr([LayerDimAttr(x) for x in operand_index_dims])
-        #
-        # # Determine the output type based on this:
-        # if is_out_transfer:
-        #     result_type = node.outputs[0].subview.source.type
-        #     result_types = (result_type,)
-        # else:
-        # result_type = MemRefType(node.outputs[0].operand_type, transfer_shape)
-        # Unroll spatial results: [(s0, 4), (s1, 4)] should give a 4x4 array of results = 16 results
-        # result_types = (result_type,)
-        # result_types = (result_type,) * num_spat_results
-        #
-        # # Determine the spatial strides for this transfer:
-        # # Spatial strides are simply determined in a linear fashion, each time prgressing
-        # # the number of elements that one transfer type takes.
-        # transfer_elements = prod(transfer_shape)
-        # # spatio_temporal_elements = prod(v.size for v in ssis_dest.get_spatio_temporal_variables())
-        # # spatial_stride = transfer_elements * spatio_temporal_elements
-        # if is_out_transfer:
-        #     st_factor = num_spat_results // len(inputs)
-        #     spatial_strides = tuple(range(0, transfer_elements * num_spat_results, transfer_elements * st_factor))
-        # elif len(inputs) == 1:
-        #     spatial_strides = tuple(range(0, transfer_elements * num_spat_results, transfer_elements))
-        # elif num_spat_results == 1:
-        #     spatial_strides = tuple(range(0, transfer_elements * len(inputs), transfer_elements))
-        # else:
-        #     # FIXME: spatial strides can apply to both input and output but it is not very clear right now
-        #     spatial_strides = tuple(range(0, transfer_elements * num_spat_results, transfer_elements))
-        #     # raise NotImplementedError("The case with multiple inputs and multiple spatial results is not implemented yet")
-        #
-        # # Determine the temporal strides for this transfer:
-        # seen_dims = defaultdict(lambda: 1)
-        # # this assumes that each resulting tile after tiling to be in row-major layout
-        # # this could probably benefit from a more holistic view of layout transformation
-        # #
-        # if is_out_transfer:
-        #     ssis_prev = ssis_dict[next(workload.predecessors(node))]
-        #     new_ssis = []
-        #     new_ssis_tvars = []
-        #     for cur, prev in zip(ssis.variables, ssis_prev.variables, strict=True):
-        #         if cur.type == prev.type:
-        #             if cur.type == IterationVariableType.TEMPORAL:
-        #                 new_ssis_tvars.append(deepcopy(cur))
-        #             else:
-        #                 new_ssis.append(deepcopy(cur))
-        #         else:
-        #             assert cur.type == IterationVariableType.SPATIAL
-        #             assert prev.type == IterationVariableType.SPATIOTEMPORAL
-        #             new_var = deepcopy(cur)
-        #             new_var.type = IterationVariableType.TEMPORAL
-        #             new_ssis_tvars.append(new_var)
-        #     ssis = SteadyStateIterationSpace([*new_ssis, *new_ssis_tvars])
-        #
-        # all_vars: Sequence[IterationVariable] = []
-        # # First, iterate over kernel dimensions in row-major order:
-        # kernel_var_dict = {v.dimension: v for v in ssis.get_kernel_variables()}
-        # filtered_vars = [(dim, strides) for dim, strides in workload_strides.items() if any(strides)]
-        # ordered_strides = sorted(filtered_vars, key=lambda x: x[1])
-        # ordered_strides = [ordered_strides[i] for i in index_order]
-        # all_vars.extend(kernel_var_dict[dim] for dim, _ in ordered_strides)
-        #
-        # # First, we should go over the temporal vars that are kept local in mem tile:
-        # reuse_tvars = []
-        # for var in ssis.get_temporal_variables():
-        #     if var.mem_tile_reuse == MemTileReuse.REUSE:
-        #         reuse_tvars.append(var)
-        #     else:
-        #         break
-        # non_reuse_tvars = ssis.get_temporal_variables()[len(reuse_tvars) :]
-        # all_vars.extend(var for var in reuse_tvars if var.relevant)
-        # # Then, iterate over relevant spatial vars:
-        # all_vars.extend(var for var in ssis.get_spatial_variables() if var.relevant)
-        # # This is only relevant for first and last ops, which should not have spatio-temporal vars.
-        # # After that, go over the temporal strides (both relevant and irellevant)
-        # # that aren't kept local in memtiles.
-        # # Then, add all remaining temporal variables that aren't kept local in the memtile
-        # all_vars.extend(var for var in non_reuse_tvars if var.applicable)
-        #
-        # # I dont' think offsets are relevant anymore with the new representation
-        # offsets = [0]
-        #
-        # # Construct sizes and strides
-        # sizes = []
-        # strides = []
-        # for var in all_vars:
-        #     sizes.insert(0, var.size)
-        #     stride = workload_strides[var.dimension]
-        #     # multiply the stride by previous iteration vars
-        #     stride = tuple(seen_dims[var.dimension] * x for x in stride)
-        #     seen_dims[var.dimension] *= var.size
-        #     # convert stride to int (assumes dram row-major layout):
-        #     stride = sum(x * y for (x, y) in zip(stride, shape_multiplier, strict=True))
-        #     strides.insert(0, stride)
-        #
-        # sizes, strides = canonicalize_transformation(sizes, strides)
-        #
-        # if len(mapping.memory_allocation):
-        #     row, col = mapping.memory_allocation[0].row_id, mapping.memory_allocation[0].col_id
-        #     assert row is not None
-        #     assert col is not None
-        #     if is_out_transfer:
-        #         row = 1
-        #         col = 7
-        #         memtile = ArrayAttr(
-        #             [
-        #                 ArrayAttr([IntegerAttr.from_index_int_value(6), IntegerAttr.from_index_int_value(1)]),
-        #                 ArrayAttr([IntegerAttr.from_index_int_value(7), IntegerAttr.from_index_int_value(1)]),
-        #             ]
-        #         )
-        #     else:
-        #         memtile = ArrayAttr([ArrayAttr([IntegerAttr.from_index_int_value(x) for x in (col, row)])])
-        # else:
-        #     memtile = NoneAttr()
-        #
+
         input_type = SSAValue.get(inputs[0]).type
         assert isinstance(input_type, StrensorType)
         path_plan = mapping.resource_allocation[0]
@@ -299,6 +139,20 @@ class AIECodeGenerationStage(Stage):
             assert target.row_id is not None
             assert target.col_id is not None
             cores.append(StringAttr(f"tile_{target.col_id}_{target.row_id}"))
+
+        if len(cores) == 1:
+            # FIXME: hardcoded fix:
+            if any(x.type == StrensorVarType.SPATIAL for x in ss.vars):
+                warn("hardcoding spatial loop to be absent because of wrong input")
+                relevant_dims = {x.dim for x in ss.get_kernel_variables()}
+                new_vars = []
+                ss_new = StrensorSpace(
+                    tuple(
+                        StrensorVar(StrensorVarType.ABSENT, x.size, x.dim) if x.type == StrensorVarType.SPATIAL else x
+                        for x in ss.vars
+                    )
+                )
+                ss = ss_new
 
         if cores == [StringAttr("tile_0_0")]:
             shape = cast(ShapedType, node.output.subview.source.type).get_shape()
@@ -314,6 +168,20 @@ class AIECodeGenerationStage(Stage):
                 ),
                 [StringAttr("tile_0_0")],
             )
+            result_types = [result_type]
+        elif len(node.outputs) > 1:
+            # create equal split based on compute allocations
+            cores_per_output = len(cores) // len(node.outputs)
+            result_types = []
+            for i in range(len(node.outputs)):
+                result_types.append(
+                    StrensorType(
+                        input_type.element_type,
+                        ss,
+                        cores[i * cores_per_output : (i + 1) * cores_per_output],
+                        reuse_index,
+                    )
+                )
         else:
             result_type = StrensorType(
                 input_type.element_type,
@@ -321,9 +189,10 @@ class AIECodeGenerationStage(Stage):
                 cores,
                 reuse_index,
             )
+            result_types = [result_type]
         op = TransferOp(
             inputs,
-            [result_type],
+            result_types,
             #     ssis,
             #     offsets,
             #     sizes,
@@ -432,7 +301,7 @@ class AIECodeGenerationStage(Stage):
             vars: list[StrensorVar] = []
             for size, dim in zip(get_kernel_size(tensor), get_layer_dims(tensor), strict=True):
                 vars.insert(0, StrensorVar(StrensorVarType.KERNEL, size, dim))
-            reuse_index = 0
+            reuse_index = len(vars)
             for var in ssis_dict[tensor].variables:
                 if var.effect == LoopEffect.ABSENT:
                     vars.insert(0, StrensorVar(StrensorVarType.ABSENT, var.size, var.dimension))
@@ -446,11 +315,11 @@ class AIECodeGenerationStage(Stage):
             return reuse_index, StrensorSpace(tuple(vars))
 
         # all_ops: list[Operation] = []
-        def inputs(node: HasInputs) -> Iterable[Operation]:
+        def inputs(node: HasInputs) -> Iterable[SSAValue]:
             for inp in node.inputs:
                 for other_node in workload.nodes:
                     if isinstance(other_node, HasOutputs) and inp in other_node.outputs:
-                        yield ops[other_node]
+                        yield ops[other_node].results[other_node.outputs.index(inp)]
 
         for node in workload.topological_sort():
             if isinstance(node, InEdge):
@@ -473,7 +342,7 @@ class AIECodeGenerationStage(Stage):
                 inps = tuple(inputs(node))
                 assert len(inps) == 1
                 inp = inps[0]
-                ops[node] = OutEdgeOp(node, inp.results)
+                ops[node] = OutEdgeOp(node, (inp,))
             if isinstance(node, TransferNode):
                 reuse_index, ss = ssis_to_strensorspace(node.outputs[0])
                 ops[node] = self.create_transfer_op(
@@ -502,16 +371,23 @@ class AIECodeGenerationStage(Stage):
 
         types = []
         remaining_ops = []
+        in_edges: list[InEdgeOp] = []
         for op in ops.values():
             if isinstance(op, InEdgeOp):
                 types.append(op.output.type)
+                in_edges.append(op)
             elif isinstance(op, OutEdgeOp):
                 types.append(op.inputs[0].type)
                 remaining_ops.append(YieldOp(*op.inputs))
+                op.erase()
             else:
                 remaining_ops.append(op)
 
-        fusion_group = FusionGroupOp(Region(Block(remaining_ops, arg_types=types)))
+        fusion_group = FusionGroupOp(Region(block := Block(remaining_ops, arg_types=types)))
+
+        for in_edge, block_arg in zip(in_edges, block.args, strict=False):
+            in_edge.output.replace_by(block_arg)
+            in_edge.erase()
 
         module = ModuleOp([fusion_group])
 
@@ -551,11 +427,7 @@ class AIECodeGenerationStage(Stage):
 
         module = self.generate_steady_state_workload(workload, mapping, ssis_dict)
 
-        with open("test.mlir", "w") as f:
-            f.write(str(module))
-
         self.module = module
-        return
 
         # with open("test1.mlir", "w") as f:
         #     f.write(str(module))
@@ -575,14 +447,32 @@ class AIECodeGenerationStage(Stage):
         # args = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]  # gemm
         # args = ["Gemm_Right.I_in", "Gemm_Right.W_in", "Gemm_Left.W_in", "Elt_Mul.O_out"]  # swiglu
         args = self.runtime_args  # will be inferred automatically based on EdgeOps
+        output_path = self.ctx.data["output_path"]
+        output_path += "/codegen/"
+        os.makedirs(output_path, exist_ok=True)
 
+        with open(output_path + "/stream.mlir", "w") as f:
+            f.write(str(module))
+        module.verify()
         # Lowering Passes:
         SpatialUnrollPass().apply(self.context, module)
+        with open(output_path + "/unrolled.mlir", "w") as f:
+            f.write(str(module))
         AIEDispatchPass().apply(self.context, module)
+        with open(output_path + "/dispatched.mlir", "w") as f:
+            f.write(str(module))
         IterationSpaceToFor().apply(self.context, module)
+        with open(output_path + "/with_for.mlir", "w") as f:
+            f.write(str(module))
         AIEConvertOfs().apply(self.context, module)
+        with open(output_path + "/convert_of.mlir", "w") as f:
+            f.write(str(module))
         ConvertStreamToAIEPass().apply(self.context, module)
+        with open(output_path + "/to_aie.mlir", "w") as f:
+            f.write(str(module))
         ClearMemorySpace().apply(self.context, module)
+        with open(output_path + "/final.mlir", "w") as f:
+            f.write(str(module))
 
         # Optionally, Add Tracing Script
         # if False:
