@@ -136,9 +136,7 @@ class StrideSet:
         # FIXME: figure out actual limits
         # these are innermost to outermost:
         bound_limits = (1024, 1024, 16384, 64)
-        for i, (stride, bound_limit) in enumerate(
-            zip(self.strides, bound_limits, strict=False)
-        ):
+        for i, (stride, bound_limit) in enumerate(zip(self.strides, bound_limits, strict=False)):
             if stride.size > bound_limit:
                 if i < len(bound_limits) - 1:
                     # find largest number under bound that is a divisor of the size:
@@ -148,9 +146,7 @@ class StrideSet:
                             divider = d
                             break
                     if divider is None:
-                        raise RuntimeError(
-                            "Could not find legalized transfer for the runtime sequence."
-                        )
+                        raise RuntimeError("Could not find legalized transfer for the runtime sequence.")
                 else:
                     divider = stride.size // bound_limit
                 tiled_size = stride.size // divider
@@ -205,17 +201,11 @@ class ChannelToObjectFifoPass(RewritePattern):
     ) -> Sequence[ObjectFifoOp]:
 
         spatial_dims = [
-            x[1]
-            for x in transforms
-            if x[0].type == StrensorVarType.SPATIAL
-            and x[1].type == StrensorVarType.SPATIAL
+            x[1] for x in transforms if x[0].type == StrensorVarType.SPATIAL and x[1].type == StrensorVarType.SPATIAL
         ]
 
         join_dims = [
-            x[0]
-            for x in transforms
-            if x[0].type == StrensorVarType.SPATIAL
-            and x[1].type == StrensorVarType.TEMPORAL
+            x[0] for x in transforms if x[0].type == StrensorVarType.SPATIAL and x[1].type == StrensorVarType.TEMPORAL
         ]
 
         ofs: list[ObjectFifoOp] = []
@@ -232,8 +222,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 target = next(
                     c
                     for c in consumers
-                    if c.spatial_index is not None
-                    and set(spatial) <= set(c.spatial_index.data.vars)
+                    if c.spatial_index is not None and set(spatial) <= set(c.spatial_index.data.vars)
                 )
 
                 switch_join: list[ObjectFifoOp] = []
@@ -243,8 +232,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     source = next(
                         p
                         for p in producers
-                        if p.spatial_index is not None
-                        and set(spatial) | set(join) <= set(p.spatial_index.data.vars)
+                        if p.spatial_index is not None and set(spatial) | set(join) <= set(p.spatial_index.data.vars)
                     )
 
                     assert isinstance(source_type := source.input.type, StrensorType)
@@ -285,24 +273,15 @@ class ChannelToObjectFifoPass(RewritePattern):
     ) -> Sequence[ObjectFifoOp]:
 
         spatial_dims = [
-            x[1]
-            for x in transforms
-            if x[0].type == StrensorVarType.SPATIAL
-            and x[1].type == StrensorVarType.SPATIAL
+            x[1] for x in transforms if x[0].type == StrensorVarType.SPATIAL and x[1].type == StrensorVarType.SPATIAL
         ]
 
         join_dims = [
-            x[0]
-            for x in transforms
-            if x[0].type == StrensorVarType.SPATIAL
-            and x[1].type == StrensorVarType.TEMPORAL
+            x[0] for x in transforms if x[0].type == StrensorVarType.SPATIAL and x[1].type == StrensorVarType.TEMPORAL
         ]
 
         broadcast_dims = [
-            x[1]
-            for x in transforms
-            if x[0].type == StrensorVarType.ABSENT
-            and x[1].type == StrensorVarType.SPATIAL
+            x[1] for x in transforms if x[0].type == StrensorVarType.ABSENT and x[1].type == StrensorVarType.SPATIAL
         ]
 
         ofs: list[ObjectFifoOp] = []
@@ -319,8 +298,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 target = next(
                     c
                     for c in consumers
-                    if c.spatial_index is not None
-                    and set(spatial) <= set(c.spatial_index.data.vars)
+                    if c.spatial_index is not None and set(spatial) <= set(c.spatial_index.data.vars)
                 )
 
                 switch_join: list[ObjectFifoOp] = []
@@ -332,8 +310,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     source = next(
                         p
                         for p in producers
-                        if p.spatial_index is not None
-                        and set(spatial) | set(join) <= set(p.spatial_index.data.vars)
+                        if p.spatial_index is not None and set(spatial) | set(join) <= set(p.spatial_index.data.vars)
                     )
 
                     object_fifo = ObjectFifoOp.from_referenced_type(
@@ -358,14 +335,12 @@ class ChannelToObjectFifoPass(RewritePattern):
                 source = next(
                     p
                     for p in producers
-                    if p.spatial_index is not None
-                    and set(spatial) <= set(p.spatial_index.data.vars)
+                    if p.spatial_index is not None and set(spatial) <= set(p.spatial_index.data.vars)
                 )
                 target = next(
                     c
                     for c in consumers
-                    if c.spatial_index is not None
-                    and set(spatial) <= set(c.spatial_index.data.vars)
+                    if c.spatial_index is not None and set(spatial) <= set(c.spatial_index.data.vars)
                 )
                 assert isinstance(target_type := target.output.type, StrensorType)
                 object_fifo = ObjectFifoOp.from_referenced_type(
@@ -389,16 +364,14 @@ class ChannelToObjectFifoPass(RewritePattern):
                 source = next(
                     p
                     for p in producers
-                    if p.spatial_index is not None
-                    and set(spatial) <= set(p.spatial_index.data.vars)
+                    if p.spatial_index is not None and set(spatial) <= set(p.spatial_index.data.vars)
                 )
 
                 targets = [
                     c
                     for c in consumers
                     for broadcast in iterate_spat_vars(broadcast_dims)
-                    if c.spatial_index is not None
-                    and set(spatial) | set(broadcast) <= set(c.spatial_index.data.vars)
+                    if c.spatial_index is not None and set(spatial) | set(broadcast) <= set(c.spatial_index.data.vars)
                 ]
 
                 assert isinstance(target_type := targets[0].output.type, StrensorType)
@@ -407,10 +380,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     self.get_tile(source),
                     [self.get_tile(t) for t in targets],
                     name_base + f"broadcast_{i}",
-                    (1,)
-                    * (
-                        1 + len(targets)
-                    ),  # TODO: correct object fifo depth for broadcasts
+                    (1,) * (1 + len(targets)),  # TODO: correct object fifo depth for broadcasts
                     target_type.get_element_type(),
                     target_type.get_kernel_shape(),
                 )
@@ -435,17 +405,11 @@ class ChannelToObjectFifoPass(RewritePattern):
         name_base: str,
     ) -> Sequence[ObjectFifoOp]:
         broadcast_dims = [
-            x[1]
-            for x in transforms
-            if x[0].type == StrensorVarType.ABSENT
-            and x[1].type == StrensorVarType.SPATIAL
+            x[1] for x in transforms if x[0].type == StrensorVarType.ABSENT and x[1].type == StrensorVarType.SPATIAL
         ]
 
         distribute_dims = [
-            x[1]
-            for x in transforms
-            if x[0].type == StrensorVarType.TEMPORAL
-            and x[1].type == StrensorVarType.SPATIAL
+            x[1] for x in transforms if x[0].type == StrensorVarType.TEMPORAL and x[1].type == StrensorVarType.SPATIAL
         ]
 
         if len(broadcast_dims) > 0:
@@ -465,6 +429,8 @@ class ChannelToObjectFifoPass(RewritePattern):
         ofs: list[ObjectFifoOp] = []
 
         # max one distribute dimension:
+        if len(distribute_dims) > 1:
+            breakpoint()
         assert len(distribute_dims) <= 1
         for i, distribute in enumerate(iterate_spat_vars(distribute_dims)):
             # get all broadcast targets:
@@ -475,9 +441,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 for c in consumers:
                     assert c.spatial_index is not None
                     # match on spatial index:
-                    if set(distribute) | set(broadcast) == set(
-                        c.spatial_index.data.vars
-                    ):
+                    if set(distribute) | set(broadcast) == set(c.spatial_index.data.vars):
                         targets.append(c)
 
             # gather all broadcast tiles:
@@ -568,10 +532,7 @@ class ChannelToObjectFifoPass(RewritePattern):
             # find correct consumer:
             for j, join in enumerate(iterate_spat_vars(join_dims)):
                 source = next(
-                    p
-                    for p in producers
-                    if p.spatial_index is not None
-                    and set(join) <= set(p.spatial_index.data.vars)
+                    p for p in producers if p.spatial_index is not None and set(join) <= set(p.spatial_index.data.vars)
                 )
 
                 assert isinstance(source_type := source.input.type, StrensorType)
@@ -640,20 +601,13 @@ class ChannelToObjectFifoPass(RewritePattern):
             transformations = [
                 (x, y)
                 for x, y in zip(in_ss.vars, out_ss.vars, strict=True)
-                if (
-                    x.type == StrensorVarType.SPATIAL
-                    or y.type == StrensorVarType.SPATIAL
-                )
+                if (x.type == StrensorVarType.SPATIAL or y.type == StrensorVarType.SPATIAL)
             ]
         elif all(v.type == StrensorVarType.CONSTANT for v in in_ss.vars):
-            transformations = [
-                (x, x) for x in out_ss.vars if x.type == StrensorVarType.SPATIAL
-            ]
+            transformations = [(x, x) for x in out_ss.vars if x.type == StrensorVarType.SPATIAL]
 
         elif all(v.type == StrensorVarType.CONSTANT for v in out_ss.vars):
-            transformations = [
-                (x, x) for x in in_ss.vars if x.type == StrensorVarType.SPATIAL
-            ]
+            transformations = [(x, x) for x in in_ss.vars if x.type == StrensorVarType.SPATIAL]
         else:
             raise NotImplementedError()
 
@@ -664,22 +618,16 @@ class ChannelToObjectFifoPass(RewritePattern):
             ops = self.shim_to_mem(producers[0], consumers, name_base)
         elif self.is_mem(in_type.core_allocation.data[0].data):
             if self.is_compute(out_type.core_allocation.data[0].data):
-                ops = self.mem_to_compute(
-                    producers, consumers, transformations, name_base
-                )
+                ops = self.mem_to_compute(producers, consumers, transformations, name_base)
             elif self.is_shim(out_type.core_allocation.data[0].data):
                 ops = self.mem_to_shim(producers, consumers, transformations, name_base)
             else:
                 raise NotImplementedError("going from mem tile to unknown")
         elif self.is_compute(in_type.core_allocation.data[0].data):
             if self.is_compute(out_type.core_allocation.data[0].data):
-                ops = self.compute_to_compute(
-                    producers, consumers, transformations, name_base
-                )
+                ops = self.compute_to_compute(producers, consumers, transformations, name_base)
             elif self.is_mem(out_type.core_allocation.data[0].data):
-                ops = self.compute_to_mem(
-                    producers, consumers, transformations, name_base
-                )
+                ops = self.compute_to_mem(producers, consumers, transformations, name_base)
             else:
                 raise NotImplementedError("going from compute tile to unknown")
         else:
@@ -717,9 +665,7 @@ class RealizeLinks(RewritePattern):
         ofs_push = push.attributes.get("of")
         assert isa(ofs_push, StringAttr) or isa(ofs_push, ArrayAttr[StringAttr])
 
-        num_elements = prod(strensor.get_kernel_shape()) * prod(
-            strensor.get_local_shape()
-        )
+        num_elements = prod(strensor.get_kernel_shape()) * prod(strensor.get_local_shape())
         if isinstance(ofs_pull, ArrayAttr):
             # join link
             assert isinstance(ofs_push, StringAttr)
@@ -773,37 +719,21 @@ class TransferToRuntimeSequence(RewritePattern):
 
         # find strensor type in memtile and compute tile:
         if isinstance(op, PushOp):
-            mem_op = next(
-                op.operation
-                for op in op.channel.uses
-                if isinstance(op.operation, PullOp)
-            )
+            mem_op = next(op.operation for op in op.channel.uses if isinstance(op.operation, PullOp))
             mem_strensor = mem_op.output.type
             assert isinstance(mem_strensor, StrensorType)
             mem_push = next(op.operation for op in mem_op.output.uses)
             assert isinstance(mem_push, PushOp)
-            compute_op = next(
-                op.operation
-                for op in mem_push.channel.uses
-                if isinstance(op.operation, PullOp)
-            )
+            compute_op = next(op.operation for op in mem_push.channel.uses if isinstance(op.operation, PullOp))
             compute_strensor = compute_op.output.type
             assert isinstance(compute_strensor, StrensorType)
         else:
-            mem_op = next(
-                op.operation
-                for op in op.channel.uses
-                if isinstance(op.operation, PushOp)
-            )
+            mem_op = next(op.operation for op in op.channel.uses if isinstance(op.operation, PushOp))
             mem_strensor = mem_op.input.type
             assert isinstance(mem_strensor, StrensorType)
             mem_pull = mem_op.input.owner
             assert isinstance(mem_pull, PullOp)
-            compute_op = next(
-                op.operation
-                for op in mem_pull.channel.uses
-                if isinstance(op.operation, PushOp)
-            )
+            compute_op = next(op.operation for op in mem_pull.channel.uses if isinstance(op.operation, PushOp))
             compute_strensor = compute_op.input.type
             assert isinstance(compute_strensor, StrensorType)
 
@@ -829,24 +759,19 @@ class TransferToRuntimeSequence(RewritePattern):
         # next, iterate temporal/absent vars kept local in a memtile
         for i, (mvar, cvar) in enumerate(iter_strensors()):
             if (
-                cvar.type == mvar.type == StrensorVarType.TEMPORAL
-                or mvar.type == StrensorVarType.ABSENT
+                cvar.type == mvar.type == StrensorVarType.TEMPORAL or mvar.type == StrensorVarType.ABSENT
             ) and i < mem_strensor.num_reuse_vars:
                 vars.append(mvar)
 
         # then, iterate the join / distribute vars:
         for mvar, cvar in iter_strensors():
-            if (
-                mvar.type == StrensorVarType.TEMPORAL
-                and cvar.type == StrensorVarType.SPATIAL
-            ):
+            if mvar.type == StrensorVarType.TEMPORAL and cvar.type == StrensorVarType.SPATIAL:
                 vars.append(mvar)
 
         # then, remaining vars:
         for i, (mvar, cvar) in enumerate(iter_strensors()):
             if (
-                cvar.type == mvar.type == StrensorVarType.TEMPORAL
-                or mvar.type == StrensorVarType.ABSENT
+                cvar.type == mvar.type == StrensorVarType.TEMPORAL or mvar.type == StrensorVarType.ABSENT
             ) and i >= mem_strensor.num_reuse_vars:
                 vars.append(mvar)
 
@@ -892,18 +817,12 @@ class TransferToRuntimeSequence(RewritePattern):
             # Perform software for loop unrolling:
             software_strides = stride_set.strides[4:]
             software_strides_ranges = [
-                [
-                    Stride(1, var.stride * i, var.iteration_t * i)
-                    for i in range(var.size)
-                ]
-                for var in software_strides
+                [Stride(1, var.stride * i, var.iteration_t * i) for i in range(var.size)] for var in software_strides
             ]
             combined_ranges = list(product(*software_strides_ranges))
             reduced_ranges = [
                 reduce(
-                    lambda x, y: Stride(
-                        1, x.stride + y.stride, x.iteration_t + y.iteration_t
-                    ),
+                    lambda x, y: Stride(1, x.stride + y.stride, x.iteration_t + y.iteration_t),
                     x,
                     Stride(1, 0, 0),
                 )
@@ -912,12 +831,7 @@ class TransferToRuntimeSequence(RewritePattern):
 
             for r in reduced_ranges:
                 bd_dimensions = BDDimLayoutArrayAttr(
-                    BDDimLayoutArray(
-                        [
-                            BDDimLayout((var.size, var.stride))
-                            for var in hardware_strides[::-1]
-                        ]
-                    )
+                    BDDimLayoutArray([BDDimLayout((var.size, var.stride)) for var in hardware_strides[::-1]])
                 )
 
                 dma_bd = DMABDOp(
@@ -935,17 +849,13 @@ class TransferToRuntimeSequence(RewritePattern):
                     repeat_count=hardware_strides[3].size - 1,
                 )
 
-                task.attributes["iteration_t"] = IntegerAttr.from_index_int_value(
-                    r.iteration_t
-                )
+                task.attributes["iteration_t"] = IntegerAttr.from_index_int_value(r.iteration_t)
 
                 rewriter.insert_op([task], InsertPoint.before(op))
 
         # remove yields from pull ops:
         if isinstance(op, PullOp):
-            yielded = next(
-                (use for use in op.output.uses if isinstance(use.operation, YieldOp))
-            )
+            yielded = next((use for use in op.output.uses if isinstance(use.operation, YieldOp)))
             assert yielded.index == 0
             op.output.replace_by(runtime_sequence.body.block.args[-1])
             rewriter.erase_op(yielded.operation)
@@ -966,9 +876,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
         *_, t_var = strensor.ssis.data.get_temporal_variables()
         for_op = op.parent_op()
         assert isinstance(for_op, ForOp)
-        assert isinstance(
-            (layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr
-        )
+        assert isinstance((layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr)
         assert layer_dim.data == t_var
         # one acquire per fifo
         acquires = []
@@ -989,18 +897,13 @@ class TransferToObjectFIFOPattern(RewritePattern):
                 object_fifo=of.data,
             )
             releases.append(release_op)
-        access_ops = [
-            ObjectFIFOSubviewAccessOp(IntegerAttr(0, i32), acquire)
-            for acquire in acquires
-        ]
+        access_ops = [ObjectFIFOSubviewAccessOp(IntegerAttr(0, i32), acquire) for acquire in acquires]
         # toggle between acquires with index switch op:
         index_switch = IndexSwitchOp(
             arg=for_op.body.block.args[0],
             cases=DenseArrayBase.from_list(IntegerType(64), list(range(t_var.size))),
             default_region=Region(Block([scf.YieldOp(access_ops[0])])),
-            case_regions=[
-                Region(Block([scf.YieldOp(access_ops[i])])) for i in range(t_var.size)
-            ],
+            case_regions=[Region(Block([scf.YieldOp(access_ops[i])])) for i in range(t_var.size)],
             result_types=access_ops[0].result_types,
         )
         # put all acquries before for op:
@@ -1046,10 +949,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
         )
 
         # accesses:
-        access_ops = [
-            ObjectFIFOSubviewAccessOp(IntegerAttr(i, i32), acquire_op)
-            for i in range(reuse_factor)
-        ]
+        access_ops = [ObjectFIFOSubviewAccessOp(IntegerAttr(i, i32), acquire_op) for i in range(reuse_factor)]
 
         # index op to select correct access:
         index_ops: list[Operation] = [
@@ -1060,15 +960,11 @@ class TransferToObjectFIFOPattern(RewritePattern):
         assert isinstance(for_op, ForOp)
         # innermost to outermost:
         for iter_var in reversed(relevant_reuse_vars):
-            assert isinstance(
-                (layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr
-            )
+            assert isinstance((layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr)
             while layer_dim.data != iter_var:
                 for_op = for_op.parent_op()
                 assert isinstance(for_op, ForOp)
-                assert isinstance(
-                    (layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr
-                )
+                assert isinstance((layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr)
             i_arg = MuliOp(mult_val, for_op.body.block.args[0])
             add_val = AddiOp(add_val, i_arg)
             mult_val = MuliOp(mult_val, for_op.ub)
@@ -1078,9 +974,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
             arg=add_val,
             cases=DenseArrayBase.from_list(IntegerType(64), list(range(reuse_factor))),
             default_region=Region(Block([scf.YieldOp(access_ops[0])])),
-            case_regions=[
-                Region(Block([scf.YieldOp(access_ops[i])])) for i in range(reuse_factor)
-            ],
+            case_regions=[Region(Block([scf.YieldOp(access_ops[i])])) for i in range(reuse_factor)],
             result_types=access_ops[0].result_types,
         )
         index_ops.append(index_switch)
@@ -1181,9 +1075,7 @@ class StrensorToMemref(RewritePattern):
 @dataclass
 class OrderDMAs(RewritePattern):
     @op_type_rewrite_pattern
-    def match_and_rewrite(
-        self, op: RuntimeSequenceOp, rewriter: PatternRewriter
-    ) -> None:
+    def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter) -> None:
         dma_ops = [
             (op, iteration_t.value.data)
             for op in op.body.block.ops
@@ -1270,12 +1162,8 @@ class AIEConvertOfs(ModulePass):
         device = next(op for op in op.walk() if isinstance(op, DeviceOp))
         shim_tile = TileOp(0, 0)
         Rewriter().insert_op(shim_tile, InsertPoint.at_start(device.region.block))
-        PatternRewriteWalker(ChannelToObjectFifoPass(shim_tile.result)).rewrite_module(
-            op
-        )
-        PatternRewriteWalker(
-            TransferToRuntimeSequence(), apply_recursively=False
-        ).rewrite_module(op)
+        PatternRewriteWalker(ChannelToObjectFifoPass(shim_tile.result)).rewrite_module(op)
+        PatternRewriteWalker(TransferToRuntimeSequence(), apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(StrensorToMemref()).rewrite_module(op)
         PatternRewriteWalker(OrderDMAs(), apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(SyncDMAs(), apply_recursively=False).rewrite_module(op)

@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum, IntFlag, auto
+from math import prod
 from typing import Generic, Iterable, Reversible, Self, TypeVar
 
 from xdsl.dialects.builtin import (
@@ -26,6 +27,7 @@ from xdsl.ir import (
     SSAValue,
     StrEnum,
     TypeAttribute,
+    VerifyException,
     core,
 )
 from xdsl.irdl import (
@@ -60,7 +62,7 @@ from stream.workload.workload import InEdge, OutEdge
 
 @irdl_attr_definition
 class Channel(ParametrizedAttribute, TypeAttribute):
-    name = "channel"
+    name = "stream.channel"
 
 
 @irdl_attr_definition
@@ -456,6 +458,17 @@ class TransferOp(IRDLOperation):
                         result += dim_val * mult
                 mult *= spat_var.size
         return self.outputs[result]
+
+    def verify_(self) -> None:
+        # number of spat vars must correspond to number of core allocations in output
+        for output in self.outputs:
+            assert isinstance(output.type, StrensorType)
+            num_spat_results = prod(x.size for x in output.type.ssis.data.get_spatial_variables())
+            if num_spat_results != len(output.type.core_allocation):
+                raise VerifyException(
+                    f"number of spatial results ({num_spat_results}) does not correspond "
+                    f"with number of core allocations ({len(output.type.core_allocation)})"
+                )
 
 
 @irdl_op_definition
