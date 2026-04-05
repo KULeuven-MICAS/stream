@@ -191,7 +191,7 @@ class Workload(DiGraphWrapper[Node]):
         node_mapping = mapping.get(node)
         assert node_mapping is not None, f"No mapping found for node {node.name}"
         unique_node_dims = self.get_dims(node)
-        converted_tiling: list[InterCoreTiling] = []
+        converted_tiling: list[tuple[LayerDim, int]] = []
         all_tilings_equal = all(t == node_mapping.inter_core_tiling[0] for t in node_mapping.inter_core_tiling)
         assert all_tilings_equal, f"Multiple different inter-core tilings for node {node.name} not supported for now."
         for dim, factor in node_mapping.inter_core_tiling[0]:
@@ -201,7 +201,7 @@ class Workload(DiGraphWrapper[Node]):
                 dim_idx = dim.position
                 unique_dim = unique_node_dims[dim_idx]
             converted_tiling.append((unique_dim, factor))
-        return converted_tiling
+        return tuple(converted_tiling)
 
     def get_tensor_shape_with_dimension_sizes(
         self, tensor: Tensor, dimension_sizes: dict[LayerDim, int]
@@ -245,15 +245,15 @@ class Workload(DiGraphWrapper[Node]):
         succ_idx = transfer.outputs.index(tensor)
         succ = list(self.successors(transfer))[succ_idx]
         if isinstance(succ, OutEdge):
-            succ_tiling = tuple()
+            tiling = tuple()
         elif isinstance(succ, TransferNode):
-            # Successor transfer node should have same tiling as current transfer since they are on the same core
-            succ_tiling = self.get_unique_dims_inter_core_tiling(succ, mapping)
+            # Current transfer's tiling determines the shape
+            tiling = self.get_unique_dims_inter_core_tiling(transfer, mapping)
         elif isinstance(succ, ComputationNode):
-            succ_tiling = self.get_unique_dims_inter_core_tiling(succ, mapping)
+            tiling = self.get_unique_dims_inter_core_tiling(succ, mapping)
         else:
             raise TypeError(f"Unexpected successor type {type(succ)} for transfer node {transfer.name}")
-        new_shape = self.get_tensor_shape_with_tiling(tensor, succ_tiling)
+        new_shape = self.get_tensor_shape_with_tiling(tensor, tiling)
         new_subview = SubviewOp.from_static_parameters(
             source=tensor.subview.source,
             source_type=tensor.subview.source.type,
@@ -428,30 +428,40 @@ class Workload(DiGraphWrapper[Node]):
     ) -> None:
         """Visualize the graph using Graphviz and save it to an image file.
 
-        Nodes are laid out horizontally by topological generation,
-        and vertically stacked to avoid overlap. The resource is displayed
-        below each node in a clean and readable way.
+        Builds a new graph that inserts Tensor nodes between operation nodes,
+        showing the data flow through tensors explicitly. Nodes are laid out
+        horizontally (left to right).
         """
-        dot = to_pydot(self)
+        viz = nx.DiGraph()
 
-        # Set global graph layout left to right
+        # Add all original nodes
+        for node in self.nodes:
+            viz.add_node(node)
+
+        # Add tensor nodes and connect them, using tensor name as key to deduplicate
+        tensor_nodes: dict[str, Tensor] = {}
+        for node in self.nodes:
+            if isinstance(node, HasOutputs):
+                for tensor in node.outputs:
+                    tensor_nodes[tensor.name] = tensor
+                    viz.add_node(tensor.name)
+                    viz.add_edge(node, tensor.name)
+            if isinstance(node, HasInputs):
+                for tensor in node.inputs:
+                    tensor_nodes[tensor.name] = tensor
+                    viz.add_node(tensor.name)
+                    viz.add_edge(tensor.name, node)
+
+        dot = to_pydot(viz)
         dot.set_rankdir("LR")
         dot.set_concentrate(True)
 
-        # Determine node positions based on topological generations
-        generation_to_nodes = {}
-        for gen_idx, generation in enumerate(nx.topological_generations(self)):
-            generation_to_nodes[gen_idx] = list(generation)
-
-        # Assign nodes to horizontal positions based on their generation
-        for gen_idx, nodes in generation_to_nodes.items():
-            for idx, node in enumerate(nodes):
-                n = dot.get_node(str(node))[0]
-                n.set_pos(f"{gen_idx},{-idx}!")  # Horizontal by generation, vertical by index
-
-        # Customize node appearances and add resource labels
-        for node in self.nodes():
-            n = dot.get_node(str(node))[0]
+        # Style original nodes
+        for node in self.nodes:
+            dot_nodes = dot.get_node(str(node))
+            if not dot_nodes:
+                continue
+            n = dot_nodes[0]
             if isinstance(node, ComputationNode):
                 dim_sizes = {str(dim): self.get_dimension_size(dim) for dim in self.get_dims(node)}
                 n.set_shape("ellipse")
@@ -462,10 +472,9 @@ class Workload(DiGraphWrapper[Node]):
                 dim_sizes = {str(dim): self.get_dimension_size(dim) for dim in self.get_dims(node)}
                 n.set_shape("box")
                 label = f"{node.name}\nType: {node.transfer_type}\nDims: {dim_sizes}"
-                label += self._get_mem_alloc_label(node, mapping)
-                if ssis:
-                    label += self._get_for_loop_label(ssis.get(node, None))
-
+                # label += self._get_mem_alloc_label(node, mapping)
+                # if ssis:
+                #     label += self._get_for_loop_label(ssis.get(node, None))
                 n.set_label(label)
                 n.set_style("filled")
                 n.set_fillcolor("#ffcb9a")
@@ -481,6 +490,33 @@ class Workload(DiGraphWrapper[Node]):
                 n.set_fillcolor("#c2f0c2")
             else:
                 raise ValueError(f"Unknown node type: {type(node)}")
+
+        # Style tensor nodes
+        for tensor_name, tensor in tensor_nodes.items():
+            dot_nodes = dot.get_node(f'"{tensor_name}"') or dot.get_node(tensor_name)
+            if not dot_nodes:
+                continue
+            n = dot_nodes[0]
+            # Compact dim info: {dim: size, ...}
+            tensor_dims = self.get_tensor_dimensions(tensor)
+            dim_sizes = {str(d): self.get_dimension_size(d) for d in tensor_dims}
+            label = f"{tensor_name}\n{tensor.shape}"
+            if dim_sizes:
+                label += f"\n{dim_sizes}"
+            if mapping is not None:
+                try:
+                    tensor_mapping = mapping.get(tensor)
+                    if tensor_mapping.memory_allocation is not None:
+                        label += f"\nMemAlloc: {tensor_mapping.memory_allocation}"
+                except KeyError:
+                    pass
+            if ssis:
+                tensor_ssis = ssis.get(tensor, None)
+                label += self._get_for_loop_label(tensor_ssis)
+            n.set_shape("box")
+            n.set_style("filled,rounded")
+            n.set_fillcolor("#e8e8e8")
+            n.set_label(label)
 
         # Save to file
         dot.write_png(filepath)
