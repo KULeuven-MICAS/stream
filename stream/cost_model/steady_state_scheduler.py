@@ -170,18 +170,15 @@ class SteadyStateScheduler:
         return self.ssw
 
     def update_tensor_steady_state_iteration_spaces(self, tensor_reuse_levels: TensorReuseLevels):
-        for node in self.ssw.nodes:
-            if isinstance(node, TransferNode):
-                for tensor in node.outputs:
-                    reuse_level = tensor_reuse_levels[tensor]
-                    ssis = self.ssis.get(tensor, None)
-                    if ssis is None:
-                        raise KeyError(f"{tensor} not found in ssis.")
-                    for i, iv in enumerate(ssis.get_applicable_temporal_variables()):
-                        if i <= reuse_level:
-                            iv.reuse = Reuse.REUSE
-                        else:
-                            iv.reuse = Reuse.NO_REUSE
+        for t, ssis in self.ssis.items():
+            if isinstance(t, Tensor):
+                assert t in tensor_reuse_levels, f"Tensor {t.name} does not have a reuse level assigned."
+                reuse_level = tensor_reuse_levels[t]
+                for i, iv in enumerate(ssis.get_applicable_temporal_variables()):
+                    if i <= reuse_level:
+                        iv.reuse = Reuse.REUSE
+                    else:
+                        iv.reuse = Reuse.NO_REUSE
 
     def build_transfer_graph(self) -> Workload:
         new_nodes: dict[str, Node] = {node.name: node for node in self.workload.nodes}
