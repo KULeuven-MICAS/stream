@@ -156,7 +156,7 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                         dimension=dim,
                         size=unrolling,
                         effect=effect,
-                        type=IterationVariableType.SPATIAL,
+                        type=IterationVariableType.SPATIOTEMPORAL,
                     )
                 )
             elif any(dim == su[0] for su in spatial_unrollings[node]):
