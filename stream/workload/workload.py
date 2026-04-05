@@ -226,18 +226,45 @@ class Workload(DiGraphWrapper[Node]):
             out_shape.append(int(extent))
         return tuple(out_shape)
 
-    def get_tensor_shape_with_tiling(self, tensor: Tensor, succ_tiling: InterCoreTiling) -> tuple[int, ...]:
+    def get_tensor_shape_with_tiling(self, tensor: Tensor, tiling: InterCoreTiling) -> tuple[int, ...]:
         unique_dims, _ = self.unique_dimensions()
         dim_sizes = {}
         for dim in unique_dims:
-            if any(dim == ict[0] for ict in succ_tiling):
-                tiling_factor = next(ict[1] for ict in succ_tiling if dim == ict[0])
+            if any(dim == ict[0] for ict in tiling):
+                tiling_factor = next(ict[1] for ict in tiling if dim == ict[0])
                 dim_size = self.get_dimension_size(dim) // tiling_factor
             else:
                 dim_size = self.get_dimension_size(dim)
             dim_sizes[dim] = dim_size
         new_shape = self.get_tensor_shape_with_dimension_sizes(tensor, dim_sizes)
         return new_shape
+
+    def get_tensor_single_core(self, tensor: Tensor, node: HasOutputs, mapping: "Mapping") -> Tensor:
+        """
+        Get a new Tensor representing the portion residing on a single core, based on the nodes' tiling.
+        """
+        node_mapping = mapping.get(node)
+        assert node_mapping is not None, f"No mapping found for node {node.name}"
+        tilings = node_mapping.inter_core_tiling
+        # Assert all possible tilings are equal for now and take first one
+        assert all(t == tilings[0] for t in tilings), f"Multiple different tilings not implemented yet."
+        tiling = tilings[0]
+        if tiling == tuple():
+            return tensor
+        new_shape = self.get_tensor_shape_with_tiling(tensor, tiling)
+        new_subview = SubviewOp.from_static_parameters(
+            source=tensor.subview.source,
+            source_type=tensor.subview.source.type,
+            offsets=[0 for _ in new_shape],
+            sizes=new_shape,
+            strides=[1 for _ in new_shape],
+        )
+        return Tensor(
+            name=tensor.name,
+            operand_type=tensor.operand_type,
+            shape=new_shape,
+            subview=new_subview,
+        )
 
     def get_tensor_of_transfer_to_single_core(
         self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping"

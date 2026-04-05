@@ -62,7 +62,7 @@ class TransferAndTensorAllocator:
         timeslots: dict[Node, int],
         accelerator: Accelerator,
         iterations: int,
-        ssis: dict[HasIterationSpace, SteadyStateIterationSpace],
+        ssis: dict[HasIterationSpace|Tensor, SteadyStateIterationSpace],
         multiplicities: dict[ComputationNode, int],
         mapping: Mapping,
         cost_lut: CoreCostLUT,
@@ -99,6 +99,7 @@ class TransferAndTensorAllocator:
         self.mem_cores = list(self.context.mem_cores)
 
         # ------------------- canonicalized options -------------------- #
+        self.tensors: list[Tensor] = []
         self.tensor_fixed: list[Tensor] = []
         self.tensor_var: list[Tensor] = []
         self.possible_tensor_allocations: dict[Tensor, tuple[TensorPlacementChoice, ...]] = {}
@@ -159,6 +160,7 @@ class TransferAndTensorAllocator:
                 raw_alloc = self._retrieve_core_allocation(node)
                 normalized = self._normalize_tensor_choices(raw_alloc)
                 self.possible_tensor_allocations[tensor] = normalized
+                self.tensors.append(tensor)
                 if len(normalized) == 1:
                     self.tensor_fixed.append(tensor)
                 else:
@@ -720,15 +722,14 @@ class TransferAndTensorAllocator:
     def _memory_capacity_constraints(self):
         self.core_load: dict[Core, gp.LinExpr] = defaultdict(gp.LinExpr)
         # Transfer output tensors on their chosen compute/memory cores
-        for tr in self.transfer_nodes:
-            for t in tr.outputs:
-                assert isinstance(t, Tensor), f"Expected transfer output {t} to be a Tensor."
-                tensor_size = self.workload.get_tensor_of_transfer_to_single_core(t, tr, self.mapping).size_bits()
+        for node in self.workload.get_iteration_space_nodes():
+            for t in node.outputs:
+                tensor_size = self.workload.get_tensor_single_core(t, node, self.mapping).size_bits()
                 candidate_cores = self._candidate_cores_for_tensor(t)
                 for c in candidate_cores:
                     assert isinstance(c, Core)
                     u = self._tensor_uses_core_var(t, c)
-                    for stop in range(-1, len(self.ssis[tr].get_applicable_temporal_variables())):
+                    for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                         _, size_factor = self.reuse_levels[(t, stop)]
                         req_size = ceil(size_factor * tensor_size)
                         uz = self._add_binary_product(
@@ -753,7 +754,7 @@ class TransferAndTensorAllocator:
                         continue
                     assert isinstance(c, Core)
                     u = self._tensor_uses_core_var(t, c)
-                    for stop in range(-1, len(self.ssis[tr].get_applicable_temporal_variables())):
+                    for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                         tiles_needed = self.tiles_needed_levels[(t, stop)]
 
                         uz = self._add_binary_product(
@@ -782,7 +783,7 @@ class TransferAndTensorAllocator:
                     else:
                         factor_variable = self.bds_needed_levels
                     u = self._tensor_uses_core_var(t, c)
-                    for stop in range(-1, len(self.ssis[tr].get_applicable_temporal_variables())):
+                    for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                         bds_needed = factor_variable[(t, stop)]
                         uz = self._add_binary_product(
                             a=u,
