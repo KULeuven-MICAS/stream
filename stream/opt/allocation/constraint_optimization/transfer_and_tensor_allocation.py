@@ -139,7 +139,7 @@ class TransferAndTensorAllocator:
         self.reuse_levels: dict[tuple[Tensor, int], tuple[int, int]] = {}
         self.tiles_needed_levels: dict[tuple[Tensor, int], int] = {}
         self.bds_needed_levels: dict[tuple[Tensor, int], int] = {}
-        self.transfer_nodes_to_optimize_firings_for: list[TransferNode] = []
+        self.tensors_to_optimize_reuse_for: list[Tensor] = []
         self._init_transfer_fire_helpers()
 
         # track optimization progress
@@ -248,15 +248,15 @@ class TransferAndTensorAllocator:
                 )
 
     def _init_transfer_fire_helpers(self) -> None:
-        for tr in self.transfer_nodes:
-            ssis = self.ssis[tr].get_applicable_temporal_variables()
-            sizes = [iter_var.size for iter_var in ssis]
-            relevancies = [iter_var.relevant for iter_var in ssis]
-            reuses = [iter_var.reuse for iter_var in ssis]
-            if any(r != Reuse.NOT_SET for r in reuses):
-                continue
-            self.transfer_nodes_to_optimize_firings_for.append(tr)
-            for t in tr.tensors:
+        for node in self.workload.get_iteration_space_nodes():
+            for t in node.outputs:
+                ssis = self.ssis[t].get_applicable_temporal_variables()
+                sizes = [iter_var.size for iter_var in ssis]
+                relevancies = [iter_var.relevant for iter_var in ssis]
+                reuses = [iter_var.reuse for iter_var in ssis]
+                if any(r != Reuse.NOT_SET for r in reuses):
+                    continue
+                self.tensors_to_optimize_reuse_for.append(t)
                 fires = math.prod(sizes)
                 size_factor = 1
                 tiles_needed = 1
@@ -533,27 +533,27 @@ class TransferAndTensorAllocator:
 
     def __create_reuse_vars(self):
         self.z_stop: dict[tuple[Tensor, int], gp.Var] = {}
-        for tr in self.transfer_nodes:
-            for t in tr.tensors:
-                sizes = self.ssis[tr].get_applicable_temporal_sizes()
+        for node in self.workload.get_iteration_space_nodes():
+            for t in node.outputs:
+                sizes = self.ssis[t].get_applicable_temporal_sizes()
                 for stop in range(-1, len(sizes)):
-                    v = self.model.addVar(vtype=GRB.BINARY, name=f"zStop_{tr.name}_L{stop}")
+                    v = self.model.addVar(vtype=GRB.BINARY, name=f"zStop_{t.name}_L{stop}")
                     self.z_stop[(t, stop)] = v
                 self.model.addConstr(
                     quicksum(self.z_stop[(t, s)] for s in range(-1, len(sizes))) == 1,
-                    name=f"zStop_Choose_One_{tr.name}",
+                    name=f"zStop_Choose_One_{t.name}",
                 )
-                if tr not in self.transfer_nodes_to_optimize_firings_for:
-                    reuses = self.ssis[tr].get_temporal_reuses()
+                if t not in self.tensors_to_optimize_reuse_for:
+                    reuses = self.ssis[t].get_temporal_reuses()
                     stop = -2
                     for i in range(len(reuses) - 1, -1, -1):
                         if reuses[i] == Reuse.REUSE:
                             stop = i
                             break
-                    assert stop >= -1, f"Something went wrong for Transfer {tr.name} REUSE indexing: {reuses}"
+                    assert stop >= -1, f"Something went wrong for {t.name} REUSE indexing: {reuses}"
                     self.model.addConstr(
                         self.z_stop[(t, stop)] == 1,
-                        name=f"zStop_FixedStop_{tr.name}_L{stop}",
+                        name=f"zStop_FixedStop_{t.name}_L{stop}",
                     )
 
     def __create_transfer_path_vars(self):
@@ -598,7 +598,7 @@ class TransferAndTensorAllocator:
                 f"Only single-input transfers are supported for fire rate constraints, "
                 f"but {tr.name} has inputs {tr.inputs}."
             )
-            t = tr.inputs[0]
+            t = tr.outputs[0]
             fires = self.model.addVar(vtype=GRB.INTEGER, name=f"fires_{tr.name}")
             self.fires[tr] = fires
 
@@ -606,7 +606,7 @@ class TransferAndTensorAllocator:
                 fires
                 == quicksum(
                     self.reuse_levels[(t, s)][0] * self.z_stop[(t, s)]
-                    for s in range(-1, len(self.ssis[tr].get_applicable_temporal_variables()))
+                    for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
                 ),
                 name=f"fires_def_{tr.name}",
             )
@@ -618,7 +618,7 @@ class TransferAndTensorAllocator:
                 f"Only single-input transfers are supported for fire rate constraints, "
                 f"but {tr.name} has inputs {tr.inputs}."
             )
-            t = tr.inputs[0]
+            t = tr.outputs[0]
             reuse_factor = self.model.addVar(vtype=GRB.INTEGER, name=f"reuse_factor_{tr.name}")
             self.reuse_factors[tr] = reuse_factor
 
@@ -626,7 +626,7 @@ class TransferAndTensorAllocator:
                 reuse_factor
                 == quicksum(
                     self.reuse_levels[(t, s)][1] * self.z_stop[(t, s)]
-                    for s in range(-1, len(self.ssis[tr].get_applicable_temporal_variables()))
+                    for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
                 ),
                 name=f"reuse_factor_def_{tr.name}",
             )
@@ -1116,11 +1116,11 @@ class TransferAndTensorAllocator:
         self,
     ) -> TensorReuseLevels:
         reuse_levels: TensorReuseLevels = {}
-        for tr in self.transfer_nodes:
-            for t in tr.tensors:
+        for node in self.workload.get_iteration_space_nodes():
+            for t in node.outputs:
                 if t in reuse_levels:
                     continue
-                for stop in range(-1, len(self.ssis[tr].get_applicable_temporal_variables())):
+                for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                     if self.z_stop[(t, stop)].X > self.VAR_THRESHOLD:
                         reuse_levels[t] = stop
         return reuse_levels
@@ -1129,8 +1129,8 @@ class TransferAndTensorAllocator:
         self,
     ) -> TensorDepths:
         tiles_needed: TensorDepths = {}
-        for tr in self.transfer_nodes:
-            for t in tr.tensors:
+        for node in self.workload.get_iteration_space_nodes():
+            for t in node.outputs:
                 if t in tiles_needed or t not in self.ssis:
                     continue
                 for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
@@ -1187,8 +1187,8 @@ class TransferAndTensorAllocator:
 
     def _check_io_transfers_firing_levels(self) -> None:
         for tr in self.transfer_nodes:
-            stop_max = len(self.ssis[tr].get_applicable_temporal_variables())
             for t in tr.tensors:
+                stop_max = len(self.ssis[t].get_applicable_temporal_variables())
                 stop = next(s for s in range(-1, stop_max) if self.z_stop[(t, s)].X > self.VAR_THRESHOLD)
                 assert stop >= 0
 
