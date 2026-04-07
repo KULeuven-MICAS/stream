@@ -455,7 +455,16 @@ class SteadyStateScheduler:
     def update_tensor_ssis(
         self, workload: Workload, ssis: dict[HasIterationSpace | Tensor, SteadyStateIterationSpace]
     ) -> dict[HasIterationSpace | Tensor, SteadyStateIterationSpace]:
-        # Generate the new tensors
+        # Generate the tensor SSIS of InEdge(s) output
+        for in_edge in workload.get_in_edges():
+            for tensor in in_edge.outputs:
+                assert tensor not in ssis, (
+                    f"Tensor {tensor.name} already has an SSIS, cannot assign the same tensor multiple SSIS."
+                )
+                succ = next(workload.successors(in_edge))
+                tensor_ssis = self.generate_tensor_ssis(workload, tensor, succ, ssis)
+                ssis[tensor] = tensor_ssis
+        # Generate the new tensor SSIS of node outputs
         for node in workload.get_iteration_space_nodes():
             for tensor in node.outputs:
                 assert tensor not in ssis, (
