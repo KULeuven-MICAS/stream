@@ -795,14 +795,14 @@ class TransferAndTensorAllocator:
 
     def _ensure_memory_and_compute_reuse_compatibility(self):
         """
-        Ensure that a COMPUTE_TO_MEM transfer input reuse level >= output reuse level.
-        Ensure that a MEM_TO_COMPUTE or COMPUTE_TO_COMPUTE transfer output reuse level >= input reuse level.
+        Ensure that a COMPUTE_TO_MEM transfer output reuse level >= input reuse level.
+        Ensure that a MEM_TO_COMPUTE transfer input reuse level >= output reuse level.
         """
         for tr in self.transfer_nodes:
             inputs = tr.inputs
             outputs = tr.outputs
             relevancies = self.ssis[tr].get_applicable_temporal_relevancies()
-            if tr.transfer_type in (TransferType.COMPUTE_TO_MEM):
+            if tr.transfer_type in (TransferType.COMPUTE_TO_MEM,):
                 pred = next(iter(self.workload.predecessors(tr)))
                 assert isinstance(pred, TransferNode), (
                     f"Expected TransferNode predecessor for {tr.name}, got {type(pred)}"
@@ -812,11 +812,11 @@ class TransferAndTensorAllocator:
                 for output_tensor in outputs:
                     for i in range(len(relevancies)):
                         self.model.addConstr(
-                            quicksum(self.z_stop[(input_tensor, s)] for s in range(-1, i))
-                            >= quicksum(self.z_stop[(output_tensor, s)] for s in range(-1, i)),
+                            quicksum(self.z_stop[(output_tensor, s)] for s in range(-1, i))
+                            >= quicksum(self.z_stop[(input_tensor, s)] for s in range(-1, i)),
                             name=f"reuse_compat_input_{tr.name}_L{i}",
                         )
-            elif tr.transfer_type in (TransferType.MEM_TO_COMPUTE, TransferType.COMPUTE_TO_COMPUTE):
+            elif tr.transfer_type in (TransferType.MEM_TO_COMPUTE,):
                 assert len(outputs) == 1, (
                     "Expected exactly one output tensor for MEM_TO_COMPUTE or COMPUTE_TO_COMPUTE transfer."
                 )
@@ -824,8 +824,8 @@ class TransferAndTensorAllocator:
                 for input_tensor in inputs:
                     for i in range(len(relevancies)):
                         self.model.addConstr(
-                            quicksum(self.z_stop[(output_tensor, s)] for s in range(-1, i))
-                            >= quicksum(self.z_stop[(input_tensor, s)] for s in range(-1, i)),
+                            quicksum(self.z_stop[(input_tensor, s)] for s in range(-1, i))
+                            >= quicksum(self.z_stop[(output_tensor, s)] for s in range(-1, i)),
                             name=f"reuse_compat_output_{tr.name}_L{i}",
                         )
 
