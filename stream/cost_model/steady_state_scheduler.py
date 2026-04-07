@@ -363,6 +363,10 @@ class SteadyStateScheduler:
         return updated_fusion_splits
 
     def update_mapping(self):
+        # Update inter_core_tiling of computation node to unique dimensions
+        for node in self.ssw.get_computation_nodes():
+            unique_dims_tiling = (self.ssw.get_unique_dims_inter_core_tiling(node, self.mapping),)
+            self.mapping.update_inter_core_tiling(node, unique_dims_tiling)
         # Add transfer node mappings
         for node in self.ssw.get_transfer_nodes():
             assert len(node.inputs) == 1, "Transfer node must have exactly one input tensor."

@@ -247,7 +247,7 @@ class Workload(DiGraphWrapper[Node]):
         assert node_mapping is not None, f"No mapping found for node {node.name}"
         tilings = node_mapping.inter_core_tiling
         # Assert all possible tilings are equal for now and take first one
-        assert all(t == tilings[0] for t in tilings), f"Multiple different tilings not implemented yet."
+        assert all(t == tilings[0] for t in tilings), "Multiple different tilings not implemented yet."
         tiling = tilings[0]
         if tiling == tuple():
             return tensor

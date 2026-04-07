@@ -93,6 +93,9 @@ class Mapping:
     ) -> None:
         self._by_node[node].memory_allocation = new_memory_allocation
 
+    def update_inter_core_tiling(self, node: Node, new_inter_core_tiling: tuple[InterCoreTiling, ...]) -> None:
+        self._by_node[node].inter_core_tiling = new_inter_core_tiling
+
     def set_for_node(
         self,
         node: Node,
