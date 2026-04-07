@@ -804,25 +804,23 @@ class TransferAndTensorAllocator:
             outputs = tr.outputs
             relevancies = self.ssis[tr].get_applicable_temporal_relevancies()
             if tr.transfer_type in (TransferType.COMPUTE_TO_MEM,):
-                assert len(outputs) == 1, "Expected exactly one input tensor for COMPUTE_TO_MEM transfer."
+                assert len(outputs) == 1, "Expected exactly one output tensor for COMPUTE_TO_MEM transfer."
                 output_tensor = outputs[0]
-                for input_tensor in outputs:
+                for input_tensor in inputs:
                     for i in range(len(relevancies)):
                         self.model.addConstr(
-                            quicksum(self.z_stop[(output_tensor, s)] for s in range(-1, i))
-                            >= quicksum(self.z_stop[(input_tensor, s)] for s in range(-1, i)),
+                            quicksum(self.z_stop[(output_tensor, s)] for s in range(i, len(relevancies)))
+                            >= quicksum(self.z_stop[(input_tensor, s)] for s in range(i, len(relevancies))),
                             name=f"reuse_compat_input_{tr.name}_L{i}",
                         )
             elif tr.transfer_type in (TransferType.MEM_TO_COMPUTE,):
-                assert len(inputs) == 1, (
-                    "Expected exactly one output tensor for MEM_TO_COMPUTE or COMPUTE_TO_COMPUTE transfer."
-                )
+                assert len(inputs) == 1, "Expected exactly one input tensor for MEM_TO_COMPUTE transfer."
                 input_tensor = inputs[0]
-                for output_tensor in inputs:
+                for output_tensor in outputs:
                     for i in range(len(relevancies)):
                         self.model.addConstr(
-                            quicksum(self.z_stop[(input_tensor, s)] for s in range(-1, i))
-                            >= quicksum(self.z_stop[(output_tensor, s)] for s in range(-1, i)),
+                            quicksum(self.z_stop[(input_tensor, s)] for s in range(i, len(relevancies)))
+                            >= quicksum(self.z_stop[(output_tensor, s)] for s in range(i, len(relevancies))),
                             name=f"reuse_compat_output_{tr.name}_L{i}",
                         )
 
@@ -1123,7 +1121,7 @@ class TransferAndTensorAllocator:
         for t in self.workload.tensors:
             for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                 if self.z_stop[(t, stop)].X > self.VAR_THRESHOLD:
-                        tiles_needed[t] = self.tiles_needed_levels[(t, stop)]
+                    tiles_needed[t] = self.tiles_needed_levels[(t, stop)]
         return tiles_needed
 
     def get_transfer_routing(self) -> TransferAlloc:
