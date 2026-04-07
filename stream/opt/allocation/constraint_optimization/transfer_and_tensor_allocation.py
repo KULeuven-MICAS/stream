@@ -62,7 +62,7 @@ class TransferAndTensorAllocator:
         timeslots: dict[Node, int],
         accelerator: Accelerator,
         iterations: int,
-        ssis: dict[HasIterationSpace|Tensor, SteadyStateIterationSpace],
+        ssis: dict[HasIterationSpace | Tensor, SteadyStateIterationSpace],
         multiplicities: dict[ComputationNode, int],
         mapping: Mapping,
         cost_lut: CoreCostLUT,
@@ -587,6 +587,7 @@ class TransferAndTensorAllocator:
         self._buffer_descriptor_constraints()
         self._slot_latency_constraints()
         self._force_nonconstant_reuse_levels()
+        self._force_final_output_reuse_levels()
 
     def _transfer_fire_rate_constraints(self):
         self.fires: dict[TransferNode, gp.Var] = {}
@@ -859,7 +860,27 @@ class TransferAndTensorAllocator:
                 if last_irrelevant >= 0:
                     self.model.addConstr(
                         quicksum(self.z_stop[(t, s)] for s in range(last_irrelevant, len(relevancies))) >= 1,
-                        name=f"force_reuse_{tr.name}",
+                        name=f"force_intermediate_reuse_{tr.name}",
+                    )
+
+    def _force_final_output_reuse_levels(self):
+        """
+        Forces the reuse level of the outputs of the final compute node(s) by looking at COMPUTE_TO_MEM transfer inputs..
+        It forces buffering up until the top irrelevant loop.
+        """
+        for tr in self.transfer_nodes:
+            if tr.transfer_type not in (TransferType.COMPUTE_TO_MEM,):
+                continue
+            for t in tr.inputs:
+                relevancies = self.ssis[t].get_applicable_temporal_relevancies()
+                last_irrelevant = -1
+                for i, r in enumerate(relevancies):
+                    if r is False:
+                        last_irrelevant = i
+                if last_irrelevant >= 0:
+                    self.model.addConstr(
+                        quicksum(self.z_stop[(t, s)] for s in range(last_irrelevant, len(relevancies))) >= 1,
+                        name=f"force_output_reuse_{tr.name}",
                     )
 
     # ...................... overlap + objective ................. #
