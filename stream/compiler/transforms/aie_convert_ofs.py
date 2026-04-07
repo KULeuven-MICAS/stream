@@ -404,12 +404,22 @@ class ChannelToObjectFifoPass(RewritePattern):
         transforms: Sequence[tuple[StrensorVar, StrensorVar]],
         name_base: str,
     ) -> Sequence[ObjectFifoOp]:
+        assert isinstance(consumers[0].output.type, StrensorType)
+        relevant_dims = {var.dim for var in consumers[0].output.type.ssis.data.get_kernel_variables()}
         broadcast_dims = [
-            x[1] for x in transforms if x[0].type == StrensorVarType.ABSENT and x[1].type == StrensorVarType.SPATIAL
+            x[1]
+            for x in transforms
+            if x[0].type != StrensorVarType.SPATIAL
+            and x[1].type == StrensorVarType.SPATIAL
+            and x[1].dim not in relevant_dims
         ]
 
         distribute_dims = [
-            x[1] for x in transforms if x[0].type == StrensorVarType.TEMPORAL and x[1].type == StrensorVarType.SPATIAL
+            x[1]
+            for x in transforms
+            if x[0].type != StrensorVarType.SPATIAL
+            and x[1].type == StrensorVarType.SPATIAL
+            and x[1].dim in relevant_dims
         ]
 
         if len(broadcast_dims) > 0:
