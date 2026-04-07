@@ -219,18 +219,6 @@ class AIECodeGenerationStage(Stage):
         ops: list[ComputationNodeOp] = []
 
         # # add spatio-temporal dims to get only inner shape:
-        st_vars = ssis.get_spatio_temporal_variables()
-        st_var: tuple[tuple[LayerDim, int], ...]
-        assert len(st_vars) <= 1
-        if len(st_vars):
-            st_var = ((st_vars[0].dimension, st_vars[0].size),)
-        else:
-            st_var = tuple()
-        # # determine new result type based on spatial mapping
-        shape = workload.get_tensor_shape_with_tiling(
-            node.output,
-            tuple(workload.get_unique_dims_inter_core_tiling(node, full_mapping)) + st_var,
-        )
         cores = mapping.resource_allocation[0]
         cores_attrs = []
         for core in cores:
