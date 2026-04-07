@@ -587,6 +587,7 @@ class TransferAndTensorAllocator:
         self._slot_latency_constraints()
         self._force_nonconstant_reuse_levels()
         self._force_final_output_reuse_levels()
+        self._ensure_memory_and_compute_reuse_compatibility()
 
     def _transfer_fire_rate_constraints(self):
         self.fires: dict[TransferNode, gp.Var] = {}
@@ -803,13 +804,9 @@ class TransferAndTensorAllocator:
             outputs = tr.outputs
             relevancies = self.ssis[tr].get_applicable_temporal_relevancies()
             if tr.transfer_type in (TransferType.COMPUTE_TO_MEM,):
-                pred = next(iter(self.workload.predecessors(tr)))
-                assert isinstance(pred, TransferNode), (
-                    f"Expected TransferNode predecessor for {tr.name}, got {type(pred)}"
-                )
-                assert len(inputs) == 1, "Expected exactly one input tensor for COMPUTE_TO_MEM transfer."
-                input_tensor = inputs[0]
-                for output_tensor in outputs:
+                assert len(outputs) == 1, "Expected exactly one input tensor for COMPUTE_TO_MEM transfer."
+                output_tensor = outputs[0]
+                for input_tensor in outputs:
                     for i in range(len(relevancies)):
                         self.model.addConstr(
                             quicksum(self.z_stop[(output_tensor, s)] for s in range(-1, i))
@@ -817,11 +814,11 @@ class TransferAndTensorAllocator:
                             name=f"reuse_compat_input_{tr.name}_L{i}",
                         )
             elif tr.transfer_type in (TransferType.MEM_TO_COMPUTE,):
-                assert len(outputs) == 1, (
+                assert len(inputs) == 1, (
                     "Expected exactly one output tensor for MEM_TO_COMPUTE or COMPUTE_TO_COMPUTE transfer."
                 )
-                output_tensor = outputs[0]
-                for input_tensor in inputs:
+                input_tensor = inputs[0]
+                for output_tensor in inputs:
                     for i in range(len(relevancies)):
                         self.model.addConstr(
                             quicksum(self.z_stop[(input_tensor, s)] for s in range(-1, i))
