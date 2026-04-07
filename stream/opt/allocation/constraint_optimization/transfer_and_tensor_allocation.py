@@ -248,35 +248,34 @@ class TransferAndTensorAllocator:
                 )
 
     def _init_transfer_fire_helpers(self) -> None:
-        for node in self.workload.get_iteration_space_nodes():
-            for t in node.outputs:
-                ssis = self.ssis[t].get_applicable_temporal_variables()
-                sizes = [iter_var.size for iter_var in ssis]
-                relevancies = [iter_var.relevant for iter_var in ssis]
-                reuses = [iter_var.reuse for iter_var in ssis]
-                if any(r != Reuse.NOT_SET for r in reuses):
-                    continue
-                self.tensors_to_optimize_reuse_for.append(t)
-                fires = math.prod(sizes)
-                size_factor = 1
-                tiles_needed = 1
-                bds_needed = 1
-                self.reuse_levels[(t, -1)] = (fires, size_factor)
-                self.tiles_needed_levels[(t, -1)] = tiles_needed
-                self.bds_needed_levels[(t, -1)] = bds_needed
-                for i, (Nl, relevancy) in enumerate(zip(sizes, relevancies, strict=True)):
-                    size_factor *= Nl if relevancy else 1
-                    tiles_needed *= Nl if relevancy else 1
-                    fires //= Nl
-                    self.reuse_levels[(t, i)] = (fires, size_factor)
-                    self.tiles_needed_levels[(t, i)] = tiles_needed
-                    if relevancy:
-                        bds_needed = 1
-                    else:
-                        bds_needed *= Nl
-                    self.bds_needed_levels[(t, i)] = bds_needed
-                if self.force_double_buffering:
-                    self.tiles_needed_levels[(t, -1)] = 2
+        for t in self.workload.tensors:
+            ssis = self.ssis[t].get_applicable_temporal_variables()
+            sizes = [iter_var.size for iter_var in ssis]
+            relevancies = [iter_var.relevant for iter_var in ssis]
+            reuses = [iter_var.reuse for iter_var in ssis]
+            if any(r != Reuse.NOT_SET for r in reuses):
+                continue
+            self.tensors_to_optimize_reuse_for.append(t)
+            fires = math.prod(sizes)
+            size_factor = 1
+            tiles_needed = 1
+            bds_needed = 1
+            self.reuse_levels[(t, -1)] = (fires, size_factor)
+            self.tiles_needed_levels[(t, -1)] = tiles_needed
+            self.bds_needed_levels[(t, -1)] = bds_needed
+            for i, (Nl, relevancy) in enumerate(zip(sizes, relevancies, strict=True)):
+                size_factor *= Nl if relevancy else 1
+                tiles_needed *= Nl if relevancy else 1
+                fires //= Nl
+                self.reuse_levels[(t, i)] = (fires, size_factor)
+                self.tiles_needed_levels[(t, i)] = tiles_needed
+                if relevancy:
+                    bds_needed = 1
+                else:
+                    bds_needed *= Nl
+                self.bds_needed_levels[(t, i)] = bds_needed
+            if self.force_double_buffering:
+                self.tiles_needed_levels[(t, -1)] = 2
 
     def _is_const_i(self, tr: TransferNode) -> bool:
         src = next(iter(self.workload.predecessors(tr)))
@@ -302,14 +301,13 @@ class TransferAndTensorAllocator:
         Off-chip core is excluded from DMA accounting.
         """
         cores: set[Core] = set()
-        for tr in self.transfer_nodes:
-            for t in tr.tensors:
-                if not isinstance(t, Tensor):
+        for t in self.workload.tensors:
+            if not isinstance(t, Tensor):
+                continue
+            for core in self._candidate_cores_for_tensor(t):
+                if core.id == self.offchip_core_id:
                     continue
-                for core in self._candidate_cores_for_tensor(t):
-                    if core.id == self.offchip_core_id:
-                        continue
-                    cores.add(core)
+                cores.add(core)
         return cores
 
     def _unique_tensor_list(self, tensors) -> list[Tensor]:
@@ -533,28 +531,27 @@ class TransferAndTensorAllocator:
 
     def __create_reuse_vars(self):
         self.z_stop: dict[tuple[Tensor, int], gp.Var] = {}
-        for node in self.workload.get_iteration_space_nodes():
-            for t in node.outputs:
-                sizes = self.ssis[t].get_applicable_temporal_sizes()
-                for stop in range(-1, len(sizes)):
-                    v = self.model.addVar(vtype=GRB.BINARY, name=f"zStop_{t.name}_L{stop}")
-                    self.z_stop[(t, stop)] = v
+        for t in self.workload.tensors:
+            sizes = self.ssis[t].get_applicable_temporal_sizes()
+            for stop in range(-1, len(sizes)):
+                v = self.model.addVar(vtype=GRB.BINARY, name=f"zStop_{t.name}_L{stop}")
+                self.z_stop[(t, stop)] = v
+            self.model.addConstr(
+                quicksum(self.z_stop[(t, s)] for s in range(-1, len(sizes))) == 1,
+                name=f"zStop_Choose_One_{t.name}",
+            )
+            if t not in self.tensors_to_optimize_reuse_for:
+                reuses = self.ssis[t].get_temporal_reuses()
+                stop = -2
+                for i in range(len(reuses) - 1, -1, -1):
+                    if reuses[i] == Reuse.REUSE:
+                        stop = i
+                        break
+                assert stop >= -1, f"Something went wrong for {t.name} REUSE indexing: {reuses}"
                 self.model.addConstr(
-                    quicksum(self.z_stop[(t, s)] for s in range(-1, len(sizes))) == 1,
-                    name=f"zStop_Choose_One_{t.name}",
+                    self.z_stop[(t, stop)] == 1,
+                    name=f"zStop_FixedStop_{t.name}_L{stop}",
                 )
-                if t not in self.tensors_to_optimize_reuse_for:
-                    reuses = self.ssis[t].get_temporal_reuses()
-                    stop = -2
-                    for i in range(len(reuses) - 1, -1, -1):
-                        if reuses[i] == Reuse.REUSE:
-                            stop = i
-                            break
-                    assert stop >= -1, f"Something went wrong for {t.name} REUSE indexing: {reuses}"
-                    self.model.addConstr(
-                        self.z_stop[(t, stop)] == 1,
-                        name=f"zStop_FixedStop_{t.name}_L{stop}",
-                    )
 
     def __create_transfer_path_vars(self):
         for tr in self.transfer_nodes:
@@ -1116,25 +1113,19 @@ class TransferAndTensorAllocator:
         self,
     ) -> TensorReuseLevels:
         reuse_levels: TensorReuseLevels = {}
-        for node in self.workload.get_iteration_space_nodes():
-            for t in node.outputs:
-                if t in reuse_levels:
-                    continue
-                for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
-                    if self.z_stop[(t, stop)].X > self.VAR_THRESHOLD:
-                        reuse_levels[t] = stop
+        for t in self.workload.tensors:
+            for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
+                if self.z_stop[(t, stop)].X > self.VAR_THRESHOLD:
+                    reuse_levels[t] = stop
         return reuse_levels
 
     def get_tensor_depths(
         self,
     ) -> TensorDepths:
         tiles_needed: TensorDepths = {}
-        for node in self.workload.get_iteration_space_nodes():
-            for t in node.outputs:
-                if t in tiles_needed or t not in self.ssis:
-                    continue
-                for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
-                    if self.z_stop[(t, stop)].X > self.VAR_THRESHOLD:
+        for t in self.workload.tensors:
+            for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
+                if self.z_stop[(t, stop)].X > self.VAR_THRESHOLD:
                         tiles_needed[t] = self.tiles_needed_levels[(t, stop)]
         return tiles_needed
 
