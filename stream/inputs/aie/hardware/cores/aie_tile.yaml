@@ -1,6 +1,6 @@
 name: aie_tile
 type: aie2.compute
-max_object_fifo_depth: 6
+max_object_fifo_depth: 12
 
 memory:
   capacity: 524288  # 64 KB in bits (top-level L1 tile memory)

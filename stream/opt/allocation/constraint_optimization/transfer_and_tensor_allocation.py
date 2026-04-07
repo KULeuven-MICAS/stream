@@ -259,7 +259,7 @@ class TransferAndTensorAllocator:
             for t in tr.tensors:
                 fires = math.prod(sizes)
                 size_factor = 1
-                tiles_needed = 2 if self.force_double_buffering else 1
+                tiles_needed = 1
                 bds_needed = 1
                 self.reuse_levels[(t, -1)] = (fires, size_factor)
                 self.tiles_needed_levels[(t, -1)] = tiles_needed
@@ -275,6 +275,8 @@ class TransferAndTensorAllocator:
                     else:
                         bds_needed *= Nl
                     self.bds_needed_levels[(t, i)] = bds_needed
+                if self.force_double_buffering:
+                    self.tiles_needed_levels[(t, -1)] = 2
 
     def _is_const_i(self, tr: TransferNode) -> bool:
         src = next(iter(self.workload.predecessors(tr)))
@@ -773,7 +775,7 @@ class TransferAndTensorAllocator:
         """
         self.bd_depth: dict[Core, gp.LinExpr] = defaultdict(gp.LinExpr)
         for tr in self.transfer_nodes:
-            for t in tr.outputs:
+            for t in tr.tensors:
                 resources = self._candidate_cores_for_tensor(t)
                 for c in resources:
                     if c.id == self.offchip_core_id:
