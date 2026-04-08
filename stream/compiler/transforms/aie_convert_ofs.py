@@ -240,7 +240,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     # number of elements is the kernel shape
                     local_shape = source_type.get_local_shape()
                     assert len(local_shape) <= 1
-                    num_elements = prod(local_shape)
+                    num_elements = min((2, prod(local_shape)))
 
                     object_fifo = ObjectFifoOp.from_referenced_type(
                         self.get_tile(source),
@@ -317,7 +317,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                         self.get_tile(source),
                         [self.get_tile(target)],
                         name_base + f"switch_join_{i}_{j}",
-                        (1, 1),  # TODO: correct object fifo depth for switch joins
+                        (2, 1),  # TODO: correct object fifo depth for switch joins
                         target_type.get_element_type(),
                         target_type.get_kernel_shape(),
                     )
@@ -347,7 +347,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     self.get_tile(source),
                     [self.get_tile(target)],
                     name_base + f"unicast_{i}",
-                    (1, 1),  # TODO: correct object fifo depth for unicasts
+                    (2, 2),  # TODO: correct object fifo depth for unicasts
                     target_type.get_element_type(),
                     target_type.get_kernel_shape(),
                 )
@@ -380,7 +380,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     self.get_tile(source),
                     [self.get_tile(t) for t in targets],
                     name_base + f"broadcast_{i}",
-                    (1,) * (1 + len(targets)),  # TODO: correct object fifo depth for broadcasts
+                    (2,) * (1 + len(targets)),  # TODO: correct object fifo depth for broadcasts
                     target_type.get_element_type(),
                     target_type.get_kernel_shape(),
                 )
@@ -462,7 +462,7 @@ class ChannelToObjectFifoPass(RewritePattern):
             # number of elements is the kernel shape
             local_shape = target_type.get_local_shape()
             assert len(local_shape) <= 1
-            num_elements = prod(local_shape)
+            num_elements = min((2, prod(local_shape)))
 
             object_fifo = ObjectFifoOp.from_referenced_type(
                 producer_tile,
@@ -752,38 +752,10 @@ class TransferToRuntimeSequence(RewritePattern):
             yield from zip(
                 reversed(mem_strensor.ssis.data.vars),
                 reversed(compute_strensor.ssis.data.vars),
+                strict=True,
             )
 
         vars: list[StrensorVar] = []
-
-        # first kernel vars:
-        for mvar, _ in iter_strensors():
-            if mvar.type == StrensorVarType.KERNEL:
-                vars.append(mvar)
-
-        # then spatial vars:
-        for mvar, _ in iter_strensors():
-            if mvar.type == StrensorVarType.SPATIAL:
-                vars.append(mvar)
-
-        # next, iterate temporal/absent vars kept local in a memtile
-        for i, (mvar, cvar) in enumerate(iter_strensors()):
-            if (
-                cvar.type == mvar.type == StrensorVarType.TEMPORAL or mvar.type == StrensorVarType.ABSENT
-            ) and i < mem_strensor.num_reuse_vars:
-                vars.append(mvar)
-
-        # then, iterate the join / distribute vars:
-        for mvar, cvar in iter_strensors():
-            if mvar.type == StrensorVarType.TEMPORAL and cvar.type == StrensorVarType.SPATIAL:
-                vars.append(mvar)
-
-        # then, remaining vars:
-        for i, (mvar, cvar) in enumerate(iter_strensors()):
-            if (
-                cvar.type == mvar.type == StrensorVarType.TEMPORAL or mvar.type == StrensorVarType.ABSENT
-            ) and i >= mem_strensor.num_reuse_vars:
-                vars.append(mvar)
 
         strides: list[Stride] = []
 
@@ -798,20 +770,70 @@ class TransferToRuntimeSequence(RewritePattern):
             mult *= var.size
 
         iteration_mult = 1
-        for var in vars:
+
+        # first kernel vars:
+        for _, var in iter_strensors():
             stride = dim_strides[var.dim] if var.dim in dim_strides else 0
             if var.type == StrensorVarType.KERNEL:
                 strides.append(Stride(var.size, stride, iteration_mult))
-            elif var.type == StrensorVarType.SPATIAL:
-                strides.append(Stride(var.size, stride, iteration_mult, True))
-                iteration_mult *= var.size
-            elif var.type == StrensorVarType.TEMPORAL:
-                strides.append(Stride(var.size, stride, iteration_mult))
-                iteration_mult *= var.size
-            else:
-                iteration_mult *= var.size
-            if var.dim in dim_strides:
-                dim_strides[var.dim] *= var.size
+                vars.append(var)
+                if var.dim in dim_strides:
+                    dim_strides[var.dim] *= var.size
+
+        # then pure spatial vars:
+        for mvar, _ in iter_strensors():
+            stride = dim_strides[mvar.dim] if mvar.dim in dim_strides else 0
+            if mvar.type == StrensorVarType.SPATIAL:
+                vars.append(mvar)
+                if mvar.dim in dim_strides:
+                    strides.append(Stride(mvar.size, stride, iteration_mult, True))
+                    dim_strides[mvar.dim] *= mvar.size
+                iteration_mult *= mvar.size
+
+        # next, iterate temporal/absent vars kept local in a memtile
+        for i, (mvar, cvar) in enumerate(iter_strensors()):
+            stride = dim_strides[cvar.dim] if cvar.dim in dim_strides else 0
+            if cvar.type == StrensorVarType.ABSENT and i < mem_strensor.reuse_index.data:
+                iteration_mult *= cvar.size
+            if cvar.type == StrensorVarType.TEMPORAL and i < mem_strensor.reuse_index.data:
+                vars.append(mvar)
+                if cvar.dim in dim_strides:
+                    strides.append(Stride(cvar.size, stride, iteration_mult))
+                    dim_strides[cvar.dim] *= cvar.size
+                iteration_mult *= cvar.size
+
+        from pprint import pp
+
+        print(op)
+        print(compute_strensor)
+        print(mem_strensor)
+        pp(strides)
+        if isinstance(op, PullOp):
+            breakpoint()
+
+        # then, iterate the join / distribute vars:
+        for mvar, cvar in iter_strensors():
+            stride = dim_strides[cvar.dim] if cvar.dim in dim_strides else 0
+            if mvar.type == StrensorVarType.TEMPORAL and cvar.type == StrensorVarType.SPATIAL:
+                vars.append(mvar)
+                if cvar.dim in dim_strides:
+                    # only add relevant
+                    strides.append(Stride(cvar.size, stride, iteration_mult))
+                    dim_strides[cvar.dim] *= cvar.size
+                iteration_mult *= cvar.size
+
+        # then, remaining vars:
+        for i, (mvar, cvar) in enumerate(iter_strensors()):
+            stride = dim_strides[cvar.dim] if cvar.dim in dim_strides else 0
+            if cvar.type == StrensorVarType.ABSENT and i >= mem_strensor.reuse_index.data:
+                iteration_mult *= cvar.size
+            if cvar.type == StrensorVarType.TEMPORAL and i >= mem_strensor.reuse_index.data:
+                # add stride even if irrelevant for repeated transfers
+                strides.append(Stride(cvar.size, stride, iteration_mult))
+                iteration_mult *= cvar.size
+                vars.append(mvar)
+                if cvar.dim in dim_strides:
+                    dim_strides[cvar.dim] *= cvar.size
 
         stride_dict = StrideSet(tuple(strides)).split()
         stride_dict = {x: y.canonicalize().legalize() for x, y in stride_dict.items()}
