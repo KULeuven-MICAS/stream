@@ -44,6 +44,7 @@ from stream.compiler.transforms.aie_convert_ofs import AIEConvertOfs
 
 # from stream.compiler.transforms.aie_add_tracing_script import AIEAddTracingScript
 from stream.compiler.transforms.aie_dispatch import AIEDispatchPass
+from stream.compiler.transforms.aie_move_tile_ops_up import AIEMoveTileOpsUp
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import (
     ConvertStreamToAIEPass,
@@ -458,6 +459,7 @@ class AIECodeGenerationStage(Stage):
         ConvertStreamToAIEPass().apply(self.context, module)
         with open(output_path + "/to_aie.mlir", "w") as f:
             f.write(str(module))
+        AIEMoveTileOpsUp().apply(self.context, module)
         ClearMemorySpace().apply(self.context, module)
         with open(output_path + "/final.mlir", "w") as f:
             f.write(str(module))
