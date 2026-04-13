@@ -1024,8 +1024,21 @@ class TransferToObjectFIFOPattern(RewritePattern):
             assert isinstance(op.input, OpResult)
             use_op = op.input.op
 
-        rewriter.insert_op(release_op, InsertPoint.after(for_op))
-        rewriter.insert_op([acquire_op, *access_ops], InsertPoint.before(for_op))
+        # FIXME: this is mainly necessary because of bad reuse in output stream IR
+        # push insertion point higher until next relevant dimension is found
+        relevant_dims = {var.dim for var in strensor.ssis.data.get_kernel_variables()}
+        while True:
+            assert isinstance((layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr)
+            if layer_dim.data.dim in relevant_dims:
+                break
+            for_op = for_op.parent_op()
+            if not isinstance(for_op, ForOp):
+                break
+        # FIXME: end
+
+        assert (for_yield := for_op.body.block.last_op) is not None
+        rewriter.insert_op(release_op, InsertPoint.before(for_yield))
+        rewriter.insert_op([acquire_op, *access_ops], InsertPoint.at_start(for_op.body.block))
         rewriter.insert_op(index_ops, InsertPoint.before(use_op))
 
         # set output of computation node op if this was a push op
