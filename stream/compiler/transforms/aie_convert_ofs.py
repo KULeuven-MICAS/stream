@@ -804,12 +804,12 @@ class TransferToRuntimeSequence(RewritePattern):
 
         from pprint import pp
 
-        print(op)
-        print(compute_strensor)
-        print(mem_strensor)
-        pp(strides)
-        if isinstance(op, PullOp):
-            breakpoint()
+        # print(op)
+        # print(compute_strensor)
+        # print(mem_strensor)
+        # pp(strides)
+        # if isinstance(op, PullOp):
+        #     breakpoint()
 
         # then, iterate the join / distribute vars:
         for mvar, cvar in iter_strensors():
