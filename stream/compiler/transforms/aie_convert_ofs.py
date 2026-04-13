@@ -1,33 +1,32 @@
-from abc import ABC
-from collections import defaultdict
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from functools import reduce
 from itertools import product
-from math import dist, isqrt, prod
-import string
-from typing import Iterable, Self, Sequence, cast
-from numpy import isin
-from xdsl.context import Context, MLContext
+from math import isqrt, prod
+from typing import Self
+
+from xdsl.context import Context
 from xdsl.dialects import scf
 from xdsl.dialects.arith import AddiOp, ConstantOp, MuliOp
 from xdsl.dialects.builtin import (
     ArrayAttr,
+    DenseArrayBase,
     IndexType,
-    IntAttr,
     IntegerAttr,
+    IntegerType,
     MemRefType,
     ModuleOp,
     StringAttr,
     SymbolRefAttr,
+    i32,
 )
 from xdsl.dialects.csl import RewritePattern
 from xdsl.dialects.scf import ForOp, IndexSwitchOp
-from xdsl.ir import Attribute, Block, OpResult, Operation, Region, SSAValue
-from xdsl.dialects.builtin import DenseArrayBase, IntegerType, i32
+from xdsl.ir import Attribute, Block, Operation, OpResult, Region, SSAValue
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
-    PatternRewriteWalker,
     PatternRewriter,
+    PatternRewriteWalker,
     op_type_rewrite_pattern,
 )
 from xdsl.rewriter import InsertPoint, Rewriter
@@ -38,25 +37,25 @@ from xdsl_aie.dialects.aie import (
     BDDimLayoutArray,
     BDDimLayoutArrayAttr,
     CoreOp,
-    DMABDOp,
     DeviceOp,
+    DMABDOp,
     EndOp,
-    ObjectFIFOReleaseOp,
-    ObjectFIFOSubviewAccessOp,
     ObjectFifoAcquireOp,
     ObjectFifoLinkOp,
     ObjectFifoOp,
     ObjectFifoPortEnum,
+    ObjectFIFOReleaseOp,
+    ObjectFIFOSubviewAccessOp,
     RuntimeSequenceOp,
     TileOp,
 )
 from xdsl_aie.dialects.aiex import DmaAwaitTaskOp, DmaConfigureTaskForOp, DmaStartTaskOp
+
 from stream.compiler.dialects.stream import (
     ChannelOp,
     ComputationNodeOp,
     PullOp,
     PushOp,
-    StrensorSpaceAttr,
     StrensorType,
     StrensorVar,
     StrensorVarAttr,
@@ -199,7 +198,6 @@ class ChannelToObjectFifoPass(RewritePattern):
         transforms: Sequence[tuple[StrensorVar, StrensorVar]],
         name_base: str,
     ) -> Sequence[ObjectFifoOp]:
-
         spatial_dims = [
             x[1] for x in transforms if x[0].type == StrensorVarType.SPATIAL and x[1].type == StrensorVarType.SPATIAL
         ]
@@ -214,7 +212,7 @@ class ChannelToObjectFifoPass(RewritePattern):
         assert len(spatial_dims) <= 1
         for i, spatial in enumerate(iterate_spat_vars(spatial_dims)):
             # Join Patterns:
-            if len(join_dims):
+            if join_dims:
                 assert len(join_dims) == 1
                 assert len(spatial_dims) + len(join_dims) == len(transforms)
 
@@ -240,7 +238,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     # number of elements is the kernel shape
                     local_shape = source_type.get_local_shape()
                     assert len(local_shape) <= 1
-                    num_elements = min((2, prod(local_shape)))
+                    num_elements = max((2, prod(local_shape)))
 
                     object_fifo = ObjectFifoOp.from_referenced_type(
                         self.get_tile(source),
@@ -271,7 +269,6 @@ class ChannelToObjectFifoPass(RewritePattern):
         transforms: Sequence[tuple[StrensorVar, StrensorVar]],
         name_base: str,
     ) -> Sequence[ObjectFifoOp]:
-
         spatial_dims = [
             x[1] for x in transforms if x[0].type == StrensorVarType.SPATIAL and x[1].type == StrensorVarType.SPATIAL
         ]
@@ -290,7 +287,7 @@ class ChannelToObjectFifoPass(RewritePattern):
         assert len(spatial_dims) <= 1
         for i, spatial in enumerate(iterate_spat_vars(spatial_dims)):
             # Switch Join Patterns:
-            if len(join_dims):
+            if join_dims:
                 assert len(join_dims) == 1
                 assert len(spatial_dims) + len(join_dims) == len(transforms)
 
@@ -462,7 +459,7 @@ class ChannelToObjectFifoPass(RewritePattern):
             # number of elements is the kernel shape
             local_shape = target_type.get_local_shape()
             assert len(local_shape) <= 1
-            num_elements = min((2, prod(local_shape)))
+            num_elements = max((2, prod(local_shape)))
 
             object_fifo = ObjectFifoOp.from_referenced_type(
                 producer_tile,
@@ -498,7 +495,6 @@ class ChannelToObjectFifoPass(RewritePattern):
         consumers: Sequence[PullOp],
         name_base: str,
     ) -> Sequence[ObjectFifoOp]:
-
         assert len(consumers) == 1
         assert isinstance(strensor := consumers[0].output.type, StrensorType)
         consumer_tiles = tuple(map(self.get_tile, consumers))
@@ -523,13 +519,12 @@ class ChannelToObjectFifoPass(RewritePattern):
         transforms: Sequence[tuple[StrensorVar, StrensorVar]],
         name_base: str,
     ) -> Sequence[ObjectFifoOp]:
-
         join_dims = [x[0] for x in transforms if x[0].type == StrensorVarType.SPATIAL]
 
         ofs: list[ObjectFifoOp] = []
 
         # Join Patterns:
-        if len(join_dims):
+        if join_dims:
             assert len(join_dims) == 1
             assert len(join_dims) == len(transforms)
 
@@ -584,7 +579,6 @@ class ChannelToObjectFifoPass(RewritePattern):
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, channel: ChannelOp, rewriter: PatternRewriter):
-
         if "of" in channel.attributes:
             # already converted
             return
@@ -802,8 +796,6 @@ class TransferToRuntimeSequence(RewritePattern):
                     dim_strides[cvar.dim] *= cvar.size
                 iteration_mult *= cvar.size
 
-        from pprint import pp
-
         # print(op)
         # print(compute_strensor)
         # print(mem_strensor)
@@ -836,7 +828,7 @@ class TransferToRuntimeSequence(RewritePattern):
                     dim_strides[cvar.dim] *= cvar.size
 
         stride_dict = StrideSet(tuple(strides)).split()
-        stride_dict = {x: y.canonicalize().legalize() for x, y in stride_dict.items()}
+        stride_dict = {x: y.force_squash().legalize() for x, y in stride_dict.items()}
 
         for i, (spatial_offset, stride_set) in enumerate(stride_dict.items()):
             ofs = op.attributes.get("of")
@@ -887,7 +879,7 @@ class TransferToRuntimeSequence(RewritePattern):
 
         # remove yields from pull ops:
         if isinstance(op, PullOp):
-            yielded = next((use for use in op.output.uses if isinstance(use.operation, YieldOp)))
+            yielded = next(use for use in op.output.uses if isinstance(use.operation, YieldOp))
             assert yielded.index == 0
             op.output.replace_by(runtime_sequence.body.block.args[-1])
             rewriter.erase_op(yielded.operation)
@@ -949,7 +941,6 @@ class TransferToObjectFIFOPattern(RewritePattern):
         op.output.replace_by(index_switch.results[0])
         # delete original op
         rewriter.erase_matched_op()
-        return
 
     def generate_reuse_pattern(
         self,
@@ -958,7 +949,6 @@ class TransferToObjectFIFOPattern(RewritePattern):
         strensor: StrensorType,
         rewriter: PatternRewriter,
     ):
-
         relevant_reuse_vars = tuple(strensor.get_relevant_reuse_vars())
 
         # select correct port and operand
@@ -1030,8 +1020,8 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
         # FIXME: this is mainly necessary because of bad reuse in output stream IR
         # push insertion point higher until next relevant dimension is found
-        if "of_12" in of:
-            breakpoint()
+        # if "of_12" in of:
+        #     breakpoint()
         relevant_dims = {var.dim for var in strensor.ssis.data.get_kernel_variables()}
         while True:
             assert isinstance((layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr)
@@ -1061,8 +1051,6 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
         operand.replace_by(index_switch.results[0])
         rewriter.erase_matched_op()
-
-        return
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: PushOp | PullOp, rewriter: PatternRewriter):  # noqa: PLR0912, PLR0915
@@ -1208,7 +1196,6 @@ class AIEConvertOfs(ModulePass):
     name = "aie-convert-ofs"
 
     def apply(self, ctx: Context, op: ModuleOp) -> None:
-
         # create new shim tile
         device = next(op for op in op.walk() if isinstance(op, DeviceOp))
         shim_tiles = {
