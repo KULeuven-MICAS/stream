@@ -1001,6 +1001,10 @@ class TransferToObjectFIFOPattern(RewritePattern):
             add_val = AddiOp(add_val, i_arg)
             mult_val = MuliOp(mult_val, for_op.ub)
             index_ops.extend([i_arg, add_val, mult_val])
+        if relevant_reuse_vars:
+            for_op = for_op.parent_op()
+            assert isinstance(for_op, ForOp)
+            print(of)
 
         index_switch = IndexSwitchOp(
             arg=add_val,
@@ -1026,6 +1030,8 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
         # FIXME: this is mainly necessary because of bad reuse in output stream IR
         # push insertion point higher until next relevant dimension is found
+        if "of_12" in of:
+            breakpoint()
         relevant_dims = {var.dim for var in strensor.ssis.data.get_kernel_variables()}
         while True:
             assert isinstance((layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr)
