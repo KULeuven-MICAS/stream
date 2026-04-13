@@ -246,7 +246,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                         self.get_tile(source),
                         [self.get_tile(target)],
                         name_base + f"join_{i}_{j}",
-                        (num_elements, 1),
+                        (num_elements, 2),
                         source_type.get_element_type(),
                         source_type.get_kernel_shape(),
                     )
@@ -317,7 +317,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                         self.get_tile(source),
                         [self.get_tile(target)],
                         name_base + f"switch_join_{i}_{j}",
-                        (2, 1),  # TODO: correct object fifo depth for switch joins
+                        (2, 2),  # TODO: correct object fifo depth for switch joins
                         target_type.get_element_type(),
                         target_type.get_kernel_shape(),
                     )
@@ -468,7 +468,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 producer_tile,
                 consumer_tiles,
                 name_base + str(i),
-                (1,) + (num_elements,) * len(consumer_tiles),
+                (2,) + (num_elements,) * len(consumer_tiles),
                 target_type.get_element_type(),
                 target_type.get_kernel_shape(),
             )
@@ -507,7 +507,7 @@ class ChannelToObjectFifoPass(RewritePattern):
             producerTile=producer_tile,
             consumerTiles=consumer_tiles,
             name=name_base + "mem",
-            elemNumber=(1, 1),
+            elemNumber=(2, 2),
             referenced_type=strensor.get_element_type(),
             shape=strensor.get_local_shape() + strensor.get_kernel_shape(),
         )
@@ -551,7 +551,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     self.get_tile(source),
                     [self.get_tile(target, source_type.core_allocation.data[0].data)],
                     name_base + f"mem_{j}",
-                    (1, 1),
+                    (2, 2),
                     source_type.get_element_type(),
                     source_type.get_local_shape() + source_type.get_kernel_shape(),
                 )
