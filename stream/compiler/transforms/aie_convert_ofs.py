@@ -186,7 +186,7 @@ class StrideSet:
 
 @dataclass
 class ChannelToObjectFifoPass(RewritePattern):
-    shim_tile: SSAValue
+    shim_tiles: dict[str, SSAValue]
     of_count: int = 0
     """
     Converts channels to object fifo definitions
@@ -482,7 +482,7 @@ class ChannelToObjectFifoPass(RewritePattern):
         producer.attributes["of"] = ArrayAttr(x.sym_name for x in ofs)
         return ofs
 
-    def get_tile(self, op: PushOp | PullOp) -> SSAValue:
+    def get_tile(self, op: PushOp | PullOp, memtile: str = "") -> SSAValue:
         parent = op.parent_op()
         while not isinstance(parent, CoreOp | RuntimeSequenceOp):
             assert parent is not None
@@ -490,7 +490,7 @@ class ChannelToObjectFifoPass(RewritePattern):
         if isinstance(parent, CoreOp):
             return parent.tile
         else:  # runtime sequence
-            return self.shim_tile
+            return self.shim_tiles[memtile]
 
     def shim_to_mem(
         self,
@@ -501,8 +501,8 @@ class ChannelToObjectFifoPass(RewritePattern):
 
         assert len(consumers) == 1
         assert isinstance(strensor := consumers[0].output.type, StrensorType)
-        producer_tile = self.get_tile(producer)
         consumer_tiles = tuple(map(self.get_tile, consumers))
+        producer_tile = self.get_tile(producer, strensor.core_allocation.data[0].data)
         object_fifo = ObjectFifoOp.from_referenced_type(
             producerTile=producer_tile,
             consumerTiles=consumer_tiles,
@@ -549,7 +549,7 @@ class ChannelToObjectFifoPass(RewritePattern):
 
                 object_fifo = ObjectFifoOp.from_referenced_type(
                     self.get_tile(source),
-                    [self.get_tile(target)],
+                    [self.get_tile(target, source_type.core_allocation.data[0].data)],
                     name_base + f"mem_{j}",
                     (1, 1),
                     source_type.get_element_type(),
@@ -1192,9 +1192,20 @@ class AIEConvertOfs(ModulePass):
 
         # create new shim tile
         device = next(op for op in op.walk() if isinstance(op, DeviceOp))
-        shim_tile = TileOp(0, 0)
-        Rewriter().insert_op(shim_tile, InsertPoint.at_start(device.region.block))
-        PatternRewriteWalker(ChannelToObjectFifoPass(shim_tile.result)).rewrite_module(op)
+        shim_tiles = {
+            "tile_0_1": TileOp(0, 0),
+            "tile_1_1": TileOp(1, 0),
+            "tile_2_1": TileOp(2, 0),
+            "tile_3_1": TileOp(3, 0),
+            "tile_4_1": TileOp(4, 0),
+            "tile_5_1": TileOp(5, 0),
+            "tile_6_1": TileOp(6, 0),
+            "tile_7_1": TileOp(7, 0),
+        }
+        PatternRewriteWalker(ChannelToObjectFifoPass({x: y.result for x, y in shim_tiles.items()})).rewrite_module(op)
+        Rewriter().insert_op(
+            [x for x in shim_tiles.values() if x.result.uses], InsertPoint.at_start(device.region.block)
+        )
         PatternRewriteWalker(TransferToRuntimeSequence(), apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(StrensorToMemref()).rewrite_module(op)
         PatternRewriteWalker(OrderDMAs(), apply_recursively=False).rewrite_module(op)
