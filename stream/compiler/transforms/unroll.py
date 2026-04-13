@@ -40,12 +40,12 @@ def iterate_spat_vars(
     if len(spat_vars) == 0:
         yield tuple()
         return
-    vars = ((StrensorVar(StrensorVarType.POINT, i, spat_vars[-1].dim),) for i in range(spat_vars[-1].size))
+    vars = ((StrensorVar(StrensorVarType.POINT, i, spat_vars[0].dim),) for i in range(spat_vars[0].size))
     for var in vars:
         if len(spat_vars) == 1:
             yield var
         else:
-            for other_vars in iterate_spat_vars(spat_vars[:-1]):
+            for other_vars in iterate_spat_vars(spat_vars[1:]):
                 yield var + other_vars
 
 
