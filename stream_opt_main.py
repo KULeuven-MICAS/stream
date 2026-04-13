@@ -15,6 +15,7 @@ from stream.compiler.kernels.gemm import GemmKernel
 from stream.compiler.kernels.silu import SiluKernel
 from stream.compiler.transforms.aie_convert_ofs import AIEConvertOfs
 from stream.compiler.transforms.aie_dispatch import AIEDispatchPass
+from stream.compiler.transforms.aie_move_tile_ops_up import AIEMoveTileOpsUp
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
 from stream.compiler.transforms.iteration_space_to_for import IterationSpaceToFor
@@ -71,6 +72,7 @@ class StreamMain(xDSLOptMain):
         self.register_pass("aie-convert-ofs", lambda: AIEConvertOfs)
         self.register_pass("convert-stream-to-aie", lambda: ConvertStreamToAIEPass)
         self.register_pass("clear-memory-space", lambda: ClearMemorySpace)
+        self.register_pass("aie-move-tile-ops-up", lambda: AIEMoveTileOpsUp)
         pass
         # self.register_pass(name, pass_)
 
