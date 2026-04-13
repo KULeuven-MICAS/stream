@@ -96,9 +96,7 @@ from stream.workload.steady_state.iteration_space import (
 )
 
 
-def canonicalize_transformation(
-    sizes: Sequence[int], strides: Sequence[int]
-) -> tuple[list[int], list[int]]:
+def canonicalize_transformation(sizes: Sequence[int], strides: Sequence[int]) -> tuple[list[int], list[int]]:
     """
     Examples:
 
@@ -138,17 +136,13 @@ class SetKernelLayouts(RewritePattern):
     kernels: dict[str, AIEKernel]
 
     @op_type_rewrite_pattern
-    def match_and_rewrite(
-        self, op: ComputationNodeOp, rewriter: PatternRewriter
-    ) -> None:
+    def match_and_rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
         aie_kernel = self.kernels.get(op.kernel.data)
         assert aie_kernel is not None
         layouts = aie_kernel.operand_layouts()
         if not layouts:
             return
-        shaped_operands = [
-            operand for operand in op.operands if isinstance(operand.type, ShapedType)
-        ]
+        shaped_operands = [operand for operand in op.operands if isinstance(operand.type, ShapedType)]
         for layout, operand in zip(layouts, shaped_operands, strict=True):
             assert isa(old_type := operand.type, MemRefType[FixedBitwidthType])
             layout_attr = TiledStridedLayoutAttr(layout)
@@ -162,9 +156,7 @@ class SetKernelLayouts(RewritePattern):
             )
             new_operand = LayoutCast(operand, new_type)
             rewriter.insert_op(new_operand, InsertPoint.before(op))
-            operand.replace_by_if(
-                new_operand.results[0], lambda use: use.operation is op
-            )
+            operand.replace_by_if(new_operand.results[0], lambda use: use.operation is op)
 
 
 @dataclass
@@ -195,11 +187,7 @@ class HoistLayoutCasts(RewritePattern):
 class SquashLayoutCasts(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: LayoutCast, rewriter: PatternRewriter) -> None:
-        layout_casts = [
-            use.operation
-            for use in op.source.uses
-            if isinstance(use.operation, LayoutCast)
-        ]
+        layout_casts = [use.operation for use in op.source.uses if isinstance(use.operation, LayoutCast)]
         # all dest types must be equal
         assert all(op.dest.type == cast.dest.type for cast in layout_casts)
         # keep only this one
@@ -208,9 +196,7 @@ class SquashLayoutCasts(RewritePattern):
             rewriter.erase_op(cast_to_remove)
 
 
-def get_transform(
-    source: TiledStridedLayout, dest: TiledStridedLayout
-) -> tuple[list[int], list[int]]:
+def get_transform(source: TiledStridedLayout, dest: TiledStridedLayout) -> tuple[list[int], list[int]]:
     """
     Returns sizes, strides
     """
@@ -234,9 +220,7 @@ def get_transform(
 
     strides.sort(key=lambda x: x["stride_dest"].step or 0, reverse=True)
 
-    sizes_src, strides_src = zip(
-        *[(x["stride_src"].bound, x["stride_src"].step) for x in strides], strict=False
-    )
+    sizes_src, strides_src = zip(*[(x["stride_src"].bound, x["stride_src"].step) for x in strides], strict=False)
     sizes_dest, strides_dest = zip(
         *[(x["stride_dest"].bound, x["stride_dest"].step) for x in strides],
         strict=False,
@@ -275,10 +259,7 @@ class RealizeLayoutCasts(RewritePattern):
 
         def all_acquires(of: str) -> Iterable[ObjectFifoAcquireOp]:
             for op in device_op.walk():
-                if (
-                    isinstance(op, ObjectFifoAcquireOp)
-                    and op.objFifo_name.root_reference.data == of
-                ):
+                if isinstance(op, ObjectFifoAcquireOp) and op.objFifo_name.root_reference.data == of:
                     yield op
 
         # get all acquires and releases
@@ -346,17 +327,22 @@ class RealizeLayoutCasts(RewritePattern):
 
         # create BDDimlayout
         bd_layout = BDDimLayoutArrayAttr(
-            BDDimLayoutArray(
-                [
-                    BDDimLayout((size, stride))
-                    for size, stride in zip(sizes, strides, strict=True)
-                ]
-            )
+            BDDimLayoutArray([BDDimLayout((size, stride)) for size, stride in zip(sizes, strides, strict=True)])
         )
 
         # take last fifo in the chain (starting form memtile i)
         fifo = SymbolTable.lookup_symbol(device_op, of_name)
         assert isinstance(fifo, ObjectFifoOp)
+
+        # make sure fifo originates from memtile:
+        assert isinstance(fifo.producerTile, OpResult) and isinstance(tile_op := fifo.producerTile.op, TileOp)
+        if tile_op.row.value.data != 1:
+            for link in device_op.walk():
+                if isinstance(link, ObjectFifoLinkOp):
+                    if of_name in (x.root_reference.data for x in link.fifoIns):
+                        fifo = SymbolTable.lookup_symbol(device_op, link.fifoOuts.data[0])
+                        assert isinstance(fifo, ObjectFifoOp)
+
         # fifo.elemType = ObjectFIFO([MemRefType(element_type.element_type, element_type.shape, dest_type.layout)])
         if not transform_is_null:
             fifo.dimensionsToStream = bd_layout
@@ -435,19 +421,13 @@ class ConvertStreamToAIEPass(ModulePass):
 
         PatternRewriteWalker(OrderCoreOps()).rewrite_module(op)
 
-        PatternRewriteWalker(SetKernelLayouts(ctx.registered_kernels)).rewrite_module(
-            op
-        )
+        PatternRewriteWalker(SetKernelLayouts(ctx.registered_kernels)).rewrite_module(op)
         PatternRewriteWalker(HoistLayoutCasts()).rewrite_module(op)
         PatternRewriteWalker(SquashLayoutCasts()).rewrite_module(op)
-        PatternRewriteWalker(ConvertAIEKernels(ctx.registered_kernels)).rewrite_module(
-            op
-        )
+        PatternRewriteWalker(ConvertAIEKernels(ctx.registered_kernels)).rewrite_module(op)
         # symbol table stuff messes up my terminator op:
         PatternRewriteWalker(PutEndAtEnd()).rewrite_module(op)
 
         PatternRewriteWalker(RealizeLayoutCasts()).rewrite_module(op)
         ClearMemorySpace().apply(ctx, op)
-        PatternRewriteWalker(InfinteLoopCol(), apply_recursively=False).rewrite_module(
-            op
-        )
+        PatternRewriteWalker(InfinteLoopCol(), apply_recursively=False).rewrite_module(op)

@@ -120,7 +120,7 @@ class AIECodeGenerationStage(Stage):
         node: TransferNode,
         mapping: NodeMapping,
         full_mapping: Mapping,
-        inputs: Sequence[Operation | SSAValue],
+        inputs: Sequence[SSAValue],
         ssis_dict: dict[HasIterationSpace | Tensor, SteadyStateIterationSpace],
         workload: Workload,
         ss: StrensorSpace,
