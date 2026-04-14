@@ -980,6 +980,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
         ]
         for_op = op.parent_op()
         assert isinstance(for_op, ForOp)
+        innermost = None
         # innermost to outermost:
         for iter_var in reversed(relevant_reuse_vars):
             assert isinstance((layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr)
@@ -987,6 +988,8 @@ class TransferToObjectFIFOPattern(RewritePattern):
                 for_op = for_op.parent_op()
                 assert isinstance(for_op, ForOp)
                 assert isinstance((layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr)
+            if innermost is None:
+                innermost = for_op
             i_arg = MuliOp(mult_val, for_op.body.block.args[0])
             add_val = AddiOp(add_val, i_arg)
             mult_val = MuliOp(mult_val, for_op.ub)
@@ -1005,18 +1008,23 @@ class TransferToObjectFIFOPattern(RewritePattern):
         )
         index_ops.append(index_switch)
 
+        # put index switch at innermost relevant for loop
+        if innermost is not None:
+            rewriter.insert_op(index_ops, InsertPoint.at_start(innermost.body.block))
+        # or just before use if no relevant loops exist:
+        elif isinstance(op, PullOp):
+            use_op = next(use.operation for use in op.output.uses)
+            rewriter.insert_op(index_ops, InsertPoint.before(use_op))
+        else:
+            assert isinstance(op.input, OpResult)
+            use_op = op.input.op
+            rewriter.insert_op(index_ops, InsertPoint.before(use_op))
+
         release_op = ObjectFIFOReleaseOp(
             IntegerAttr.from_int_and_width(port.get_int(), 32),
             IntegerAttr.from_int_and_width(reuse_factor, 32),
             object_fifo=of,
         )
-
-        # there should only be one use now
-        if isinstance(op, PullOp):
-            use_op = next(use.operation for use in op.output.uses)
-        else:
-            assert isinstance(op.input, OpResult)
-            use_op = op.input.op
 
         # FIXME: this is mainly necessary because of bad reuse in output stream IR
         # push insertion point higher until next relevant dimension is found
@@ -1035,7 +1043,6 @@ class TransferToObjectFIFOPattern(RewritePattern):
         assert (for_yield := for_op.body.block.last_op) is not None
         rewriter.insert_op(release_op, InsertPoint.before(for_yield))
         rewriter.insert_op([acquire_op, *access_ops], InsertPoint.at_start(for_op.body.block))
-        rewriter.insert_op(index_ops, InsertPoint.before(use_op))
 
         # set output of computation node op if this was a push op
         if isinstance(op, PushOp):
