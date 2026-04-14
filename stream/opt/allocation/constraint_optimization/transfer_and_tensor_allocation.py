@@ -22,7 +22,7 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
     _resource_key,
 )
 from stream.workload.node import HasOutputs, TransferType
-from stream.workload.steady_state.iteration_space import Reuse, SteadyStateIterationSpace
+from stream.workload.steady_state.iteration_space import IterationVariableType, Reuse, SteadyStateIterationSpace
 from stream.workload.steady_state.node import Node
 from stream.workload.workload import (
     ComputationNode,
@@ -588,6 +588,7 @@ class TransferAndTensorAllocator:
         self._force_nonconstant_reuse_levels()
         self._force_final_output_reuse_levels()
         self._ensure_memory_and_compute_reuse_compatibility()
+        self._force_reuse_includes_spatial()
 
     def _transfer_fire_rate_constraints(self):
         self.fires: dict[TransferNode, gp.Var] = {}
@@ -796,8 +797,8 @@ class TransferAndTensorAllocator:
 
     def _ensure_memory_and_compute_reuse_compatibility(self):
         """
-        Ensure that a COMPUTE_TO_MEM transfer output reuse level >= input reuse level.
-        Ensure that a MEM_TO_COMPUTE transfer input reuse level >= output reuse level.
+        Ensure that for COMPUTE_TO_MEM and MEM_TO_COMPUTE transfers the input and output
+        reuse levels are equal.
         """
         for tr in self.transfer_nodes:
             inputs = tr.inputs
@@ -807,22 +808,49 @@ class TransferAndTensorAllocator:
                 assert len(outputs) == 1, "Expected exactly one output tensor for COMPUTE_TO_MEM transfer."
                 output_tensor = outputs[0]
                 for input_tensor in inputs:
-                    for i in range(len(relevancies)):
+                    for s in range(-1, len(relevancies)):
                         self.model.addConstr(
-                            quicksum(self.z_stop[(output_tensor, s)] for s in range(i, len(relevancies)))
-                            >= quicksum(self.z_stop[(input_tensor, s)] for s in range(i, len(relevancies))),
-                            name=f"reuse_compat_input_{tr.name}_L{i}",
+                            self.z_stop[(output_tensor, s)] == self.z_stop[(input_tensor, s)],
+                            name=f"reuse_eq_input_{tr.name}_L{s}",
                         )
             elif tr.transfer_type in (TransferType.MEM_TO_COMPUTE,):
                 assert len(inputs) == 1, "Expected exactly one input tensor for MEM_TO_COMPUTE transfer."
                 input_tensor = inputs[0]
                 for output_tensor in outputs:
-                    for i in range(len(relevancies)):
+                    for s in range(-1, len(relevancies)):
                         self.model.addConstr(
-                            quicksum(self.z_stop[(input_tensor, s)] for s in range(i, len(relevancies)))
-                            >= quicksum(self.z_stop[(output_tensor, s)] for s in range(i, len(relevancies))),
-                            name=f"reuse_compat_output_{tr.name}_L{i}",
+                            self.z_stop[(input_tensor, s)] == self.z_stop[(output_tensor, s)],
+                            name=f"reuse_eq_output_{tr.name}_L{s}",
                         )
+
+    def _force_reuse_includes_spatial(self):
+        """
+        Force reuse to cover any applicable temporal loop that sits inside (or at)
+        the outermost spatial variable of a tensor. Temporal loops outside the
+        outermost spatial do not need to be buffered for spatial coverage.
+        """
+        for t in self.tensors_to_optimize_reuse_for:
+            variables = self.ssis[t].variables
+            applicable_temporal = self.ssis[t].get_applicable_temporal_variables()
+            outermost_spatial_pos = -1
+            for pos, var in enumerate(variables):
+                if var.type == IterationVariableType.SPATIAL:
+                    outermost_spatial_pos = pos
+            if outermost_spatial_pos < 0:
+                continue
+            min_reuse_level = -1
+            for i, tv in enumerate(applicable_temporal):
+                pos = next(p for p, v in enumerate(variables) if v is tv)
+                if pos <= outermost_spatial_pos:
+                    min_reuse_level = i
+                else:
+                    break
+            if min_reuse_level < 0:
+                continue
+            self.model.addConstr(
+                quicksum(self.z_stop[(t, s)] for s in range(min_reuse_level, len(applicable_temporal))) >= 1,
+                name=f"force_reuse_past_spatial_{t.name}",
+            )
 
     # ...................... slot latency ........................ #
     def _slot_latency_constraints(self):
