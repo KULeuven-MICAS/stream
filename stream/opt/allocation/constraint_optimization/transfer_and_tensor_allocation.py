@@ -779,20 +779,47 @@ class TransferAndTensorAllocator:
                 for c in resources:
                     if c.id == self.offchip_core_id:
                         continue
+                    u = self._tensor_uses_core_var(t, c)
                     assert isinstance(c, Core)
                     if c.type == "compute":
-                        factor_variable = self.tiles_needed_levels
+                        for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
+                            bds_needed = self.tiles_needed_levels[(t, stop)]
+                            uz = self._add_binary_product(
+                                a=u,
+                                b=self.z_stop[(t, stop)],
+                                base_name=f"bddepth_{t.name}_{_resource_key(c)}_L{stop}",
+                            )
+                            self.bd_depth[c] += bds_needed * uz
                     else:
-                        factor_variable = self.bds_needed_levels
-                    u = self._tensor_uses_core_var(t, c)
-                    for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
-                        bds_needed = factor_variable[(t, stop)]
-                        uz = self._add_binary_product(
-                            a=u,
-                            b=self.z_stop[(t, stop)],
-                            base_name=f"bddepth_{t.name}_{_resource_key(c)}_L{stop}",
-                        )
-                        self.bd_depth[c] += bds_needed * uz
+                        # If the core is a memory core, we add bd usage only if the eq. tensor on compute
+                        # is not being reused (zStop[t, stop] == 0 at that reuse level)
+                        # This means we create a new 'active' helper variable for the eq. tensor
+                        # TODO: Shouldn't just be exactly that compute tensor reuse level
+                        if t in tr.outputs:
+                            assert len(tr.inputs) == 1
+                            compute_tensor = tr.inputs[0]
+                        elif t in tr.inputs:
+                            # TODO: Check that for multiple outputs the reuse levels are equivalent,
+                            # otherswise we may need to create separate active variables for each output tensor.
+                            compute_tensor = tr.outputs[0]
+                        else:
+                            raise NotImplementedError("Expected tensor to be either input or output of the transfer.")
+                        for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
+                            src_tensor_reuse = self.z_stop[(compute_tensor, stop)]
+                            gate_var = self.model.addVar(vtype=GRB.BINARY, name=f"active_{compute_tensor.name}_{_resource_key(c)}_L{stop}")
+                            self.model.addConstr(gate_var == 1 - src_tensor_reuse, name=f"active_gate_{compute_tensor.name}_{_resource_key(c)}_L{stop}")
+                            uz = self._add_binary_product(
+                                a=u,
+                                b=self.z_stop[(t, stop)],
+                                base_name=f"bddepth_{t.name}_{_resource_key(c)}_L{stop}",
+                            )
+                            uzgate = self._add_binary_product(
+                                a=uz,
+                                b=gate_var,
+                                base_name=f"bddepth_active_{t.name}_{_resource_key(c)}_L{stop}",
+                            )
+                            bds_needed = self.bds_needed_levels[(t, stop)]
+                            self.bd_depth[c] += bds_needed * uzgate
         self.context.add_buffer_descriptor_constraints(self.model, self.bd_depth)
 
     def _ensure_memory_and_compute_reuse_compatibility(self):
