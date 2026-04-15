@@ -207,13 +207,15 @@ class SteadyStateScheduler:
         }
         if not spatial_keys:
             return
+        seen_spatial_keys = set()
         for iv in self.ssis[temporal_side].variables:
             if iv.applicable and iv.type in (
                 IterationVariableType.TEMPORAL,
                 IterationVariableType.SPATIOTEMPORAL,
             ):
-                if (iv.dimension, iv.size) in spatial_keys:
+                if (iv.dimension, iv.size) in spatial_keys and (iv.dimension, iv.size) not in seen_spatial_keys:
                     iv.reuse = Reuse.REUSE
+                    seen_spatial_keys.add((iv.dimension, iv.size))
 
     def build_transfer_graph(self) -> Workload:
         new_nodes: dict[str, Node] = {node.name: node for node in self.workload.nodes}
