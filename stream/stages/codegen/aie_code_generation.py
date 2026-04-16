@@ -160,6 +160,17 @@ class AIECodeGenerationStage(Stage):
                         break
                     if var.type == StrensorVarType.KERNEL:
                         break
+            elif isinstance(inputs[0], OpResult) and isinstance(inputs[0].op, TransferOp):
+                # remove unnecessary reuse
+                relevant_dims = {var.dim for var in ss.get_kernel_variables()}
+
+                # just make sure we are output stationary
+                for i, var in enumerate(ss.vars[-input_type.reuse_index.data :]):
+                    reuse_index = input_type.reuse_index.data - i
+                    if var.type == StrensorVarType.TEMPORAL and var.dim not in relevant_dims:
+                        break
+                    if var.type == StrensorVarType.KERNEL:
+                        break
             else:
                 # keep reuse index of input if available
                 reuse_index = input_type.reuse_index.data
