@@ -141,6 +141,30 @@ class AIECodeGenerationStage(Stage):
             assert target.col_id is not None
             cores.append(StringAttr(f"tile_{target.col_id}_{target.row_id}"))
 
+        # determine reuse index
+        # FIXME: this completely ignores constraint optimization because the reuse index there does not make sense
+
+        # keep reuse index of input if available
+        if input_type.reuse_index.data > 0:
+            reuse_index = input_type.reuse_index.data
+        # else we are input transfer for memtile, cover spatial of destination
+        elif isinstance((next_t := next(workload.successors(node))), TransferNode):
+            next_ssis = ssis_dict[next_t]
+            total_spatial = (
+                next_ssis.variables.index(next_ssis.get_spatial_variables()[-1])
+                - next_ssis.variables.index(next_ssis.get_spatial_variables()[0])
+                + 1
+            )
+            count_spatial = 0
+            new_reuse_index = 0
+            for i, var in enumerate(reversed(ss.vars)):
+                if var.type in (StrensorVarType.SPATIAL, StrensorVarType.TEMPORAL):
+                    count_spatial += 1
+                if count_spatial == total_spatial:
+                    new_reuse_index = i + 1
+                    break
+            reuse_index = new_reuse_index
+
         if len(cores) == 1:
             # FIXME: hardcoded fix:
             if any(x.type == StrensorVarType.SPATIAL for x in ss.vars):
@@ -218,6 +242,19 @@ class AIECodeGenerationStage(Stage):
         reuse_index: int,
     ) -> ComputationNodeOp:
         ops: list[ComputationNodeOp] = []
+
+        # FIXME: recomputes reuse index becuase constraint optimization seems broken
+        relevant_dims = {var.dim for var in ss.get_kernel_variables()}
+
+        # just make sure we are output stationary
+        for i, var in enumerate(ss.vars):
+            reuse_index = len(ss.vars) - i
+            if var.type == StrensorVarType.TEMPORAL and var.dim not in relevant_dims:
+                break
+            if var.type == StrensorVarType.KERNEL:
+                break
+
+        # FIXME: end
 
         # # add spatio-temporal dims to get only inner shape:
         cores = mapping.resource_allocation[0]
