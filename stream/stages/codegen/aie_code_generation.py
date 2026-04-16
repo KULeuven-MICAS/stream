@@ -19,7 +19,7 @@ from xdsl.dialects.builtin import (
     ShapedType,
     TensorType,
 )
-from xdsl.ir import Block, Operation, Region, SSAValue
+from xdsl.ir import Block, OpResult, Operation, Region, SSAValue
 from xdsl.ir.affine import AffineDimExpr
 from xdsl.parser import AffineMap, StringAttr
 from xdsl_aie.dialects.aie import AIEDeviceEnum
@@ -144,9 +144,25 @@ class AIECodeGenerationStage(Stage):
         # determine reuse index
         # FIXME: this completely ignores constraint optimization because the reuse index there does not make sense
 
-        # keep reuse index of input if available
         if input_type.reuse_index.data > 0:
-            reuse_index = input_type.reuse_index.data
+            # make destination stationary because we're not retransmitting
+            if (
+                isinstance(inputs[0], OpResult)
+                and isinstance(inputs[0].op, ComputationNodeOp)
+                and isinstance(next(workload.successors(node)), ComputationNode)
+            ):
+                relevant_dims = {var.dim for var in ss.get_kernel_variables()}
+
+                # just make sure we are output stationary
+                for i, var in enumerate(ss.vars):
+                    reuse_index = len(ss.vars) - i
+                    if var.type == StrensorVarType.TEMPORAL and var.dim not in relevant_dims:
+                        break
+                    if var.type == StrensorVarType.KERNEL:
+                        break
+            else:
+                # keep reuse index of input if available
+                reuse_index = input_type.reuse_index.data
         # else we are input transfer for memtile, cover spatial of destination
         elif isinstance((next_t := next(workload.successors(node))), TransferNode):
             next_ssis = ssis_dict[next_t]
@@ -164,6 +180,8 @@ class AIECodeGenerationStage(Stage):
                     new_reuse_index = i + 1
                     break
             reuse_index = new_reuse_index
+
+        # FIXME: end
 
         if len(cores) == 1:
             # FIXME: hardcoded fix:
