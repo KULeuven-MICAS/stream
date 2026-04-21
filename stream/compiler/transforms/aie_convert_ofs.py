@@ -880,7 +880,11 @@ class TransferToRuntimeSequence(RewritePattern):
                     dim_strides[cvar.dim] *= cvar.size
 
         stride_dict = StrideSet(tuple(strides)).split()
-        stride_dict = {x: y.canonicalize().legalize() for x, y in stride_dict.items()}
+        # squash weight transformations:
+        if op.attributes['of'].data in ('of_1_mem', 'of_2_mem', 'of_3_mem'):
+            stride_dict = {x: y.force_squash().legalize() for x, y in stride_dict.items()}
+        else:
+            stride_dict = {x: y.canonicalize().legalize() for x, y in stride_dict.items()}
 
         for i, (spatial_offset, stride_set) in enumerate(stride_dict.items()):
             ofs = op.attributes.get("of")

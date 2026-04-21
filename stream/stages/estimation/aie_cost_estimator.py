@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from math import ceil, floor, prod
 
-from xdsl.dialects.builtin import BFloat16Type, FixedBitwidthType
+from xdsl.dialects.builtin import BFloat16Type, FixedBitwidthType, Float32Type
 
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
@@ -63,6 +63,13 @@ class AIECostEstimator:
                 return 32
             elif core.core_type == "aie.compute":
                 return 16
+            else:
+                raise self.raise_not_implemented_for_datatypes(input_datatype, output_datatype, core)
+        elif isinstance(input_datatype, Float32Type) and isinstance(output_datatype, Float32Type):
+            if core.core_type == "aie2.compute":
+                return 16
+            elif core.core_type == "aie.compute":
+                return 8
             else:
                 raise self.raise_not_implemented_for_datatypes(input_datatype, output_datatype, core)
         else:

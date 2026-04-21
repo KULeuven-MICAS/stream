@@ -56,8 +56,10 @@ import os
 from math import ceil
 from typing import TYPE_CHECKING
 
+from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
+from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAlloc
 from stream.workload.node import ComputationNode as _ComputationNode
 
 if TYPE_CHECKING:
@@ -91,10 +93,10 @@ def _link_label(link: CommunicationLink) -> str:
     return f"Link {sender_id}→{receiver_id} (bw={bw})"
 
 
-def _path_label(path: tuple) -> str:
+def _path_label(path: MulticastPathPlan) -> str:
     """Short but complete label for a path of CommunicationLinks used as a track name."""
-    hops = "→".join(str(getattr(lnk.receiver, "id", "?")) for lnk in path)
-    src = getattr(path[0].sender, "id", "?") if path else "?"
+    hops = "→".join(str(getattr(lnk.receiver, "id", "?")) for lnk in path.links_used)
+    src = getattr(path.sources[0], "id", "?") if path.links_used else "?"
     return f"Path {src}→{hops}"
 
 
@@ -133,6 +135,7 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
     overlap: int,
     latency_per_iteration: float,
     output_path: str,
+    transfer_allocations: TransferAlloc,
     *,
     filename: str = "steady_state_trace.json",
 ) -> str:
@@ -196,14 +199,11 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
     # Chosen transfer paths — collect (path, label) pairs so the row name
     # lists every link in the path.
     path_of: dict = {}  # transfer node → chosen path tuple
-    for node in tta.transfer_nodes:
-        for (tr, path), var in tta.y_path.items():
-            if tr is node and round(float(var.X)) == 1:
-                path_of[node] = path
-                for link in path:
-                    if link not in all_resources:
-                        all_resources.append(link)
-                break
+    for tr, path in transfer_allocations.items():
+            path_of[tr] = path
+            for link in path.links_used:
+                if link not in all_resources:
+                    all_resources.append(link)
 
     all_resources.sort(key=_resource_sort_key)
     tid_of: dict[object, int] = {res: tid for tid, res in enumerate(all_resources)}
@@ -257,11 +257,12 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
             node_dur = slot_lat[slot]
 
         alloc_cores = list(tta.mapping.get(node).resource_allocation)
-
+        assert len(alloc_cores) == 1, "Should have a single chosen resource allocation"
+        compute_allocation = alloc_cores[0]
         for rel_iter in shown_iterations:
             label = _ITER_LABEL[rel_iter]
             abs_start = (rel_iter + 1) * ts_offset + slot_starts[slot]
-            for core in alloc_cores:
+            for core in compute_allocation:
                 if core not in tid_of:
                     continue
                 trace_events.append(
@@ -303,7 +304,7 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
         if chosen_path is None:
             continue
 
-        one_transfer_lat = float(tta._transfer_latency(node, chosen_path))
+        one_transfer_lat = float(tta._transfer_latency_cache[(node, chosen_path)].X)
         ssis = tta.ssis[node]
         reuse_summary = ssis.reuse_summary()  # set by update_transfer_reuse_levels after solve
 
@@ -321,7 +322,7 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
         for rel_iter in shown_iterations:
             label = _ITER_LABEL[rel_iter]
             abs_start = (rel_iter + 1) * ts_offset + slot_starts[slot]
-            for link in chosen_path:
+            for link in chosen_path.links_used:
                 if link not in tid_of:
                     continue
                 trace_events.append(
