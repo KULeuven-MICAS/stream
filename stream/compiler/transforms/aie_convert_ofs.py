@@ -2,7 +2,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from functools import reduce
 from itertools import product
-from math import isqrt, prod
+from math import dist, isqrt, prod
 from typing import Self
 
 from xdsl.context import Context
@@ -419,6 +419,10 @@ class ChannelToObjectFifoPass(RewritePattern):
             and x[1].dim in relevant_dims
         ]
 
+        spatial_dims = [
+            x[1] for x in transforms if x[0].type == StrensorVarType.SPATIAL and x[1].type == StrensorVarType.SPATIAL
+        ]
+
         if len(broadcast_dims) > 0:
             if len(distribute_dims) > 0:
                 name_base += "distribroad_"
@@ -429,54 +433,62 @@ class ChannelToObjectFifoPass(RewritePattern):
         else:
             name_base += "unicast_"
 
-        assert len(producers) == 1
-        producer = producers[0]
-        producer_tile = self.get_tile(producer)
-
         ofs: list[ObjectFifoOp] = []
 
-        # max one distribute dimension:
-        if len(distribute_dims) > 1:
-            breakpoint()
-        assert len(distribute_dims) <= 1
-        for i, distribute in enumerate(iterate_spat_vars(distribute_dims)):
-            # get all broadcast targets:
-            targets: list[PullOp] = []
-            # max one broadcast dimension:
-            assert len(broadcast_dims) <= 1
-            for broadcast in iterate_spat_vars(broadcast_dims):
-                for c in consumers:
-                    assert c.spatial_index is not None
-                    # match on spatial index:
-                    if set(distribute) | set(broadcast) == set(c.spatial_index.data.vars):
-                        targets.append(c)
-
-            # gather all broadcast tiles:
-            consumer_tiles = tuple(self.get_tile(x) for x in targets)
-
-            assert isinstance(target_type := targets[0].output.type, StrensorType)
-
-            # number of elements is the kernel shape
-            local_shape = target_type.get_local_shape()
-            assert len(local_shape) <= 1
-            num_elements = max((2, prod(local_shape)))
-
-            object_fifo = ObjectFifoOp.from_referenced_type(
-                producer_tile,
-                consumer_tiles,
-                name_base + str(i),
-                (2,) + (num_elements,) * len(consumer_tiles),
-                target_type.get_element_type(),
-                target_type.get_kernel_shape(),
+        for s, spatial in enumerate(iterate_spat_vars(spatial_dims)):
+            # find correct source:
+            source = next(
+                p for p in producers if p.spatial_index is not None and set(spatial) <= set(p.spatial_index.data.vars)
             )
-            ofs.append(object_fifo)
 
-            # annotate targets:
-            for target in targets:
-                target.attributes["of"] = object_fifo.sym_name
+            spat_ofs: list[ObjectFifoOp] = []
 
-        # annotate source
-        producer.attributes["of"] = ArrayAttr(x.sym_name for x in ofs)
+            producer_tile = self.get_tile(source)
+
+            # max one distribute dimension:
+            if len(distribute_dims) > 1:
+                raise NotImplementedError()
+
+            assert len(distribute_dims) <= 1
+            for i, distribute in enumerate(iterate_spat_vars(distribute_dims)):
+                # get all broadcast targets:
+                targets: list[PullOp] = []
+                # max one broadcast dimension:
+                assert len(broadcast_dims) <= 1
+                for broadcast in iterate_spat_vars(broadcast_dims):
+                    for c in consumers:
+                        assert c.spatial_index is not None
+                        # match on spatial index:
+                        if set(spatial) | set(distribute) | set(broadcast) == set(c.spatial_index.data.vars):
+                            targets.append(c)
+
+                # gather all broadcast tiles:
+                consumer_tiles = tuple(self.get_tile(x) for x in targets)
+
+                assert isinstance(target_type := targets[0].output.type, StrensorType)
+
+                # number of elements is the kernel shape
+                local_shape = target_type.get_local_shape()
+                assert len(local_shape) <= 1
+                num_elements = max((2, prod(local_shape)))
+
+                object_fifo = ObjectFifoOp.from_referenced_type(
+                    producer_tile,
+                    consumer_tiles,
+                    name_base + f"{s}_{i}",
+                    (2,) + (num_elements,) * len(consumer_tiles),
+                    target_type.get_element_type(),
+                    target_type.get_kernel_shape(),
+                )
+                spat_ofs.append(object_fifo)
+
+                # annotate targets:
+                for target in targets:
+                    target.attributes["of"] = object_fifo.sym_name
+
+            # annotate source
+            source.attributes["of"] = ArrayAttr(x.sym_name for x in spat_ofs)
+            ofs.extend(spat_ofs)
         return ofs
 
     def get_tile(self, op: PushOp | PullOp, memtile: str = "") -> SSAValue:
@@ -493,24 +505,64 @@ class ChannelToObjectFifoPass(RewritePattern):
         self,
         producer: PushOp,
         consumers: Sequence[PullOp],
+        transforms: Sequence[tuple[StrensorVar, StrensorVar]],
         name_base: str,
     ) -> Sequence[ObjectFifoOp]:
-        assert len(consumers) == 1
-        assert isinstance(strensor := consumers[0].output.type, StrensorType)
-        consumer_tiles = tuple(map(self.get_tile, consumers))
-        producer_tile = self.get_tile(producer, strensor.core_allocation.data[0].data)
-        object_fifo = ObjectFifoOp.from_referenced_type(
-            producerTile=producer_tile,
-            consumerTiles=consumer_tiles,
-            name=name_base + "mem",
-            elemNumber=(2, 2),
-            referenced_type=strensor.get_element_type(),
-            shape=strensor.get_local_shape() + strensor.get_kernel_shape(),
-        )
-        producer.attributes["of"] = object_fifo.sym_name
-        for consumer in consumers:
-            consumer.attributes["of"] = object_fifo.sym_name
-        return (object_fifo,)
+
+        distribute_dims = [x[1] for x in transforms if x[1].type == StrensorVarType.SPATIAL]
+
+        # Distribute Patterns:
+        if distribute_dims:
+            assert len(distribute_dims) == 1
+            assert len(distribute_dims) == len(transforms)
+
+            distributes: list[ObjectFifoOp] = []
+
+            # find correct consumer:
+            for i, distribute in enumerate(iterate_spat_vars(distribute_dims)):
+                target = next(
+                    t
+                    for t in consumers
+                    if t.spatial_index is not None and set(distribute) <= set(t.spatial_index.data.vars)
+                )
+
+                assert isinstance(target_type := target.output.type, StrensorType)
+
+                object_fifo = ObjectFifoOp.from_referenced_type(
+                    self.get_tile(producer, target_type.core_allocation.data[0].data),
+                    [self.get_tile(target)],
+                    name_base + f"mem_{i}",
+                    (2, 2),
+                    target_type.get_element_type(),
+                    target_type.get_local_shape() + target_type.get_kernel_shape(),
+                )
+                distributes.append(object_fifo)
+
+                # annotate source:
+                target.attributes["of"] = object_fifo.sym_name
+
+            # annotate target with all ofs:
+            producer.attributes["of"] = ArrayAttr(x.sym_name for x in distributes)
+
+            return distributes
+
+        else:
+            assert len(consumers) == 1
+            assert isinstance(strensor := consumers[0].output.type, StrensorType)
+            consumer_tiles = tuple(map(self.get_tile, consumers))
+            producer_tile = self.get_tile(producer, strensor.core_allocation.data[0].data)
+            object_fifo = ObjectFifoOp.from_referenced_type(
+                producerTile=producer_tile,
+                consumerTiles=consumer_tiles,
+                name=name_base + "mem",
+                elemNumber=(2, 2),
+                referenced_type=strensor.get_element_type(),
+                shape=strensor.get_local_shape() + strensor.get_kernel_shape(),
+            )
+            producer.attributes["of"] = object_fifo.sym_name
+            for consumer in consumers:
+                consumer.attributes["of"] = object_fifo.sym_name
+            return (object_fifo,)
 
     def mem_to_shim(
         self,
@@ -619,7 +671,7 @@ class ChannelToObjectFifoPass(RewritePattern):
         name_base = f"of_{self.of_count}_"
         if self.is_shim(in_type.core_allocation.data[0].data):
             assert len(producers) == 1
-            ops = self.shim_to_mem(producers[0], consumers, name_base)
+            ops = self.shim_to_mem(producers[0], consumers, transformations, name_base)
         elif self.is_mem(in_type.core_allocation.data[0].data):
             if self.is_compute(out_type.core_allocation.data[0].data):
                 ops = self.mem_to_compute(producers, consumers, transformations, name_base)
