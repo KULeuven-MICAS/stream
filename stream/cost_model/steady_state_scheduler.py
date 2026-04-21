@@ -201,12 +201,13 @@ class SteadyStateScheduler:
         so either may stand in for a spatial distribution on the other endpoint."""
         if spatial_side not in self.ssis or temporal_side not in self.ssis:
             return
-        spatial_keys = {
+        spatial_keys_not_in_temporal = {
             (iv.dimension, iv.size)
             for iv in self.ssis[spatial_side].variables
             if iv.type == IterationVariableType.SPATIAL and iv.applicable
+            and iv not in self.ssis[temporal_side].variables  # only look at temporal side vars that are not spatial
         }
-        if not spatial_keys:
+        if not spatial_keys_not_in_temporal:
             return
         seen_spatial_keys = set()
         for iv in self.ssis[temporal_side].variables:
@@ -214,7 +215,7 @@ class SteadyStateScheduler:
                 IterationVariableType.TEMPORAL,
                 IterationVariableType.SPATIOTEMPORAL,
             ):
-                if (iv.dimension, iv.size) in spatial_keys and (iv.dimension, iv.size) not in seen_spatial_keys:
+                if (iv.dimension, iv.size) in spatial_keys_not_in_temporal and (iv.dimension, iv.size) not in seen_spatial_keys:
                     iv.reuse = Reuse.REUSE
                     seen_spatial_keys.add((iv.dimension, iv.size))
 
