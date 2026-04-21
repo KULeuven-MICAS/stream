@@ -2,7 +2,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from functools import reduce
 from itertools import product
-from math import dist, isqrt, prod
+from math import isqrt, prod
 from typing import Self
 
 from xdsl.context import Context
@@ -136,7 +136,7 @@ class StrideSet:
         # these are innermost to outermost:
         bound_limits = (1024, 1024, 16384, 64)
         for i, (stride, bound_limit) in enumerate(zip(self.strides, bound_limits, strict=False)):
-            if stride.size > bound_limit:
+            if stride.size >= bound_limit:
                 if i < len(bound_limits) - 1:
                     # find largest number under bound that is a divisor of the size:
                     divider = None
@@ -508,7 +508,6 @@ class ChannelToObjectFifoPass(RewritePattern):
         transforms: Sequence[tuple[StrensorVar, StrensorVar]],
         name_base: str,
     ) -> Sequence[ObjectFifoOp]:
-
         distribute_dims = [x[1] for x in transforms if x[1].type == StrensorVarType.SPATIAL]
 
         # Distribute Patterns:
@@ -848,12 +847,11 @@ class TransferToRuntimeSequence(RewritePattern):
                     dim_strides[cvar.dim] *= cvar.size
                 iteration_mult *= cvar.size
 
-        # print(op)
-        # print(compute_strensor)
-        # print(mem_strensor)
-        # pp(strides)
-        # if isinstance(op, PullOp):
-        #     breakpoint()
+        # broadcast vars timing:
+        for mvar, cvar in iter_strensors():
+            stride = dim_strides[cvar.dim] if cvar.dim in dim_strides else 0
+            if mvar.type == StrensorVarType.ABSENT and cvar.type == StrensorVarType.SPATIAL:
+                iteration_mult *= cvar.size
 
         # then, iterate the join / distribute vars:
         for mvar, cvar in iter_strensors():
@@ -879,9 +877,15 @@ class TransferToRuntimeSequence(RewritePattern):
                 if cvar.dim in dim_strides:
                     dim_strides[cvar.dim] *= cvar.size
 
+        # print(op)
+        # print(compute_strensor)
+        # print(mem_strensor)
+        # pp(strides)
+        # breakpoint()
+
         stride_dict = StrideSet(tuple(strides)).split()
         # squash weight transformations:
-        if op.attributes['of'].data in ('of_1_mem', 'of_2_mem', 'of_3_mem'):
+        if op.attributes["of"].data in ("of_1_mem", "of_2_mem", "of_3_mem") and False:
             stride_dict = {x: y.force_squash().legalize() for x, y in stride_dict.items()}
         else:
             stride_dict = {x: y.canonicalize().legalize() for x, y in stride_dict.items()}

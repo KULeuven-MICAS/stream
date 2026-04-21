@@ -1,13 +1,11 @@
 import argparse
-from typing import IO, Sequence
-from xdsl.dialects import builtin
-from xdsl.dialects.builtin import ModuleOp
+from collections.abc import Sequence
+
+from xdsl.dialects.builtin import bf16
 from xdsl.xdsl_opt_main import xDSLOptMain
 from xdsl_aie.dialects.aie import AIE
 from xdsl_aie.dialects.aiex import AIEX
-from xdsl.dialects.builtin import Builtin, bf16
-from xdsl.dialects.scf import Scf
-from xdsl.dialects.arith import Arith
+
 from stream.compiler.context.aie_context import AIEContext
 from stream.compiler.dialects.stream import Stream
 from stream.compiler.kernels.eltwise_mul import EltwiseMulKernel
@@ -60,6 +58,7 @@ class StreamMain(xDSLOptMain):
         for kernel in (
             GemmKernel(1, bf16, 32, 32, 64, "layout"),
             GemmKernel(1, bf16, 32, 64, 32, "layout"),
+            GemmKernel(1, bf16, 32, 32, 32, "layout"),
             SiluKernel(1, bf16),
             EltwiseMulKernel(1, bf16),
         ):
