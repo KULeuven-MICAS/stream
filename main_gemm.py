@@ -39,7 +39,7 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
     # json_path = f"outputs/{experiment_id}/scme.json"
     #####################################################################
 
-    module = optimize_allocation_co(
+    ctx = optimize_allocation_co(
         hardware=accelerator,
         workload=workload_path,
         mapping=mapping_path,
@@ -51,6 +51,8 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
         nb_cols_to_use=nb_cols,
         npu=npu,
     )
+
+    module = ctx.get("module")
 
     # Save the mlir module to output.mlir
     mlir_path = f"outputs/{experiment_id}/output.mlir"
@@ -76,7 +78,7 @@ if __name__ == "__main__":
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
     args = parser.parse_args()
 
-    run_main_aie_codegen_gemm(
+    module = run_main_aie_codegen_gemm(
         args.M,
         args.K,
         args.N,
@@ -90,3 +92,7 @@ if __name__ == "__main__":
         args.cols,
         args.npu,
     )
+    save_path = f"outputs/swiglu_module_{args.M}_{args.N}_{args.K}.mlir"
+    with open(save_path, "w") as f:
+        f.write(str(module))
+    print(f"Saved generated module to {save_path}")
