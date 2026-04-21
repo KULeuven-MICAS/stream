@@ -150,17 +150,18 @@ class SteadyStateScheduler:
         )
         self.tensor_depths = tensor_depths
         # Export Perfetto-compatible JSON trace of the solved schedule
-        try:
-            trace_path = export_steady_state_trace(
-                tta=tta,
-                iterations=self.iterations,
-                overlap=overlap,
-                latency_per_iteration=latency_per_iteration,
-                output_path=self.output_path,
-            )
-            logger.info("Steady-state schedule trace: %s", trace_path)
-        except Exception as exc:  # never let a visualisation failure abort the run
-            logger.warning("Failed to export steady-state trace: %s", exc)
+        # try:
+        trace_path = export_steady_state_trace(
+            tta=tta,
+            iterations=self.iterations,
+            overlap=overlap,
+            latency_per_iteration=latency_per_iteration,
+            output_path=self.output_path,
+            transfer_allocations=transfer_allocations,
+        )
+        logger.info("Steady-state schedule trace: %s", trace_path)
+        # except Exception as exc:  # never let a visualisation failure abort the run
+        #     logger.warning("Failed to export steady-state trace: %s", exc)
         # Check that all nodes in the steady state workload have a chosen resource allocation
         # self.check_steady_state_workload_allocations(self.ssw)
         self.update_tensor_steady_state_iteration_spaces(tensor_reuse_levels)

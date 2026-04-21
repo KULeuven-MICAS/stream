@@ -4,7 +4,7 @@ import os
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping2
+from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 
 _logging_level = _logging.INFO
@@ -32,8 +32,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     workload_path = make_swiglu_workload(
         seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down=last_gemm_down
     )
-    # mapping_path = make_swiglu_mapping(seq_len, embedding_dim, hidden_dim, last_gemm_down)
-    mapping_path = make_swiglu_mapping2(
+    mapping_path = make_swiglu_mapping(
         seq_len, embedding_dim, hidden_dim, last_gemm_down, seq_len_tile_size, embedding_tile_size, hidden_tile_size
     )
     ##############################################################################################
