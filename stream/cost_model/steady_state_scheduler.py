@@ -569,6 +569,16 @@ class SteadyStateScheduler:
             possible_memory_cores = self._retrieve_core_allocation(dst)
         elif node.transfer_type in (TransferType.COMPUTE_TO_MEM,):
             possible_memory_cores = self._get_possible_memory_core_allocations(src)
+        elif node.transfer_type in (TransferType.MEM_TO_COMPUTE,):
+            # The destination compute node's allocation determines the possible mem cores
+            # Assert all dsts have the same number of core allocations
+            first_nb_allocs = len(self._retrieve_core_allocation(dsts[0])[0])
+            assert all(len(self._retrieve_core_allocation(dst)[0]) == first_nb_allocs for dst in dsts), (
+                "All destination nodes must have the same number of core allocations for MEM_TO_COMPUTE transfer."
+            )
+            assert isinstance(dsts[0], HasOutputs)
+            possible_memory_cores = self._get_possible_memory_core_allocations(dsts[0])
+            pass
         else:
             possible_memory_cores_set: set[Core] = set()
             for dst in dsts:
