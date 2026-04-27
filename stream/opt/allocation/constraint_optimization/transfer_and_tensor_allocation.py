@@ -6,6 +6,7 @@ from typing import Any, TypeAlias
 
 import gurobipy as gp
 import matplotlib.pyplot as plt
+import yaml
 from gurobipy import GRB, quicksum
 
 from stream.cost_model.communication_manager import MulticastPathPlan
@@ -110,6 +111,7 @@ class TransferAndTensorAllocator:
         # ------------------- optimization model ---------------------- #
         self.model = gp.Model("transfer_tensor_alloc")
         self.model.setParam("OutputFlag", gurobi_verbosity)
+        self.model.setParam("LogToConsole", 0)
 
         # primary decision vars
         self.x_tensor_choice: dict[tuple[Tensor, TensorPlacementChoice], gp.Var] = {}
@@ -806,8 +808,13 @@ class TransferAndTensorAllocator:
                             raise NotImplementedError("Expected tensor to be either input or output of the transfer.")
                         for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                             src_tensor_reuse = self.z_stop[(compute_tensor, stop)]
-                            gate_var = self.model.addVar(vtype=GRB.BINARY, name=f"active_{compute_tensor.name}_{_resource_key(c)}_L{stop}")
-                            self.model.addConstr(gate_var == 1 - src_tensor_reuse, name=f"active_gate_{compute_tensor.name}_{_resource_key(c)}_L{stop}")
+                            gate_var = self.model.addVar(
+                                vtype=GRB.BINARY, name=f"active_{compute_tensor.name}_{_resource_key(c)}_L{stop}"
+                            )
+                            self.model.addConstr(
+                                gate_var == 1 - src_tensor_reuse,
+                                name=f"active_gate_{compute_tensor.name}_{_resource_key(c)}_L{stop}",
+                            )
                             uz = self._add_binary_product(
                                 a=u,
                                 b=self.z_stop[(t, stop)],
@@ -914,7 +921,7 @@ class TransferAndTensorAllocator:
 
     def _force_final_output_reuse_levels(self):
         """
-        Forces the reuse level of the outputs of the final compute node(s) by looking at COMPUTE_TO_MEM transfer inputs..
+        Forces the reuse level of the outputs of the final compute node(s) by looking at COMPUTE_TO_MEM transfer inputs.
         It forces buffering up until the top irrelevant loop.
         """
         for tr in self.transfer_nodes:
@@ -1143,6 +1150,7 @@ class TransferAndTensorAllocator:
         self.plot_optimization_progress(
             show=False, save_path=os.path.join(self.output_path, "optimization_progress.png")
         )
+        self.save_optimization_metrics(save_path=os.path.join(self.output_path, "optimization_metrics.yaml"))
 
         assert self.total_latency is not None, "Total latency variable was not created."
         total_latency = int(self.total_latency.X)
@@ -1491,6 +1499,98 @@ class TransferAndTensorAllocator:
         }
 
         self.optimization_trace.append(point)
+
+    def save_optimization_metrics(self, save_path: str) -> None:
+        """
+        Dump a concise YAML summary of the Gurobi run alongside the progress plot.
+
+        Headline fields (in order of relevance for a paper):
+          - search:    nodes explored, simplex/barrier iterations  -> "how much was searched"
+          - solution:  objective, best bound, MIP gap              -> "what was found / how tight"
+          - effort:    runtime (s), work units                     -> "how expensive it was"
+          - model:    variable / constraint / nonzero counts      -> "problem size"
+          - trace:     per-event progress records (reuses self.optimization_trace)
+        """
+
+        def _attr(name: str) -> Any | None:
+            """Return a Gurobi model attribute or None if unavailable post-solve."""
+            try:
+                value = getattr(self.model, name)
+            except (AttributeError, gp.GurobiError):
+                return None
+            if isinstance(value, float) and not math.isfinite(value):
+                return None
+            return value
+
+        status = _attr("Status")
+        status_name = {
+            GRB.LOADED: "LOADED",
+            GRB.OPTIMAL: "OPTIMAL",
+            GRB.INFEASIBLE: "INFEASIBLE",
+            GRB.INF_OR_UNBD: "INF_OR_UNBD",
+            GRB.UNBOUNDED: "UNBOUNDED",
+            GRB.CUTOFF: "CUTOFF",
+            GRB.ITERATION_LIMIT: "ITERATION_LIMIT",
+            GRB.NODE_LIMIT: "NODE_LIMIT",
+            GRB.TIME_LIMIT: "TIME_LIMIT",
+            GRB.SOLUTION_LIMIT: "SOLUTION_LIMIT",
+            GRB.INTERRUPTED: "INTERRUPTED",
+            GRB.NUMERIC: "NUMERIC",
+            GRB.SUBOPTIMAL: "SUBOPTIMAL",
+            GRB.WORK_LIMIT: "WORK_LIMIT",
+        }.get(status, str(status))
+
+        # Per-event trace, normalized to a compact form (drop None values)
+        trace_records: list[dict[str, Any]] = []
+        for rec in self.optimization_trace:
+            entry: dict[str, Any] = {"time_s": rec.get("time"), "event": rec.get("event")}
+            for src, dst in (
+                ("best_obj", "incumbent"),
+                ("best_bound", "best_bound"),
+                ("gap", "gap"),
+                ("nodecnt", "nodes"),
+                ("cutcnt", "cuts"),
+                ("work", "work"),
+            ):
+                val = rec.get(src)
+                if isinstance(val, int | float) and math.isfinite(val):
+                    entry[dst] = val
+            trace_records.append(entry)
+
+        metrics: dict[str, Any] = {
+            "status": status_name,
+            "search": {
+                "nodes_explored": _attr("NodeCount"),
+                "simplex_iterations": _attr("IterCount"),
+                "barrier_iterations": _attr("BarIterCount"),
+            },
+            "solution": {
+                "objective": _attr("ObjVal"),
+                "best_bound": _attr("ObjBound"),
+                "mip_gap": _attr("MIPGap"),
+            },
+            "effort": {
+                "runtime_s": _attr("Runtime"),
+                "work_units": _attr("Work"),
+            },
+            "model": {
+                "variables": {
+                    "total": _attr("NumVars"),
+                    "integer": _attr("NumIntVars"),
+                    "binary": _attr("NumBinVars"),
+                },
+                "constraints": {
+                    "linear": _attr("NumConstrs"),
+                    "general": _attr("NumGenConstrs"),
+                },
+                "nonzeros": _attr("NumNZs"),
+            },
+            "trace": trace_records,
+        }
+
+        with open(save_path, "w") as fh:
+            yaml.safe_dump(metrics, fh, sort_keys=False, default_flow_style=False)
+        print(f"Optimization metrics saved to {save_path}")
 
     def plot_optimization_progress(  # noqa: PLR0912, PLR0915
         self,
