@@ -71,7 +71,6 @@ def _create_steady_state_iteration_spaces(iteration_variables, workload: "Worklo
     ssis_dict: dict[ComputationNode, SteadyStateIterationSpace] = {}
     for node in workload.get_iteration_space_nodes():
         ssis_dict[node] = SteadyStateIterationSpace(iteration_variables[node])
-        print(node.name, ssis_dict[node])
     return ssis_dict
 
 
@@ -239,6 +238,22 @@ def get_compute_predecessors_successors(tr: TransferNode, workload: "Workload") 
             to_visit.extend(workload.successors(current))
     return compute_nodes
 
+def get_node_with_largest_resource_allocation(nodes: list[ComputationNode], mapping: "Mapping") -> ComputationNode:
+    """Return the node with the largest number of resource allocations in the mapping."""
+    max_tiling = -1
+    node_with_resource_allocation = None
+    for node in nodes:
+        node_mapping = mapping.get(node)
+        assert node_mapping is not None, f"No mapping found for node {node.name}"
+        allocation = node_mapping.resource_allocation
+        assert len(allocation) == 1, "Multiple possible allocations not supported currently."
+        allocation = allocation[0]
+        allocation_size = len(allocation)
+        if allocation_size > max_tiling:
+            max_tiling = allocation_size
+            node_with_resource_allocation = node
+    assert node_with_resource_allocation is not None, "No node with resource allocation found."
+    return node_with_resource_allocation
 
 def sympy_to_xdsl(expr: sp.Expr) -> AffineExpr:
     """
