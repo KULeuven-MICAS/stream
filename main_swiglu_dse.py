@@ -40,7 +40,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         wl_name = re.split(r"/|\.", workload_path)[-2]
     mapping_name = f"{rows}_row_{cols}_col"
     experiment_id = (
-        f"dse-tilesizes-{seq_len_tile_size}_{embedding_tile_size}_{hidden_tile_size}-{hw_name}-{wl_name}-{mapping_name}"
+        f"dse-{seq_len_tile_size}_{embedding_tile_size}_{hidden_tile_size}-{hw_name}-{wl_name}-{mapping_name}"
     )
     ######################################################################
 
@@ -78,13 +78,14 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         enable_codegen=False,
         trace_size=trace_size,
         nb_cols_to_use=cols,
+        nb_rows_to_use=rows,
         npu=npu,
         seq_len_tile_size=seq_len_tile_size,
         embedding_tile_size=embedding_tile_size,
         hidden_tile_size=hidden_tile_size,
         last_gemm_down=last_gemm_down,
         nb_workers=1,
-        max_nb_mappings=100,
+        max_nb_mappings=256,
     )
 
     # #####################CostModelEvaluationLUT LOAD#############################
