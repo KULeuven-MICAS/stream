@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from math import prod
 import os
 import random
 import time
@@ -22,9 +23,13 @@ class MappingOrder(Enum):
     RANDOM = auto()
     """Shuffle variants randomly (reproducible via the fixed RNG seed)."""
 
-    UTILIZATION = auto()
+    UTILIZATION_DESCENDING = auto()
     """Sort variants by total core utilisation (descending): variants that allocate more
     cores across all layers come first."""
+
+    UTILIZATION_ASCENDING = auto()
+    """Sort variants by total core utilisation (ascending): variants that allocate more
+    cores across all layers come last."""
 
 
 @dataclass(frozen=True)
@@ -74,7 +79,22 @@ class MappingGenerator:
         # If True, require all layers to use disjoint cores in each mapping.
         disjoint_cores_per_layer: bool = True,
         layer_core_splits: dict[str, list[int]] | None = None,
-        ordering: MappingOrder = MappingOrder.UTILIZATION,
+        # Cap on the number of inter-core split shapes kept PER (layer, total) bucket,
+        # after the array-shape and balance filters. For example, on a 4x8 array a
+        # Gemm layer with ``layer_core_splits=[4, 8, 16]`` and a cap of 1 will yield
+        # one shape per total -> 3 shapes total: e.g. ``(2,2) / (4,2) / (4,4)``.
+        # Within each total bucket, surviving shapes are sorted by the split on the
+        # FIRST inter-core dim (descending) so the largest unrolling on dim[0] wins.
+        # Layer names not present in the dict get no cap. Pass alongside
+        # ``layer_core_splits`` since both express per-layer policy.
+        layer_max_shapes_per_total: dict[str, int] | None = None,
+        ordering: MappingOrder = MappingOrder.UTILIZATION_ASCENDING,
+        # Physical compute-array shape used to constrain inter-core tiling.
+        # If both are provided, a layer's per-dim splits must fit the rows x cols
+        # rectangle (see _splits_fit_array_shape). If either is None, the
+        # constraint is skipped (legacy behaviour).
+        nb_rows: int | None = None,
+        nb_cols: int | None = None,
     ) -> None:
         self.accelerator = accelerator
         self.workload = workload
@@ -104,6 +124,9 @@ class MappingGenerator:
         self.max_variants = max_variants
         self.disjoint_cores_per_layer = disjoint_cores_per_layer
         self.ordering = ordering
+        self.nb_rows = nb_rows
+        self.nb_cols = nb_cols
+        self.layer_max_shapes_per_total = layer_max_shapes_per_total or {}
 
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -160,8 +183,10 @@ class MappingGenerator:
         match self.ordering:
             case MappingOrder.RANDOM:
                 return self._sort_variants_random(variants)
-            case MappingOrder.UTILIZATION:
+            case MappingOrder.UTILIZATION_DESCENDING:
                 return self._sort_variants_by_utilization(variants)
+            case MappingOrder.UTILIZATION_ASCENDING:
+                return self._sort_variants_by_utilization(variants, reverse=False)
 
     def _sort_variants_random(
         self,
@@ -174,6 +199,7 @@ class MappingGenerator:
     def _sort_variants_by_utilization(
         self,
         variants: list[tuple[tuple[str, list[SplitSpec]], ...]],
+        reverse: bool = True
     ) -> list[tuple[tuple[str, list[SplitSpec]], ...]]:
         """Sort variants by total cores allocated summed across all layers, descending.
 
@@ -183,7 +209,7 @@ class MappingGenerator:
         def _total_cores(variant: tuple[tuple[str, list[SplitSpec]], ...]) -> int:
             return sum(self._num_cores_needed(specs) for (_, specs) in variant)
 
-        return sorted(variants, key=_total_cores, reverse=True)
+        return sorted(variants, key=_total_cores, reverse=reverse)
 
     # -------------------------
     # Core building blocks
@@ -237,7 +263,7 @@ class MappingGenerator:
             {
                 "name": "Gemm_Left",
                 "kernel": self._kernel_gemm(),
-                "inter_core_dims": ["D2", "D0"],
+                "inter_core_dims": ["D0", "D2"],
                 # Dimension sizes for choosing legal split factors (edit if needed)
                 "dim_sizes": {"D0": self.seq_len, "D2": self.hidden_dim},
             }
@@ -248,7 +274,7 @@ class MappingGenerator:
             {
                 "name": "Gemm_Right",
                 "kernel": self._kernel_gemm(),
-                "inter_core_dims": ["D2", "D0"],
+                "inter_core_dims": ["D0", "D2"],
                 "dim_sizes": {"D0": self.seq_len, "D2": self.hidden_dim},
             }
         )
@@ -279,13 +305,38 @@ class MappingGenerator:
                 {
                     "name": "Gemm_Down",
                     "kernel": self._kernel_gemm(),
-                    "inter_core_dims": ["D2", "D0"],
+                    "inter_core_dims": ["D0", "D2"],
                     # If your Gemm_Down semantics differ, update these sizes.
                     "dim_sizes": {"D0": self.seq_len, "D2": self.embedding_dim},
                 }
             )
 
         return layers
+
+    def _splits_fit_array_shape(self, splits: Sequence[int]) -> bool:
+        """
+        Reject inter-core split combinations that cannot be physically laid out on the
+        ``nb_rows x nb_cols`` compute array.
+
+        - 1D split ``(s,)``     -> must fit a single row OR a single column, i.e. ``s <= max(nb_rows, nb_cols)``.
+        - 2D split ``(s0, s1)`` -> the two factors must fit the rectangle in either orientation:
+              ``(s0 <= nb_rows AND s1 <= nb_cols)`` OR ``(s0 <= nb_cols AND s1 <= nb_rows)``.
+              This rejects cases like ``(16, 1)`` on a 4x8 array where one dim alone exceeds both axes.
+        - Higher-dim splits are passed through unchanged (no current layer uses >2 inter-core dims).
+        - If ``nb_rows`` or ``nb_cols`` is unset, the check is skipped (legacy behaviour).
+        """
+        if self.nb_rows is None or self.nb_cols is None:
+            return True
+
+        rows, cols = self.nb_rows, self.nb_cols
+        n = len(splits)
+
+        if n == 1:
+            return int(splits[0]) <= max(rows, cols)
+        if n == 2:
+            s0, s1 = int(splits[0]), int(splits[1])
+            return (s0 <= rows and s1 <= cols) or (s0 <= cols and s1 <= rows)
+        return True
 
     def _enumerate_inter_core_split_options(
         self, layer_templates: Sequence[dict[str, Any]]
@@ -331,13 +382,121 @@ class MappingGenerator:
                     continue
                 if allowed_totals is not None and needed not in allowed_totals:
                     continue
+                if not self._splits_fit_array_shape(splits):
+                    continue
 
                 specs = [SplitSpec(dim=dims[i], split=int(splits[i])) for i in range(len(dims))]
                 options_for_layer.append((lname, specs))
 
+            options_for_layer = self._filter_first_dim_priority(options_for_layer)
+            options_for_layer = self._cap_options_per_layer(options_for_layer)
             per_layer_options.append(options_for_layer)
 
         return per_layer_options
+
+    def _cap_options_per_layer(
+        self, options: list[tuple[str, list[SplitSpec]]]
+    ) -> list[tuple[str, list[SplitSpec]]]:
+        """
+        Within each ``total = prod(splits)`` bucket of this layer, keep at most
+        ``layer_max_shapes_per_total[lname]`` shapes. The cap is applied INSIDE
+        each total, not across totals, so a layer with totals ``[4, 8, 16]`` and
+        a cap of 1 still yields three shapes (one per total).
+
+        Within a bucket, shapes are sorted by the split on the FIRST entry in
+        ``inter_core_dims`` (descending) so the largest unrolling on dim[0]
+        wins; remaining dims are used as secondary sort keys for determinism.
+
+        Layer names not present in ``self.layer_max_shapes_per_total`` are
+        passed through unmodified.
+        """
+        if not options:
+            return options
+
+        lname = options[0][0]
+        cap = self.layer_max_shapes_per_total.get(lname)
+        if cap is None or cap <= 0:
+            return options
+
+        def _sort_key(entry: tuple[str, list[SplitSpec]]) -> tuple[int, ...]:
+            specs = entry[1]
+            # Descending by leading-dim split, then by remaining splits to break ties.
+            return tuple(-int(s.split) for s in specs)
+
+        # Group by total core count, then keep the top-`cap` shapes per group.
+        buckets: dict[int, list[tuple[str, list[SplitSpec]]]] = {}
+        for entry in options:
+            total = 1
+            for s in entry[1]:
+                total *= int(s.split)
+            buckets.setdefault(total, []).append(entry)
+
+        kept: list[tuple[str, list[SplitSpec]]] = []
+        for total in sorted(buckets):
+            kept.extend(sorted(buckets[total], key=_sort_key)[:cap])
+        return kept
+
+    def _filter_first_dim_priority(
+        self, options: list[tuple[str, list[SplitSpec]]]
+    ) -> list[tuple[str, list[SplitSpec]]]:
+        """
+        Per-column growth: for each total bucket, prefer the 2D shape whose first
+        inter-core dim saturates ``nb_rows`` before the second dim starts to grow.
+
+        Concretely, for total ``N`` on a ``nb_rows x nb_cols`` array we want
+        ``first_dim = min(N, nb_rows)`` and ``second_dim = N / first_dim``. So on a
+        4x8 array:
+
+            total=4  -> (4, 1)
+            total=8  -> (4, 2)
+            total=16 -> (4, 4)
+            total=32 -> (4, 8)
+
+        This guarantees the first dim is the one that "grows" as the total core
+        count grows, until it caps at ``nb_rows``; only then does the second dim
+        grow.
+
+        The selection is implemented as a sort key over candidates inside each
+        total bucket:
+          1. ``|first_dim - target|`` (smaller = closer to "fills rows first")
+          2. penalty for ``first_dim > nb_rows`` (rejects axis-swap orientations
+             like ``(8, 2)`` even when they otherwise fit the rectangle)
+          3. ``-first_dim`` to break remaining ties in favour of larger leading dim
+
+        Only the candidates tied for the best score in each bucket are kept.
+
+        1D options pass through unchanged. If ``nb_rows`` is unset, the filter
+        is skipped (legacy behaviour) and all candidates remain.
+        """
+        if not options or self.nb_rows is None:
+            return options
+
+        rows = int(self.nb_rows)
+
+        kept: list[tuple[str, list[SplitSpec]]] = []
+        buckets: dict[int, list[tuple[str, list[SplitSpec]]]] = {}
+
+        for entry in options:
+            _, specs = entry
+            if len(specs) <= 1:
+                kept.append(entry)
+                continue
+            total = 1
+            for s in specs:
+                total *= int(s.split)
+            buckets.setdefault(total, []).append(entry)
+
+        for total, entries in buckets.items():
+            target = min(total, rows)
+
+            def _score(entry: tuple[str, list[SplitSpec]], target: int = target) -> tuple[int, int, int]:
+                s0 = int(entry[1][0].split)
+                return (abs(s0 - target), max(0, s0 - rows), -s0)
+
+            best = min(_score(e) for e in entries)
+            kept.extend(e for e in entries if _score(e) == best)
+
+        return kept
 
     def _assemble_mapping(
         self,

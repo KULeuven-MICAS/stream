@@ -213,6 +213,7 @@ def optimize_mapping(  # noqa: PLR0913
     enable_codegen: bool = False,
     trace_size: int = 1048576,
     nb_cols_to_use: int = 8,
+    nb_rows_to_use: int = 4,
     seq_len_tile_size: int = 32,
     embedding_tile_size: int = 128,
     hidden_tile_size: int = 64,
@@ -266,6 +267,7 @@ def optimize_mapping(  # noqa: PLR0913
             temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
             trace_size=trace_size,
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
+            nb_rows_to_use=nb_rows_to_use,  # used by MappingGenerator for shape-aware tiling
             seq_len_tile_size=seq_len_tile_size,
             embedding_tile_size=embedding_tile_size,
             hidden_tile_size=hidden_tile_size,

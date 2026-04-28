@@ -94,6 +94,8 @@ class MappingGenerationMultiThreadedStage(Stage):
         hidden_tile_size = self.ctx.get("hidden_tile_size", 64)
         last_gemm_down = self.ctx.get("last_gemm_down", False)
         max_nb_mappings = self.ctx.get("max_nb_mappings", 200)
+        nb_rows_to_use = self.ctx.get("nb_rows_to_use", None)
+        nb_cols_to_use = self.ctx.get("nb_cols_to_use", None)
 
         # Thread pool knobs (optional in ctx)
         self.max_workers = int(self.ctx.get("max_workers", os.cpu_count() or 4))
@@ -116,6 +118,15 @@ class MappingGenerationMultiThreadedStage(Stage):
                 "Elt_Mul": [1, 4],
                 "Gemm_Down": [4, 8, 16],  # only used if last_gemm_down=True
             },
+            layer_max_shapes_per_total={
+                "Gemm_Left": 1,
+                "Gemm_Right": 1,
+                "Silu": 1,
+                "Elt_Mul": 1,
+                "Gemm_Down": 1,
+            },
+            nb_rows=nb_rows_to_use,
+            nb_cols=nb_cols_to_use,
         )
 
     def run(self):
