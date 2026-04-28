@@ -27,6 +27,8 @@ class MappingGenerationStage(Stage):
         hidden_tile_size = self.ctx.get("hidden_tile_size", 64)
         last_gemm_down = self.ctx.get("last_gemm_down", False)
         max_nb_mappings = self.ctx.get("max_nb_mappings", 200)
+        nb_rows_to_use = self.ctx.get("nb_rows_to_use", None)
+        nb_cols_to_use = self.ctx.get("nb_cols_to_use", None)
         self.mapping_generator = MappingGenerator(
             accelerator=self.accelerator,
             workload=self.workload,
@@ -39,10 +41,26 @@ class MappingGenerationStage(Stage):
             layer_core_splits={
                 "Gemm_Left": [4, 8, 16],
                 "Gemm_Right": [4, 8, 16],
-                "Silu": [1, 4, 8],
-                "Elt_Mul": [1, 4, 8],
+                "Silu": [1, 4],
+                "Elt_Mul": [1, 4],
                 "Gemm_Down": [4, 8, 16],  # only used if last_gemm_down=True
             },
+            # layer_core_splits={
+            #     "Gemm_Left": [8,],
+            #     "Gemm_Right": [8,],
+            #     "Silu": [4,],
+            #     "Elt_Mul": [4,],
+            #     "Gemm_Down": [8,],  # only used if last_gemm_down=True
+            # },
+            layer_max_shapes_per_total={
+                "Gemm_Left": 1,
+                "Gemm_Right": 1,
+                "Silu": 1,
+                "Elt_Mul": 1,
+                "Gemm_Down": 1,
+            },
+            nb_rows=nb_rows_to_use,
+            nb_cols=nb_cols_to_use,
         )
 
     def run(self):
@@ -70,13 +88,14 @@ class MappingGenerationStage(Stage):
             sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
             try:
                 ctxs = list(sub_stage.run())
+                assert len(ctxs) == 1, f"Expected exactly one context, but got {len(ctxs)}"
                 ctx = ctxs[0]
                 scheduler = ctx.get("scheduler", None)
                 latency = scheduler.latency_total
             except RuntimeError as e:
                 logger.error(f"Error evaluating mapping {mapping_path}: {e}")
+                print(f"Error evaluating mapping {mapping_path}: {e}")
                 latency = float("inf")  # treat errors as infinite latency
-            assert len(ctxs) == 1, f"Expected exactly one context, but got {len(ctxs)}"
             if best_latency is None or latency < best_latency:
                 best_latency = latency
                 best_mapping_path = mapping_path
