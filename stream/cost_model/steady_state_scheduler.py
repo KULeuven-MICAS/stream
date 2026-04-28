@@ -41,7 +41,7 @@ from stream.workload.steady_state.iteration_space import (
     Reuse,
     SteadyStateIterationSpace,
 )
-from stream.workload.utils import generate_steady_state_iteration_spaces, get_equivalent_dimension
+from stream.workload.utils import generate_steady_state_iteration_spaces, get_compute_predecessors_successors, get_equivalent_dimension, get_node_with_largest_resource_allocation
 from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
@@ -557,28 +557,22 @@ class SteadyStateScheduler:
         self, node: TransferNode, src: HasOutputs, dsts: tuple[HasInputs, ...]
     ) -> tuple[tuple[Core, ...], ...]:
         """
-        Determine the memory allocation of the transfer node.
-        If the transfer is a X-to-memory transfer, then the possible memory allocations are the possible memory cores.
+        Determine the memory allocation of the transfer node. The memory alloc is always for the destination side tensors.
+        This means that for input transfers, the MEM_TO_MEM transfer output tensor is allocated on one or more memory cores,
+        whereas for output transfers the COMPUTE_TO_MEM transfer output tensor is allocated on one or more memory cores.
         Else, the possible memory allocations are determined by the destination nodes' allocations.
         """
         if node.transfer_type in (TransferType.MEM_TO_MEM,) and isinstance(src, InEdge):
-            possible_memory_cores = self._get_possible_memory_core_allocations(src)
+            # Find the dst with max number of compute allocations to determine possible memory cores
+            compute_dsts = get_compute_predecessors_successors(tr=node, workload=self.ssw)  # won't have any compute preds
+            dst = get_node_with_largest_resource_allocation(compute_dsts, self.mapping)
+            possible_memory_cores = self._get_possible_memory_core_allocations(dst)
         elif node.transfer_type in (TransferType.MEM_TO_MEM,) and any(isinstance(dst, OutEdge) for dst in dsts):
             assert len(dsts) == 1, "Currently only support single destination for constant output transfer."
             dst = dsts[0]
             possible_memory_cores = self._retrieve_core_allocation(dst)
         elif node.transfer_type in (TransferType.COMPUTE_TO_MEM,):
             possible_memory_cores = self._get_possible_memory_core_allocations(src)
-        elif node.transfer_type in (TransferType.MEM_TO_COMPUTE,):
-            # The destination compute node's allocation determines the possible mem cores
-            # Assert all dsts have the same number of core allocations
-            first_nb_allocs = len(self._retrieve_core_allocation(dsts[0])[0])
-            assert all(len(self._retrieve_core_allocation(dst)[0]) == first_nb_allocs for dst in dsts), (
-                "All destination nodes must have the same number of core allocations for MEM_TO_COMPUTE transfer."
-            )
-            assert isinstance(dsts[0], HasOutputs)
-            possible_memory_cores = self._get_possible_memory_core_allocations(dsts[0])
-            pass
         else:
             possible_memory_cores_set: set[Core] = set()
             for dst in dsts:
@@ -601,32 +595,36 @@ class SteadyStateScheduler:
                 try:
                     dst_tiling = tuple(self.ssw.get_unique_dims_inter_core_tiling(dst, self.mapping))
                 except KeyError:
-                    dst_tiling = self.get_inter_core_tiling_for_compute_to_mem(node, dst_allocs)
+                    dst_tiling = self.get_inter_core_tiling_for_mem_allocations(node, dst_allocs)
                 possible_inter_core_tiling.append(dst_tiling)
         return tuple(possible_inter_core_tiling)
 
-    def get_inter_core_tiling_for_compute_to_mem(
+    def get_inter_core_tiling_for_mem_allocations(
         self, node: TransferNode, memory_allocs: tuple[tuple[Core, ...], ...]
     ) -> tuple[tuple[int, ...], ...]:
         assert isinstance(node, TransferNode), "Node must be a TransferNode for inter-core tiling determination."
-        assert node.transfer_type in (TransferType.COMPUTE_TO_MEM,), (
-            "This function should only be called for compute to mem transfers."
+        assert node.transfer_type in (TransferType.COMPUTE_TO_MEM, TransferType.MEM_TO_MEM), (
+            "This function should only be called for MEM_TO_MEM (input) or COMPUTE_TO_MEM (output) transfers."
         )
-        # Get the predecessor compute and its tiling
-        src_compute = next(n for n in self.ssw.predecessors(node) if isinstance(n, ComputationNode))
-        try:
-            src_compute_tiling = self.ssw.get_unique_dims_inter_core_tiling(src_compute, self.mapping)
-        except KeyError as e:
-            raise KeyError(f"Source compute node {src_compute.name} does not have a tiling in the mapping.") from e
-        # From the compute tiling, gather the factor that matches in length with tmemory allocs
-        node_tiling = self.get_matching_tiling(src_compute_tiling, memory_allocs)
-        return (node_tiling,)
+        # Get the compute preds and succs
+        compute_preds_succs = get_compute_predecessors_successors(tr=node, workload=self.ssw)
+        # Get the largest allocation one of these
+        largest_alloc_node = get_node_with_largest_resource_allocation(compute_preds_succs, self.mapping)
+        # Get its compute tiling and find the tiling loop that matches the number of memory allocs
+        largest_alloc_tiling = self.ssw.get_unique_dims_inter_core_tiling(largest_alloc_node, self.mapping)
+        mem_tiling = self.get_matching_tiling(largest_alloc_tiling, memory_allocs)
+        return (mem_tiling,)
 
     def get_matching_tiling(self, compute_tiling: InterCoreTiling, dst_allocs: tuple[Core, ...]) -> tuple[int, ...]:
         for tiling_loop in compute_tiling:
             _, size = tiling_loop
             if size == len(dst_allocs):
                 return tiling_loop
+        # No size with exact match found, try to find one that is a multiple of the number of dst allocs
+        for tiling_loop in compute_tiling:
+            dim, size = tiling_loop
+            if size % len(dst_allocs) == 0:
+                return (dim, len(dst_allocs))
         raise ValueError(f"No matching tiling found for compute tiling {compute_tiling} and dst allocs {dst_allocs}")
 
     def determine_possible_transfer_plans(
