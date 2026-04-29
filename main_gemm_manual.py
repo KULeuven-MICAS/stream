@@ -1,33 +1,18 @@
 import argparse
 import logging as _logging
-import os
-import re
+from collections.abc import Sequence
 
-from xdsl.dialects import get_all_dialects
-from xdsl.dialects.builtin import ModuleOp
+from xdsl.dialects.builtin import ModuleOp, bf16
 from xdsl.parser import Parser
 from xdsl.passes import ModulePass, PipelinePass
-from xdsl.printer import Printer
-from xdsl.tools.command_line_tool import CommandLineTool
-from xdsl.transforms.canonicalize import CanonicalizePass
-from xdsl.transforms.experimental.function_constant_pinning import FunctionConstantPinningPass
-from xdsl.transforms.mlir_opt import MLIROptPass
-import argparse
-from typing import IO, Sequence
-from xdsl.dialects import builtin
-from xdsl.dialects.builtin import ModuleOp
 from xdsl.xdsl_opt_main import xDSLOptMain
 from xdsl_aie.dialects.aie import AIE
 from xdsl_aie.dialects.aiex import AIEX
-from xdsl.dialects.builtin import Builtin, bf16
-from xdsl.dialects.scf import Scf
-from xdsl.dialects.arith import Arith
-from xdsl.printer import Printer
+
+# from stream.dialects import get_all_dialects
 from stream.compiler.context.aie_context import AIEContext
 from stream.compiler.dialects.stream import Stream
-from stream.compiler.kernels.eltwise_mul import EltwiseMulKernel
 from stream.compiler.kernels.gemm import GemmKernel
-from stream.compiler.kernels.silu import SiluKernel
 from stream.compiler.transforms.aie_convert_ofs import AIEConvertOfs
 from stream.compiler.transforms.aie_dispatch import AIEDispatchPass
 from stream.compiler.transforms.aie_move_tile_ops_up import AIEMoveTileOpsUp
@@ -35,13 +20,6 @@ from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEPass
 from stream.compiler.transforms.iteration_space_to_for import IterationSpaceToFor
 from stream.compiler.transforms.unroll import SpatialUnrollPass
-
-# from stream.dialects import get_all_dialects
-
-from stream.api import optimize_allocation_co
-from stream.compiler.kernels.gemm import GemmKernel
-from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping
-from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
@@ -191,7 +169,6 @@ class StreamMain(xDSLOptMain):
         self.setup_pipeline()
 
     def setup_pipeline(self):
-
         def callback(previous_pass: ModulePass, module: ModuleOp, next_pass: ModulePass) -> None:
             module.verify()
 
@@ -213,9 +190,7 @@ class StreamMain(xDSLOptMain):
 
     def register_default_kernels(self):
         self.ctx.registered_kernels
-        for kernel in (
-            GemmKernel(1, bf16, 32, 32, 32, "layout"),
-        ):
+        for kernel in (GemmKernel(1, bf16, 32, 32, 32, "layout"),):
             self.ctx.registered_kernels[kernel.unique_name] = kernel
 
     def register_all_passes(self):
@@ -243,13 +218,15 @@ class StreamMain(xDSLOptMain):
     def register_all_frontends(self):
         super().register_all_frontends()
 
-def run_main_aie_codegen_gemm(M, K, N): 
 
+def run_main_aie_codegen_gemm(M, K, N):
     stream_main = StreamMain()
-    module = Parser(stream_main.ctx,generate_mlir(M, N, K),).parse_module()
+    module = Parser(
+        stream_main.ctx,
+        generate_mlir(M, N, K),
+    ).parse_module()
     # stream_main.apply_passes(module)
     stream_main.pipeline.apply(stream_main.ctx, module)
-
 
     save_path = f"outputs/swiglu_module_{M}_{N}_{K}.mlir"
     with open(save_path, "w") as f:
@@ -257,7 +234,6 @@ def run_main_aie_codegen_gemm(M, K, N):
     print(f"Saved generated module to {save_path}")
 
     return module
-
 
 
 if __name__ == "__main__":
@@ -277,13 +253,14 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     stream_main = StreamMain()
-    module = Parser(stream_main.ctx,generate_mlir(args.M, args.N, args.K),).parse_module()
+    module = Parser(
+        stream_main.ctx,
+        generate_mlir(args.M, args.N, args.K),
+    ).parse_module()
     # stream_main.apply_passes(module)
     stream_main.pipeline.apply(stream_main.ctx, module)
-
 
     save_path = f"outputs/swiglu_module_{args.M}_{args.N}_{args.K}.mlir"
     with open(save_path, "w") as f:
         f.write(str(module))
     print(f"Saved generated module to {save_path}")
-
