@@ -42,7 +42,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         wl_name = re.split(r"/|\.", workload_path)[-2]
     mapping_name = f"{rows}_row_{cols}_col"
     tile_sizes_folder = f"tilesizes_{seq_len_tile_size}_{embedding_tile_size}_{hidden_tile_size}"
-    experiment_id = f"dse-single-tilesize-{hw_name}-{wl_name}-{mapping_name}/{tile_sizes_folder}"
+    experiment_id = f"dse-20260430-{hw_name}-{wl_name}-{mapping_name}/{tile_sizes_folder}"
     ######################################################################
 
     ################################LOGGING###############################

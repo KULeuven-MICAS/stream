@@ -229,13 +229,61 @@ def _pretty_box_and_violin(latencies: np.ndarray, out_path: str, title: str) -> 
     plt.close()
 
 
-def _plot_best_so_far(idx_latency_pairs, out_path: str, units: str = "") -> None:
+def _find_trace_yaml(run_dir: str) -> str | None:
+    """Walk *run_dir* and return the first ``optimization_trace.yaml`` found, or None."""
+    for root, _dirs, files in os.walk(run_dir):
+        if "optimization_trace.yaml" in files:
+            return os.path.join(root, "optimization_trace.yaml")
+    return None
+
+
+def _load_incumbent_series(trace_path: str) -> list[tuple[float, float]] | None:
+    """
+    Load an optimization trace YAML and return a list of (time_s, incumbent)
+    pairs representing the incumbent progression.
+
+    Between explicit incumbent events the value stays constant (carried forward),
+    so every trace entry that has or inherits an incumbent produces a point.
+    Returns None if the file cannot be read or has no incumbent data.
+    """
+    try:
+        with open(trace_path) as f:
+            data = yaml.safe_load(f)
+    except Exception:
+        return None
+
+    entries = data.get("trace") if isinstance(data, dict) else None
+    if not entries:
+        return None
+
+    points: list[tuple[float, float]] = []
+    current_incumbent: float | None = None
+
+    for entry in entries:
+        t = entry.get("time_s")
+        if t is None:
+            continue
+        if "incumbent" in entry:
+            current_incumbent = float(entry["incumbent"])
+        if current_incumbent is not None:
+            points.append((float(t), current_incumbent))
+
+    return points if points else None
+
+
+def _plot_best_so_far(
+    idx_latency_pairs,
+    out_path: str,
+    units: str = "",
+    base_dir: str | None = None,
+) -> None:
     """
     idx_latency_pairs: list of (idx:int, latency:float), for valid runs only.
     Saves a single plot showing:
       - scatter of all latencies
       - line of best-so-far (running minimum)
       - idx labels next to each "new best" point
+      - per-run incumbent progress lines (from optimization_trace.yaml)
     """
     if not idx_latency_pairs:
         return
@@ -252,21 +300,72 @@ def _plot_best_so_far(idx_latency_pairs, out_path: str, units: str = "") -> None
 
     # Points where we actually improved the running minimum ("best so far" dots)
     is_new_best = np.r_[True, best_so_far[1:] < best_so_far[:-1]]
-    best_idxs = idxs[is_new_best]
     best_lats = best_so_far[is_new_best]
 
-    plt.figure(figsize=(10, 6))
-    plt.scatter(idxs, lats, s=10, alpha=0.35, label="latency (each mapping)")
-    plt.plot(idxs, best_so_far, linewidth=2.0, label="best-so-far (running min)")
+    plt.figure(figsize=(15, 6))
+
+    # Per-run incumbent progress lines from optimization traces
+    # Track the right-edge x of each run's trace line so the best-so-far
+    # dots and line align with the endpoint of the trace, not the run center.
+    run_end_x: dict[int, float] = {}  # idx → right-edge x position
+    line_half_width = 0.0
+
+    if base_dir is not None:
+        # Determine a uniform line width: fraction of the gap between run points
+        if len(idxs) >= 2:
+            avg_gap = (float(idxs[-1]) - float(idxs[0])) / (len(idxs) - 1)
+        else:
+            avg_gap = 1.0
+        line_half_width = avg_gap * 0.35  # each line spans ~70% of the gap
+
+        trace_plotted = False
+        final_latency_of = {int(idx): lat for idx, lat in zip(idxs, lats, strict=False)}
+
+        for idx_val in idxs:
+            run_dir = os.path.join(base_dir, str(idx_val))
+            trace_path = _find_trace_yaml(run_dir)
+            if trace_path is None:
+                continue
+            series = _load_incumbent_series(trace_path)
+            if series is None:
+                continue
+
+            # Ensure the final latency.yaml value is the last point in the series
+            final_lat = final_latency_of.get(int(idx_val))
+            if final_lat is not None:
+                last_t, last_v = series[-1]
+                if abs(last_v - final_lat) > 0.5:
+                    series.append((last_t + 1e-6, final_lat))
+
+            # Normalise trace times to [idx - half_width, idx + half_width]
+            t_min = series[0][0]
+            t_max = series[-1][0]
+            t_range = t_max - t_min if t_max > t_min else 1.0
+
+            xs = [float(idx_val) - line_half_width + (t - t_min) / t_range * 2 * line_half_width for t, _ in series]
+            ys = [v for _, v in series]
+
+            run_end_x[int(idx_val)] = xs[-1]
+
+            label = "incumbent progress" if not trace_plotted else None
+            plt.step(xs, ys, where="post", linewidth=1.0, alpha=0.6, color="tab:blue", label=label)
+            plt.plot(xs[-1], ys[-1], "o", markersize=3.5, alpha=0.6, color="tab:blue")
+            trace_plotted = True
+
+    # Best-so-far line and dots: use the trace right-edge x when available,
+    # otherwise fall back to the run's idx.
+    best_so_far_xs = np.array([run_end_x.get(int(i), float(i)) for i in idxs])
+    plt.plot(best_so_far_xs, best_so_far, linewidth=1.0, color="tab:orange", label="best-so-far (running min)")
 
     # Highlight and label new-best points
-    plt.scatter(best_idxs, best_lats, s=22, alpha=0.9, zorder=3)
-    for x, y in zip(best_idxs, best_lats, strict=False):
+    best_xs = best_so_far_xs[is_new_best]
+    plt.scatter(best_xs, best_lats, s=22, alpha=0.9, zorder=3, color="tab:orange")
+    for x, y in zip(best_xs, best_lats, strict=False):
         plt.annotate(
             str(int(x)),
             (x, y),
             textcoords="offset points",
-            xytext=(6, 4),
+            xytext=(6, -10),
             ha="left",
             va="bottom",
             fontsize=8,
@@ -356,6 +455,7 @@ def main() -> None:
         idx_latency_pairs,
         out_path=os.path.join(args.out_dir, f"{args.prefix}_best_so_far.png"),
         units=args.units,
+        base_dir=args.base_dir,
     )
 
     print("\nSaved plots:")

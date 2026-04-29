@@ -28,7 +28,7 @@ class AIECostEstimator:
         utilization = kernel.utilization
         ideal_ops_per_cycle = self.ops_per_cycle(node, core)
         ideal_cycles = ceil(macs / ideal_ops_per_cycle)
-        ops_per_cycle = floor(ideal_ops_per_cycle * (utilization / 100.0))
+        ops_per_cycle = ideal_ops_per_cycle * (utilization / 100.0)
         cycles = ceil(macs / ops_per_cycle)
         energy = 0  # TODO
         return CoreCostEntry(

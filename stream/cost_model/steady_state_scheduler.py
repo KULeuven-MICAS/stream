@@ -97,7 +97,7 @@ class SteadyStateScheduler:
         # Update the fusion_splits based on the new workload with transfer nodes
         self.fusion_splits = self.update_fusion_splits()
         # Save the new workload with transfers
-        self.ssw.visualize(os.path.join(self.output_path, "tiled_workload_with_transfers.png"))
+        # self.ssw.visualize(os.path.join(self.output_path, "tiled_workload_with_transfers.png"))
         # Update the mapping for the new workload graph
         self.mapping = self.update_mapping()
         # Update the cost lut for the new workload graph
@@ -108,8 +108,10 @@ class SteadyStateScheduler:
         self.iterations = self.calculate_iterations()
         # Calculate the multiplicity of each node's execution in the steady state workload
         multiplicities = self.calculate_multiplicities()
-        # Get the timeslots for all nodes
-        timeslots = self.ssw.get_timeslots()
+        # Get the timeslots for all nodes (resource-aware: same slot allowed iff a
+        # disjoint core/link assignment exists across same-class nodes in that slot).
+        timeslots = self.ssw.get_timeslots(self.mapping)
+        # timeslots = self.ssw.get_timeslots_simple()  # baseline: one slot per node, no resource awareness
         # At this point, the only nodes without an allocation are the transfer nodes
         tta = TransferAndTensorAllocator(
             self.ssw,
@@ -148,20 +150,21 @@ class SteadyStateScheduler:
             latency_per_iteration,
             overlap,
         )
-        self.tensor_depths = tensor_depths
-        # Export Perfetto-compatible JSON trace of the solved schedule
-        # try:
-        trace_path = export_steady_state_trace(
-            tta=tta,
-            iterations=self.iterations,
-            overlap=overlap,
-            latency_per_iteration=latency_per_iteration,
-            output_path=self.output_path,
-            transfer_allocations=transfer_allocations,
-        )
-        logger.info("Steady-state schedule trace: %s", trace_path)
-        # except Exception as exc:  # never let a visualisation failure abort the run
-        #     logger.warning("Failed to export steady-state trace: %s", exc)
+        # Export Perfetto-compatible JSON traces of the solved schedule
+        try:
+            for (compact, fname) in [(True, "steady_state_trace_compact.json"), (False, "steady_state_trace.json")]:
+                trace_path = export_steady_state_trace(
+                    tta=tta,
+                    iterations=self.iterations,
+                    overlap=overlap,
+                    latency_per_iteration=latency_per_iteration,
+                    output_path=self.output_path,
+                    compact=compact,
+                    filename=fname,
+                )
+            logger.info("Steady-state schedule trace: %s", trace_path)
+        except Exception as exc:  # never let a visualisation failure abort the run
+            logger.warning("Failed to export steady-state trace (%s): %s", fname, exc)
         # Check that all nodes in the steady state workload have a chosen resource allocation
         # self.check_steady_state_workload_allocations(self.ssw)
         self.update_tensor_steady_state_iteration_spaces(tensor_reuse_levels)
@@ -583,7 +586,7 @@ class SteadyStateScheduler:
 
     def determine_possible_inter_core_tiling(
         self, node: TransferNode, possible_dst_allocs: tuple[tuple[Core, ...], ...], dsts: tuple[HasInputs, ...]
-    ) -> tuple[tuple[int, ...], ...]:
+    ) -> tuple[InterCoreTiling, ...]:
         possible_inter_core_tiling = []
         for dst_allocs in possible_dst_allocs:
             nb_cores = len(dst_allocs)
@@ -601,7 +604,7 @@ class SteadyStateScheduler:
 
     def get_inter_core_tiling_for_mem_allocations(
         self, node: TransferNode, memory_allocs: tuple[tuple[Core, ...], ...]
-    ) -> tuple[tuple[int, ...], ...]:
+    ) -> tuple[InterCoreTiling, ...]:
         assert isinstance(node, TransferNode), "Node must be a TransferNode for inter-core tiling determination."
         assert node.transfer_type in (TransferType.COMPUTE_TO_MEM, TransferType.MEM_TO_MEM), (
             "This function should only be called for MEM_TO_MEM (input) or COMPUTE_TO_MEM (output) transfers."
@@ -615,7 +618,9 @@ class SteadyStateScheduler:
         mem_tiling = self.get_matching_tiling(largest_alloc_tiling, memory_allocs)
         return (mem_tiling,)
 
-    def get_matching_tiling(self, compute_tiling: InterCoreTiling, dst_allocs: tuple[Core, ...]) -> tuple[int, ...]:
+    def get_matching_tiling(
+        self, compute_tiling: InterCoreTiling, dst_allocs: tuple[Core, ...]
+    ) -> tuple[LayerDim, int]:
         for tiling_loop in compute_tiling:
             _, size = tiling_loop
             if size == len(dst_allocs):

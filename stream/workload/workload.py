@@ -27,6 +27,8 @@ from stream.workload.tensor import Tensor
 from stream.workload.utils import affine_bounds, sympy_to_xdsl
 
 if TYPE_CHECKING:
+    from stream.cost_model.communication_manager import MulticastPathPlan
+    from stream.hardware.architecture.core import Core
     from stream.mapping.mapping import Mapping
 
 
@@ -570,13 +572,110 @@ class Workload(DiGraphWrapper[Node]):
             return f"{label}"
         return ""
 
-    def get_timeslots(self) -> dict[Node, int]:
-        timeslots = {}
+    def get_timeslots_simple(self) -> dict[Node, int]:
+        """Original baseline: walk topological generations and give every node its own
+        unique slot (slot increments per node, not per generation). Kept for A/B-comparison
+        against the resource-aware ``get_timeslots``.
+        """
+        timeslots: dict[Node, int] = {}
         slot = 0
         for generation in nx.topological_generations(self):
             for node in generation:
                 timeslots[node] = slot
                 slot += 1
+        return timeslots
+
+    def get_timeslots(self, mapping: "Mapping | None" = None) -> dict[Node, int]:
+        """Assign each node a timeslot using a depthwise priority topological sort (drain a
+        transfer chain into its ComputationNode before opening the next branch).
+
+        Slot-sharing rules:
+        - A TransferNode and a ComputationNode may always share a slot (disjoint resource
+          classes: links vs cores).
+        - InEdges and OutEdges have no slot exclusion.
+        - When ``mapping`` is provided, two ComputationNodes share a slot iff their
+          candidate core allocations admit a pair with disjoint cores; two TransferNodes
+          share a slot iff their candidate ``MulticastPathPlan``s admit a pair with
+          disjoint ``links_used``. Joint feasibility across all same-class nodes in the
+          slot is checked by backtracking, so the downstream constraint solver is
+          guaranteed at least one valid resource assignment per slot.
+        - When ``mapping`` is None, falls back to ≤1 ComputationNode and ≤1 TransferNode
+          per slot.
+        """
+
+        def priority(node: Node):
+            if isinstance(node, ComputationNode):
+                return (0, node.name)
+            if isinstance(node, TransferNode):
+                return (1, node.name)
+            if isinstance(node, InEdge):
+                return (2, node.name)
+            return (3, node.name)  # OutEdge last
+
+        def get_options(node: Node) -> list[frozenset] | None:
+            """Return candidate resource sets for a node, or None if unknown.
+
+            For TransferNode: each option is the ``links_used`` of one MulticastPathPlan.
+            For ComputationNode: each option is the set of cores in one allocation.
+            """
+            if mapping is None:
+                return None
+            try:
+                ra = mapping.get(node).resource_allocation
+            except (KeyError, AttributeError):
+                return None
+            if not ra:
+                return None
+            if isinstance(node, TransferNode):
+                return [frozenset(cast("MulticastPathPlan", p).links_used) for p in ra]
+            if isinstance(node, ComputationNode):
+                return [frozenset(cast("Sequence[Core]", alloc)) for alloc in ra]
+            return None
+
+        def joint_feasible(option_lists: list[list[frozenset]]) -> bool:
+            """True iff one option from each list can be picked so all are pairwise disjoint."""
+
+            def bt(idx: int, used: frozenset) -> bool:
+                if idx == len(option_lists):
+                    return True
+                for opt in option_lists[idx]:
+                    if not (opt & used):
+                        if bt(idx + 1, used | opt):
+                            return True
+                return False
+
+            return bt(0, frozenset())
+
+        def can_join(slot_opts: list[list[frozenset] | None], new_opts: list[frozenset] | None) -> bool:
+            if new_opts is None:
+                # Unknown allocation: fall back to exclusive use of this resource class.
+                return len(slot_opts) == 0
+            concrete: list[list[frozenset]] = []
+            for o in slot_opts:
+                if o is None:
+                    return False
+                concrete.append(o)
+            concrete.append(new_opts)
+            return joint_feasible(concrete)
+
+        timeslots: dict[Node, int] = {}
+        slot_transfers: dict[int, list[list[frozenset] | None]] = {}
+        slot_computes: dict[int, list[list[frozenset] | None]] = {}
+
+        for node in nx.lexicographical_topological_sort(self, key=priority):
+            earliest = max((timeslots[p] + 1 for p in self.predecessors(node)), default=0)
+            slot = earliest
+            bucket: dict[int, list[list[frozenset] | None]] | None = None
+            if isinstance(node, TransferNode):
+                bucket = slot_transfers
+            elif isinstance(node, ComputationNode):
+                bucket = slot_computes
+            if bucket is not None:
+                opts = get_options(node)
+                while not can_join(bucket.get(slot, []), opts):
+                    slot += 1
+                bucket.setdefault(slot, []).append(opts)
+            timeslots[node] = slot
         return timeslots
 
     def get_ir(self) -> dict:
@@ -673,11 +772,7 @@ class Workload(DiGraphWrapper[Node]):
             dim_relations.append(str(expr))
 
         # Build timeslots
-        timeslots = {
-            node.name: gen_id
-            for gen_id, generation in enumerate(nx.topological_generations(self))
-            for node in generation
-        }
+        timeslots = {node.name: slot for node, slot in self.get_timeslots().items()}
 
         return {
             "num_nodes": len(list(self.nodes)),
