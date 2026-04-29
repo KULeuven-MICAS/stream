@@ -23,7 +23,7 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
     _resource_key,
 )
 from stream.workload.node import HasOutputs, TransferType
-from stream.workload.steady_state.iteration_space import IterationVariableType, Reuse, SteadyStateIterationSpace
+from stream.workload.steady_state.iteration_space import IterationVariableType, LoopEffect, Reuse, SteadyStateIterationSpace
 from stream.workload.steady_state.node import Node
 from stream.workload.workload import (
     ComputationNode,
@@ -890,9 +890,10 @@ class TransferAndTensorAllocator:
     def _slot_latency_constraints(self):
         for n in self.ssc_nodes:
             s = self.slot_of[n]
-            runtimes = [self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)]
-            runtime = ceil(max(runtimes)) if runtimes else 0
-            self.model.addConstr(self.slot_latency[s] >= runtime, name=f"ssc_lat_{n.name}")
+            latencies = [self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)]
+            runtime = ceil(max(latencies)) if latencies else 0
+            active_latency = self._active_compute_latency(n, runtime)
+            self.model.addConstr(self.slot_latency[s] >= active_latency, name=f"ssc_lat_{n.name}")
 
         for (tr, choice), y in self.y_path_choice.items():
             s = self.slot_of[tr]
@@ -1430,6 +1431,20 @@ class TransferAndTensorAllocator:
             )
             self._transfer_latency_cache[(tr, choice)] = active_latency
 
+        return active_latency
+    
+    def _active_compute_latency(
+        self,
+        n: ComputationNode,
+        runtime_constant: float,
+    ) -> int:
+        # Get the temporal steady state fraction of 'ABSENT' loops
+        ssis_t = self.ssis.get(n).get_temporal_variables()
+        total_product = prod([ssis_var.size for ssis_var in ssis_t])
+        product_without_absent = prod([ssis_var.size for ssis_var in ssis_t if ssis_var.effect != LoopEffect.ABSENT])
+        fraction = product_without_absent / total_product if total_product > 0 else 1.0
+        # Scale the runtime constant by the fraction to get the effective latency
+        active_latency = int(round(runtime_constant * fraction))
         return active_latency
 
     def _mip_progress_callback(self, model, where):
