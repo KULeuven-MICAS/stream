@@ -225,7 +225,7 @@ class CommunicationManager:
 
         # Weighting (same idea as meeting case, but applied to no-meeting too)
         for u, v, d in Gw.edges(data=True):
-            if (is_offchip(u) and is_memory(v)) or (is_offchip(v) and is_memory(u)):
+            if (is_offchip(v) and is_memory(u)):
                 d["w"] = float(offchip_mem_penalty)
             else:
                 d["w"] = 1.0
@@ -344,6 +344,6 @@ class CommunicationManager:
             sources=src_allocs,  # type: ignore
             destinations=dst_allocs,  # type: ignore
         )
-        multicast_plans = self._enumerate_multicast_plans(request)
+        multicast_plans = self._enumerate_multicast_plans(request, offchip_mem_penalty=1)
         # Stable output ordering
         return tuple(multicast_plans)
