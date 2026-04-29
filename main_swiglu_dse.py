@@ -1,7 +1,9 @@
 import argparse
+import itertools
 import logging as _logging
 import os
 import re
+import traceback
 
 from stream.api import optimize_mapping
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
@@ -39,9 +41,8 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     if wl_name == "onnx":
         wl_name = re.split(r"/|\.", workload_path)[-2]
     mapping_name = f"{rows}_row_{cols}_col"
-    experiment_id = (
-        f"dse-{seq_len_tile_size}_{embedding_tile_size}_{hidden_tile_size}-{hw_name}-{wl_name}-{mapping_name}"
-    )
+    tile_sizes_folder = f"tilesizes_{seq_len_tile_size}_{embedding_tile_size}_{hidden_tile_size}"
+    experiment_id = f"dse-single-tilesize-{hw_name}-{wl_name}-{mapping_name}/{tile_sizes_folder}"
     ######################################################################
 
     ################################LOGGING###############################
@@ -103,6 +104,56 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     return module
 
 
+def sweep_tile_size_combinations(args: argparse.Namespace) -> None:
+    """Run the DSE flow for every (seq_len, embedding, hidden) tile size combination.
+
+    Failures within a single combination are logged and skipped so that the sweep
+    continues with the remaining combinations.
+    """
+    combinations = list(
+        itertools.product(args.seq_len_tile_size, args.embedding_tile_size, args.hidden_tile_size)
+    )
+    print(f"Iterating over {len(combinations)} tile size combination(s): {combinations}")
+
+    for s_tile, e_tile, h_tile in combinations:
+        print(
+            f"\n===== Running tile sizes: seq_len_tile_size={s_tile}, "
+            f"embedding_tile_size={e_tile}, hidden_tile_size={h_tile} ====="
+        )
+        try:
+            module = run_main_aie_codegen_swiglu(
+                args.seq_len,
+                args.embedding_dim,
+                args.hidden_dim,
+                args.in_dtype,
+                args.out_dtype,
+                args.trace_size,
+                args.rows,
+                args.cols,
+                args.npu,
+                s_tile,
+                e_tile,
+                h_tile,
+                last_gemm_down=args.last_gemm_down,
+            )
+        except Exception as ex:
+            print(
+                f"FAILED tile combination (seq_len_tile_size={s_tile}, "
+                f"embedding_tile_size={e_tile}, hidden_tile_size={h_tile}): {ex}"
+            )
+            traceback.print_exc()
+            continue
+
+        if module is not None:
+            save_path = (
+                f"outputs/swiglu_module_{args.seq_len}_{args.embedding_dim}_{args.hidden_dim}_"
+                f"{s_tile}_{e_tile}_{h_tile}.mlir"
+            )
+            with open(save_path, "w") as f:
+                f.write(str(module))
+            print(f"Saved generated module to {save_path}")
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run AIE code generation for Gemm")
     parser.add_argument("--seq_len", type=int, required=True, help="Sequence length (seq_len dimension of the input)")
@@ -119,12 +170,26 @@ if __name__ == "__main__":
     parser.add_argument("--cols", type=int, default=8, help="Number of AIE columns to use (default: 8)")
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
     parser.add_argument(
-        "--seq_len_tile_size", type=int, default=32, help="Tile size for seq_len dimension (default: 64)"
+        "--seq_len_tile_size",
+        type=int,
+        nargs="+",
+        default=[32],
+        help="Tile size(s) for seq_len dimension. Accepts multiple values to sweep (default: [32])",
     )
     parser.add_argument(
-        "--embedding_tile_size", type=int, default=32, help="Tile size for embedding dimension (default: 64)"
+        "--embedding_tile_size",
+        type=int,
+        nargs="+",
+        default=[32],
+        help="Tile size(s) for embedding dimension. Accepts multiple values to sweep (default: [32])",
     )
-    parser.add_argument("--hidden_tile_size", type=int, default=32, help="Tile size for hidden dimension (default: 64)")
+    parser.add_argument(
+        "--hidden_tile_size",
+        type=int,
+        nargs="+",
+        default=[32],
+        help="Tile size(s) for hidden dimension. Accepts multiple values to sweep (default: [32])",
+    )
     parser.add_argument(
         "--no_last_gemm_down",
         dest="last_gemm_down",
@@ -133,22 +198,4 @@ if __name__ == "__main__":
         help="If set, the last gemm down projection is skipped",
     )
     args = parser.parse_args()
-    module = run_main_aie_codegen_swiglu(
-        args.seq_len,
-        args.embedding_dim,
-        args.hidden_dim,
-        args.in_dtype,
-        args.out_dtype,
-        args.trace_size,
-        args.rows,
-        args.cols,
-        args.npu,
-        args.seq_len_tile_size,
-        args.embedding_tile_size,
-        args.hidden_tile_size,
-        last_gemm_down=args.last_gemm_down,
-    )
-    save_path = f"outputs/swiglu_module_{args.seq_len}_{args.embedding_dim}_{args.hidden_dim}.mlir"
-    with open(save_path, "w") as f:
-        f.write(str(module))
-    print(f"Saved generated module to {save_path}")
+    sweep_tile_size_combinations(args)
