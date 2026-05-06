@@ -18,10 +18,7 @@ class AIECostEstimator:
 
     def estimate(self, node: ComputationNode, core: Core) -> CoreCostEntry:
         dim_sizes = [self.workload.get_dimension_size(dim) for dim in self.workload.get_dims(node)]
-        assert len(self.mapping.get(node).inter_core_tiling) == 1, (
-            "TODO: Make this work with more than one inter_core_tiling"
-        )
-        total_inter_core_tiling = prod(factor for _, factor in self.mapping.get(node).inter_core_tiling[0])
+        total_inter_core_tiling = self._get_total_inter_core_tiling_factor(node)
         macs = prod(dim_sizes) // total_inter_core_tiling
         kernel = self.mapping.get(node).kernel
         assert kernel is not None, "Kernel must be defined in mapping for AIE cost estimation."
@@ -42,6 +39,13 @@ class AIECostEstimator:
             layer=node,
             metadata={"utilization": utilization},
         )
+
+    def _get_total_inter_core_tiling_factor(self, node):
+        assert len(self.mapping.get(node).inter_core_tiling) == 1, (
+            "TODO: Make this work with more than one inter_core_tiling"
+        )
+        total_inter_core_tiling = prod(factor for _, factor in self.mapping.get(node).inter_core_tiling[0])
+        return total_inter_core_tiling
 
     def ops_per_cycle(self, node: ComputationNode, core: Core) -> int:
         """Depending on the node inputs and output data type and core type,
