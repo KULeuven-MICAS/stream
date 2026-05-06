@@ -1,7 +1,6 @@
 from math import ceil, prod
 from typing import TYPE_CHECKING
 
-from deap import gp
 from zigzag.datatypes import LayerDim, UnrollFactor
 
 from stream.cost_model.communication_manager import MulticastPathPlan
@@ -9,8 +8,8 @@ from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.workload.node import Node, TransferNode
-from stream.workload.steady_state.iteration_space import LoopEffect, SteadyStateIterationSpace
 from stream.workload.steady_state.computation import SteadyStateComputation
+from stream.workload.steady_state.iteration_space import LoopEffect, SteadyStateIterationSpace
 from stream.workload.workload import ComputationNode
 
 if TYPE_CHECKING:
@@ -305,6 +304,7 @@ def get_partitioned_nodes(
         partitioned_nodes.append(partitioned_node)
     return partitioned_nodes
 
+
 def get_transfer_latency_for_path(tr: TransferNode, path: MulticastPathPlan) -> int:
     if not path:
         return 0
@@ -313,17 +313,15 @@ def get_transfer_latency_for_path(tr: TransferNode, path: MulticastPathPlan) -> 
     tensor = tr.inputs[0]
     return ceil(tensor.size_bits() / min_bw)
 
+
 def get_active_transfer_latency_for_path(tr: TransferNode, choice: MulticastPathPlan, reuse_factor, ssis) -> int:
     latency_constant = float(get_transfer_latency_for_path(tr, choice))
     active_latency_absent_loops = get_active_latency(tr, latency_constant, ssis)
     active_latency = ceil(active_latency_absent_loops / reuse_factor)
     return active_latency
 
-def get_active_latency(
-    n: Node,
-    runtime_constant: float,
-    ssis: dict[ComputationNode, SteadyStateIterationSpace]
-) -> int:
+
+def get_active_latency(n: Node, runtime_constant: float, ssis: dict[ComputationNode, SteadyStateIterationSpace]) -> int:
     # Get the temporal steady state fraction of 'ABSENT' loops
     ssis_t = ssis.get(n).get_temporal_variables()
     total_product = prod([ssis_var.size for ssis_var in ssis_t])

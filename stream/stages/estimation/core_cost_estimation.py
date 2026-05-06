@@ -125,7 +125,6 @@ class CoreCostEstimationStage(Stage):
         for n in same_name_nodes:
             self.cost_lut.remove_node(n)
 
-
     def get_estimator(self, core: Core):
         if self.is_aie_compute_core(core):
             return AIECostEstimator(self.workload, self.mapping)

@@ -59,9 +59,9 @@ from typing import TYPE_CHECKING
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
-from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import TransferAlloc
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency, get_active_transfer_latency_for_path
-from stream.workload.node import ComputationNode as _ComputationNode, TransferNode
+from stream.workload.node import ComputationNode as _ComputationNode
+from stream.workload.node import TransferNode
 
 if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core

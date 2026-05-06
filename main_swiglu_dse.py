@@ -110,9 +110,7 @@ def sweep_tile_size_combinations(args: argparse.Namespace) -> None:
     Failures within a single combination are logged and skipped so that the sweep
     continues with the remaining combinations.
     """
-    combinations = list(
-        itertools.product(args.seq_len_tile_size, args.embedding_tile_size, args.hidden_tile_size)
-    )
+    combinations = list(itertools.product(args.seq_len_tile_size, args.embedding_tile_size, args.hidden_tile_size))
     print(f"Iterating over {len(combinations)} tile size combination(s): {combinations}")
 
     for s_tile, e_tile, h_tile in combinations:

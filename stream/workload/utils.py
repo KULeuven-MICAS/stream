@@ -222,7 +222,7 @@ def collect_spatial_unrollings(workload: "Workload", mapping: "Mapping"):
 
 
 def get_compute_predecessors_successors(tr: TransferNode, workload: "Workload") -> list[ComputationNode]:
-    """Iteratively go through all preds and succs until there are no more transfer nodes, and return the compute nodes found."""
+    """Walk preds/succs until no transfer nodes remain, returning all compute nodes found."""
     compute_nodes: list[ComputationNode] = []
     visited: set[Node] = set()
     to_visit: list[Node] = [tr]
@@ -237,6 +237,7 @@ def get_compute_predecessors_successors(tr: TransferNode, workload: "Workload") 
             to_visit.extend(workload.predecessors(current))
             to_visit.extend(workload.successors(current))
     return compute_nodes
+
 
 def get_node_with_largest_resource_allocation(nodes: list[ComputationNode], mapping: "Mapping") -> ComputationNode:
     """Return the node with the largest number of resource allocations in the mapping."""
@@ -254,6 +255,7 @@ def get_node_with_largest_resource_allocation(nodes: list[ComputationNode], mapp
             node_with_resource_allocation = node
     assert node_with_resource_allocation is not None, "No node with resource allocation found."
     return node_with_resource_allocation
+
 
 def sympy_to_xdsl(expr: sp.Expr) -> AffineExpr:
     """

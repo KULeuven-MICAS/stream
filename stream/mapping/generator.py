@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-from math import prod
 import os
 import random
 import time
@@ -197,9 +196,7 @@ class MappingGenerator:
         return variants
 
     def _sort_variants_by_utilization(
-        self,
-        variants: list[tuple[tuple[str, list[SplitSpec]], ...]],
-        reverse: bool = True
+        self, variants: list[tuple[tuple[str, list[SplitSpec]], ...]], reverse: bool = True
     ) -> list[tuple[tuple[str, list[SplitSpec]], ...]]:
         """Sort variants by total cores allocated summed across all layers, descending.
 
@@ -333,7 +330,7 @@ class MappingGenerator:
 
         if n == 1:
             return int(splits[0]) <= max(rows, cols)
-        if n == 2:
+        if n == 2:  # noqa: PLR2004
             s0, s1 = int(splits[0]), int(splits[1])
             return (s0 <= rows and s1 <= cols) or (s0 <= cols and s1 <= rows)
         return True
@@ -394,9 +391,7 @@ class MappingGenerator:
 
         return per_layer_options
 
-    def _cap_options_per_layer(
-        self, options: list[tuple[str, list[SplitSpec]]]
-    ) -> list[tuple[str, list[SplitSpec]]]:
+    def _cap_options_per_layer(self, options: list[tuple[str, list[SplitSpec]]]) -> list[tuple[str, list[SplitSpec]]]:
         """
         Within each ``total = prod(splits)`` bucket of this layer, keep at most
         ``layer_max_shapes_per_total[lname]`` shapes. The cap is applied INSIDE

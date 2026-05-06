@@ -1,9 +1,9 @@
-from dataclasses import dataclass, field
-from typing import Iterable, Sequence
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 
 from xdsl.context import Context
 from xdsl.dialects.builtin import ModuleOp
-from xdsl.ir import OpResult, Operation, SSAValue
+from xdsl.ir import Operation, OpResult, SSAValue
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
     PatternRewriter,
@@ -16,11 +16,8 @@ from stream.compiler.dialects.stream import (
     ChannelOp,
     ComputationNodeOp,
     GatherOp,
-    InEdgeOp,
-    OutEdgeOp,
     PullOp,
     PushOp,
-    SteadyStateIterationSpaceAttr,
     StrensorSpace,
     StrensorSpaceAttr,
     StrensorType,
@@ -28,9 +25,6 @@ from stream.compiler.dialects.stream import (
     StrensorVarType,
     TransferOp,
     YieldOp,
-)
-from stream.workload.steady_state.iteration_space import (
-    SteadyStateIterationSpace,
 )
 
 

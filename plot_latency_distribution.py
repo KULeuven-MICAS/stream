@@ -271,7 +271,7 @@ def _load_incumbent_series(trace_path: str) -> list[tuple[float, float]] | None:
     return points if points else None
 
 
-def _plot_best_so_far(
+def _plot_best_so_far(  # noqa: PLR0915
     idx_latency_pairs,
     out_path: str,
     units: str = "",
@@ -312,7 +312,7 @@ def _plot_best_so_far(
 
     if base_dir is not None:
         # Determine a uniform line width: fraction of the gap between run points
-        if len(idxs) >= 2:
+        if len(idxs) >= 2:  # noqa: PLR2004
             avg_gap = (float(idxs[-1]) - float(idxs[0])) / (len(idxs) - 1)
         else:
             avg_gap = 1.0
@@ -334,7 +334,7 @@ def _plot_best_so_far(
             final_lat = final_latency_of.get(int(idx_val))
             if final_lat is not None:
                 last_t, last_v = series[-1]
-                if abs(last_v - final_lat) > 0.5:
+                if abs(last_v - final_lat) > 0.5:  # noqa: PLR2004
                     series.append((last_t + 1e-6, final_lat))
 
             # Normalise trace times to [idx - half_width, idx + half_width]

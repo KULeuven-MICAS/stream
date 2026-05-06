@@ -127,7 +127,7 @@ class StrideSet:
                 new_strides.append(var)
         return type(self)(tuple(new_strides))
 
-    def legalize(self) -> Self:
+    def legalize(self) -> Self:  # noqa: PLR0912
         if any(s.spatial for s in self.strides):
             raise RuntimeError("cannot legalize strideset with spatial strides")
         new_strides: list[Stride] = []
@@ -165,15 +165,15 @@ class StrideSet:
                     )
                 ).legalize()
         changed = False
-        # make sure the inner 3 most strides are nonzero
+        min_nonzero_strides = 3
+        min_total_strides = 4
         for var in self.strides:
             if var.stride == 0 and var.size != 1:
-                while len(new_strides) < 3:
+                while len(new_strides) < min_nonzero_strides:
                     changed = True
                     new_strides.append(Stride(1, 0, var.iteration_t))
             new_strides.append(var)
-        # make sure the transform is at least 4 strides long
-        while len(new_strides) < 4:
+        while len(new_strides) < min_total_strides:
             changed = True
             new_strides.append(Stride(1, 0, self.strides[-1].iteration_t))
         new = type(self)(tuple(new_strides))
@@ -629,7 +629,7 @@ class ChannelToObjectFifoPass(RewritePattern):
         return int(tile[-1]) > 1
 
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, channel: ChannelOp, rewriter: PatternRewriter):
+    def match_and_rewrite(self, channel: ChannelOp, rewriter: PatternRewriter):  # noqa: PLR0912
         if "of" in channel.attributes:
             # already converted
             return
@@ -656,7 +656,7 @@ class ChannelToObjectFifoPass(RewritePattern):
             transformations = [
                 (x, y)
                 for x, y in zip(in_ss.vars, out_ss.vars, strict=True)
-                if (x.type == StrensorVarType.SPATIAL or y.type == StrensorVarType.SPATIAL)
+                if StrensorVarType.SPATIAL in (x.type, y.type)
             ]
         elif all(v.type == StrensorVarType.CONSTANT for v in in_ss.vars):
             transformations = [(x, x) for x in out_ss.vars if x.type == StrensorVarType.SPATIAL]
@@ -1002,7 +1002,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
         # delete original op
         rewriter.erase_matched_op()
 
-    def generate_reuse_pattern(
+    def generate_reuse_pattern(  # noqa: PLR0912, PLR0915
         self,
         op: PullOp | PushOp,
         of: str,
@@ -1129,10 +1129,8 @@ class TransferToObjectFIFOPattern(RewritePattern):
 
         if isinstance(op, PushOp):
             strensor = op.input.type
-            port = ObjectFifoPortEnum.Produce
-        else:  # pull
+        else:
             strensor = op.output.type
-            port = ObjectFifoPortEnum.Consume
         assert isinstance(strensor, StrensorType)
         ofs = op.attributes.get("of")
         assert isa(ofs, ArrayAttr[StringAttr]) or isa(ofs, StringAttr)

@@ -84,9 +84,7 @@ class AIEKernelWithZeroing(AIEKernel, ABC):
             assert device_op.parent
             device_op = device_op.parent
 
-        SymbolTable.insert_or_update(
-            device_op, FuncOp(self.zero_name, self.zero_type(op), Region(), "private")
-        )
+        SymbolTable.insert_or_update(device_op, FuncOp(self.zero_name, self.zero_type(op), Region(), "private"))
 
         # Insert zeroing after definition of output
         assert isinstance((last := op.inputs[-1]), OpResult)
@@ -110,9 +108,7 @@ class AIEKernelWithZeroing(AIEKernel, ABC):
                     assert isinstance(case_def.source, OpResult)
                     case_def = case_def.source.op
                 assert isinstance(case_def, ObjectFIFOSubviewAccessOp)
-                rewriter.insert_op(
-                    self.zero_call(case_def), InsertPoint.after(case_def)
-                )
+                rewriter.insert_op(self.zero_call(case_def), InsertPoint.after(case_def))
         else:
             assert isinstance(first_def, ObjectFIFOSubviewAccessOp)
             rewriter.insert_op(self.zero_call(first_def), InsertPoint.after(first_def))

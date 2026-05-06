@@ -1,37 +1,21 @@
-import string
-from collections import defaultdict
-from collections.abc import Iterable, Iterator, Sequence
-from copy import deepcopy
-from dataclasses import dataclass, field
-from functools import reduce
-from itertools import product
-from math import isqrt, prod
-from typing import Self, cast
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 
 from snaxc.dialects.snax import LayoutCast
 from snaxc.dialects.tsl import TiledStridedLayoutAttr
-from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
-from xdsl.context import Context, MLContext
+from snaxc.ir.tsl import Stride, TiledStridedLayout
+from xdsl.context import Context
 from xdsl.dialects import scf
-from xdsl.dialects.arith import AddiOp, ConstantOp, MuliOp
+from xdsl.dialects.arith import ConstantOp
 from xdsl.dialects.builtin import (
-    ArrayAttr,
-    DenseArrayBase,
     FixedBitwidthType,
     IndexType,
-    IntegerAttr,
-    IntegerType,
     MemRefType,
     ModuleOp,
-    NoneAttr,
     ShapedType,
-    StringAttr,
-    SymbolRefAttr,
-    i32,
 )
-from xdsl.dialects.func import CallOp, FuncOp
 from xdsl.dialects.scf import ForOp, IndexSwitchOp, YieldOp
-from xdsl.ir import Attribute, Operation, OpResult, Region, SSAValue
+from xdsl.ir import Operation, OpResult
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
     PatternRewriter,
@@ -39,61 +23,33 @@ from xdsl.pattern_rewriter import (
     RewritePattern,
     op_type_rewrite_pattern,
 )
-from xdsl.rewriter import InsertPoint, Rewriter
+from xdsl.rewriter import InsertPoint
 from xdsl.utils.hints import isa
 from xdsl_aie.dialects.aie import (
-    AIEDeviceEnum,
     BDDimLayout,
     BDDimLayoutArray,
     BDDimLayoutArrayAttr,
     Block,
     CoreOp,
     DeviceOp,
-    DMABDOp,
     EndOp,
-    ObjectFIFO,
     ObjectFifoAcquireOp,
     ObjectFifoLinkOp,
     ObjectFifoOp,
     ObjectFifoPortEnum,
-    ObjectFIFOReleaseOp,
     ObjectFIFOSubview,
     ObjectFIFOSubviewAccessOp,
-    RuntimeSequenceOp,
     SymbolTable,
     TileOp,
-)
-from xdsl_aie.dialects.aiex import (
-    DmaAwaitTaskOp,
-    DmaConfigureTaskForOp,
-    DmaMemcpyNdOp,
-    DmaStartTaskOp,
-    DmaWaitOp,
 )
 
 from stream.compiler.context.aie_context import AIEContext
 from stream.compiler.dialects.stream import (
-    ChannelOp,
     ComputationNodeOp,
-    InEdgeOp,
-    OutEdgeOp,
-    PullOp,
-    PushOp,
-    SteadyStateIterationSpaceAttr,
-    StrensorType,
-    StrensorVar,
-    TransferOp,
 )
 from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_aie_kernels import ConvertAIEKernels
-from stream.compiler.transforms.iteration_space_to_for import iteration_space_to_for
-from stream.workload.steady_state.iteration_space import (
-    IterationVariable,
-    IterationVariableType,
-    Reuse,
-    SteadyStateIterationSpace,
-)
 
 
 def canonicalize_transformation(sizes: Sequence[int], strides: Sequence[int]) -> tuple[list[int], list[int]]:
@@ -240,7 +196,7 @@ def get_transform(source: TiledStridedLayout, dest: TiledStridedLayout) -> tuple
 @dataclass
 class RealizeLayoutCasts(RewritePattern):
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, op: LayoutCast, rewriter: PatternRewriter):
+    def match_and_rewrite(self, op: LayoutCast, rewriter: PatternRewriter):  # noqa: PLR0912, PLR0915
         device_op = op
         while not isinstance((device_op := device_op.parent_op()), DeviceOp):
             assert device_op is not None
@@ -258,9 +214,9 @@ class RealizeLayoutCasts(RewritePattern):
             return
 
         def all_acquires(of: str) -> Iterable[ObjectFifoAcquireOp]:
-            for op in device_op.walk():
-                if isinstance(op, ObjectFifoAcquireOp) and op.objFifo_name.root_reference.data == of:
-                    yield op
+            for walk_op in device_op.walk():
+                if isinstance(walk_op, ObjectFifoAcquireOp) and walk_op.objFifo_name.root_reference.data == of:
+                    yield walk_op
 
         # get all acquires and releases
         consumers: list[ObjectFifoAcquireOp] = []

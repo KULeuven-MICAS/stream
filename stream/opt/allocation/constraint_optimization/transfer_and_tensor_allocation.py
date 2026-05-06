@@ -24,7 +24,12 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
 )
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency
 from stream.workload.node import HasOutputs, TransferType
-from stream.workload.steady_state.iteration_space import IterationVariableType, LoopEffect, Reuse, SteadyStateIterationSpace
+from stream.workload.steady_state.iteration_space import (
+    IterationVariableType,
+    LoopEffect,
+    Reuse,
+    SteadyStateIterationSpace,
+)
 from stream.workload.steady_state.node import Node
 from stream.workload.workload import (
     ComputationNode,
@@ -1205,9 +1210,7 @@ class TransferAndTensorAllocator:
         )
         self.save_optimization_trace(os.path.join(self.output_path, "optimization_trace.yaml"))
         self.save_optimization_metrics(save_path=os.path.join(self.output_path, "optimization_metrics.yaml"))
-        self.save_slot_latency_breakdown(
-            save_path=os.path.join(self.output_path, "slot_latency_breakdown.yaml")
-        )
+        self.save_slot_latency_breakdown(save_path=os.path.join(self.output_path, "slot_latency_breakdown.yaml"))
 
         assert self.total_latency is not None, "Total latency variable was not created."
         total_latency = int(self.total_latency.X)
@@ -1679,7 +1682,7 @@ class TransferAndTensorAllocator:
         """
 
         def _scalar(v: Any) -> Any:
-            if v is None or isinstance(v, (bool, str)):
+            if v is None or isinstance(v, bool | str):
                 return v
             try:
                 f = float(v)
@@ -1740,7 +1743,7 @@ class TransferAndTensorAllocator:
             # ── Transfer contributors (only the chosen path per transfer) ── #
             for (tr, choice), y in self.y_path_choice.items():
                 try:
-                    if float(y.X) < 0.5:
+                    if float(y.X) < 0.5:  # noqa: PLR2004
                         continue
                     s = int(self.slot_of[tr])
                     raw = int(self._transfer_latency_for_path(tr, choice))
@@ -1794,9 +1797,7 @@ class TransferAndTensorAllocator:
             except Exception:
                 overlap_val = None
             try:
-                total_latency_val = (
-                    float(self.total_latency.X) if self.total_latency is not None else None
-                )
+                total_latency_val = float(self.total_latency.X) if self.total_latency is not None else None
             except Exception:
                 total_latency_val = None
             iter_step_val: float | None

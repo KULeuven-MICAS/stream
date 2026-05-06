@@ -1,19 +1,14 @@
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from enum import Enum, IntFlag, auto
 from math import prod
-from typing import Generic, Iterable, Reversible, Self, TypeVar
+from typing import Self, TypeVar
 
 from xdsl.dialects.builtin import (
     ContainerType,
     FixedBitwidthType,
-    IndexType,
     IntAttr,
-    IntegerAttr,
     NoneAttr,
-    ShapedType,
     StringAttr,
-    i64,
 )
 from xdsl.dialects.utils import AbstractYieldOperation
 from xdsl.ir import (
@@ -28,18 +23,14 @@ from xdsl.ir import (
     StrEnum,
     TypeAttribute,
     VerifyException,
-    core,
 )
 from xdsl.irdl import (
-    AttrSizedOperandSegments,
     IRDLOperation,
     ParameterDef,
     irdl_attr_definition,
     irdl_op_definition,
     operand_def,
-    opt_operand_def,
     opt_prop_def,
-    opt_result_def,
     prop_def,
     region_def,
     result_def,
@@ -47,17 +38,15 @@ from xdsl.irdl import (
     var_operand_def,
     var_result_def,
 )
-from xdsl.parser import ArrayAttr, AttrParser, DenseArrayBase, MLIRTokenKind, MemRefType
+from xdsl.parser import ArrayAttr, AttrParser, MLIRTokenKind
 from xdsl.printer import Printer
 from xdsl.traits import IsolatedFromAbove, Pure
 
 from stream.datatypes import LayerDim
-from stream.hardware.architecture.core import Core
 from stream.workload.steady_state.iteration_space import (
-    IterationVariable,
     SteadyStateIterationSpace,
 )
-from stream.workload.workload import InEdge, OutEdge
+from stream.workload.workload import OutEdge
 
 
 @irdl_attr_definition
@@ -107,7 +96,7 @@ class CoreAttr(ParametrizedAttribute):
         printer.print_string(f"t{self.col.data}-{self.row.data}")
 
 
-StrensorCovT = TypeVar("StrensorCovT", bound=FixedBitwidthType, covariant=True)
+StrensorCovT_co = TypeVar("StrensorCovT_co", bound=FixedBitwidthType, covariant=True)
 
 
 class StrensorVarType(StrEnum):
@@ -138,7 +127,7 @@ class StrensorVar:
         if size is None:
             return
         parser.parse_characters("(")
-        parser._current_token
+        _ = parser._current_token
         var_type, dim = cls.parse_dim(parser)
         parser.parse_characters(")")
         return cls(var_type, size, dim)

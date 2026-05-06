@@ -1,13 +1,13 @@
 from collections import defaultdict
-from typing import Sequence
-from xdsl.context import Context, MLContext
+
+from xdsl.context import Context
 from xdsl.dialects.builtin import IntegerAttr, ModuleOp
 from xdsl.dialects.csl import RewritePattern
 from xdsl.ir import Block, Operation, Region
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
-    PatternRewriteWalker,
     PatternRewriter,
+    PatternRewriteWalker,
     op_type_rewrite_pattern,
 )
 from xdsl.rewriter import InsertPoint
@@ -34,7 +34,6 @@ from stream.compiler.dialects.stream import (
 class FusionGroupDispatcher(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, fusion_op: FusionGroupOp, rewriter: PatternRewriter):
-
         locs: dict[str, list[Operation]] = defaultdict(list)
 
         # determine new location for each block
@@ -63,13 +62,11 @@ class FusionGroupDispatcher(RewritePattern):
 
         # Create proper runtime sequence:
         runtime_ops = locs.pop("tile_0_0")
-        runtime = RuntimeSequenceOp(
-            Region(Block(arg_types=fusion_op.body.block.arg_types))
-        )
+        runtime = RuntimeSequenceOp(Region(Block(arg_types=fusion_op.body.block.arg_types)))
         for op in runtime_ops:
             op.detach()
             rewriter.insert_op(op, InsertPoint.at_end(runtime.body.block))
-        for f_arg, r_arg in zip(fusion_op.body.block.args, runtime.body.block.args):
+        for f_arg, r_arg in zip(fusion_op.body.block.args, runtime.body.block.args, strict=False):
             f_arg.replace_by(r_arg)
 
         core_ops: list[Operation] = []

@@ -225,7 +225,7 @@ class CommunicationManager:
 
         # Weighting (same idea as meeting case, but applied to no-meeting too)
         for u, v, d in Gw.edges(data=True):
-            if (is_offchip(v) and is_memory(u)):
+            if is_offchip(v) and is_memory(u):
                 d["w"] = float(offchip_mem_penalty)
             else:
                 d["w"] = 1.0

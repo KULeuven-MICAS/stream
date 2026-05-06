@@ -59,7 +59,5 @@ class EltwiseMulKernel(AIEKernel):
         len = prod(cast(MemRefType[AnyDenseElement], op.inputs[0].type).get_shape())
         return [
             len := ConstantOp.from_int_and_width(len, i32),
-            CallOp(
-                self.function_name, [op.inputs[0], op.inputs[1], op.inputs[2], len], []
-            ),
+            CallOp(self.function_name, [op.inputs[0], op.inputs[1], op.inputs[2], len], []),
         ]

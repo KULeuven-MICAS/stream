@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 
 from xdsl.dialects.arith import ConstantOp
-from xdsl.dialects.builtin import IndexType, ModuleOp, StringAttr
+from xdsl.dialects.builtin import IndexType, ModuleOp
 from xdsl.dialects.csl import RewritePattern
 from xdsl.dialects.scf import ForOp, YieldOp
 from xdsl.ir import Block
@@ -9,29 +9,22 @@ from xdsl.irdl import OpResult
 from xdsl.parser import Context
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
-    PatternRewriteWalker,
     PatternRewriter,
+    PatternRewriteWalker,
     op_type_rewrite_pattern,
 )
-from xdsl.rewriter import InsertPoint, Rewriter
+from xdsl.rewriter import InsertPoint
 from xdsl_aie.dialects.aie import CoreOp, EndOp, TileOp
 
 from stream.compiler.dialects.stream import (
     ComputationNodeOp,
     PullOp,
     PushOp,
-    StrensorSpace,
-    StrensorSpaceAttr,
     StrensorType,
-    StrensorVar,
     StrensorVarAttr,
     StrensorVarType,
 )
 from stream.datatypes import LayerDim
-from stream.workload.steady_state.iteration_space import (
-    IterationVariable,
-    IterationVariableType,
-)
 
 
 def iteration_space_to_for(block: Block, rewriter: PatternRewriter):  # noqa: PLR0912, PLR0915
@@ -73,9 +66,7 @@ def iteration_space_to_for(block: Block, rewriter: PatternRewriter):  # noqa: PL
         if var.dim not in relevant_dims:
             continue
         ub = ConstantOp.from_int_and_width(var.size, IndexType())
-        for_op = ForOp(
-            lb, ub, step, [], Block([*for_ops, YieldOp()], arg_types=[IndexType()])
-        )
+        for_op = ForOp(lb, ub, step, [], Block([*for_ops, YieldOp()], arg_types=[IndexType()]))
         if innermost is None:
             innermost = for_op
         for_op.attributes["layer_dim"] = StrensorVarAttr(var)
@@ -107,6 +98,4 @@ class IterationSpaceToFor(ModulePass):
     name = "iteration-space-to-for"
 
     def apply(self, ctx: Context, op: ModuleOp) -> None:
-        PatternRewriteWalker(
-            ComputeCoreToFor(), apply_recursively=False
-        ).rewrite_module(op)
+        PatternRewriteWalker(ComputeCoreToFor(), apply_recursively=False).rewrite_module(op)
