@@ -105,7 +105,6 @@ class CoreCostEstimationStage(Stage):
             self.remove_old_entries(node)
             if seen_new:
                 self.cost_lut.save()
-        pass
 
     def check_equal_mapping(self, node1: ComputationNode, node2: ComputationNode) -> bool:
         if node2 is None:

@@ -640,23 +640,6 @@ class MappingGenerator:
         return out_path
 
 
-# -------------------------
-# Example usage
-# -------------------------
-# gen = MappingGenerator(
-#     accelerator=accelerator,
-#     output_dir="./mappings_out",
-#     seq_len=seq_len,
-#     embedding_dim=embedding_dim,
-#     hidden_dim=hidden_dim,
-#     last_gemm_down=True,
-#     seq_len_tile_size=seq_len_tile_size,
-#     embedding_tile_size=embedding_tile_size,
-#     hidden_tile_size=hidden_tile_size,
-#     max_variants=50,                     # optional
-#     disjoint_cores_per_layer=True,       # optional
-# )
-# paths = gen.run()
 # print("Generated mapping files:")
 # for p in paths:
 #     print("  ", p)

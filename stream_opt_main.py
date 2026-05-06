@@ -81,17 +81,11 @@ class StreamMain(xDSLOptMain):
     def register_all_frontends(self):
         super().register_all_frontends()
 
-        # def parse_onnx(io: IO[str]) -> ModuleOp:
-        #     assert isinstance(io.name, str)
-        #     return OnnxParser(io.name).parse()
-        #
-        # self.available_frontends["onnx"] = parse_onnx
-
 
 def main():
     stream_main = StreamMain()
     stream_main.run()
 
 
-if "__main__" == __name__:
+if __name__ == "__main__":
     main()

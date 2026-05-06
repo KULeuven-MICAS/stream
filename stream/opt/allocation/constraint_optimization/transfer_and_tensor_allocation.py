@@ -1301,24 +1301,6 @@ class TransferAndTensorAllocator:
                 stop = next(s for s in range(-1, stop_max) if self.z_stop[(t, s)].X > self.VAR_THRESHOLD)
                 assert stop >= 0
 
-    def _eval_and_print_linexpr(self, expr, sol=None):
-        val = expr.getConstant()
-
-        print("Expression terms:")
-        for i in range(expr.size()):
-            var = expr.getVar(i)
-            coeff = expr.getCoeff(i)
-            x = sol[var] if sol is not None else var.X
-            term_val = coeff * x
-            val += term_val
-            print(f"  {coeff} * {var.VarName} (value={x:.4f}) -> {term_val:.4f}")
-
-        if expr.getConstant() != 0:
-            print(f"  constant {expr.getConstant()}")
-
-        print(f"Total = {val:.4f}")
-        return val
-
     def _retrieve_core_allocation(self, node: Node) -> tuple[tuple[Core, ...], ...]:
         if isinstance(node, InEdge):
             assert self.accelerator.offchip_core_id is not None

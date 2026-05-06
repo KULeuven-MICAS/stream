@@ -22,7 +22,6 @@ def plot_activation_distribution(
     df, max_size = get_sizes_per_node(workload, order=order)
     # Plot the sizes
     nb_iterations = max(df["Iteration"])
-    print(f"Activation distribution: {nb_iterations} iterations; {len(df)} bars; {max_size:.3e} max")
     fig = px.bar(
         df,
         x="Layer",
@@ -41,7 +40,6 @@ def plot_activation_distribution(
     fig.layout.updatemenus[0].buttons[0].args[1]["transition"]["duration"] = transition_time  # type: ignore
     fig.update_geos(projection_type="equirectangular", visible=True, resolution=110)
     fig.write_html(fig_path)
-    pass
 
 
 def get_sizes_per_node(workload, order):

@@ -89,16 +89,6 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         max_nb_mappings=256,
     )
 
-    # #####################CostModelEvaluationLUT LOAD#############################
-    # cost_lut_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
-    # cost_lut = CostModelEvaluationLUT(cost_lut_path)
-    # #############################################################################
-
-    # # Save json for perfetto visualization (Visualize at http://ui.perfetto.dev/)
-    # convert_scme_to_perfetto_json(scme, cost_lut, json_path=json_path)
-
-    # # Plotting memory usage of best SCME
-    # plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
     module = ctx.get("module")
 
     return module

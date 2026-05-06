@@ -110,7 +110,6 @@ class StandardFitnessEvaluator(FitnessEvaluator):
                 # Get the required offchip bandwidth during the execution of the node for all directions
                 offchip_bandwidth_per_op: dict[MemoryOperand, FourWayDataMoving] = {}
                 if too_large_operands and hasattr(cme, "ideal_temporal_cycle") and latency:
-                    bandwidth_scaling = cme.ideal_temporal_cycle / latency  # noqa: F841
                     offchip_bandwidth_per_op = {
                         mem_op: 3  # get_top_level_inst_bandwidth(cme, mem_op, bandwidth_scaling)
                         for mem_op in too_large_operands

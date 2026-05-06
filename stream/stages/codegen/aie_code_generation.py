@@ -1,5 +1,4 @@
 import os
-import time
 from collections.abc import Iterable, Sequence
 from typing import cast
 from warnings import warn
@@ -27,8 +26,6 @@ from stream.compiler.dialects.stream import (
     YieldOp,
 )
 from stream.compiler.transforms.aie_convert_ofs import AIEConvertOfs
-
-# from stream.compiler.transforms.aie_add_tracing_script import AIEAddTracingScript
 from stream.compiler.transforms.aie_dispatch import AIEDispatchPass
 from stream.compiler.transforms.aie_move_tile_ops_up import AIEMoveTileOpsUp
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
@@ -90,10 +87,7 @@ class AIECodeGenerationStage(Stage):
 
         for ctx in sub_stage.run():
             self.ctx = ctx
-            start = time.time()
             self.codegen_main()
-            end = time.time()
-            print(f"code generation took {end - start} seconds")
             assert self.module is not None
             self.ctx.set(module=self.module)
             yield self.ctx
@@ -425,7 +419,6 @@ class AIECodeGenerationStage(Stage):
 
     def codegen_main(self) -> None:
         workload: Workload = self.ctx.get("workload")
-        trace_size: int = self.ctx.get("trace_size", 1048576)  # noqa: F841
         assert workload is not None
         mapping = self.ctx.get("scheduler").mapping
         for kernel in (nm.kernel for nm in mapping.values() if nm.kernel is not None):
