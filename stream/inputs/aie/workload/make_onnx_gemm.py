@@ -10,24 +10,28 @@ def make_gemm_workload(M, K, N, in_dtype, out_dtype):  # noqa: N803
     if "16" in in_dtype:
         ACT_SIZE = 16
         WEIGHT_SIZE = 16
+        in_dtype_onnx = TensorProto.BFLOAT16
     elif "32" in in_dtype:
         ACT_SIZE = 32
         WEIGHT_SIZE = 32
+        in_dtype_onnx = TensorProto.FLOAT
     else:
         raise ValueError(f"Unsupported input data type: {in_dtype}")
     if "16" in out_dtype:
         OUTPUT_SIZE = 16
+        out_dtype_onnx = TensorProto.BFLOAT16
     elif "32" in out_dtype:
         OUTPUT_SIZE = 32
+        out_dtype_onnx = TensorProto.FLOAT
     else:
         raise ValueError(f"Unsupported output data type: {out_dtype}")
 
     name = f"gemm_{M}_{K}_{N}"
 
     # Define the model's graph
-    input_tensor_A = helper.make_tensor_value_info("A", TensorProto.FLOAT, [M, K])
+    input_tensor_A = helper.make_tensor_value_info("A", in_dtype_onnx, [M, K])
     output_tensor = helper.make_tensor_value_info(
-        "Y", TensorProto.FLOAT, None
+        "Y", out_dtype_onnx, None
     )  # Let shape inference infer the output shape
 
     # Gemm node
@@ -48,7 +52,7 @@ def make_gemm_workload(M, K, N, in_dtype, out_dtype):  # noqa: N803
     # Omit the weight values by creating dummy weight initializers, just for shape definition
     weight_B = helper.make_tensor(
         "B",
-        TensorProto.FLOAT,
+        in_dtype_onnx,
         [K, N],
         np.zeros((K, N)),
     )

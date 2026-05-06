@@ -573,13 +573,13 @@ class SteadyStateScheduler:
                 tr=node, workload=self.ssw
             )  # won't have any compute preds
             dst = get_node_with_largest_resource_allocation(compute_dsts, self.mapping)
-            possible_memory_cores = self._get_possible_memory_core_allocations(dst)
+            possible_memory_cores = self._get_possible_memory_core_allocations(dst, node)
         elif node.transfer_type in (TransferType.MEM_TO_MEM,) and any(isinstance(dst, OutEdge) for dst in dsts):
             assert len(dsts) == 1, "Currently only support single destination for constant output transfer."
             dst = dsts[0]
             possible_memory_cores = self._retrieve_core_allocation(dst)
         elif node.transfer_type in (TransferType.COMPUTE_TO_MEM,):
-            possible_memory_cores = self._get_possible_memory_core_allocations(src)
+            possible_memory_cores = self._get_possible_memory_core_allocations(src, node)
         else:
             possible_memory_cores_set: set[Core] = set()
             for dst in dsts:
@@ -625,6 +625,7 @@ class SteadyStateScheduler:
     def get_matching_tiling(
         self, compute_tiling: InterCoreTiling, dst_allocs: tuple[Core, ...]
     ) -> tuple[LayerDim, int]:
+        # TODO: Make sure that the selected tiling_loop is relevant for the transfer node
         for tiling_loop in compute_tiling:
             _, size = tiling_loop
             if size == len(dst_allocs):
@@ -718,10 +719,22 @@ class SteadyStateScheduler:
                 memory_cores.add(core)
         return memory_cores
 
-    def _get_possible_memory_core_allocations(self, src: HasOutputs) -> tuple[tuple[Core, ...], ...]:
-        MAX_NB_SRC_ALLOCATION_PER_MEM_CORE = 4
-        nb_source_allocations = len(self._retrieve_core_allocation(src)[0])
-        required_nb_memory_cores = ceil(nb_source_allocations / MAX_NB_SRC_ALLOCATION_PER_MEM_CORE)
+    def _get_possible_memory_core_allocations(self, src: HasOutputs, node: Node) -> tuple[tuple[Core, ...], ...]:
+        MAX_RELEVANT_FACTOR_PER_TRANSFER_TYPE = {
+            TransferType.MEM_TO_MEM: 1,  # for input transfers to mem tile
+            TransferType.COMPUTE_TO_MEM: 4,  # for output transfers to mem tile
+        }
+        # Check the dims of node and find their unrolling factors in inter_core_tiling of src
+        node_dims = self.ssw.get_dims(node)
+        inter_core_tiling_src = self.mapping.get(src).inter_core_tiling[0]
+        total_relevant_unrolling = 1
+        for dim in node_dims:
+            for tiling_dim, size in inter_core_tiling_src:
+                if tiling_dim == dim:
+                    total_relevant_unrolling *= size
+        required_nb_memory_cores = ceil(
+            total_relevant_unrolling / MAX_RELEVANT_FACTOR_PER_TRANSFER_TYPE[node.transfer_type]
+        )
         all_mem_cores = self._get_accelerator_memory_cores()
         candidates = [tuple(combo) for combo in combinations(all_mem_cores, required_nb_memory_cores)]
         return tuple(candidates)

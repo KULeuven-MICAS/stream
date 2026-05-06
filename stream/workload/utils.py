@@ -143,18 +143,18 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                     )
                 )
             elif dim not in workload.get_dims(node):
-                if isinstance(node, ComputationNode):
-                    effect = LoopEffect.ABSENT
-                elif isinstance(node, TransferNode):
-                    compute_preds_succs = get_compute_predecessors_successors(node, workload)
-                    dim_not_in_any_compute = all(dim not in workload.get_dims(n) for n in compute_preds_succs)
-                    effect = LoopEffect.ABSENT if dim_not_in_any_compute else LoopEffect.INVARIANT
-                # This dimension is not present, so add an absent spatial var
+                # if isinstance(node, ComputationNode):
+                #     effect = LoopEffect.ABSENT
+                # elif isinstance(node, TransferNode):
+                #     compute_preds_succs = get_compute_predecessors_successors(node, workload)
+                #     dim_not_in_any_compute = all(dim not in workload.get_dims(n) for n in compute_preds_succs)
+                #     effect = LoopEffect.ABSENT if dim_not_in_any_compute else LoopEffect.INVARIANT
+                # # This dimension is not present, so add an absent spatial var
                 iteration_variables[node].append(
                     IterationVariable(
                         dimension=dim,
                         size=unrolling,
-                        effect=effect,
+                        effect=LoopEffect.ABSENT,
                         type=IterationVariableType.SPATIOTEMPORAL,
                     )
                 )
