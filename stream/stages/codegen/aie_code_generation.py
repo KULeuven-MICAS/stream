@@ -1,36 +1,22 @@
 import os
 import time
-from collections import defaultdict
-from collections.abc import Iterator, Sequence
-from copy import deepcopy
-from itertools import product
-from math import prod
-from typing import Iterable, cast
+from collections.abc import Iterable, Sequence
+from typing import cast
 from warnings import warn
 
-from snaxc.dialects.snax import NoneAttr
 from snaxc.dialects.tsl import TSL
-from xdsl.context import MLContext
 from xdsl.dialects.builtin import (
-    ArrayAttr,
-    IntegerAttr,
-    MemRefType,
     ModuleOp,
     ShapedType,
-    TensorType,
 )
-from xdsl.ir import Block, OpResult, Operation, Region, SSAValue
-from xdsl.ir.affine import AffineDimExpr
-from xdsl.parser import AffineMap, StringAttr
-from xdsl_aie.dialects.aie import AIEDeviceEnum
+from xdsl.ir import Block, Operation, OpResult, Region, SSAValue
+from xdsl.parser import StringAttr
 
 from stream.compiler.context.aie_context import AIEContext
 from stream.compiler.dialects.stream import (
     ComputationNodeOp,
-    CoreAttr,
     FusionGroupOp,
     InEdgeOp,
-    LayerDimAttr,
     OutEdgeOp,
     Stream,
     StrensorSpace,
@@ -48,11 +34,8 @@ from stream.compiler.transforms.aie_move_tile_ops_up import AIEMoveTileOpsUp
 from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import (
     ConvertStreamToAIEPass,
-    canonicalize_transformation,
 )
 from stream.compiler.transforms.iteration_space_to_for import IterationSpaceToFor
-from stream.compiler.transforms.stream_split_transfers import StreamSplitTransfersPass
-from stream.compiler.transforms.stream_split_unicasts import StreamSplitUnicastsPass
 from stream.compiler.transforms.unroll import SpatialUnrollPass
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import LayerDim
@@ -61,7 +44,6 @@ from stream.mapping.mapping import Mapping, NodeMapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.iteration_space import (
-    IterationVariable,
     IterationVariableType,
     LoopEffect,
     Reuse,
@@ -197,9 +179,7 @@ class AIECodeGenerationStage(Stage):
         if len(cores) == 1:
             # FIXME: hardcoded fix:
             if any(x.type == StrensorVarType.SPATIAL for x in ss.vars):
-                warn("hardcoding spatial loop to be absent because of wrong input")
-                relevant_dims = {x.dim for x in ss.get_kernel_variables()}
-                new_vars = []
+                warn("hardcoding spatial loop to be absent because of wrong input", stacklevel=2)
                 ss_new = StrensorSpace(
                     tuple(
                         StrensorVar(StrensorVarType.ABSENT, x.size, x.dim) if x.type == StrensorVarType.SPATIAL else x
@@ -258,7 +238,7 @@ class AIECodeGenerationStage(Stage):
 
         return op
 
-    def create_computation_node_op(
+    def create_computation_node_op(  # noqa: PLR0913
         self,
         node: ComputationNode,
         mapping: NodeMapping,
@@ -270,9 +250,7 @@ class AIECodeGenerationStage(Stage):
         ss: StrensorSpace,
         reuse_index: int,
     ) -> ComputationNodeOp:
-        ops: list[ComputationNodeOp] = []
-
-        # FIXME: recomputes reuse index becuase constraint optimization seems broken
+        # FIXME: recomputes reuse index because constraint optimization seems broken
         relevant_dims = {var.dim for var in ss.get_kernel_variables()}
 
         # just make sure we are output stationary
@@ -326,11 +304,8 @@ class AIECodeGenerationStage(Stage):
         #     core_allocation = ArrayAttr([IntegerAttr.from_index_int_value(x) for x in (col, row)])
         assert mapping.kernel is not None
         return ComputationNodeOp(inputs, (result_type,), mapping.kernel.unique_name)
-        #     ops.append(op)
 
-        return ops
-
-    def generate_steady_state_workload(
+    def generate_steady_state_workload(  # noqa: PLR0915
         self,
         workload: Workload,
         mapping: Mapping,
@@ -451,13 +426,8 @@ class AIECodeGenerationStage(Stage):
     def codegen_main(self) -> None:
         workload: Workload = self.ctx.get("workload")
         trace_size: int = self.ctx.get("trace_size", 1048576)  # noqa: F841
-        npu: AIEDeviceEnum = self.ctx.get("npu", "npu2")
         assert workload is not None
-
         mapping = self.ctx.get("scheduler").mapping
-        tensor_depths = self.ctx.get("scheduler").tensor_depths
-        aie_kernels = {nm.kernel.unique_name: nm.kernel for nm in mapping.values() if nm.kernel is not None}
-        # register kernels:
         for kernel in (nm.kernel for nm in mapping.values() if nm.kernel is not None):
             self.context.registered_kernels[kernel.unique_name] = kernel
 
@@ -487,21 +457,6 @@ class AIECodeGenerationStage(Stage):
         # with open("test1.mlir", "w") as f:
         #     f.write(str(module))
 
-        # StreamSplitUnicastsPass().apply(self.context, module)
-        #
-        # with open("test2.mlir", "w") as f:
-        #     f.write(str(module))
-        # # SetNoReusePass().apply(self.context, module)
-        # Split transfers in push and pull
-        # StreamSplitTransfersPass().apply(self.context, module)
-        #
-        # with open("test3.mlir", "w") as f:
-        #     f.write(str(module))
-        #
-        # Arguments that will be supplied via runtime sequence, modify as needed
-        # args = ["Op0.I_in", "Op0.W_in", "Op0.O_out"]  # gemm
-        # args = ["Gemm_Right.I_in", "Gemm_Right.W_in", "Gemm_Left.W_in", "Elt_Mul.O_out"]  # swiglu
-        args = self.runtime_args  # will be inferred automatically based on EdgeOps
         output_path = self.ctx.data["output_path"]
         output_path += "/codegen/"
         os.makedirs(output_path, exist_ok=True)

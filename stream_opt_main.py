@@ -19,11 +19,6 @@ from stream.compiler.transforms.convert_stream_to_aie import ConvertStreamToAIEP
 from stream.compiler.transforms.iteration_space_to_for import IterationSpaceToFor
 from stream.compiler.transforms.unroll import SpatialUnrollPass
 
-# from stream.dialects import get_all_dialects
-# from stream.frontend.onnx.parser import OnnxParser
-# from stream.transforms import get_all_passes
-#
-
 
 class StreamMain(xDSLOptMain):
     ctx: AIEContext
@@ -54,7 +49,6 @@ class StreamMain(xDSLOptMain):
         self.setup_pipeline()
 
     def register_default_kernels(self):
-        self.ctx.registered_kernels
         for kernel in (
             GemmKernel(1, bf16, 32, 32, 64, "layout"),
             GemmKernel(1, bf16, 32, 64, 32, "layout"),
@@ -72,8 +66,6 @@ class StreamMain(xDSLOptMain):
         self.register_pass("convert-stream-to-aie", lambda: ConvertStreamToAIEPass)
         self.register_pass("clear-memory-space", lambda: ClearMemorySpace)
         self.register_pass("aie-move-tile-ops-up", lambda: AIEMoveTileOpsUp)
-        pass
-        # self.register_pass(name, pass_)
 
     def register_all_dialects(self):
         super().register_all_dialects()

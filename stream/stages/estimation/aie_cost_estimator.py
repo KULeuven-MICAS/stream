@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from math import ceil, floor, prod
+from math import ceil, prod
 
 from xdsl.dialects.builtin import BFloat16Type, FixedBitwidthType, Float32Type
 

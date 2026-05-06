@@ -4,7 +4,6 @@ import os
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 
 _logging_level = _logging.INFO
@@ -32,7 +31,10 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     workload_path = make_swiglu_workload(
         seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down=last_gemm_down
     )
-    mapping_path = "outputs/dse-20260429-whole_array_strix-swiglu_256_2048_8192-4_row_8_col/tilesizes_32_128_32/42/swiglu_256_2048_2048_mapping.yaml"
+    mapping_path = (
+        "outputs/dse-20260429-whole_array_strix-swiglu_256_2048_8192-4_row_8_col"
+        "/tilesizes_32_128_32/42/swiglu_256_2048_2048_mapping.yaml"
+    )
     ##############################################################################################
 
     ################################PARSING###############################

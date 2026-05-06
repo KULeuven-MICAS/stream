@@ -41,7 +41,12 @@ from stream.workload.steady_state.iteration_space import (
     Reuse,
     SteadyStateIterationSpace,
 )
-from stream.workload.utils import generate_steady_state_iteration_spaces, get_compute_predecessors_successors, get_equivalent_dimension, get_node_with_largest_resource_allocation
+from stream.workload.utils import (
+    generate_steady_state_iteration_spaces,
+    get_compute_predecessors_successors,
+    get_equivalent_dimension,
+    get_node_with_largest_resource_allocation,
+)
 from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
@@ -152,7 +157,7 @@ class SteadyStateScheduler:
         )
         # Export Perfetto-compatible JSON traces of the solved schedule
         try:
-            for (compact, fname) in [(True, "steady_state_trace_compact.json"), (False, "steady_state_trace.json")]:
+            for compact, fname in [(True, "steady_state_trace_compact.json"), (False, "steady_state_trace.json")]:
                 trace_path = export_steady_state_trace(
                     tta=tta,
                     iterations=self.iterations,
@@ -207,7 +212,8 @@ class SteadyStateScheduler:
         spatial_keys_not_in_temporal = {
             (iv.dimension, iv.size)
             for iv in self.ssis[spatial_side].variables
-            if iv.type == IterationVariableType.SPATIAL and iv.applicable
+            if iv.type == IterationVariableType.SPATIAL
+            and iv.applicable
             and iv not in self.ssis[temporal_side].variables  # only look at temporal side vars that are not spatial
         }
         if not spatial_keys_not_in_temporal:
@@ -218,7 +224,10 @@ class SteadyStateScheduler:
                 IterationVariableType.TEMPORAL,
                 IterationVariableType.SPATIOTEMPORAL,
             ):
-                if (iv.dimension, iv.size) in spatial_keys_not_in_temporal and (iv.dimension, iv.size) not in seen_spatial_keys:
+                if (iv.dimension, iv.size) in spatial_keys_not_in_temporal and (
+                    iv.dimension,
+                    iv.size,
+                ) not in seen_spatial_keys:
                     iv.reuse = Reuse.REUSE
                     seen_spatial_keys.add((iv.dimension, iv.size))
 
@@ -560,14 +569,16 @@ class SteadyStateScheduler:
         self, node: TransferNode, src: HasOutputs, dsts: tuple[HasInputs, ...]
     ) -> tuple[tuple[Core, ...], ...]:
         """
-        Determine the memory allocation of the transfer node. The memory alloc is always for the destination side tensors.
-        This means that for input transfers, the MEM_TO_MEM transfer output tensor is allocated on one or more memory cores,
-        whereas for output transfers the COMPUTE_TO_MEM transfer output tensor is allocated on one or more memory cores.
-        Else, the possible memory allocations are determined by the destination nodes' allocations.
+        Determine the memory allocation of the transfer node.
+        The memory alloc is always for the destination side tensors. For input transfers, the
+        MEM_TO_MEM output tensor is allocated on memory cores; for output transfers the
+        COMPUTE_TO_MEM output tensor is. Otherwise, allocations follow destination nodes.
         """
         if node.transfer_type in (TransferType.MEM_TO_MEM,) and isinstance(src, InEdge):
             # Find the dst with max number of compute allocations to determine possible memory cores
-            compute_dsts = get_compute_predecessors_successors(tr=node, workload=self.ssw)  # won't have any compute preds
+            compute_dsts = get_compute_predecessors_successors(
+                tr=node, workload=self.ssw
+            )  # won't have any compute preds
             dst = get_node_with_largest_resource_allocation(compute_dsts, self.mapping)
             possible_memory_cores = self._get_possible_memory_core_allocations(dst)
         elif node.transfer_type in (TransferType.MEM_TO_MEM,) and any(isinstance(dst, OutEdge) for dst in dsts):

@@ -114,8 +114,7 @@ def load_experiment(path: str, label: str) -> Experiment:
     csv_path = os.path.join(path, "_plots", "summary.csv")
     if not os.path.isfile(csv_path):
         raise FileNotFoundError(
-            f"Missing summary.csv for experiment '{label}': {csv_path}\n"
-            f"Run plot_swiglu_dse_sweep.py on '{path}' first."
+            f"Missing summary.csv for experiment '{label}': {csv_path}\nRun plot_swiglu_dse_sweep.py on '{path}' first."
         )
     with open(csv_path, newline="") as f:
         rows = list(csv.DictReader(f))
@@ -174,7 +173,7 @@ def _save_fig(fig: plt.Figure, out_path_no_ext: str) -> None:
 
 
 def _experiment_colors(n: int) -> list:
-    cmap = plt.get_cmap("tab10" if n <= 10 else "tab20")
+    cmap = plt.get_cmap("tab10" if n <= 10 else "tab20")  # noqa: PLR2004
     return [cmap(i % cmap.N) for i in range(n)]
 
 
@@ -219,9 +218,7 @@ def plot_best_overall_bar(experiments: list[Experiment], out_path_no_ext: str, u
     _save_fig(fig, out_path_no_ext)
 
 
-def plot_best_per_tilesize_box(
-    experiments: list[Experiment], out_path_no_ext: str, units: str
-) -> None:
+def plot_best_per_tilesize_box(experiments: list[Experiment], out_path_no_ext: str, units: str) -> None:
     data = [e.best_per_tilesize for e in experiments]
     if not any(d.size for d in data):
         return
@@ -250,7 +247,7 @@ def plot_best_per_tilesize_box(
     for i, arr in enumerate(data, start=1):
         if arr.size == 0:
             continue
-        jitter = (np.random.RandomState(0).uniform(-0.12, 0.12, size=arr.size))
+        jitter = np.random.RandomState(0).uniform(-0.12, 0.12, size=arr.size)
         ax.scatter(
             np.full(arr.size, i) + jitter,
             arr,
@@ -270,15 +267,13 @@ def plot_best_per_tilesize_box(
     _save_fig(fig, out_path_no_ext)
 
 
-def plot_best_per_tilesize_bar(
-    experiments: list[Experiment], out_path_no_ext: str, units: str
-) -> None:
+def plot_best_per_tilesize_bar(experiments: list[Experiment], out_path_no_ext: str, units: str) -> None:
     """Grouped bar chart: per tile-size combination, one bar per experiment.
 
     Restricted to combinations that have a best latency in every experiment so
     the comparison is apples-to-apples.
     """
-    if len(experiments) < 2:
+    if len(experiments) < 2:  # noqa: PLR2004
         return
 
     # Find combos common to all experiments (with finite best latency in each).
@@ -367,7 +362,7 @@ def plot_success_rate_bar(experiments: list[Experiment], out_path_no_ext: str) -
             ax.text(
                 float(xi),
                 float(total),
-                f"{s/total:.0%}",
+                f"{s / total:.0%}",
                 ha="center",
                 va="bottom",
                 fontsize=11,
@@ -434,12 +429,8 @@ def main() -> None:
     units_label = f" ({UNITS})" if UNITS else ""
 
     plot_best_overall_bar(experiments, os.path.join(OUT_DIR, "best_overall_bar"), units_label)
-    plot_best_per_tilesize_box(
-        experiments, os.path.join(OUT_DIR, "best_per_tilesize_box"), units_label
-    )
-    plot_best_per_tilesize_bar(
-        experiments, os.path.join(OUT_DIR, "best_per_tilesize_bar"), units_label
-    )
+    plot_best_per_tilesize_box(experiments, os.path.join(OUT_DIR, "best_per_tilesize_box"), units_label)
+    plot_best_per_tilesize_bar(experiments, os.path.join(OUT_DIR, "best_per_tilesize_bar"), units_label)
     plot_success_rate_bar(experiments, os.path.join(OUT_DIR, "success_rate_bar"))
     write_compare_summary(experiments, os.path.join(OUT_DIR, "compare_summary.csv"), UNITS)
 

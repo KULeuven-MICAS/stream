@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import pickle
 from typing import TYPE_CHECKING, Any
@@ -16,13 +17,13 @@ logger = logging.getLogger(__name__)
 
 def _to_yaml_scalar(v: Any) -> Any:
     """Coerce a value to a native scalar yaml can dump cleanly. Falls back to ``str``."""
-    if v is None or isinstance(v, (bool, str)):
+    if v is None or isinstance(v, bool | str):
         return v
     try:
         f = float(v)
     except (TypeError, ValueError):
         return str(v)
-    if f != f or f in (float("inf"), float("-inf")):  # NaN / inf
+    if not math.isfinite(f):
         return str(v)
     if f.is_integer():
         return int(f)
@@ -115,9 +116,7 @@ class CoreCostLUT:
                 try:
                     lds = getattr(node, "layer_dim_sizes", None)
                     if lds is not None:
-                        node_entry["layer_dim_sizes"] = {
-                            str(k): _to_yaml_scalar(v) for k, v in dict(lds).items()
-                        }
+                        node_entry["layer_dim_sizes"] = {str(k): _to_yaml_scalar(v) for k, v in dict(lds).items()}
                 except Exception:
                     pass
                 cores_list: list[dict[str, Any]] = []
@@ -127,17 +126,13 @@ class CoreCostLUT:
                         "core_type": str(getattr(core, "core_type", "")),
                         "latency_total": _to_yaml_scalar(getattr(entry, "latency_total", None)),
                         "ideal_cycle": _to_yaml_scalar(getattr(entry, "ideal_cycle", None)),
-                        "ideal_temporal_cycle": _to_yaml_scalar(
-                            getattr(entry, "ideal_temporal_cycle", None)
-                        ),
+                        "ideal_temporal_cycle": _to_yaml_scalar(getattr(entry, "ideal_temporal_cycle", None)),
                         "energy_total": _to_yaml_scalar(getattr(entry, "energy_total", None)),
                     }
                     metadata = getattr(entry, "metadata", None) or {}
                     if metadata:
                         try:
-                            core_summary["metadata"] = {
-                                str(k): _to_yaml_scalar(v) for k, v in dict(metadata).items()
-                            }
+                            core_summary["metadata"] = {str(k): _to_yaml_scalar(v) for k, v in dict(metadata).items()}
                         except Exception:
                             pass
                     cores_list.append(core_summary)

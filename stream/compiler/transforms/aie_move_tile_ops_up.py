@@ -1,40 +1,24 @@
-from collections import defaultdict
-from typing import Sequence
-from xdsl.context import Context, MLContext
-from xdsl.dialects.builtin import IntegerAttr, ModuleOp
+from xdsl.context import Context
+from xdsl.dialects.builtin import ModuleOp
 from xdsl.dialects.csl import RewritePattern
-from xdsl.ir import Block, OpResult, Operation, Region
+from xdsl.ir import OpResult
 from xdsl.passes import ModulePass
 from xdsl.pattern_rewriter import (
-    PatternRewriteWalker,
     PatternRewriter,
+    PatternRewriteWalker,
     op_type_rewrite_pattern,
 )
 from xdsl.rewriter import InsertPoint
 from xdsl_aie.dialects.aie import (
-    AIEDeviceEnum,
     CoreOp,
     DeviceOp,
-    EndOp,
-    RuntimeSequenceOp,
     TileOp,
-)
-
-from stream.compiler.dialects.stream import (
-    ChannelOp,
-    ComputationNodeOp,
-    FusionGroupOp,
-    PullOp,
-    PushOp,
-    StrensorType,
-    YieldOp,
 )
 
 
 class MoveTileOpsUpPattern(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, device_op: DeviceOp, rewriter: PatternRewriter):
-
         tile_ops = []
         for tile_op in device_op.walk():
             if isinstance(tile_op, TileOp):

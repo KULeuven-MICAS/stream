@@ -2,6 +2,7 @@ import os
 
 import yaml
 
+
 def make_gemm_mapping(M, K, N, m, k, n, nb_rows_to_use: int = 4, nb_cols_to_use: int = 4):  # noqa: N803
     NB_COMPUTE_ROWS_OF_ARRAY = 4
     name = f"gemm_{M}_{K}_{N}"
@@ -18,10 +19,7 @@ def make_gemm_mapping(M, K, N, m, k, n, nb_rows_to_use: int = 4, nb_cols_to_use:
         "name": "gemm",
         "kwargs": {"m": m, "k": k, "n": n, "utilization": 61.8, "layout": "default"},
     }
-    inter_core_tiling = [
-        {"dim": "D0", "split": d_inter_core}, 
-        {"dim": "D2", "split": k_inter_core}
-    ]
+    inter_core_tiling = [{"dim": "D0", "split": d_inter_core}, {"dim": "D2", "split": k_inter_core}]
     gemm = {
         "name": "Gemm",
         "core_allocation": [compute_allocation],
@@ -43,11 +41,7 @@ def make_gemm_mapping(M, K, N, m, k, n, nb_rows_to_use: int = 4, nb_cols_to_use:
         "B": {},
         "Y": {},
     }
-    mapping = {
-        "layers": [gemm],
-        "fused_groups": [fused_groups],
-        "runtime_args": runtime_args
-    }
+    mapping = {"layers": [gemm], "fused_groups": [fused_groups], "runtime_args": runtime_args}
 
     with open(output_file, "w") as f:
         yaml.dump(mapping, f, default_flow_style=False, sort_keys=False)

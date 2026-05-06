@@ -449,7 +449,7 @@ class Workload(DiGraphWrapper[Node]):
             result[unique_dim] = stride
         return result
 
-    def visualize(
+    def visualize(  # noqa: PLR0912, PLR0915
         self,
         filepath: str = "workload_graph.png",
         mapping: "Mapping | None" = None,

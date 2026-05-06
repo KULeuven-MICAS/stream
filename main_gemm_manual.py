@@ -9,7 +9,6 @@ from xdsl.xdsl_opt_main import xDSLOptMain
 from xdsl_aie.dialects.aie import AIE
 from xdsl_aie.dialects.aiex import AIEX
 
-# from stream.dialects import get_all_dialects
 from stream.compiler.context.aie_context import AIEContext
 from stream.compiler.dialects.stream import Stream
 from stream.compiler.kernels.gemm import GemmKernel
@@ -26,28 +25,25 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
-def generate_mlir(M, N, K):
-    # Derived tiling parameters (as requested)
-    t0 = M // 32 // 4
-    t1 = N // 32 // 8
-    t2 = K // 32
-
-    # Safety checks (important)
-    assert M % (32 * 4) == 0, "M must be divisible by 128"
-    assert N % (32 * 8) == 0, "N must be divisible by 256"
-    assert K % 32 == 0, "K must be divisible by 32"
+def generate_mlir(m_size, n_size, k_size):
+    t0 = m_size // 32 // 4
+    t1 = n_size // 32 // 8
+    t2 = k_size // 32
+    assert m_size % (32 * 4) == 0, "M must be divisible by 128"
+    assert n_size % (32 * 8) == 0, "N must be divisible by 256"
+    assert k_size % 32 == 0, "K must be divisible by 32"
 
     return f"""
 builtin.module {{
 
   "stream.fusion_group"() ({{
-    ^bb0(%0: !stream.strensor<{M}(c0)x{K}(c2)xbf16, ["tile_0_0"]>,
-         %1: !stream.strensor<{K}(c2)x{N}(c1)xbf16, ["tile_0_0"]>,
-         %2: !stream.strensor<{M}(c0)x{N}(c1)xbf16, ["tile_0_0"]>):
+    ^bb0(%0: !stream.strensor<{m_size}(c0)x{k_size}(c2)xbf16, ["tile_0_0"]>,
+         %1: !stream.strensor<{k_size}(c2)x{n_size}(c1)xbf16, ["tile_0_0"]>,
+         %2: !stream.strensor<{m_size}(c0)x{n_size}(c1)xbf16, ["tile_0_0"]>):
 
   // Inputs
   %4 = "stream.transfer"(%0) :
-        (!stream.strensor<{M}(c0)x{K}(c2)xbf16, ["tile_0_0"]>)
+        (!stream.strensor<{m_size}(c0)x{k_size}(c2)xbf16, ["tile_0_0"]>)
      -> !stream.strensor<{t0}(t0)x{t1}(t1)x{t2}(t2)|8(a1)x4(s0)x32(k0)x32(k2)xbf16,
         ["tile_0_1", "tile_1_1", "tile_2_1", "tile_3_1"]>
 
@@ -66,7 +62,7 @@ builtin.module {{
 
   // Weights
   %5 = "stream.transfer"(%1) :
-        (!stream.strensor<{K}(c2)x{N}(c1)xbf16, ["tile_0_0"]>)
+        (!stream.strensor<{k_size}(c2)x{n_size}(c1)xbf16, ["tile_0_0"]>)
      -> !stream.strensor<{t0}(t0)x{t1}(t1)x{t2}(t2)|8(s1)x4(a0)x32(k2)x32(k1)xbf16,
         ["tile_0_1", "tile_1_1", "tile_2_1", "tile_3_1",
          "tile_4_1", "tile_5_1", "tile_6_1", "tile_7_1"]>
@@ -135,10 +131,10 @@ builtin.module {{
         (!stream.strensor<{t0}(t0)x{t1}(t1)|{t2}(a2)x8(s1)x4(t0)x32(k0)x32(k1)xbf16,
         ["tile_0_1", "tile_1_1", "tile_2_1", "tile_3_1",
          "tile_4_1", "tile_5_1", "tile_6_1", "tile_7_1"]>)
-     -> !stream.strensor<{M}(c0)x{N}(c1)xbf16, ["tile_0_0"]>
+     -> !stream.strensor<{m_size}(c0)x{n_size}(c1)xbf16, ["tile_0_0"]>
 
   "stream.yield"(%22) :
-        (!stream.strensor<{M}(c0)x{N}(c1)xbf16, ["tile_0_0"]>) -> ()
+        (!stream.strensor<{m_size}(c0)x{n_size}(c1)xbf16, ["tile_0_0"]>) -> ()
 
   }}) : () -> ()
 }}
@@ -189,7 +185,6 @@ class StreamMain(xDSLOptMain):
         )
 
     def register_default_kernels(self):
-        self.ctx.registered_kernels
         for kernel in (GemmKernel(1, bf16, 32, 32, 32, "layout"),):
             self.ctx.registered_kernels[kernel.unique_name] = kernel
 
@@ -201,8 +196,6 @@ class StreamMain(xDSLOptMain):
         self.register_pass("convert-stream-to-aie", lambda: ConvertStreamToAIEPass)
         self.register_pass("clear-memory-space", lambda: ClearMemorySpace)
         self.register_pass("aie-move-tile-ops-up", lambda: AIEMoveTileOpsUp)
-        pass
-        # self.register_pass(name, pass_)
 
     def register_all_dialects(self):
         super().register_all_dialects()
@@ -219,16 +212,14 @@ class StreamMain(xDSLOptMain):
         super().register_all_frontends()
 
 
-def run_main_aie_codegen_gemm(M, K, N):
+def run_main_aie_codegen_gemm(m_size, k_size, n_size):
     stream_main = StreamMain()
     module = Parser(
         stream_main.ctx,
-        generate_mlir(M, N, K),
+        generate_mlir(m_size, n_size, k_size),
     ).parse_module()
-    # stream_main.apply_passes(module)
     stream_main.pipeline.apply(stream_main.ctx, module)
-
-    save_path = f"outputs/swiglu_module_{M}_{N}_{K}.mlir"
+    save_path = f"outputs/swiglu_module_{m_size}_{n_size}_{k_size}.mlir"
     with open(save_path, "w") as f:
         f.write(str(module))
     print(f"Saved generated module to {save_path}")
@@ -257,9 +248,7 @@ if __name__ == "__main__":
         stream_main.ctx,
         generate_mlir(args.M, args.N, args.K),
     ).parse_module()
-    # stream_main.apply_passes(module)
     stream_main.pipeline.apply(stream_main.ctx, module)
-
     save_path = f"outputs/swiglu_module_{args.M}_{args.N}_{args.K}.mlir"
     with open(save_path, "w") as f:
         f.write(str(module))

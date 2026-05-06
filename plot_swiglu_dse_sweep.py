@@ -50,6 +50,7 @@ import numpy as np
 import yaml
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
+from matplotlib.lines import Line2D
 from matplotlib.ticker import ScalarFormatter
 
 _TILE_DIR_RE = re.compile(r"^tilesizes_(\d+)_(\d+)_(\d+)$")
@@ -314,7 +315,7 @@ def _load_optimization_trace(trace_path: str) -> list[float] | None:
     return incumbents or None
 
 
-def _plot_optimization_progress(
+def _plot_optimization_progress(  # noqa: PLR0912, PLR0915
     combo: TileCombo,
     out_path_no_ext: str,
     units: str,
@@ -358,9 +359,7 @@ def _plot_optimization_progress(
         if k == 1:
             xs = [float(x_center)]
         else:
-            xs = [
-                x_center - stair_w / 2.0 + (i / (k - 1)) * stair_w for i in range(k)
-            ]
+            xs = [x_center - stair_w / 2.0 + (i / (k - 1)) * stair_w for i in range(k)]
         ax.plot(
             xs,
             trace,
@@ -411,7 +410,7 @@ def _plot_optimization_progress(
         for cand in candidates:
             if groups:
                 prev = groups[-1][-1]
-                close_x = cand[1] - prev[1] <= 2.0
+                close_x = cand[1] - prev[1] <= 2.0  # noqa: PLR2004
                 close_y = abs(cand[2] - prev[2]) <= 1e-3 * max(prev[2], 1.0)
                 if close_x and close_y:
                     groups[-1].append(cand)
@@ -465,8 +464,6 @@ def _plot_optimization_progress(
     ax.set_axisbelow(True)
 
     # Custom legend so it explains both elements without cluttering the plot.
-    from matplotlib.lines import Line2D
-
     legend_handles = [
         Line2D(
             [0],
@@ -519,9 +516,7 @@ def _plot_optimization_progress(
     _save_fig(fig, out_path_no_ext)
 
 
-def _plot_best_so_far(
-    idx_latency_pairs: list[tuple[int, float]], out_path_no_ext: str, units: str
-) -> None:
+def _plot_best_so_far(idx_latency_pairs: list[tuple[int, float]], out_path_no_ext: str, units: str) -> None:
     if not idx_latency_pairs:
         return
     pairs = sorted(idx_latency_pairs, key=lambda p: p[0])
@@ -698,7 +693,7 @@ def _plot_box_compare(combos: list[TileCombo], out_path_no_ext: str, units: str)
                 line.set_alpha(0.7)
 
     if invalid_sorted:
-        invalid_positions = positions[len(valid_sorted):]
+        invalid_positions = positions[len(valid_sorted) :]
         if valid_sorted:
             all_lats = np.concatenate([np.asarray(c.finite_latencies) for c in valid_sorted])
             y_marker = float(np.median(all_lats))
@@ -732,11 +727,11 @@ def _plot_box_compare(combos: list[TileCombo], out_path_no_ext: str, units: str)
 
 def _plot_ecdf_compare(combos: list[TileCombo], out_path_no_ext: str, units: str, top_k: int = 10) -> None:
     valid = _combos_with_data(combos)
-    if len(valid) < 2:
+    if len(valid) < 2:  # noqa: PLR2004
         return
     valid_sorted = sorted(valid, key=lambda c: c.best_latency)
     shown = valid_sorted[:top_k]
-    cmap = plt.get_cmap("tab10" if len(shown) <= 10 else "tab20")
+    cmap = plt.get_cmap("tab10" if len(shown) <= 10 else "tab20")  # noqa: PLR2004
 
     fig, ax = plt.subplots(figsize=(9, 6))
     for i, c in enumerate(shown):
@@ -774,7 +769,7 @@ def _plot_success_rate_bar(combos: list[TileCombo], out_path_no_ext: str) -> Non
     for yi, (s, f) in enumerate(zip(succ, fail, strict=False)):
         total = s + f
         if total:
-            ax.text(float(total), float(yi), f"  {s/total:.0%}", va="center", ha="left", fontsize=11)
+            ax.text(float(total), float(yi), f"  {s / total:.0%}", va="center", ha="left", fontsize=11)
     fig.tight_layout()
     _save_fig(fig, out_path_no_ext)
 
@@ -787,7 +782,7 @@ def _plot_heatmaps_by_seq(combos: list[TileCombo], out_dir: str, units: str) -> 
     seqs = sorted({c.seq for c in valid})
     embs = sorted({c.embedding for c in valid})
     hids = sorted({c.hidden for c in valid})
-    if len(embs) < 2 or len(hids) < 2:
+    if len(embs) < 2 or len(hids) < 2:  # noqa: PLR2004
         return  # nothing meaningful to compare in 2D
 
     by_key = {(c.seq, c.embedding, c.hidden): c for c in valid}
@@ -884,10 +879,7 @@ def _write_summary(combos: list[TileCombo], out_dir: str, units: str) -> None:
             f.write(f"--- {c.label} ---\n")
             f.write(f"  total: {c.total_dirs}, succeeded: {c.succeeded}, failed: {c.failed}\n")
             if c.finite_latencies:
-                f.write(
-                    f"  best{units}: {c.best_latency:.6g}, "
-                    f"median: {np.median(c.finite_latencies):.6g}\n"
-                )
+                f.write(f"  best{units}: {c.best_latency:.6g}, median: {np.median(c.finite_latencies):.6g}\n")
             else:
                 f.write("  no finite latencies\n")
 
