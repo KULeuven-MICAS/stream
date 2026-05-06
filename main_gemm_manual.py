@@ -248,6 +248,7 @@ if __name__ == "__main__":
         stream_main.ctx,
         generate_mlir(args.M, args.N, args.K),
     ).parse_module()
+    print(module)
     stream_main.pipeline.apply(stream_main.ctx, module)
     save_path = f"outputs/swiglu_module_{args.M}_{args.N}_{args.K}.mlir"
     with open(save_path, "w") as f:
