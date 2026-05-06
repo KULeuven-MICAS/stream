@@ -1205,6 +1205,9 @@ class TransferAndTensorAllocator:
         )
         self.save_optimization_trace(os.path.join(self.output_path, "optimization_trace.yaml"))
         self.save_optimization_metrics(save_path=os.path.join(self.output_path, "optimization_metrics.yaml"))
+        self.save_slot_latency_breakdown(
+            save_path=os.path.join(self.output_path, "slot_latency_breakdown.yaml")
+        )
 
         assert self.total_latency is not None, "Total latency variable was not created."
         total_latency = int(self.total_latency.X)
@@ -1660,6 +1663,164 @@ class TransferAndTensorAllocator:
         with open(save_path, "w") as fh:
             yaml.safe_dump(metrics, fh, sort_keys=False, default_flow_style=False)
         print(f"Optimization metrics saved to {save_path}")
+
+    def save_slot_latency_breakdown(self, save_path: str) -> None:  # noqa: PLR0915, PLR0912
+        """Dump a debug-friendly per-slot latency breakdown next to the metrics yaml.
+
+        For every slot lists the compute and transfer contributors with the
+        intermediate values that make up its slot_latency constraint:
+          - compute: LUT latency_total, SSIS fraction, active_latency
+          - transfer: tensor bits, min link bandwidth, raw path cycles,
+                      active_latency (absent-loop scaled), reuse_factor,
+                      final contribution to slot_latency
+
+        Best-effort: any per-node failure is silently skipped, and the whole
+        method swallows top-level errors so it never blocks the pipeline.
+        """
+
+        def _scalar(v: Any) -> Any:
+            if v is None or isinstance(v, (bool, str)):
+                return v
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return str(v)
+            if not math.isfinite(f):
+                return str(v)
+            if f.is_integer():
+                return int(f)
+            return f
+
+        try:
+            breakdown: dict[int, dict[str, Any]] = {}
+            for s, lat_var in self.slot_latency.items():
+                slot_val: float | None
+                try:
+                    slot_val = float(lat_var.X)
+                except Exception:
+                    slot_val = None
+                breakdown[int(s)] = {
+                    "slot_latency_cycles": _scalar(slot_val),
+                    "compute_contributors": [],
+                    "transfer_contributors": [],
+                }
+
+            # ── Compute contributors ── #
+            for n in self.ssc_nodes:
+                try:
+                    s = int(self.slot_of[n])
+                    cores = self.cost_lut.get_cores(n)
+                    latencies = [self.cost_lut.get_cost(n, c).latency_total for c in cores]
+                    runtime = ceil(max(latencies)) if latencies else 0
+                    active = get_active_latency(n, float(runtime), self.ssis)
+                    fraction: float | None = None
+                    try:
+                        ssis_t = self.ssis.get(n).get_temporal_variables()
+                        total = prod([v.size for v in ssis_t])
+                        present = prod([v.size for v in ssis_t if v.effect != LoopEffect.ABSENT])
+                        fraction = (present / total) if total > 0 else 1.0
+                    except Exception:
+                        fraction = None
+                    breakdown.setdefault(
+                        s,
+                        {"slot_latency_cycles": None, "compute_contributors": [], "transfer_contributors": []},
+                    )
+                    breakdown[s]["compute_contributors"].append(
+                        {
+                            "name": getattr(n, "name", str(n)),
+                            "n_cores_in_lut": len(cores),
+                            "lut_latency_total": _scalar(runtime),
+                            "ssis_fraction": _scalar(fraction),
+                            "active_latency": _scalar(active),
+                        }
+                    )
+                except Exception:
+                    continue
+
+            # ── Transfer contributors (only the chosen path per transfer) ── #
+            for (tr, choice), y in self.y_path_choice.items():
+                try:
+                    if float(y.X) < 0.5:
+                        continue
+                    s = int(self.slot_of[tr])
+                    raw = int(self._transfer_latency_for_path(tr, choice))
+                    active_abs = int(get_active_latency(tr, float(raw), self.ssis))
+                    try:
+                        reuse_factor = float(self.reuse_factors[tr].getValue())
+                    except Exception:
+                        reuse_factor = None
+                    cached_var = self._transfer_latency_cache.get((tr, choice))
+                    try:
+                        contribution = float(cached_var.getValue()) if cached_var is not None else None
+                    except Exception:
+                        contribution = None
+                    tensor_bits: int | None = None
+                    try:
+                        if tr.inputs:
+                            tensor_bits = int(tr.inputs[0].size_bits())
+                    except Exception:
+                        tensor_bits = None
+                    min_bw: int | None = None
+                    try:
+                        if choice and choice.links_used:
+                            min_bw = int(min(link.bandwidth for link in choice.links_used))
+                    except Exception:
+                        min_bw = None
+                    breakdown.setdefault(
+                        s,
+                        {"slot_latency_cycles": None, "compute_contributors": [], "transfer_contributors": []},
+                    )
+                    breakdown[s]["transfer_contributors"].append(
+                        {
+                            "name": getattr(tr, "name", str(tr)),
+                            "tensor_bits": _scalar(tensor_bits),
+                            "min_link_bw": _scalar(min_bw),
+                            "raw_path_cycles": _scalar(raw),
+                            "active_latency_absent_loops": _scalar(active_abs),
+                            "reuse_factor": _scalar(reuse_factor),
+                            "contribution": _scalar(contribution),
+                        }
+                    )
+                except Exception:
+                    continue
+
+            # ── Top-level totals ── #
+            try:
+                latency_per_iteration = sum(float(v.X) for v in self.slot_latency.values())
+            except Exception:
+                latency_per_iteration = None
+            try:
+                overlap_val = float(self.overlap.X) if self.overlap is not None else None
+            except Exception:
+                overlap_val = None
+            try:
+                total_latency_val = (
+                    float(self.total_latency.X) if self.total_latency is not None else None
+                )
+            except Exception:
+                total_latency_val = None
+            iter_step_val: float | None
+            if latency_per_iteration is not None and overlap_val is not None:
+                iter_step_val = latency_per_iteration - overlap_val
+            else:
+                iter_step_val = None
+
+            summary = {
+                "totals": {
+                    "latency_per_iteration": _scalar(latency_per_iteration),
+                    "overlap": _scalar(overlap_val),
+                    "iter_step": _scalar(iter_step_val),
+                    "total_latency": _scalar(total_latency_val),
+                },
+                "slots": [{"slot": s, **breakdown[s]} for s in sorted(breakdown)],
+            }
+
+            with open(save_path, "w") as fh:
+                yaml.safe_dump(summary, fh, sort_keys=False, default_flow_style=False)
+            print(f"Slot latency breakdown saved to {save_path}")
+        except Exception as e:
+            # Never block the pipeline on this debug artifact.
+            print(f"[warn] save_slot_latency_breakdown failed: {e}")
 
     def plot_optimization_progress(  # noqa: PLR0912, PLR0915
         self,
