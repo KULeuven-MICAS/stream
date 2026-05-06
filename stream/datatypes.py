@@ -7,8 +7,10 @@ from xdsl.ir.affine import AffineDimExpr
 
 @dataclass(frozen=True, repr=False)
 class LayerDim(AffineDimExpr):
+    prefix: str = "z"
+
     def __str__(self) -> str:
-        return f"z{self.position}"
+        return f"{self.prefix}{self.position}"
 
     def __repr__(self) -> str:
         return str(self)

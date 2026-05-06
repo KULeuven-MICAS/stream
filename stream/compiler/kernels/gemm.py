@@ -1,52 +1,85 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import cast
 
-from xdsl.dialects.arith import ConstantOp
+from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.dialects.builtin import (
     AnyDenseElement,
     FunctionType,
-    MemRefType,
-    i32,
 )
 from xdsl.dialects.func import CallOp
 from xdsl.irdl import Operation
 
 from stream.compiler.dialects.stream import ComputationNodeOp
-from stream.compiler.kernels.aie_kernel import AIEKernel
+from stream.compiler.kernels.aie_kernel import AIEKernelWithZeroing
 
 
 @dataclass
-class GemmKernel(AIEKernel):
+class GemmKernel(AIEKernelWithZeroing):
     element_type: AnyDenseElement
     m: int
     k: int
     n: int
+    layout: str
+
+    @property
+    def zero_name(self) -> str:
+        return f"zero_{self.element_type}_{self.m}_{self.k}_{self.n}"
+
+    def zero_type(self, op: ComputationNodeOp) -> FunctionType:
+        return FunctionType.from_lists(inputs=[op.inputs[2].type], outputs=[])
 
     @property
     def linkwith_name(self) -> str:
-        return "gemm.o"
+        return f"mm_{self.m}_{self.k}_{self.n}.o"
 
     @property
     def function_name(self) -> str:
-        return f"gemm_vectorized_{self.element_type}_{self.element_type}"
+        return f"matmul_{self.element_type}_{self.element_type}_{self.m}_{self.k}_{self.n}"
+
+    def operand_layouts(self) -> Sequence[TiledStridedLayout]:
+        # Intrinsic dimensions:
+        r = 4  # ~m
+        s = 8  # ~k
+        t = 8  # ~n
+        # Tiled kernel dimensions:
+        mt = self.m // r
+        kt = self.k // s
+        nt = self.n // t
+        return [
+            # A: mxk, tiles of rxs
+            TiledStridedLayout(
+                [
+                    TiledStride([Stride(r * s * kt, mt), Stride(s, r)]),
+                    TiledStride([Stride(r * s, kt), Stride(1, s)]),
+                ]
+            ),
+            # B: kxn, tiles of sxt
+            TiledStridedLayout(
+                [
+                    TiledStride([Stride(s * t * nt, kt), Stride(t, s)]),
+                    TiledStride([Stride(s * t, nt), Stride(1, t)]),
+                ]
+            ),
+            # C: mxn, tiles of rxt
+            TiledStridedLayout(
+                [
+                    TiledStride([Stride(r * t * nt, mt), Stride(t, r)]),
+                    TiledStride([Stride(r * t, nt), Stride(1, t)]),
+                ]
+            ),
+        ]
 
     def function_type(self, op: ComputationNodeOp) -> FunctionType:
         assert op.output is not None
         return FunctionType.from_lists(
-            inputs=[i32, i32, i32]
-            + [op.inputs[1].type]  # A
-            + [op.inputs[0].type]  # b
-            + [op.output.type],  # c
+            inputs=[op.inputs[0].type]  # A
+            + [op.inputs[1].type]  # b
+            + [op.inputs[2].type],  # c
             outputs=[],
         )
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
-        m, k = cast(MemRefType[AnyDenseElement], op.inputs[1].type).get_shape()
         assert op.output is not None
         return [
-            m := ConstantOp.from_int_and_width(m, i32),
-            k := ConstantOp.from_int_and_width(k, i32),
-            row_offset := ConstantOp.from_int_and_width(0, i32),
-            CallOp(self.function_name, [m, k, row_offset, op.inputs[1], op.inputs[0], op.output], []),
+            CallOp(self.function_name, [op.inputs[0], op.inputs[1], op.inputs[2]], []),
         ]

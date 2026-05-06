@@ -39,6 +39,7 @@ class TilingGenerationStage(Stage):
         self.tiled_sizes: dict[int, int] = {}
         self.steady_state_iteration_spaces: dict[ComputationNode, SteadyStateIterationSpace] = {}
         self.unique_dims, self.dim_expressions = self.workload.unique_dimensions()
+        pass
 
     def run(self):
         self.fusion_splits = determine_fusion_splits(self.workload, self.mapping)

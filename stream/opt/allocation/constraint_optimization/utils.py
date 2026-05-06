@@ -3,10 +3,13 @@ from typing import TYPE_CHECKING
 
 from zigzag.datatypes import LayerDim, UnrollFactor
 
+from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
+from stream.workload.node import Node, TransferNode
 from stream.workload.steady_state.computation import SteadyStateComputation
+from stream.workload.steady_state.iteration_space import LoopEffect, SteadyStateIterationSpace
 from stream.workload.workload import ComputationNode
 
 if TYPE_CHECKING:
@@ -300,3 +303,30 @@ def get_partitioned_nodes(
         partitioned_node.set_runtime(runtimes[core])
         partitioned_nodes.append(partitioned_node)
     return partitioned_nodes
+
+
+def get_transfer_latency_for_path(tr: TransferNode, path: MulticastPathPlan) -> int:
+    if not path:
+        return 0
+    min_bw = min(link.bandwidth for link in path.links_used)
+    assert len(tr.inputs) == 1, "Only single-input transfers are supported for latency calculation."
+    tensor = tr.inputs[0]
+    return ceil(tensor.size_bits() / min_bw)
+
+
+def get_active_transfer_latency_for_path(tr: TransferNode, choice: MulticastPathPlan, reuse_factor, ssis) -> int:
+    latency_constant = float(get_transfer_latency_for_path(tr, choice))
+    active_latency_absent_loops = get_active_latency(tr, latency_constant, ssis)
+    active_latency = ceil(active_latency_absent_loops / reuse_factor)
+    return active_latency
+
+
+def get_active_latency(n: Node, runtime_constant: float, ssis: dict[ComputationNode, SteadyStateIterationSpace]) -> int:
+    # Get the temporal steady state fraction of 'ABSENT' loops
+    ssis_t = ssis.get(n).get_temporal_variables()
+    total_product = prod([ssis_var.size for ssis_var in ssis_t])
+    product_without_absent = prod([ssis_var.size for ssis_var in ssis_t if ssis_var.effect != LoopEffect.ABSENT])
+    fraction = product_without_absent / total_product if total_product > 0 else 1.0
+    # Scale the runtime constant by the fraction to get the effective latency
+    active_latency = int(round(runtime_constant * fraction))
+    return active_latency

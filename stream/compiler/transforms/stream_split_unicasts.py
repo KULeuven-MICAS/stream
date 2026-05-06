@@ -62,6 +62,7 @@ class SplitUnicastsPattern(RewritePattern):
                     op.strides,
                     op.spatial_strides,
                     op.memtile,
+                    op.operand_indeces,
                 )
             )
             input_idx += 1

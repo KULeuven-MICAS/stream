@@ -4,37 +4,11 @@ from typing import Any
 from onnx import NodeProto
 from zigzag.parser.onnx.utils import parse_onnx_model_from_path
 
-# from stream.hardware.architecture.accelerator import Accelerator
-# from stream.parser.onnx.concat import ConcatParser
 from stream.parser.onnx.conv import ConvParser
-
-# from stream.parser.onnx.default import DefaultNodeParser
-# from stream.parser.onnx.einsum import EinsumParser
-# from stream.parser.onnx.exp import ExpParser
-# from stream.parser.onnx.flatten import FlattenParser
-# from stream.parser.onnx.gather import GatherParser
-# from stream.parser.onnx.gelu import GeluParser
 from stream.parser.onnx.gemm import GemmParser
-
-# from stream.parser.onnx.lpnormalization import LpNormalizationParser
-# from stream.parser.onnx.matmul import MatMulParser
 from stream.parser.onnx.mul import MulParser
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
-
-# from stream.parser.onnx.pooling import PoolingParser
-# from stream.parser.onnx.reciprocal import ReciprocalParser
-# from stream.parser.onnx.reduce_1d import Reduce1DParser
-# from stream.parser.onnx.relu import ReluParser
-# from stream.parser.onnx.reshape import ReshapeParser
-# from stream.parser.onnx.sigmoid import SigmoidParser
 from stream.parser.onnx.simd import SimdParser
-
-# from stream.parser.onnx.slice import SliceParser
-# from stream.parser.onnx.softmax import SoftmaxParser
-# from stream.parser.onnx.split import SplitParser
-# from stream.parser.onnx.sqrt import SqrtParser
-# from stream.parser.onnx.ssm import SSMParser
-# from stream.parser.onnx.transpose import TransposeParser
 from stream.parser.onnx.utils import onnx_tensor_to_tensor
 from stream.workload.workload import InEdge, Node, OutEdge, Tensor, Workload
 

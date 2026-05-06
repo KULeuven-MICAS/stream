@@ -4,7 +4,7 @@ import os
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping2
+from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 
 _logging_level = _logging.INFO
@@ -21,6 +21,9 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     rows,
     cols,
     npu,
+    seq_len_tile_size=1,
+    embedding_tile_size=512,
+    hidden_tile_size=64,
     last_gemm_down: bool = False,
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
@@ -29,7 +32,9 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     workload_path = make_swiglu_workload(
         seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down=last_gemm_down
     )
-    mapping_path = make_swiglu_mapping2(seq_len, embedding_dim, hidden_dim, last_gemm_down)
+    mapping_path = make_swiglu_mapping(
+        seq_len, embedding_dim, hidden_dim, last_gemm_down, seq_len_tile_size, embedding_tile_size, hidden_tile_size
+    )
     ##############################################################################################
 
     ################################PARSING###############################
@@ -79,16 +84,6 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         npu=npu,
     )
 
-    # #####################CostModelEvaluationLUT LOAD#############################
-    # cost_lut_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
-    # cost_lut = CostModelEvaluationLUT(cost_lut_path)
-    # #############################################################################
-
-    # # Save json for perfetto visualization (Visualize at http://ui.perfetto.dev/)
-    # convert_scme_to_perfetto_json(scme, cost_lut, json_path=json_path)
-
-    # # Plotting memory usage of best SCME
-    # plot_memory_usage(scme, section_start_percent, percent_shown, fig_path=memory_fig_path)
     module = ctx.get("module")
 
     return module
@@ -107,8 +102,15 @@ if __name__ == "__main__":
     parser.add_argument("--out_dtype", type=str, default="bf16", help="Output data type (default: bf16)")
     parser.add_argument("--trace_size", type=int, default=1048576, help="Size of the trace buffer (default: 1048576)")
     parser.add_argument("--rows", type=int, default=4, help="Number of AIE rows to use (has to be 4)")
-    parser.add_argument("--cols", type=int, default=1, help="Number of AIE columns to use (default: 1)")
+    parser.add_argument("--cols", type=int, default=8, help="Number of AIE columns to use (default: 8)")
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
+    parser.add_argument(
+        "--seq_len_tile_size", type=int, default=32, help="Tile size for seq_len dimension (default: 32)"
+    )
+    parser.add_argument(
+        "--embedding_tile_size", type=int, default=128, help="Tile size for embedding dimension (default: 128)"
+    )
+    parser.add_argument("--hidden_tile_size", type=int, default=64, help="Tile size for hidden dimension (default: 64)")
     parser.add_argument(
         "--no_last_gemm_down",
         dest="last_gemm_down",
@@ -127,6 +129,9 @@ if __name__ == "__main__":
         args.rows,
         args.cols,
         args.npu,
+        args.seq_len_tile_size,
+        args.embedding_tile_size,
+        args.hidden_tile_size,
         last_gemm_down=args.last_gemm_down,
     )
     save_path = f"outputs/swiglu_module_{args.seq_len}_{args.embedding_dim}_{args.hidden_dim}.mlir"

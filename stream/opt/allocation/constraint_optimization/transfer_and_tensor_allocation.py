@@ -1,12 +1,15 @@
-# transfer_and_tensor_allocator.py
 import math
+import os
 from collections import defaultdict
 from math import ceil, prod
-from typing import TypeAlias
+from typing import Any, TypeAlias
 
 import gurobipy as gp
+import matplotlib.pyplot as plt
+import yaml
 from gurobipy import GRB, quicksum
 
+from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
@@ -19,38 +22,54 @@ from stream.opt.allocation.constraint_optimization.context import (
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
     _resource_key,
 )
-from stream.workload.steady_state.iteration_space import ComputeTileReuse, MemTileReuse, SteadyStateIterationSpace
+from stream.opt.allocation.constraint_optimization.utils import get_active_latency
+from stream.workload.node import HasOutputs, TransferType
+from stream.workload.steady_state.iteration_space import (
+    IterationVariableType,
+    LoopEffect,
+    Reuse,
+    SteadyStateIterationSpace,
+)
 from stream.workload.steady_state.node import Node
-from stream.workload.workload import ComputationNode, HasIterationSpace, InEdge, OutEdge, Tensor, TransferNode, Workload
+from stream.workload.workload import (
+    ComputationNode,
+    HasIterationSpace,
+    InEdge,
+    OutEdge,
+    Tensor,
+    TransferNode,
+    Workload,
+)
 
-PathKey: TypeAlias = tuple[TransferNode, tuple[CommunicationLink, ...]]
-TensorAlloc: TypeAlias = dict[Tensor, Core]
-TransferAlloc: TypeAlias = dict[TransferNode, tuple[CommunicationLink]]
-MemoryAlloc: TypeAlias = dict[TransferNode, Core]
+TensorPlacementChoice: TypeAlias = tuple[Core, ...]
+
+TensorReuseLevels: TypeAlias = dict[Tensor, int]
+TensorDepths: TypeAlias = dict[Tensor, int]
+TensorAlloc: TypeAlias = dict[Tensor, TensorPlacementChoice]
+TransferAlloc: TypeAlias = dict[TransferNode, MulticastPathPlan]
+MemoryAlloc: TypeAlias = dict[TransferNode, TensorPlacementChoice]
 
 
 class TransferAndTensorAllocator:
     """
     MILP that decides
 
-    1. **where** every *movable* Tensor lives,
-    2. **which path** each Transfer uses,
-
-    while all slots/resources coming from existing timeslots remain unchanged.
+    1. where every movable tensor lives
+    2. which routing choice each transfer uses
     """
 
-    VAR_THRESHOLD = 0.5  # threshold to decide if a binary variable is chosen
+    VAR_THRESHOLD = 0.5
+    DMA_COUNT_SAME_TENSOR_ON_CORE_ONCE_GLOBALLY = False
+    # False: count tensor-core occupancy separately for each transfer that uses it
+    # True:  count tensor-core occupancy only once across all transfers
 
-    # ------------------------------------------------------------ #
-    # ctor / public API                                            #
-    # ------------------------------------------------------------ #
     def __init__(  # noqa: PLR0913
         self,
         workload: Workload,
         timeslots: dict[Node, int],
         accelerator: Accelerator,
         iterations: int,
-        ssis: dict[HasIterationSpace, SteadyStateIterationSpace],
+        ssis: dict[HasIterationSpace | Tensor, SteadyStateIterationSpace],
         multiplicities: dict[ComputationNode, int],
         mapping: Mapping,
         cost_lut: CoreCostLUT,
@@ -58,13 +77,14 @@ class TransferAndTensorAllocator:
         big_m: int | None = None,
         gurobi_verbosity: int = 1,
         nb_cols_to_use: int = 4,
+        output_path: str = "",
         context: TransferAndTensorContext | None = None,
     ):
         self.workload = workload
         self.slot_of = timeslots
         self.accelerator = accelerator
         self.context = context or build_transfer_context(
-            accelerator, nb_cols_to_use=nb_cols_to_use, force_double_buffering=False
+            accelerator, nb_cols_to_use=nb_cols_to_use, force_double_buffering=True
         )
         self.offchip_core_id = self.context.offchip_core_id
         self.iterations = iterations
@@ -72,148 +92,199 @@ class TransferAndTensorAllocator:
         self.multiplicities = multiplicities
         self.mapping = mapping
         self.cost_lut = cost_lut
+        self.output_path = output_path
 
         self.max_slot = max(timeslots.values()) if timeslots else 0
         self.big_m = big_m or len(workload.nodes()) + 5
         self.force_io_transfers_on_mem_tile = self.context.force_io_transfers_on_mem_tile
 
         # ------------------- categorise nodes -------------------- #
-        self.ssc_nodes: list[ComputationNode] = workload.get_computation_nodes()
-        self.transfer_nodes: list[TransferNode] = workload.get_transfer_nodes()
+        self.ssc_nodes: tuple[ComputationNode, ...] = tuple(workload.get_computation_nodes())
+        self.transfer_nodes: tuple[TransferNode, ...] = tuple(workload.get_transfer_nodes())
 
-        # Possible tensor allocations
-        self.tensor_fixed: list[Tensor] = []
-        self.tensor_var: list[Tensor] = []  # will remain empty for now
-        self.possible_tensor_allocations: dict[Tensor, list[Resource]] = {}
-        for in_edge in workload.get_in_edges():
-            self.possible_tensor_allocations[in_edge.outputs[0]] = [self.accelerator.get_core(self.offchip_core_id)]
-            self.tensor_fixed.append(in_edge.outputs[0])
-        for node in workload.get_computation_nodes():
-            for t in node.tensors:
-                if t not in self.possible_tensor_allocations:
-                    self.possible_tensor_allocations[t] = self.mapping.get(node).resource_allocation
-                    self.tensor_fixed.append(t)
-        for out_edge in workload.get_out_edges():
-            tensor = out_edge.inputs[0]
-            self.possible_tensor_allocations[tensor] = [self.accelerator.get_core(self.offchip_core_id)]
-            self.tensor_fixed.append(tensor)
-
-        # Possible transfer allocations
-        self.possible_transfer_allocations: dict[TransferNode, list[Resource]] = {}
-        for node in workload.get_transfer_nodes():
-            self.possible_transfer_allocations[node] = self.mapping.get(node).resource_allocation
-
-        # ------------------------------------------------------------------------------
-        # memory cores that may act as on‑chip caches (exclude the DRAM/off‑chip id)
-        # ------------------------------------------------------------------------------
         self.force_double_buffering = self.context.force_double_buffering
         self.mem_cores = list(self.context.mem_cores)
 
-        # --------------- optimisation model ---------------------- #
+        # ------------------- canonicalized options -------------------- #
+        self.tensors: list[Tensor] = []
+        self.tensor_fixed: list[Tensor] = []
+        self.tensor_var: list[Tensor] = []
+        self.possible_tensor_allocations: dict[Tensor, tuple[TensorPlacementChoice, ...]] = {}
+        self.possible_transfer_allocations: dict[TransferNode, tuple[MulticastPathPlan, ...]] = {}
+
+        self._init_option_sets()
+
+        # ------------------- optimization model ---------------------- #
         self.model = gp.Model("transfer_tensor_alloc")
         self.model.setParam("OutputFlag", gurobi_verbosity)
+        self.model.setParam("LogToConsole", 0)
 
-        # decision vars
-        self.x_tensor: dict[tuple[Tensor, Core], gp.Var] = {}
-        self.y_path: dict[PathKey, gp.Var] = {}
+        # primary decision vars
+        self.x_tensor_choice: dict[tuple[Tensor, TensorPlacementChoice], gp.Var] = {}
+        self.y_path_choice: dict[tuple[TransferNode, MulticastPathPlan], gp.Var] = {}
+
+        # auxiliary indicators
+        self.transfer_core_indicator: dict[tuple[TransferNode, Core], gp.Var] = {}
+        self.tensor_core_indicator: dict[tuple[Tensor, Core], gp.Var] = {}
+        self.same_core_indicator: dict[tuple[Tensor, Tensor, Core], gp.Var] = {}
 
         # helpers
         self.link_set: set[CommunicationLink] = set()
-        self.links_in_path: dict[PathKey, list[CommunicationLink]] = {}
+        self.links_in_choice: dict[tuple[TransferNode, MulticastPathPlan], set[CommunicationLink]] = {}
+        self.choice_src_cores: dict[tuple[TransferNode, MulticastPathPlan], set[Core]] = {}
+        self.choice_dst_cores: dict[tuple[TransferNode, MulticastPathPlan], set[Core]] = {}
+        self.choice_mem_cores: dict[tuple[TransferNode, MulticastPathPlan], set[Core]] = {}
+        self.choice_has_empty_path: dict[tuple[TransferNode, MulticastPathPlan], bool] = {}
 
         # latency vars
+        self._transfer_latency_cache: dict[tuple[TransferNode, MulticastPathPlan], gp.Var] = {}
         self.slot_latency: dict[int, gp.Var] = {}
-        self.overlap = None
-        self.total_latency = None
+        self.overlap: gp.Var | None = None
+        self.total_latency: gp.Var | None = None
 
         # transfer fire helpers init
-        # dict((transfer, steady state iteration space index): (fires_across_ss_iterations, extra_mem_bytes))
         self._ensure_same_ssis_for_all_transfers()
-        self.reuse_levels: dict[tuple[TransferNode, int], tuple[int, int]] = {}
-        self.tiles_needed_levels: dict[tuple[TransferNode, int], int] = {}
-        self.transfer_nodes_to_optimize_firings_for: list[TransferNode] = []
+        self.reuse_levels: dict[tuple[Tensor, int], tuple[int, int]] = {}
+        self.tiles_needed_levels: dict[tuple[Tensor, int], int] = {}
+        self.bds_needed_levels: dict[tuple[Tensor, int], int] = {}
+        self.tensors_to_optimize_reuse_for: list[Tensor] = []
         self._init_transfer_fire_helpers()
+
+        # track optimization progress
+        self.optimization_trace: list[dict[str, float | str | None]] = []
 
         self._build_model()
 
     # ------------------------------------------------------------ #
+    # option canonicalization                                      #
+    # ------------------------------------------------------------ #
+    def _init_option_sets(self) -> None:
+        for node in self.workload.topological_sort():
+            if not isinstance(node, HasOutputs):
+                continue
+            for tensor in node.outputs:
+                if tensor in self.possible_tensor_allocations:
+                    continue
+                raw_alloc = self._retrieve_core_allocation(node)
+                normalized = self._normalize_tensor_choices(raw_alloc)
+                self.possible_tensor_allocations[tensor] = normalized
+                self.tensors.append(tensor)
+                if len(normalized) == 1:
+                    self.tensor_fixed.append(tensor)
+                else:
+                    self.tensor_var.append(tensor)
+
+        for tr in self.transfer_nodes:
+            raw_paths = self.mapping.get(tr).resource_allocation
+            self.possible_transfer_allocations[tr] = self._normalize_path_choices(raw_paths)
+
+    def _normalize_tensor_choices(self, raw: Any) -> tuple[TensorPlacementChoice, ...]:
+        """
+        Canonical form:
+            tuple[ tuple[Core, ...], ... ]
+        """
+        if raw is None:
+            raise ValueError("Tensor allocation options cannot be None.")
+
+        raw_tuple = tuple(raw)
+        if not raw_tuple:
+            raise ValueError("Tensor allocation options cannot be empty.")
+
+        # Case 1: raw itself is one flat iterable of Core objects
+        if all(isinstance(x, Core) for x in raw_tuple):
+            return (tuple(raw_tuple),)
+
+        # Case 2: raw is iterable of choices, each choice iterable of Core
+        out: list[TensorPlacementChoice] = []
+        for choice in raw_tuple:
+            choice_tuple = tuple(choice)
+            if not choice_tuple:
+                raise ValueError("Empty tensor placement choice encountered.")
+            if not all(isinstance(c, Core) for c in choice_tuple):
+                raise TypeError(f"Invalid tensor placement choice: {choice_tuple}")
+            out.append(tuple(choice_tuple))
+        return tuple(out)
+
+    def _normalize_path_choices(self, raw: Any) -> tuple[MulticastPathPlan, ...]:
+        """
+        Canonical form:
+            tuple[MulticastPathPlan, ...]
+
+        Expects raw to be an iterable of MulticastPathPlan objects.
+        """
+        if raw is None:
+            raise ValueError("Transfer path options cannot be None.")
+        raw_tuple = tuple(raw)
+        if not raw_tuple:
+            raise ValueError("Transfer path options cannot be empty.")
+        if not all(isinstance(x, MulticastPathPlan) for x in raw_tuple):
+            bad_types = {type(x) for x in raw_tuple if not isinstance(x, MulticastPathPlan)}
+            raise TypeError(
+                f"Unsupported routing choice structure. Expected iterable of MulticastPathPlan, "
+                f"got invalid element types: {bad_types}"
+            )
+        return raw_tuple
+
+    # ------------------------------------------------------------ #
     # internal helpers                                             #
     # ------------------------------------------------------------ #
-    # ---------- memory factor ( NO ping-pong for now ) ---------- #
-    # TODO: Update this for memory-only cores
     @staticmethod
     def _mem_factor(t: Tensor, core: Core) -> int:
-        # if getattr(core, "type", None) == "COMPUTE":
-        return 1  # NO ping–pong
-        # else:
-        #     full_fac = getattr(t, "slices_per_full", 1)
-        #     return int(full_fac)
+        return 1
 
-    # ---------- latency of a transfer along a path -------------- #
     @staticmethod
-    def _transfer_latency(tr: TransferNode, path: tuple[CommunicationLink, ...]) -> int:
+    def _transfer_latency_for_path(tr: TransferNode, path: MulticastPathPlan) -> int:
         if not path:
             return 0
-        min_bw = min(link.bandwidth for link in path)
+        min_bw = min(link.bandwidth for link in path.links_used)
         assert len(tr.inputs) == 1, "Only single-input transfers are supported for latency calculation."
         tensor = tr.inputs[0]
         return ceil(tensor.size_bits() / min_bw)
 
-    # ---------- init transfer fire helpers ----------------------- #
     def _ensure_same_ssis_for_all_transfers(self) -> None:
-        """
-        Ensure that all transfers have the same steady-state iteration space dimensions and sizes (SSIS).
-        """
         first_ssis = self.ssis[self.transfer_nodes[0]]
-        # first_transfer_ssis_dims = first_transfer_ssis.get_temporal_dimensions()
         first_transfer_ssis_sizes = first_ssis.get_temporal_sizes()
         first_transfer_ssis_total_size = prod(first_transfer_ssis_sizes)
         for tr in self.transfer_nodes:
             transfer_ssis = self.ssis[tr]
-            # transfer_ssis_dims = transfer_ssis.get_temporal_dimensions()
             transfer_ssis_sizes = transfer_ssis.get_temporal_sizes()
             transfer_ssis_total_size = prod(transfer_ssis_sizes)
-            # if not (
-            #     transfer_ssis_dims == first_transfer_ssis_dims and transfer_ssis_sizes == first_transfer_ssis_sizes
-            # ):
             if transfer_ssis_total_size != first_transfer_ssis_total_size:
                 raise ValueError(
-                    # f"Transfer {tr.node_name} has different SSIS dims and sizes than the {self.transfer_nodes[0]}: "
-                    # f"{transfer_ssis_dims}, {transfer_ssis_sizes} != "
-                    # f"{first_transfer_ssis_dims}, {first_transfer_ssis_sizes}"
                     f"Transfer {tr.name} has different SSIS total size than the {self.transfer_nodes[0].name}: "
                     f"{transfer_ssis_total_size} != {first_transfer_ssis_total_size}"
                 )
 
     def _init_transfer_fire_helpers(self) -> None:
-        for tr in self.transfer_nodes:  # only the movable tensors
-            ssis = self.ssis[tr].get_temporal_variables()  # e.g. [Nk, Nk-1, …, N0]
+        for t in self.workload.tensors:
+            ssis = self.ssis[t].get_applicable_temporal_variables()
             sizes = [iter_var.size for iter_var in ssis]
             relevancies = [iter_var.relevant for iter_var in ssis]
-            reuses = [iter_var.compute_tile_reuse for iter_var in ssis]
-
-            # Check that all compute reuses are NOT_SET, else continue
-            if any(r != ComputeTileReuse.NOT_SET for r in reuses):
+            reuses = [iter_var.reuse for iter_var in ssis]
+            if any(r != Reuse.NOT_SET for r in reuses):
                 continue
-            self.transfer_nodes_to_optimize_firings_for.append(tr)
-
-            # level = -1  →  "transfer every steady state iteration"
+            self.tensors_to_optimize_reuse_for.append(t)
             fires = math.prod(sizes)
             size_factor = 1
-            self.reuse_levels[(tr, -1)] = (fires, size_factor)
             tiles_needed = 1
-            self.tiles_needed_levels[(tr, -1)] = tiles_needed
-            # level = i  →  keep while loops 0..i stay in cache
-            for i, (Nl, relevancy) in enumerate(zip(sizes, relevancies, strict=True)):  # i = 0 … K-1
-                size_factor *= Nl if relevancy else 1  # enlarge tile size factor only if relevant
+            bds_needed = 1
+            self.reuse_levels[(t, -1)] = (fires, size_factor)
+            self.tiles_needed_levels[(t, -1)] = tiles_needed
+            self.bds_needed_levels[(t, -1)] = bds_needed
+            for i, (Nl, relevancy) in enumerate(zip(sizes, relevancies, strict=True)):
+                size_factor *= Nl if relevancy else 1
                 tiles_needed *= Nl if relevancy else 1
-                fires //= Nl  # fewer transfers
-                self.reuse_levels[(tr, i)] = (fires, size_factor)
-                self.tiles_needed_levels[(tr, i)] = tiles_needed
+                fires //= Nl
+                self.reuse_levels[(t, i)] = (fires, size_factor)
+                self.tiles_needed_levels[(t, i)] = tiles_needed
+                if relevancy:
+                    bds_needed = 1
+                else:
+                    bds_needed *= Nl
+                self.bds_needed_levels[(t, i)] = bds_needed
+            if self.force_double_buffering:
+                self.tiles_needed_levels[(t, -1)] = 2
 
-    # ------------------------------------------------------------------------------
-    # only transfers whose src OR dst tensor is CONSTANT are eligible for MemC
-    # ------------------------------------------------------------------------------
     def _is_const_i(self, tr: TransferNode) -> bool:
         src = next(iter(self.workload.predecessors(tr)))
         return isinstance(src, InEdge)
@@ -225,52 +296,233 @@ class TransferAndTensorAllocator:
     def _is_const_io(self, tr: TransferNode) -> bool:
         return self._is_const_i(tr) or self._is_const_o(tr)
 
-    # ------------------------------------------------------------
-    # bandwidth of the FIRST link on a DRAM → mem‑core path
-    # ------------------------------------------------------------
-    def _first_link_bw_from_dram(
-        self,
-        tr: TransferNode,
-        mc: Core,
-    ) -> int:
-        """
-        Return the maximum bandwidth of the first link among all paths that
-        start at the off-chip core and end at the given memory core *mc*.
+    def _constant_transfer_tensor(self, tr: TransferNode) -> Tensor:
+        if self._is_const_i(tr):
+            return tr.outputs[0]
+        if self._is_const_o(tr):
+            return tr.inputs[0]
+        raise ValueError(f"Transfer {tr.name} is not a constant I/O transfer.")
 
-        Raises:
-            ValueError - if no such path exists in self.possible_transfer_allocations[tr].
+    def _all_dma_candidate_cores(self) -> set[Core]:
         """
-        best_bw: int | None = None
-        for path in self.possible_transfer_allocations[tr]:  # list[list[Link]]
-            if not path:  # empty == same core
+        All on-chip cores that may host tensors participating in transfers.
+        Off-chip core is excluded from DMA accounting.
+        """
+        cores: set[Core] = set()
+        for t in self.workload.tensors:
+            if not isinstance(t, Tensor):
                 continue
-            for link in path:
-                sender = link.sender
-                receiver = link.receiver
-                if (  # for constant input transfers
-                    isinstance(sender, Core)
-                    and isinstance(receiver, Core)
-                    and sender.id == self.offchip_core_id
-                    and receiver.id == mc.id
-                ) or (  # for constant output transfers
-                    isinstance(sender, Core)
-                    and isinstance(receiver, Core)
-                    and sender.id == mc.id
-                    and receiver.id == self.offchip_core_id
-                ):
-                    best_bw = link.bandwidth if best_bw is None else max(best_bw, link.bandwidth)
-        if best_bw is None:
-            raise ValueError(
-                f"No DRAM→{mc.name} path found for transfer {tr.name}. "
-                f"Check that transfer is for constant input/output tensors."
-            )
-        return best_bw
+            for core in self._candidate_cores_for_tensor(t):
+                if core.id == self.offchip_core_id:
+                    continue
+                cores.add(core)
+        return cores
+
+    def _unique_tensor_list(self, tensors) -> list[Tensor]:
+        """
+        Stable unique filtering for tensors.
+        """
+        seen: set[Tensor] = set()
+        out: list[Tensor] = []
+        for t in tensors:
+            if not isinstance(t, Tensor):
+                continue
+            if t in seen:
+                continue
+            seen.add(t)
+            out.append(t)
+        return out
+
+    def _transfer_incoming_tensors(self, tr: TransferNode) -> list[Tensor]:
+        """
+        Tensors whose presence on a core contributes to incoming DMA usage on that core.
+
+        Assumption:
+            incoming DMA on a core corresponds to transfer outputs allocated on that core.
+        """
+        return self._unique_tensor_list(tr.outputs)
+
+    def _transfer_outgoing_tensors(self, tr: TransferNode) -> list[Tensor]:
+        """
+        Tensors whose presence on a core contributes to outgoing DMA usage on that core.
+
+        Assumption:
+            outgoing DMA on a core corresponds to transfer inputs allocated on that core.
+        """
+        return self._unique_tensor_list(tr.inputs)
+
+    def _transfer_incoming_dma_expr(self, tr: TransferNode, core: Core):
+        """
+        DMA contribution of one transfer to the incoming DMA load of one core.
+
+        If DMA_COUNT_SAME_TENSOR_ON_CORE_ONCE_GLOBALLY is False:
+            each transfer contributes its own tensor occupancy.
+
+        If DMA_COUNT_SAME_TENSOR_ON_CORE_ONCE_GLOBALLY is True:
+            the aggregation across transfers is handled in _add_dma_usage_constraints(),
+            so this helper is only used in the per-transfer mode.
+        """
+        tensors = self._transfer_incoming_tensors(tr)
+        return quicksum(self._tensor_on_core_expr(t, core) for t in tensors)
+
+    def _transfer_outgoing_dma_expr(self, tr: TransferNode, core: Core):
+        """
+        DMA contribution of one transfer to the outgoing DMA load of one core.
+        """
+        tensors = self._transfer_outgoing_tensors(tr)
+        return quicksum(self._tensor_on_core_expr(t, core) for t in tensors)
+
+    def _global_incoming_dma_expr(self, core: Core):
+        """
+        Global incoming DMA usage on one core, counting each tensor at most once across all transfers.
+        """
+        tensors: set[Tensor] = set()
+        for tr in self.transfer_nodes:
+            tensors.update(self._transfer_incoming_tensors(tr))
+        return quicksum(self._tensor_on_core_expr(t, core) for t in tensors)
+
+    def _global_outgoing_dma_expr(self, core: Core):
+        """
+        Global outgoing DMA usage on one core, counting each tensor at most once across all transfers.
+        """
+        tensors: set[Tensor] = set()
+        for tr in self.transfer_nodes:
+            tensors.update(self._transfer_outgoing_tensors(tr))
+        return quicksum(self._tensor_on_core_expr(t, core) for t in tensors)
+
+    # ------------------------------------------------------------ #
+    # canonical choice metadata                                    #
+    # ------------------------------------------------------------ #
+    def _index_choice_metadata(self) -> None:
+        for tr in self.transfer_nodes:
+            for choice in self.possible_transfer_allocations[tr]:
+                key = (tr, choice)
+                self.links_in_choice[key] = self._links_of_choice(choice)
+                self.link_set.update(self.links_in_choice[key])
+                self.choice_src_cores[key] = self._src_cores_of_choice(choice)
+                self.choice_dst_cores[key] = self._dst_cores_of_choice(choice)
+                self.choice_mem_cores[key] = self._mem_cores_of_choice(choice)
+                self.choice_has_empty_path[key] = len(choice.links_used) == 0
+
+    @staticmethod
+    def _links_of_choice(choice: MulticastPathPlan) -> set[CommunicationLink]:
+        return set(choice.links_used)
+
+    @staticmethod
+    def _src_cores_of_choice(choice: MulticastPathPlan) -> set[Core]:
+        return set(choice.sources)
+
+    @staticmethod
+    def _dst_cores_of_choice(choice: MulticastPathPlan) -> set[Core]:
+        return set(choice.targets)
+
+    def _mem_cores_of_choice(self, choice: MulticastPathPlan) -> set[Core]:
+        out: set[Core] = set()
+        for link in choice.links_used:
+            if link.sender in self.mem_cores:
+                out.add(link.sender)
+            if link.receiver in self.mem_cores:
+                out.add(link.receiver)
+        return out
+
+    # ------------------------------------------------------------ #
+    # derived linear expressions / indicators                      #
+    # ------------------------------------------------------------ #
+    def _tensor_choices(self, t: Tensor) -> tuple[TensorPlacementChoice, ...]:
+        return self.possible_tensor_allocations[t]
+
+    def _path_choices(self, tr: TransferNode) -> tuple[MulticastPathPlan, ...]:
+        return self.possible_transfer_allocations[tr]
+
+    def _fixed_tensor_choice(self, t: Tensor) -> TensorPlacementChoice:
+        choices = self._tensor_choices(t)
+        assert len(choices) == 1, f"Tensor {t.name} is not fixed."
+        return choices[0]
+
+    def _candidate_cores_for_tensor(self, t: Tensor) -> set[Core]:
+        return {core for choice in self._tensor_choices(t) for core in choice}
+
+    def _tensor_on_core_expr(self, t: Tensor, core: Core):
+        if t in self.tensor_fixed:
+            return int(core in self._fixed_tensor_choice(t))
+
+        return quicksum(self.x_tensor_choice[(t, choice)] for choice in self._tensor_choices(t) if core in choice)
+
+    def _transfer_uses_core_var(self, tr: TransferNode, core: Core) -> gp.Var:
+        key = (tr, core)
+        if key in self.transfer_core_indicator:
+            return self.transfer_core_indicator[key]
+
+        u = self.model.addVar(vtype=GRB.BINARY, name=f"u_{tr.name}_{_resource_key(core)}")
+        self.transfer_core_indicator[key] = u
+
+        occ_exprs = [self._tensor_on_core_expr(t, core) for t in tr.tensors if isinstance(t, Tensor)]
+        if not occ_exprs:
+            self.model.addConstr(u == 0, name=f"u_zero_{tr.name}_{_resource_key(core)}")
+            return u
+
+        for i, occ in enumerate(occ_exprs):
+            self.model.addConstr(u >= occ, name=f"u_lb_{tr.name}_{_resource_key(core)}_{i}")
+        self.model.addConstr(
+            u <= quicksum(occ_exprs),
+            name=f"u_ub_{tr.name}_{_resource_key(core)}",
+        )
+        return u
+
+    def _tensor_uses_core_var(self, t: Tensor, core: Core) -> gp.Var:
+        key = (t, core)
+        if key in self.tensor_core_indicator:
+            return self.tensor_core_indicator[key]
+
+        u = self.model.addVar(vtype=GRB.BINARY, name=f"u_{t.name}_{_resource_key(core)}")
+        self.tensor_core_indicator[key] = u
+
+        occ = self._tensor_on_core_expr(t, core)
+        self.model.addConstr(
+            u == occ,
+            name=f"u_eq_{t.name}_{_resource_key(core)}",
+        )
+        return u
+
+    def _same_core_var(self, src_tensor: Tensor, dst_tensor: Tensor, core: Core) -> gp.Var:
+        key = (src_tensor, dst_tensor, core)
+        if key in self.same_core_indicator:
+            return self.same_core_indicator[key]
+
+        v = self.model.addVar(
+            vtype=GRB.BINARY,
+            name=f"same_{src_tensor.name}_{dst_tensor.name}_{_resource_key(core)}",
+        )
+        self.same_core_indicator[key] = v
+
+        src_occ = self._tensor_on_core_expr(src_tensor, core)
+        dst_occ = self._tensor_on_core_expr(dst_tensor, core)
+
+        self.model.addConstr(
+            v <= src_occ, name=f"same_src_ub_{src_tensor.name}_{dst_tensor.name}_{_resource_key(core)}"
+        )
+        self.model.addConstr(
+            v <= dst_occ, name=f"same_dst_ub_{src_tensor.name}_{dst_tensor.name}_{_resource_key(core)}"
+        )
+        self.model.addConstr(
+            v >= src_occ + dst_occ - 1,
+            name=f"same_lb_{src_tensor.name}_{dst_tensor.name}_{_resource_key(core)}",
+        )
+        return v
+
+    def _all_candidate_cores_for_transfer(self, tr: TransferNode) -> set[Core]:
+        out: set[Core] = set()
+        for t in tr.tensors:
+            if isinstance(t, Tensor):
+                out.update(self._candidate_cores_for_tensor(t))
+        return out
 
     # ------------------------------------------------------------ #
     # model construction                                           #
     # ------------------------------------------------------------ #
     def _build_model(self):
         self._create_vars()
+        self._index_choice_metadata()
         self._create_constraints()
         self._overlap_and_objective()
 
@@ -278,270 +530,199 @@ class TransferAndTensorAllocator:
     def _create_vars(self):
         self.__create_tensor_placement_vars()
         self.__create_transfer_path_vars()
-        self.__create_compute_core_reuse_vars()
-        self.__create_mem_core_reuse_vars()
-        self.__create_transfer_mem_core_vars()
+        self.__create_reuse_vars()
         self.__create_slot_latency_vars()
-
-    def _paths_for_transfer(self, tr: TransferNode) -> list[PathKey]:
-        return [p for p in self.y_path if p[0] is tr]
-
-    @staticmethod
-    def _path_src_core(path: tuple[CommunicationLink, ...]) -> Core | None:
-        return path[0].sender if path else None
-
-    @staticmethod
-    def _path_dst_core(path: tuple[CommunicationLink, ...]) -> Core | None:
-        return path[-1].receiver if path else None
 
     def __create_slot_latency_vars(self):
         for s in range(self.max_slot + 1):
             self.slot_latency[s] = self.model.addVar(vtype=GRB.INTEGER, name=f"L_{s}")
 
-    def __create_compute_core_reuse_vars(self):
-        self.z_stopC: dict[tuple[TransferNode, int], gp.Var] = {}
-        for tr in self.transfer_nodes:
-            sizes = self.ssis[tr].get_temporal_sizes()
-            for stop in range(-1, len(sizes)):  # -1 .. K-1
-                v = self.model.addVar(vtype=GRB.BINARY, name=f"zStopC_{tr.name}_L{stop}")
-                self.z_stopC[(tr, stop)] = v
-            # Choose exactly one stop-level
+    def __create_reuse_vars(self):
+        self.z_stop: dict[tuple[Tensor, int], gp.Var] = {}
+        for t in self.workload.tensors:
+            sizes = self.ssis[t].get_applicable_temporal_sizes()
+            for stop in range(-1, len(sizes)):
+                v = self.model.addVar(vtype=GRB.BINARY, name=f"zStop_{t.name}_L{stop}")
+                self.z_stop[(t, stop)] = v
             self.model.addConstr(
-                quicksum(self.z_stopC[(tr, s)] for s in range(-1, len(sizes))) == 1,
-                name=f"zStopC_Choose_One_{tr.name}",
+                quicksum(self.z_stop[(t, s)] for s in range(-1, len(sizes))) == 1,
+                name=f"zStop_Choose_One_{t.name}",
             )
-            if tr not in self.transfer_nodes_to_optimize_firings_for:
-                # Get the stop value by looking at the reuses of the ssis
-                reuses = tr.steady_state_iteration_space.get_temporal_compute_tile_reuses()
-                # Find the index of the last 'REUSE' in the reuses
+            if t not in self.tensors_to_optimize_reuse_for:
+                reuses = self.ssis[t].get_temporal_reuses()
                 stop = -2
                 for i in range(len(reuses) - 1, -1, -1):
-                    if reuses[i] == ComputeTileReuse.REUSE:
+                    if reuses[i] == Reuse.REUSE:
                         stop = i
                         break
-                assert stop >= -1, f"Something went wrong for Transfer {tr.node_name} REUSE indexing: {reuses}"
-                # Set the z_stopC variable to 1 for the chosen stop
+                assert stop >= -1, f"Something went wrong for {t.name} REUSE indexing: {reuses}"
                 self.model.addConstr(
-                    self.z_stopC[(tr, stop)] == 1,
-                    name=f"zStopC_FixedStop_{tr.node_name}_L{stop}",
+                    self.z_stop[(t, stop)] == 1,
+                    name=f"zStop_FixedStop_{t.name}_L{stop}",
                 )
-
-    def __create_mem_core_reuse_vars(self):
-        self.z_stopM: dict[tuple[TransferNode, int], gp.Var] = {}
-
-        for tr in self.transfer_nodes:
-            sizes = self.ssis[tr].get_temporal_sizes()
-            for stop in range(-1, len(sizes)):
-                v = self.model.addVar(vtype=GRB.BINARY, name=f"zStopM_{tr.name}_L{stop}")
-                self.z_stopM[(tr, stop)] = v
-            self.model.addConstr(
-                quicksum(self.z_stopM[(tr, s)] for s in range(-1, len(sizes))) == 1,
-                name=f"cacheChooseStopM_{tr.name}",
-            )
-            # If any of the reuses is already set to NO_REUSE, enforce these levels to 0
-            mem_tile_reuses = self.ssis[tr].get_temporal_mem_tile_reuses()
-            for i, r in enumerate(mem_tile_reuses):
-                if r == MemTileReuse.NO_REUSE:
-                    self.model.addConstr(
-                        self.z_stopM[(tr, i)] == 0,
-                        name=f"zStopM_NoReuse_{tr.name}_L{i}",
-                    )
-
-            # stopM ≥ stopC (every cached loop for Compute must also be cached in the MemC)
-            for s in range(-1, len(sizes)):
-                cumC = quicksum(self.z_stopC[(tr, u)] for u in range(s, len(sizes)))
-                cumM = quicksum(self.z_stopM[(tr, u)] for u in range(s, len(sizes)))
-                self.model.addConstr(cumC <= cumM, name=f"nest_{tr.name}_L{s}")
-
-    def __create_transfer_mem_core_vars(self):
-        self.m_store: dict[tuple[TransferNode, Core], gp.Var] = {}
-        if not self.mem_cores:
-            return  # no memory cores, nothing to do
-        for tr in self.transfer_nodes:
-            memory_allocation = self.mapping.get(tr).memory_allocation
-            if not memory_allocation:
-                continue
-            for mc in memory_allocation:
-                v = self.model.addVar(vtype=GRB.BINARY, name=f"mStore_{tr.name}_{_resource_key(mc)}")
-                self.m_store[(tr, mc)] = v
-            if not self.force_io_transfers_on_mem_tile:
-                v_none = self.model.addVar(vtype=GRB.BINARY, name=f"mStore_{tr.name}_NONE")
-                self.m_store[(tr, None)] = v_none
-            self.model.addConstr(
-                quicksum(self.m_store[(tr, c)] for c in memory_allocation) == 1, name=f"chooseMemCore_{tr.name}"
-            )
 
     def __create_transfer_path_vars(self):
         for tr in self.transfer_nodes:
-            for p in self.possible_transfer_allocations[tr]:  # list[list[Link]]
-                p_tuple = tuple(p)
-                v = self.model.addVar(vtype=GRB.BINARY, name=f"y_{tr.name}_{hash(p_tuple)}")
-                self.y_path[(tr, p_tuple)] = v
-                self.links_in_path[(tr, p_tuple)] = list(p_tuple)
-                self.link_set.update(p_tuple)
+            for i, choice in enumerate(self.possible_transfer_allocations[tr]):
+                v = self.model.addVar(vtype=GRB.BINARY, name=f"y_{tr.name}_choice_{i}")
+                self.y_path_choice[(tr, choice)] = v
 
     def __create_tensor_placement_vars(self):
         for t in self.tensor_var:
-            for c in self.possible_tensor_allocations[t]:  # type: ignore
-                v = self.model.addVar(vtype=GRB.BINARY, name=f"x_{t.name}_{_resource_key(c)}")
-                self.x_tensor[(t, c)] = v
+            for choice in self.possible_tensor_allocations[t]:
+                choice_name = "__".join(_resource_key(c) for c in choice)
+                v = self.model.addVar(vtype=GRB.BINARY, name=f"x_{t.name}_{choice_name}")
+                self.x_tensor_choice[(t, choice)] = v
 
     # ...................... tensor placement .................... #
     def _tensor_placement_constraints(self):
         for t in self.tensor_var:
             self.model.addConstr(
-                quicksum(self.x_tensor[(t, c)] for c in self.possible_tensor_allocations[t]) == 1,  # type: ignore
+                quicksum(self.x_tensor_choice[(t, choice)] for choice in self.possible_tensor_allocations[t]) == 1,
                 name=f"place_{t.name}",
             )
 
     # ...................... CONSTRAINTS ................... #
     def _create_constraints(self):
-        self._path_choice_constraints()
         self._tensor_placement_constraints()
+        self._path_choice_constraints()
         self._transfer_fire_rate_constraints()
+        self._reuse_factor_rate_constraints()
         self._link_contention_constraints()
         self._memory_capacity_constraints()
         self._object_fifo_depth_constraints()
+        self._buffer_descriptor_constraints()
         self._slot_latency_constraints()
+        self._force_nonconstant_reuse_levels()
+        self._force_final_output_reuse_levels()
+        self._ensure_memory_and_compute_reuse_compatibility()
+        self._force_reuse_includes_spatial()
 
     def _transfer_fire_rate_constraints(self):
-        # firesC = Mem Core to Compute Core
-        # firesM = DRAM to Mem Core
-        self.firesC, self.firesM = {}, {}
+        self.fires: dict[TransferNode, gp.Var] = {}
         for tr in self.transfer_nodes:
-            fires_c = self.model.addVar(vtype=GRB.INTEGER, name=f"firesC_{tr.name}")
-            fires_m = self.model.addVar(vtype=GRB.INTEGER, name=f"firesM_{tr.name}")
-            self.firesC[tr], self.firesM[tr] = fires_c, fires_m
+            assert len(tr.inputs) == 1, (
+                f"Only single-input transfers are supported for fire rate constraints, "
+                f"but {tr.name} has inputs {tr.inputs}."
+            )
+            t = tr.outputs[0]
+            fires = self.model.addVar(vtype=GRB.INTEGER, name=f"fires_{tr.name}")
+            self.fires[tr] = fires
 
             self.model.addConstr(
-                fires_c
+                fires
                 == quicksum(
-                    self.reuse_levels[(tr, s)][0] * self.z_stopC[(tr, s)]
-                    for s in range(-1, len(self.ssis[tr].get_temporal_variables()))
+                    self.reuse_levels[(t, s)][0] * self.z_stop[(t, s)]
+                    for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
                 ),
-                name=f"firesC_def_{tr.name}",
+                name=f"fires_def_{tr.name}",
             )
+
+    def _reuse_factor_rate_constraints(self):
+        self.reuse_factors: dict[TransferNode, gp.Var] = {}
+        for tr in self.transfer_nodes:
+            assert len(tr.inputs) == 1, (
+                f"Only single-input transfers are supported for fire rate constraints, "
+                f"but {tr.name} has inputs {tr.inputs}."
+            )
+            t = tr.outputs[0]
+            reuse_factor = self.model.addVar(vtype=GRB.INTEGER, name=f"reuse_factor_{tr.name}")
+            self.reuse_factors[tr] = reuse_factor
+
             self.model.addConstr(
-                fires_m
+                reuse_factor
                 == quicksum(
-                    self.reuse_levels[(tr, s)][0] * self.z_stopM[(tr, s)]
-                    for s in range(-1, len(self.ssis[tr].get_temporal_variables()))
+                    self.reuse_levels[(t, s)][1] * self.z_stop[(t, s)]
+                    for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
                 ),
-                name=f"firesM_def_{tr.name}",
+                name=f"reuse_factor_def_{tr.name}",
             )
 
     # ...................... path choice ........................ #
     def _path_choice_constraints(self) -> None:
-        """
-        For every transfer, exactly one path must be selected and path choices must be coherent
-        with tensor placements for both source and destination tensors.
-        """
         for tr in self.transfer_nodes:
-            paths = self._paths_for_transfer(tr)
-            self._add_one_path_constraint(tr, paths)
-            self._add_source_tensor_coherence_constraints(tr, paths)
-            self._add_destination_tensor_coherence_constraints(tr, paths)
-            # self._add_io_transfers_path_coherence_constraints(tr, paths)
+            choices = self._path_choices(tr)
+            self._add_one_path_constraint(tr, choices)
+            self._add_source_tensor_coherence_constraints(tr, choices)
+            self._add_destination_tensor_coherence_constraints(tr, choices)
+            self._add_empty_path_coherence_constraints(tr, choices)
 
-    def _add_one_path_constraint(self, tr: TransferNode, paths: list[PathKey]) -> None:
-        """Ensure exactly one path is selected for each transfer."""
-        self.model.addConstr(quicksum(self.y_path[p] for p in paths) == 1, name=f"one_path_{tr.name}")
-
-    def _add_source_tensor_coherence_constraints(self, tr: TransferNode, paths: list[PathKey]) -> None:
-        """Add constraints to ensure path choice is coherent with source tensor placement."""
-        predecessors = list(self.workload.predecessors(tr))
-        predecessors = tr.inputs
-        assert all(isinstance(n, Tensor) for n in predecessors), (
-            f"Transfer {tr.name} has non-tensor predecessor(s): {predecessors}"
+    def _add_one_path_constraint(self, tr: TransferNode, choices: tuple[MulticastPathPlan, ...]) -> None:
+        self.model.addConstr(
+            quicksum(self.y_path_choice[(tr, choice)] for choice in choices) == 1,
+            name=f"one_path_{tr.name}",
         )
-        successors = list(self.workload.successors(tr))
-        for src_tensor in predecessors:
-            if src_tensor in self.tensor_var:
-                for p in paths:
-                    src_core = self._path_src_core(p[1])
-                    if src_core is not None:
-                        assert isinstance(src_core, Core), f"Expected {src_core} to be a Core, got {type(src_core)}"
-                        self.model.addConstr(
-                            self.y_path[p] <= self.x_tensor[(src_tensor, src_core)],
-                            name=f"path_core_link_src_{tr.name}_{_resource_key(src_core)}",
-                        )
-                        continue
-                    # empty path is only possible if the src_tensor is fixed on the same core as the dst_tensor
-                    dst_tensor = successors[0] if successors else None
-                    if dst_tensor is not None and dst_tensor in self.tensor_fixed:
-                        dst_core = self.resource_of[dst_tensor]
-                        assert isinstance(dst_core, Core), f"Expected {dst_core} to be a Core, got {type(dst_core)}"
-                        self.model.addConstr(
-                            self.y_path[p] <= self.x_tensor[(src_tensor, dst_core)],
-                            name=f"path_core_link_src_empty_path_{tr.name}_{_resource_key(dst_core)}",
-                        )
 
-    def _add_destination_tensor_coherence_constraints(self, tr: TransferNode, paths: list[PathKey]) -> None:
-        """Add constraints to ensure path choice is coherent with destination tensor placement."""
+    def _add_source_tensor_coherence_constraints(
+        self, tr: TransferNode, choices: tuple[MulticastPathPlan, ...]
+    ) -> None:
+        src_tensors = tr.inputs
+        assert all(isinstance(t, Tensor) for t in src_tensors), (
+            f"Transfer {tr.name} has non-tensor input(s): {src_tensors}"
+        )
+
+        for src_tensor in src_tensors:
+            for i, choice in enumerate(choices):
+                y = self.y_path_choice[(tr, choice)]
+                for src_core in self.choice_src_cores[(tr, choice)]:
+                    self.model.addConstr(
+                        y <= self._tensor_on_core_expr(src_tensor, src_core),
+                        name=f"path_src_match_{tr.name}_{src_tensor.name}_{_resource_key(src_core)}_choice_{i}",
+                    )
+
+    def _add_destination_tensor_coherence_constraints(
+        self, tr: TransferNode, choices: tuple[MulticastPathPlan, ...]
+    ) -> None:
         dst_tensors = tr.outputs
-        assert len(tr.inputs) == 1, "Only single-input transfers are supported for destination tensor coherence."
-        src_tensor = tr.inputs[0]
         for dst_tensor in dst_tensors:
-            if dst_tensor in self.tensor_var:
-                assert isinstance(dst_tensor, Tensor), (
-                    f"Expected {dst_tensor.name} to be a Tensor, got {type(dst_tensor)}"
-                )
-                for p in paths:
-                    dst_core = self._path_dst_core(p[1])
-                    if dst_core is not None:
-                        if isinstance(dst_core, str):
-                            continue  # dst_core is any core, no constraint needed
-                        self.model.addConstr(
-                            self.y_path[p] <= self.x_tensor[(dst_tensor, dst_core)],
-                            name=f"path_core_link_dst_{tr.name}_{_resource_key(dst_core)}",
-                        )
-                        continue
-                    # empty path is only possible if the dst_tensor is fixed on the same core as the src_tensor
-                    src_tensor = src_tensor[0] if src_tensor else None
-                    if src_tensor is not None and src_tensor in self.tensor_fixed:
-                        src_core = self.resource_of[src_tensor]
-                        assert isinstance(src_core, Core), f"Expected {src_core} to be a Core, got {type(src_core)}"
-                        self.model.addConstr(
-                            self.y_path[p] <= self.x_tensor[(dst_tensor, src_core)],
-                            name=f"path_core_link_dst_empty_path_{tr.name}_{_resource_key(src_core)}",
-                        )
+            assert isinstance(dst_tensor, Tensor), f"Expected {dst_tensor} to be a Tensor."
+            for i, choice in enumerate(choices):
+                y = self.y_path_choice[(tr, choice)]
+                for dst_core in self.choice_dst_cores[(tr, choice)]:
+                    self.model.addConstr(
+                        y <= self._tensor_on_core_expr(dst_tensor, dst_core),
+                        name=f"path_dst_match_{tr.name}_{dst_tensor.name}_{_resource_key(dst_core)}_choice_{i}",
+                    )
 
-    def _add_io_transfers_path_coherence_constraints(self, tr: TransferNode, paths: list[PathKey]) -> None:
+    def _add_empty_path_coherence_constraints(self, tr: TransferNode, choices: tuple[MulticastPathPlan, ...]) -> None:
         """
-        For every path:
-            if its FIRST link originates or ends in a memory core, enforce memory core matching:
-            y_path ≤ m_store[(tr, memc)]
+        If a routing choice contains only empty paths, enforce that source and destination
+        tensors can be colocated on at least one common candidate core.
         """
-        if not self._is_const_io(tr):
+        if len(tr.inputs) != 1 or len(tr.outputs) == 0:
             return
-        for p in paths:
-            if not p[1]:
-                continue  # empty path
-            # Gather the mem cores involved in this path and make sure there's only one
-            links = p[1]
-            seen_mem_cores = set()
-            for link in links:
-                sender = link.sender
-                receiver = link.receiver
-                if sender in self.mem_cores:
-                    seen_mem_cores.add(sender)
-                if receiver in self.mem_cores:
-                    seen_mem_cores.add(receiver)
-            if len(seen_mem_cores) != 1:
-                raise ValueError(f"Transfer {tr.node_name} doesn't have exactly one MemC in its path: {seen_mem_cores}")
-            mem_core = seen_mem_cores.pop()
-            self.model.addConstr(
-                self.y_path[p] <= self.m_store[(tr, mem_core)],
-                name=f"pathMemMatch_{tr.node_name}_{_resource_key(mem_core)}",
-            )
+
+        src_tensor = tr.inputs[0]
+        assert isinstance(src_tensor, Tensor)
+
+        for i, choice in enumerate(choices):
+            if not self.choice_has_empty_path[(tr, choice)]:
+                continue
+            # Handle only all-empty choices here. Mixed empty/non-empty choices are still
+            # covered by src/dst coherence on the non-empty paths.
+            if len(choice.links_used) != 0:
+                raise ValueError("Something went wrong in empty path determination")
+            y = self.y_path_choice[(tr, choice)]
+            for dst_tensor in tr.outputs:
+                assert isinstance(dst_tensor, Tensor)
+                common_cores = self._candidate_cores_for_tensor(src_tensor) & self._candidate_cores_for_tensor(
+                    dst_tensor
+                )
+                if not common_cores:
+                    self.model.addConstr(y == 0, name=f"empty_path_infeasible_{tr.name}_{dst_tensor.name}_choice_{i}")
+                    continue
+                coloc_terms = [self._same_core_var(src_tensor, dst_tensor, core) for core in common_cores]
+                self.model.addConstr(
+                    y <= quicksum(coloc_terms),
+                    name=f"empty_path_match_{tr.name}_{dst_tensor.name}_choice_{i}",
+                )
 
     # ...................... link contention .................... #
     def _link_contention_constraints(self):
-        # For every link/slot sum of all selected paths ≤ 1
         usage: dict[tuple[CommunicationLink, int], list[gp.Var]] = defaultdict(list)
-        for (tr, path_t), y in self.y_path.items():
+        for (tr, choice), y in self.y_path_choice.items():
             s = self.slot_of[tr]
-            for link in self.links_in_path[(tr, path_t)]:
+            for link in self.links_in_choice[(tr, choice)]:
                 usage[(link, s)].append(y)
 
         for (link, s), vars_ in usage.items():
@@ -549,119 +730,238 @@ class TransferAndTensorAllocator:
 
     # ...................... memory capacity .................... #
     def _memory_capacity_constraints(self):
-        self.core_load: dict[Core, gp.QuadExpr] = defaultdict(gp.QuadExpr)
-        # add transfer tensors
-        for tr in self.transfer_nodes:
-            for t in tr.outputs:
-                assert t in self.tensor_fixed, "Transfer tensors must be fixed (for now)."
-                for c in self.possible_tensor_allocations[t]:
-                    tensor_shape = self.workload.get_tensor_shape_of_transfer_to_single_core(t, tr, self.mapping)
-                    tensor_size = t.size_bits(shape=tensor_shape)
-                    assert isinstance(c, Core), f"Expected {c} to be a Core, got {type(c)}"
-                    for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
-                        _, size_factor = self.reuse_levels[(tr, stop)]
+        self.core_load: dict[Core, gp.LinExpr] = defaultdict(gp.LinExpr)
+        # Transfer output tensors on their chosen compute/memory cores
+        for node in self.workload.get_iteration_space_nodes():
+            for t in node.outputs:
+                tensor_size = self.workload.get_tensor_single_core(t, node, self.mapping).size_bits()
+                candidate_cores = self._candidate_cores_for_tensor(t)
+                for c in candidate_cores:
+                    assert isinstance(c, Core)
+                    u = self._tensor_uses_core_var(t, c)
+                    for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
+                        _, size_factor = self.reuse_levels[(t, stop)]
                         req_size = ceil(size_factor * tensor_size)
-                        self.core_load[c] += req_size * self.z_stopC[(tr, stop)]
+                        uz = self._add_binary_product(
+                            a=u,
+                            b=self.z_stop[(t, stop)],
+                            base_name=f"memload_{t.name}_{_resource_key(c)}_L{stop}",
+                        )
+                        self.core_load[c] += req_size * uz
 
-        # add MemC load for transfers going through
-        for tr in self.transfer_nodes:
-            memory_allocation = self.mapping.get(tr).memory_allocation
-            if not memory_allocation:
-                continue
-            for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
-                _, size_factor = self.reuse_levels[(tr, stop)]
-                assert len(tr.inputs) == 1, "Only single-input transfers are supported for memory capacity calculation."
-                tensor = tr.inputs[0]
-                req_size = size_factor * tensor.size_bits()  # full transfer size across all dsts
-                for mc in memory_allocation:
-                    self.core_load[mc] += req_size * self.m_store[(tr, mc)] * self.z_stopM[(tr, stop)]
-
-        # add memory capacity constraints for each core
         for c, expr in self.core_load.items():
-            cap = c.get_memory_capacity()  # user-provided helper
+            cap = c.get_memory_capacity()
             self.model.addConstr(expr <= cap, name=f"mem_cap_{_resource_key(c)}")
 
     def _object_fifo_depth_constraints(self):
-        """
-        Ensure that the max FIFO depth of each core is respected.
-        """
         self.object_fifo_depth: dict[Core, gp.LinExpr] = defaultdict(gp.LinExpr)
         for tr in self.transfer_nodes:
-            resources = {c for t in tr.tensors for c in self.possible_tensor_allocations[t]}
-            for c in resources:
-                if c.id == self.offchip_core_id:
-                    continue  # off-chip has no FIFO depth limit
-                assert isinstance(c, Core), f"Expected {c} to be a Core, got {type(c)}"
-                for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
-                    tiles_needed = self.tiles_needed_levels[(tr, stop)]
-                    tiles_needed += 1 if self.force_double_buffering else 0
-                    self.object_fifo_depth[c] += tiles_needed * self.z_stopC[(tr, stop)]
-            # Go through the possible memory cores too
-            memory_allocation = self.mapping.get(tr).memory_allocation
-            for mc in memory_allocation:
-                if mc.id == self.offchip_core_id:
-                    continue  # off-chip has no FIFO depth limit
-                assert isinstance(mc, Core), f"Expected {mc} to be a Core, got {type(mc)}"
-                for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
-                    tiles_needed = self.tiles_needed_levels[(tr, stop)]
-                    tiles_needed += 1 if self.force_double_buffering else 0
-                    self.object_fifo_depth[mc] += tiles_needed * self.m_store[(tr, mc)] * self.z_stopM[(tr, stop)]
+            # TODO: Confirm assumption that OF linking causes only single object fifo depth increase
+            for t in tr.outputs:
+                resources = self._candidate_cores_for_tensor(t)
+                for c in resources:
+                    if c.id == self.offchip_core_id:
+                        continue
+                    assert isinstance(c, Core)
+                    u = self._tensor_uses_core_var(t, c)
+                    for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
+                        tiles_needed = self.tiles_needed_levels[(t, stop)]
+
+                        uz = self._add_binary_product(
+                            a=u,
+                            b=self.z_stop[(t, stop)],
+                            base_name=f"objfifo_{t.name}_{_resource_key(c)}_L{stop}",
+                        )
+                        self.object_fifo_depth[c] += tiles_needed * uz
         self.context.add_object_fifo_constraints(self.model, self.object_fifo_depth)
+
+    def _buffer_descriptor_constraints(self):
+        """
+        For compute tiles: use tiles_needed_levels to determine how many buffer descriptors are needed (relevant).
+        For memory tiles: use bds_needed_levels to determine how many buffer descriptors are needed (irrelevant/repeat).
+        """
+        self.bd_depth: dict[Core, gp.LinExpr] = defaultdict(gp.LinExpr)
+        for tr in self.transfer_nodes:
+            for t in tr.tensors:
+                resources = self._candidate_cores_for_tensor(t)
+                for c in resources:
+                    if c.id == self.offchip_core_id:
+                        continue
+                    u = self._tensor_uses_core_var(t, c)
+                    assert isinstance(c, Core)
+                    if c.type == "compute":
+                        for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
+                            bds_needed = self.tiles_needed_levels[(t, stop)]
+                            uz = self._add_binary_product(
+                                a=u,
+                                b=self.z_stop[(t, stop)],
+                                base_name=f"bddepth_{t.name}_{_resource_key(c)}_L{stop}",
+                            )
+                            self.bd_depth[c] += bds_needed * uz
+                    else:
+                        # If the core is a memory core, we add bd usage only if the eq. tensor on compute
+                        # is not being reused (zStop[t, stop] == 0 at that reuse level)
+                        # This means we create a new 'active' helper variable for the eq. tensor
+                        # TODO: Shouldn't just be exactly that compute tensor reuse level
+                        if t in tr.outputs:
+                            assert len(tr.inputs) == 1
+                            compute_tensor = tr.inputs[0]
+                        elif t in tr.inputs:
+                            # TODO: Check that for multiple outputs the reuse levels are equivalent,
+                            # otherswise we may need to create separate active variables for each output tensor.
+                            compute_tensor = tr.outputs[0]
+                        else:
+                            raise NotImplementedError("Expected tensor to be either input or output of the transfer.")
+                        for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
+                            src_tensor_reuse = self.z_stop[(compute_tensor, stop)]
+                            gate_var = self.model.addVar(
+                                vtype=GRB.BINARY, name=f"active_{compute_tensor.name}_{_resource_key(c)}_L{stop}"
+                            )
+                            self.model.addConstr(
+                                gate_var == 1 - src_tensor_reuse,
+                                name=f"active_gate_{compute_tensor.name}_{_resource_key(c)}_L{stop}",
+                            )
+                            uz = self._add_binary_product(
+                                a=u,
+                                b=self.z_stop[(t, stop)],
+                                base_name=f"bddepth_{t.name}_{_resource_key(c)}_L{stop}",
+                            )
+                            uzgate = self._add_binary_product(
+                                a=uz,
+                                b=gate_var,
+                                base_name=f"bddepth_active_{t.name}_{_resource_key(c)}_L{stop}",
+                            )
+                            bds_needed = self.bds_needed_levels[(t, stop)]
+                            self.bd_depth[c] += bds_needed * uzgate
+        self.context.add_buffer_descriptor_constraints(self.model, self.bd_depth)
+
+    def _ensure_memory_and_compute_reuse_compatibility(self):
+        """
+        Ensure that for COMPUTE_TO_MEM and MEM_TO_COMPUTE transfers the input and output
+        reuse levels are equal.
+        """
+        for tr in self.transfer_nodes:
+            inputs = tr.inputs
+            outputs = tr.outputs
+            relevancies = self.ssis[tr].get_applicable_temporal_relevancies()
+            if tr.transfer_type in (TransferType.COMPUTE_TO_MEM,):
+                assert len(outputs) == 1, "Expected exactly one output tensor for COMPUTE_TO_MEM transfer."
+                output_tensor = outputs[0]
+                for input_tensor in inputs:
+                    for s in range(-1, len(relevancies)):
+                        self.model.addConstr(
+                            self.z_stop[(output_tensor, s)] == self.z_stop[(input_tensor, s)],
+                            name=f"reuse_eq_input_{tr.name}_L{s}",
+                        )
+            elif tr.transfer_type in (TransferType.MEM_TO_COMPUTE,):
+                assert len(inputs) == 1, "Expected exactly one input tensor for MEM_TO_COMPUTE transfer."
+                input_tensor = inputs[0]
+                for output_tensor in outputs:
+                    for s in range(-1, len(relevancies)):
+                        self.model.addConstr(
+                            self.z_stop[(input_tensor, s)] == self.z_stop[(output_tensor, s)],
+                            name=f"reuse_eq_output_{tr.name}_L{s}",
+                        )
+
+    def _force_reuse_includes_spatial(self):
+        """
+        Force reuse to cover any applicable temporal loop that sits inside (or at)
+        the outermost spatial variable of a tensor. Temporal loops outside the
+        outermost spatial do not need to be buffered for spatial coverage.
+        """
+        for t in self.tensors_to_optimize_reuse_for:
+            variables = self.ssis[t].variables
+            applicable_temporal = self.ssis[t].get_applicable_temporal_variables()
+            outermost_spatial_pos = -1
+            for pos, var in enumerate(variables):
+                if var.type == IterationVariableType.SPATIAL:
+                    outermost_spatial_pos = pos
+            if outermost_spatial_pos < 0:
+                continue
+            min_reuse_level = -1
+            for i, tv in enumerate(applicable_temporal):
+                pos = next(p for p, v in enumerate(variables) if v is tv)
+                if pos <= outermost_spatial_pos:
+                    min_reuse_level = i
+                else:
+                    break
+            if min_reuse_level < 0:
+                continue
+            self.model.addConstr(
+                quicksum(self.z_stop[(t, s)] for s in range(min_reuse_level, len(applicable_temporal))) >= 1,
+                name=f"force_reuse_past_spatial_{t.name}",
+            )
 
     # ...................... slot latency ........................ #
     def _slot_latency_constraints(self):
-        # constant SSC contributions
         for n in self.ssc_nodes:
             s = self.slot_of[n]
-            runtimes = [self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)]
-            runtime = ceil(max(runtimes)) if runtimes else 0
-            self.model.addConstr(self.slot_latency[s] >= runtime, name=f"ssc_lat_{n.name}")
+            latencies = [self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)]
+            runtime = ceil(max(latencies)) if latencies else 0
+            active_latency = get_active_latency(n, runtime, self.ssis)
+            self.model.addConstr(self.slot_latency[s] >= active_latency, name=f"ssc_lat_{n.name}")
 
-        # transfer (path-dependent) contributions
-        for (tr, p), y in self.y_path.items():
+        for (tr, choice), y in self.y_path_choice.items():
             s = self.slot_of[tr]
-            lat = self._transfer_latency(tr, p)
-            self.model.addConstr(self.slot_latency[s] >= lat * y, name=f"tr_lat_{tr.name}_{hash(p)}")
+            active_latency = self._active_transfer_latency(tr, choice, y)
+            self.model.addConstr(self.slot_latency[s] >= active_latency, name=f"tr_lat_{tr.name}_{hash(choice)}")
+
+    def _force_nonconstant_reuse_levels(self):
+        """
+        Forces the reuse level at the destination of a compute to compute transfer.
+        It forces buffering up until the top irrelevant loop.
+        """
+        for tr in self.transfer_nodes:
+            if tr.transfer_type not in (TransferType.COMPUTE_TO_COMPUTE):
+                continue
+            relevancies = self.ssis[tr].get_applicable_temporal_relevancies()
+            last_irrelevant = -1
+            for t in tr.outputs:
+                for i, r in enumerate(relevancies):
+                    if r is False:
+                        last_irrelevant = i
+                if last_irrelevant >= 0:
+                    self.model.addConstr(
+                        quicksum(self.z_stop[(t, s)] for s in range(last_irrelevant, len(relevancies))) >= 1,
+                        name=f"force_intermediate_reuse_{tr.name}",
+                    )
+
+    def _force_final_output_reuse_levels(self):
+        """
+        Forces the reuse level of the outputs of the final compute node(s) by looking at COMPUTE_TO_MEM transfer inputs.
+        It forces buffering up until the top irrelevant loop.
+        """
+        for tr in self.transfer_nodes:
+            if tr.transfer_type not in (TransferType.COMPUTE_TO_MEM,):
+                continue
+            for t in tr.inputs:
+                relevancies = self.ssis[t].get_applicable_temporal_relevancies()
+                last_irrelevant = -1
+                for i, r in enumerate(relevancies):
+                    if r is False:
+                        last_irrelevant = i
+                if last_irrelevant >= 0:
+                    self.model.addConstr(
+                        quicksum(self.z_stop[(t, s)] for s in range(last_irrelevant, len(relevancies))) >= 1,
+                        name=f"force_output_reuse_{tr.name}",
+                    )
 
     # ...................... overlap + objective ................. #
     def _overlap_and_objective(self) -> None:
-        """
-        ▸ idle_start[res,s]  == 1  ⇔  slot *s* is *before* the first activity on *res*
-        ▸ idle_end  [res,s]  == 1  ⇔  slot *s* is *after*  the last  activity on *res*
-        Only these slots contribute to the idle-latency that can overlap
-        successive steady-state iterations.
-        """
         max_s = self.max_slot
         big_m = self.big_m
 
         self._init_idle_indicators(max_s, big_m)
         self._create_idle_latency_vars(max_s)
         self._define_overlap_var()
-        self._add_transfer_costs()
         self._add_dma_usage_constraints()
         self._set_total_latency_and_objective()
 
-    # --------------------- overlap helpers --------------------- #
-    def _first_last_busy_slot(self, res: Resource) -> tuple[int | None, int | None]:
-        busy = sorted(self.slot_of[n] for n, r in self.resource_of.items() if r is res)
-        return (busy[0], busy[-1]) if busy else (None, None)
-
     def _init_idle_indicators(self, max_s: int, big_m: int) -> None:
-        self.idleS: dict[tuple[Resource, int], gp.Var | int] = {}
-        self.idleE: dict[tuple[Resource, int], gp.Var | int] = {}
-        # self._init_fixed_idle_indicators(max_s)
+        self.idleS: dict[tuple[Resource, int], gp.Var] = {}
+        self.idleE: dict[tuple[Resource, int], gp.Var] = {}
         self._init_link_idle_indicators(max_s, big_m)
-
-    # def _init_fixed_idle_indicators(self, max_s: int) -> None:
-    #     for res in self.tsa.resources:
-    #         if res is None or (isinstance(res, Core) and res.id == self.offchip_core_id):
-    #             continue
-    #         first_busy, last_busy = self._first_last_busy_slot(res)
-    #         if first_busy is None or last_busy is None:
-    #             continue
-    #         for s in range(max_s + 1):
-    #             self.idleS[(res, s)] = 1 if s < first_busy else 0
-    #             self.idleE[(res, s)] = 1 if s > last_busy else 0
+        self._init_core_idle_indicators(max_s, big_m)
 
     def _init_link_idle_indicators(self, max_s: int, big_m: int) -> None:
         self.link_used: dict[CommunicationLink, gp.Var] = {}
@@ -671,9 +971,9 @@ class TransferAndTensorAllocator:
             active_s: dict[int, gp.LinExpr] = {}
             for s in range(max_s + 1):
                 active_s[s] = quicksum(
-                    self.y_path[(tr, p)]
-                    for (tr, p) in self.y_path
-                    if link in self.links_in_path[(tr, p)] and self.slot_of[tr] == s
+                    self.y_path_choice[(tr, choice)]
+                    for (tr, choice) in self.y_path_choice
+                    if link in self.links_in_choice[(tr, choice)] and self.slot_of[tr] == s
                 )
             lu = self.model.addVar(vtype=GRB.BINARY, name=f"linkUsed_{_resource_key(link)}")
             self.link_used[link] = lu
@@ -708,15 +1008,97 @@ class TransferAndTensorAllocator:
                 self.model.addConstr(is_ >= 1 - lu)
                 self.model.addConstr(ie_ <= lu)
 
+    def _init_core_idle_indicators(self, max_s: int, big_m: int) -> None:
+        # Collect the set of all compute cores from the (fixed) mapping
+        core_set: set[Core] = set()
+        for node in self.ssc_nodes:
+            for group in self.mapping.get(node).resource_allocation:
+                core_set.update(group)
+
+        # Build core → set of slots in which it is active
+        core_active_slots: dict[Core, set[int]] = defaultdict(set)
+        for node in self.ssc_nodes:
+            s = self.slot_of[node]
+            for group in self.mapping.get(node).resource_allocation:
+                for core in group:
+                    core_active_slots[core].add(s)
+
+        for core in core_set:
+            active_slots = core_active_slots[core]
+
+            # active_s[s] is a constant 0/1 for compute cores (mapping is fixed)
+            active_s: dict[int, int] = {s: (1 if s in active_slots else 0) for s in range(max_s + 1)}
+
+            # lu: core is used (always 1 since we only iterate cores from the mapping)
+            lu = self.model.addVar(vtype=GRB.BINARY, name=f"coreUsed_{_resource_key(core)}")
+            self.model.addConstr(lu == 1, name=f"core_used_def_{_resource_key(core)}")
+
+            prefix = [
+                self.model.addVar(vtype=GRB.INTEGER, name=f"pre_{_resource_key(core)}_{s}") for s in range(max_s + 1)
+            ]
+            suffix = [
+                self.model.addVar(vtype=GRB.INTEGER, name=f"suf_{_resource_key(core)}_{s}") for s in range(max_s + 1)
+            ]
+            self.model.addConstr(prefix[0] == active_s[0])
+            self.model.addConstr(suffix[-1] == active_s[max_s])
+            for s in range(1, max_s + 1):
+                self.model.addConstr(prefix[s] == prefix[s - 1] + active_s[s])
+                self.model.addConstr(suffix[max_s - s] == suffix[max_s - s + 1] + active_s[max_s - s])
+
+            for s in range(max_s + 1):
+                is_ = self.model.addVar(vtype=GRB.BINARY, name=f"idleS_{_resource_key(core)}_{s}")
+                ie_ = self.model.addVar(vtype=GRB.BINARY, name=f"idleE_{_resource_key(core)}_{s}")
+                self.idleS[(core, s)] = is_
+                self.idleE[(core, s)] = ie_
+
+                self.model.addConstr(prefix[s] <= big_m * (1 - is_))
+                self.model.addConstr(prefix[s] >= lu - big_m * is_)
+                self.model.addConstr(suffix[s] <= big_m * (1 - ie_))
+                self.model.addConstr(suffix[s] >= lu - big_m * ie_)
+                self.model.addConstr(is_ >= 1 - lu)
+                self.model.addConstr(ie_ <= lu)
+
     def _create_idle_latency_vars(self, max_s: int) -> None:
         self.idle_lat: dict[Resource, gp.Var] = {}
+
+        # Safe upper bound for slot latency
+        slot_latency_ub = 0
+        for n in self.ssc_nodes:
+            runtimes = [self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)]
+            runtime = ceil(max(runtimes)) if runtimes else 0
+            slot_latency_ub = max(slot_latency_ub, runtime)
+
+        for tr in self.transfer_nodes:
+            for choice in self._path_choices(tr):
+                lat = ceil(self._transfer_latency_for_path(tr, choice))
+                slot_latency_ub = max(slot_latency_ub, lat)
+
         for res in {r for r, _ in self.idleS} | {r for r, _ in self.idleE}:
-            expr = quicksum(
-                self.idleS.get((res, s), 0) * self.slot_latency[s] + self.idleE.get((res, s), 0) * self.slot_latency[s]
-                for s in range(max_s + 1)
-            )
+            terms = []
+            for s in range(max_s + 1):
+                idle_s = self.idleS.get((res, s), None)
+                idle_e = self.idleE.get((res, s), None)
+
+                if idle_s is not None:
+                    prod_s = self._add_binary_scaled_continuous(
+                        binary_var=idle_s,
+                        continuous_var=self.slot_latency[s],
+                        continuous_ub=slot_latency_ub,
+                        base_name=f"idleS_lat_{_resource_key(res)}_{s}",
+                    )
+                    terms.append(prod_s)
+
+                if idle_e is not None:
+                    prod_e = self._add_binary_scaled_continuous(
+                        binary_var=idle_e,
+                        continuous_var=self.slot_latency[s],
+                        continuous_ub=slot_latency_ub,
+                        base_name=f"idleE_lat_{_resource_key(res)}_{s}",
+                    )
+                    terms.append(prod_e)
+
             v = self.model.addVar(vtype=GRB.INTEGER, name=f"idleLat_{_resource_key(res)}")
-            self.model.addConstr(v == expr)
+            self.model.addConstr(v == quicksum(terms), name=f"idleLat_def_{_resource_key(res)}")
             self.idle_lat[res] = v
 
     def _define_overlap_var(self) -> None:
@@ -725,83 +1107,69 @@ class TransferAndTensorAllocator:
         for v in self.idle_lat.values():
             self.model.addConstr(overlap <= v)
 
-    def _add_transfer_costs(self) -> None:
-        self.total_transfer_cost = quicksum(
-            self._transfer_latency(tr, p) * self.y_path[(tr, p)] * self.firesC[tr] for (tr, p) in self.y_path
-        )
-        lat_dram_mem = {
-            (tr, mc): ceil(tr.inputs[0].size_bits() / self._first_link_bw_from_dram(tr, mc))
-            for tr in self.transfer_nodes
-            if self._is_const_io(tr)
-            for mc in self.mapping.get(tr).memory_allocation
-        }
-        self.total_transfer_cost += quicksum(
-            lat_dram_mem[(tr, mc)] * self.firesM[tr] * self.m_store[(tr, mc)]
-            for tr in self.transfer_nodes
-            if self._is_const_io(tr)
-            for mc in self.mapping.get(tr).memory_allocation
-        )
+    def _transfer_dma_usage_expr(self, tr: TransferNode, core: Core):
+        return quicksum(self._tensor_on_core_expr(t, core) for t in tr.tensors if isinstance(t, Tensor))
 
     def _add_dma_usage_constraints(self) -> None:
-        self.mem_core_usage_s2mm: dict[Core, gp.Var] = {}
-        self.mem_core_usage_mm2s: dict[Core, gp.Var] = {}
-        self.shim_core_usage_s2mm: dict[Core, gp.Var] = {}
-        self.shim_core_usage_mm2s: dict[Core, gp.Var] = {}
-        for mc in self.mem_cores:
-            mem_core_usage_s2mm = self.model.addVar(vtype=GRB.INTEGER, name=f"memCoreUsageS2MM_{_resource_key(mc)}")
-            self.model.addConstr(
-                mem_core_usage_s2mm
-                == quicksum(
-                    self.m_store[(tr, mc)]
-                    for tr in self.transfer_nodes
-                    if self._is_const_io(tr) and mc in self.mapping.get(tr).memory_allocation
-                ),
-                name=f"memCoreUsageS2MMConstr_{_resource_key(mc)}",
-            )
-            self.mem_core_usage_s2mm[mc] = mem_core_usage_s2mm
+        """
+        Directional DMA accounting for all on-chip cores.
 
-            mem_core_usage_mm2s = self.model.addVar(vtype=GRB.INTEGER, name=f"memCoreUsageMM2S_{_resource_key(mc)}")
-            self.model.addConstr(
-                mem_core_usage_mm2s
-                == quicksum(
-                    self.m_store[(tr, mc)]
-                    for tr in self.transfer_nodes
-                    if self._is_const_io(tr) and mc in self.mapping.get(tr).memory_allocation
-                ),
-                name=f"memCoreUsageMM2SConstr_{_resource_key(mc)}",
-            )
-            self.mem_core_usage_mm2s[mc] = mem_core_usage_mm2s
+        Incoming DMA on a core:
+            based on transfer outputs allocated on that core.
 
-            shim_core_usage_s2mm = self.model.addVar(vtype=GRB.INTEGER, name=f"shimCoreUsageS2MM_{_resource_key(mc)}")
-            self.model.addConstr(
-                shim_core_usage_s2mm
-                == quicksum(
-                    self.m_store[(tr, mc)]
-                    for tr in self.transfer_nodes
-                    if self._is_const_o(tr) and mc in self.mapping.get(tr).memory_allocation
-                ),
-                name=f"shimCoreUsageS2MMConstr_{_resource_key(mc)}",
-            )
-            self.shim_core_usage_s2mm[mc] = shim_core_usage_s2mm
+        Outgoing DMA on a core:
+            based on transfer inputs allocated on that core.
 
-            shim_core_usage_mm2s = self.model.addVar(vtype=GRB.INTEGER, name=f"shimCoreUsageMM2S_{_resource_key(mc)}")
-            self.model.addConstr(
-                shim_core_usage_mm2s
-                == quicksum(
-                    self.m_store[(tr, mc)]
-                    for tr in self.transfer_nodes
-                    if self._is_const_i(tr) and mc in self.mapping.get(tr).memory_allocation
-                ),
-                name=f"shimCoreUsageMM2SConstr_{_resource_key(mc)}",
-            )
-            self.shim_core_usage_mm2s[mc] = shim_core_usage_mm2s
+        Two counting modes are supported:
+            - per-transfer counting
+            - global per-tensor counting
+        """
+        self.core_dma_in: dict[Core, gp.Var] = {}
+        self.core_dma_out: dict[Core, gp.Var] = {}
 
-        self.max_mem_core_usage, self.max_shim_core_usage = self.context.add_dma_usage_constraints(
+        dma_cores = self._all_dma_candidate_cores()
+
+        for core in dma_cores:
+            v_in = self.model.addVar(vtype=GRB.INTEGER, name=f"coreDmaIn_{_resource_key(core)}")
+            v_out = self.model.addVar(vtype=GRB.INTEGER, name=f"coreDmaOut_{_resource_key(core)}")
+
+            if self.DMA_COUNT_SAME_TENSOR_ON_CORE_ONCE_GLOBALLY:
+                in_expr = self._global_incoming_dma_expr(core)
+                out_expr = self._global_outgoing_dma_expr(core)
+            else:
+                in_expr = quicksum(self._transfer_incoming_dma_expr(tr, core) for tr in self.transfer_nodes)
+                out_expr = quicksum(self._transfer_outgoing_dma_expr(tr, core) for tr in self.transfer_nodes)
+
+            self.model.addConstr(
+                v_in == in_expr,
+                name=f"coreDmaInConstr_{_resource_key(core)}",
+            )
+            self.model.addConstr(
+                v_out == out_expr,
+                name=f"coreDmaOutConstr_{_resource_key(core)}",
+            )
+
+            self.core_dma_in[core] = v_in
+            self.core_dma_out[core] = v_out
+
+        self.max_core_dma_in = self.model.addVar(vtype=GRB.INTEGER, name="maxCoreDmaIn")
+        self.max_core_dma_out = self.model.addVar(vtype=GRB.INTEGER, name="maxCoreDmaOut")
+
+        for core in dma_cores:
+            self.model.addConstr(
+                self.max_core_dma_in >= self.core_dma_in[core],
+                name=f"maxCoreDmaIn_lb_{_resource_key(core)}",
+            )
+            self.model.addConstr(
+                self.max_core_dma_out >= self.core_dma_out[core],
+                name=f"maxCoreDmaOut_lb_{_resource_key(core)}",
+            )
+
+        # Optional hard architectural constraints through the context
+        self.context.add_dma_usage_constraints(
             self.model,
-            self.mem_core_usage_s2mm,
-            self.mem_core_usage_mm2s,
-            self.shim_core_usage_s2mm,
-            self.shim_core_usage_mm2s,
+            self.core_dma_in,
+            self.core_dma_out,
         )
 
     def _set_total_latency_and_objective(self) -> None:
@@ -812,158 +1180,869 @@ class TransferAndTensorAllocator:
             self.total_lat
             == self.iterations * quicksum(self.slot_latency.values()) - (self.iterations - 1) * self.overlap
         )
-        obj_func = self.total_lat + self.total_transfer_cost + self.max_mem_core_usage
+        obj_func = self.total_lat + self.max_core_dma_in + self.max_core_dma_out
         self.model.setObjective(obj_func, GRB.MINIMIZE)
 
     # ------------------------------------------------------------------ #
     # public solve()                                                     #
     # ------------------------------------------------------------------ #
-    def solve(self, *, tee: bool = True) -> tuple[TensorAlloc, TransferAlloc, MemoryAlloc, int, int, int]:  # noqa: PLR0912
+    def solve(
+        self, *, tee: bool = True
+    ) -> tuple[TensorReuseLevels, TensorDepths, TensorAlloc, TransferAlloc, MemoryAlloc, int, int, int]:
         self.model.setParam("OutputFlag", 1 if tee else 0)
-        self.model.optimize()
+        self.model.optimize(self._mip_progress_callback)
         if self.model.Status != GRB.OPTIMAL:
             self.model.computeIIS()
-            self.model.write("model.ilp")
-            raise RuntimeError("Gurobi did not find an optimal solution. IIS written to model.ilp")
 
-        # ---------- sanity checks -------------------
-        self._check_io_transfers_firing_levels()
+            ilp_path = os.path.join(self.output_path, "model.ilp")
+            self.model.write(ilp_path)
+            raise RuntimeError(f"Gurobi did not find an optimal solution. IIS written to {ilp_path}")
 
-        # ---------- read back decisions --------------------------------
         tensor_alloc = self.get_tensor_allocations()
         routing = self.get_transfer_routing()
         chosen_memory_cores = self.get_chosen_memory_cores()
-        self.update_transfer_reuse_levels()
+        tensor_reuse_levels = self.get_tensor_reuse_levels()
+        tensor_depths = self.get_tensor_depths()
+
+        # Visualize the optimization progress
+        self.plot_optimization_progress(
+            show=False, save_path=os.path.join(self.output_path, "optimization_progress.png")
+        )
+        self.save_optimization_trace(os.path.join(self.output_path, "optimization_trace.yaml"))
+        self.save_optimization_metrics(save_path=os.path.join(self.output_path, "optimization_metrics.yaml"))
+        self.save_slot_latency_breakdown(save_path=os.path.join(self.output_path, "slot_latency_breakdown.yaml"))
 
         assert self.total_latency is not None, "Total latency variable was not created."
         total_latency = int(self.total_latency.X)
         overlap = int(self.overlap.X)
         latency_per_iteration = sum(slot_lat.X for slot_lat in self.slot_latency.values())
-        return tensor_alloc, routing, chosen_memory_cores, total_latency, overlap, latency_per_iteration
+        return (
+            tensor_reuse_levels,
+            tensor_depths,
+            tensor_alloc,
+            routing,
+            chosen_memory_cores,
+            total_latency,
+            overlap,
+            int(latency_per_iteration),
+        )
 
-    def update_transfer_reuse_levels(  # noqa: PLR0912
+    def get_tensor_reuse_levels(
         self,
-    ) -> None:
-        compute_tile_reuse_levels: dict[TransferNode, int] = {}
-        mem_tile_reuse_levels: dict[TransferNode, int] = {}
-        for tr in self.transfer_nodes:
-            for stop in range(-1, len(self.ssis[tr].get_temporal_variables())):
-                if self.z_stopC[(tr, stop)].X > self.VAR_THRESHOLD:
-                    compute_tile_reuse_levels[tr] = stop
-                if self.z_stopM[(tr, stop)].X > self.VAR_THRESHOLD:
-                    mem_tile_reuse_levels[tr] = stop
-        # Update the steady state iteration space for transfers
-        for tr in self.transfer_nodes:
-            stop = compute_tile_reuse_levels[tr]
-            # Set all iteration variables to REUSE flag
-            for i, iter_var in enumerate(self.ssis[tr].get_temporal_variables()):
-                if i <= stop:
-                    flag = ComputeTileReuse.REUSE
-                else:
-                    flag = ComputeTileReuse.NO_REUSE
-                iter_var.compute_tile_reuse = flag
-            for i, iter_var in enumerate(self.ssis[tr].get_temporal_variables()):
-                if i <= mem_tile_reuse_levels[tr]:
-                    flag = MemTileReuse.REUSE
-                else:
-                    flag = MemTileReuse.NO_REUSE
-                iter_var.mem_tile_reuse = flag  # append the memory reuse flag
-        # # Print the updated reuse levels for debugging
-        # for tr in self.transfer_nodes:
-        #     compute_stop = compute_tile_reuse_levels.get(tr, -1)
-        #     mem_stop = mem_tile_reuse_levels.get(tr, -1)
-        #     print(f"Transfer {tr.node_name}: Compute Stop = {compute_stop}, Mem Stop = {mem_stop}")
-        #     for i, iter_var in enumerate(tr.steady_state_iteration_space.get_temporal_variables()):
-        #         print(f"  Iter {i}: Reuse = {iter_var.reuse.name}, Size = {iter_var.size}")
+    ) -> TensorReuseLevels:
+        reuse_levels: TensorReuseLevels = {}
+        for t in self.workload.tensors:
+            for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
+                if self.z_stop[(t, stop)].X > self.VAR_THRESHOLD:
+                    reuse_levels[t] = stop
+        return reuse_levels
 
-    def get_transfer_routing(
+    def get_tensor_depths(
         self,
-    ) -> dict[TransferNode, tuple[CommunicationLink]]:
-        routing: dict[TransferNode, tuple[CommunicationLink]] = {}
+    ) -> TensorDepths:
+        tiles_needed: TensorDepths = {}
+        for t in self.workload.tensors:
+            for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
+                if self.z_stop[(t, stop)].X > self.VAR_THRESHOLD:
+                    tiles_needed[t] = self.tiles_needed_levels[(t, stop)]
+        return tiles_needed
+
+    def get_transfer_routing(self) -> TransferAlloc:
+        routing: TransferAlloc = {}
         for tr in self.transfer_nodes:
             chosen = [
-                p for p in self.possible_transfer_allocations[tr] if self.y_path[(tr, tuple(p))].X > self.VAR_THRESHOLD
+                choice
+                for choice in self.possible_transfer_allocations[tr]
+                if self.y_path_choice[(tr, choice)].X > self.VAR_THRESHOLD
             ]
             if len(chosen) != 1:
-                raise ValueError(f"{tr.name}: expected exactly one path, got {chosen}")
-            path = chosen[0]
-            routing[tr] = path
+                raise ValueError(f"{tr.name}: expected exactly one routing choice, got {chosen}")
+            routing[tr] = chosen[0]
         return routing
 
-    def get_chosen_memory_cores(
-        self,
-    ) -> dict[TransferNode, Core]:
-        # --- which MemC was selected
-        chosen_memory_cores: dict[TransferNode, Core] = {}
+    def get_chosen_memory_cores(self) -> MemoryAlloc:
+        chosen_memory_cores: MemoryAlloc = {}
+        tensor_alloc = self.get_tensor_allocations()
         for tr in self.transfer_nodes:
-            for mc in self.mem_cores:
-                if self.m_store.get((tr, mc), None) and self.m_store[(tr, mc)].X > self.VAR_THRESHOLD:
-                    chosen_memory_cores[tr] = mc
-                    break
+            if not self._is_const_io(tr):
+                continue
+            tensor = self._constant_transfer_tensor(tr)
+
+            if tensor in tensor_alloc:
+                chosen_memory_cores[tr] = tensor_alloc[tensor]
+            else:
+                chosen_memory_cores[tr] = self._fixed_tensor_choice(tensor)
         return chosen_memory_cores
 
-    def update_transfer_memory_core_allocation(
-        self,
-    ) -> None:
+    def update_transfer_memory_core_allocation(self) -> None:
         chosen_memory_cores = self.get_chosen_memory_cores()
-        for tr, core in chosen_memory_cores.items():
-            assert isinstance(core, Core), f"Expected {core} to be a Core, got {type(core)}"
-            tr.chosen_memory_core = core
+        for tr, cores in chosen_memory_cores.items():
+            self.mapping.update_memory_allocation_for_node(tr, (cores,))
 
-    def get_tensor_allocations(
-        self,
-    ) -> dict[Tensor, Core]:
-        tensor_alloc: dict[Tensor, Core] = {}
+    def get_tensor_allocations(self) -> TensorAlloc:
+        tensor_alloc: TensorAlloc = {}
+        for t in self.tensor_fixed:
+            tensor_alloc[t] = self._fixed_tensor_choice(t)
         for t in self.tensor_var:
-            chosen = [c for c in self.possible_tensor_allocations[t] if self.x_tensor[(t, c)].X > self.VAR_THRESHOLD]
+            chosen = [
+                choice
+                for choice in self.possible_tensor_allocations[t]
+                if self.x_tensor_choice[(t, choice)].X > self.VAR_THRESHOLD
+            ]
             if len(chosen) != 1:
-                raise ValueError(f"{t.node_name}: expected exactly one core, got {chosen}")
-            core = chosen[0]
-            t.chosen_resource_allocation = core
-            tensor_alloc[t] = core
+                raise ValueError(f"{t.node_name}: expected exactly one placement choice, got {chosen}")
+            tensor_alloc[t] = chosen[0]
         return tensor_alloc
 
     def _check_io_transfers_firing_levels(self) -> None:
-        # firesC should always be greater or equal to firesM
         for tr in self.transfer_nodes:
-            assert self.firesC[tr].X >= self.firesM[tr].X - 1e-6
-        # chosen stopM ≥ stopC
-        for tr in self.transfer_nodes:
-            stop_max = len(self.ssis[tr].get_temporal_variables())
-            stopC = next(s for s in range(-1, stop_max) if self.z_stopC[(tr, s)].X > self.VAR_THRESHOLD)
-            stopM = next(s for s in range(-1, stop_max) if self.z_stopM[(tr, s)].X > self.VAR_THRESHOLD)
-            assert stopM >= stopC
+            for t in tr.tensors:
+                stop_max = len(self.ssis[t].get_applicable_temporal_variables())
+                stop = next(s for s in range(-1, stop_max) if self.z_stop[(t, s)].X > self.VAR_THRESHOLD)
+                assert stop >= 0
 
-    def _eval_and_print_linexpr(self, expr, sol=None):
+    def _retrieve_core_allocation(self, node: Node) -> tuple[tuple[Core, ...], ...]:
+        if isinstance(node, InEdge):
+            assert self.accelerator.offchip_core_id is not None
+            return ((self.accelerator.get_core(self.accelerator.offchip_core_id),),)
+        if isinstance(node, OutEdge):
+            assert self.accelerator.offchip_core_id is not None
+            return ((self.accelerator.get_core(self.accelerator.offchip_core_id),),)
+        if isinstance(node, TransferNode):
+            return self.mapping.get(node).memory_allocation
+        return self.mapping.get(node).resource_allocation
+
+    def _safe_name(self, name: str) -> str:
+        # Optional: sanitize if your objects print with spaces or odd chars
+        return str(name).replace(" ", "_").replace(":", "_")
+
+    def _add_const_over_linexpr(
+        self,
+        *,
+        numerator: float,
+        denominator_expr: gp.LinExpr,
+        base_name: str,
+        denominator_lb: float,
+        result_lb: float = 0.0,
+        denominator_ub: float | None = None,
+        result_ub: float | None = None,
+    ) -> tuple[gp.Var, gp.Var]:
         """
-        Evaluate and pretty-print a Gurobi linear expression using size()/getVar(i)/getCoeff(i),
-        with each term on its own line.
+        Create:
+            den = denominator_expr
+            res = numerator / den
 
-        Parameters
-        ----------
-        expr : gurobipy.LinExpr
-            The linear expression to evaluate.
-        sol : dict, optional
-            Mapping from variable -> value. If None, use var.X (solution value).
+        Returns:
+            (res, den)
 
-        Returns
-        -------
-        float
-            Evaluated numeric value of the expression.
+        Notes:
+        - denominator_lb must be strictly positive.
+        - If you know denominator_ub or result_ub, pass them for tighter models.
         """
-        val = expr.getConstant()
+        assert denominator_lb > 0.0, "denominator_lb must be strictly positive"
 
-        print("Expression terms:")
-        for i in range(expr.size()):
-            var = expr.getVar(i)
-            coeff = expr.getCoeff(i)
-            x = sol[var] if sol is not None else var.X
-            term_val = coeff * x
-            val += term_val
-            print(f"  {coeff} * {var.VarName} (value={x:.4f}) -> {term_val:.4f}")
+        n = self._safe_name(base_name)
 
-        if expr.getConstant() != 0:
-            print(f"  constant {expr.getConstant()}")
+        den = self.model.addVar(
+            lb=denominator_lb,
+            ub=denominator_ub if denominator_ub is not None else GRB.INFINITY,
+            name=f"{n}__den",
+        )
+        res = self.model.addVar(
+            lb=result_lb,
+            ub=result_ub if result_ub is not None else GRB.INFINITY,
+            name=f"{n}__val",
+        )
 
-        print(f"Total = {val:.4f}")
-        return val
+        self.model.addConstr(
+            den == denominator_expr,
+            name=f"{n}__def_den",
+        )
+        self.model.addGenConstrNL(
+            res,
+            float(numerator) / den,
+            name=f"{n}__def_div",
+        )
+
+        return res, den
+
+    def _add_binary_scaled_continuous(
+        self,
+        *,
+        binary_var: gp.Var,
+        continuous_var: gp.Var,
+        continuous_ub: float,
+        base_name: str,
+        result_lb: float = 0.0,
+    ) -> gp.Var:
+        """
+        Create exact linearization of:
+            z = binary_var * continuous_var
+
+        Assumes:
+            binary_var in {0,1}
+            result_lb <= continuous_var
+            0 <= continuous_var <= continuous_ub
+
+        Returns:
+            z
+        """
+        assert continuous_ub >= 0.0, "continuous_ub must be nonnegative"
+
+        n = self._safe_name(base_name)
+
+        z = self.model.addVar(
+            lb=result_lb,
+            ub=continuous_ub,
+            name=f"{n}__prod",
+        )
+
+        self.model.addConstr(z <= continuous_var, name=f"{n}__prod_ub1")
+        self.model.addConstr(z <= continuous_ub * binary_var, name=f"{n}__prod_ub2")
+        self.model.addConstr(
+            z >= continuous_var - continuous_ub * (1 - binary_var),
+            name=f"{n}__prod_lb1",
+        )
+        self.model.addConstr(z >= 0.0, name=f"{n}__prod_lb2")
+
+        return z
+
+    def _add_binary_times_const_over_linexpr(
+        self,
+        *,
+        binary_var: gp.Var,
+        numerator: float,
+        denominator_expr: gp.LinExpr,
+        denominator_lb: float,
+        base_name: str,
+        denominator_ub: float | None = None,
+    ) -> gp.Var:
+        assert denominator_lb > 0.0
+
+        result_ub = float(numerator) / denominator_lb
+
+        ratio_var, _ = self._add_const_over_linexpr(
+            numerator=numerator,
+            denominator_expr=denominator_expr,
+            base_name=base_name,
+            denominator_lb=denominator_lb,
+            denominator_ub=denominator_ub,
+            result_lb=0.0,
+            result_ub=result_ub,
+        )
+
+        return self._add_binary_scaled_continuous(
+            binary_var=binary_var,
+            continuous_var=ratio_var,
+            continuous_ub=result_ub,
+            base_name=f"{base_name}__gated",
+        )
+
+    def _add_binary_product(
+        self,
+        *,
+        a: gp.Var,
+        b: gp.Var,
+        base_name: str,
+    ) -> gp.Var:
+        n = self._safe_name(base_name)
+        w = self.model.addVar(vtype=GRB.BINARY, name=f"{n}__and")
+        self.model.addConstr(w <= a, name=f"{n}__ub1")
+        self.model.addConstr(w <= b, name=f"{n}__ub2")
+        self.model.addConstr(w >= a + b - 1, name=f"{n}__lb")
+        return w
+
+    def _active_transfer_latency(
+        self,
+        tr: TransferNode,
+        choice: MulticastPathPlan,
+        y: gp.Var,
+    ) -> gp.Var:
+        if (tr, choice) in self._transfer_latency_cache:
+            active_latency_absent_loops_and_reuse_factor = self._transfer_latency_cache[(tr, choice)]
+        else:
+            latency_constant = float(self._transfer_latency_for_path(tr, choice))
+            active_latency_absent_loops = get_active_latency(tr, latency_constant, self.ssis)
+            reuse_factor: gp.LinExpr = self.reuse_factors[tr]
+            active_latency_absent_loops_and_reuse_factor = self._add_binary_times_const_over_linexpr(
+                binary_var=y,
+                numerator=active_latency_absent_loops,
+                denominator_expr=reuse_factor,
+                denominator_lb=1.0,
+                base_name=f"transfer_latency_{tr}",
+            )
+            self._transfer_latency_cache[(tr, choice)] = active_latency_absent_loops_and_reuse_factor
+
+        return active_latency_absent_loops_and_reuse_factor
+
+    def _active_compute_latency(
+        self,
+        n: ComputationNode,
+        runtime_constant: float,
+    ) -> int:
+        # Get the temporal steady state fraction of 'ABSENT' loops
+        ssis_t = self.ssis.get(n).get_temporal_variables()
+        total_product = prod([ssis_var.size for ssis_var in ssis_t])
+        product_without_absent = prod([ssis_var.size for ssis_var in ssis_t if ssis_var.effect != LoopEffect.ABSENT])
+        fraction = product_without_absent / total_product if total_product > 0 else 1.0
+        # Scale the runtime constant by the fraction to get the effective latency
+        active_latency = int(round(runtime_constant * fraction))
+        return active_latency
+
+    def _mip_progress_callback(self, model, where):
+        if where not in (GRB.Callback.MIP, GRB.Callback.MIPSOL, GRB.Callback.PRESOLVE):
+            return
+
+        if where == GRB.Callback.PRESOLVE:
+            point = {
+                "event": "PRESOLVE",
+                "time": float(model.cbGet(GRB.Callback.RUNTIME)),
+                "work": float(model.cbGet(GRB.Callback.WORK)),
+                "rows_removed": int(model.cbGet(GRB.Callback.PRE_ROWDEL)),
+                "cols_removed": int(model.cbGet(GRB.Callback.PRE_COLDEL)),
+                "bound_changes": int(model.cbGet(GRB.Callback.PRE_BNDCHG)),
+                "coeff_changes": int(model.cbGet(GRB.Callback.PRE_COECHG)),
+            }
+            self.optimization_trace.append(point)
+            return
+
+        if where == GRB.Callback.MIP:
+            best = model.cbGet(GRB.Callback.MIP_OBJBST)
+            bound = model.cbGet(GRB.Callback.MIP_OBJBND)
+            nodecnt = model.cbGet(GRB.Callback.MIP_NODCNT)
+            nodlft = model.cbGet(GRB.Callback.MIP_NODLFT)
+            itrcnt = model.cbGet(GRB.Callback.MIP_ITRCNT)
+            cutcnt = model.cbGet(GRB.Callback.MIP_CUTCNT)
+            runtime = model.cbGet(GRB.Callback.RUNTIME)
+            work = model.cbGet(GRB.Callback.WORK)
+            event = "MIP"
+        else:
+            best = model.cbGet(GRB.Callback.MIPSOL_OBJ)
+            bound = model.cbGet(GRB.Callback.MIPSOL_OBJBND)
+            nodecnt = model.cbGet(GRB.Callback.MIPSOL_NODCNT)
+            nodlft = None
+            itrcnt = None
+            cutcnt = None
+            runtime = model.cbGet(GRB.Callback.RUNTIME)
+            work = model.cbGet(GRB.Callback.WORK)
+            event = "MIPSOL"
+
+        max_val = 1e90
+        if not math.isfinite(best) or abs(best) >= max_val:
+            best = None
+        else:
+            best = float(best)
+
+        if not math.isfinite(bound) or abs(bound) >= max_val:
+            bound = None
+        else:
+            bound = float(bound)
+
+        gap = None
+        if best is not None and bound is not None:
+            gap = abs(best - bound) / max(1.0, abs(best))
+
+        point = {
+            "event": event,
+            "time": float(runtime),
+            "work": float(work),
+            "nodecnt": float(nodecnt) if nodecnt is not None else None,
+            "nodlft": float(nodlft) if nodlft is not None else None,
+            "itrcnt": float(itrcnt) if itrcnt is not None else None,
+            "cutcnt": int(cutcnt) if cutcnt is not None else None,
+            "best_obj": best,
+            "best_bound": bound,
+            "gap": gap,
+        }
+
+        self.optimization_trace.append(point)
+
+    def save_optimization_metrics(self, save_path: str) -> None:
+        """
+        Dump a concise YAML summary of the Gurobi run alongside the progress plot.
+
+        Headline fields (in order of relevance for a paper):
+          - search:    nodes explored, simplex/barrier iterations  -> "how much was searched"
+          - solution:  objective, best bound, MIP gap              -> "what was found / how tight"
+          - effort:    runtime (s), work units                     -> "how expensive it was"
+          - model:    variable / constraint / nonzero counts      -> "problem size"
+          - trace:     per-event progress records (reuses self.optimization_trace)
+        """
+
+        def _attr(name: str) -> Any | None:
+            """Return a Gurobi model attribute or None if unavailable post-solve."""
+            try:
+                value = getattr(self.model, name)
+            except (AttributeError, gp.GurobiError):
+                return None
+            if isinstance(value, float) and not math.isfinite(value):
+                return None
+            return value
+
+        status = _attr("Status")
+        status_name = {
+            GRB.LOADED: "LOADED",
+            GRB.OPTIMAL: "OPTIMAL",
+            GRB.INFEASIBLE: "INFEASIBLE",
+            GRB.INF_OR_UNBD: "INF_OR_UNBD",
+            GRB.UNBOUNDED: "UNBOUNDED",
+            GRB.CUTOFF: "CUTOFF",
+            GRB.ITERATION_LIMIT: "ITERATION_LIMIT",
+            GRB.NODE_LIMIT: "NODE_LIMIT",
+            GRB.TIME_LIMIT: "TIME_LIMIT",
+            GRB.SOLUTION_LIMIT: "SOLUTION_LIMIT",
+            GRB.INTERRUPTED: "INTERRUPTED",
+            GRB.NUMERIC: "NUMERIC",
+            GRB.SUBOPTIMAL: "SUBOPTIMAL",
+            GRB.WORK_LIMIT: "WORK_LIMIT",
+        }.get(status, str(status))
+
+        # Per-event trace, normalized to a compact form (drop None values)
+        trace_records: list[dict[str, Any]] = []
+        for rec in self.optimization_trace:
+            entry: dict[str, Any] = {"time_s": rec.get("time"), "event": rec.get("event")}
+            for src, dst in (
+                ("best_obj", "incumbent"),
+                ("best_bound", "best_bound"),
+                ("gap", "gap"),
+                ("nodecnt", "nodes"),
+                ("cutcnt", "cuts"),
+                ("work", "work"),
+            ):
+                val = rec.get(src)
+                if isinstance(val, int | float) and math.isfinite(val):
+                    entry[dst] = val
+            trace_records.append(entry)
+
+        metrics: dict[str, Any] = {
+            "status": status_name,
+            "search": {
+                "nodes_explored": _attr("NodeCount"),
+                "simplex_iterations": _attr("IterCount"),
+                "barrier_iterations": _attr("BarIterCount"),
+            },
+            "solution": {
+                "objective": _attr("ObjVal"),
+                "best_bound": _attr("ObjBound"),
+                "mip_gap": _attr("MIPGap"),
+            },
+            "effort": {
+                "runtime_s": _attr("Runtime"),
+                "work_units": _attr("Work"),
+            },
+            "model": {
+                "variables": {
+                    "total": _attr("NumVars"),
+                    "integer": _attr("NumIntVars"),
+                    "binary": _attr("NumBinVars"),
+                },
+                "constraints": {
+                    "linear": _attr("NumConstrs"),
+                    "general": _attr("NumGenConstrs"),
+                },
+                "nonzeros": _attr("NumNZs"),
+            },
+            "trace": trace_records,
+        }
+
+        with open(save_path, "w") as fh:
+            yaml.safe_dump(metrics, fh, sort_keys=False, default_flow_style=False)
+        print(f"Optimization metrics saved to {save_path}")
+
+    def save_slot_latency_breakdown(self, save_path: str) -> None:  # noqa: PLR0915, PLR0912
+        """Dump a debug-friendly per-slot latency breakdown next to the metrics yaml.
+
+        For every slot lists the compute and transfer contributors with the
+        intermediate values that make up its slot_latency constraint:
+          - compute: LUT latency_total, SSIS fraction, active_latency
+          - transfer: tensor bits, min link bandwidth, raw path cycles,
+                      active_latency (absent-loop scaled), reuse_factor,
+                      final contribution to slot_latency
+
+        Best-effort: any per-node failure is silently skipped, and the whole
+        method swallows top-level errors so it never blocks the pipeline.
+        """
+
+        def _scalar(v: Any) -> Any:
+            if v is None or isinstance(v, bool | str):
+                return v
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return str(v)
+            if not math.isfinite(f):
+                return str(v)
+            if f.is_integer():
+                return int(f)
+            return f
+
+        try:
+            breakdown: dict[int, dict[str, Any]] = {}
+            for s, lat_var in self.slot_latency.items():
+                slot_val: float | None
+                try:
+                    slot_val = float(lat_var.X)
+                except Exception:
+                    slot_val = None
+                breakdown[int(s)] = {
+                    "slot_latency_cycles": _scalar(slot_val),
+                    "compute_contributors": [],
+                    "transfer_contributors": [],
+                }
+
+            # ── Compute contributors ── #
+            for n in self.ssc_nodes:
+                try:
+                    s = int(self.slot_of[n])
+                    cores = self.cost_lut.get_cores(n)
+                    latencies = [self.cost_lut.get_cost(n, c).latency_total for c in cores]
+                    runtime = ceil(max(latencies)) if latencies else 0
+                    active = get_active_latency(n, float(runtime), self.ssis)
+                    fraction: float | None = None
+                    try:
+                        ssis_t = self.ssis.get(n).get_temporal_variables()
+                        total = prod([v.size for v in ssis_t])
+                        present = prod([v.size for v in ssis_t if v.effect != LoopEffect.ABSENT])
+                        fraction = (present / total) if total > 0 else 1.0
+                    except Exception:
+                        fraction = None
+                    breakdown.setdefault(
+                        s,
+                        {"slot_latency_cycles": None, "compute_contributors": [], "transfer_contributors": []},
+                    )
+                    breakdown[s]["compute_contributors"].append(
+                        {
+                            "name": getattr(n, "name", str(n)),
+                            "n_cores_in_lut": len(cores),
+                            "lut_latency_total": _scalar(runtime),
+                            "ssis_fraction": _scalar(fraction),
+                            "active_latency": _scalar(active),
+                        }
+                    )
+                except Exception:
+                    continue
+
+            # ── Transfer contributors (only the chosen path per transfer) ── #
+            for (tr, choice), y in self.y_path_choice.items():
+                try:
+                    if float(y.X) < 0.5:  # noqa: PLR2004
+                        continue
+                    s = int(self.slot_of[tr])
+                    raw = int(self._transfer_latency_for_path(tr, choice))
+                    active_abs = int(get_active_latency(tr, float(raw), self.ssis))
+                    try:
+                        reuse_factor = float(self.reuse_factors[tr].getValue())
+                    except Exception:
+                        reuse_factor = None
+                    cached_var = self._transfer_latency_cache.get((tr, choice))
+                    try:
+                        contribution = float(cached_var.getValue()) if cached_var is not None else None
+                    except Exception:
+                        contribution = None
+                    tensor_bits: int | None = None
+                    try:
+                        if tr.inputs:
+                            tensor_bits = int(tr.inputs[0].size_bits())
+                    except Exception:
+                        tensor_bits = None
+                    min_bw: int | None = None
+                    try:
+                        if choice and choice.links_used:
+                            min_bw = int(min(link.bandwidth for link in choice.links_used))
+                    except Exception:
+                        min_bw = None
+                    breakdown.setdefault(
+                        s,
+                        {"slot_latency_cycles": None, "compute_contributors": [], "transfer_contributors": []},
+                    )
+                    breakdown[s]["transfer_contributors"].append(
+                        {
+                            "name": getattr(tr, "name", str(tr)),
+                            "tensor_bits": _scalar(tensor_bits),
+                            "min_link_bw": _scalar(min_bw),
+                            "raw_path_cycles": _scalar(raw),
+                            "active_latency_absent_loops": _scalar(active_abs),
+                            "reuse_factor": _scalar(reuse_factor),
+                            "contribution": _scalar(contribution),
+                        }
+                    )
+                except Exception:
+                    continue
+
+            # ── Top-level totals ── #
+            try:
+                latency_per_iteration = sum(float(v.X) for v in self.slot_latency.values())
+            except Exception:
+                latency_per_iteration = None
+            try:
+                overlap_val = float(self.overlap.X) if self.overlap is not None else None
+            except Exception:
+                overlap_val = None
+            try:
+                total_latency_val = float(self.total_latency.X) if self.total_latency is not None else None
+            except Exception:
+                total_latency_val = None
+            iter_step_val: float | None
+            if latency_per_iteration is not None and overlap_val is not None:
+                iter_step_val = latency_per_iteration - overlap_val
+            else:
+                iter_step_val = None
+
+            summary = {
+                "totals": {
+                    "latency_per_iteration": _scalar(latency_per_iteration),
+                    "overlap": _scalar(overlap_val),
+                    "iter_step": _scalar(iter_step_val),
+                    "total_latency": _scalar(total_latency_val),
+                },
+                "slots": [{"slot": s, **breakdown[s]} for s in sorted(breakdown)],
+            }
+
+            with open(save_path, "w") as fh:
+                yaml.safe_dump(summary, fh, sort_keys=False, default_flow_style=False)
+            print(f"Slot latency breakdown saved to {save_path}")
+        except Exception as e:
+            # Never block the pipeline on this debug artifact.
+            print(f"[warn] save_slot_latency_breakdown failed: {e}")
+
+    def plot_optimization_progress(  # noqa: PLR0912, PLR0915
+        self,
+        *,
+        save_path: str | None = None,
+        show: bool = True,
+        figsize: tuple[float, float] = (10.0, 6),
+        show_work_subplot: bool = False,
+    ) -> None:
+        """
+        Plot optimization progress recorded in self.optimization_trace.
+
+        Top subplot:
+        - best incumbent
+        - best bound
+        - relative gap (%) on a secondary y-axis
+
+        Bottom subplot (optional):
+        - solver work (if available)
+        - optionally explored nodes / cuts on a secondary y-axis
+
+        Args:
+            save_path: Path to save the figure. If None, figure is not saved.
+            show: Whether to display the figure.
+            figsize: Figure size as (width, height).
+            show_work_subplot: Whether to include the bottom work subplot.
+
+        Expects callback records like:
+            {
+                "event": "MIP" or "MIPSOL",
+                "time": float,
+                "nodecnt": float | None,
+                "best_obj": float | None,
+                "best_bound": float | None,
+                "gap": float | None,
+                "work": float | None,
+                "cutcnt": float | None,
+            }
+        """
+
+        if not hasattr(self, "optimization_trace") or not self.optimization_trace:
+            raise ValueError("No optimization trace found. Run solve() with the progress callback enabled first.")
+
+        def _is_finite_number(x) -> bool:
+            return x is not None and isinstance(x, int | float) and math.isfinite(x)
+
+        trace = [
+            rec
+            for rec in self.optimization_trace
+            if _is_finite_number(rec.get("time"))
+            and (
+                _is_finite_number(rec.get("best_obj"))
+                or _is_finite_number(rec.get("best_bound"))
+                or _is_finite_number(rec.get("gap"))
+                or _is_finite_number(rec.get("work"))
+                or _is_finite_number(rec.get("nodecnt"))
+                or _is_finite_number(rec.get("cutcnt"))
+            )
+        ]
+
+        if not trace:
+            raise ValueError("Optimization trace exists, but it does not contain plottable finite values.")
+
+        trace.sort(key=lambda r: (float(r["time"]), 0 if r.get("event") == "MIPSOL" else 1))
+
+        times: list[float] = []
+        incumbent: list[float] = []
+        bound: list[float] = []
+        gap_pct: list[float] = []
+
+        works: list[float] = []
+        nodes: list[float] = []
+        cuts: list[float] = []
+
+        last_best_obj: float | None = None
+        last_best_bound: float | None = None
+        last_gap: float | None = None
+        last_work: float | None = None
+        last_nodecnt: float | None = None
+        last_cutcnt: float | None = None
+
+        for rec in trace:
+            t = float(rec["time"])
+
+            if _is_finite_number(rec.get("best_obj")):
+                last_best_obj = float(rec["best_obj"])
+            if _is_finite_number(rec.get("best_bound")):
+                last_best_bound = float(rec["best_bound"])
+            if _is_finite_number(rec.get("gap")):
+                last_gap = 100.0 * float(rec["gap"])
+
+            if _is_finite_number(rec.get("work")):
+                last_work = float(rec["work"])
+            if _is_finite_number(rec.get("nodecnt")):
+                last_nodecnt = float(rec["nodecnt"])
+            if _is_finite_number(rec.get("cutcnt")):
+                last_cutcnt = float(rec["cutcnt"])
+
+            times.append(t)
+            incumbent.append(float("nan") if last_best_obj is None else last_best_obj)
+            bound.append(float("nan") if last_best_bound is None else last_best_bound)
+            gap_pct.append(float("nan") if last_gap is None else last_gap)
+
+            works.append(float("nan") if last_work is None else last_work)
+            nodes.append(float("nan") if last_nodecnt is None else last_nodecnt)
+            cuts.append(float("nan") if last_cutcnt is None else last_cutcnt)
+
+        num_subplots = 2 if show_work_subplot else 1
+        height_ratios = [2.0, 1.2] if show_work_subplot else [1.0]
+
+        fig, axes = plt.subplots(
+            num_subplots,
+            1,
+            figsize=figsize,
+            sharex=True,
+            gridspec_kw={"height_ratios": height_ratios},
+        )
+
+        if num_subplots == 1:
+            ax1 = axes
+        else:
+            ax1, ax3 = axes
+
+        # Top subplot: original functionality unchanged
+        ax2 = ax1.twinx()
+
+        line_inc = ax1.step(times, incumbent, where="post", label="Best incumbent")
+        line_bnd = ax1.step(times, bound, where="post", label="Best bound")
+        line_gap = ax2.plot(times, gap_pct, label="Gap (%)", linestyle="--")
+
+        ax1.set_ylabel("Objective")
+        ax2.set_ylabel("Gap (%)")
+        ax1.set_title("Gurobi optimization progress")
+        ax1.grid(True, alpha=0.3)
+
+        handles_top = line_inc + line_bnd + line_gap
+        labels_top = [h.get_label() for h in handles_top]
+        ax1.legend(handles_top, labels_top, loc="best")
+
+        # Bottom subplot: work done (optional)
+        if show_work_subplot:
+            ax4 = ax3.twinx()
+            handles_bottom = []
+
+            if any(not math.isnan(x) for x in works):
+                line_work = ax3.step(times, works, where="post", label="Solver work")
+                handles_bottom += line_work
+
+            if any(not math.isnan(x) for x in nodes):
+                line_nodes = ax4.step(times, nodes, where="post", label="Explored nodes", linestyle="--")
+                handles_bottom += line_nodes
+
+            if any(not math.isnan(x) for x in cuts):
+                line_cuts = ax4.step(times, cuts, where="post", label="Cuts applied", linestyle=":")
+                handles_bottom += line_cuts
+
+            ax3.set_xlabel("Runtime (s)")
+            ax3.set_ylabel("Work units")
+            ax4.set_ylabel("Nodes / cuts")
+            ax3.grid(True, alpha=0.3)
+
+            if handles_bottom:
+                labels_bottom = [h.get_label() for h in handles_bottom]
+                ax3.legend(handles_bottom, labels_bottom, loc="best")
+        else:
+            ax1.set_xlabel("Runtime (s)")
+
+        fig.tight_layout()
+
+        if save_path is not None:
+            fig.savefig(save_path, dpi=200, bbox_inches="tight")
+            print(f"Optimization progress plot saved to {save_path}")
+
+        if show:
+            plt.show()
+        else:
+            plt.close(fig)
+
+    def save_optimization_trace(self, file_path: str) -> None:
+        """
+        Save the optimization trace to a YAML file.
+
+        Writes a single chronological ``trace`` list. Each entry represents a
+        point where something changed and has the following fields:
+
+        - ``time_s``     – solver runtime in seconds
+        - ``event``      – ``"MIPSOL"`` (new incumbent found) or ``"MIP"`` (bound update)
+        - ``incumbent``  – present only on ``MIPSOL`` entries (when best_obj improved)
+        - ``best_bound`` – present only when the bound changed
+        - ``gap``        – relative gap at this point (when both values are available)
+
+        Args:
+            file_path: Destination path for the YAML file (e.g. "trace.yaml").
+        """
+        if not hasattr(self, "optimization_trace") or not self.optimization_trace:
+            raise ValueError("No optimization trace found. Run solve() with the progress callback enabled first.")
+
+        def _fin(x) -> bool:
+            return x is not None and isinstance(x, int | float) and math.isfinite(x)
+
+        # Sort by time, MIPSOL first when times are equal (mirrors plot logic)
+        sorted_trace = sorted(
+            self.optimization_trace,
+            key=lambda r: (float(r["time"]), 0 if r.get("event") == "MIPSOL" else 1),
+        )
+
+        entries: list[dict] = []
+        last_obj: float | None = None
+        last_bound: float | None = None
+
+        for rec in sorted_trace:
+            if not _fin(rec.get("time")):
+                continue
+
+            t = float(rec["time"])
+            obj = float(rec["best_obj"]) if _fin(rec.get("best_obj")) else None
+            bnd = float(rec["best_bound"]) if _fin(rec.get("best_bound")) else None
+            gap = float(rec["gap"]) if _fin(rec.get("gap")) else None
+
+            incumbent_improved = obj is not None and obj != last_obj
+            bound_changed = bnd is not None and bnd != last_bound
+
+            if not incumbent_improved and not bound_changed:
+                continue
+
+            entry: dict = {"time_s": t, "event": rec.get("event", "MIP")}
+            if incumbent_improved:
+                entry["incumbent"] = obj
+                last_obj = obj
+            if bound_changed:
+                entry["best_bound"] = bnd
+                last_bound = bnd
+            if gap is not None:
+                entry["gap"] = gap
+
+            entries.append(entry)
+
+        os.makedirs(os.path.dirname(os.path.abspath(file_path)), exist_ok=True)
+        with open(file_path, "w") as f:
+            yaml.dump({"trace": entries}, f, default_flow_style=False, sort_keys=False)
+
+        print(f"Optimization trace saved to {file_path}")

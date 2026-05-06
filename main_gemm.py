@@ -4,7 +4,7 @@ import os
 import re
 
 from stream.api import optimize_allocation_co
-from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping_whole_array
+from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
 
 _logging_level = _logging.INFO
@@ -16,12 +16,8 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
     workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
-    accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array.yaml")
-    mapping_path = make_gemm_mapping_whole_array(M, K, N, m, k, n, nb_rows_to_use=nb_rows, nb_cols_to_use=nb_cols)
-    # mode = "lbl"
-    # layer_stacks = [(0,),]
-    mode = "fused"
-    layer_stacks = [(0,)]
+    accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
+    mapping_path = make_gemm_mapping(M, K, N, m, k, n, nb_rows_to_use=nb_rows, nb_cols_to_use=nb_cols)
     ##############################################################################################
 
     ################################PARSING###############################
@@ -43,12 +39,10 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
     # json_path = f"outputs/{experiment_id}/scme.json"
     #####################################################################
 
-    module = optimize_allocation_co(
+    ctx = optimize_allocation_co(
         hardware=accelerator,
         workload=workload_path,
         mapping=mapping_path,
-        mode=mode,
-        layer_stacks=layer_stacks,
         experiment_id=experiment_id,
         output_path="outputs",
         skip_if_exists=False,
@@ -57,6 +51,8 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
         nb_cols_to_use=nb_cols,
         npu=npu,
     )
+
+    module = ctx.get("module")
 
     # Save the mlir module to output.mlir
     mlir_path = f"outputs/{experiment_id}/output.mlir"
@@ -82,7 +78,7 @@ if __name__ == "__main__":
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
     args = parser.parse_args()
 
-    run_main_aie_codegen_gemm(
+    module = run_main_aie_codegen_gemm(
         args.M,
         args.K,
         args.N,
@@ -96,3 +92,7 @@ if __name__ == "__main__":
         args.cols,
         args.npu,
     )
+    save_path = f"outputs/swiglu_module_{args.M}_{args.N}_{args.K}.mlir"
+    with open(save_path, "w") as f:
+        f.write(str(module))
+    print(f"Saved generated module to {save_path}")

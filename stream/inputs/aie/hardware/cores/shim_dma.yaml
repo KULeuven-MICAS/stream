@@ -1,37 +1,8 @@
 name: shim_dma
-type: aie2.memory
+type: aie2.shim
+max_object_fifo_depth: 48
 
-memories:
-  dram:
-    size: 10000000000
-    r_cost: 100
-    w_cost: 100
-    area: 0
-    latency: 1
-    operands: [I1, I2, O]
-    ports:
-      - name: r_port_1
-        type: read
-        bandwidth_min: 128
-        bandwidth_max: 128
-        allocation:
-          - I1, tl
-          - I2, tl
-          - O, tl
-          - O, th
-      - name: w_port_1
-        type: write
-        bandwidth_min: 128
-        bandwidth_max: 128
-        allocation:
-          - I1, fh
-          - I2, fh
-          - O, fh
-          - O, fl
-    served_dimensions: [D1, D2]
-
-operational_array:
-  unit_energy: 0
-  unit_area: 0
-  dimensions: [D1, D2]
-  sizes: [0, 0]
+memory:
+  capacity: 10000000000  # effectively unlimited (off-chip backing)
+  bandwidth_min: 128  # bits/cc
+  bandwidth_max: 128  # bits/cc

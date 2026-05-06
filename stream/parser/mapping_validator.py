@@ -13,16 +13,22 @@ class MappingValidator:
         "name": {"type": "string", "required": True},
         "core_allocation": {
             "type": "list",
-            "schema": {"type": "integer"},
+            "schema": {
+                "type": "list",
+                "schema": {"type": "integer"},
+            },
             "required": True,
         },
         "inter_core_tiling": {
             "type": "list",
             "schema": {
-                "type": "dict",
+                "type": "list",
                 "schema": {
-                    "dim": {"type": "string", "required": True},
-                    "split": {"type": "integer", "required": True},
+                    "type": "dict",
+                    "schema": {
+                        "dim": {"type": "string", "required": True},
+                        "split": {"type": "integer", "required": True},
+                    },
                 },
             },
             "required": False,
@@ -154,7 +160,12 @@ class MappingValidator:
         raw_entries = layer_data.get("inter_core_tiling", []) or []
         normalized_entries: list[dict[str, Any]] = []
         for entry in raw_entries:
-            if isinstance(entry, dict):
+            if isinstance(entry, list):
+                for sub_entry in entry:
+                    if not isinstance(sub_entry, dict):
+                        self.invalidate(
+                            f"Invalid inter_core_tiling entry type: {type(sub_entry)}. Expected dict.",
+                        )
                 normalized_entries.append(entry)
             else:
                 self.invalidate(f"Invalid inter_core_tiling entry type: {type(entry)}")
@@ -172,11 +183,12 @@ class MappingValidator:
     def _validate_positive_tiling_values(self) -> None:
         for layer_data in self.normalized["layers"]:
             for entry in layer_data.get("inter_core_tiling", []):
-                split_val = entry.get("split", 0)
-                if not isinstance(split_val, int) or split_val <= 0:
-                    self.invalidate(
-                        f"Layer '{layer_data.get('name')}' split must be a positive integer; got {split_val}.",
-                    )
+                for sub_entry in entry:
+                    split_val = sub_entry.get("split", 0)
+                    if not isinstance(split_val, int) or split_val <= 0:
+                        self.invalidate(
+                            f"Layer '{layer_data.get('name')}' split must be a positive integer; got {split_val}.",
+                        )
 
         for fused_group in self.normalized["fused_groups"]:
             for entry in fused_group.get("intra_core_tiling", []) or []:

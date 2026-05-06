@@ -7,7 +7,7 @@ from typing import Any
 from cerberus import Validator
 from zigzag.utils import open_yaml
 
-from stream.parser.core_validator import CoreValidatorRegistry
+from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -89,19 +89,9 @@ class AcceleratorValidator:
         # ------------------------------------------------------------------ #
         "core_coordinates": {
             "type": "dict",
-            "required": True,
+            "required": False,
+            "default": {},
             "valuesrules": {"type": "list", "minlength": 2, "maxlength": 2, "schema": {"type": "integer"}},
-        },
-        # ------------------------------------------------------------------ #
-        # Maximum object fifo depth for compute and memory core types        #
-        # ------------------------------------------------------------------ #
-        "max_object_fifo_depth": {
-            "type": "dict",
-            "required": True,
-            "schema": {
-                "compute": {"type": "integer", "min": 0},
-                "memory": {"type": "integer", "min": 0},
-            },
         },
     }
 
@@ -132,6 +122,7 @@ class AcceleratorValidator:
         # Validation outside of schema
         self.validate_core_ids()
         self.validate_all_cores()
+        self.validate_namespace()
         self.validate_core_coordinates()
 
         self.validate_core_connectivity()
@@ -164,10 +155,15 @@ class AcceleratorValidator:
                 self.data["cores"][core_id] = normalized_core_data
 
     def validate_core_coordinates(self) -> None:
-        """For all given core coordinates:
-        Check that the key exists in self.data["cores"]
+        """Validate the *format* of core coordinates when the field is present.
+
+        Coordinates are optional at the base level; namespace-specific validators
+        (e.g. :class:`AIE2AcceleratorNamespaceValidator`) enforce their presence
+        when required by the namespace.
         """
-        core_coordinates = self.data["core_coordinates"]
+        core_coordinates = self.data.get("core_coordinates", {})
+        if not core_coordinates:
+            return  # absent or empty – namespace validator handles presence checks
         for core_id, coordinates in core_coordinates.items():
             if not isinstance(core_id, int) or core_id < 0:
                 self.invalidate(f"Invalid core id in core_coordinates: {core_id} is not a positive integer.")
@@ -176,6 +172,63 @@ class AcceleratorValidator:
             if len(coordinates) != self.COORDINATES_LEN or not all(isinstance(coord, int) for coord in coordinates):
                 self.invalidate(f"Invalid coordinates for core id {core_id}: {coordinates}.")
 
+    def validate_namespace(self) -> None:
+        """Enforce a single consistent core namespace and run namespace-specific checks.
+
+        Called after :meth:`validate_all_cores` so every core entry in
+        ``self.data["cores"]`` is already a fully-normalized dict.
+        """
+        namespaces: set[str] = set()
+        for core_id, core_data in self.data["cores"].items():
+            if not isinstance(core_data, dict):
+                continue  # core failed to load; error already recorded
+            core_type = core_data.get("type", "")
+            if "." not in core_type:
+                self.invalidate(
+                    f"Core {core_id} has type '{core_type}' without a namespace prefix. "
+                    "All core types must follow the '<namespace>.<kind>' format "
+                    f"(e.g. 'zigzag.compute', 'aie2.compute'). "
+                    f"Allowed namespaces: {sorted(ALLOWED_NAMESPACES)}, "
+                    f"allowed kinds: {sorted(ALLOWED_KINDS)}."
+                )
+            else:
+                ns = core_type.split(".")[0]
+                kind = core_type.split(".")[-1]
+                if ns not in ALLOWED_NAMESPACES:
+                    self.invalidate(
+                        f"Core {core_id} has unknown namespace '{ns}'. "
+                        f"Allowed namespaces: {sorted(ALLOWED_NAMESPACES)}."
+                    )
+                if kind not in ALLOWED_KINDS:
+                    self.invalidate(
+                        f"Core {core_id} has unknown kind '{kind}'. Allowed kinds: {sorted(ALLOWED_KINDS)}."
+                    )
+                namespaces.add(ns)
+
+        if len(namespaces) > 1:
+            self.invalidate(
+                f"All cores in an accelerator must share the same namespace, "
+                f"but found multiple namespaces: {sorted(namespaces)}. "
+                "Mix-namespace accelerators are not supported."
+            )
+            return
+
+        if not namespaces:
+            return  # all cores failed to load; errors already recorded
+
+        namespace = next(iter(namespaces))
+        validator_cls = AcceleratorNamespaceValidatorRegistry.get(namespace)
+        if validator_cls is None:
+            supported = AcceleratorNamespaceValidatorRegistry.supported_namespaces()
+            self.invalidate(
+                f"Namespace '{namespace}' is not supported. "
+                f"Supported namespaces: {', '.join(supported)}. "
+                "To add support, create and register a new AcceleratorNamespaceValidator subclass."
+            )
+            return
+
+        validator_cls(self.data, self.invalidate).validate()
+
     def validate_single_core(self, core_file_name: str) -> None | dict[str, Any]:
         core_data = self.open_core(core_file_name)
         # Stop validation if invalid core name is found
@@ -183,11 +236,11 @@ class AcceleratorValidator:
             return
 
         raw_type = core_data.get("type")
-        default_kind = raw_type if raw_type in {"compute", "memory"} else "compute"
+        default_kind = raw_type if raw_type in ALLOWED_KINDS else "compute"
         normalized_type = CoreValidatorRegistry.normalize_core_type(
             raw_type,
             default_namespace=CoreValidatorRegistry.default_namespace,
-            default_kind=str(default_kind),
+            default_kind=default_kind,
         )
         validator_cls = CoreValidatorRegistry.get_validator(normalized_type)
         if validator_cls is None:
@@ -292,3 +345,94 @@ class AcceleratorValidator:
         """Returns the user-provided data after normalization by the validator. (Normalization happens during
         initialization)"""
         return self.data
+
+
+# =============================================================================
+# Namespace-specific accelerator validation
+# -----------------------------------------------------------------------------
+# Every accelerator YAML uses cores that all belong to a single namespace
+# (e.g. "zigzag" or "aie2").  The classes below encode what extra top-level
+# fields and constraints are required for each namespace.
+#
+# HOW TO ADD A NEW NAMESPACE
+# --------------------------
+#   1. Create a subclass of BaseAcceleratorNamespaceValidator below.
+#   2. Set NAMESPACE = "<your-namespace>" (must match the prefix used in
+#      core_type strings, e.g. "aie3" for "aie3.compute").
+#   3. Decorate the class with @AcceleratorNamespaceValidatorRegistry.register.
+#   4. Override validate() and call self._invalidate(msg) for any violation.
+#      The message will be logged and collected in the parent validator's error
+#      list automatically.
+# =============================================================================
+
+
+class AcceleratorNamespaceValidatorRegistry:
+    """Maps a namespace string to its accelerator-level namespace validator class."""
+
+    _registry: dict[str, type["BaseAcceleratorNamespaceValidator"]] = {}
+
+    @classmethod
+    def register(cls, validator_cls: type["BaseAcceleratorNamespaceValidator"]):
+        """Register *validator_cls* under its declared NAMESPACE."""
+        cls._registry[validator_cls.NAMESPACE] = validator_cls
+        return validator_cls
+
+    @classmethod
+    def get(cls, namespace: str) -> type["BaseAcceleratorNamespaceValidator"] | None:
+        return cls._registry.get(namespace)
+
+    @classmethod
+    def supported_namespaces(cls) -> list[str]:
+        return sorted(cls._registry.keys())
+
+
+class BaseAcceleratorNamespaceValidator:
+    """Base class for namespace-specific accelerator validators.
+
+    Subclasses should set :attr:`NAMESPACE` and override :meth:`validate`.
+    Violations are reported via :meth:`_invalidate`, which delegates to the
+    parent :class:`AcceleratorValidator` so all errors are collected in one
+    place.
+    """
+
+    NAMESPACE: str = ""  # must be overridden
+
+    def __init__(self, data: dict[str, Any], invalidate_fn) -> None:
+        self.data = data
+        self._invalidate = invalidate_fn
+
+    def validate(self) -> None:  # pragma: no cover
+        """Override in subclasses to add namespace-specific validation."""
+
+
+@AcceleratorNamespaceValidatorRegistry.register
+class ZigZagAcceleratorNamespaceValidator(BaseAcceleratorNamespaceValidator):
+    """Namespace validator for zigzag cores.  No extra top-level fields required."""
+
+    NAMESPACE = "zigzag"
+
+    def validate(self) -> None:
+        pass  # zigzag accelerators have no namespace-specific requirements
+
+
+@AcceleratorNamespaceValidatorRegistry.register
+class AIE2AcceleratorNamespaceValidator(BaseAcceleratorNamespaceValidator):
+    """Namespace validator for aie2 cores.
+
+    Requires:
+    - ``core_coordinates``: a non-empty mapping from core id to ``[col, row]``.
+    """
+
+    NAMESPACE = "aie2"
+
+    def validate(self) -> None:
+        self._validate_core_coordinates()
+
+    def _validate_core_coordinates(self) -> None:
+        coords = self.data.get("core_coordinates", {})
+        if not coords:
+            self._invalidate(
+                "aie2 accelerators require a 'core_coordinates' section that maps every "
+                "core id to its physical [col, row] position on the AIE array. "
+                "Add 'core_coordinates' to your hardware YAML."
+            )

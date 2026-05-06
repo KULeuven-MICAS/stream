@@ -32,7 +32,8 @@ def make_gemm_workload(M, K, N, in_dtype, out_dtype):  # noqa: N803
 
     # Gemm node
     gemm_node = helper.make_node(
-        "Gemm",
+        op_type="Gemm",
+        name="Gemm",
         inputs=["A", "B"],
         outputs=["Y"],
         alpha=1.0,

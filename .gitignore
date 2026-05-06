@@ -172,3 +172,7 @@ stream/inputs/aie/mapping/*.yml
 
 # svg files (e.g. flamegraphs)
 *.svg
+
+# planning and docs artifacts
+.planning/
+docs/
