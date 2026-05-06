@@ -32,7 +32,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     workload_path = make_swiglu_workload(
         seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down=last_gemm_down
     )
-    mapping_path = "outputs/dse-20260429-whole_array_strix-swiglu_256_2048_8192-4_row_8_col/tilesizes_32_128_32/42/swiglu_256_2048_2048_mapping_test.yaml"
+    mapping_path = "outputs/dse-20260429-whole_array_strix-swiglu_256_2048_8192-4_row_8_col/tilesizes_32_128_32/42/swiglu_256_2048_2048_mapping.yaml"
     ##############################################################################################
 
     ################################PARSING###############################

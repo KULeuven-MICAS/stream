@@ -281,6 +281,244 @@ def _plot_violin_box(latencies: np.ndarray, out_path_no_ext: str, units: str) ->
     _save_fig(fig, out_path_no_ext)
 
 
+def _load_optimization_trace(trace_path: str) -> list[float] | None:
+    """Return ordered list of incumbent latencies from a tetra optimization_trace.yaml.
+
+    Returns ``None`` if the file is missing or has no usable incumbent values
+    (e.g. mapping did not meet constraints, so tetra/ only contains model.ilp).
+    """
+    if not os.path.exists(trace_path):
+        return None
+    try:
+        with open(trace_path) as f:
+            data = yaml.safe_load(f)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    trace = data.get("trace") or []
+    incumbents: list[float] = []
+    for entry in trace:
+        if not isinstance(entry, dict):
+            continue
+        v = entry.get("incumbent")
+        if v is None:
+            continue
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        if math.isnan(f) or math.isinf(f):
+            continue
+        incumbents.append(f)
+    return incumbents or None
+
+
+def _plot_optimization_progress(
+    combo: TileCombo,
+    out_path_no_ext: str,
+    units: str,
+    ymax: float | None = None,
+    annotate_optimal: bool = False,
+    optimal_rtol: float = 0.005,
+) -> None:
+    """Per-tile-size plot: optimization incumbent descent at each mapping index.
+
+    Stylistically mirrors ``_plot_box_compare`` — same orange "This Work"
+    palette, black-edged final-incumbent marker for emphasis, grey × markers
+    for mapping indices whose tetra/ run did not produce an optimization
+    trace (i.e. did not meet constraints).
+    """
+    index_dirs = _list_index_dirs(combo.path)
+    if not index_dirs:
+        return
+
+    indices_ok: list[int] = []
+    traces: list[list[float]] = []
+    indices_fail: list[int] = []
+    for idx, d in index_dirs:
+        trace = _load_optimization_trace(os.path.join(d, "tetra", "optimization_trace.yaml"))
+        if trace:
+            indices_ok.append(idx)
+            traces.append(trace)
+        else:
+            indices_fail.append(idx)
+
+    if not indices_ok and not indices_fail:
+        return
+
+    this_color = "#DD8452"
+
+    width = max(6.5, 0.13 * len(index_dirs) + 2.8)
+    fig, ax = plt.subplots(figsize=(width, 5.0))
+
+    stair_w = 0.7  # horizontal extent of each per-mapping staircase (in index units)
+    for x_center, trace in zip(indices_ok, traces, strict=False):
+        k = len(trace)
+        if k == 1:
+            xs = [float(x_center)]
+        else:
+            xs = [
+                x_center - stair_w / 2.0 + (i / (k - 1)) * stair_w for i in range(k)
+            ]
+        ax.plot(
+            xs,
+            trace,
+            color=this_color,
+            alpha=0.55,
+            linewidth=1.4,
+            drawstyle="steps-post",
+            solid_capstyle="butt",
+            zorder=2,
+        )
+        if k > 1:
+            ax.scatter(
+                xs[:-1],
+                trace[:-1],
+                color=this_color,
+                alpha=0.5,
+                s=14,
+                edgecolors="none",
+                zorder=3,
+            )
+        ax.scatter(
+            [xs[-1]],
+            [trace[-1]],
+            color=this_color,
+            alpha=0.95,
+            s=28,
+            edgecolors="black",
+            linewidths=0.7,
+            zorder=4,
+        )
+
+    if annotate_optimal and traces:
+        best_y = min(t[-1] for t in traces)
+        threshold = best_y * (1.0 + optimal_rtol)
+        candidates: list[tuple[int, float, float]] = []
+        for x_center, trace in zip(indices_ok, traces, strict=False):
+            if trace[-1] > threshold:
+                continue
+            k = len(trace)
+            x_final = float(x_center) if k == 1 else x_center + stair_w / 2.0
+            candidates.append((x_center, x_final, float(trace[-1])))
+        candidates.sort(key=lambda c: c[0])
+
+        # Cluster annotations that would otherwise overplot: consecutive indices
+        # whose final-incumbent y values match within a relative tolerance get
+        # merged into a single comma-separated label at the cluster centroid.
+        groups: list[list[tuple[int, float, float]]] = []
+        for cand in candidates:
+            if groups:
+                prev = groups[-1][-1]
+                close_x = cand[1] - prev[1] <= 2.0
+                close_y = abs(cand[2] - prev[2]) <= 1e-3 * max(prev[2], 1.0)
+                if close_x and close_y:
+                    groups[-1].append(cand)
+                    continue
+            groups.append([cand])
+
+        for group in groups:
+            label = ",".join(str(g[0]) for g in group)
+            x_pos = sum(g[1] for g in group) / len(group)
+            y_pos = max(g[2] for g in group)
+            ax.annotate(
+                label,
+                xy=(x_pos, y_pos),
+                xytext=(4, 6),
+                textcoords="offset points",
+                fontsize=10,
+                fontweight="bold",
+                color="black",
+                bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.75, "pad": 1.0},
+                zorder=6,
+            )
+
+    if indices_fail:
+        if traces:
+            # Place X markers among the final-incumbent cluster so they stay
+            # visible whether the y-axis is auto-fit or zoomed in.
+            y_marker = float(np.median([t[-1] for t in traces]))
+        else:
+            y_marker = 0.5
+        ax.scatter(
+            indices_fail,
+            [y_marker] * len(indices_fail),
+            marker="x",
+            s=80,
+            color="#555555",
+            linewidths=1.8,
+            zorder=5,
+            label="Doesn't meet constraints",
+        )
+
+    all_idxs = indices_ok + indices_fail
+    ax.set_xlim(min(all_idxs) - 0.5, max(all_idxs) + 0.5)
+    ax.set_xlabel("Mapping index (evaluation order)")
+    ax.set_ylabel(f"Latency{units}")
+    _apply_sci_notation(ax, axis="y")
+
+    if ymax is not None:
+        ax.set_ylim(0.0, ymax)
+    ax.yaxis.grid(True, linestyle="--", alpha=0.5)
+    ax.xaxis.grid(False)
+    ax.set_axisbelow(True)
+
+    # Custom legend so it explains both elements without cluttering the plot.
+    from matplotlib.lines import Line2D
+
+    legend_handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color=this_color,
+            alpha=0.95,
+            markeredgecolor="black",
+            markeredgewidth=0.7,
+            markersize=7,
+            linestyle="None",
+            label="Optimal solution for allocation",
+        ),
+        Line2D(
+            [0],
+            [0],
+            marker="o",
+            color=this_color,
+            alpha=0.5,
+            markeredgecolor="none",
+            markersize=7,
+            linestyle="None",
+            label="Constraint optimization progress",
+        ),
+    ]
+    if indices_fail:
+        legend_handles.append(
+            Line2D(
+                [0],
+                [0],
+                marker="x",
+                color="#555555",
+                markersize=8,
+                markeredgewidth=1.8,
+                linestyle="None",
+                label="Doesn't meet constraints",
+            )
+        )
+    ax.legend(
+        handles=legend_handles,
+        loc="lower center",
+        bbox_to_anchor=(0.5, 1.02),
+        ncol=3,
+        frameon=False,
+        columnspacing=0.8,
+        handletextpad=0.4,
+        borderpad=0.3,
+    )
+    fig.tight_layout()
+    _save_fig(fig, out_path_no_ext)
+
+
 def _plot_best_so_far(
     idx_latency_pairs: list[tuple[int, float]], out_path_no_ext: str, units: str
 ) -> None:
@@ -352,6 +590,19 @@ def render_per_combo(combo: TileCombo, out_dir: str, units: str) -> None:
         os.path.join(out_dir, "latency_best_so_far"),
         units=units_label,
     )
+    _plot_optimization_progress(
+        combo,
+        os.path.join(out_dir, "optimization_progress"),
+        units=units_label,
+    )
+    if combo.finite_latencies:
+        ymax_zoom = float(max(combo.finite_latencies)) * (4.0 / 3.0)
+        _plot_optimization_progress(
+            combo,
+            os.path.join(out_dir, "optimization_progress_zoom"),
+            units=units_label,
+            ymax=ymax_zoom,
+        )
 
 
 # -----------------------------
@@ -398,34 +649,83 @@ def _plot_best_latency_bar(combos: list[TileCombo], out_path_no_ext: str, units:
 
 
 def _plot_box_compare(combos: list[TileCombo], out_path_no_ext: str, units: str) -> None:
-    valid = _combos_with_data(combos)
-    if len(valid) < 2:
+    if not combos:
         return
-    valid_sorted = sorted(valid, key=lambda c: c.best_latency)
-    data = [np.asarray(c.finite_latencies) for c in valid_sorted]
-    labels = [c.label for c in valid_sorted]
+    valid = _combos_with_data(combos)
+    invalid = [c for c in combos if not c.finite_latencies]
+    if not valid and not invalid:
+        return
 
-    height = max(4.0, 0.32 * len(valid_sorted) + 2.0)
-    fig, ax = plt.subplots(figsize=(10, height))
-    bp = ax.boxplot(
-        data,
-        vert=False,
-        widths=0.6,
-        patch_artist=True,
-        showfliers=True,
-        boxprops={"facecolor": "#3b6cb7", "alpha": 0.6, "edgecolor": "#1f3f70"},
-        medianprops={"color": "#c14b3a", "linewidth": 2.0},
-        whiskerprops={"color": "#1f3f70"},
-        capprops={"color": "#1f3f70"},
-        flierprops={"marker": "o", "markersize": 3, "markerfacecolor": "#1f3f70", "alpha": 0.5},
-    )
-    del bp
-    ax.set_yticks(np.arange(1, len(valid_sorted) + 1))
-    ax.set_yticklabels(labels)
-    ax.invert_yaxis()
-    ax.set_xlabel(f"Latency{units}")
-    ax.set_ylabel("Tile sizes (seq × emb × hid)")
-    _apply_sci_notation(ax, axis="x")
+    # Valid combos sorted by best latency; failed combos appended at the end.
+    valid_sorted = sorted(valid, key=lambda c: c.best_latency)
+    invalid_sorted = sorted(invalid, key=lambda c: (c.seq, c.embedding, c.hidden))
+    all_combos = valid_sorted + invalid_sorted
+    labels = [c.label for c in all_combos]
+    positions = list(range(1, len(all_combos) + 1))
+
+    # Match the "This Work" style from ~/iron/plot_gemm.py for paper consistency.
+    this_color = "#DD8452"
+
+    width = max(7.0, 0.45 * len(all_combos) + 3.5)
+    fig, ax = plt.subplots(figsize=(width, 5.5))
+
+    if valid_sorted:
+        data = [np.asarray(c.finite_latencies) for c in valid_sorted]
+        valid_positions = positions[: len(valid_sorted)]
+        bp = ax.boxplot(
+            data,
+            positions=valid_positions,
+            vert=True,
+            widths=0.6,
+            patch_artist=True,
+            showfliers=True,
+            medianprops={"color": "black", "linewidth": 1.2},
+            flierprops={
+                "marker": "o",
+                "markersize": 3,
+                "markerfacecolor": this_color,
+                "markeredgecolor": this_color,
+                "alpha": 0.5,
+            },
+        )
+        for patch in bp["boxes"]:
+            patch.set_facecolor(this_color)
+            patch.set_edgecolor(this_color)
+            patch.set_alpha(0.35)
+        for key in ("whiskers", "caps"):
+            for line in bp[key]:
+                line.set_color(this_color)
+                line.set_alpha(0.7)
+
+    if invalid_sorted:
+        invalid_positions = positions[len(valid_sorted):]
+        if valid_sorted:
+            all_lats = np.concatenate([np.asarray(c.finite_latencies) for c in valid_sorted])
+            y_marker = float(np.median(all_lats))
+        else:
+            y_marker = 0.5
+        ax.scatter(
+            invalid_positions,
+            [y_marker] * len(invalid_positions),
+            marker="x",
+            s=140,
+            color="#555555",
+            linewidths=2.2,
+            zorder=5,
+            label="Doesn't meet constraints",
+        )
+
+    ax.set_xticks(positions)
+    ax.set_xticklabels(labels, rotation=45, ha="right")
+    ax.set_xlim(0.5, len(all_combos) + 0.5)
+    ax.set_xlabel("Tile sizes (seq × emb × hid)")
+    ax.set_ylabel(f"Latency{units}")
+    _apply_sci_notation(ax, axis="y")
+    ax.yaxis.grid(True, linestyle="--", alpha=0.5)
+    ax.xaxis.grid(False)
+    ax.set_axisbelow(True)
+    if invalid_sorted:
+        ax.legend(loc="best", frameon=True)
     fig.tight_layout()
     _save_fig(fig, out_path_no_ext)
 
