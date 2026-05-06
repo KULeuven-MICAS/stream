@@ -1,5 +1,6 @@
 # time_slot_allocation.py
 import json
+import logging
 import sys
 from enum import Enum, auto
 from io import StringIO
@@ -10,6 +11,8 @@ from pyparsing import Any
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.workload.workload import Node
+
+logger = logging.getLogger(__name__)
 
 # --------------------------------------------------------------------------- #
 # Helpers                                                                     #
@@ -181,8 +184,8 @@ class TimeSlotAllocation:
 
         for row_slots in [slots[i : i + cols_per_row] for i in range(0, len(slots), cols_per_row)]:
             header = " " * 20 + "".join(f"|{s:^{col_w}}" for s in row_slots) + "|"
-            print(header)
-            print("-" * len(header))
+            logger.debug(header)
+            logger.debug("-" * len(header))
             for res in rows:
                 label = _resource_key(res)[:20]
                 row = f"{label:<20}"
@@ -195,8 +198,8 @@ class TimeSlotAllocation:
                     else:
                         row += f"|{'':^{col_w}}"
                 row += "|"
-                print(row)
-            print("-" * len(header))
+                logger.debug(row)
+            logger.debug("-" * len(header))
 
     # ------------------------------------------------------------------ #
     # Perfetto / Chrome-trace export                                     #

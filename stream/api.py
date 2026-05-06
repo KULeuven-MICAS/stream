@@ -13,15 +13,13 @@ from stream.stages.allocation.constraint_optimization_allocation import Constrai
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.context import StageContext
 from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
-
-# from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
-# from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
+from stream.stages.estimation.memory_accesses_estimation import MemoryAccessesEstimationStage
+from stream.stages.generation.mapping_generation import MappingGenerationStage
+from stream.stages.generation.mapping_generation_multi import MappingGenerationMultiThreadedStage
 from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.mapping_parser import MappingParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
-
-# from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 from stream.stages.stage import LeafStage, MainStage, StageCallable
 
 _logging_level = _logging.INFO
@@ -68,7 +66,7 @@ def optimize_allocation_ga(  # noqa: PLR0913
     skip_if_exists: bool = False,
     temporal_mapping_type: str = "uneven",
 ) -> StreamCostModelEvaluation:
-    _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
+    _sanity_check_inputs(hardware, workload, mapping, output_path)
 
     # Create experiment_id path
     output_path = f"{output_path}/{experiment_id}"
@@ -169,6 +167,7 @@ def optimize_allocation_co(  # noqa: PLR0913
             TilingGenerationStage,
             CoreCostEstimationStage,
             ConstraintOptimizationAllocationStage,
+            MemoryAccessesEstimationStage,
         ]
         ctx = StageContext.from_kwargs(
             accelerator=hardware,  # required by AcceleratorParserStage
@@ -194,8 +193,138 @@ def optimize_allocation_co(  # noqa: PLR0913
         answers = mainstage.run()
         assert len(answers) == 1, "Expected a single result from the optimization."
         ctx = answers[0]
-        # pickle_save(scme, scme_path)  # type: ignore
     return ctx
+
+
+def optimize_mapping(  # noqa: PLR0913
+    hardware: str,
+    workload: str,
+    experiment_id: str,
+    output_path: str,
+    max_nb_mappings: int = 20,
+    skip_if_exists: bool = False,
+    temporal_mapping_type: str = "uneven",
+    enable_codegen: bool = False,
+    trace_size: int = 1048576,
+    nb_cols_to_use: int = 8,
+    nb_rows_to_use: int = 4,
+    seq_len_tile_size: int = 32,
+    embedding_tile_size: int = 128,
+    hidden_tile_size: int = 64,
+    last_gemm_down: bool = False,
+    npu: str = "npu2",
+    nb_workers: int = 1,
+) -> StageContext:
+    _sanity_check_gurobi_license()
+
+    # Create experiment_id path
+    output_path = f"{output_path}/{experiment_id}"
+    os.makedirs(output_path, exist_ok=True)
+
+    # Get logger
+    logger = _logging.getLogger(__name__)
+
+    # Determine temporal mapping type for ZigZag
+    if temporal_mapping_type == "uneven":
+        temporal_mapping_type = TemporalMappingType.UNEVEN
+    elif temporal_mapping_type == "even":
+        temporal_mapping_type = TemporalMappingType.EVEN
+    else:
+        raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
+
+    if nb_workers > 1:
+        mapping_generation_stage = MappingGenerationMultiThreadedStage
+    else:
+        mapping_generation_stage = MappingGenerationStage
+
+    # Load final resulting context if it exists and skip_if_exists is True
+    ctx_path = f"{output_path}/ctx.pickle"
+    if os.path.exists(ctx_path) and skip_if_exists:
+        ctx = pickle_load(ctx_path)
+        logger.info(f"Loaded context from {ctx_path}")
+    else:
+        stages: list[StageCallable] = [  # Initializes the MainStage as entry point
+            AcceleratorParserStage,  # Parses the accelerator
+            StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+            mapping_generation_stage,
+            MappingParserStage,
+            TilingGenerationStage,
+            CoreCostEstimationStage,
+            ConstraintOptimizationAllocationStage,
+            MemoryAccessesEstimationStage,
+        ]
+        ctx = StageContext.from_kwargs(
+            accelerator=hardware,  # required by AcceleratorParserStage
+            workload_path=workload,  # required by ModelParserStage
+            loma_lpf_limit=6,  # required by LomaEngine
+            output_path=output_path,
+            temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
+            trace_size=trace_size,
+            nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
+            nb_rows_to_use=nb_rows_to_use,  # used by MappingGenerator for shape-aware tiling
+            seq_len_tile_size=seq_len_tile_size,
+            embedding_tile_size=embedding_tile_size,
+            hidden_tile_size=hidden_tile_size,
+            last_gemm_down=last_gemm_down,
+            max_nb_mappings=max_nb_mappings,
+        )
+        # optionally add code generation stage
+        if enable_codegen:
+            from stream.stages.codegen.aie_code_generation import AIECodeGenerationStage  # noqa: PLC0415
+
+            stages = [AIECodeGenerationStage] + stages
+            ctx.set(
+                npu=npu,  # required by AIECodeGenerationStage
+            )
+        if nb_workers > 1:
+            ctx.set(
+                max_workers=nb_workers,
+            )
+
+        mainstage = MainStage(stages, ctx)
+        # Launch the MainStage
+        answers = mainstage.run()
+        assert len(answers) == 1, "Expected a single result from the optimization."
+        ctx = answers[0]
+    return ctx
+
+
+def parse_accelerator_ir(
+    hardware: str,
+    arch_ir_path: str,
+) -> str:
+    """Parse a hardware definition into an accelerator IR YAML file.
+
+    Instantiates the :class:`~stream.hardware.architecture.accelerator.Accelerator`
+    from the given hardware YAML, calls its :meth:`~stream.hardware.architecture.accelerator.Accelerator.get_ir`
+    method, and writes the result to *arch_ir_path*.
+
+    Args:
+        hardware: Path to the hardware definition YAML file.
+        arch_ir_path: Destination path for the accelerator IR YAML.
+
+    Returns:
+        The path to the saved IR file (*arch_ir_path*).
+    """
+    base_output_path = os.path.dirname(os.path.abspath(arch_ir_path))
+    os.makedirs(base_output_path, exist_ok=True)
+    ctx = StageContext.from_kwargs(
+        accelerator=hardware,
+        output_path=base_output_path,
+    )
+    stages: list[StageCallable] = [
+        AcceleratorParserStage,
+        LeafStage,
+    ]
+    mainstage = MainStage(stages, ctx)
+    ctxs = mainstage.run()
+    assert len(ctxs) == 1, "Expected a single result from the accelerator parsing"
+    ctx: StageContext = ctxs[0]  # type: ignore[no-redef]
+    accelerator = ctx.get("accelerator")
+    arch_ir = accelerator.get_ir()
+    with open(arch_ir_path, "w") as f:
+        yaml.dump(arch_ir, f, sort_keys=False)
+    return arch_ir_path
 
 
 def parse_workload_ir(

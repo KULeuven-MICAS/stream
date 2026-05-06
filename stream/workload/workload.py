@@ -22,10 +22,13 @@ from stream.workload.node import (
     OutEdge,
     TransferNode,
 )
+from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 from stream.workload.tensor import Tensor
 from stream.workload.utils import affine_bounds, sympy_to_xdsl
 
 if TYPE_CHECKING:
+    from stream.cost_model.communication_manager import MulticastPathPlan
+    from stream.hardware.architecture.core import Core
     from stream.mapping.mapping import Mapping
 
 
@@ -122,7 +125,7 @@ class Workload(DiGraphWrapper[Node]):
         return tuple(cast(HasIterationSpace, node) for node in self.nodes if isinstance(node, HasIterationSpace))
 
     def get_node_by_name(self, name: str) -> Node:
-        for node in self.nodes:
+        for node in self.node_list:
             if node.name == name:
                 return node
         raise KeyError(f"No node with name {name} found in workload.")
@@ -182,7 +185,7 @@ class Workload(DiGraphWrapper[Node]):
 
         dim_values = [sympy_to_xdsl(sp.simplify(expr)) for expr in x]
         # IMPORTANT: z dimensions are LayerDim, so expressions.index(LayerDim(i)) works
-        z = [LayerDim(i) for i in range(len(free_vars))]
+        z = [LayerDim(position=i, prefix="z") for i in range(len(free_vars))]
         return z, dim_values
 
     def get_unique_dims_inter_core_tiling(self, node: ComputationNode, mapping: "Mapping") -> InterCoreTiling:
@@ -190,12 +193,17 @@ class Workload(DiGraphWrapper[Node]):
         node_mapping = mapping.get(node)
         assert node_mapping is not None, f"No mapping found for node {node.name}"
         unique_node_dims = self.get_dims(node)
-        converted_tiling: InterCoreTiling = []
-        for dim, factor in node_mapping.inter_core_tiling:
-            dim_idx = dim.position
-            unique_dim = unique_node_dims[dim_idx]
+        converted_tiling: list[tuple[LayerDim, int]] = []
+        all_tilings_equal = all(t == node_mapping.inter_core_tiling[0] for t in node_mapping.inter_core_tiling)
+        assert all_tilings_equal, f"Multiple different inter-core tilings for node {node.name} not supported for now."
+        for dim, factor in node_mapping.inter_core_tiling[0]:
+            if "z" in str(dim):
+                unique_dim = dim
+            else:
+                dim_idx = dim.position
+                unique_dim = unique_node_dims[dim_idx]
             converted_tiling.append((unique_dim, factor))
-        return converted_tiling
+        return tuple(converted_tiling)
 
     def get_tensor_shape_with_dimension_sizes(
         self, tensor: Tensor, dimension_sizes: dict[LayerDim, int]
@@ -220,12 +228,12 @@ class Workload(DiGraphWrapper[Node]):
             out_shape.append(int(extent))
         return tuple(out_shape)
 
-    def get_tensor_shape_with_tiling(self, tensor: Tensor, succ_tiling: InterCoreTiling) -> tuple[int, ...]:
+    def get_tensor_shape_with_tiling(self, tensor: Tensor, tiling: InterCoreTiling) -> tuple[int, ...]:
         unique_dims, _ = self.unique_dimensions()
         dim_sizes = {}
         for dim in unique_dims:
-            if any(dim == ict[0] for ict in succ_tiling):
-                tiling_factor = next(ict[1] for ict in succ_tiling if dim == ict[0])
+            if any(dim == ict[0] for ict in tiling):
+                tiling_factor = next(ict[1] for ict in tiling if dim == ict[0])
                 dim_size = self.get_dimension_size(dim) // tiling_factor
             else:
                 dim_size = self.get_dimension_size(dim)
@@ -233,18 +241,100 @@ class Workload(DiGraphWrapper[Node]):
         new_shape = self.get_tensor_shape_with_dimension_sizes(tensor, dim_sizes)
         return new_shape
 
-    def get_tensor_shape_of_transfer_to_single_core(
+    def get_tensor_single_core(self, tensor: Tensor, node: HasOutputs, mapping: "Mapping") -> Tensor:
+        """
+        Get a new Tensor representing the portion residing on a single core, based on the nodes' tiling.
+        """
+        node_mapping = mapping.get(node)
+        assert node_mapping is not None, f"No mapping found for node {node.name}"
+        tilings = node_mapping.inter_core_tiling
+        # Assert all possible tilings are equal for now and take first one
+        assert all(t == tilings[0] for t in tilings), "Multiple different tilings not implemented yet."
+        tiling = tilings[0]
+        if tiling == tuple():
+            return tensor
+        new_shape = self.get_tensor_shape_with_tiling(tensor, tiling)
+        new_subview = SubviewOp.from_static_parameters(
+            source=tensor.subview.source,
+            source_type=tensor.subview.source.type,
+            offsets=[0 for _ in new_shape],
+            sizes=new_shape,
+            strides=[1 for _ in new_shape],
+        )
+        return Tensor(
+            name=tensor.name,
+            operand_type=tensor.operand_type,
+            shape=new_shape,
+            subview=new_subview,
+        )
+
+    def get_tensor_of_transfer_to_single_core(
         self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping"
-    ) -> tuple[int, ...]:
+    ) -> Tensor:
         succ_idx = transfer.outputs.index(tensor)
         succ = list(self.successors(transfer))[succ_idx]
         if isinstance(succ, OutEdge):
-            succ_tiling = tuple()
+            tiling = tuple()
+        elif isinstance(succ, TransferNode):
+            # Current transfer's tiling determines the shape
+            tiling = self.get_unique_dims_inter_core_tiling(transfer, mapping)
+        elif isinstance(succ, ComputationNode):
+            tiling = self.get_unique_dims_inter_core_tiling(succ, mapping)
         else:
-            assert isinstance(succ, ComputationNode), f"Expected ComputationNode, got {type(succ)}"
-            succ_tiling = self.get_unique_dims_inter_core_tiling(succ, mapping)
-        new_shape = self.get_tensor_shape_with_tiling(tensor, succ_tiling)
-        return new_shape
+            raise TypeError(f"Unexpected successor type {type(succ)} for transfer node {transfer.name}")
+        new_shape = self.get_tensor_shape_with_tiling(tensor, tiling)
+        new_subview = SubviewOp.from_static_parameters(
+            source=tensor.subview.source,
+            source_type=tensor.subview.source.type,
+            offsets=[0 for _ in new_shape],
+            sizes=new_shape,
+            strides=[1 for _ in new_shape],
+        )
+        return Tensor(
+            name=tensor.name,
+            operand_type=tensor.operand_type,
+            shape=new_shape,
+            subview=new_subview,
+        )
+
+    def get_tensor_of_transfer_from_single_core(
+        self, tensor: Tensor, transfer: TransferNode, mapping: "Mapping"
+    ) -> Tensor:
+        pred_idx = transfer.inputs.index(tensor)
+        pred = list(self.predecessors(transfer))[pred_idx]
+        if isinstance(pred, InEdge):
+            pred_tiling = tuple()
+        else:
+            assert isinstance(pred, ComputationNode), f"Expected ComputationNode, got {type(pred)}"
+            pred_tiling = self.get_unique_dims_inter_core_tiling(pred, mapping)
+        new_shape = self.get_tensor_shape_with_tiling(tensor, pred_tiling)
+        new_subview = SubviewOp.from_static_parameters(
+            source=tensor.subview.source,
+            source_type=tensor.subview.source.type,
+            offsets=[0 for _ in new_shape],
+            sizes=new_shape,
+            strides=[1 for _ in new_shape],
+        )
+        return Tensor(
+            name=tensor.name,
+            operand_type=tensor.operand_type,
+            shape=new_shape,
+            subview=new_subview,
+        )
+
+    def replace_node(self, old_node: Node, new_node: Node) -> None:
+        """Replace a node in the workload with a new node, updating edges accordingly."""
+        if old_node not in self.node_list:
+            try:
+                old_node = self.get_node_by_name(old_node.name)
+            except KeyError as e:
+                raise KeyError(f"Node {old_node.name} not found in workload.") from e
+        self.add_node(new_node)
+        for pred in self.predecessors(old_node):
+            self.add_edge(pred, new_node)
+        for succ in self.successors(old_node):
+            self.add_edge(new_node, succ)
+        self.remove_node(old_node)
 
     def with_modified_dimension_sizes(self, new_sizes: dict[LayerDim, int]) -> "Workload":
         """Create a new workload where the dimension sizes of the given global dimension indices are modified to the new
@@ -359,33 +449,48 @@ class Workload(DiGraphWrapper[Node]):
             result[unique_dim] = stride
         return result
 
-    def visualize(self, filepath: str = "workload_graph.png", mapping: "Mapping | None" = None) -> None:
+    def visualize(  # noqa: PLR0912, PLR0915
+        self,
+        filepath: str = "workload_graph.png",
+        mapping: "Mapping | None" = None,
+        ssis: dict[Node, "SteadyStateIterationSpace"] | None = None,
+    ) -> None:
         """Visualize the graph using Graphviz and save it to an image file.
 
-        Nodes are laid out horizontally by topological generation,
-        and vertically stacked to avoid overlap. The resource is displayed
-        below each node in a clean and readable way.
+        Builds a new graph that inserts Tensor nodes between operation nodes,
+        showing the data flow through tensors explicitly. Nodes are laid out
+        horizontally (left to right).
         """
-        dot = to_pydot(self)
+        viz = nx.DiGraph()
 
-        # Set global graph layout left to right
+        # Add all original nodes
+        for node in self.nodes:
+            viz.add_node(node)
+
+        # Add tensor nodes and connect them, using tensor name as key to deduplicate
+        tensor_nodes: dict[str, Tensor] = {}
+        for node in self.nodes:
+            if isinstance(node, HasOutputs):
+                for tensor in node.outputs:
+                    tensor_nodes[tensor.name] = tensor
+                    viz.add_node(tensor.name)
+                    viz.add_edge(node, tensor.name)
+            if isinstance(node, HasInputs):
+                for tensor in node.inputs:
+                    tensor_nodes[tensor.name] = tensor
+                    viz.add_node(tensor.name)
+                    viz.add_edge(tensor.name, node)
+
+        dot = to_pydot(viz)
         dot.set_rankdir("LR")
         dot.set_concentrate(True)
 
-        # Determine node positions based on topological generations
-        generation_to_nodes = {}
-        for gen_idx, generation in enumerate(nx.topological_generations(self)):
-            generation_to_nodes[gen_idx] = list(generation)
-
-        # Assign nodes to horizontal positions based on their generation
-        for gen_idx, nodes in generation_to_nodes.items():
-            for idx, node in enumerate(nodes):
-                n = dot.get_node(str(node))[0]
-                n.set_pos(f"{gen_idx},{-idx}!")  # Horizontal by generation, vertical by index
-
-        # Customize node appearances and add resource labels
-        for node in self.nodes():
-            n = dot.get_node(str(node))[0]
+        # Style original nodes
+        for node in self.nodes:
+            dot_nodes = dot.get_node(str(node))
+            if not dot_nodes:
+                continue
+            n = dot_nodes[0]
             if isinstance(node, ComputationNode):
                 dim_sizes = {str(dim): self.get_dimension_size(dim) for dim in self.get_dims(node)}
                 n.set_shape("ellipse")
@@ -396,10 +501,9 @@ class Workload(DiGraphWrapper[Node]):
                 dim_sizes = {str(dim): self.get_dimension_size(dim) for dim in self.get_dims(node)}
                 n.set_shape("box")
                 label = f"{node.name}\nType: {node.transfer_type}\nDims: {dim_sizes}"
-                if mapping is not None:
-                    node_mapping = mapping.get(node)
-                    if node_mapping.memory_allocation is not None:
-                        label += f"\nMemAlloc: {node_mapping.memory_allocation}"
+                # label += self._get_mem_alloc_label(node, mapping)
+                # if ssis:
+                #     label += self._get_for_loop_label(ssis.get(node, None))
                 n.set_label(label)
                 n.set_style("filled")
                 n.set_fillcolor("#ffcb9a")
@@ -416,17 +520,162 @@ class Workload(DiGraphWrapper[Node]):
             else:
                 raise ValueError(f"Unknown node type: {type(node)}")
 
+        # Style tensor nodes
+        for tensor_name, tensor in tensor_nodes.items():
+            dot_nodes = dot.get_node(f'"{tensor_name}"') or dot.get_node(tensor_name)
+            if not dot_nodes:
+                continue
+            n = dot_nodes[0]
+            # Compact dim info: {dim: size, ...}
+            tensor_dims = self.get_tensor_dimensions(tensor)
+            dim_sizes = {str(d): self.get_dimension_size(d) for d in tensor_dims}
+            label = f"{tensor_name}\n{tensor.shape}"
+            if dim_sizes:
+                label += f"\n{dim_sizes}"
+            if mapping is not None:
+                try:
+                    tensor_mapping = mapping.get(tensor)
+                    if tensor_mapping.memory_allocation is not None:
+                        label += f"\nMemAlloc: {tensor_mapping.memory_allocation}"
+                except KeyError:
+                    pass
+            if ssis:
+                tensor_ssis = ssis.get(tensor, None)
+                label += self._get_for_loop_label(tensor_ssis)
+            n.set_shape("box")
+            n.set_style("filled,rounded")
+            n.set_fillcolor("#e8e8e8")
+            n.set_label(label)
+
         # Save to file
         dot.write_png(filepath)
         print(f"Graph saved to {filepath}")
 
-    def get_timeslots(self) -> dict[Node, int]:
-        timeslots = {}
+    def _get_mem_alloc_label(self, node: TransferNode, mapping: "Mapping | None") -> str:
+        if mapping is not None:
+            node_mapping = mapping.get(node)
+            if node_mapping.memory_allocation is not None:
+                return f"\nMemAlloc: {node_mapping.memory_allocation}"
+        return ""
+
+    def _get_for_loop_label(self, ssis: SteadyStateIterationSpace | None) -> str:
+        if ssis is not None:
+            temporal_loop_dims = reversed(ssis.get_temporal_variables())
+            temporal_loop_sizes = reversed(ssis.get_temporal_sizes())
+            reuses = reversed(ssis.get_temporal_reuses())
+            label = "\nForLoops:"
+            indent = ""
+            for dim, size, reuse in zip(temporal_loop_dims, temporal_loop_sizes, reuses, strict=True):
+                label += f"\n{indent}{dim}: {size}; Reuse={reuse}"
+                indent += "  "
+            label += "\n"
+            return f"{label}"
+        return ""
+
+    def get_timeslots_simple(self) -> dict[Node, int]:
+        """Original baseline: walk topological generations and give every node its own
+        unique slot (slot increments per node, not per generation). Kept for A/B-comparison
+        against the resource-aware ``get_timeslots``.
+        """
+        timeslots: dict[Node, int] = {}
         slot = 0
         for generation in nx.topological_generations(self):
             for node in generation:
                 timeslots[node] = slot
                 slot += 1
+        return timeslots
+
+    def get_timeslots(self, mapping: "Mapping | None" = None) -> dict[Node, int]:
+        """Assign each node a timeslot using a depthwise priority topological sort (drain a
+        transfer chain into its ComputationNode before opening the next branch).
+
+        Slot-sharing rules:
+        - A TransferNode and a ComputationNode may always share a slot (disjoint resource
+          classes: links vs cores).
+        - InEdges and OutEdges have no slot exclusion.
+        - When ``mapping`` is provided, two ComputationNodes share a slot iff their
+          candidate core allocations admit a pair with disjoint cores; two TransferNodes
+          share a slot iff their candidate ``MulticastPathPlan``s admit a pair with
+          disjoint ``links_used``. Joint feasibility across all same-class nodes in the
+          slot is checked by backtracking, so the downstream constraint solver is
+          guaranteed at least one valid resource assignment per slot.
+        - When ``mapping`` is None, falls back to ≤1 ComputationNode and ≤1 TransferNode
+          per slot.
+        """
+
+        def priority(node: Node):
+            if isinstance(node, ComputationNode):
+                return (0, node.name)
+            if isinstance(node, TransferNode):
+                return (1, node.name)
+            if isinstance(node, InEdge):
+                return (2, node.name)
+            return (3, node.name)  # OutEdge last
+
+        def get_options(node: Node) -> list[frozenset] | None:
+            """Return candidate resource sets for a node, or None if unknown.
+
+            For TransferNode: each option is the ``links_used`` of one MulticastPathPlan.
+            For ComputationNode: each option is the set of cores in one allocation.
+            """
+            if mapping is None:
+                return None
+            try:
+                ra = mapping.get(node).resource_allocation
+            except (KeyError, AttributeError):
+                return None
+            if not ra:
+                return None
+            if isinstance(node, TransferNode):
+                return [frozenset(cast("MulticastPathPlan", p).links_used) for p in ra]
+            if isinstance(node, ComputationNode):
+                return [frozenset(cast("Sequence[Core]", alloc)) for alloc in ra]
+            return None
+
+        def joint_feasible(option_lists: list[list[frozenset]]) -> bool:
+            """True iff one option from each list can be picked so all are pairwise disjoint."""
+
+            def bt(idx: int, used: frozenset) -> bool:
+                if idx == len(option_lists):
+                    return True
+                for opt in option_lists[idx]:
+                    if not (opt & used):
+                        if bt(idx + 1, used | opt):
+                            return True
+                return False
+
+            return bt(0, frozenset())
+
+        def can_join(slot_opts: list[list[frozenset] | None], new_opts: list[frozenset] | None) -> bool:
+            if new_opts is None:
+                # Unknown allocation: fall back to exclusive use of this resource class.
+                return len(slot_opts) == 0
+            concrete: list[list[frozenset]] = []
+            for o in slot_opts:
+                if o is None:
+                    return False
+                concrete.append(o)
+            concrete.append(new_opts)
+            return joint_feasible(concrete)
+
+        timeslots: dict[Node, int] = {}
+        slot_transfers: dict[int, list[list[frozenset] | None]] = {}
+        slot_computes: dict[int, list[list[frozenset] | None]] = {}
+
+        for node in nx.lexicographical_topological_sort(self, key=priority):
+            earliest = max((timeslots[p] + 1 for p in self.predecessors(node)), default=0)
+            slot = earliest
+            bucket: dict[int, list[list[frozenset] | None]] | None = None
+            if isinstance(node, TransferNode):
+                bucket = slot_transfers
+            elif isinstance(node, ComputationNode):
+                bucket = slot_computes
+            if bucket is not None:
+                opts = get_options(node)
+                while not can_join(bucket.get(slot, []), opts):
+                    slot += 1
+                bucket.setdefault(slot, []).append(opts)
+            timeslots[node] = slot
         return timeslots
 
     def get_ir(self) -> dict:
@@ -523,11 +772,7 @@ class Workload(DiGraphWrapper[Node]):
             dim_relations.append(str(expr))
 
         # Build timeslots
-        timeslots = {
-            node.name: gen_id
-            for gen_id, generation in enumerate(nx.topological_generations(self))
-            for node in generation
-        }
+        timeslots = {node.name: slot for node, slot in self.get_timeslots().items()}
 
         return {
             "num_nodes": len(list(self.nodes)),

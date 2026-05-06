@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import pickle
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
@@ -12,6 +13,21 @@ if TYPE_CHECKING:
     from stream.workload.workload import ComputationNode
 
 logger = logging.getLogger(__name__)
+
+
+def _to_yaml_scalar(v: Any) -> Any:
+    """Coerce a value to a native scalar yaml can dump cleanly. Falls back to ``str``."""
+    if v is None or isinstance(v, bool | str):
+        return v
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return str(v)
+    if not math.isfinite(f):
+        return str(v)
+    if f.is_integer():
+        return int(f)
+    return f
 
 
 class CoreCostLUT:
@@ -70,11 +86,62 @@ class CoreCostLUT:
             if c.id == core.id:
                 self.lut[node].pop(c)
 
+    def remove_node(self, node: ComputationNode):
+        if node in self.lut:
+            self.lut.pop(node)
+
     def save(self):
         if not self.cache_path:
             raise ValueError("No cache_path provided.")
         with open(self.cache_path, "wb") as fp:
             pickle.dump(self.lut, fp)
+        self._save_yaml_summary()
+
+    def _save_yaml_summary(self) -> None:
+        """Write a human-readable yaml sibling next to the pickle.
+
+        Best-effort: any failure is logged at debug level and swallowed so
+        a missing optional dep or odd attribute never blocks the pipeline.
+        """
+        try:
+            import yaml  # noqa: PLC0415  -- optional, deferred so failure is local
+        except Exception as e:
+            logger.debug("yaml not available, skipping CoreCostLUT yaml summary: %s", e)
+            return
+        try:
+            yaml_path = os.path.splitext(self.cache_path)[0] + ".yaml"
+            summary: dict[str, Any] = {"nodes": []}
+            for node, core_dict in self.lut.items():
+                node_entry: dict[str, Any] = {"name": getattr(node, "name", str(node))}
+                try:
+                    lds = getattr(node, "layer_dim_sizes", None)
+                    if lds is not None:
+                        node_entry["layer_dim_sizes"] = {str(k): _to_yaml_scalar(v) for k, v in dict(lds).items()}
+                except Exception:
+                    pass
+                cores_list: list[dict[str, Any]] = []
+                for core, entry in core_dict.items():
+                    core_summary: dict[str, Any] = {
+                        "core_id": _to_yaml_scalar(getattr(core, "id", None)),
+                        "core_type": str(getattr(core, "core_type", "")),
+                        "latency_total": _to_yaml_scalar(getattr(entry, "latency_total", None)),
+                        "ideal_cycle": _to_yaml_scalar(getattr(entry, "ideal_cycle", None)),
+                        "ideal_temporal_cycle": _to_yaml_scalar(getattr(entry, "ideal_temporal_cycle", None)),
+                        "energy_total": _to_yaml_scalar(getattr(entry, "energy_total", None)),
+                    }
+                    metadata = getattr(entry, "metadata", None) or {}
+                    if metadata:
+                        try:
+                            core_summary["metadata"] = {str(k): _to_yaml_scalar(v) for k, v in dict(metadata).items()}
+                        except Exception:
+                            pass
+                    cores_list.append(core_summary)
+                node_entry["cores"] = cores_list
+                summary["nodes"].append(node_entry)
+            with open(yaml_path, "w") as fp:
+                yaml.safe_dump(summary, fp, sort_keys=False)
+        except Exception as e:
+            logger.debug("Failed to write CoreCostLUT yaml summary: %s", e)
 
     def _maybe_load(self):
         if not self.cache_path or not os.path.exists(self.cache_path):

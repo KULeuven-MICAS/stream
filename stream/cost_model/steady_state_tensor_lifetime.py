@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -9,6 +10,8 @@ from matplotlib import pyplot as plt
 from stream.workload.steady_state.node import Node
 from stream.workload.steady_state.tensor import SteadyStateTensor
 from stream.workload.steady_state.workload import SteadyStateWorkload
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -124,13 +127,19 @@ class TensorLifetimeAnalyzer:
         return [lt.tensor for lt in self.get_lifetimes_by_memory().get(memory, []) if lt.start <= time <= lt.end]
 
     def summary(self) -> None:
-        print("Tensor lifetimes by memory:")
+        logger.debug("Tensor lifetimes by memory:")
         for mem, lifetimes in self.get_lifetimes_by_memory().items():
-            print(f"\nMemory {mem}:")
+            logger.debug("Memory %s:", mem)
             for lt in lifetimes:
-                print(f"  Tensor {lt.tensor.node_name}: [{lt.start}, {lt.end}] size={getattr(lt.tensor, 'size', 0)}")
+                logger.debug(
+                    "  Tensor %s: [%d, %d] size=%d",
+                    lt.tensor.node_name,
+                    lt.start,
+                    lt.end,
+                    getattr(lt.tensor, "size", 0),
+                )
             t, m = self.get_max_memory_usage(mem)
-            print(f"  Max usage: {m} at time {t}")
+            logger.debug("  Max usage: %d at time %d", m, t)
 
     def visualize(self, figsize: tuple[int, int] = (10, 6), filename_prefix: str = "tensor_lifetime") -> None:
         """

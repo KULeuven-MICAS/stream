@@ -22,10 +22,6 @@ core_coordinates:
 offchip_core_id: 6     # core that fronts external memory
 unit_energy_cost: 0    # default energy for core_connectivity
 
-max_object_fifo_depth:
-  compute: 16
-  memory: 48
-
 core_connectivity:
   # ───── 2-D mesh among the four compute cores ─────
   - type: link

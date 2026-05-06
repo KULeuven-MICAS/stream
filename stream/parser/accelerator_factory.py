@@ -1,18 +1,16 @@
 from typing import Any
 
-from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.parser.accelerator_factory import AcceleratorFactory as ZigZagCoreFactory
 
 from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
+from stream.hardware.architecture.backends import AIE2CoreBackend, ZigZagCoreBackend
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
-from stream.parser.core_validator import CoreValidatorRegistry, core_kind_from_type
+from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 
 class AcceleratorFactory:
     """! Converts valid user-provided accelerator data into an `Accelerator` instance"""
-
-    STANDARD_MAX_OBJECT_FIFO_DEPTH = {"compute": 16, "memory": 48}
 
     def __init__(self, data: dict[str, Any]):
         """! Generate an `Accelerator` instance from the validated user-provided data."""
@@ -23,13 +21,10 @@ class AcceleratorFactory:
         cores: list[Core] = []
         unique_shared_mem_group_ids: set[int] = set()
 
-        # Get the max object fifo depth for the types of cores
-        max_object_fifo_depth = self.data["max_object_fifo_depth"]
-
         for core_id, core_data in self.data["cores"].items():
             shared_mem_group_id = self.get_shared_mem_group_id(core_id)
-            coordinates = self.data["core_coordinates"].get(core_id)
-            core = self.create_core(core_data, core_id, shared_mem_group_id, coordinates, max_object_fifo_depth)
+            coordinates = self.data.get("core_coordinates", {}).get(core_id)
+            core = self.create_core(core_data, core_id, shared_mem_group_id, coordinates)
             cores.append(core)
             unique_shared_mem_group_ids.add(shared_mem_group_id)
 
@@ -61,31 +56,62 @@ class AcceleratorFactory:
         core_id: int,
         shared_mem_group_id: int | None = None,
         coordinates: list[int] | None = None,
-        max_object_fifo_depth: dict[str, int] | None = None,
     ) -> Core:
-        if max_object_fifo_depth is None:
-            max_object_fifo_depth = self.STANDARD_MAX_OBJECT_FIFO_DEPTH
-        core_factory = ZigZagCoreFactory(core_data)
-        core = core_factory.create(core_id, shared_mem_group_id=shared_mem_group_id)
-        # Typecast
-        core = Core.from_zigzag_core(core)
-        core.core_type = CoreValidatorRegistry.normalize_core_type(
-            core_data.get("type"),
+        # Resolve the fully-qualified core type (e.g. "aie2.compute")
+        raw_type = core_data.get("type")
+        default_kind = raw_type if raw_type in ALLOWED_KINDS else "compute"
+        core_type = CoreValidatorRegistry.normalize_core_type(
+            raw_type,
             default_namespace=CoreValidatorRegistry.default_namespace,
-            default_kind="compute",
+            default_kind=default_kind,
         )
-        core.type = core_kind_from_type(core.core_type) or "compute"
-        if core.type not in max_object_fifo_depth:
-            raise ValueError(
-                f"max_object_fifo_depth is missing an entry for core kind '{core.type}'. "
-                f"Available kinds: {list(max_object_fifo_depth.keys())}"
+        namespace = core_type.split(".")[0] if "." in core_type else ""
+
+        col_id = coordinates[0] if coordinates else None
+        row_id = coordinates[1] if coordinates else None
+
+        if namespace == "aie2":
+            # ---- AIE2 native path: lightweight backend ----
+            mem = core_data["memory"]
+            backend = AIE2CoreBackend(
+                memory_capacity_bits=mem["capacity"],
+                bandwidth_min=mem.get("bandwidth_min", 0),
+                bandwidth_max=mem.get("bandwidth_max", 0),
             )
-        core.utilization = core_data.get("utilization", 100)
-        core.max_object_fifo_depth = max_object_fifo_depth[core.type]
-        if coordinates:
-            core.col_id = coordinates[0]
-            core.row_id = coordinates[1]
-        return core
+            return Core(
+                backend=backend,
+                core_id=core_id,
+                name=core_data.get("name", f"core_{core_id}"),
+                core_type=core_type,
+                utilization=core_data.get("utilization", 100),
+                max_object_fifo_depth=core_data.get("max_object_fifo_depth", 0),
+                col_id=col_id,
+                row_id=row_id,
+            )
+
+        if namespace == "zigzag":
+            # ---- ZigZag path: full hierarchy via ZigZagCoreFactory ----
+            zigzag_core = ZigZagCoreFactory(core_data).create(core_id, shared_mem_group_id=shared_mem_group_id)
+            # ZigZagCoreFactory returns a raw zigzag Accelerator — upgrade to
+            # our ZigZagCoreBackend subclass so the backend protocol methods
+            # (get_memory_capacity, get_max_memory_bandwidth, get_ir) are available.
+            zigzag_core.__class__ = ZigZagCoreBackend
+
+            return Core(
+                backend=zigzag_core,
+                core_id=zigzag_core.id,
+                name=zigzag_core.name,
+                core_type=core_type,
+                utilization=core_data.get("utilization", 100),
+                max_object_fifo_depth=core_data.get("max_object_fifo_depth", 0),
+                col_id=col_id,
+                row_id=row_id,
+            )
+
+        raise ValueError(
+            f"Unknown core namespace '{namespace}' in core type '{core_type}'. "
+            f"Supported namespaces: {', '.join(sorted(ALLOWED_NAMESPACES))}"
+        )
 
     def get_shared_mem_group_id(self, core_id: int):
         """Calculate the memory group id for the given core. If the core shares the top level memory with other cores,
@@ -114,21 +140,7 @@ class AcceleratorFactory:
     def have_non_identical_top_memory(self, core_a: Core, core_b: Core):
         """Check wether the top level memories of two cores is exactly the same. This should be the case when the user
         has specified the cores share memory"""
-
-        top_levels_a: list[MemoryLevel] = list(
-            (level for level, out_degree in core_a.memory_hierarchy.out_degree() if out_degree == 0)
-        )
-        top_levels_b: list[MemoryLevel] = list(
-            (level for level, out_degree in core_b.memory_hierarchy.out_degree() if out_degree == 0)
-        )
-        top_instances_a = [level.memory_instance for level in top_levels_a]
-        top_instances_b = [level.memory_instance for level in top_levels_b]
-        if len(top_instances_a) != len(top_instances_b):
-            return True
-        for instance_a, instance_b in zip(top_instances_a, top_instances_b, strict=False):
-            if frozenset(instance_a.__dict__.values()) != frozenset(instance_b.__dict__.values()):
-                return True
-        return False
+        return core_a.get_memory_capacity() != core_b.get_memory_capacity()
 
     def create_core_graph(self, cores: list[Core]):
         assert all(core.id == i for i, core in enumerate(cores))

@@ -1,6 +1,5 @@
 from typing import Any
 
-from zigzag.datatypes import MemoryOperand
 from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.utils import DiGraphWrapper
 
@@ -34,7 +33,7 @@ class Accelerator:
         self.communication_manager = CommunicationManager(self)
 
     def get_core(self, core_id: int) -> Core:
-        """s
+        """
         Return the core with id 'core_id'.
         Raises ValueError() when a core_id is not found in the available cores.
         """
@@ -56,36 +55,71 @@ class Accelerator:
 
         raise ValueError("Unclear which dataflow to return or no valid dataflow found.")
 
-    def has_shared_memory(self, core_id_a: int, core_id_b: int, mem_op_a: MemoryOperand, mem_op_b: MemoryOperand):
-        """Check whether two cores have a shared top level memory instance for a given memory operand.
-
-        Args:
-            core_id_a : The first core id.
-            core_id_b : The second core id.
-            mem_op_a : The memory operand for the tensor in core a.
-            mem_op_b : The memory operand for the tensor in core b.
-        """
-        core_a = self.get_core(core_id_a)
-        core_b = self.get_core(core_id_b)
-        top_memory_instance_a = next(
-            (
-                ml.memory_instance
-                for ml, out_degree in core_a.memory_hierarchy.out_degree()
-                if out_degree == 0 and mem_op_a in ml.operands
-            )
-        )
-        top_memory_instance_b = next(
-            (
-                ml.memory_instance
-                for ml, out_degree in core_b.memory_hierarchy.out_degree()
-                if out_degree == 0 and mem_op_b in ml.operands
-            )
-        )
-        return top_memory_instance_a is top_memory_instance_b
-
     @property
     def core_list(self) -> list[Core]:
         return list(self.cores.node_list)
+
+    def get_ir(self) -> dict:
+        """Return a dictionary representation of the accelerator for serialization.
+
+        Captures:
+        - Top-level accelerator metadata (name, offchip core, shared memory groups).
+        - Per-core IR produced by :meth:`~stream.hardware.architecture.core.Core.get_ir`,
+          which includes type-specific fields keyed by ``core_type`` namespace.
+        - Core connectivity expressed as a list of ``bus`` or directed ``link`` entries,
+          mirroring the structure of the hardware YAML input.
+        """
+        # --- cores ---
+        cores_ir: list[dict] = [core.get_ir() for core in self.cores.node_list]
+
+        # --- connectivity ---
+        # Buses: all edges that share the same CommunicationLink object (bidirectional=True)
+        # are collected into a single bus entry listing every participating core.
+        # Point-to-point links (bidirectional=False) are emitted as directed pairs.
+        links_ir: list[dict] = []
+        seen_bus_ids: set[int] = set()
+        for src, dst, data in self.cores.edges(data=True):
+            cl = data.get("cl")
+            if cl is None:
+                continue
+            if cl.bidirectional:
+                bus_id = id(cl)
+                if bus_id in seen_bus_ids:
+                    continue
+                seen_bus_ids.add(bus_id)
+                # Collect every core that participates in this shared bus instance
+                connected_ids: set[int] = set()
+                for u, v, edge_data in self.cores.edges(data=True):
+                    if edge_data.get("cl") is cl:
+                        connected_ids.add(u.id)
+                        connected_ids.add(v.id)
+                links_ir.append(
+                    {
+                        "type": "bus",
+                        "cores": sorted(connected_ids),
+                        "bandwidth": cl.bandwidth,
+                        "unit_energy_cost": cl.unit_energy_cost,
+                    }
+                )
+            else:
+                links_ir.append(
+                    {
+                        "type": "link",
+                        "from_core": src.id,
+                        "to_core": dst.id,
+                        "bandwidth": cl.bandwidth,
+                        "unit_energy_cost": cl.unit_energy_cost,
+                    }
+                )
+
+        return {
+            "name": self.name,
+            "num_cores": len(list(self.cores.nodes)),
+            "offchip_core_id": self.offchip_core_id,
+            "nb_shared_mem_groups": self.nb_shared_mem_groups,
+            "cores": cores_ir,
+            "core_connectivity": links_ir,
+        }
 
     def __str__(self) -> str:
         return f"Accelerator({self.name})"

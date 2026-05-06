@@ -1,15 +1,15 @@
 from collections import defaultdict
-from math import prod
 from typing import TYPE_CHECKING
 
 import sympy as sp
 from xdsl.ir.affine import AffineConstantExpr, AffineDimExpr, AffineExpr
 
 from stream.datatypes import InterCoreTiling, LayerDim
-from stream.workload.node import TransferNode
+from stream.workload.node import ComputationNode, Node, TransferNode
 from stream.workload.steady_state.iteration_space import (
     IterationVariable,
     IterationVariableType,
+    LoopEffect,
     SteadyStateIterationSpace,
 )
 
@@ -23,13 +23,6 @@ def determine_fusion_splits(workload: "Workload", mapping: "Mapping") -> dict[La
     Determine the best dimension to fuse the layers on.
     Currently, we fuse on the dimension with the smallest total size across all layers.
     """
-    dim_occurrence_count = defaultdict(int)
-    for node in workload.get_iteration_space_nodes():
-        for expr in workload.get_dims(node):
-            for dim in expr.used_dims():
-                dim_occurrence_count[LayerDim(dim)] += 1
-    max_dim_count = max(dim_occurrence_count.values())
-    max_dims = tuple(k for k, v in dim_occurrence_count.items() if v == max_dim_count)
     # Go through the defined mapping intra_core_tiling dims and check that they occur for all layers
     assert len(mapping.fused_groups) == 1, "Only single fused group mappings are supported currently."
     fused_group = mapping.fused_groups[0]
@@ -37,7 +30,7 @@ def determine_fusion_splits(workload: "Workload", mapping: "Mapping") -> dict[La
     unique_unrollings_dict = dict(unique_spatial_unrollings)
     result = {}
     for dim, tile_size in fused_group.intra_core_tiling:
-        assert dim in max_dims, f"Fused group intra_core_tiling dimension {dim} not present for all layers."
+        # assert dim in max_dims, f"Fused group intra_core_tiling dimension {dim} not present for all layers."
         nb_splits, rem = divmod(workload.get_dimension_size(dim), int(tile_size * unique_unrollings_dict.get(dim, 1)))
         assert rem == 0, (
             f"Dimension size {workload.get_dimension_size(dim)} not divisible by "
@@ -63,12 +56,11 @@ def get_equivalent_dimension(old_workload: "Workload", new_workload: "Workload",
 
 
 def generate_steady_state_iteration_spaces(
-    workload: "Workload", mapping: "Mapping", split_factors: dict[LayerDim, int]
+    workload: "Workload", mapping: "Mapping", fusion_splits: dict[LayerDim, int]
 ) -> dict["HasIterationSpace", SteadyStateIterationSpace]:
     spatial_unrollings, unique_spatial_unrollings = collect_spatial_unrollings(workload, mapping)
     iteration_variables = _create_spatial_iteration_variables(workload, spatial_unrollings, unique_spatial_unrollings)
-    temporal_unrollings = _derive_temporal_unrollings(workload, unique_spatial_unrollings, split_factors)
-    iteration_variables = _add_temporal_iteration_variables(iteration_variables, temporal_unrollings, workload)
+    iteration_variables = _add_temporal_iteration_variables(iteration_variables, fusion_splits, workload)
     iteration_variables = _insert_kernel_iteration_variables(iteration_variables, workload, unique_spatial_unrollings)
     ssis_dict = _create_steady_state_iteration_spaces(iteration_variables, workload)
     return ssis_dict
@@ -79,35 +71,31 @@ def _create_steady_state_iteration_spaces(iteration_variables, workload: "Worklo
     ssis_dict: dict[ComputationNode, SteadyStateIterationSpace] = {}
     for node in workload.get_iteration_space_nodes():
         ssis_dict[node] = SteadyStateIterationSpace(iteration_variables[node])
-        print(node.name, ssis_dict[node])
     return ssis_dict
 
 
 def _add_temporal_iteration_variables(
-    iteration_variables: dict["HasIterationSpace", list[IterationVariable]], temporal_unrollings, workload: "Workload"
+    iteration_variables: dict["HasIterationSpace", list[IterationVariable]],
+    fusion_splits: dict[LayerDim, int],
+    workload: "Workload",
 ) -> dict["HasIterationSpace", list[IterationVariable]]:
     """Iterate through all computation nodes and add the temporal iteration variables."""
     for node in workload.get_iteration_space_nodes():
-        for temporal_unrolling in temporal_unrollings:
-            dim, size = temporal_unrolling
-            relevant = dim in workload.get_dims(node)
+        for dim, size in fusion_splits.items():
+            if isinstance(node, ComputationNode):
+                effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.ABSENT
+            elif isinstance(node, TransferNode):
+                compute_preds_succs = get_compute_predecessors_successors(node, workload)
+                if dim in workload.get_dims(node):
+                    effect = LoopEffect.VARYING
+                elif any(dim in workload.get_dims(n) for n in compute_preds_succs):
+                    effect = LoopEffect.INVARIANT
+                else:
+                    effect = LoopEffect.ABSENT
             iteration_variables[node].append(
-                IterationVariable(dim, size, relevant, type=IterationVariableType.TEMPORAL)
+                IterationVariable(dimension=dim, size=size, effect=effect, type=IterationVariableType.TEMPORAL)
             )
     return iteration_variables
-
-
-def _derive_temporal_unrollings(workload: "Workload", unique_spatial_unrollings, fusion_splits: dict[LayerDim, int]):
-    """Iterate through the unique workload dimensions and get temporal unrollings"""
-    temporal_unrollings: list[tuple[LayerDim, int]] = []  # list because order matters
-    unique_dims, _ = workload.unique_dimensions()
-    for dim in unique_dims:  # iterate in different order here if needed
-        if dim not in fusion_splits:
-            size = 1
-        else:
-            size = fusion_splits[dim]
-        temporal_unrollings.append((dim, size))
-    return temporal_unrollings
 
 
 def _insert_kernel_iteration_variables(
@@ -124,13 +112,13 @@ def _insert_kernel_iteration_variables(
             assert rem == 0, (
                 f"Dim size {workload.get_dimension_size(dim)} not divisible by spatial unrolling {spatial_unrolling}"
             )
-            relevant = dim in workload.get_dims(node)
+            effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.INVARIANT
             iteration_variables[node].insert(
                 0,
                 IterationVariable(
                     dimension=dim,
                     size=size,
-                    relevant=relevant,
+                    effect=effect,
                     type=IterationVariableType.KERNEL,
                 ),
             )
@@ -150,8 +138,24 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                     IterationVariable(
                         dimension=dim,
                         size=unrolling,
-                        relevant=True,
+                        effect=LoopEffect.VARYING,
                         type=IterationVariableType.SPATIAL,
+                    )
+                )
+            elif dim not in workload.get_dims(node):
+                if isinstance(node, ComputationNode):
+                    effect = LoopEffect.ABSENT
+                elif isinstance(node, TransferNode):
+                    compute_preds_succs = get_compute_predecessors_successors(node, workload)
+                    dim_not_in_any_compute = all(dim not in workload.get_dims(n) for n in compute_preds_succs)
+                    effect = LoopEffect.ABSENT if dim_not_in_any_compute else LoopEffect.INVARIANT
+                # This dimension is not present, so add an absent spatial var
+                iteration_variables[node].append(
+                    IterationVariable(
+                        dimension=dim,
+                        size=unrolling,
+                        effect=effect,
+                        type=IterationVariableType.SPATIOTEMPORAL,
                     )
                 )
             elif any(dim == su[0] for su in spatial_unrollings[node]):
@@ -161,11 +165,12 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                 remaining_size, rem = divmod(unrolling, spatial_size)
                 assert rem == 0, f"Unrolling size {unrolling} not divisible by spatial size {spatial_size}"
                 # First add the spatiotemporal variable
+                effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.INVARIANT
                 iteration_variables[node].append(
                     IterationVariable(
                         dimension=dim,
                         size=remaining_size,
-                        relevant=True,
+                        effect=effect,
                         type=IterationVariableType.SPATIOTEMPORAL,
                     )
                 )
@@ -174,22 +179,19 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                     IterationVariable(
                         dimension=dim,
                         size=spatial_size,
-                        relevant=True,
+                        effect=effect,
                         type=IterationVariableType.SPATIAL,
                     )
                 )
             else:
-                if isinstance(node, TransferNode):
-                    type = IterationVariableType.SPATIAL
-                else:
-                    type = IterationVariableType.SPATIOTEMPORAL
+                type = IterationVariableType.SPATIOTEMPORAL
                 # Create a replacement temporal variable
-                relevant = dim in workload.get_dims(node)
+                effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.INVARIANT
                 iteration_variables[node].append(
                     IterationVariable(
                         dimension=dim,
                         size=unrolling,
-                        relevant=relevant,
+                        effect=effect,
                         type=type,
                     )
                 )
@@ -219,12 +221,40 @@ def collect_spatial_unrollings(workload: "Workload", mapping: "Mapping"):
     return spatial_unrollings, unique_spatial_unrollings
 
 
-def _get_total_spatial_unrolling_for_dim(
-    dim: LayerDim,
-    spatial_unrollings: set[tuple[LayerDim, int]],
-) -> int:
-    total_unrolling = prod(su[1] for su in spatial_unrollings if su[0] == dim)
-    return total_unrolling
+def get_compute_predecessors_successors(tr: TransferNode, workload: "Workload") -> list[ComputationNode]:
+    """Walk preds/succs until no transfer nodes remain, returning all compute nodes found."""
+    compute_nodes: list[ComputationNode] = []
+    visited: set[Node] = set()
+    to_visit: list[Node] = [tr]
+    while to_visit:
+        current = to_visit.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        if isinstance(current, ComputationNode):
+            compute_nodes.append(current)
+        else:
+            to_visit.extend(workload.predecessors(current))
+            to_visit.extend(workload.successors(current))
+    return compute_nodes
+
+
+def get_node_with_largest_resource_allocation(nodes: list[ComputationNode], mapping: "Mapping") -> ComputationNode:
+    """Return the node with the largest number of resource allocations in the mapping."""
+    max_tiling = -1
+    node_with_resource_allocation = None
+    for node in nodes:
+        node_mapping = mapping.get(node)
+        assert node_mapping is not None, f"No mapping found for node {node.name}"
+        allocation = node_mapping.resource_allocation
+        assert len(allocation) == 1, "Multiple possible allocations not supported currently."
+        allocation = allocation[0]
+        allocation_size = len(allocation)
+        if allocation_size > max_tiling:
+            max_tiling = allocation_size
+            node_with_resource_allocation = node
+    assert node_with_resource_allocation is not None, "No node with resource allocation found."
+    return node_with_resource_allocation
 
 
 def sympy_to_xdsl(expr: sp.Expr) -> AffineExpr:

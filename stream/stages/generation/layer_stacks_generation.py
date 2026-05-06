@@ -1,8 +1,6 @@
 import logging
 from typing import TypeAlias
 
-from zigzag.datatypes import MemoryOperand
-
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.workload import ComputationNode
@@ -36,8 +34,7 @@ class LayerStacksGenerationStage(Stage):
         for core in self.accelerator.cores.node_list:
             if core.id == self.accelerator.offchip_core_id:
                 continue  # skip offchip core
-            mem_op = MemoryOperand("I2")
-            core_weight_capacity = core.memory_hierarchy.get_operand_top_level(mem_op).memory_instance.size
+            core_weight_capacity = core.get_memory_capacity()
             weight_capacities[core.id] = core_weight_capacity
 
         # Total weight capacity in bits

@@ -41,6 +41,7 @@ class SplitTransferPattern(RewritePattern):
                 op.sizes,
                 op.strides,
                 op.memtile,
+                op.operand_indeces,
             )
             ops_to_add.append(push)
         for i, result in enumerate(op.results):
@@ -62,6 +63,7 @@ class SplitTransferPattern(RewritePattern):
                         op.sizes,
                         op.strides,
                         op.memtile,
+                        op.operand_indeces,
                     )
                 )
                 use.operation.operands[use.index] = pull.results[0]

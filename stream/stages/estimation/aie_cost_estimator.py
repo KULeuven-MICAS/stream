@@ -1,7 +1,7 @@
 from dataclasses import dataclass
-from math import ceil, floor, prod
+from math import ceil, prod
 
-from xdsl.dialects.builtin import BFloat16Type, FixedBitwidthType
+from xdsl.dialects.builtin import BFloat16Type, FixedBitwidthType, Float32Type
 
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
@@ -18,14 +18,14 @@ class AIECostEstimator:
 
     def estimate(self, node: ComputationNode, core: Core) -> CoreCostEntry:
         dim_sizes = [self.workload.get_dimension_size(dim) for dim in self.workload.get_dims(node)]
-        total_inter_core_tiling = prod(factor for _, factor in self.mapping.get(node).inter_core_tiling)
+        total_inter_core_tiling = self._get_total_inter_core_tiling_factor(node)
         macs = prod(dim_sizes) // total_inter_core_tiling
         kernel = self.mapping.get(node).kernel
         assert kernel is not None, "Kernel must be defined in mapping for AIE cost estimation."
         utilization = kernel.utilization
         ideal_ops_per_cycle = self.ops_per_cycle(node, core)
         ideal_cycles = ceil(macs / ideal_ops_per_cycle)
-        ops_per_cycle = floor(ideal_ops_per_cycle * (utilization / 100.0))
+        ops_per_cycle = ideal_ops_per_cycle * (utilization / 100.0)
         cycles = ceil(macs / ops_per_cycle)
         energy = 0  # TODO
         return CoreCostEntry(
@@ -39,6 +39,13 @@ class AIECostEstimator:
             layer=node,
             metadata={"utilization": utilization},
         )
+
+    def _get_total_inter_core_tiling_factor(self, node):
+        assert len(self.mapping.get(node).inter_core_tiling) == 1, (
+            "TODO: Make this work with more than one inter_core_tiling"
+        )
+        total_inter_core_tiling = prod(factor for _, factor in self.mapping.get(node).inter_core_tiling[0])
+        return total_inter_core_tiling
 
     def ops_per_cycle(self, node: ComputationNode, core: Core) -> int:
         """Depending on the node inputs and output data type and core type,
@@ -60,6 +67,13 @@ class AIECostEstimator:
                 return 32
             elif core.core_type == "aie.compute":
                 return 16
+            else:
+                raise self.raise_not_implemented_for_datatypes(input_datatype, output_datatype, core)
+        elif isinstance(input_datatype, Float32Type) and isinstance(output_datatype, Float32Type):
+            if core.core_type == "aie2.compute":
+                return 16
+            elif core.core_type == "aie.compute":
+                return 8
             else:
                 raise self.raise_not_implemented_for_datatypes(input_datatype, output_datatype, core)
         else:

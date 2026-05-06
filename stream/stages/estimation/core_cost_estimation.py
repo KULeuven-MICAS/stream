@@ -25,18 +25,6 @@ from stream.workload.workload import ComputationNode, Workload
 logger = logging.getLogger(__name__)
 
 
-class _KwargsMainStage:
-    def __init__(self, list_of_callables, **kwargs: Any):
-        self.kwargs = kwargs
-        self.list_of_callables = list_of_callables
-
-    def run(self):
-        answers = []
-        for cme, extra_info in self.list_of_callables[0](self.list_of_callables[1:], **self.kwargs).run():
-            answers.append((cme, extra_info))
-        return answers
-
-
 class CoreCostEstimationStage(Stage):
     """
     Stage that computes and caches core cost entries for each valid node-core allocation.
@@ -73,10 +61,17 @@ class CoreCostEstimationStage(Stage):
         self.cost_lut_path: str = os.path.join(self.output_path, "core_cost_lut.pickle")
         self.visualize_cost_lut_path: str = os.path.splitext(self.cost_lut_path)[0] + ".png"
 
-        self.valid_allocations: dict[ComputationNode, list[Core]] = {
-            node: self.mapping.get(node).resource_allocation for node in self.workload.get_computation_nodes()
-        }
-        self.cost_lut: CoreCostLUT = CoreCostLUT(self.cost_lut_path)
+        self.valid_allocations: dict[ComputationNode, list[Core]] = {}
+        for node in self.workload.get_computation_nodes():
+            node_mapping = self.mapping.get(node)
+            if node_mapping is None:
+                raise ValueError(f"No mapping found for node {node.name}")
+            assert len(node_mapping.resource_allocation) == 1, (
+                "TODO: Support multiple resource allocation entries per node"
+            )
+            cores = node_mapping.resource_allocation[0]  # TODO: support multiple resource allocation entries
+            self.valid_allocations[node] = cores
+        self.cost_lut: CoreCostLUT = CoreCostLUT(cache_path=self.cost_lut_path, load=True)
 
     def run(self):
         logger.info("Start CoreCostEstimationStage.")
@@ -97,16 +92,37 @@ class CoreCostEstimationStage(Stage):
                     continue
                 equal_node = self.cost_lut.get_equal_node(node)
                 equal_core = self.cost_lut.get_equal_core(equal_node, core) if equal_node else None
-                if equal_node and equal_core:
+                equal_mapping = self.check_equal_mapping(node, equal_node) if equal_node else None
+                if equal_node and equal_core and equal_mapping:
                     cost = pickle_deepcopy(self.cost_lut.get_cost(equal_node, equal_core))
-                    self.cost_lut.add_cost(node, core, cost, allow_overwrite=False)
+                    allow_overwrite = node.name == equal_node.name  # e.g. previous run with same mapping
+                    self.cost_lut.add_cost(node, core, cost, allow_overwrite=allow_overwrite)
                     continue
                 estimator = self.get_estimator(core)
                 cost_entry = estimator.estimate(node, core)
                 self.cost_lut.add_cost(node, core, cost_entry, allow_overwrite=False)
                 seen_new = True
+            self.remove_old_entries(node)
             if seen_new:
                 self.cost_lut.save()
+
+    def check_equal_mapping(self, node1: ComputationNode, node2: ComputationNode) -> bool:
+        if node2 is None:
+            return False
+        try:
+            eq_node1 = self.mapping.get_equal_computation_node(node1)
+            eq_node2 = self.mapping.get_equal_computation_node(node2)
+            mapping1 = self.mapping.get(eq_node1) if eq_node1 else None
+            mapping2 = self.mapping.get(eq_node2) if eq_node2 else None
+        except KeyError:
+            return False
+        return mapping1 == mapping2
+
+    def remove_old_entries(self, node: ComputationNode):
+        # Remove all entries in lut with same name as node but that are not node
+        same_name_nodes = [n for n in self.cost_lut.get_nodes() if n.name == node.name and n is not node]
+        for n in same_name_nodes:
+            self.cost_lut.remove_node(n)
 
     def get_estimator(self, core: Core):
         if self.is_aie_compute_core(core):
