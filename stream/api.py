@@ -14,17 +14,12 @@ from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorit
 from stream.stages.context import StageContext
 from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
 from stream.stages.estimation.memory_accesses_estimation import MemoryAccessesEstimationStage
-
-# from stream.stages.generation.layer_stacks_generation import LayerStacksGenerationStage
-# from stream.stages.generation.scheduling_order_generation import SchedulingOrderGenerationStage
 from stream.stages.generation.mapping_generation import MappingGenerationStage
 from stream.stages.generation.mapping_generation_multi import MappingGenerationMultiThreadedStage
 from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.mapping_parser import MappingParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
-
-# from stream.stages.set_fixed_allocation_performance import SetFixedAllocationPerformanceStage
 from stream.stages.stage import LeafStage, MainStage, StageCallable
 
 _logging_level = _logging.INFO
@@ -71,7 +66,7 @@ def optimize_allocation_ga(  # noqa: PLR0913
     skip_if_exists: bool = False,
     temporal_mapping_type: str = "uneven",
 ) -> StreamCostModelEvaluation:
-    _sanity_check_inputs(hardware, workload, mapping, mode, output_path)
+    _sanity_check_inputs(hardware, workload, mapping, output_path)
 
     # Create experiment_id path
     output_path = f"{output_path}/{experiment_id}"
@@ -198,7 +193,6 @@ def optimize_allocation_co(  # noqa: PLR0913
         answers = mainstage.run()
         assert len(answers) == 1, "Expected a single result from the optimization."
         ctx = answers[0]
-        # pickle_save(scme, scme_path)  # type: ignore
     return ctx
 
 
@@ -292,7 +286,6 @@ def optimize_mapping(  # noqa: PLR0913
         answers = mainstage.run()
         assert len(answers) == 1, "Expected a single result from the optimization."
         ctx = answers[0]
-        # pickle_save(scme, scme_path)  # type: ignore
     return ctx
 
 

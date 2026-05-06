@@ -83,8 +83,7 @@ class UnrollComputationNodes(RewritePattern):
 class UnrollTransfers(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: TransferOp, rewriter: PatternRewriter) -> None:
-        if op.parent_op() is None:
-            breakpoint()
+        assert op.parent_op() is not None
         ops: list[Operation] = []
         new_results: list[SSAValue] = []
         # create singular channel
@@ -131,8 +130,6 @@ class UnrollTransfers(RewritePattern):
 class SquashGatherOps(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: GatherOp, rewriter: PatternRewriter) -> None:
-        if len(op.inputs) != len(op.output.uses):
-            breakpoint()
         assert len(op.inputs) == len(op.output.uses)
         inputs: dict[StrensorSpace, SSAValue | Operation] = {}
         # gather mapping spatial index -> input

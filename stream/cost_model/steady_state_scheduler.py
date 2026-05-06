@@ -144,12 +144,6 @@ class SteadyStateScheduler:
         # assert total == total_latency_solver, (
         #     f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
         # )
-        print(
-            f"Total latency: {total_latency} "
-            f"Latency per iteration: {latency_per_iteration} "
-            f"Overlap: {overlap} "
-            f" Iterations: {self.iterations}"
-        )
         self.latency_total, self.latency_per_iteration, self.overlap_between_iterations = (
             total_latency,
             latency_per_iteration,
@@ -247,7 +241,6 @@ class SteadyStateScheduler:
                 self.add_two_transfer_nodes_for_constant_output_transfer(tensor, src, dsts, new_nodes)
             else:
                 self.add_single_transfer_node_for_non_constant_transfer(tensor, src, dsts, new_nodes)
-        pass
         new_workload = Workload(new_nodes.values())
         return new_workload
 

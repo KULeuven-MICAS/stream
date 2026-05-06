@@ -166,4 +166,3 @@ if __name__ == "__main__":
     layer_ids = sorted(set(n.id for n in scme.workload.node_list))
     json_path = "outputs/tpu_like_quad_core-resnet18-fused-genetic_algorithm/scme.json"
     perfetto_json = convert_scme_to_perfetto_json(scme, cost_lut, json_path=json_path, layer_ids=layer_ids)
-    print(perfetto_json)
