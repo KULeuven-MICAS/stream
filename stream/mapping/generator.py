@@ -107,11 +107,11 @@ class MappingGenerator:
             "Expected workload to have an input tensor with 'input' in its name."
         )
         seq_len, embedding_dim = input_tensor.shape
-        output_tensor = workload.tensors[-1]
-        assert "output" in output_tensor.name.lower(), (
-            "Expected workload to have an output tensor with 'output' in its name."
+        weights_1_tensor = next(t for t in workload.tensors if "weights_1" in t.name.lower())
+        assert weights_1_tensor.shape[0] == embedding_dim, (
+            "Expected weights_1 tensor's first dim to match embedding_dim from input tensor."
         )
-        hidden_dim = output_tensor.shape[1]  # Assuming output tensor
+        hidden_dim = weights_1_tensor.shape[1]
         self.seq_len = seq_len
         self.embedding_dim = embedding_dim
         self.hidden_dim = hidden_dim

@@ -8,6 +8,7 @@ from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.core import Core
+from stream.workload.node import ComputationNode
 from stream.workload.utils import get_equivalent_dimension
 from stream.workload.workload import Node, Workload
 
@@ -59,6 +60,10 @@ class NodeMapping:
             if not isinstance(self.kernel, AIEKernel):
                 raise TypeError("Kernel must be an AIEKernel instance. Other kernel types are not supported yet.")
 
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, NodeMapping):
+            return NotImplemented
+        return self.inter_core_tiling == other.inter_core_tiling and self.kernel == other.kernel
 
 class Mapping:
     """Holds per-Node mapping information across multiple layers."""
@@ -119,6 +124,11 @@ class Mapping:
         if layer_mapping is None:
             raise KeyError(f"Node {node} not found in mapping")
         return layer_mapping
+
+    def get_equal_computation_node(self, node: ComputationNode) -> ComputationNode | None:
+        if any(n.has_same_performance(node) for n in self._by_node if isinstance(n, ComputationNode) and n.name == node.name):
+            return next(n for n in self._by_node if isinstance(n, ComputationNode) and n.has_same_performance(node) and n.name == node.name)
+        return None
 
     def remove(self, node: Node) -> None:
         """Remove a node entry from the mapping."""
