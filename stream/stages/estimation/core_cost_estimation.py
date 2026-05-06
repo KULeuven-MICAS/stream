@@ -71,7 +71,7 @@ class CoreCostEstimationStage(Stage):
             )
             cores = node_mapping.resource_allocation[0]  # TODO: support multiple resource allocation entries
             self.valid_allocations[node] = cores
-        self.cost_lut: CoreCostLUT = CoreCostLUT(self.cost_lut_path)
+        self.cost_lut: CoreCostLUT = CoreCostLUT(cache_path=self.cost_lut_path, load=True)
 
     def run(self):
         logger.info("Start CoreCostEstimationStage.")
@@ -92,16 +92,39 @@ class CoreCostEstimationStage(Stage):
                     continue
                 equal_node = self.cost_lut.get_equal_node(node)
                 equal_core = self.cost_lut.get_equal_core(equal_node, core) if equal_node else None
-                if equal_node and equal_core:
+                equal_mapping = self.check_equal_mapping(node, equal_node) if equal_node else None
+                if equal_node and equal_core and equal_mapping:
                     cost = pickle_deepcopy(self.cost_lut.get_cost(equal_node, equal_core))
-                    self.cost_lut.add_cost(node, core, cost, allow_overwrite=False)
+                    allow_overwrite = node.name == equal_node.name  # e.g. previous run with same mapping
+                    self.cost_lut.add_cost(node, core, cost, allow_overwrite=allow_overwrite)
                     continue
                 estimator = self.get_estimator(core)
                 cost_entry = estimator.estimate(node, core)
                 self.cost_lut.add_cost(node, core, cost_entry, allow_overwrite=False)
                 seen_new = True
+            self.remove_old_entries(node)
             if seen_new:
                 self.cost_lut.save()
+        pass
+
+    def check_equal_mapping(self, node1: ComputationNode, node2: ComputationNode) -> bool:
+        if node2 is None:
+            return False
+        try:
+            eq_node1 = self.mapping.get_equal_computation_node(node1)
+            eq_node2 = self.mapping.get_equal_computation_node(node2)
+            mapping1 = self.mapping.get(eq_node1) if eq_node1 else None
+            mapping2 = self.mapping.get(eq_node2) if eq_node2 else None
+        except KeyError:
+            return False
+        return mapping1 == mapping2
+
+    def remove_old_entries(self, node: ComputationNode):
+        # Remove all entries in lut with same name as node but that are not node
+        same_name_nodes = [n for n in self.cost_lut.get_nodes() if n.name == node.name and n is not node]
+        for n in same_name_nodes:
+            self.cost_lut.remove_node(n)
+
 
     def get_estimator(self, core: Core):
         if self.is_aie_compute_core(core):
