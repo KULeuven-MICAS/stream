@@ -1,23 +1,14 @@
-# Roadmap: Stream AIE — OR-Tools TETRA Backend
+# Roadmap: Stream AIE — TETRA Constraint Optimization
 
-## Overview
+## Milestones
 
-The milestone introduces OR-Tools as an alternative MILP solver backend for TETRA by building a solver abstraction layer, implementing ORToolsBackend on top of it, handling the one non-linear constraint through linearization, and finally wiring in a verification runner and configuration API that lets both backends run side-by-side. Every phase delivers a coherent, independently verifiable capability and the overall sequence preserves full backward compatibility with gurobipy throughout.
+- ✅ **v1.0 OR-Tools TETRA Backend** - Phases 1-4 (shipped 2026-05-07)
+- 🚧 **v1.1 Selective Constraints** - Phases 5-7 (in progress)
 
 ## Phases
 
-**Phase Numbering:**
-- Integer phases (1, 2, 3): Planned milestone work
-- Decimal phases (2.1, 2.2): Urgent insertions (marked with INSERTED)
-
-Decimal phases appear between their surrounding integers in numeric order.
-
-- [ ] **Phase 1: Solver Facade** - SolverModel ABC + GurobiBackend refactor with zero behavioral change
-- [ ] **Phase 2: ORToolsBackend (linear)** - OR-Tools MathOpt implementation of all standard MILP operations
-- [ ] **Phase 3: Linearized Division** - Piecewise enumeration replaces the non-linear division constraint
-- [ ] **Phase 4: Verification & Config** - Cross-backend runner, backend selection API, and SolveStats
-
-## Phase Details
+<details>
+<summary>✅ v1.0 OR-Tools TETRA Backend (Phases 1-4) - SHIPPED 2026-05-07</summary>
 
 ### Phase 1: Solver Facade
 **Goal**: TETRA can run through a clean abstraction layer with gurobipy as the sole backend, with zero change in optimization results
@@ -75,14 +66,60 @@ Plans:
 - [x] 04-01-PLAN.md — SolveStats dataclass + backend selection wiring through pipeline
 - [ ] 04-02-PLAN.md — CLI --backend arguments + cross-backend verification runner
 
+</details>
+
+### 🚧 v1.1 Selective Constraints (In Progress)
+
+**Milestone Goal:** Allow users to selectively enable/disable hardware resource constraint groups in TETRA to study their impact on optimality.
+
+#### Phase 5: ConstraintSelection Dataclass
+**Goal**: A validated configuration object for constraint toggling exists and TTA correctly guards all four hardware constraint groups based on it
+**Depends on**: Phase 4
+**Requirements**: SEL-01, SEL-02, SEL-03, SEL-04, SEL-05
+**Success Criteria** (what must be TRUE):
+  1. `ConstraintSelection(memory_capacity=False)` instantiates with all other fields defaulting to True, and the object is immutable (frozen dataclass)
+  2. Creating a `ConstraintSelection` with `memory_capacity=False, object_fifo_depth=True` emits a WARNING log about a nonsensical combination
+  3. When `memory_capacity=False`, TransferAndTensorAllocator skips the memory capacity constraints block and the model solves without them
+  4. When `dma_channels=False`, DMA is treated uniformly with other groups: the entire method is skipped (no variables, no constraints), and the objective excludes DMA terms
+  5. Each disabled constraint group produces a distinct WARNING log entry naming the skipped group
+**Plans:** 1/2 plans executed
+
+Plans:
+- [x] 05-01-PLAN.md — ConstraintSelection frozen dataclass + unit tests
+- [ ] 05-02-PLAN.md — TTA if-guards for all four constraint groups + guard verification tests
+
+#### Phase 6: Pipeline & API Surface
+**Goal**: Users can pass a `ConstraintSelection` through every public entry point — programmatic API and CLI — and it reaches both allocators unchanged
+**Depends on**: Phase 5
+**Requirements**: PIPE-01, UI-01, UI-02
+**Success Criteria** (what must be TRUE):
+  1. `optimize_allocation_co()` and `optimize_mapping()` accept a `constraint_selection` keyword argument and pass it through to both allocators
+  2. Running a main script with `--disable-constraints memory_capacity dma_channels` produces a `ConstraintSelection` with those two fields set to False and the others True
+  3. Passing `constraint_selection` via the API and via the equivalent CLI flags produces identical solver behavior on the same input
+**Plans**: TBD
+**UI hint**: yes
+
+#### Phase 7: End-to-End Validation
+**Goal**: The constraint toggle feature is verified correct per group and cross-backend parity is confirmed with selective constraints active
+**Depends on**: Phase 6
+**Requirements**: TEST-01, TEST-02
+**Success Criteria** (what must be TRUE):
+  1. For each of the four constraint groups, a tight test instance flips from feasible to infeasible (or vice versa) when the toggle changes, confirming the guard is structurally effective
+  2. Gurobi and OR-Tools produce objective values within solver tolerance for every enabled constraint combination tested
+  3. All existing tests continue to pass (no regression from new guards or threading)
+**Plans**: TBD
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4
+Phases execute in numeric order: 5 → 6 → 7
 
-| Phase | Plans Complete | Status | Completed |
-|-------|----------------|--------|-----------|
-| 1. Solver Facade | 4/4 | Complete |  |
-| 2. ORToolsBackend (linear) | 1/2 | In Progress|  |
-| 3. Linearized Division | 0/TBD | Not started | - |
-| 4. Verification & Config | 0/2 | Not started | - |
+| Phase | Milestone | Plans Complete | Status | Completed |
+|-------|-----------|----------------|--------|-----------|
+| 1. Solver Facade | v1.0 | 4/4 | Complete | 2026-05-07 |
+| 2. ORToolsBackend (linear) | v1.0 | 1/2 | Complete | 2026-05-07 |
+| 3. Linearized Division | v1.0 | TBD | Complete | 2026-05-07 |
+| 4. Verification & Config | v1.0 | 2/2 | Complete | 2026-05-07 |
+| 5. ConstraintSelection Dataclass | v1.1 | 1/2 | In Progress|  |
+| 6. Pipeline & API Surface | v1.1 | 0/TBD | Not started | - |
+| 7. End-to-End Validation | v1.1 | 0/TBD | Not started | - |
