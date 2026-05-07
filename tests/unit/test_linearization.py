@@ -1,7 +1,11 @@
 """Tests for the piecewise division linearization (D-09, D-10)."""
 import pytest
+
 from stream.opt.solver import (
-    SolverBackend, SolverParams, SolverVarType, create_solver,
+    SolverBackend,
+    SolverParams,
+    SolverVarType,
+    create_solver,
 )
 
 

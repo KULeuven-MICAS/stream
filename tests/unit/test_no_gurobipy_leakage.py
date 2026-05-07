@@ -49,7 +49,7 @@ def test_no_gurobipy_in_co_files():
             violations[str(filepath.relative_to(REPO_ROOT))] = imports
 
     assert not violations, (
-        f"Gurobipy imports found outside solver backend:\n"
+        "Gurobipy imports found outside solver backend:\n"
         + "\n".join(f"  {path}: {imps}" for path, imps in violations.items())
     )
 
