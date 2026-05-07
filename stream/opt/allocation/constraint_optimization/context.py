@@ -16,7 +16,7 @@ from stream.opt.allocation.constraint_optimization.config import (
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
 
 if TYPE_CHECKING:
-    import gurobipy as gp
+    from stream.opt.solver import LinExpr, SolverModel, SolverVar
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +107,8 @@ class NamespaceConstraints:
 
     def add_object_fifo_constraints(
         self,
-        model: gp.Model,
-        object_fifo_depth: dict[Core, gp.LinExpr],
+        model: SolverModel,
+        object_fifo_depth: dict[Core, LinExpr],
     ) -> None:
         """Enforce FIFO-depth limits for cores in this namespace."""
 
@@ -116,8 +116,8 @@ class NamespaceConstraints:
 
     def add_buffer_descriptor_constraints(
         self,
-        model: gp.Model,
-        buffer_descriptor_depth: dict[Core, gp.LinExpr],
+        model: SolverModel,
+        buffer_descriptor_depth: dict[Core, LinExpr],
     ) -> None:
         """Enforce buffer-descriptor limits for cores in this namespace."""
 
@@ -125,10 +125,10 @@ class NamespaceConstraints:
 
     def add_dma_usage_constraints(
         self,
-        model: gp.Model,
-        dma_usage_in: dict[Core, gp.Var],
-        dma_usage_out: dict[Core, gp.Var],
-    ) -> list[gp.Var]:
+        model: SolverModel,
+        dma_usage_in: dict[Core, SolverVar],
+        dma_usage_out: dict[Core, SolverVar],
+    ) -> list[SolverVar]:
         """Enforce DMA channel limits.
 
         Returns a (possibly empty) list of Gurobi variables representing
@@ -165,13 +165,13 @@ class AIE2Constraints(NamespaceConstraints):
 
     def add_object_fifo_constraints(
         self,
-        model: gp.Model,
-        object_fifo_depth: dict[Core, gp.LinExpr],
+        model: SolverModel,
+        object_fifo_depth: dict[Core, LinExpr],
     ) -> None:
         for core, expr in object_fifo_depth.items():
             if not self.applies_to(core):
                 continue
-            model.addConstr(
+            model.add_constr(
                 expr <= core.max_object_fifo_depth,
                 name=f"aie2_obj_fifo_depth_Core_{core.id}",
             )
@@ -180,13 +180,13 @@ class AIE2Constraints(NamespaceConstraints):
 
     def add_buffer_descriptor_constraints(
         self,
-        model: gp.Model,
-        buffer_descriptor_depth: dict[Core, gp.LinExpr],
+        model: SolverModel,
+        buffer_descriptor_depth: dict[Core, LinExpr],
     ) -> None:
         for core, expr in buffer_descriptor_depth.items():
             if not self.applies_to(core):
                 continue
-            model.addConstr(
+            model.add_constr(
                 expr <= core.max_object_fifo_depth,
                 name=f"aie2_bd_depth_Core_{core.id}",
             )
@@ -204,18 +204,18 @@ class AIE2Constraints(NamespaceConstraints):
 
     def add_dma_usage_constraints(
         self,
-        model: gp.Model,
-        dma_usage_in: dict[Core, gp.Var],
-        dma_usage_out: dict[Core, gp.Var],
-    ) -> list[gp.Var]:
+        model: SolverModel,
+        dma_usage_in: dict[Core, SolverVar],
+        dma_usage_out: dict[Core, SolverVar],
+    ) -> list[SolverVar]:
         # Filter to aie2 cores only
         for core, v_in in dma_usage_in.items():
             max_in = self.get_max_dma_channels(core)
-            model.addConstr(v_in <= max_in, name=f"dma_in_cap_{_resource_key(core)}")
+            model.add_constr(v_in <= max_in, name=f"dma_in_cap_{_resource_key(core)}")
 
         for core, v_out in dma_usage_out.items():
             max_out = self.get_max_dma_channels(core)
-            model.addConstr(v_out <= max_out, name=f"dma_out_cap_{_resource_key(core)}")
+            model.add_constr(v_out <= max_out, name=f"dma_out_cap_{_resource_key(core)}")
 
 
 # ============================================================================
@@ -242,8 +242,8 @@ class TransferAndTensorContext:
 
     def add_object_fifo_constraints(
         self,
-        model: gp.Model,
-        object_fifo_depth: dict[Core, gp.LinExpr],
+        model: SolverModel,
+        object_fifo_depth: dict[Core, LinExpr],
     ) -> None:
         """Dispatch object-FIFO depth constraints to all namespace strategies."""
         for ns in self.namespace_constraints:
@@ -251,8 +251,8 @@ class TransferAndTensorContext:
 
     def add_buffer_descriptor_constraints(
         self,
-        model: gp.Model,
-        buffer_descriptor_depth: dict[Core, gp.LinExpr],
+        model: SolverModel,
+        buffer_descriptor_depth: dict[Core, LinExpr],
     ) -> None:
         """Dispatch buffer-descriptor constraints to all namespace strategies."""
         for ns in self.namespace_constraints:
@@ -260,9 +260,9 @@ class TransferAndTensorContext:
 
     def add_dma_usage_constraints(
         self,
-        model: gp.Model,
-        dma_usage_in: dict[Core, gp.Var],
-        dma_usage_out: dict[Core, gp.Var],
+        model: SolverModel,
+        dma_usage_in: dict[Core, SolverVar],
+        dma_usage_out: dict[Core, SolverVar],
     ) -> None:
         """Dispatch DMA-usage constraints to all namespace strategies.
 
