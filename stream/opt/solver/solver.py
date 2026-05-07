@@ -17,6 +17,7 @@ import datetime
 import logging
 import math
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
 
@@ -60,6 +61,32 @@ class SolverBackend(Enum):
     SCIP = "SCIP"
     ORTOOLS = "ORTOOLS"
     ORTOOLS_GUROBI = "ORTOOLS"  # Deprecated alias — use ORTOOLS
+
+
+@dataclass(frozen=True)
+class SolveStats:
+    """Structured solve statistics returned by SolverModel.solve_stats().
+
+    All fields are populated after optimize() has been called.
+    Fields not available for a given backend are set to None.
+    """
+
+    backend: str
+    """Backend name, e.g. 'GUROBI' or 'ORTOOLS'."""
+    solver: str
+    """Underlying solver name, e.g. 'gurobi', 'gscip', 'highs'."""
+    status: str
+    """Solve status string, e.g. 'OPTIMAL', 'INFEASIBLE', 'TIME_LIMIT'."""
+    objective: float | None
+    """Objective value of best solution found, or None if no solution."""
+    solve_time_s: float
+    """Wall-clock solve time in seconds."""
+    mip_gap: float | None
+    """Relative MIP gap, or None if not available for this backend."""
+    node_count: int | None
+    """Number of B&B nodes explored, or None if not available for this backend."""
+    iteration_count: int | None
+    """Number of simplex iterations, or None if not available for this backend."""
 
 
 # ---------------------------------------------------------------------------
@@ -292,6 +319,14 @@ class SolverModel(ABC):
     @abstractmethod
     def get_sol_count(self) -> int:
         """Return the number of solutions found."""
+
+    @abstractmethod
+    def solve_stats(self) -> SolveStats:
+        """Return structured solve statistics.
+
+        Must be called after optimize(). Returns a SolveStats instance
+        with fields populated for this backend; unavailable fields are None.
+        """
 
     @abstractmethod
     def compute_iis(self) -> None:
@@ -541,6 +576,27 @@ class GurobiBackend(SolverModel):
 
     def get_sol_count(self) -> int:
         return self._model.SolCount
+
+    def solve_stats(self) -> SolveStats:
+        has_solution = self._model.SolCount > 0
+        objective: float | None = self._model.ObjVal if has_solution else None
+        if has_solution:
+            try:
+                mip_gap: float | None = self._model.MIPGap
+            except Exception:
+                mip_gap = None
+        else:
+            mip_gap = None
+        return SolveStats(
+            backend="GUROBI",
+            solver="gurobi",
+            status=self.get_status(),
+            objective=objective,
+            solve_time_s=self._model.Runtime,
+            mip_gap=mip_gap,
+            node_count=int(self._model.NodeCount),
+            iteration_count=int(self._model.IterCount),
+        )
 
     def compute_iis(self) -> None:
         self._model.computeIIS()
@@ -841,6 +897,24 @@ class ORToolsBackend(SolverModel):
         if self._result is None:
             return 0
         return 1 if self._result.has_primal_feasible_solution() else 0
+
+    def solve_stats(self) -> SolveStats:
+        has_solution = self._result is not None and self._result.has_primal_feasible_solution()
+        objective: float | None = self._result.objective_value() if has_solution else None
+        if self._result is not None:
+            solve_time_s = self._result.solve_stats.solve_time.total_seconds()
+        else:
+            solve_time_s = 0.0
+        return SolveStats(
+            backend="ORTOOLS",
+            solver=self._solver_type.name.lower(),
+            status=self.get_status(),
+            objective=objective,
+            solve_time_s=solve_time_s,
+            mip_gap=None,
+            node_count=None,
+            iteration_count=None,
+        )
 
     def compute_iis(self) -> None:
         _logger.warning(
