@@ -62,6 +62,7 @@ class SteadyStateScheduler:
         cost_lut: CoreCostLUT,
         nb_cols_to_use: int = 4,
         output_path: str = "",
+        backend: str = "ORTOOLS",
     ):
         """
         Initialize the SteadyStateScheduler with the allocation and accelerator.
@@ -85,6 +86,7 @@ class SteadyStateScheduler:
         self.tensor_depths: TensorDepths = {}
 
         self.nb_cols_to_use = nb_cols_to_use
+        self.backend = backend
 
         self.output_path = output_path
         if self.output_path:
@@ -129,6 +131,7 @@ class SteadyStateScheduler:
             cost_lut=self.cost_lut,
             nb_cols_to_use=self.nb_cols_to_use,
             output_path=self.output_path,
+            backend=self.backend,
         )
         (
             tensor_reuse_levels,

@@ -53,6 +53,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.config = config
 
         self.output_path = self.ctx.get("output_path")
+        self.backend: str = self.ctx.get("backend", "ORTOOLS")
 
     def run(self):
         logger.info("Start ConstraintOptimizationAllocationStage.")
@@ -76,6 +77,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             self.cost_lut,
             self.config.transfer.nb_cols_to_use,
             output_path,
+            backend=self.backend,
         )
         workload = scheduler.run()
         return workload, scheduler

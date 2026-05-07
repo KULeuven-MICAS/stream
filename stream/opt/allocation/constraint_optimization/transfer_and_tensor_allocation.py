@@ -88,6 +88,7 @@ class TransferAndTensorAllocator:
         nb_cols_to_use: int = 4,
         output_path: str = "",
         context: TransferAndTensorContext | None = None,
+        backend: str = "ORTOOLS",
     ):
         self.workload = workload
         self.slot_of = timeslots
@@ -102,6 +103,7 @@ class TransferAndTensorAllocator:
         self.mapping = mapping
         self.cost_lut = cost_lut
         self.output_path = output_path
+        self.backend_str = backend
 
         self.max_slot = max(timeslots.values()) if timeslots else 0
         self.big_m = big_m or len(workload.nodes()) + 5
@@ -124,7 +126,7 @@ class TransferAndTensorAllocator:
         self._init_option_sets()
 
         # ------------------- optimization model ---------------------- #
-        self.model: SolverModel = create_solver(SolverBackend.GUROBI, "transfer_tensor_alloc")
+        self.model: SolverModel = create_solver(SolverBackend[self.backend_str], "transfer_tensor_alloc")
         self.model.set_param(SolverParams.VERBOSITY, gurobi_verbosity)
         self.model.set_param(SolverParams.LOG_TO_CONSOLE, 0)
 
