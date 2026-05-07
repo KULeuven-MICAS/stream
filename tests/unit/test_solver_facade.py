@@ -259,3 +259,35 @@ def test_get_status_before_solve():
     assert isinstance(status, str), (
         f"get_status() should return a string, got {type(status)} ({status!r})"
     )
+
+
+def test_quicksum_with_mixed_types():
+    """quicksum handles mixed SolverVar, LinExpr, and int items without error.
+
+    Regression test for the bug where quicksum of _GurobiLinExpr items
+    produced an invalid nested expression that caused addConstr to fail
+    with 'Invalid argument to Model.addConstr'.
+    """
+    model = create_solver(SolverBackend.GUROBI, "quicksum_test")
+    model.set_param(SolverParams.VERBOSITY, 0)
+    model.set_param(SolverParams.LOG_TO_CONSOLE, 0)
+
+    x1 = model.add_var(vtype=SolverVarType.BINARY, name="x1")
+    x2 = model.add_var(vtype=SolverVarType.BINARY, name="x2")
+
+    # First-level quicksum produces a LinExpr (SolverVar._raw items)
+    inner = model.quicksum([x1._raw, x2._raw])
+
+    # Second-level quicksum with mixed LinExpr and int — triggers the bug if not fixed
+    outer = model.quicksum([inner, 1])
+
+    # The outer result's ._raw must be a raw gp.LinExpr, not a wrapped _GurobiLinExpr
+    import gurobipy as gp
+
+    assert isinstance(outer._raw, gp.LinExpr), (
+        f"quicksum result._raw must be a gp.LinExpr, got {type(outer._raw)}"
+    )
+
+    # Should be usable in a constraint without 'Invalid argument' error
+    v = model.add_var(vtype=SolverVarType.INTEGER, lb=0, name="v")
+    model.add_constr(v == outer, name="mixed_quicksum_constr")  # Must not raise

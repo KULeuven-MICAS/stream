@@ -531,7 +531,7 @@ class GurobiBackend(SolverModel):
         self._model.write(path)
 
     def quicksum(self, iterable: Any) -> _GurobiLinExpr:
-        return _GurobiLinExpr(gp.quicksum(iterable))
+        return _GurobiLinExpr(gp.quicksum(_unwrap(item) for item in iterable))
 
     def lin_expr(self, constant: float = 0.0) -> _GurobiLinExpr:
         return _GurobiLinExpr(gp.LinExpr(constant))
