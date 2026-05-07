@@ -26,6 +26,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     embedding_tile_size=512,
     hidden_tile_size=64,
     last_gemm_down: bool = False,
+    backend: str = "ortools",
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
@@ -87,6 +88,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         last_gemm_down=last_gemm_down,
         nb_workers=1,
         max_nb_mappings=256,
+        backend=backend,
     )
 
     module = ctx.get("module")
@@ -123,6 +125,7 @@ def sweep_tile_size_combinations(args: argparse.Namespace) -> None:
                 e_tile,
                 h_tile,
                 last_gemm_down=args.last_gemm_down,
+                backend=args.backend,
             )
         except Exception as ex:
             print(
@@ -184,6 +187,11 @@ if __name__ == "__main__":
         action="store_false",
         default=True,
         help="If set, the last gemm down projection is skipped",
+    )
+    parser.add_argument(
+        "--backend", type=str, default="ortools",
+        choices=["gurobi", "ortools"],
+        help="Solver backend to use (default: ortools)",
     )
     args = parser.parse_args()
     sweep_tile_size_combinations(args)
