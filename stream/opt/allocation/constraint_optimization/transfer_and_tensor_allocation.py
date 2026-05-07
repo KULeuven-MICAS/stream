@@ -1,3 +1,4 @@
+import logging
 import math
 import os
 from collections import defaultdict
@@ -25,6 +26,7 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
 )
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency
 from stream.opt.solver import (
+    ConstraintSelection,
     SolverBackend,
     SolverModel,
     SolverParams,
@@ -32,6 +34,8 @@ from stream.opt.solver import (
     SolverVarType,
     create_solver,
 )
+
+_logger = logging.getLogger(__name__)
 from stream.workload.node import HasOutputs, TransferType
 from stream.workload.steady_state.iteration_space import (
     IterationVariableType,
@@ -89,6 +93,7 @@ class TransferAndTensorAllocator:
         output_path: str = "",
         context: TransferAndTensorContext | None = None,
         backend: str = "ORTOOLS_GSCIP",
+        constraint_selection: ConstraintSelection | None = None,
     ):
         self.workload = workload
         self.slot_of = timeslots
@@ -104,6 +109,7 @@ class TransferAndTensorAllocator:
         self.cost_lut = cost_lut
         self.output_path = output_path
         self.backend_str = backend
+        self.constraint_selection = constraint_selection or ConstraintSelection()
 
         self.max_slot = max(timeslots.values()) if timeslots else 0
         self.big_m = big_m or len(workload.nodes()) + 5
@@ -609,9 +615,18 @@ class TransferAndTensorAllocator:
         self._transfer_fire_rate_constraints()
         self._reuse_factor_rate_constraints()
         self._link_contention_constraints()
-        self._memory_capacity_constraints()
-        self._object_fifo_depth_constraints()
-        self._buffer_descriptor_constraints()
+        if self.constraint_selection.memory_capacity:
+            self._memory_capacity_constraints()
+        else:
+            _logger.warning("ConstraintSelection: skipping memory_capacity constraints")
+        if self.constraint_selection.object_fifo_depth:
+            self._object_fifo_depth_constraints()
+        else:
+            _logger.warning("ConstraintSelection: skipping object_fifo_depth constraints")
+        if self.constraint_selection.buffer_descriptors:
+            self._buffer_descriptor_constraints()
+        else:
+            _logger.warning("ConstraintSelection: skipping buffer_descriptors constraints")
         self._slot_latency_constraints()
         self._force_nonconstant_reuse_levels()
         self._force_final_output_reuse_levels()
@@ -980,7 +995,10 @@ class TransferAndTensorAllocator:
         self._init_idle_indicators(max_s, big_m)
         self._create_idle_latency_vars(max_s)
         self._define_overlap_var()
-        self._add_dma_usage_constraints()
+        if self.constraint_selection.dma_channels:
+            self._add_dma_usage_constraints()
+        else:
+            _logger.warning("ConstraintSelection: skipping dma_channels constraints")
         self._set_total_latency_and_objective()
 
     def _init_idle_indicators(self, max_s: int, big_m: int) -> None:
@@ -1213,7 +1231,10 @@ class TransferAndTensorAllocator:
             == self.iterations * self.model.quicksum(v._raw for v in self.slot_latency.values())
             - (self.iterations - 1) * self.overlap
         )
-        obj_func = self.total_lat._raw + self.max_core_dma_in._raw + self.max_core_dma_out._raw
+        if self.constraint_selection.dma_channels:
+            obj_func = self.total_lat._raw + self.max_core_dma_in._raw + self.max_core_dma_out._raw
+        else:
+            obj_func = self.total_lat._raw
         self.model.set_objective(obj_func, sense="minimize")
 
     # ------------------------------------------------------------------ #
