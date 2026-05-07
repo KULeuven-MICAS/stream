@@ -6,6 +6,7 @@ Public API re-exported from stream.opt.solver.solver.
 from stream.opt.solver.solver import (
     GurobiBackend,
     LinExpr,
+    ORToolsBackend,
     SolverBackend,
     SolverModel,
     SolverParams,
@@ -17,6 +18,7 @@ from stream.opt.solver.solver import (
 __all__ = [
     "GurobiBackend",
     "LinExpr",
+    "ORToolsBackend",
     "SolverBackend",
     "SolverModel",
     "SolverParams",
