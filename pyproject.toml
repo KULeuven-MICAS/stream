@@ -61,6 +61,11 @@ push = false
 "stream/__init__.py" = ["{version}"]
 
 
+[tool.pytest.ini_options]
+markers = [
+    "slow: marks tests as slow (integration tests against real TETRA instances)",
+]
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120

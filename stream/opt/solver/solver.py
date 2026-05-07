@@ -772,6 +772,23 @@ class ORToolsBackend(SolverModel):
         self._solver_type = solver_type
         self._params: dict[str, Any] = {"enable_output": False}
         self._result: mathopt.SolveResult | None = None
+        # MathOpt requires globally-unique names within a model.  These counters
+        # deduplicate names by appending a suffix when the same base name would
+        # be used a second time (Gurobi silently allows duplicate names; MathOpt does not).
+        self._var_name_count: dict[str, int] = {}
+        self._constr_name_count: dict[str, int] = {}
+
+    def _unique_var_name(self, name: str) -> str:
+        """Return a unique variable name by appending a counter on collision."""
+        count = self._var_name_count.get(name, 0)
+        self._var_name_count[name] = count + 1
+        return name if count == 0 else f"{name}_{count}"
+
+    def _unique_constr_name(self, name: str) -> str:
+        """Return a unique constraint name by appending a counter on collision."""
+        count = self._constr_name_count.get(name, 0)
+        self._constr_name_count[name] = count + 1
+        return name if count == 0 else f"{name}_{count}"
 
     def add_var(
         self,
@@ -782,16 +799,18 @@ class ORToolsBackend(SolverModel):
         name: str = "",
     ) -> _ORToolsVar:
         ub_val = math.inf if ub is None else ub
+        unique_name = self._unique_var_name(name)
         if vtype == SolverVarType.BINARY:
-            v = self._model.add_binary_variable(name=name)
+            v = self._model.add_binary_variable(name=unique_name)
         elif vtype == SolverVarType.INTEGER:
-            v = self._model.add_integer_variable(lb=lb, ub=ub_val, name=name)
+            v = self._model.add_integer_variable(lb=lb, ub=ub_val, name=unique_name)
         else:
-            v = self._model.add_variable(lb=lb, ub=ub_val, name=name)
+            v = self._model.add_variable(lb=lb, ub=ub_val, name=unique_name)
         return _ORToolsVar(v, self)
 
     def add_constr(self, expr: Any, *, name: str = "") -> None:
-        self._model.add_linear_constraint(_unwrap_ort(expr), name=name)
+        unique_name = self._unique_constr_name(name)
+        self._model.add_linear_constraint(_unwrap_ort(expr), name=unique_name)
 
     def set_objective(self, expr: Any, *, sense: str = "minimize") -> None:
         raw_expr = _unwrap_ort(expr)
