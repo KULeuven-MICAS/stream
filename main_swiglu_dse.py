@@ -26,7 +26,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     embedding_tile_size=512,
     hidden_tile_size=64,
     last_gemm_down: bool = False,
-    backend: str = "ortools",
+    backend: str = "ortools_gscip",
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
@@ -189,9 +189,11 @@ if __name__ == "__main__":
         help="If set, the last gemm down projection is skipped",
     )
     parser.add_argument(
-        "--backend", type=str, default="ortools",
-        choices=["gurobi", "ortools"],
-        help="Solver backend to use (default: ortools)",
+        "--backend",
+        type=str,
+        default="ortools_gscip",
+        choices=["gurobi", "ortools_gscip", "ortools_highs", "ortools_gurobi"],
+        help="Solver backend (default: ortools_gscip)",
     )
     args = parser.parse_args()
     sweep_tile_size_combinations(args)

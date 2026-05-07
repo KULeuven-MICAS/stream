@@ -121,11 +121,11 @@ def optimize_allocation_co(  # noqa: PLR0913
     trace_size: int = 1048576,
     nb_cols_to_use: int = 4,
     npu: str = "npu2",
-    backend: str = "ortools",
+    backend: str = "ortools_gscip",
 ) -> StreamCostModelEvaluation:
     _sanity_check_inputs(hardware, workload, mapping, output_path)
     _backend_enum = SolverBackend[backend.upper()]
-    if _backend_enum == SolverBackend.GUROBI:
+    if _backend_enum in (SolverBackend.GUROBI, SolverBackend.ORTOOLS_GUROBI):
         _sanity_check_gurobi_license()
 
     # Create experiment_id path
@@ -204,10 +204,10 @@ def optimize_mapping(  # noqa: PLR0913
     last_gemm_down: bool = False,
     npu: str = "npu2",
     nb_workers: int = 1,
-    backend: str = "ortools",
+    backend: str = "ortools_gscip",
 ) -> StageContext:
     _backend_enum = SolverBackend[backend.upper()]
-    if _backend_enum == SolverBackend.GUROBI:
+    if _backend_enum in (SolverBackend.GUROBI, SolverBackend.ORTOOLS_GUROBI):
         _sanity_check_gurobi_license()
 
     # Create experiment_id path

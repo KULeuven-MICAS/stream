@@ -12,7 +12,9 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
-def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_rows, nb_cols, npu, backend: str = "ortools"):  # noqa: N803, PLR0913
+def run_main_aie_codegen_gemm(
+    M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_rows, nb_cols, npu, backend: str = "ortools_gscip"
+):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
     workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
@@ -78,9 +80,11 @@ if __name__ == "__main__":
     parser.add_argument("--cols", type=int, default=2, help="Number of AIE columns to use (default: 2)")
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
     parser.add_argument(
-        "--backend", type=str, default="ortools",
-        choices=["gurobi", "ortools"],
-        help="Solver backend to use (default: ortools)",
+        "--backend",
+        type=str,
+        default="ortools_gscip",
+        choices=["gurobi", "ortools_gscip", "ortools_highs", "ortools_gurobi"],
+        help="Solver backend (default: ortools_gscip)",
     )
     args = parser.parse_args()
 

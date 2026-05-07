@@ -88,7 +88,7 @@ class TransferAndTensorAllocator:
         nb_cols_to_use: int = 4,
         output_path: str = "",
         context: TransferAndTensorContext | None = None,
-        backend: str = "ORTOOLS",
+        backend: str = "ORTOOLS_GSCIP",
     ):
         self.workload = workload
         self.slot_of = timeslots

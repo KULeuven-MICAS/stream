@@ -62,7 +62,7 @@ class SteadyStateScheduler:
         cost_lut: CoreCostLUT,
         nb_cols_to_use: int = 4,
         output_path: str = "",
-        backend: str = "ORTOOLS",
+        backend: str = "ORTOOLS_GSCIP",
     ):
         """
         Initialize the SteadyStateScheduler with the allocation and accelerator.

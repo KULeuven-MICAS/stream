@@ -55,12 +55,18 @@ class SolverParams(Enum):
 
 
 class SolverBackend(Enum):
-    """Available solver backends."""
+    """Available solver backends.
+
+    GUROBI: Native gurobipy (requires license).
+    ORTOOLS_GSCIP: MathOpt with GSCIP solver (open-source, bundled).
+    ORTOOLS_HIGHS: MathOpt with HiGHS solver (open-source, bundled).
+    ORTOOLS_GUROBI: MathOpt using Gurobi as backend (requires license).
+    """
 
     GUROBI = "GUROBI"
-    SCIP = "SCIP"
-    ORTOOLS = "ORTOOLS"
-    ORTOOLS_GUROBI = "ORTOOLS"  # Deprecated alias — use ORTOOLS
+    ORTOOLS_GSCIP = "ORTOOLS_GSCIP"
+    ORTOOLS_HIGHS = "ORTOOLS_HIGHS"
+    ORTOOLS_GUROBI = "ORTOOLS_GUROBI"
 
 
 @dataclass(frozen=True)
@@ -793,6 +799,7 @@ _ORT_STATUS_MAP: dict[mathopt.TerminationReason, str] = {
     mathopt.TerminationReason.OTHER_ERROR: "UNKNOWN(OTHER_ERROR)",
 }
 
+
 def _to_timedelta(v: Any) -> datetime.timedelta:
     return datetime.timedelta(seconds=v)
 
@@ -906,7 +913,7 @@ class ORToolsBackend(SolverModel):
         else:
             solve_time_s = 0.0
         return SolveStats(
-            backend="ORTOOLS",
+            backend=f"ORTOOLS_{self._solver_type.name}",
             solver=self._solver_type.name.lower(),
             status=self.get_status(),
             objective=objective,
@@ -918,8 +925,7 @@ class ORToolsBackend(SolverModel):
 
     def compute_iis(self) -> None:
         _logger.warning(
-            "ORToolsBackend does not support IIS computation. "
-            "Use write() to export the model as MPS for debugging."
+            "ORToolsBackend does not support IIS computation. Use write() to export the model as MPS for debugging."
         )
 
     def write(self, path: str) -> None:
@@ -944,27 +950,31 @@ class ORToolsBackend(SolverModel):
 # ---------------------------------------------------------------------------
 
 
-def create_solver(backend: SolverBackend, name: str = "", *, solver_type: Any = None) -> SolverModel:
+_ORTOOLS_SOLVER_MAP: dict[SolverBackend, Any] = {
+    SolverBackend.ORTOOLS_GSCIP: mathopt.SolverType.GSCIP,
+    SolverBackend.ORTOOLS_HIGHS: mathopt.SolverType.HIGHS,
+    SolverBackend.ORTOOLS_GUROBI: mathopt.SolverType.GUROBI,
+}
+
+
+def create_solver(backend: SolverBackend, name: str = "") -> SolverModel:
     """Instantiate a SolverModel by backend enum.
+
+    Each SolverBackend member maps to exactly one solver configuration —
+    no additional solver_type kwarg needed.
 
     Args:
         backend: The solver backend to use.
         name: Model name (used in logs and output files).
-        solver_type: Optional mathopt.SolverType for ORToolsBackend (D-04).
-                     Defaults to mathopt.SolverType.GSCIP when not specified.
 
     Returns:
         A concrete SolverModel instance.
 
     Raises:
-        NotImplementedError: For SCIP backend (not yet implemented).
         ValueError: For unrecognized backend values.
     """
     if backend == SolverBackend.GUROBI:
         return GurobiBackend(name)
-    if backend == SolverBackend.SCIP:
-        raise NotImplementedError("SCIP backend not yet implemented")
-    if backend == SolverBackend.ORTOOLS:
-        st = solver_type if solver_type is not None else mathopt.SolverType.GSCIP
-        return ORToolsBackend(name, st)
+    if backend in _ORTOOLS_SOLVER_MAP:
+        return ORToolsBackend(name, _ORTOOLS_SOLVER_MAP[backend])
     raise ValueError(f"Unknown backend: {backend!r}")

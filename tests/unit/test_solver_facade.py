@@ -142,8 +142,7 @@ def test_solver_var_arithmetic():
     # var <= 5 should produce a valid Gurobi constraint expression, not a bool
     constr_expr = var <= 5
     assert not isinstance(constr_expr, bool), (
-        f"var <= 5 should produce a constraint expression, not a Python bool. "
-        f"Got type {type(constr_expr)}"
+        f"var <= 5 should produce a constraint expression, not a Python bool. Got type {type(constr_expr)}"
     )
 
 
@@ -215,22 +214,23 @@ def test_linexpr_defaultdict():
 def test_factory_gurobi():
     """create_solver(GUROBI) returns a GurobiBackend instance."""
     solver = create_solver(SolverBackend.GUROBI, "test")
-    assert isinstance(solver, GurobiBackend), (
-        f"Expected GurobiBackend, got {type(solver)}"
-    )
+    assert isinstance(solver, GurobiBackend), f"Expected GurobiBackend, got {type(solver)}"
 
 
-def test_factory_scip_raises():
-    """create_solver(SCIP) raises NotImplementedError."""
-    with pytest.raises(NotImplementedError, match="SCIP"):
-        create_solver(SolverBackend.SCIP)
-
-
-def test_factory_ortools_backward_compat():
-    """create_solver(ORTOOLS_GUROBI) returns ORToolsBackend (backward compat alias)."""
+def test_factory_ortools_gscip():
+    """create_solver(ORTOOLS_GSCIP) returns ORToolsBackend."""
     from stream.opt.solver import ORToolsBackend
 
-    solver = create_solver(SolverBackend.ORTOOLS_GUROBI, "test")
+    solver = create_solver(SolverBackend.ORTOOLS_GSCIP, "test")
+    assert isinstance(solver, SolverModel)
+    assert isinstance(solver, ORToolsBackend)
+
+
+def test_factory_ortools_highs():
+    """create_solver(ORTOOLS_HIGHS) returns ORToolsBackend."""
+    from stream.opt.solver import ORToolsBackend
+
+    solver = create_solver(SolverBackend.ORTOOLS_HIGHS, "test")
     assert isinstance(solver, SolverModel)
     assert isinstance(solver, ORToolsBackend)
 
@@ -258,9 +258,7 @@ def test_get_status_before_solve():
     model.set_param(SolverParams.VERBOSITY, 0)
     model.set_param(SolverParams.LOG_TO_CONSOLE, 0)
     status = model.get_status()
-    assert isinstance(status, str), (
-        f"get_status() should return a string, got {type(status)} ({status!r})"
-    )
+    assert isinstance(status, str), f"get_status() should return a string, got {type(status)} ({status!r})"
 
 
 def test_quicksum_with_mixed_types():
@@ -286,9 +284,7 @@ def test_quicksum_with_mixed_types():
     # The outer result's ._raw must be a raw gp.LinExpr, not a wrapped _GurobiLinExpr
     import gurobipy as gp
 
-    assert isinstance(outer._raw, gp.LinExpr), (
-        f"quicksum result._raw must be a gp.LinExpr, got {type(outer._raw)}"
-    )
+    assert isinstance(outer._raw, gp.LinExpr), f"quicksum result._raw must be a gp.LinExpr, got {type(outer._raw)}"
 
     # Should be usable in a constraint without 'Invalid argument' error
     v = model.add_var(vtype=SolverVarType.INTEGER, lb=0, name="v")

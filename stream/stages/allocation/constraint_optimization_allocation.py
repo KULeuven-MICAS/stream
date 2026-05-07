@@ -53,7 +53,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.config = config
 
         self.output_path = self.ctx.get("output_path")
-        self.backend: str = self.ctx.get("backend", "ORTOOLS")
+        self.backend: str = self.ctx.get("backend", "ORTOOLS_GSCIP")
 
     def run(self):
         logger.info("Start ConstraintOptimizationAllocationStage.")

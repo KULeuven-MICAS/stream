@@ -29,7 +29,7 @@ from stream.opt.solver import (
 
 def _ortools_trivial_model() -> tuple[SolverModel, SolverVar]:
     """Create a trivial LP: minimize x subject to 0 <= x <= 10, using ORToolsBackend."""
-    m = create_solver(SolverBackend.ORTOOLS, "trivial")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "trivial")
     m.set_param(SolverParams.VERBOSITY, 0)
     x = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=10.0, name="x")
     m.set_objective(x._raw, sense="minimize")
@@ -38,7 +38,7 @@ def _ortools_trivial_model() -> tuple[SolverModel, SolverVar]:
 
 def _ortools_infeasible_model() -> tuple[SolverModel, SolverVar]:
     """Create an infeasible LP: x >= 5 and x <= 3, minimize x."""
-    m = create_solver(SolverBackend.ORTOOLS, "infeasible")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "infeasible")
     m.set_param(SolverParams.VERBOSITY, 0)
     x = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=10.0, name="x")
     m.add_constr(x._raw >= 5.0, name="lb_infeasible")
@@ -54,7 +54,7 @@ def _ortools_infeasible_model() -> tuple[SolverModel, SolverVar]:
 
 def test_ortools_add_binary_var():
     """add_var(vtype=BINARY) returns SolverVar; ._raw is mathopt.Variable."""
-    m = create_solver(SolverBackend.ORTOOLS, "binary_test")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "binary_test")
     m.set_param(SolverParams.VERBOSITY, 0)
     x = m.add_var(vtype=SolverVarType.BINARY, name="x")
     assert isinstance(x, SolverVar), f"Expected SolverVar, got {type(x)}"
@@ -63,7 +63,7 @@ def test_ortools_add_binary_var():
 
 def test_ortools_add_continuous_var():
     """add_var(vtype=CONTINUOUS, lb=0, ub=10) returns SolverVar."""
-    m = create_solver(SolverBackend.ORTOOLS, "continuous_test")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "continuous_test")
     m.set_param(SolverParams.VERBOSITY, 0)
     x = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=10.0, name="x")
     assert isinstance(x, SolverVar), f"Expected SolverVar, got {type(x)}"
@@ -71,7 +71,7 @@ def test_ortools_add_continuous_var():
 
 def test_ortools_add_integer_var():
     """add_var(vtype=INTEGER, lb=0, ub=5) returns SolverVar."""
-    m = create_solver(SolverBackend.ORTOOLS, "integer_test")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "integer_test")
     m.set_param(SolverParams.VERBOSITY, 0)
     x = m.add_var(vtype=SolverVarType.INTEGER, lb=0, ub=5, name="x")
     assert isinstance(x, SolverVar), f"Expected SolverVar, got {type(x)}"
@@ -93,7 +93,7 @@ def test_ortools_trivial_lp():
 
 def test_ortools_lp_with_constraint():
     """LP with lower-bound constraint: x >= 3 => x.X == 3.0."""
-    m = create_solver(SolverBackend.ORTOOLS, "constrained")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "constrained")
     m.set_param(SolverParams.VERBOSITY, 0)
     x = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=10.0, name="x")
     m.add_constr(x._raw >= 3.0, name="lb_constr")
@@ -105,7 +105,7 @@ def test_ortools_lp_with_constraint():
 
 def test_ortools_linear_constraints():
     """<=, >=, == constraints all work without raising."""
-    m = create_solver(SolverBackend.ORTOOLS, "constr_types")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "constr_types")
     m.set_param(SolverParams.VERBOSITY, 0)
     x = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=10.0, name="x")
     y = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=10.0, name="y")
@@ -120,7 +120,7 @@ def test_ortools_linear_constraints():
 
 def test_ortools_binary_milp():
     """Maximize x+y (binary) s.t. x+y<=1 => obj == 1.0."""
-    m = create_solver(SolverBackend.ORTOOLS, "binary_milp")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "binary_milp")
     m.set_param(SolverParams.VERBOSITY, 0)
     x = m.add_var(vtype=SolverVarType.BINARY, name="x")
     y = m.add_var(vtype=SolverVarType.BINARY, name="y")
@@ -138,7 +138,7 @@ def test_ortools_binary_milp():
 
 def test_ortools_quicksum():
     """quicksum([v1._raw, v2._raw]) returns LinExpr, usable in constraint."""
-    m = create_solver(SolverBackend.ORTOOLS, "quicksum_test")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "quicksum_test")
     m.set_param(SolverParams.VERBOSITY, 0)
     x = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=5.0, name="x")
     y = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=5.0, name="y")
@@ -153,7 +153,7 @@ def test_ortools_quicksum():
 
 def test_ortools_quicksum_mixed():
     """quicksum with LinExpr + int items does not raise (regression analog)."""
-    m = create_solver(SolverBackend.ORTOOLS, "quicksum_mixed")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "quicksum_mixed")
     m.set_param(SolverParams.VERBOSITY, 0)
     x = m.add_var(vtype=SolverVarType.BINARY, name="x")
     y = m.add_var(vtype=SolverVarType.BINARY, name="y")
@@ -172,7 +172,7 @@ def test_ortools_quicksum_mixed():
 
 def test_ortools_linexpr_accumulation():
     """lin_expr() += var._raw multiple times, then use in constraint."""
-    m = create_solver(SolverBackend.ORTOOLS, "linexpr_accum")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "linexpr_accum")
     m.set_param(SolverParams.VERBOSITY, 0)
     x = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=5.0, name="x")
     y = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=5.0, name="y")
@@ -187,7 +187,7 @@ def test_ortools_linexpr_accumulation():
 
 def test_ortools_linexpr_defaultdict():
     """defaultdict(model.lin_expr) pattern works."""
-    m = create_solver(SolverBackend.ORTOOLS, "defaultdict_test")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "defaultdict_test")
     m.set_param(SolverParams.VERBOSITY, 0)
     x = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=5.0, name="x")
     y = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=5.0, name="y")
@@ -216,7 +216,7 @@ def test_ortools_var_x():
 
 def test_ortools_var_x_before_solve():
     """Accessing .X before optimize() raises ValueError."""
-    m = create_solver(SolverBackend.ORTOOLS, "pre_solve")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "pre_solve")
     m.set_param(SolverParams.VERBOSITY, 0)
     x = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=10.0, name="x")
     with pytest.raises(ValueError):
@@ -230,7 +230,7 @@ def test_ortools_var_x_before_solve():
 
 def test_ortools_set_param():
     """set_param(VERBOSITY, 0), set_param(TIME_LIMIT, 60), set_param(THREADS, 1) do not raise."""
-    m = create_solver(SolverBackend.ORTOOLS, "param_test")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "param_test")
     m.set_param(SolverParams.VERBOSITY, 0)
     m.set_param(SolverParams.TIME_LIMIT, 60)
     m.set_param(SolverParams.THREADS, 1)
@@ -242,24 +242,22 @@ def test_ortools_set_param():
 
 
 def test_factory_ortools():
-    """create_solver(SolverBackend.ORTOOLS) returns ORToolsBackend."""
-    solver = create_solver(SolverBackend.ORTOOLS, "factory_test")
+    """create_solver(SolverBackend.ORTOOLS_GSCIP) returns ORToolsBackend."""
+    solver = create_solver(SolverBackend.ORTOOLS_GSCIP, "factory_test")
     assert isinstance(solver, ORToolsBackend), f"Expected ORToolsBackend, got {type(solver)}"
     assert isinstance(solver, SolverModel), "ORToolsBackend should be a SolverModel"
 
 
-def test_factory_ortools_with_solver_type():
-    """create_solver(ORTOOLS, solver_type=mathopt.SolverType.HIGHS) works."""
-    solver = create_solver(SolverBackend.ORTOOLS, "highs_test", solver_type=mathopt.SolverType.HIGHS)
+def test_factory_ortools_highs():
+    """create_solver(ORTOOLS_HIGHS) returns ORToolsBackend with HiGHS solver."""
+    solver = create_solver(SolverBackend.ORTOOLS_HIGHS, "highs_test")
     assert isinstance(solver, ORToolsBackend), f"Expected ORToolsBackend, got {type(solver)}"
 
 
-def test_factory_ortools_gurobi_alias():
-    """create_solver(SolverBackend.ORTOOLS_GUROBI) returns ORToolsBackend (backward compat)."""
-    solver = create_solver(SolverBackend.ORTOOLS_GUROBI, "alias_test")
-    assert isinstance(solver, ORToolsBackend), (
-        f"ORTOOLS_GUROBI should route to ORToolsBackend, got {type(solver)}"
-    )
+def test_factory_ortools_gurobi():
+    """create_solver(ORTOOLS_GUROBI) returns ORToolsBackend with Gurobi solver."""
+    solver = create_solver(SolverBackend.ORTOOLS_GUROBI, "gurobi_ort_test")
+    assert isinstance(solver, ORToolsBackend), f"ORTOOLS_GUROBI should route to ORToolsBackend, got {type(solver)}"
 
 
 # ---------------------------------------------------------------------------
@@ -348,8 +346,6 @@ def test_cross_backend_objective():
         assert m.get_status() == "OPTIMAL", f"Expected OPTIMAL on {backend_enum}, got {m.get_status()}"
         return x.X * 2.0 + y.X * 3.0
 
-    ort_obj = build_and_solve(SolverBackend.ORTOOLS)
+    ort_obj = build_and_solve(SolverBackend.ORTOOLS_GSCIP)
     grb_obj = build_and_solve(SolverBackend.GUROBI)
-    assert abs(ort_obj - grb_obj) < 1e-4, (
-        f"Cross-backend objective mismatch: ORTools={ort_obj}, Gurobi={grb_obj}"
-    )
+    assert abs(ort_obj - grb_obj) < 1e-4, f"Cross-backend objective mismatch: ORTools={ort_obj}, Gurobi={grb_obj}"
