@@ -4,6 +4,7 @@ Public API re-exported from stream.opt.solver.solver.
 """
 
 from stream.opt.solver.solver import (
+    ConstraintSelection,
     GurobiBackend,
     LinExpr,
     ORToolsBackend,
@@ -17,6 +18,7 @@ from stream.opt.solver.solver import (
 )
 
 __all__ = [
+    "ConstraintSelection",
     "GurobiBackend",
     "LinExpr",
     "ORToolsBackend",

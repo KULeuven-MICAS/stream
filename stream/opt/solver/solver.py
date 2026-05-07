@@ -95,6 +95,29 @@ class SolveStats:
     """Number of simplex iterations, or None if not available for this backend."""
 
 
+@dataclass(frozen=True)
+class ConstraintSelection:
+    """Toggle hardware resource constraint groups in TransferAndTensorAllocator.
+
+    All groups default to True (fully constrained). Set a field to False
+    to skip that constraint group entirely -- no variables are created,
+    no constraints are added, and (for dma_channels) objective terms are omitted.
+    """
+
+    memory_capacity: bool = True
+    object_fifo_depth: bool = True
+    buffer_descriptors: bool = True
+    dma_channels: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.memory_capacity and self.object_fifo_depth:
+            _logger.warning(
+                "ConstraintSelection: memory_capacity=False with object_fifo_depth=True "
+                "is nonsensical -- object-FIFO depth constraints assume memory capacity "
+                "is enforced. Continuing with this configuration."
+            )
+
+
 # ---------------------------------------------------------------------------
 # Helper
 # ---------------------------------------------------------------------------
