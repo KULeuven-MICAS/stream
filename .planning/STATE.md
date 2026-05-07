@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Selective Constraints
-status: executing
-stopped_at: Completed 05-01-PLAN.md
-last_updated: "2026-05-07T21:37:25.433Z"
+status: verifying
+stopped_at: Completed 05-02-PLAN.md
+last_updated: "2026-05-07T21:43:12.610Z"
 last_activity: 2026-05-07
 progress:
   total_phases: 3
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 2
+  completed_plans: 3
   percent: 0
 ---
 
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-05-07)
 
 Phase: 05 (constraintselection-dataclass) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-05-07
 
 Progress: [░░░░░░░░░░] 0%
@@ -50,6 +50,7 @@ Progress: [░░░░░░░░░░] 0%
 | 02-ortoolsbackend P01 | 2 tasks | 5min | 6 files |
 | 04-verification-config P01 | 2 tasks | 12min | 7 files |
 | Phase 05-constraintselection-dataclass P01 | 61 | 1 tasks | 3 files |
+| Phase 05-constraintselection-dataclass P02 | 420 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -69,6 +70,8 @@ v1.1 decisions:
 - DMA toggle skips context.add_dma_usage_constraints() only — accounting variables preserved for objective
 - Structural constraints (link contention, reuse, slot latency) are never toggleable
 - [Phase 05-constraintselection-dataclass]: ConstraintSelection placed after SolveStats in solver.py, sharing module-level _logger; re-exported first alphabetically in __init__.py __all__
+- [Phase 05-constraintselection-dataclass]: Guards placed at call site in _create_constraints() not inside constraint methods (D-01); constraint_selection keyword-only after backend=
+- [Phase 05-constraintselection-dataclass]: _make_tta_stub uses bind_objective=False default; only objective test binds real _set_total_latency_and_objective
 
 ### Pending Todos
 
@@ -81,6 +84,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-07T21:37:25.431Z
-Stopped at: Completed 05-01-PLAN.md
+Last session: 2026-05-07T21:43:12.607Z
+Stopped at: Completed 05-02-PLAN.md
 Resume file: None

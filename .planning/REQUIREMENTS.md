@@ -10,9 +10,9 @@ Requirements for selective constraint toggling. Each maps to roadmap phases.
 ### Constraint Selection
 
 - [x] **SEL-01**: ConstraintSelection frozen dataclass with 4 bool fields (memory_capacity, object_fifo_depth, buffer_descriptors, dma_channels), all defaulting to True
-- [ ] **SEL-02**: TransferAndTensorAllocator skips disabled constraint groups via if-guards in _create_constraints()
-- [ ] **SEL-03**: DMA toggle skips only context.add_dma_usage_constraints() dispatch, keeps accounting variables for objective
-- [ ] **SEL-04**: Objective conditionally excludes DMA terms when dma_channels=False
+- [x] **SEL-02**: TransferAndTensorAllocator skips disabled constraint groups via if-guards in _create_constraints()
+- [x] **SEL-03**: DMA toggle skips only context.add_dma_usage_constraints() dispatch, keeps accounting variables for objective
+- [x] **SEL-04**: Objective conditionally excludes DMA terms when dma_channels=False
 - [x] **SEL-05**: __post_init__ emits WARNING for nonsensical constraint combinations (e.g. memory off + FIFO on)
 
 ### Pipeline Integration
@@ -50,9 +50,9 @@ All v1.0 requirements were validated in the previous milestone:
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | SEL-01 | Phase 5 | Complete |
-| SEL-02 | Phase 5 | Pending |
-| SEL-03 | Phase 5 | Pending |
-| SEL-04 | Phase 5 | Pending |
+| SEL-02 | Phase 5 | Complete |
+| SEL-03 | Phase 5 | Complete |
+| SEL-04 | Phase 5 | Complete |
 | SEL-05 | Phase 5 | Complete |
 | PIPE-01 | Phase 6 | Pending |
 | UI-01 | Phase 6 | Pending |
