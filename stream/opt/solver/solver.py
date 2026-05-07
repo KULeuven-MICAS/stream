@@ -537,19 +537,18 @@ class GurobiBackend(SolverModel):
         return _GurobiLinExpr(gp.LinExpr(constant))
 
     @staticmethod
-    def check_license() -> bool:
-        """Verify a valid Gurobi license is available.
-
-        Returns:
-            True if license is valid.
-
-        Raises:
-            gp.GurobiError: If no valid license is found.
-        """
-        tmp = gp.Model("_license_check")
-        tmp.setParam("OutputFlag", 0)
-        tmp.optimize()
-        return True
+    def check_license() -> None:
+        """Verify Gurobi license is available. Raises ValueError on failure."""
+        try:
+            tmp = gp.Model("_license_check")
+            tmp.setParam("OutputFlag", 0)
+            tmp.optimize()
+        except gp.GurobiError as exc:
+            if exc.errno == gp.GRB.Error.NO_LICENSE:
+                error_message = "No valid Gurobi license found. Get an academic WLS license at https://www.gurobi.com/academia/academic-program-and-licenses/"
+            else:
+                error_message = f"An unexpected Gurobi error occurred: {exc.message}"
+            raise ValueError(error_message) from exc
 
 
 # ---------------------------------------------------------------------------

@@ -2,13 +2,13 @@ import logging as _logging
 import os
 from typing import Literal
 
-import gurobipy as gp
 import yaml
 from onnx import ModelProto
 from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.utils import pickle_load, pickle_save
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
+from stream.opt.solver import GurobiBackend
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.context import StageContext
@@ -36,21 +36,7 @@ def _sanity_check_inputs(hardware: str, workload: str, mapping: str, output_path
 
 
 def _sanity_check_gurobi_license():
-    try:
-        # Try to create a simple optimization model
-        model = gp.Model()
-        model.setParam("OutputFlag", 0)
-        # Check if the model was successfully created (license check)
-        model.optimize()
-        # If model.optimize() runs without a license issue, return
-        return
-    except gp.GurobiError as exc:
-        # Catch any Gurobi errors, especially licensing errors
-        if exc.errno == gp.GRB.Error.NO_LICENSE:
-            error_message = "No valid Gurobi license found. Get an academic WLS license at https://www.gurobi.com/academia/academic-program-and-licenses/"
-        else:
-            error_message = f"An unexpected Gurobi error occurred: {exc.message}"
-        raise ValueError(error_message) from exc
+    GurobiBackend.check_license()
 
 
 def optimize_allocation_ga(  # noqa: PLR0913
