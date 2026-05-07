@@ -86,7 +86,7 @@ Plans:
 
 Plans:
 - [x] 05-01-PLAN.md — ConstraintSelection frozen dataclass + unit tests
-- [ ] 05-02-PLAN.md — TTA if-guards for all four constraint groups + guard verification tests
+- [x] 05-02-PLAN.md — TTA if-guards for all four constraint groups + guard verification tests
 
 #### Phase 6: Pipeline & API Surface
 **Goal**: Users can pass a `ConstraintSelection` through every public entry point — programmatic API and CLI — and it reaches both allocators unchanged
