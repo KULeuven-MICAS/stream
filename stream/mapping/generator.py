@@ -87,7 +87,7 @@ class MappingGenerator:
         # Layer names not present in the dict get no cap. Pass alongside
         # ``layer_core_splits`` since both express per-layer policy.
         layer_max_shapes_per_total: dict[str, int] | None = None,
-        ordering: MappingOrder = MappingOrder.UTILIZATION_ASCENDING,
+        ordering: MappingOrder = MappingOrder.UTILIZATION_DESCENDING,
         # Physical compute-array shape used to constrain inter-core tiling.
         # If both are provided, a layer's per-dim splits must fit the rows x cols
         # rectangle (see _splits_fit_array_shape). If either is None, the
