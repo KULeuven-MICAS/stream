@@ -12,7 +12,7 @@ _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname
 _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
-def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_rows, nb_cols, npu):  # noqa: N803, PLR0913
+def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_rows, nb_cols, npu, backend: str = "ortools"):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
     workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
@@ -50,6 +50,7 @@ def run_main_aie_codegen_gemm(M, K, N, m, k, n, in_dtype, out_dtype, trace_size,
         trace_size=trace_size,
         nb_cols_to_use=nb_cols,
         npu=npu,
+        backend=backend,
     )
 
     module = ctx.get("module")
@@ -76,6 +77,11 @@ if __name__ == "__main__":
     parser.add_argument("--rows", type=int, default=2, help="Number of AIE rows to use (default: 2)")
     parser.add_argument("--cols", type=int, default=2, help="Number of AIE columns to use (default: 2)")
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target (default: npu2)")
+    parser.add_argument(
+        "--backend", type=str, default="ortools",
+        choices=["gurobi", "ortools"],
+        help="Solver backend to use (default: ortools)",
+    )
     args = parser.parse_args()
 
     module = run_main_aie_codegen_gemm(
@@ -91,6 +97,7 @@ if __name__ == "__main__":
         args.rows,
         args.cols,
         args.npu,
+        args.backend,
     )
     save_path = f"outputs/swiglu_module_{args.M}_{args.N}_{args.K}.mlir"
     with open(save_path, "w") as f:
