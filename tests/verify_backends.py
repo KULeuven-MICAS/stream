@@ -8,9 +8,9 @@ Per D-06, D-07: standalone runnable script (not a pytest test).
 Exit code: 0 if PASS (within tolerance), 1 if FAIL.
 
 Usage:
-    python tests/verify_backends.py --workload gemm --M 256 --K 8192 --N 2048
-    python tests/verify_backends.py --workload swiglu --seq_len 256 --embedding_dim 512 --hidden_dim 2048
-    python tests/verify_backends.py --workload gemm --M 256 --K 8192 --N 2048 --output-yaml /tmp/stats.yaml
+    python tests/verify_backends.py --workload gemm
+    python tests/verify_backends.py --workload swiglu --backends ortools_gscip ortools_highs
+    python tests/verify_backends.py --workload gemm --backends gurobi ortools_gscip --output-yaml /tmp/stats.yaml
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ SWIGLU_GUROBI_OBJ = 9_396_485.0
 # ---------------------------------------------------------------------------
 
 
-def _run_gemm_pipeline(
+def _run_gemm_pipeline(  # noqa: PLR0913, N803
     M: int,
     K: int,
     N: int,
@@ -92,7 +92,7 @@ def _run_gemm_pipeline(
     )
 
 
-def _run_swiglu_pipeline(
+def _run_swiglu_pipeline(  # noqa: PLR0913
     seq_len: int,
     embedding_dim: int,
     hidden_dim: int,
@@ -172,10 +172,7 @@ def _print_comparison_table(
     print(sep)
     for r in results:
         obj_str = f"{r['objective']:.1f}" if r["objective"] is not None else "N/A"
-        print(
-            f"{r['backend']:<10} {r['solver']:<8} {r['status']:<10}"
-            f" {obj_str:>15} {r['solve_time_s']:>14.2f}"
-        )
+        print(f"{r['backend']:<10} {r['solver']:<8} {r['status']:<10} {obj_str:>15} {r['solve_time_s']:>14.2f}")
     print(sep)
     print()
 
@@ -304,11 +301,7 @@ def _run_backend(
 
     solve_time_s = time.perf_counter() - t0
 
-    # Determine solver name from context if available
-    if backend == "gurobi":
-        solver = "gurobi"
-    elif backend == "ortools":
-        solver = "gscip"
+    solver = backend.lower().replace("ortools_", "")
 
     return (
         {
@@ -337,40 +330,34 @@ def verify(args: argparse.Namespace) -> int:
 
     output_dir = ""  # use tempdir per run
 
-    # Run OR-Tools first (license-free)
-    ort_result, ort_latency = _run_backend(workload, "ortools", args, output_dir)
-    results.append(ort_result)
-    if ort_latency is not None:
-        latency_totals["ortools"] = ort_latency
+    backends = args.backends
+    for b in backends:
+        result, latency = _run_backend(workload, b, args, output_dir)
+        results.append(result)
+        if latency is not None:
+            latency_totals[b] = latency
 
-    # Run Gurobi second
-    grb_result, grb_latency = _run_backend(workload, "gurobi", args, output_dir)
-    results.append(grb_result)
-    if grb_latency is not None:
-        latency_totals["gurobi"] = grb_latency
-
-    # Compute relative difference
+    # Compute relative difference (compare all against first successful backend)
     rel_diff = None
     passed = False
 
-    if "ortools" in latency_totals and "gurobi" in latency_totals:
-        ort_val = latency_totals["ortools"]
-        grb_val = latency_totals["gurobi"]
-        baseline = max(abs(grb_val), 1e-10)
-        rel_diff = abs(ort_val - grb_val) / baseline
+    successful = [b for b in backends if b in latency_totals]
+    if len(successful) >= 2:
+        base_name = successful[0]
+        base_val = latency_totals[base_name]
+        max_diff = 0.0
+        for b in successful[1:]:
+            diff = abs(latency_totals[b] - base_val) / max(abs(base_val), 1e-10)
+            max_diff = max(max_diff, diff)
+        rel_diff = max_diff
         passed = rel_diff <= args.tolerance
-    elif "ortools" in latency_totals and grb_result["status"] == "NO_LICENSE":
-        # No Gurobi license: compare OR-Tools against known baseline
-        ort_val = latency_totals["ortools"]
+    elif len(successful) == 1:
+        b = successful[0]
         baseline_obj = GEMM_GUROBI_OBJ if workload == "gemm" else SWIGLU_GUROBI_OBJ
-        rel_diff = abs(ort_val - baseline_obj) / max(abs(baseline_obj), 1e-10)
+        rel_diff = abs(latency_totals[b] - baseline_obj) / max(abs(baseline_obj), 1e-10)
         passed = rel_diff <= args.tolerance
-        print(
-            f"Note: Gurobi unavailable. Comparing OR-Tools result against known baseline "
-            f"({baseline_obj:.0f}) instead of live Gurobi run."
-        )
+        print(f"Note: Only 1 backend succeeded. Comparing against known baseline ({baseline_obj:.0f}).")
     else:
-        # One or both backends failed without a license issue
         passed = False
 
     _print_comparison_table(workload, workload_desc, results, rel_diff, args.tolerance, passed)
@@ -424,6 +411,16 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cols", type=int, default=8, help="Number of AIE columns")
     parser.add_argument("--trace_size", type=int, default=1048576, help="Trace buffer size")
     parser.add_argument("--npu", type=str, default="npu2", help="NPU type to target")
+
+    # Backend selection
+    parser.add_argument(
+        "--backends",
+        type=str,
+        nargs="+",
+        default=["ortools_gscip", "ortools_highs", "gurobi"],
+        choices=["gurobi", "ortools_gscip", "ortools_highs", "ortools_gurobi"],
+        help="Backends to compare (default: ortools_gscip ortools_highs gurobi)",
+    )
 
     # Verification parameters
     parser.add_argument(

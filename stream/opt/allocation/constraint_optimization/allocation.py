@@ -94,7 +94,7 @@ class ComputeAllocator:
         context: ConstraintContext,
         *,
         iterations: int = 1,
-        backend: str = "ORTOOLS",
+        backend: str = "ORTOOLS_GSCIP",
     ) -> None:
         self.workload = workload
         self.accelerator = accelerator
@@ -286,60 +286,51 @@ class ComputeAllocator:
         # Replace tupledict creation with plain dict loops
         self.k_vec = {
             (n, k): m.add_var(vtype=SolverVarType.BINARY, name=f"k_vec[{n},{k}]")
-            for n in self.node_ids for k in self.p_vals
-        }
-        self.k_splits = {
-            n: m.add_var(vtype=SolverVarType.INTEGER, name=f"k_splits[{n}]")
             for n in self.node_ids
+            for k in self.p_vals
         }
+        self.k_splits = {n: m.add_var(vtype=SolverVarType.INTEGER, name=f"k_splits[{n}]") for n in self.node_ids}
         self.core_asgn = {
             (c, n): m.add_var(vtype=SolverVarType.BINARY, name=f"core_asgn[{c.id},{n}]")
-            for c in self.cores for n in self.node_ids
+            for c in self.cores
+            for n in self.node_ids
         }
         self.lat_id_core = {
             (n, c): m.add_var(vtype=SolverVarType.INTEGER, name=f"lat_id_core[{n},{c.id}]")
-            for n in self.node_ids for c in self.cores
+            for n in self.node_ids
+            for c in self.cores
         }
         self.slot_asgn = {
             (s, n): m.add_var(vtype=SolverVarType.BINARY, name=f"slot_asgn[{s},{n}]")
-            for s in self.slots for n in self.node_ids
+            for s in self.slots
+            for n in self.node_ids
         }
         self.asgn = {
             (c, s, n): m.add_var(vtype=SolverVarType.BINARY, name=f"asgn[{c.id},{s},{n}]")
-            for c in self.cores for s in self.slots for n in self.node_ids
-        }
-        self.slot_idx = {
-            n: m.add_var(vtype=SolverVarType.INTEGER, name=f"slot_idx[{n}]")
-            for n in self.node_ids
-        }
-        self.w_split = {
-            n: m.add_var(vtype=SolverVarType.INTEGER, name=f"w_split[{n}]")
-            for n in self.node_ids
-        }
-        self.w_core = {
-            c: m.add_var(vtype=SolverVarType.INTEGER, name=f"w_core[{c.id}]")
             for c in self.cores
+            for s in self.slots
+            for n in self.node_ids
         }
+        self.slot_idx = {n: m.add_var(vtype=SolverVarType.INTEGER, name=f"slot_idx[{n}]") for n in self.node_ids}
+        self.w_split = {n: m.add_var(vtype=SolverVarType.INTEGER, name=f"w_split[{n}]") for n in self.node_ids}
+        self.w_core = {c: m.add_var(vtype=SolverVarType.INTEGER, name=f"w_core[{c.id}]") for c in self.cores}
         self.lat_core_slot = {
             (c, s): m.add_var(vtype=SolverVarType.INTEGER, name=f"lat_core_slot[{c.id},{s}]")
-            for c in self.cores for s in self.slots
-        }
-        self.lat_slot = {
-            s: m.add_var(vtype=SolverVarType.INTEGER, name=f"lat_slot[{s}]")
+            for c in self.cores
             for s in self.slots
         }
+        self.lat_slot = {s: m.add_var(vtype=SolverVarType.INTEGER, name=f"lat_slot[{s}]") for s in self.slots}
         self.idle_start = {
             (c, s): m.add_var(vtype=SolverVarType.BINARY, name=f"idle_start[{c.id},{s}]")
-            for c in self.cores for s in self.slots
+            for c in self.cores
+            for s in self.slots
         }
         self.idle_end = {
             (c, s): m.add_var(vtype=SolverVarType.BINARY, name=f"idle_end[{c.id},{s}]")
-            for c in self.cores for s in self.slots
-        }
-        self.idle_sum = {
-            c: m.add_var(vtype=SolverVarType.INTEGER, name=f"idle_sum[{c.id}]")
             for c in self.cores
+            for s in self.slots
         }
+        self.idle_sum = {c: m.add_var(vtype=SolverVarType.INTEGER, name=f"idle_sum[{c.id}]") for c in self.cores}
 
         # Scalars
         self.lat_iter = m.add_var(vtype=SolverVarType.INTEGER, name="lat_iter")
@@ -392,15 +383,13 @@ class ComputeAllocator:
         for c in self.cores:
             for n in self.node_ids:
                 m.add_constr(
-                    self.core_asgn[(c, n)]._raw
-                    == m.quicksum(self.asgn[(c, s, n)]._raw for s in self.slots)._raw,
+                    self.core_asgn[(c, n)]._raw == m.quicksum(self.asgn[(c, s, n)]._raw for s in self.slots)._raw,
                     name=f"core_asgn_asgn_{c.id}_{n}",
                 )
         for n in self.node_ids:
             for s in self.slots:
                 m.add_constr(
-                    self.slot_asgn[(s, n)]._raw
-                    * m.quicksum(self.asgn[(c, s, n)]._raw for c in self.cores)._raw
+                    self.slot_asgn[(s, n)]._raw * m.quicksum(self.asgn[(c, s, n)]._raw for c in self.cores)._raw
                     == self.slot_asgn[(s, n)]._raw * self.k_splits[n]._raw,
                     name=f"slot_asgn_ksplits_{s}_{n}",
                 )
@@ -428,8 +417,7 @@ class ComputeAllocator:
         m = self.model
         for n in self.node_ids:
             m.add_constr(
-                self.slot_idx[n]._raw
-                == m.quicksum(s * self.slot_asgn[(s, n)]._raw for s in self.slots)._raw,
+                self.slot_idx[n]._raw == m.quicksum(s * self.slot_asgn[(s, n)]._raw for s in self.slots)._raw,
                 name=f"slot_idx_def_{n}",
             )
         for p, c in deps:
@@ -477,7 +465,9 @@ class ComputeAllocator:
             for s in self.slots:
                 m.add_constr(
                     self.lat_core_slot[(c, s)]._raw
-                    == m.quicksum(self.lat_id_core[(n, c)]._raw * self.asgn[(c, s, n)]._raw for n in self.node_ids)._raw,
+                    == m.quicksum(
+                        self.lat_id_core[(n, c)]._raw * self.asgn[(c, s, n)]._raw for n in self.node_ids
+                    )._raw,
                     name=f"lat_core_slot_{c.id}_{s}",
                 )
         # lat_slot[s] = max(lat_core_slot[c, s] for c in cores)
@@ -508,11 +498,13 @@ class ComputeAllocator:
         m = self.model
         incl: dict[tuple[Core, int], SolverVar] = {
             (c, s): m.add_var(vtype=SolverVarType.INTEGER, name=f"incl[{c.id},{s}]")
-            for c in self.cores for s in self.slots
+            for c in self.cores
+            for s in self.slots
         }
         excl: dict[tuple[Core, int], SolverVar] = {
             (c, s): m.add_var(vtype=SolverVarType.INTEGER, name=f"excl[{c.id},{s}]")
-            for c in self.cores for s in self.slots
+            for c in self.cores
+            for s in self.slots
         }
 
         for c in self.cores:
@@ -520,8 +512,7 @@ class ComputeAllocator:
                 m.add_constr(
                     incl[(c, s)]._raw
                     == m.quicksum(
-                        m.quicksum(self.asgn[(c, t, n)]._raw for n in self.node_ids)._raw
-                        for t in range(s + 1)
+                        m.quicksum(self.asgn[(c, t, n)]._raw for n in self.node_ids)._raw for t in range(s + 1)
                     )._raw,
                     name=f"incl_{c.id}_{s}",
                 )
@@ -530,8 +521,7 @@ class ComputeAllocator:
                 m.add_constr(
                     excl[(c, s)]._raw
                     == m.quicksum(
-                        m.quicksum(self.asgn[(c, t, n)]._raw for n in self.node_ids)._raw
-                        for t in range(s)
+                        m.quicksum(self.asgn[(c, t, n)]._raw for n in self.node_ids)._raw for t in range(s)
                     )._raw,
                     name=f"excl_{c.id}_{s}",
                 )
@@ -539,15 +529,12 @@ class ComputeAllocator:
         eps = 1e-4
         big_m = len(self.node_ids) + eps
         tot_nodes_core: dict[Core, SolverVar] = {
-            c: m.add_var(vtype=SolverVarType.INTEGER, name=f"tot_nodes_core[{c.id}]")
-            for c in self.cores
+            c: m.add_var(vtype=SolverVarType.INTEGER, name=f"tot_nodes_core[{c.id}]") for c in self.cores
         }
         for c in self.cores:
             m.add_constr(
                 tot_nodes_core[c]._raw
-                == m.quicksum(
-                    self.asgn[(c, s, n)]._raw for s in self.slots for n in self.node_ids
-                )._raw,
+                == m.quicksum(self.asgn[(c, s, n)]._raw for s in self.slots for n in self.node_ids)._raw,
                 name=f"tot_nodes_core_{c.id}",
             )
 
@@ -585,8 +572,7 @@ class ComputeAllocator:
         #   idle_min >= idle_sum[c] - M*(1-b_c) for all c, with sum(b_c)==1
         big_m_min = len(self.node_ids) * max(1, len(self.slots))  # safe upper bound on any idle_sum
         b_min: dict[Core, SolverVar] = {
-            c: m.add_var(vtype=SolverVarType.BINARY, name=f"b_min[{c.id}]")
-            for c in self.cores
+            c: m.add_var(vtype=SolverVarType.BINARY, name=f"b_min[{c.id}]") for c in self.cores
         }
         for c in self.cores:
             m.add_constr(self.idle_min._raw <= self.idle_sum[c]._raw, name=f"idle_min_ub_{c.id}")
@@ -639,7 +625,7 @@ def get_optimal_allocations(
     context: ConstraintContext | None = None,
     stage_config: ConstraintOptStageConfig | None = None,
     iterations: int = 1,
-    backend: str = "ORTOOLS",
+    backend: str = "ORTOOLS_GSCIP",
 ) -> ALLOCATION_T:
     """Backwards-compatible helper preserving the original functional API."""
     if context is None:

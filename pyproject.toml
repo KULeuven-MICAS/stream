@@ -73,3 +73,5 @@ fix = true
 lint.select = ["E", "F", "W", "I", "PL", "N", "UP", "B"]
 lint.ignore = ["D401", "N806", "N802", "UP038", "PLW1641"]
 lint.pylint.max-args = 8
+lint.per-file-ignores."tests/**" = ["PLR2004", "PLC0415", "PLR0915", "N803"]
+lint.per-file-ignores."main_*.py" = ["PLR0913", "N803"]

@@ -48,9 +48,7 @@ REL_TOL = 0.01
 
 # Patch targets — both allocator modules import create_solver into their own namespace
 _ALLOC_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.allocation.create_solver"
-_TTA_CREATE_SOLVER = (
-    "stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation.create_solver"
-)
+_TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation.create_solver"
 _LICENSE_CHECK = "stream.api._sanity_check_gurobi_license"
 
 
@@ -165,10 +163,7 @@ def _extract_latency_total(ctx) -> float:
 
 def _print_result_table(rows: list[dict]) -> None:
     """Print a formatted comparison table to stdout."""
-    header = (
-        f"{'Backend':<10} {'Solver':<8} {'Status':<10}"
-        f" {'latency_total':>15} {'SolveTime(s)':>14}"
-    )
+    header = f"{'Backend':<10} {'Solver':<8} {'Status':<10} {'latency_total':>15} {'SolveTime(s)':>14}"
     print("\n" + "-" * len(header))
     print(header)
     print("-" * len(header))
@@ -243,7 +238,7 @@ def test_gemm_cross_backend():
             solve_time = time.perf_counter() - t0
 
     lpi = _extract_latency_total(ctx)
-    _append_result(results, "ORTOOLS", "gscip", lpi, solve_time)
+    _append_result(results, "ORTOOLS_GSCIP", "gscip", lpi, solve_time)
     _print_result_table(results)
 
     rel_err = abs(lpi - GEMM_GUROBI_OBJ) / max(abs(GEMM_GUROBI_OBJ), 1e-10)
@@ -274,7 +269,7 @@ def test_gemm_highs():
             solve_time = time.perf_counter() - t0
 
     lpi = _extract_latency_total(ctx)
-    _append_result(results, "ORTOOLS", "highs", lpi, solve_time)
+    _append_result(results, "ORTOOLS_HIGHS", "highs", lpi, solve_time)
     _print_result_table(results)
 
     # HiGHS should produce a feasible solution — verify against Gurobi baseline
@@ -333,7 +328,7 @@ def test_swiglu_cross_backend():
             solve_time = time.perf_counter() - t0
 
     lpi = _extract_latency_total(ctx)
-    _append_result(results, "ORTOOLS", "gscip", lpi, solve_time)
+    _append_result(results, "ORTOOLS_GSCIP", "gscip", lpi, solve_time)
     _print_result_table(results)
 
     rel_err = abs(lpi - SWIGLU_GUROBI_OBJ) / max(abs(SWIGLU_GUROBI_OBJ), 1e-10)
@@ -360,7 +355,7 @@ def test_swiglu_highs():
             solve_time = time.perf_counter() - t0
 
     lpi = _extract_latency_total(ctx)
-    _append_result(results, "ORTOOLS", "highs", lpi, solve_time)
+    _append_result(results, "ORTOOLS_HIGHS", "highs", lpi, solve_time)
     _print_result_table(results)
 
     rel_err = abs(lpi - SWIGLU_GUROBI_OBJ) / max(abs(SWIGLU_GUROBI_OBJ), 1e-10)
