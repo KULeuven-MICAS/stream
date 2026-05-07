@@ -94,12 +94,14 @@ class ComputeAllocator:
         context: ConstraintContext,
         *,
         iterations: int = 1,
+        backend: str = "ORTOOLS",
     ) -> None:
         self.workload = workload
         self.accelerator = accelerator
         self.cost_lut = cost_lut
         self.context = context
         self.iterations = iterations
+        self.backend_str = backend
 
         # Solver model and main assignment tensor
         self.model: SolverModel | None = None
@@ -270,7 +272,7 @@ class ComputeAllocator:
         self.p_vals = list(range(1, len(self.cores) + 1))
         self.slots = list(range(len(self.node_ids)))
 
-        self.model = create_solver(SolverBackend.GUROBI, "compute_alloc")
+        self.model = create_solver(SolverBackend[self.backend_str], "compute_alloc")
         self.model.set_param(SolverParams.VERBOSITY, 1)
         self.model.set_param(SolverParams.TIME_LIMIT, self.compute_cfg.time_limit)
         self.model.set_param(SolverParams.THREADS, 0)
@@ -637,6 +639,7 @@ def get_optimal_allocations(
     context: ConstraintContext | None = None,
     stage_config: ConstraintOptStageConfig | None = None,
     iterations: int = 1,
+    backend: str = "ORTOOLS",
 ) -> ALLOCATION_T:
     """Backwards-compatible helper preserving the original functional API."""
     if context is None:
@@ -653,4 +656,5 @@ def get_optimal_allocations(
         cost_lut,
         context,
         iterations=iterations,
+        backend=backend,
     ).get_optimal_allocations()

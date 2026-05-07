@@ -8,7 +8,7 @@ from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.utils import pickle_load, pickle_save
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
-from stream.opt.solver import GurobiBackend
+from stream.opt.solver import GurobiBackend, SolverBackend
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.context import StageContext
@@ -121,9 +121,12 @@ def optimize_allocation_co(  # noqa: PLR0913
     trace_size: int = 1048576,
     nb_cols_to_use: int = 4,
     npu: str = "npu2",
+    backend: str = "ortools",
 ) -> StreamCostModelEvaluation:
     _sanity_check_inputs(hardware, workload, mapping, output_path)
-    _sanity_check_gurobi_license()
+    _backend_enum = SolverBackend[backend.upper()]
+    if _backend_enum == SolverBackend.GUROBI:
+        _sanity_check_gurobi_license()
 
     # Create experiment_id path
     output_path = f"{output_path}/{experiment_id}"
@@ -164,6 +167,7 @@ def optimize_allocation_co(  # noqa: PLR0913
             temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
             trace_size=trace_size,
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
+            backend=_backend_enum.value,
         )
         # optionally add code generation stage
         if enable_codegen:
@@ -200,8 +204,11 @@ def optimize_mapping(  # noqa: PLR0913
     last_gemm_down: bool = False,
     npu: str = "npu2",
     nb_workers: int = 1,
+    backend: str = "ortools",
 ) -> StageContext:
-    _sanity_check_gurobi_license()
+    _backend_enum = SolverBackend[backend.upper()]
+    if _backend_enum == SolverBackend.GUROBI:
+        _sanity_check_gurobi_license()
 
     # Create experiment_id path
     output_path = f"{output_path}/{experiment_id}"
@@ -253,6 +260,7 @@ def optimize_mapping(  # noqa: PLR0913
             hidden_tile_size=hidden_tile_size,
             last_gemm_down=last_gemm_down,
             max_nb_mappings=max_nb_mappings,
+            backend=_backend_enum.value,
         )
         # optionally add code generation stage
         if enable_codegen:
