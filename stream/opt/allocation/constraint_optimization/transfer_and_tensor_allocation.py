@@ -10,16 +10,6 @@ import yaml
 # GRB.Callback constants — used only by _mip_progress_callback (Gurobi-specific, per D-04)
 from gurobipy import GRB
 
-from stream.opt.solver import (
-    LinExpr,
-    SolverBackend,
-    SolverModel,
-    SolverParams,
-    SolverVar,
-    SolverVarType,
-    create_solver,
-)
-
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
@@ -34,6 +24,14 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
     _resource_key,
 )
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency
+from stream.opt.solver import (
+    SolverBackend,
+    SolverModel,
+    SolverParams,
+    SolverVar,
+    SolverVarType,
+    create_solver,
+)
 from stream.workload.node import HasOutputs, TransferType
 from stream.workload.steady_state.iteration_space import (
     IterationVariableType,
@@ -457,7 +455,9 @@ class TransferAndTensorAllocator:
         if t in self.tensor_fixed:
             return int(core in self._fixed_tensor_choice(t))
 
-        return self.model.quicksum(self.x_tensor_choice[(t, choice)]._raw for choice in self._tensor_choices(t) if core in choice)
+        return self.model.quicksum(
+            self.x_tensor_choice[(t, choice)]._raw for choice in self._tensor_choices(t) if core in choice
+        )
 
     def _transfer_uses_core_var(self, tr: TransferNode, core: Core) -> SolverVar:
         key = (tr, core)
@@ -589,7 +589,10 @@ class TransferAndTensorAllocator:
     def _tensor_placement_constraints(self):
         for t in self.tensor_var:
             self.model.add_constr(
-                self.model.quicksum(self.x_tensor_choice[(t, choice)]._raw for choice in self.possible_tensor_allocations[t]) == 1,
+                self.model.quicksum(
+                    self.x_tensor_choice[(t, choice)]._raw for choice in self.possible_tensor_allocations[t]
+                )
+                == 1,
                 name=f"place_{t.name}",
             )
 
@@ -737,7 +740,9 @@ class TransferAndTensorAllocator:
                 usage[(link, s)].append(y)
 
         for (link, s), vars_ in usage.items():
-            self.model.add_constr(self.model.quicksum(v._raw for v in vars_) <= 1, name=f"link_usage_{_resource_key(link)}_{s}")
+            self.model.add_constr(
+                self.model.quicksum(v._raw for v in vars_) <= 1, name=f"link_usage_{_resource_key(link)}_{s}"
+            )
 
     # ...................... memory capacity .................... #
     def _memory_capacity_constraints(self):
@@ -826,7 +831,8 @@ class TransferAndTensorAllocator:
                         for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                             src_tensor_reuse = self.z_stop[(compute_tensor, stop)]
                             gate_var = self.model.add_var(
-                                vtype=SolverVarType.BINARY, name=f"active_{compute_tensor.name}_{_resource_key(c)}_L{stop}"
+                                vtype=SolverVarType.BINARY,
+                                name=f"active_{compute_tensor.name}_{_resource_key(c)}_L{stop}",
                             )
                             self.model.add_constr(
                                 gate_var == 1 - src_tensor_reuse,
@@ -899,7 +905,8 @@ class TransferAndTensorAllocator:
             if min_reuse_level < 0:
                 continue
             self.model.add_constr(
-                self.model.quicksum(self.z_stop[(t, s)]._raw for s in range(min_reuse_level, len(applicable_temporal))) >= 1,
+                self.model.quicksum(self.z_stop[(t, s)]._raw for s in range(min_reuse_level, len(applicable_temporal)))
+                >= 1,
                 name=f"force_reuse_past_spatial_{t.name}",
             )
 
@@ -933,7 +940,8 @@ class TransferAndTensorAllocator:
                         last_irrelevant = i
                 if last_irrelevant >= 0:
                     self.model.add_constr(
-                        self.model.quicksum(self.z_stop[(t, s)]._raw for s in range(last_irrelevant, len(relevancies))) >= 1,
+                        self.model.quicksum(self.z_stop[(t, s)]._raw for s in range(last_irrelevant, len(relevancies)))
+                        >= 1,
                         name=f"force_intermediate_reuse_{tr.name}",
                     )
 
@@ -953,7 +961,8 @@ class TransferAndTensorAllocator:
                         last_irrelevant = i
                 if last_irrelevant >= 0:
                     self.model.add_constr(
-                        self.model.quicksum(self.z_stop[(t, s)]._raw for s in range(last_irrelevant, len(relevancies))) >= 1,
+                        self.model.quicksum(self.z_stop[(t, s)]._raw for s in range(last_irrelevant, len(relevancies)))
+                        >= 1,
                         name=f"force_output_reuse_{tr.name}",
                     )
 
@@ -993,10 +1002,12 @@ class TransferAndTensorAllocator:
             self.model.add_constr(sum_active <= big_m * lu, name=f"link_used_def2_{_resource_key(link)}")
 
             prefix = [
-                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"pre_{_resource_key(link)}_{s}") for s in range(max_s + 1)
+                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"pre_{_resource_key(link)}_{s}")
+                for s in range(max_s + 1)
             ]
             suffix = [
-                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"suf_{_resource_key(link)}_{s}") for s in range(max_s + 1)
+                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"suf_{_resource_key(link)}_{s}")
+                for s in range(max_s + 1)
             ]
             self.prefixs[link] = prefix
             self.suffixs[link] = suffix
@@ -1045,10 +1056,12 @@ class TransferAndTensorAllocator:
             self.model.add_constr(lu == 1, name=f"core_used_def_{_resource_key(core)}")
 
             prefix = [
-                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"pre_{_resource_key(core)}_{s}") for s in range(max_s + 1)
+                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"pre_{_resource_key(core)}_{s}")
+                for s in range(max_s + 1)
             ]
             suffix = [
-                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"suf_{_resource_key(core)}_{s}") for s in range(max_s + 1)
+                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"suf_{_resource_key(core)}_{s}")
+                for s in range(max_s + 1)
             ]
             self.model.add_constr(prefix[0] == active_s[0])
             self.model.add_constr(suffix[-1] == active_s[max_s])
@@ -1109,7 +1122,9 @@ class TransferAndTensorAllocator:
                     terms.append(prod_e)
 
             v = self.model.add_var(vtype=SolverVarType.INTEGER, name=f"idleLat_{_resource_key(res)}")
-            self.model.add_constr(v == self.model.quicksum(t._raw for t in terms), name=f"idleLat_def_{_resource_key(res)}")
+            self.model.add_constr(
+                v == self.model.quicksum(t._raw for t in terms), name=f"idleLat_def_{_resource_key(res)}"
+            )
             self.idle_lat[res] = v
 
     def _define_overlap_var(self) -> None:
@@ -1189,7 +1204,8 @@ class TransferAndTensorAllocator:
         assert self.overlap is not None, "Overlap variable must be initialized before objective."
         self.model.add_constr(
             self.total_lat
-            == self.iterations * self.model.quicksum(v._raw for v in self.slot_latency.values()) - (self.iterations - 1) * self.overlap
+            == self.iterations * self.model.quicksum(v._raw for v in self.slot_latency.values())
+            - (self.iterations - 1) * self.overlap
         )
         obj_func = self.total_lat._raw + self.max_core_dma_in._raw + self.max_core_dma_out._raw
         self.model.set_objective(obj_func, sense="minimize")
@@ -1327,22 +1343,55 @@ class TransferAndTensorAllocator:
         # Optional: sanitize if your objects print with spaces or odd chars
         return str(name).replace(" ", "_").replace(":", "_")
 
+    def _add_const_over_linexpr(
+        self,
+        *,
+        numerator: float,
+        denominator_expr: Any,
+        base_name: str,
+        denominator_lb: float,
+        result_lb: float = 0.0,
+        denominator_ub: float | None = None,
+        result_ub: float | None = None,
+    ) -> tuple[SolverVar, SolverVar]:
+        """Encode res = numerator / den using the backend's non-linear constraint.
+
+        Requires a backend with supports_nonlinear=True (e.g. GurobiBackend).
+        Returns (res, den).
+        """
+        assert denominator_lb > 0.0, "denominator_lb must be strictly positive"
+
+        n = self._safe_name(base_name)
+
+        den = self.model.add_var(
+            vtype=SolverVarType.CONTINUOUS,
+            lb=denominator_lb,
+            ub=denominator_ub if denominator_ub is not None else self.model.INFINITY,
+            name=f"{n}__den",
+        )
+        res = self.model.add_var(
+            vtype=SolverVarType.CONTINUOUS,
+            lb=result_lb,
+            ub=result_ub if result_ub is not None else self.model.INFINITY,
+            name=f"{n}__val",
+        )
+
+        self.model.add_constr(den == denominator_expr, name=f"{n}__def_den")
+        self.model.add_genconstr_nl(res, float(numerator) / den._raw, name=f"{n}__def_div")
+
+        return res, den
+
     def _add_const_over_discrete_denominators(
         self,
         *,
         numerator: float,
-        selectors: list[tuple[SolverVar, float]],  # (z_stop_var, denominator_constant)
+        selectors: list[tuple[SolverVar, float]],
         base_name: str,
     ) -> SolverVar:
-        """
-        Encode:  result = numerator / denominator
-        where denominator = sum(z_stop_k * d_k) and sum(z_stop_k) == 1.
+        """Encode result = numerator / denominator for linear-only backends.
 
-        Since z_stop is one-hot and d_k are constants:
-            result = sum(z_stop_k * (numerator / d_k))
-        which is a linear expression in z_stop_k variables.
-
-        Returns the result variable.
+        Uses piecewise enumeration over discrete denominator values via one-hot
+        z_stop selectors: result = sum(z_k * (numerator / d_k)).
         """
         n = self._safe_name(base_name)
         min_denom = min(d for _, d in selectors)
@@ -1350,9 +1399,7 @@ class TransferAndTensorAllocator:
 
         result = self.model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=result_ub, name=f"{n}__val")
         self.model.add_constr(
-            result._raw == self.model.quicksum(
-                z._raw * (numerator / d) for z, d in selectors
-            )._raw,
+            result._raw == self.model.quicksum(z._raw * (numerator / d) for z, d in selectors)._raw,
             name=f"{n}__def_div",
         )
         return result
@@ -1404,19 +1451,33 @@ class TransferAndTensorAllocator:
         *,
         binary_var: SolverVar,
         numerator: float,
-        selectors: list[tuple[SolverVar, float]],  # (z_stop_var, denominator_constant)
+        denominator_expr: Any,
         denominator_lb: float,
         base_name: str,
+        denominator_ub: float | None = None,
+        selectors: list[tuple[SolverVar, float]] | None = None,
     ) -> SolverVar:
         assert denominator_lb > 0.0
 
         result_ub = float(numerator) / denominator_lb
 
-        ratio_var = self._add_const_over_discrete_denominators(
-            numerator=numerator,
-            selectors=selectors,
-            base_name=base_name,
-        )
+        if self.model.supports_nonlinear:
+            ratio_var, _ = self._add_const_over_linexpr(
+                numerator=numerator,
+                denominator_expr=denominator_expr,
+                base_name=base_name,
+                denominator_lb=denominator_lb,
+                denominator_ub=denominator_ub,
+                result_lb=0.0,
+                result_ub=result_ub,
+            )
+        else:
+            assert selectors is not None, "selectors required for linear-only backends"
+            ratio_var = self._add_const_over_discrete_denominators(
+                numerator=numerator,
+                selectors=selectors,
+                base_name=base_name,
+            )
 
         return self._add_binary_scaled_continuous(
             binary_var=binary_var,
@@ -1451,20 +1512,21 @@ class TransferAndTensorAllocator:
             latency_constant = float(self._transfer_latency_for_path(tr, choice))
             active_latency_absent_loops = get_active_latency(tr, latency_constant, self.ssis)
 
-            # Build selectors from z_stop and reuse_levels for this transfer's tensor
+            reuse_factor_expr = self.reuse_factors[tr]._raw
+
             t = tr.outputs[0]
             applicable_temporal = self.ssis[t].get_applicable_temporal_variables()
             selectors = [
-                (self.z_stop[(t, s)], float(self.reuse_levels[(t, s)][1]))
-                for s in range(-1, len(applicable_temporal))
+                (self.z_stop[(t, s)], float(self.reuse_levels[(t, s)][1])) for s in range(-1, len(applicable_temporal))
             ]
 
             active_latency_absent_loops_and_reuse_factor = self._add_binary_times_const_over_linexpr(
                 binary_var=y,
                 numerator=active_latency_absent_loops,
-                selectors=selectors,
+                denominator_expr=reuse_factor_expr,
                 denominator_lb=1.0,
                 base_name=f"transfer_latency_{tr}",
+                selectors=selectors,
             )
             self._transfer_latency_cache[(tr, choice)] = active_latency_absent_loops_and_reuse_factor
 
@@ -1568,7 +1630,8 @@ class TransferAndTensorAllocator:
             """Return a Gurobi model attribute or None if unavailable post-solve."""
             # Access the underlying gurobipy model for Gurobi-specific attributes.
             # GurobiBackend stores the model as ._model; fall back gracefully for other backends.
-            from stream.opt.solver import GurobiBackend
+            from stream.opt.solver import GurobiBackend  # noqa: PLC0415
+
             raw_model = self.model._model if isinstance(self.model, GurobiBackend) else None
             if raw_model is None:
                 return None
