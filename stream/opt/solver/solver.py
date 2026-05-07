@@ -20,7 +20,6 @@ from typing import Any
 import gurobipy as gp
 from gurobipy import GRB
 
-
 # ---------------------------------------------------------------------------
 # Enums
 # ---------------------------------------------------------------------------
@@ -313,6 +312,19 @@ class SolverModel(ABC):
             d["key"] += var._raw
         """
 
+    @property
+    def supports_nonlinear(self) -> bool:
+        """Whether this backend supports general non-linear constraints."""
+        return False
+
+    def add_genconstr_nl(self, resvar: SolverVar, expr: Any, *, name: str = "") -> None:
+        """Add a general non-linear constraint: resvar = expr.
+
+        Only supported by backends where supports_nonlinear is True.
+        For linear-only backends, callers must use a linearized formulation.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support non-linear constraints")
+
     def infinity(self) -> float:
         """Convenience accessor for INFINITY class constant."""
         return self.INFINITY
@@ -535,6 +547,13 @@ class GurobiBackend(SolverModel):
 
     def lin_expr(self, constant: float = 0.0) -> _GurobiLinExpr:
         return _GurobiLinExpr(gp.LinExpr(constant))
+
+    @property
+    def supports_nonlinear(self) -> bool:
+        return True
+
+    def add_genconstr_nl(self, resvar: SolverVar, expr: Any, *, name: str = "") -> None:
+        self._model.addGenConstrNL(resvar._raw, _unwrap(expr), name=name)
 
     @staticmethod
     def check_license() -> None:
