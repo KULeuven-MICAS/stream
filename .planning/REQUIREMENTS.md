@@ -1,77 +1,70 @@
-# Requirements: Stream AIE — OR-Tools TETRA Backend
+# Requirements: Stream AIE — Selective Constraints
 
 **Defined:** 2026-05-07
-**Core Value:** Identical optimization results regardless of solver backend
+**Core Value:** Enable users to explore TETRA design space by toggling hardware resource constraints
 
-## v1.0 Requirements
+## v1.1 Requirements
 
-Requirements for initial release. Each maps to roadmap phases.
+Requirements for selective constraint toggling. Each maps to roadmap phases.
 
-### Solver Abstraction
+### Constraint Selection
 
-- [x] **ABS-01**: SolverModel ABC defines interface for variable creation, constraint addition, objective setting, and solving
-- [x] **ABS-02**: GurobiBackend implements SolverModel by delegating to gurobipy with zero behavioral change
-- [x] **ABS-03**: SolverVar wrapper exposes `.X` property for solution extraction across backends
-- [x] **ABS-04**: LinExpr wrapper supports `+=`, `__add__`, and `defaultdict` accumulation patterns
-- [x] **ABS-05**: Backend factory instantiates solver by enum name (GUROBI, SCIP, ORTOOLS_GUROBI) with clear error on failure
+- [x] **SEL-01**: ConstraintSelection frozen dataclass with 4 bool fields (memory_capacity, object_fifo_depth, buffer_descriptors, dma_channels), all defaulting to True
+- [ ] **SEL-02**: TransferAndTensorAllocator skips disabled constraint groups via if-guards in _create_constraints()
+- [ ] **SEL-03**: DMA toggle skips only context.add_dma_usage_constraints() dispatch, keeps accounting variables for objective
+- [ ] **SEL-04**: Objective conditionally excludes DMA terms when dma_channels=False
+- [x] **SEL-05**: __post_init__ emits WARNING for nonsensical constraint combinations (e.g. memory off + FIFO on)
 
-### OR-Tools Implementation
+### Pipeline Integration
 
-- [x] **ORT-01**: ORToolsBackend implements all linear MILP operations (binary/continuous vars, linear constraints, quicksum, objective)
-- [ ] **ORT-02**: Linearized division constraint replaces `addGenConstrNL` via piecewise enumeration over discrete denominator values
-- [x] **ORT-03**: Infeasibility handler exports model as MPS file when OR-Tools reports infeasible (replacing Gurobi IIS)
+- [ ] **PIPE-01**: constraint_selection parameter threads from API through StageContext to both allocators
 
-### Verification & Configuration
+### User Interface
 
-- [ ] **VER-01**: Cross-backend verification runner compares objective values within solver tolerance on same input
-- [x] **VER-02**: Backend selection configurable via `optimize_allocation_co` API and main scripts
-- [x] **VER-03**: SolveStats dataclass captures solve time, objective, status, with None for OR-Tools-unavailable fields
+- [ ] **UI-01**: optimize_allocation_co() and optimize_mapping() accept constraint_selection kwarg
+- [ ] **UI-02**: Main scripts accept --disable-constraints CLI flag parsing into ConstraintSelection
 
-## v2.0 Requirements
+### Verification
 
-Deferred to future release. Tracked but not in current roadmap.
+- [ ] **TEST-01**: Tight-instance tests per constraint group (infeasibility-flip on toggle)
+- [ ] **TEST-02**: Cross-backend parity (Gurobi and OR-Tools agree within tolerance with same constraint selection)
 
-### Migration
+## v1.0 Requirements (Validated)
 
-- **MIG-01**: Full removal of gurobipy as required dependency
-- **MIG-02**: MathOpt backend (OR-Tools 10.x successor to MPSolver)
-
-### Diagnostics
-
-- **DIAG-01**: MIP progress callback equivalent for OR-Tools (pending upstream support)
-- **DIAG-02**: OR-Tools-native IIS computation (pending upstream OR-Tools issue #3019)
+All v1.0 requirements were validated in the previous milestone:
+- ABS-01 through ABS-05 (Solver abstraction)
+- ORT-01, ORT-02, ORT-03 (OR-Tools implementation)
+- VER-01, VER-02, VER-03 (Verification & config)
 
 ## Out of Scope
 
 | Feature | Reason |
 |---------|--------|
-| CP-SAT solver support | TETRA is MILP; CP-SAT requires all-integer formulation |
-| Changes to TETRA math formulation | Only API layer changes; exception: linearization of division |
-| Full gurobipy removal | Coexistence first, migration later |
-| MIP progress callbacks for OR-Tools | No upstream API exists (GitHub #1902) |
-| timeslot_allocation.py changes | No gurobipy coupling found in this file |
+| Toggling structural constraints (link contention, reuse, slot latency) | Model-validity constraints — disabling breaks the formulation |
+| DSE sweep utility (all 16 combinations) | Nice-to-have, defer to v1.2 |
+| Per-constraint infeasibility diagnosis (N+1 retry) | Advanced diagnostic, defer to v1.2 |
+| Custom resource limit overrides (e.g. set memory cap to 50%) | Different feature — modifying constraints, not toggling |
 
 ## Traceability
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| ABS-01 | Phase 1 | Complete |
-| ABS-02 | Phase 1 | Complete |
-| ABS-03 | Phase 1 | Complete |
-| ABS-04 | Phase 1 | Complete |
-| ABS-05 | Phase 1 | Complete |
-| ORT-01 | Phase 2 | Complete |
-| ORT-02 | Phase 3 | Pending |
-| ORT-03 | Phase 2 | Complete |
-| VER-01 | Phase 4 | Pending |
-| VER-02 | Phase 4 | Complete |
-| VER-03 | Phase 4 | Complete |
+| SEL-01 | Phase 5 | Complete |
+| SEL-02 | Phase 5 | Pending |
+| SEL-03 | Phase 5 | Pending |
+| SEL-04 | Phase 5 | Pending |
+| SEL-05 | Phase 5 | Complete |
+| PIPE-01 | Phase 6 | Pending |
+| UI-01 | Phase 6 | Pending |
+| UI-02 | Phase 6 | Pending |
+| TEST-01 | Phase 7 | Pending |
+| TEST-02 | Phase 7 | Pending |
 
 **Coverage:**
-- v1.0 requirements: 11 total
-- Mapped to phases: 11
+- v1.1 requirements: 10 total
+- Mapped to phases: 10
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-05-07*
-*Last updated: 2026-05-07 after roadmap creation*
+*Last updated: 2026-05-07*
