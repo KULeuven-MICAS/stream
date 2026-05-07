@@ -72,7 +72,7 @@ class TransferAndTensorAllocator:
     # False: count tensor-core occupancy separately for each transfer that uses it
     # True:  count tensor-core occupancy only once across all transfers
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913, PLR0915
         self,
         workload: Workload,
         timeslots: dict[Node, int],
@@ -161,6 +161,10 @@ class TransferAndTensorAllocator:
 
         # track optimization progress
         self.optimization_trace: list[dict[str, float | str | None]] = []
+
+        # counter for deduplicating variable/constraint names across all add_var calls
+        # (MathOpt rejects duplicate names; Gurobi silently accepts them)
+        self._name_counter: dict[str, int] = {}
 
         self._build_model()
 
@@ -1340,8 +1344,20 @@ class TransferAndTensorAllocator:
         return self.mapping.get(node).resource_allocation
 
     def _safe_name(self, name: str) -> str:
-        # Optional: sanitize if your objects print with spaces or odd chars
-        return str(name).replace(" ", "_").replace(":", "_")
+        """Return a sanitized, globally-unique variable/constraint name.
+
+        Replaces whitespace and colons (which cause issues in some backends)
+        then appends a numeric suffix when the same base name would be reused
+        within a single model build.  This ensures MathOpt's uniqueness
+        requirement is always satisfied even when the same tensor/core/stop
+        triple appears across multiple loop iterations.
+        """
+        sanitized = str(name).replace(" ", "_").replace(":", "_")
+        count = self._name_counter.get(sanitized, 0)
+        self._name_counter[sanitized] = count + 1
+        if count == 0:
+            return sanitized
+        return f"{sanitized}_{count}"
 
     def _add_const_over_linexpr(
         self,
@@ -1909,7 +1925,9 @@ class TransferAndTensorAllocator:
         """
 
         if not hasattr(self, "optimization_trace") or not self.optimization_trace:
-            raise ValueError("No optimization trace found. Run solve() with the progress callback enabled first.")
+            # Non-Gurobi backends do not populate optimization_trace via the callback.
+            # Silently skip plotting rather than raising so OR-Tools solves succeed.
+            return
 
         def _is_finite_number(x) -> bool:
             return x is not None and isinstance(x, int | float) and math.isfinite(x)
@@ -2063,7 +2081,9 @@ class TransferAndTensorAllocator:
             file_path: Destination path for the YAML file (e.g. "trace.yaml").
         """
         if not hasattr(self, "optimization_trace") or not self.optimization_trace:
-            raise ValueError("No optimization trace found. Run solve() with the progress callback enabled first.")
+            # Non-Gurobi backends do not populate optimization_trace via the callback.
+            # Silently skip saving rather than raising so OR-Tools solves succeed.
+            return
 
         def _fin(x) -> bool:
             return x is not None and isinstance(x, int | float) and math.isfinite(x)
