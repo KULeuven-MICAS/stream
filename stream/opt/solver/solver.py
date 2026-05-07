@@ -1,8 +1,8 @@
 """Solver abstraction layer for TETRA constraint optimization.
 
 Provides a backend-agnostic API over MILP solvers. Currently supports
-GurobiBackend (wrapping gurobipy 13.0.0). OR-Tools backend is planned
-for Phase 2.
+GurobiBackend (wrapping gurobipy 13.0.0) and ORToolsBackend (wrapping
+OR-Tools MathOpt API, Phase 2).
 
 Design decisions:
 - D-01: Core ops only — ABC wraps addVar, addConstr, setObjective, optimize, and solution extraction.
@@ -13,12 +13,17 @@ Design decisions:
 
 from __future__ import annotations
 
+import datetime
+import logging
+import math
 from abc import ABC, abstractmethod
 from enum import Enum, auto
 from typing import Any
 
 import gurobipy as gp
 from gurobipy import GRB
+
+_logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Enums
@@ -53,7 +58,8 @@ class SolverBackend(Enum):
 
     GUROBI = "GUROBI"
     SCIP = "SCIP"
-    ORTOOLS_GUROBI = "ORTOOLS_GUROBI"
+    ORTOOLS = "ORTOOLS"
+    ORTOOLS_GUROBI = "ORTOOLS"  # Deprecated alias — use ORTOOLS
 
 
 # ---------------------------------------------------------------------------
@@ -571,32 +577,301 @@ class GurobiBackend(SolverModel):
 
 
 # ---------------------------------------------------------------------------
+# OR-Tools MathOpt imports (Phase 2)
+# ---------------------------------------------------------------------------
+
+from ortools.math_opt.io.python import mps_converter  # noqa: E402
+from ortools.math_opt.python import mathopt  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# OR-Tools helpers
+# ---------------------------------------------------------------------------
+
+
+def _unwrap_ort(other: Any) -> Any:
+    """Unwrap _ORToolsVar or _ORToolsLinExpr to underlying MathOpt object.
+
+    Passes through mathopt.Variable, LinearSum, LinearExpression, int, float unchanged.
+    """
+    if isinstance(other, _ORToolsVar):
+        return other._v
+    if isinstance(other, _ORToolsLinExpr):
+        return other._e
+    return other
+
+
+# ---------------------------------------------------------------------------
+# OR-Tools private implementations
+# ---------------------------------------------------------------------------
+
+
+class _ORToolsVar(SolverVar):
+    """MathOpt-backed SolverVar. Private — use ORToolsBackend.add_var()."""
+
+    __slots__ = ("_v", "_backend")
+
+    def __init__(self, v: mathopt.Variable, backend: ORToolsBackend) -> None:
+        self._v = v
+        self._backend = backend
+
+    @property
+    def X(self) -> float:
+        if self._backend._result is None:
+            raise ValueError("No solution available — call optimize() first")
+        if not self._backend._result.has_primal_feasible_solution():
+            raise ValueError("No primal feasible solution available")
+        return self._backend._result.variable_values()[self._v]
+
+    @property
+    def _raw(self) -> mathopt.Variable:
+        return self._v
+
+    def __le__(self, other: Any) -> Any:
+        return self._v <= _unwrap_ort(other)
+
+    def __ge__(self, other: Any) -> Any:
+        return self._v >= _unwrap_ort(other)
+
+    def __eq__(self, other: Any) -> Any:
+        return self._v == _unwrap_ort(other)
+
+    def __ne__(self, other: Any) -> Any:
+        return self._v != _unwrap_ort(other)
+
+    def __add__(self, other: Any) -> Any:
+        return self._v + _unwrap_ort(other)
+
+    def __radd__(self, other: Any) -> Any:
+        return _unwrap_ort(other) + self._v
+
+    def __sub__(self, other: Any) -> Any:
+        return self._v - _unwrap_ort(other)
+
+    def __rsub__(self, other: Any) -> Any:
+        return _unwrap_ort(other) - self._v
+
+    def __mul__(self, other: Any) -> Any:
+        return self._v * _unwrap_ort(other)
+
+    def __rmul__(self, other: Any) -> Any:
+        return _unwrap_ort(other) * self._v
+
+    def __truediv__(self, other: Any) -> Any:
+        return self._v / _unwrap_ort(other)
+
+    def __rtruediv__(self, other: Any) -> Any:
+        raise TypeError("MathOpt Variable does not support reverse division (constant / var)")
+
+    def __neg__(self) -> Any:
+        return -self._v
+
+    def __hash__(self) -> int:
+        return hash(self._v)
+
+    def __repr__(self) -> str:
+        return f"_ORToolsVar({self._v!r})"
+
+
+class _ORToolsLinExpr(LinExpr):
+    """MathOpt-backed LinExpr. Private — use ORToolsBackend.lin_expr()."""
+
+    __slots__ = ("_e",)
+
+    def __init__(self, e: Any = None) -> None:
+        self._e = e if e is not None else 0
+
+    @property
+    def _raw(self) -> Any:
+        return self._e
+
+    def __iadd__(self, other: Any) -> _ORToolsLinExpr:
+        self._e = self._e + _unwrap_ort(other)
+        return self
+
+    def __add__(self, other: Any) -> _ORToolsLinExpr:
+        return _ORToolsLinExpr(self._e + _unwrap_ort(other))
+
+    def __radd__(self, other: Any) -> _ORToolsLinExpr:
+        return _ORToolsLinExpr(_unwrap_ort(other) + self._e)
+
+    def __sub__(self, other: Any) -> _ORToolsLinExpr:
+        return _ORToolsLinExpr(self._e - _unwrap_ort(other))
+
+    def __rsub__(self, other: Any) -> _ORToolsLinExpr:
+        return _ORToolsLinExpr(_unwrap_ort(other) - self._e)
+
+    def __mul__(self, other: Any) -> _ORToolsLinExpr:
+        return _ORToolsLinExpr(self._e * _unwrap_ort(other))
+
+    def __rmul__(self, other: Any) -> _ORToolsLinExpr:
+        return _ORToolsLinExpr(_unwrap_ort(other) * self._e)
+
+    def __neg__(self) -> _ORToolsLinExpr:
+        return _ORToolsLinExpr(-self._e)
+
+    def __le__(self, other: Any) -> Any:
+        return self._e <= _unwrap_ort(other)
+
+    def __ge__(self, other: Any) -> Any:
+        return self._e >= _unwrap_ort(other)
+
+    def __eq__(self, other: Any) -> Any:
+        return self._e == _unwrap_ort(other)
+
+    def __repr__(self) -> str:
+        return f"_ORToolsLinExpr({self._e!r})"
+
+
+# ---------------------------------------------------------------------------
+# OR-Tools status and parameter maps
+# ---------------------------------------------------------------------------
+
+_ORT_STATUS_MAP: dict[mathopt.TerminationReason, str] = {
+    mathopt.TerminationReason.OPTIMAL: "OPTIMAL",
+    mathopt.TerminationReason.INFEASIBLE: "INFEASIBLE",
+    mathopt.TerminationReason.NO_SOLUTION_FOUND: "TIME_LIMIT",
+    mathopt.TerminationReason.FEASIBLE: "TIME_LIMIT",
+    mathopt.TerminationReason.UNBOUNDED: "UNBOUNDED",
+    mathopt.TerminationReason.INFEASIBLE_OR_UNBOUNDED: "INF_OR_UNBD",
+    mathopt.TerminationReason.NUMERICAL_ERROR: "UNKNOWN(NUMERICAL_ERROR)",
+    mathopt.TerminationReason.OTHER_ERROR: "UNKNOWN(OTHER_ERROR)",
+}
+
+def _to_timedelta(v: Any) -> datetime.timedelta:
+    return datetime.timedelta(seconds=v)
+
+
+_ORT_PARAM_MAP: dict[SolverParams, tuple[str, Any]] = {
+    SolverParams.VERBOSITY: ("enable_output", bool),
+    SolverParams.TIME_LIMIT: ("time_limit", _to_timedelta),
+    SolverParams.THREADS: ("threads", int),
+    SolverParams.POOL_GAP: ("relative_gap_tolerance", float),
+    SolverParams.LOG_TO_CONSOLE: ("enable_output", bool),
+}
+
+
+# ---------------------------------------------------------------------------
+# ORToolsBackend
+# ---------------------------------------------------------------------------
+
+
+class ORToolsBackend(SolverModel):
+    """OR-Tools MathOpt-backed SolverModel implementation (Phase 2).
+
+    Uses MathOpt API for backend-agnostic MILP solving. Supports binary,
+    integer, and continuous variables; linear constraints; objective
+    minimization/maximization; and MPS export on infeasibility.
+
+    Default solver: GSCIP (bundled in pip, full MILP support).
+    """
+
+    INFINITY: float = math.inf
+
+    def __init__(self, name: str = "", solver_type: mathopt.SolverType = mathopt.SolverType.GSCIP) -> None:
+        self._model = mathopt.Model(name=name)
+        self._solver_type = solver_type
+        self._params: dict[str, Any] = {"enable_output": False}
+        self._result: mathopt.SolveResult | None = None
+
+    def add_var(
+        self,
+        *,
+        vtype: SolverVarType,
+        lb: float = 0.0,
+        ub: float | None = None,
+        name: str = "",
+    ) -> _ORToolsVar:
+        ub_val = math.inf if ub is None else ub
+        if vtype == SolverVarType.BINARY:
+            v = self._model.add_binary_variable(name=name)
+        elif vtype == SolverVarType.INTEGER:
+            v = self._model.add_integer_variable(lb=lb, ub=ub_val, name=name)
+        else:
+            v = self._model.add_variable(lb=lb, ub=ub_val, name=name)
+        return _ORToolsVar(v, self)
+
+    def add_constr(self, expr: Any, *, name: str = "") -> None:
+        self._model.add_linear_constraint(_unwrap_ort(expr), name=name)
+
+    def set_objective(self, expr: Any, *, sense: str = "minimize") -> None:
+        raw_expr = _unwrap_ort(expr)
+        if sense == self.MINIMIZE:
+            self._model.minimize(raw_expr)
+        elif sense == self.MAXIMIZE:
+            self._model.maximize(raw_expr)
+        else:
+            raise ValueError(f"Unknown objective sense: {sense!r}. Use 'minimize' or 'maximize'.")
+
+    def optimize(self, callback: Any = None) -> None:
+        # callback is ignored per Phase 1 D-04 (non-Gurobi backends may ignore it)
+        params = mathopt.SolveParameters(**self._params)
+        self._result = mathopt.solve(self._model, self._solver_type, params=params)
+
+    def set_param(self, param: SolverParams, value: Any) -> None:
+        if param not in _ORT_PARAM_MAP:
+            raise NotImplementedError(f"Parameter {param} not supported by ORToolsBackend")
+        attr_name, converter = _ORT_PARAM_MAP[param]
+        self._params[attr_name] = converter(value)
+
+    def get_status(self) -> str:
+        if self._result is None:
+            return "UNKNOWN(None)"
+        return _ORT_STATUS_MAP.get(self._result.termination.reason, f"UNKNOWN({self._result.termination.reason})")
+
+    def get_sol_count(self) -> int:
+        if self._result is None:
+            return 0
+        return 1 if self._result.has_primal_feasible_solution() else 0
+
+    def compute_iis(self) -> None:
+        _logger.warning(
+            "ORToolsBackend does not support IIS computation. "
+            "Use write() to export the model as MPS for debugging."
+        )
+
+    def write(self, path: str) -> None:
+        actual_path = path
+        if path.endswith(".ilp"):
+            actual_path = path[:-4] + ".mps"
+            _logger.info("ORToolsBackend exports MPS format only. Writing to %s instead of %s", actual_path, path)
+        proto = self._model.export_model()
+        mps_str = mps_converter.model_proto_to_mps(proto)
+        with open(actual_path, "w") as f:
+            f.write(mps_str)
+
+    def quicksum(self, iterable: Any) -> _ORToolsLinExpr:
+        return _ORToolsLinExpr(mathopt.fast_sum(_unwrap_ort(item) for item in iterable))
+
+    def lin_expr(self, constant: float = 0.0) -> _ORToolsLinExpr:
+        return _ORToolsLinExpr(constant)
+
+
+# ---------------------------------------------------------------------------
 # Factory function
 # ---------------------------------------------------------------------------
 
 
-def create_solver(backend: SolverBackend, name: str = "") -> SolverModel:
+def create_solver(backend: SolverBackend, name: str = "", *, solver_type: Any = None) -> SolverModel:
     """Instantiate a SolverModel by backend enum.
-
-    Per ABS-05: returns GurobiBackend for GUROBI; raises NotImplementedError
-    for SCIP and ORTOOLS_GUROBI (planned for Phase 2); raises ValueError for
-    unknown backends.
 
     Args:
         backend: The solver backend to use.
         name: Model name (used in logs and output files).
+        solver_type: Optional mathopt.SolverType for ORToolsBackend (D-04).
+                     Defaults to mathopt.SolverType.GSCIP when not specified.
 
     Returns:
         A concrete SolverModel instance.
 
     Raises:
-        NotImplementedError: For SCIP or ORTOOLS_GUROBI backends.
+        NotImplementedError: For SCIP backend (not yet implemented).
         ValueError: For unrecognized backend values.
     """
     if backend == SolverBackend.GUROBI:
         return GurobiBackend(name)
     if backend == SolverBackend.SCIP:
         raise NotImplementedError("SCIP backend not yet implemented")
-    if backend == SolverBackend.ORTOOLS_GUROBI:
-        raise NotImplementedError("OR-Tools backend not yet implemented (Phase 2)")
+    if backend == SolverBackend.ORTOOLS:
+        st = solver_type if solver_type is not None else mathopt.SolverType.GSCIP
+        return ORToolsBackend(name, st)
     raise ValueError(f"Unknown backend: {backend!r}")
