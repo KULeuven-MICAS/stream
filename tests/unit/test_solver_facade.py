@@ -24,7 +24,6 @@ from stream.opt.solver import (
     create_solver,
 )
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -227,10 +226,13 @@ def test_factory_scip_raises():
         create_solver(SolverBackend.SCIP)
 
 
-def test_factory_ortools_raises():
-    """create_solver(ORTOOLS_GUROBI) raises NotImplementedError."""
-    with pytest.raises(NotImplementedError):
-        create_solver(SolverBackend.ORTOOLS_GUROBI)
+def test_factory_ortools_backward_compat():
+    """create_solver(ORTOOLS_GUROBI) returns ORToolsBackend (backward compat alias)."""
+    from stream.opt.solver import ORToolsBackend
+
+    solver = create_solver(SolverBackend.ORTOOLS_GUROBI, "test")
+    assert isinstance(solver, SolverModel)
+    assert isinstance(solver, ORToolsBackend)
 
 
 def test_factory_unknown_raises():
