@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Selective Constraints
 status: verifying
-stopped_at: Completed 07-01-PLAN.md
-last_updated: "2026-05-08T12:39:44.423Z"
+stopped_at: Completed 08-01-PLAN.md
+last_updated: "2026-05-08T13:54:32.228Z"
 last_activity: 2026-05-08
 progress:
-  total_phases: 4
-  completed_phases: 3
-  total_plans: 5
-  completed_plans: 6
+  total_phases: 6
+  completed_phases: 4
+  total_plans: 6
+  completed_plans: 7
   percent: 0
 ---
 
@@ -21,11 +21,11 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-07)
 
 **Core value:** Explore TETRA design space — solver backends, constraint toggling, optimality impact
-**Current focus:** Phase 07 — end-to-end-validation
+**Current focus:** Phase 08 — constraint-toggle-study-script
 
 ## Current Position
 
-Phase: 07 (end-to-end-validation) — EXECUTING
+Phase: 08 (constraint-toggle-study-script) — EXECUTING
 Plan: 1 of 1
 Status: Phase complete — ready for verification
 Last activity: 2026-05-08
@@ -54,6 +54,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 06 P01 | 154 | 1 tasks | 4 files |
 | Phase 06 P02 | 3 | 1 tasks | 5 files |
 | Phase 07-end-to-end-validation P01 | 13 | 2 tasks | 1 files |
+| Phase 08 P01 | 152 | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -81,6 +82,11 @@ v1.1 decisions:
 - [Phase 06]: main_swiglu_dse.py computes ConstraintSelection once at top of sweep_tile_size_combinations from args.disable_constraints
 - [Phase 07]: Used Core.__init__ wrapper (not class attribute patch) for max_object_fifo_depth because __init__ sets instance attribute directly, shadowing class-level patches
 - [Phase 07]: parity test 'memory_off' disables both memory_capacity and object_fifo_depth per SEL-05 nonsensical-combination rule
+- [Phase 08]: Horizontal bar charts chosen for 16-row constraint comparison; heatmap uses ax.table with colored cells (green=ON, red=OFF); matplotlib.use('Agg') at module level for headless-safe operation
+
+### Roadmap Evolution
+
+- Phase 8 added: Constraint Toggle Study Script (promoted from v1.2 out-of-scope DSE sweep)
 
 ### Pending Todos
 
@@ -93,6 +99,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-08T12:39:44.421Z
-Stopped at: Completed 07-01-PLAN.md
+Last session: 2026-05-08T13:54:32.225Z
+Stopped at: Completed 08-01-PLAN.md
 Resume file: None
