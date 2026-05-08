@@ -20,6 +20,7 @@ from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocatio
     TransferAlloc,
     TransferAndTensorAllocator,
 )
+from stream.opt.solver import ConstraintSelection
 from stream.visualization.steady_state_trace import export_steady_state_trace
 from stream.workload.node import (
     ComputationNode,
@@ -63,6 +64,7 @@ class SteadyStateScheduler:
         nb_cols_to_use: int = 4,
         output_path: str = "",
         backend: str = "ORTOOLS_GSCIP",
+        constraint_selection: ConstraintSelection | None = None,
     ):
         """
         Initialize the SteadyStateScheduler with the allocation and accelerator.
@@ -87,6 +89,7 @@ class SteadyStateScheduler:
 
         self.nb_cols_to_use = nb_cols_to_use
         self.backend = backend
+        self.constraint_selection = constraint_selection
 
         self.output_path = output_path
         if self.output_path:
@@ -132,6 +135,7 @@ class SteadyStateScheduler:
             nb_cols_to_use=self.nb_cols_to_use,
             output_path=self.output_path,
             backend=self.backend,
+            constraint_selection=self.constraint_selection,
         )
         (
             tensor_reuse_levels,
