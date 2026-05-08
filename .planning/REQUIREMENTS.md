@@ -29,6 +29,11 @@ Requirements for selective constraint toggling. Each maps to roadmap phases.
 - [x] **TEST-01**: Tight-instance tests per constraint group (infeasibility-flip on toggle)
 - [x] **TEST-02**: Cross-backend parity (Gurobi and OR-Tools agree within tolerance with same constraint selection)
 
+### Study & Visualization
+
+- [x] **STUDY-01**: Script runs all 16 constraint combinations and collects objective value + solve time per combination
+- [x] **STUDY-02**: Script produces terminal table + matplotlib plots showing performance deltas relative to all-enabled baseline
+
 ## v1.0 Requirements (Validated)
 
 All v1.0 requirements were validated in the previous milestone:
@@ -41,7 +46,7 @@ All v1.0 requirements were validated in the previous milestone:
 | Feature | Reason |
 |---------|--------|
 | Toggling structural constraints (link contention, reuse, slot latency) | Model-validity constraints — disabling breaks the formulation |
-| DSE sweep utility (all 16 combinations) | Nice-to-have, defer to v1.2 |
+| ~~DSE sweep utility (all 16 combinations)~~ | Promoted to Phase 8 (STUDY-01, STUDY-02) |
 | Per-constraint infeasibility diagnosis (N+1 retry) | Advanced diagnostic, defer to v1.2 |
 | Custom resource limit overrides (e.g. set memory cap to 50%) | Different feature — modifying constraints, not toggling |
 
@@ -59,10 +64,12 @@ All v1.0 requirements were validated in the previous milestone:
 | UI-02 | Phase 6 | Complete |
 | TEST-01 | Phase 7 | Complete |
 | TEST-02 | Phase 7 | Complete |
+| STUDY-01 | Phase 8 | Complete |
+| STUDY-02 | Phase 8 | Complete |
 
 **Coverage:**
-- v1.1 requirements: 10 total
-- Mapped to phases: 10
+- v1.1 requirements: 12 total
+- Mapped to phases: 12
 - Unmapped: 0
 
 ---
