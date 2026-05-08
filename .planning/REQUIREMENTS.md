@@ -26,8 +26,8 @@ Requirements for selective constraint toggling. Each maps to roadmap phases.
 
 ### Verification
 
-- [ ] **TEST-01**: Tight-instance tests per constraint group (infeasibility-flip on toggle)
-- [ ] **TEST-02**: Cross-backend parity (Gurobi and OR-Tools agree within tolerance with same constraint selection)
+- [x] **TEST-01**: Tight-instance tests per constraint group (infeasibility-flip on toggle)
+- [x] **TEST-02**: Cross-backend parity (Gurobi and OR-Tools agree within tolerance with same constraint selection)
 
 ## v1.0 Requirements (Validated)
 
@@ -57,8 +57,8 @@ All v1.0 requirements were validated in the previous milestone:
 | PIPE-01 | Phase 6 | Complete |
 | UI-01 | Phase 6 | Complete |
 | UI-02 | Phase 6 | Complete |
-| TEST-01 | Phase 7 | Pending |
-| TEST-02 | Phase 7 | Pending |
+| TEST-01 | Phase 7 | Complete |
+| TEST-02 | Phase 7 | Complete |
 
 **Coverage:**
 - v1.1 requirements: 10 total
