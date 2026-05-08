@@ -7,6 +7,7 @@ import traceback
 
 from stream.api import optimize_mapping
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
+from stream.opt.solver import ConstraintSelection
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
@@ -27,6 +28,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     hidden_tile_size=64,
     last_gemm_down: bool = False,
     backend: str = "ortools_gscip",
+    constraint_selection: ConstraintSelection | None = None,
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
@@ -89,6 +91,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         nb_workers=1,
         max_nb_mappings=256,
         backend=backend,
+        constraint_selection=constraint_selection,
     )
 
     module = ctx.get("module")
@@ -102,6 +105,18 @@ def sweep_tile_size_combinations(args: argparse.Namespace) -> None:
     Failures within a single combination are logged and skipped so that the sweep
     continues with the remaining combinations.
     """
+    _disabled = set(args.disable_constraints or [])
+    constraint_selection = (
+        ConstraintSelection(
+            memory_capacity="memory_capacity" not in _disabled,
+            object_fifo_depth="object_fifo_depth" not in _disabled,
+            buffer_descriptors="buffer_descriptors" not in _disabled,
+            dma_channels="dma_channels" not in _disabled,
+        )
+        if _disabled
+        else None
+    )
+
     combinations = list(itertools.product(args.seq_len_tile_size, args.embedding_tile_size, args.hidden_tile_size))
     print(f"Iterating over {len(combinations)} tile size combination(s): {combinations}")
 
@@ -126,6 +141,7 @@ def sweep_tile_size_combinations(args: argparse.Namespace) -> None:
                 h_tile,
                 last_gemm_down=args.last_gemm_down,
                 backend=args.backend,
+                constraint_selection=constraint_selection,
             )
         except Exception as ex:
             print(
@@ -194,6 +210,14 @@ if __name__ == "__main__":
         default="ortools_gscip",
         choices=["gurobi", "ortools_gscip", "ortools_highs", "ortools_gurobi"],
         help="Solver backend (default: ortools_gscip)",
+    )
+    parser.add_argument(
+        "--disable-constraints",
+        nargs="*",
+        choices=["memory_capacity", "object_fifo_depth", "buffer_descriptors", "dma_channels"],
+        default=[],
+        metavar="CONSTRAINT",
+        help="Disable hardware resource constraint groups. Example: --disable-constraints memory_capacity dma_channels",
     )
     args = parser.parse_args()
     sweep_tile_size_combinations(args)

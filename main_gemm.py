@@ -6,6 +6,7 @@ import re
 from stream.api import optimize_allocation_co
 from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
+from stream.opt.solver import ConstraintSelection
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
@@ -13,7 +14,8 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
 def run_main_aie_codegen_gemm(
-    M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_rows, nb_cols, npu, backend: str = "ortools_gscip"
+    M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_rows, nb_cols, npu, backend: str = "ortools_gscip",
+    constraint_selection: ConstraintSelection | None = None,
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
@@ -53,6 +55,7 @@ def run_main_aie_codegen_gemm(
         nb_cols_to_use=nb_cols,
         npu=npu,
         backend=backend,
+        constraint_selection=constraint_selection,
     )
 
     module = ctx.get("module")
@@ -86,7 +89,26 @@ if __name__ == "__main__":
         choices=["gurobi", "ortools_gscip", "ortools_highs", "ortools_gurobi"],
         help="Solver backend (default: ortools_gscip)",
     )
+    parser.add_argument(
+        "--disable-constraints",
+        nargs="*",
+        choices=["memory_capacity", "object_fifo_depth", "buffer_descriptors", "dma_channels"],
+        default=[],
+        metavar="CONSTRAINT",
+        help="Disable hardware resource constraint groups. Example: --disable-constraints memory_capacity dma_channels",
+    )
     args = parser.parse_args()
+    _disabled = set(args.disable_constraints or [])
+    _constraint_selection = (
+        ConstraintSelection(
+            memory_capacity="memory_capacity" not in _disabled,
+            object_fifo_depth="object_fifo_depth" not in _disabled,
+            buffer_descriptors="buffer_descriptors" not in _disabled,
+            dma_channels="dma_channels" not in _disabled,
+        )
+        if _disabled
+        else None
+    )
 
     module = run_main_aie_codegen_gemm(
         args.M,
@@ -102,6 +124,7 @@ if __name__ == "__main__":
         args.cols,
         args.npu,
         args.backend,
+        constraint_selection=_constraint_selection,
     )
     save_path = f"outputs/swiglu_module_{args.M}_{args.N}_{args.K}.mlir"
     with open(save_path, "w") as f:
