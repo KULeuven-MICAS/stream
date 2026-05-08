@@ -82,7 +82,7 @@ Plans:
   3. When `memory_capacity=False`, TransferAndTensorAllocator skips the memory capacity constraints block and the model solves without them
   4. When `dma_channels=False`, DMA is treated uniformly with other groups: the entire method is skipped (no variables, no constraints), and the objective excludes DMA terms
   5. Each disabled constraint group produces a distinct WARNING log entry naming the skipped group
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans executed
 
 Plans:
 - [x] 05-01-PLAN.md — ConstraintSelection frozen dataclass + unit tests
@@ -96,8 +96,11 @@ Plans:
   1. `optimize_allocation_co()` and `optimize_mapping()` accept a `constraint_selection` keyword argument and pass it through to both allocators
   2. Running a main script with `--disable-constraints memory_capacity dma_channels` produces a `ConstraintSelection` with those two fields set to False and the others True
   3. Passing `constraint_selection` via the API and via the equivalent CLI flags produces identical solver behavior on the same input
-**Plans**: TBD
-**UI hint**: yes
+**Plans:** 2 plans
+
+Plans:
+- [ ] 06-01-PLAN.md — Thread constraint_selection through pipeline (api.py, Stage, Scheduler) + tests
+- [ ] 06-02-PLAN.md — Add --disable-constraints CLI flag to all 4 main scripts + CLI tests
 
 #### Phase 7: End-to-End Validation
 **Goal**: The constraint toggle feature is verified correct per group and cross-backend parity is confirmed with selective constraints active
@@ -120,6 +123,6 @@ Phases execute in numeric order: 5 → 6 → 7
 | 2. ORToolsBackend (linear) | v1.0 | 1/2 | Complete | 2026-05-07 |
 | 3. Linearized Division | v1.0 | TBD | Complete | 2026-05-07 |
 | 4. Verification & Config | v1.0 | 2/2 | Complete | 2026-05-07 |
-| 5. ConstraintSelection Dataclass | v1.1 | 1/2 | In Progress|  |
-| 6. Pipeline & API Surface | v1.1 | 0/TBD | Not started | - |
+| 5. ConstraintSelection Dataclass | v1.1 | 2/2 | Complete |  |
+| 6. Pipeline & API Surface | v1.1 | 0/2 | In Progress | - |
 | 7. End-to-End Validation | v1.1 | 0/TBD | Not started | - |
