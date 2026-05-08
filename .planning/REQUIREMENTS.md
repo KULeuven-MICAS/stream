@@ -22,7 +22,7 @@ Requirements for selective constraint toggling. Each maps to roadmap phases.
 ### User Interface
 
 - [x] **UI-01**: optimize_allocation_co() and optimize_mapping() accept constraint_selection kwarg
-- [ ] **UI-02**: Main scripts accept --disable-constraints CLI flag parsing into ConstraintSelection
+- [x] **UI-02**: Main scripts accept --disable-constraints CLI flag parsing into ConstraintSelection
 
 ### Verification
 
@@ -56,7 +56,7 @@ All v1.0 requirements were validated in the previous milestone:
 | SEL-05 | Phase 5 | Complete |
 | PIPE-01 | Phase 6 | Complete |
 | UI-01 | Phase 6 | Complete |
-| UI-02 | Phase 6 | Pending |
+| UI-02 | Phase 6 | Complete |
 | TEST-01 | Phase 7 | Pending |
 | TEST-02 | Phase 7 | Pending |
 
