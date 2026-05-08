@@ -4,6 +4,7 @@ from typing import TypeAlias
 
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.datatypes import LayerDim
+from stream.opt.solver import ConstraintSelection
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.mapping.mapping import Mapping
 from stream.opt.allocation.constraint_optimization.config import ConstraintOptStageConfig
@@ -54,6 +55,7 @@ class ConstraintOptimizationAllocationStage(Stage):
 
         self.output_path = self.ctx.get("output_path")
         self.backend: str = self.ctx.get("backend", "ORTOOLS_GSCIP")
+        self.constraint_selection = self.ctx.get("constraint_selection") or ConstraintSelection()
 
     def run(self):
         logger.info("Start ConstraintOptimizationAllocationStage.")
@@ -78,6 +80,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             self.config.transfer.nb_cols_to_use,
             output_path,
             backend=self.backend,
+            constraint_selection=self.constraint_selection,
         )
         workload = scheduler.run()
         return workload, scheduler

@@ -8,7 +8,7 @@ from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.utils import pickle_load, pickle_save
 
 from stream.cost_model.cost_model import StreamCostModelEvaluation
-from stream.opt.solver import GurobiBackend, SolverBackend
+from stream.opt.solver import ConstraintSelection, GurobiBackend, SolverBackend
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.context import StageContext
@@ -122,6 +122,7 @@ def optimize_allocation_co(  # noqa: PLR0913
     nb_cols_to_use: int = 4,
     npu: str = "npu2",
     backend: str = "ortools_gscip",
+    constraint_selection: ConstraintSelection | None = None,
 ) -> StreamCostModelEvaluation:
     _sanity_check_inputs(hardware, workload, mapping, output_path)
     _backend_enum = SolverBackend[backend.upper()]
@@ -168,6 +169,7 @@ def optimize_allocation_co(  # noqa: PLR0913
             trace_size=trace_size,
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
             backend=_backend_enum.value,
+            constraint_selection=constraint_selection,
         )
         # optionally add code generation stage
         if enable_codegen:
@@ -205,6 +207,7 @@ def optimize_mapping(  # noqa: PLR0913
     npu: str = "npu2",
     nb_workers: int = 1,
     backend: str = "ortools_gscip",
+    constraint_selection: ConstraintSelection | None = None,
 ) -> StageContext:
     _backend_enum = SolverBackend[backend.upper()]
     if _backend_enum in (SolverBackend.GUROBI, SolverBackend.ORTOOLS_GUROBI):
@@ -261,6 +264,7 @@ def optimize_mapping(  # noqa: PLR0913
             last_gemm_down=last_gemm_down,
             max_nb_mappings=max_nb_mappings,
             backend=_backend_enum.value,
+            constraint_selection=constraint_selection,
         )
         # optionally add code generation stage
         if enable_codegen:
