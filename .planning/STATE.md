@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Selective Constraints
-status: executing
-stopped_at: Completed 06-01-PLAN.md
-last_updated: "2026-05-08T08:39:32.570Z"
+status: verifying
+stopped_at: Completed 06-02-PLAN.md
+last_updated: "2026-05-08T08:45:04.607Z"
 last_activity: 2026-05-08
 progress:
   total_phases: 3
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 4
-  completed_plans: 4
+  completed_plans: 5
   percent: 0
 ---
 
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-05-07)
 
 Phase: 06 (pipeline-api-surface) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-05-08
 
 Progress: [░░░░░░░░░░] 0%
@@ -52,6 +52,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 05-constraintselection-dataclass P01 | 61 | 1 tasks | 3 files |
 | Phase 05-constraintselection-dataclass P02 | 420 | 2 tasks | 2 files |
 | Phase 06 P01 | 154 | 1 tasks | 4 files |
+| Phase 06 P02 | 3 | 1 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,8 @@ v1.1 decisions:
 - [Phase 05-constraintselection-dataclass]: _make_tta_stub uses bind_objective=False default; only objective test binds real _set_total_latency_and_objective
 - [Phase 06]: constraint_selection defaults to None at API level, defaults to ConstraintSelection() inside Stage (all-True behavior preserved via or-default pattern)
 - [Phase 06]: SteadyStateScheduler stores constraint_selection as None to preserve TTA's own None-handling from Phase 5
+- [Phase 06]: ConstraintSelection constructed only when _disabled is non-empty; None otherwise preserves API all-True default
+- [Phase 06]: main_swiglu_dse.py computes ConstraintSelection once at top of sweep_tile_size_combinations from args.disable_constraints
 
 ### Pending Todos
 
@@ -87,6 +90,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-08T08:39:32.568Z
-Stopped at: Completed 06-01-PLAN.md
+Last session: 2026-05-08T08:45:04.604Z
+Stopped at: Completed 06-02-PLAN.md
 Resume file: None
