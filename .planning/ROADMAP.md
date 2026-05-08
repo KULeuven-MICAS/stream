@@ -96,10 +96,10 @@ Plans:
   1. `optimize_allocation_co()` and `optimize_mapping()` accept a `constraint_selection` keyword argument and pass it through to both allocators
   2. Running a main script with `--disable-constraints memory_capacity dma_channels` produces a `ConstraintSelection` with those two fields set to False and the others True
   3. Passing `constraint_selection` via the API and via the equivalent CLI flags produces identical solver behavior on the same input
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 
 Plans:
-- [ ] 06-01-PLAN.md — Thread constraint_selection through pipeline (api.py, Stage, Scheduler) + tests
+- [x] 06-01-PLAN.md — Thread constraint_selection through pipeline (api.py, Stage, Scheduler) + tests
 - [ ] 06-02-PLAN.md — Add --disable-constraints CLI flag to all 4 main scripts + CLI tests
 
 #### Phase 7: End-to-End Validation
@@ -124,5 +124,5 @@ Phases execute in numeric order: 5 → 6 → 7
 | 3. Linearized Division | v1.0 | TBD | Complete | 2026-05-07 |
 | 4. Verification & Config | v1.0 | 2/2 | Complete | 2026-05-07 |
 | 5. ConstraintSelection Dataclass | v1.1 | 2/2 | Complete |  |
-| 6. Pipeline & API Surface | v1.1 | 0/2 | In Progress | - |
+| 6. Pipeline & API Surface | v1.1 | 1/2 | In Progress|  |
 | 7. End-to-End Validation | v1.1 | 0/TBD | Not started | - |

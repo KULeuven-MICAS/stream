@@ -17,11 +17,11 @@ Requirements for selective constraint toggling. Each maps to roadmap phases.
 
 ### Pipeline Integration
 
-- [ ] **PIPE-01**: constraint_selection parameter threads from API through StageContext to both allocators
+- [x] **PIPE-01**: constraint_selection parameter threads from API through StageContext to both allocators
 
 ### User Interface
 
-- [ ] **UI-01**: optimize_allocation_co() and optimize_mapping() accept constraint_selection kwarg
+- [x] **UI-01**: optimize_allocation_co() and optimize_mapping() accept constraint_selection kwarg
 - [ ] **UI-02**: Main scripts accept --disable-constraints CLI flag parsing into ConstraintSelection
 
 ### Verification
@@ -54,8 +54,8 @@ All v1.0 requirements were validated in the previous milestone:
 | SEL-03 | Phase 5 | Complete |
 | SEL-04 | Phase 5 | Complete |
 | SEL-05 | Phase 5 | Complete |
-| PIPE-01 | Phase 6 | Pending |
-| UI-01 | Phase 6 | Pending |
+| PIPE-01 | Phase 6 | Complete |
+| UI-01 | Phase 6 | Complete |
 | UI-02 | Phase 6 | Pending |
 | TEST-01 | Phase 7 | Pending |
 | TEST-02 | Phase 7 | Pending |
