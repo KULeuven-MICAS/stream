@@ -118,7 +118,7 @@ Plans:
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 5 → 6 → 7
+Phases execute in numeric order: 5 → 6 → 7 → 8
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -129,3 +129,17 @@ Phases execute in numeric order: 5 → 6 → 7
 | 5. ConstraintSelection Dataclass | v1.1 | 2/2 | Complete |  |
 | 6. Pipeline & API Surface | v1.1 | 2/2 | Complete   | 2026-05-08 |
 | 7. End-to-End Validation | v1.1 | 1/1 | Complete   | 2026-05-08 |
+| 8. Constraint Toggle Study Script | v1.1 | 0/1 | Not started | - |
+
+#### Phase 8: Constraint Toggle Study Script
+**Goal**: A standalone script that runs all constraint toggle combinations on a TETRA workload, compares objective values and solve times, and produces a clear visualization (table + plots) showing the performance impact of disabling each constraint group
+**Depends on**: Phase 7
+**Requirements**: STUDY-01, STUDY-02
+**Success Criteria** (what must be TRUE):
+  1. Running the script on a GEMM workload produces a comparison table showing objective value, solve time, and relative delta for each of the 16 constraint combinations
+  2. The script generates matplotlib bar/heatmap plots saved to disk showing which constraints have the largest impact on optimality
+  3. Each combination is clearly labeled with human-readable constraint group names (not field names)
+**Plans:** 1 plan
+
+Plans:
+- [ ] 08-01-PLAN.md — Study script: enumerate 16 combinations, run pipeline, print table, generate plots
