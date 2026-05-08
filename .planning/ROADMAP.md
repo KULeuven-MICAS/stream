@@ -110,7 +110,10 @@ Plans:
   1. For each of the four constraint groups, a tight test instance flips from feasible to infeasible (or vice versa) when the toggle changes, confirming the guard is structurally effective
   2. Gurobi and OR-Tools produce objective values within solver tolerance for every enabled constraint combination tested
   3. All existing tests continue to pass (no regression from new guards or threading)
-**Plans**: TBD
+**Plans:** 1/1 plans complete
+
+Plans:
+- [x] 07-01-PLAN.md — Infeasibility-flip tests (TEST-01) + cross-backend parity tests (TEST-02)
 
 ## Progress
 
@@ -125,4 +128,4 @@ Phases execute in numeric order: 5 → 6 → 7
 | 4. Verification & Config | v1.0 | 2/2 | Complete | 2026-05-07 |
 | 5. ConstraintSelection Dataclass | v1.1 | 2/2 | Complete |  |
 | 6. Pipeline & API Surface | v1.1 | 2/2 | Complete   | 2026-05-08 |
-| 7. End-to-End Validation | v1.1 | 0/TBD | Not started | - |
+| 7. End-to-End Validation | v1.1 | 1/1 | Complete   | 2026-05-08 |

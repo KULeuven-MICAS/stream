@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Selective Constraints
 status: verifying
-stopped_at: Completed 06-02-PLAN.md
-last_updated: "2026-05-08T08:45:04.607Z"
+stopped_at: Completed 07-01-PLAN.md
+last_updated: "2026-05-08T12:39:44.423Z"
 last_activity: 2026-05-08
 progress:
-  total_phases: 3
-  completed_phases: 2
-  total_plans: 4
-  completed_plans: 5
+  total_phases: 4
+  completed_phases: 3
+  total_plans: 5
+  completed_plans: 6
   percent: 0
 ---
 
@@ -21,12 +21,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-07)
 
 **Core value:** Explore TETRA design space — solver backends, constraint toggling, optimality impact
-**Current focus:** Phase 06 — pipeline-api-surface
+**Current focus:** Phase 07 — end-to-end-validation
 
 ## Current Position
 
-Phase: 06 (pipeline-api-surface) — EXECUTING
-Plan: 2 of 2
+Phase: 07 (end-to-end-validation) — EXECUTING
+Plan: 1 of 1
 Status: Phase complete — ready for verification
 Last activity: 2026-05-08
 
@@ -53,6 +53,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 05-constraintselection-dataclass P02 | 420 | 2 tasks | 2 files |
 | Phase 06 P01 | 154 | 1 tasks | 4 files |
 | Phase 06 P02 | 3 | 1 tasks | 5 files |
+| Phase 07-end-to-end-validation P01 | 13 | 2 tasks | 1 files |
 
 ## Accumulated Context
 
@@ -78,6 +79,8 @@ v1.1 decisions:
 - [Phase 06]: SteadyStateScheduler stores constraint_selection as None to preserve TTA's own None-handling from Phase 5
 - [Phase 06]: ConstraintSelection constructed only when _disabled is non-empty; None otherwise preserves API all-True default
 - [Phase 06]: main_swiglu_dse.py computes ConstraintSelection once at top of sweep_tile_size_combinations from args.disable_constraints
+- [Phase 07]: Used Core.__init__ wrapper (not class attribute patch) for max_object_fifo_depth because __init__ sets instance attribute directly, shadowing class-level patches
+- [Phase 07]: parity test 'memory_off' disables both memory_capacity and object_fifo_depth per SEL-05 nonsensical-combination rule
 
 ### Pending Todos
 
@@ -90,6 +93,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-08T08:45:04.604Z
-Stopped at: Completed 06-02-PLAN.md
+Last session: 2026-05-08T12:39:44.421Z
+Stopped at: Completed 07-01-PLAN.md
 Resume file: None
