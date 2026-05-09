@@ -221,7 +221,7 @@ def process_core(  # noqa: PLR0913
     if not pairs:
         return {
             "pid": pid,
-            "tile_name": name.split(" for ")[-1] if " for " in name else name,
+            "tile_name": name.rsplit(" for ", maxsplit=1)[-1] if " for " in name else name,
             "detected_total_iterations": 0,
             "expected_total_iterations": warmup + iterations,
             "mismatch_note": "No valid kernel pairs detected after robust filtering.",
@@ -279,7 +279,7 @@ def process_core(  # noqa: PLR0913
 
     return {
         "pid": pid,
-        "tile_name": name.split(" for ")[-1] if " for " in name else name,
+        "tile_name": name.rsplit(" for ", maxsplit=1)[-1] if " for " in name else name,
         "median_kernel_duration_cycles": med_kernel,
         "lock_stall_boundary_count": len(boundaries),
         "detected_total_iterations": detected_total,

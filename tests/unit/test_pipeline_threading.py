@@ -17,10 +17,7 @@ import argparse
 import inspect
 from unittest.mock import MagicMock
 
-import pytest
-
 from stream.opt.solver import ConstraintSelection
-
 
 # ---------------------------------------------------------------------------
 # Test 1: optimize_allocation_co accepts constraint_selection kwarg
@@ -32,12 +29,8 @@ def test_api_optimize_allocation_co_accepts_constraint_selection():
     from stream.api import optimize_allocation_co
 
     sig = inspect.signature(optimize_allocation_co)
-    assert "constraint_selection" in sig.parameters, (
-        "optimize_allocation_co must accept 'constraint_selection' kwarg"
-    )
-    assert sig.parameters["constraint_selection"].default is None, (
-        "constraint_selection must default to None"
-    )
+    assert "constraint_selection" in sig.parameters, "optimize_allocation_co must accept 'constraint_selection' kwarg"
+    assert sig.parameters["constraint_selection"].default is None, "constraint_selection must default to None"
 
 
 # ---------------------------------------------------------------------------
@@ -50,12 +43,8 @@ def test_api_optimize_mapping_accepts_constraint_selection():
     from stream.api import optimize_mapping
 
     sig = inspect.signature(optimize_mapping)
-    assert "constraint_selection" in sig.parameters, (
-        "optimize_mapping must accept 'constraint_selection' kwarg"
-    )
-    assert sig.parameters["constraint_selection"].default is None, (
-        "constraint_selection must default to None"
-    )
+    assert "constraint_selection" in sig.parameters, "optimize_mapping must accept 'constraint_selection' kwarg"
+    assert sig.parameters["constraint_selection"].default is None, "constraint_selection must default to None"
 
 
 # ---------------------------------------------------------------------------
@@ -82,9 +71,7 @@ def test_stage_reads_constraint_selection_from_context():
         constraint_selection=cs,
     )
     stage = ConstraintOptimizationAllocationStage([MagicMock()], ctx)
-    assert stage.constraint_selection.dma_channels is False, (
-        "Stage must read constraint_selection from context"
-    )
+    assert stage.constraint_selection.dma_channels is False, "Stage must read constraint_selection from context"
 
 
 # ---------------------------------------------------------------------------
@@ -129,13 +116,11 @@ def test_scheduler_stores_constraint_selection():
         MagicMock(),  # workload
         MagicMock(),  # accelerator
         MagicMock(),  # mapping
-        {},           # fusion_splits
+        {},  # fusion_splits
         MagicMock(),  # cost_lut
         constraint_selection=cs,
     )
-    assert scheduler.constraint_selection is cs, (
-        "SteadyStateScheduler must store constraint_selection"
-    )
+    assert scheduler.constraint_selection is cs, "SteadyStateScheduler must store constraint_selection"
     assert scheduler.constraint_selection.buffer_descriptors is False
 
 
@@ -152,12 +137,10 @@ def test_scheduler_defaults_constraint_selection_when_none():
         MagicMock(),  # workload
         MagicMock(),  # accelerator
         MagicMock(),  # mapping
-        {},           # fusion_splits
+        {},  # fusion_splits
         MagicMock(),  # cost_lut
     )
-    assert scheduler.constraint_selection is None, (
-        "SteadyStateScheduler constraint_selection must default to None"
-    )
+    assert scheduler.constraint_selection is None, "SteadyStateScheduler constraint_selection must default to None"
 
 
 # ---------------------------------------------------------------------------

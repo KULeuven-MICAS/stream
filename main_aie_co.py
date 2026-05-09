@@ -25,7 +25,7 @@ nb_ga_individuals = 16
 ##############################################################################################
 
 ################################PARSING###############################
-hw_name = accelerator.split("/")[-1].split(".")[0]
+hw_name = accelerator.rsplit("/", maxsplit=1)[-1].split(".", maxsplit=1)[0]
 wl_name = re.split(r"/|\.", workload_path)[-1]
 if wl_name == "onnx":
     wl_name = re.split(r"/|\.", workload_path)[-2]
