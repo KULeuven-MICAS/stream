@@ -185,7 +185,10 @@ Plans:
   1. A pipeline-stages skill file documents each active stage (AcceleratorParser, ONNXModelParser, MappingParser, TilingGeneration, CoreCostEstimation, ConstraintOptimizationAllocation, MemoryAccessesEstimation, MappingGeneration) with its responsibility, inputs/outputs, and position in the flow
   2. A stage-execution skill file documents StageContext (what data it holds, how stages access it) and the MainStage/LeafStage execution model (how stages compose, how the scheduler invokes them)
   3. Each skill file has a SKILL.md with accurate trigger phrases and is readable independently
-**Plans**: TBD
+**Plans:** 1/1 plans complete
+
+Plans:
+- [x] 12-01-PLAN.md — Write pipeline-stages.md and stage-execution.md skill files, update SKILL.md
 
 #### Phase 13: MILP & Constraint Skills
 **Goal**: Anyone modifying or debugging TETRA constraints can understand the full MILP formulation and how hardware-specific constraints are dispatched through the NamespaceConstraints pattern
@@ -224,7 +227,7 @@ Phase 9 is independent. Phase 10 depends on Phase 9. Phases 11-14 depend on Phas
 | 8. Constraint Toggle Study Script | v1.1 | 1/1 | Complete | 2026-05-08 |
 | 9. Dead Code Cleanup | v1.2 | 1/1 | Complete   | 2026-05-09 |
 | 10. CLAUDE.md & Skill Scaffolding | v1.2 | 2/2 | Complete    | 2026-05-09 |
-| 11. Solver System Skills | v1.2 | 1/1 | Complete   | 2026-05-09 |
-| 12. Pipeline Skills | v1.2 | 0/? | Not started | - |
+| 11. Solver System Skills | v1.2 | 1/1 | Complete    | 2026-05-09 |
+| 12. Pipeline Skills | v1.2 | 1/1 | Complete   | 2026-05-09 |
 | 13. MILP & Constraint Skills | v1.2 | 0/? | Not started | - |
 | 14. API & Testing Skills | v1.2 | 0/? | Not started | - |

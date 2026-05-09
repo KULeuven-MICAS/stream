@@ -21,8 +21,8 @@
 
 ### Pipeline Stages
 
-- [ ] **STAGE-01**: Skill doc covers each active pipeline stage (AcceleratorParser, ONNXModelParser, MappingParser, TilingGeneration, CoreCostEstimation, ConstraintOptimizationAllocation, MemoryAccessesEstimation, MappingGeneration) with responsibility, inputs/outputs, and where it fits in the flow
-- [ ] **STAGE-02**: Skill doc covers StageContext and the MainStage/LeafStage execution model
+- [x] **STAGE-01**: Skill doc covers each active pipeline stage (AcceleratorParser, ONNXModelParser, MappingParser, TilingGeneration, CoreCostEstimation, ConstraintOptimizationAllocation, MemoryAccessesEstimation, MappingGeneration) with responsibility, inputs/outputs, and where it fits in the flow
+- [x] **STAGE-02**: Skill doc covers StageContext and the MainStage/LeafStage execution model
 
 ### MILP & Constraints
 
@@ -56,8 +56,8 @@
 | NAV-02 | Phase 10 | Complete |
 | SOLVER-01 | Phase 11 | Complete |
 | SOLVER-02 | Phase 11 | Complete |
-| STAGE-01 | Phase 12 | Pending |
-| STAGE-02 | Phase 12 | Pending |
+| STAGE-01 | Phase 12 | Complete |
+| STAGE-02 | Phase 12 | Complete |
 | MILP-01 | Phase 13 | Pending |
 | MILP-02 | Phase 13 | Pending |
 | API-01 | Phase 14 | Pending |
