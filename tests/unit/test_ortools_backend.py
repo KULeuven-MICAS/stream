@@ -11,7 +11,6 @@ import pytest
 from ortools.math_opt.python import mathopt
 
 from stream.opt.solver import (
-    GurobiBackend,
     LinExpr,
     ORToolsBackend,
     SolverBackend,
@@ -331,13 +330,11 @@ def test_ortools_infeasible_var_x_raises():
 
 
 def test_cross_backend_objective():
-    """Same trivial MILP on ORTools and Gurobi produces the same objective value."""
+    """Same trivial MILP on GSCIP and HiGHS produces the same objective value."""
 
     def build_and_solve(backend_enum: SolverBackend) -> float:
         m = create_solver(backend_enum, "cross_backend")
         m.set_param(SolverParams.VERBOSITY, 0)
-        if isinstance(m, GurobiBackend):
-            m.set_param(SolverParams.LOG_TO_CONSOLE, 0)
         x = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=100.0, name="x")
         y = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=100.0, name="y")
         m.add_constr(x._raw + y._raw >= 5.0, name="sum_lb")
@@ -346,6 +343,6 @@ def test_cross_backend_objective():
         assert m.get_status() == "OPTIMAL", f"Expected OPTIMAL on {backend_enum}, got {m.get_status()}"
         return x.X * 2.0 + y.X * 3.0
 
-    ort_obj = build_and_solve(SolverBackend.ORTOOLS_GSCIP)
-    grb_obj = build_and_solve(SolverBackend.GUROBI)
-    assert abs(ort_obj - grb_obj) < 1e-4, f"Cross-backend objective mismatch: ORTools={ort_obj}, Gurobi={grb_obj}"
+    gscip_obj = build_and_solve(SolverBackend.ORTOOLS_GSCIP)
+    highs_obj = build_and_solve(SolverBackend.ORTOOLS_HIGHS)
+    assert abs(gscip_obj - highs_obj) < 1e-4, f"Cross-backend mismatch: GSCIP={gscip_obj}, HiGHS={highs_obj}"
