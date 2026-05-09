@@ -7,6 +7,7 @@ from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.mapping.mapping import Mapping
 from stream.opt.allocation.constraint_optimization.config import ConstraintOptStageConfig
+from stream.opt.solver import ConstraintSelection
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.workload import Workload
@@ -53,6 +54,8 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.config = config
 
         self.output_path = self.ctx.get("output_path")
+        self.backend: str = self.ctx.get("backend", "ORTOOLS_GSCIP")
+        self.constraint_selection = self.ctx.get("constraint_selection") or ConstraintSelection()
 
     def run(self):
         logger.info("Start ConstraintOptimizationAllocationStage.")
@@ -76,6 +79,8 @@ class ConstraintOptimizationAllocationStage(Stage):
             self.cost_lut,
             self.config.transfer.nb_cols_to_use,
             output_path,
+            backend=self.backend,
+            constraint_selection=self.constraint_selection,
         )
         workload = scheduler.run()
         return workload, scheduler

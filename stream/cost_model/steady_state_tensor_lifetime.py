@@ -6,9 +6,9 @@ import numpy as np
 import seaborn
 from matplotlib import patches
 from matplotlib import pyplot as plt
+from stream.workload.steady_state.tensor import SteadyStateTensor
 
 from stream.workload.steady_state.node import Node
-from stream.workload.steady_state.tensor import SteadyStateTensor
 from stream.workload.steady_state.workload import SteadyStateWorkload
 
 logger = logging.getLogger(__name__)

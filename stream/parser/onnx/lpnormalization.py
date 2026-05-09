@@ -1,5 +1,6 @@
-from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.dependency_propagation.lpnormalization_node import LpNormalizationNode
+
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 
 
 class LpNormalizationParser(OnnxOperatorParser):

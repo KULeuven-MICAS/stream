@@ -2,10 +2,11 @@ import logging
 from collections.abc import Generator
 from typing import Any
 
+from stream.workload.onnx_workload import ComputationNodeWorkload
+
 from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
-from stream.workload.onnx_workload import ComputationNodeWorkload
 
 logger = logging.getLogger(__name__)
 

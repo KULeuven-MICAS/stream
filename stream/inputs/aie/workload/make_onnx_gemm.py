@@ -6,6 +6,12 @@ import onnx.shape_inference
 from onnx import TensorProto, helper
 
 
+def _clear_tensor_data(tensor: TensorProto) -> None:
+    """Remove raw weight data from a tensor, keeping only shape and type metadata."""
+    for field in ("float_data", "double_data", "int32_data", "int64_data", "uint64_data", "raw_data"):
+        tensor.ClearField(field)
+
+
 def make_gemm_workload(M, K, N, in_dtype, out_dtype):  # noqa: N803
     if "16" in in_dtype:
         ACT_SIZE = 16
@@ -56,7 +62,7 @@ def make_gemm_workload(M, K, N, in_dtype, out_dtype):  # noqa: N803
         [K, N],
         np.zeros((K, N)),
     )
-    weight_B.ClearField("float_data")
+    _clear_tensor_data(weight_B)
 
     # Create the graph and model
     graph = helper.make_graph(

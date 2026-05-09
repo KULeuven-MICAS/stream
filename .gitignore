@@ -176,3 +176,4 @@ stream/inputs/aie/mapping/*.yml
 # planning and docs artifacts
 .planning/
 docs/
+.claude/

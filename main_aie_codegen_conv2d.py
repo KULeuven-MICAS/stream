@@ -2,8 +2,9 @@ import argparse
 import logging as _logging
 import re
 
-from stream.api import optimize_allocation_co
 from stream.inputs.aie.workload.make_conv2d_onnx import make_conv2d
+
+from stream.api import optimize_allocation_co
 from stream.utils import CostModelEvaluationLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.perfetto import convert_scme_to_perfetto_json
@@ -26,7 +27,7 @@ def run_main_aie_codegen(H):  # noqa: N803
     ##############################################################################################
 
     ################################PARSING###############################
-    hw_name = accelerator.split("/")[-1].split(".")[0]
+    hw_name = accelerator.rsplit("/", maxsplit=1)[-1].split(".", maxsplit=1)[0]
     wl_name = re.split(r"/|\.", workload_path)[-1]
     if wl_name == "onnx":
         wl_name = re.split(r"/|\.", workload_path)[-2]

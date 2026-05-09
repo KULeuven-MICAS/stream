@@ -5,6 +5,12 @@ import onnx
 from onnx import TensorProto, helper, shape_inference
 
 
+def _clear_tensor_data(tensor: TensorProto) -> None:
+    """Remove raw weight data from a tensor, keeping only shape and type metadata."""
+    for field in ("float_data", "double_data", "int32_data", "int64_data", "uint64_data", "raw_data"):
+        tensor.ClearField(field)
+
+
 def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down: bool = True):
     """
     Build an ONNX model for SwiGLU using a custom function-op SiLU in a private domain:
@@ -43,14 +49,14 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
         [embedding_dim, hidden_dim],
         np.zeros((embedding_dim, hidden_dim)),
     )
-    w_left.ClearField("float_data")
+    _clear_tensor_data(w_left)
     w_right = helper.make_tensor(
         "weights_2",
         TensorProto.BFLOAT16,
         [embedding_dim, hidden_dim],
         np.zeros((embedding_dim, hidden_dim)),
     )
-    w_right.ClearField("float_data")
+    _clear_tensor_data(w_right)
 
     # I/O
     inp = helper.make_tensor_value_info("input", TensorProto.BFLOAT16, [seq_len, embedding_dim])
@@ -141,7 +147,7 @@ def make_swiglu_workload(seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype
             [hidden_dim, embedding_dim],
             np.zeros((hidden_dim, embedding_dim)),
         )
-        w_down.ClearField("float_data")
+        _clear_tensor_data(w_down)
         # Intermediate elementwise multiply
         out_mul = helper.make_node(
             "Mul",

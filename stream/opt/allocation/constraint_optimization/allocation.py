@@ -6,10 +6,10 @@ Highlights
 ----------
 * Constants collected once and stored under ``self.const`` (see
   :class:`ComputeAllocatorConstants`).
-* Every Gurobi variable handle is a public attribute—type-annotated precisely
-  (``gp.tupledict`` *vs.* ``gurobipy.Var``).
-* Helper methods assert the tupledicts are non-``None`` **before** subscripting,
-  satisfying static type checkers.
+* Every solver variable handle is a public attribute—type-annotated precisely
+  (plain ``dict[tuple, SolverVar]``).
+* Helper methods assert the variable dicts are non-``None`` **before**
+  subscripting, satisfying static type checkers.
 * Public API remains: :py:meth:`ComputeAllocator.get_optimal_allocations`.
 """
 
@@ -19,8 +19,6 @@ import logging
 from dataclasses import dataclass
 from typing import TypeAlias, cast
 
-import gurobipy as gp
-from gurobipy import GRB, Var
 from zigzag.datatypes import LayerOperand, MemoryOperand
 
 from stream.cost_model.core_cost_lut import CoreCostLUT
@@ -33,6 +31,14 @@ from stream.opt.allocation.constraint_optimization.utils import (
     get_energies,
     get_latencies,
     invert_ids_list,
+)
+from stream.opt.solver import (
+    SolverBackend,
+    SolverModel,
+    SolverParams,
+    SolverVar,
+    SolverVarType,
+    create_solver,
 )
 from stream.workload.workload import Workload
 
@@ -88,34 +94,36 @@ class ComputeAllocator:
         context: ConstraintContext,
         *,
         iterations: int = 1,
+        backend: str = "ORTOOLS_GSCIP",
     ) -> None:
         self.workload = workload
         self.accelerator = accelerator
         self.cost_lut = cost_lut
         self.context = context
         self.iterations = iterations
+        self.backend_str = backend
 
-        # Gurobi model and main assignment tensor
-        self.model: gp.Model | None = None
-        self.asgn: gp.tupledict | None = None
+        # Solver model and main assignment tensor
+        self.model: SolverModel | None = None
+        self.asgn: dict[tuple[Core, int, int], SolverVar] | None = None
 
         # ---------------- variable handles (precise typing) ------------- #
-        self.k_vec: gp.tupledict | None = None
-        self.k_splits: gp.tupledict | None = None
-        self.core_asgn: gp.tupledict | None = None
-        self.lat_id_core: gp.tupledict | None = None
-        self.slot_asgn: gp.tupledict | None = None
-        self.slot_idx: gp.tupledict | None = None
-        self.w_split: gp.tupledict | None = None
-        self.w_core: gp.tupledict | None = None
-        self.lat_core_slot: gp.tupledict | None = None
-        self.lat_slot: gp.tupledict | None = None
-        self.lat_iter: Var | None = None
-        self.idle_start: gp.tupledict | None = None
-        self.idle_end: gp.tupledict | None = None
-        self.idle_sum: gp.tupledict | None = None
-        self.idle_min: Var | None = None
-        self.total_lat: Var | None = None
+        self.k_vec: dict[tuple[int, int], SolverVar] | None = None
+        self.k_splits: dict[int, SolverVar] | None = None
+        self.core_asgn: dict[tuple[Core, int], SolverVar] | None = None
+        self.lat_id_core: dict[tuple[int, Core], SolverVar] | None = None
+        self.slot_asgn: dict[tuple[int, int], SolverVar] | None = None
+        self.slot_idx: dict[int, SolverVar] | None = None
+        self.w_split: dict[int, SolverVar] | None = None
+        self.w_core: dict[Core, SolverVar] | None = None
+        self.lat_core_slot: dict[tuple[Core, int], SolverVar] | None = None
+        self.lat_slot: dict[int, SolverVar] | None = None
+        self.lat_iter: SolverVar | None = None
+        self.idle_start: dict[tuple[Core, int], SolverVar] | None = None
+        self.idle_end: dict[tuple[Core, int], SolverVar] | None = None
+        self.idle_sum: dict[Core, SolverVar] | None = None
+        self.idle_min: SolverVar | None = None
+        self.total_lat: SolverVar | None = None
 
         # ---------------- sets populated during model build ------------- #
         self.node_ids: list[int] = []
@@ -264,94 +272,175 @@ class ComputeAllocator:
         self.p_vals = list(range(1, len(self.cores) + 1))
         self.slots = list(range(len(self.node_ids)))
 
-        self.model = gp.Model("compute_alloc")
-        self.model.Params.OutputFlag = 1
-        self.model.Params.TimeLimit = self.compute_cfg.time_limit
-        self.model.Params.Threads = 0
-        self.model.Params.PoolGap = self.compute_cfg.gap
+        self.model = create_solver(SolverBackend[self.backend_str], "compute_alloc")
+        self.model.set_param(SolverParams.VERBOSITY, 1)
+        self.model.set_param(SolverParams.TIME_LIMIT, self.compute_cfg.time_limit)
+        self.model.set_param(SolverParams.THREADS, 0)
+        self.model.set_param(SolverParams.POOL_GAP, self.compute_cfg.gap)
 
     # -------------------- variable creation ---------------------------- #
     def _create_variables(self) -> None:
         assert self.model is not None
         m = self.model
 
-        # tupledicts
-        self.k_vec = m.addVars(self.node_ids, self.p_vals, vtype=GRB.BINARY, name="k_vec")
-        self.k_splits = m.addVars(self.node_ids, vtype=GRB.INTEGER, name="k_splits")
-        self.core_asgn = m.addVars(self.cores, self.node_ids, vtype=GRB.BINARY, name="core_asgn")
-        self.lat_id_core = m.addVars(self.node_ids, self.cores, vtype=GRB.INTEGER, name="lat_id_core")
-        self.slot_asgn = m.addVars(self.slots, self.node_ids, vtype=GRB.BINARY, name="slot_asgn")
-        self.asgn = m.addVars(self.cores, self.slots, self.node_ids, vtype=GRB.BINARY, name="asgn")
-        self.slot_idx = m.addVars(self.node_ids, vtype=GRB.INTEGER, name="slot_idx")
-        self.w_split = m.addVars(self.node_ids, vtype=GRB.INTEGER, name="w_split")
-        self.w_core = m.addVars(self.cores, vtype=GRB.INTEGER, name="w_core")
-        self.lat_core_slot = m.addVars(self.cores, self.slots, vtype=GRB.INTEGER, name="lat_core_slot")
-        self.lat_slot = m.addVars(self.slots, vtype=GRB.INTEGER, name="lat_slot")
-        self.idle_start = m.addVars(self.cores, self.slots, vtype=GRB.BINARY, name="idle_start")
-        self.idle_end = m.addVars(self.cores, self.slots, vtype=GRB.BINARY, name="idle_end")
-        self.idle_sum = m.addVars(self.cores, vtype=GRB.INTEGER, name="idle_sum")
+        # Replace tupledict creation with plain dict loops
+        self.k_vec = {
+            (n, k): m.add_var(vtype=SolverVarType.BINARY, name=f"k_vec[{n},{k}]")
+            for n in self.node_ids
+            for k in self.p_vals
+        }
+        self.k_splits = {n: m.add_var(vtype=SolverVarType.INTEGER, name=f"k_splits[{n}]") for n in self.node_ids}
+        self.core_asgn = {
+            (c, n): m.add_var(vtype=SolverVarType.BINARY, name=f"core_asgn[{c.id},{n}]")
+            for c in self.cores
+            for n in self.node_ids
+        }
+        self.lat_id_core = {
+            (n, c): m.add_var(vtype=SolverVarType.INTEGER, name=f"lat_id_core[{n},{c.id}]")
+            for n in self.node_ids
+            for c in self.cores
+        }
+        self.slot_asgn = {
+            (s, n): m.add_var(vtype=SolverVarType.BINARY, name=f"slot_asgn[{s},{n}]")
+            for s in self.slots
+            for n in self.node_ids
+        }
+        self.asgn = {
+            (c, s, n): m.add_var(vtype=SolverVarType.BINARY, name=f"asgn[{c.id},{s},{n}]")
+            for c in self.cores
+            for s in self.slots
+            for n in self.node_ids
+        }
+        self.slot_idx = {n: m.add_var(vtype=SolverVarType.INTEGER, name=f"slot_idx[{n}]") for n in self.node_ids}
+        self.w_split = {n: m.add_var(vtype=SolverVarType.INTEGER, name=f"w_split[{n}]") for n in self.node_ids}
+        self.w_core = {c: m.add_var(vtype=SolverVarType.INTEGER, name=f"w_core[{c.id}]") for c in self.cores}
+        self.lat_core_slot = {
+            (c, s): m.add_var(vtype=SolverVarType.INTEGER, name=f"lat_core_slot[{c.id},{s}]")
+            for c in self.cores
+            for s in self.slots
+        }
+        self.lat_slot = {s: m.add_var(vtype=SolverVarType.INTEGER, name=f"lat_slot[{s}]") for s in self.slots}
+        self.idle_start = {
+            (c, s): m.add_var(vtype=SolverVarType.BINARY, name=f"idle_start[{c.id},{s}]")
+            for c in self.cores
+            for s in self.slots
+        }
+        self.idle_end = {
+            (c, s): m.add_var(vtype=SolverVarType.BINARY, name=f"idle_end[{c.id},{s}]")
+            for c in self.cores
+            for s in self.slots
+        }
+        self.idle_sum = {c: m.add_var(vtype=SolverVarType.INTEGER, name=f"idle_sum[{c.id}]") for c in self.cores}
 
         # Scalars
-        self.lat_iter = m.addVar(vtype=GRB.INTEGER, name="lat_iter")
-        self.idle_min = m.addVar(vtype=GRB.INTEGER, name="idle_min")
-        self.total_lat = m.addVar(vtype=GRB.INTEGER, name="total_lat")
+        self.lat_iter = m.add_var(vtype=SolverVarType.INTEGER, name="lat_iter")
+        self.idle_min = m.add_var(vtype=SolverVarType.INTEGER, name="idle_min")
+        self.total_lat = m.add_var(vtype=SolverVarType.INTEGER, name="total_lat")
 
     # -------------------- constraint layers ---------------------------- #
     def _add_k_split_constraints(self) -> None:
         assert self.model and self.k_vec and self.k_splits
         m = self.model
-        m.addConstrs(self.k_vec.sum(n, "*") == 1 for n in self.node_ids)
-        m.addConstrs(self.k_splits[n] == gp.quicksum(self.k_vec[n, k] * k for k in self.p_vals) for n in self.node_ids)
+        for n in self.node_ids:
+            m.add_constr(
+                m.quicksum(self.k_vec[(n, k)]._raw for k in self.p_vals) == 1,
+                name=f"k_vec_one_hot_{n}",
+            )
+        for n in self.node_ids:
+            m.add_constr(
+                self.k_splits[n]._raw == m.quicksum(self.k_vec[(n, k)]._raw * k for k in self.p_vals)._raw,
+                name=f"k_splits_def_{n}",
+            )
 
     def _add_core_assignment_constraints(self, splits: SplitDict) -> None:
         assert self.model and self.core_asgn and self.k_splits and self.k_vec
         m = self.model
-        m.addConstrs(self.core_asgn.sum("*", n) == self.k_splits[n] for n in self.node_ids)
+        for n in self.node_ids:
+            m.add_constr(
+                m.quicksum(self.core_asgn[(c, n)]._raw for c in self.cores) == self.k_splits[n]._raw,
+                name=f"core_asgn_sum_{n}",
+            )
         for n in self.node_ids:
             for c in self.cores:
                 if any(splits[n][c][p] > 0 for p in self.p_vals):
-                    m.addConstr(
-                        self.core_asgn[c, n] <= gp.quicksum(splits[n][c][k] * self.k_vec[n, k] for k in self.p_vals)
+                    m.add_constr(
+                        self.core_asgn[(c, n)]._raw
+                        <= m.quicksum(splits[n][c][k] * self.k_vec[(n, k)]._raw for k in self.p_vals)._raw,
+                        name=f"core_asgn_split_{c.id}_{n}",
                     )
                 else:
                     # Explicitly zero the assignment
-                    m.addConstr(self.core_asgn[c, n] == 0)
+                    m.add_constr(self.core_asgn[(c, n)]._raw == 0, name=f"core_asgn_zero_{c.id}_{n}")
 
     def _add_slot_assignment_constraints(self) -> None:
         assert self.model and self.slot_asgn and self.asgn and self.core_asgn and self.k_splits
         m = self.model
-        m.addConstrs(self.slot_asgn.sum("*", n) == 1 for n in self.node_ids)
-        m.addConstrs(self.core_asgn[c, n] == self.asgn.sum(c, "*", n) for c in self.cores for n in self.node_ids)
+        for n in self.node_ids:
+            m.add_constr(
+                m.quicksum(self.slot_asgn[(s, n)]._raw for s in self.slots) == 1,
+                name=f"slot_asgn_one_hot_{n}",
+            )
+        for c in self.cores:
+            for n in self.node_ids:
+                m.add_constr(
+                    self.core_asgn[(c, n)]._raw == m.quicksum(self.asgn[(c, s, n)]._raw for s in self.slots)._raw,
+                    name=f"core_asgn_asgn_{c.id}_{n}",
+                )
         for n in self.node_ids:
             for s in self.slots:
-                m.addConstr(self.slot_asgn[s, n] * self.asgn.sum("*", s, n) == self.slot_asgn[s, n] * self.k_splits[n])
-        m.addConstrs(self.asgn.sum(c, s, "*") <= 1 for c in self.cores for s in self.slots)
+                m.add_constr(
+                    self.slot_asgn[(s, n)]._raw * m.quicksum(self.asgn[(c, s, n)]._raw for c in self.cores)._raw
+                    == self.slot_asgn[(s, n)]._raw * self.k_splits[n]._raw,
+                    name=f"slot_asgn_ksplits_{s}_{n}",
+                )
+        for c in self.cores:
+            for s in self.slots:
+                m.add_constr(
+                    m.quicksum(self.asgn[(c, s, n)]._raw for n in self.node_ids) <= 1,
+                    name=f"asgn_at_most_one_{c.id}_{s}",
+                )
 
     def _add_group_constraints(self, groups: GroupDict) -> None:
         assert self.model and self.asgn
         m = self.model
         for grp in groups.values():
             for n_i, n_j in zip(grp, grp[1:], strict=False):
-                m.addConstrs(self.asgn.sum(c, "*", n_i) == self.asgn.sum(c, "*", n_j) for c in self.cores)
+                for c in self.cores:
+                    m.add_constr(
+                        m.quicksum(self.asgn[(c, s, n_i)]._raw for s in self.slots)
+                        == m.quicksum(self.asgn[(c, s, n_j)]._raw for s in self.slots),
+                        name=f"group_{n_i}_{n_j}_{c.id}",
+                    )
 
     def _add_dependency_constraints(self, deps: DepDict) -> None:
         assert self.model and self.slot_idx and self.slot_asgn
         m = self.model
-        m.addConstrs(
-            self.slot_idx[n] == gp.quicksum(s * self.slot_asgn[s, n] for s in self.slots) for n in self.node_ids
-        )
+        for n in self.node_ids:
+            m.add_constr(
+                self.slot_idx[n]._raw == m.quicksum(s * self.slot_asgn[(s, n)]._raw for s in self.slots)._raw,
+                name=f"slot_idx_def_{n}",
+            )
         for p, c in deps:
-            m.addConstr(self.slot_idx[c] >= self.slot_idx[p] + 1)
+            m.add_constr(self.slot_idx[c]._raw >= self.slot_idx[p]._raw + 1, name=f"dep_{p}_{c}")
 
     def _add_weight_constraints(self, weights: WeightDict, caps: CapDict) -> None:
         assert self.model and self.w_split and self.k_splits and self.w_core and self.asgn
         m = self.model
-        m.addConstrs(self.w_split[n] * self.k_splits[n] >= weights[n] for n in self.node_ids)
-        m.addConstrs(
-            self.w_core[c] >= gp.quicksum(self.w_split[n] * self.asgn.sum(c, "*", n) for n in self.node_ids)
-            for c in self.cores
-        )
-        m.addConstrs(self.w_core[c] <= caps[c] for c in self.cores)
+        for n in self.node_ids:
+            m.add_constr(
+                self.w_split[n]._raw * self.k_splits[n]._raw >= weights[n],
+                name=f"w_split_{n}",
+            )
+        for c in self.cores:
+            m.add_constr(
+                self.w_core[c]._raw
+                >= m.quicksum(
+                    self.w_split[n]._raw * m.quicksum(self.asgn[(c, s, n)]._raw for s in self.slots)._raw
+                    for n in self.node_ids
+                )._raw,
+                name=f"w_core_{c.id}",
+            )
+            m.add_constr(self.w_core[c]._raw <= caps[c], name=f"w_cap_{c.id}")
 
     def _add_latency_constraints(self, lat: LatDict) -> None:
         assert (
@@ -364,22 +453,36 @@ class ComputeAllocator:
             and self.lat_iter
         )
         m = self.model
-        _, lat_param = gp.multidict(lat)
+        # Remove gp.multidict: lat is already a dict with (n, c, k) tuple keys
         for n in self.node_ids:
-            m.addConstrs(
-                self.lat_id_core[n, c] == gp.quicksum(self.k_vec[n, k] * lat_param[n, c, k] for k in self.p_vals)
-                for c in self.cores
-            )
-        m.addConstrs(
-            self.lat_core_slot[c, s] == gp.quicksum(self.lat_id_core[n, c] * self.asgn[c, s, n] for n in self.node_ids)
-            for c in self.cores
-            for s in self.slots
+            for c in self.cores:
+                m.add_constr(
+                    self.lat_id_core[(n, c)]._raw
+                    == m.quicksum(self.k_vec[(n, k)]._raw * lat[(n, c, k)] for k in self.p_vals)._raw,
+                    name=f"lat_id_{n}_{c.id}",
+                )
+        for c in self.cores:
+            for s in self.slots:
+                m.add_constr(
+                    self.lat_core_slot[(c, s)]._raw
+                    == m.quicksum(
+                        self.lat_id_core[(n, c)]._raw * self.asgn[(c, s, n)]._raw for n in self.node_ids
+                    )._raw,
+                    name=f"lat_core_slot_{c.id}_{s}",
+                )
+        # lat_slot[s] = max(lat_core_slot[c, s] for c in cores)
+        # Since we MINIMIZE lat_iter (which sums lat_slot), the objective forces lat_slot down.
+        # Therefore: lat_slot[s] >= lat_core_slot[c, s] for all c  is sufficient.
+        for s in self.slots:
+            for c in self.cores:
+                m.add_constr(
+                    self.lat_slot[s]._raw >= self.lat_core_slot[(c, s)]._raw,
+                    name=f"lat_slot_max_{s}_{c.id}",
+                )
+        m.add_constr(
+            self.lat_iter._raw == m.quicksum(self.lat_slot[s]._raw for s in self.slots)._raw,
+            name="lat_iter_def",
         )
-        m.addConstrs(
-            self.lat_slot[s] == gp.max_(self.lat_core_slot[c, s] for c in self.cores)  # type: ignore[arg-type]
-            for s in self.slots
-        )
-        m.addConstr(self.lat_iter == gp.quicksum(self.lat_slot))
 
     def _add_overlap_constraints(self) -> None:
         assert (
@@ -393,49 +496,103 @@ class ComputeAllocator:
             and self.total_lat
         ), "Model and required variables must be initialized before adding overlap constraints"
         m = self.model
-        incl = m.addVars(self.cores, self.slots, vtype=GRB.INTEGER, name="incl")
-        excl = m.addVars(self.cores, self.slots, vtype=GRB.INTEGER, name="excl")
+        incl: dict[tuple[Core, int], SolverVar] = {
+            (c, s): m.add_var(vtype=SolverVarType.INTEGER, name=f"incl[{c.id},{s}]")
+            for c in self.cores
+            for s in self.slots
+        }
+        excl: dict[tuple[Core, int], SolverVar] = {
+            (c, s): m.add_var(vtype=SolverVarType.INTEGER, name=f"excl[{c.id},{s}]")
+            for c in self.cores
+            for s in self.slots
+        }
 
-        m.addConstrs(
-            incl[c, s] == gp.quicksum(self.asgn.sum(c, t, "*") for t in range(s + 1))
-            for c in self.cores
-            for s in self.slots
-        )
-        m.addConstrs(
-            excl[c, s] == gp.quicksum(self.asgn.sum(c, t, "*") for t in range(s))
-            for c in self.cores
-            for s in self.slots
-        )
+        for c in self.cores:
+            for s in self.slots:
+                m.add_constr(
+                    incl[(c, s)]._raw
+                    == m.quicksum(
+                        m.quicksum(self.asgn[(c, t, n)]._raw for n in self.node_ids)._raw for t in range(s + 1)
+                    )._raw,
+                    name=f"incl_{c.id}_{s}",
+                )
+        for c in self.cores:
+            for s in self.slots:
+                m.add_constr(
+                    excl[(c, s)]._raw
+                    == m.quicksum(
+                        m.quicksum(self.asgn[(c, t, n)]._raw for n in self.node_ids)._raw for t in range(s)
+                    )._raw,
+                    name=f"excl_{c.id}_{s}",
+                )
 
         eps = 1e-4
         big_m = len(self.node_ids) + eps
-        tot_nodes_core = m.addVars(self.cores, vtype=GRB.INTEGER, name="tot_nodes_core")
-        m.addConstrs(tot_nodes_core[c] == self.asgn.sum(c, "*", "*") for c in self.cores)
+        tot_nodes_core: dict[Core, SolverVar] = {
+            c: m.add_var(vtype=SolverVarType.INTEGER, name=f"tot_nodes_core[{c.id}]") for c in self.cores
+        }
+        for c in self.cores:
+            m.add_constr(
+                tot_nodes_core[c]._raw
+                == m.quicksum(self.asgn[(c, s, n)]._raw for s in self.slots for n in self.node_ids)._raw,
+                name=f"tot_nodes_core_{c.id}",
+            )
 
-        m.addConstrs(
-            1 >= incl[c, s] + eps - big_m * (1 - self.idle_start[c, s]) for c in self.cores for s in self.slots
+        for c in self.cores:
+            for s in self.slots:
+                m.add_constr(
+                    1 >= incl[(c, s)]._raw + eps - big_m * (1 - self.idle_start[(c, s)]._raw),
+                    name=f"idle_start_ub_{c.id}_{s}",
+                )
+                m.add_constr(
+                    1 <= incl[(c, s)]._raw + big_m * self.idle_start[(c, s)]._raw,
+                    name=f"idle_start_lb_{c.id}_{s}",
+                )
+                m.add_constr(
+                    excl[(c, s)]._raw >= tot_nodes_core[c]._raw - 1 + eps - big_m * (1 - self.idle_end[(c, s)]._raw),
+                    name=f"idle_end_ub_{c.id}_{s}",
+                )
+                m.add_constr(
+                    excl[(c, s)]._raw <= tot_nodes_core[c]._raw - 1 + big_m * self.idle_end[(c, s)]._raw,
+                    name=f"idle_end_lb_{c.id}_{s}",
+                )
+        for c in self.cores:
+            m.add_constr(
+                self.idle_sum[c]._raw
+                == m.quicksum(
+                    (self.idle_start[(c, s)]._raw + self.idle_end[(c, s)]._raw) * self.lat_slot[s]._raw
+                    for s in self.slots
+                )._raw,
+                name=f"idle_sum_{c.id}",
+            )
+
+        # idle_min = min(idle_sum[c] for c in cores)
+        # Use big-M binary selector pattern (research Pattern 4):
+        #   idle_min <= idle_sum[c] for all c  (upper-bound from below)
+        #   idle_min >= idle_sum[c] - M*(1-b_c) for all c, with sum(b_c)==1
+        big_m_min = len(self.node_ids) * max(1, len(self.slots))  # safe upper bound on any idle_sum
+        b_min: dict[Core, SolverVar] = {
+            c: m.add_var(vtype=SolverVarType.BINARY, name=f"b_min[{c.id}]") for c in self.cores
+        }
+        for c in self.cores:
+            m.add_constr(self.idle_min._raw <= self.idle_sum[c]._raw, name=f"idle_min_ub_{c.id}")
+            m.add_constr(
+                self.idle_min._raw >= self.idle_sum[c]._raw - big_m_min * (1 - b_min[c]._raw),
+                name=f"idle_min_lb_{c.id}",
+            )
+        m.add_constr(
+            m.quicksum(b_min[c]._raw for c in self.cores) == 1,
+            name="idle_min_selector_one_hot",
         )
-        m.addConstrs(1 <= incl[c, s] + big_m * self.idle_start[c, s] for c in self.cores for s in self.slots)
-        m.addConstrs(
-            excl[c, s] >= tot_nodes_core[c] - 1 + eps - big_m * (1 - self.idle_end[c, s])
-            for c in self.cores
-            for s in self.slots
-        )
-        m.addConstrs(
-            excl[c, s] <= tot_nodes_core[c] - 1 + big_m * self.idle_end[c, s] for c in self.cores for s in self.slots
-        )
-        m.addConstrs(
-            self.idle_sum[c]
-            == gp.quicksum((self.idle_start[c, s] + self.idle_end[c, s]) * self.lat_slot[s] for s in self.slots)
-            for c in self.cores
-        )
-        m.addConstr(self.idle_min == gp.min_(self.idle_sum))
         assert self.lat_iter is not None, "lat_iter must be set before this constraint"
-        m.addConstr(self.total_lat == self.iterations * self.lat_iter - (self.iterations - 1) * self.idle_min)
+        m.add_constr(
+            self.total_lat._raw == self.iterations * self.lat_iter._raw - (self.iterations - 1) * self.idle_min._raw,
+            name="total_lat_def",
+        )
 
     def _set_objective(self) -> None:
         assert self.model and self.total_lat
-        self.model.setObjective(self.total_lat, GRB.MINIMIZE)
+        self.model.set_objective(self.total_lat._raw, sense="minimize")
 
     # ------------------------------------------------------------------ #
     # Solve & extract                                                    #
@@ -444,12 +601,12 @@ class ComputeAllocator:
         assert self.model and self.asgn
         self.model.optimize()
 
-        if self.model.SolCount == 0:
-            self.model.computeIIS()
+        if self.model.get_sol_count() == 0:
+            self.model.compute_iis()
             self.model.write("infeasible.ilp")
             raise ValueError("No feasible solution; see infeasible.ilp")
-        if self.model.Status not in {GRB.OPTIMAL, GRB.TIME_LIMIT}:
-            raise RuntimeError(f"Solver status {self.model.Status}")
+        if self.model.get_status() not in {"OPTIMAL", "TIME_LIMIT"}:
+            raise RuntimeError(f"Solver status {self.model.get_status()}")
 
         alloc: ALLOCATION_INTERNAL_T = [
             (slot, core, nid) for (core, slot, nid), var in self.asgn.items() if round(var.X) == 1
@@ -468,6 +625,7 @@ def get_optimal_allocations(
     context: ConstraintContext | None = None,
     stage_config: ConstraintOptStageConfig | None = None,
     iterations: int = 1,
+    backend: str = "ORTOOLS_GSCIP",
 ) -> ALLOCATION_T:
     """Backwards-compatible helper preserving the original functional API."""
     if context is None:
@@ -484,4 +642,5 @@ def get_optimal_allocations(
         cost_lut,
         context,
         iterations=iterations,
+        backend=backend,
     ).get_optimal_allocations()

@@ -1,7 +1,7 @@
+from stream.workload.dependency_propagation.concat_node import ConcatConstantNode
 from zigzag.parser.onnx.utils import OnnxTensorCategory, get_onnx_tensor_type
 
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
-from stream.workload.dependency_propagation.concat_node import ConcatConstantNode
 
 
 class ConcatParser(OnnxOperatorParser):

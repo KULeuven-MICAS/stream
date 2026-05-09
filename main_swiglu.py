@@ -6,6 +6,7 @@ import re
 from stream.api import optimize_allocation_co
 from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
+from stream.opt.solver import ConstraintSelection
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
@@ -25,6 +26,8 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     embedding_tile_size=512,
     hidden_tile_size=64,
     last_gemm_down: bool = False,
+    backend: str = "ortools_gscip",
+    constraint_selection: ConstraintSelection | None = None,
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
     accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
@@ -82,6 +85,8 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
         trace_size=trace_size,
         nb_cols_to_use=cols,
         npu=npu,
+        backend=backend,
+        constraint_selection=constraint_selection,
     )
 
     module = ctx.get("module")
@@ -118,7 +123,33 @@ if __name__ == "__main__":
         default=True,
         help="If set, the last gemm down projection is skipped",
     )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        default="ortools_gscip",
+        choices=["gurobi", "ortools_gscip", "ortools_highs", "ortools_gurobi"],
+        help="Solver backend (default: ortools_gscip)",
+    )
+    parser.add_argument(
+        "--disable-constraints",
+        nargs="*",
+        choices=["memory_capacity", "object_fifo_depth", "buffer_descriptors", "dma_channels"],
+        default=[],
+        metavar="CONSTRAINT",
+        help="Disable hardware resource constraint groups. Example: --disable-constraints memory_capacity dma_channels",
+    )
     args = parser.parse_args()
+    _disabled = set(args.disable_constraints or [])
+    _constraint_selection = (
+        ConstraintSelection(
+            memory_capacity="memory_capacity" not in _disabled,
+            object_fifo_depth="object_fifo_depth" not in _disabled,
+            buffer_descriptors="buffer_descriptors" not in _disabled,
+            dma_channels="dma_channels" not in _disabled,
+        )
+        if _disabled
+        else None
+    )
     module = run_main_aie_codegen_swiglu(
         args.seq_len,
         args.embedding_dim,
@@ -133,6 +164,8 @@ if __name__ == "__main__":
         args.embedding_tile_size,
         args.hidden_tile_size,
         last_gemm_down=args.last_gemm_down,
+        backend=args.backend,
+        constraint_selection=_constraint_selection,
     )
     save_path = f"outputs/swiglu_module_{args.seq_len}_{args.embedding_dim}_{args.hidden_dim}.mlir"
     with open(save_path, "w") as f:
