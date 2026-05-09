@@ -158,11 +158,11 @@ Plans:
   2. CLAUDE.md contains a "Skills" section that lists each `.claude/skills/` topic with a one-line description, so readers know exactly where to go for deep dives
   3. The `.claude/skills/` directory exists with a consistent structure: each skill is a subdirectory containing a SKILL.md (trigger description for AI agent auto-discovery) plus the skill content file
   4. A skill template/pattern is documented (naming, SKILL.md format, self-containment rule) so that Phases 11-14 produce uniform, independently readable skill files
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 
 Plans:
 - [x] 10-01-PLAN.md — Fix .gitignore for .claude/skills/ + create four SKILL.md stubs
-- [ ] 10-02-PLAN.md — Create CLAUDE.md navigation hub
+- [x] 10-02-PLAN.md — Create CLAUDE.md navigation hub
 
 #### Phase 11: Solver System Skills
 **Goal**: Anyone working on solver backends or constraint configuration can read a single skill file and understand the full solver abstraction layer or the constraint selection system without consulting source code
@@ -220,7 +220,7 @@ Phase 9 is independent. Phase 10 depends on Phase 9. Phases 11-14 depend on Phas
 | 7. End-to-End Validation | v1.1 | 1/1 | Complete | 2026-05-08 |
 | 8. Constraint Toggle Study Script | v1.1 | 1/1 | Complete | 2026-05-08 |
 | 9. Dead Code Cleanup | v1.2 | 1/1 | Complete   | 2026-05-09 |
-| 10. CLAUDE.md & Skill Scaffolding | v1.2 | 1/2 | In Progress|  |
+| 10. CLAUDE.md & Skill Scaffolding | v1.2 | 2/2 | Complete   | 2026-05-09 |
 | 11. Solver System Skills | v1.2 | 0/? | Not started | - |
 | 12. Pipeline Skills | v1.2 | 0/? | Not started | - |
 | 13. MILP & Constraint Skills | v1.2 | 0/? | Not started | - |

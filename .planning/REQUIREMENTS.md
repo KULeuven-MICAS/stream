@@ -11,8 +11,8 @@
 
 ### CLAUDE.md & Navigation
 
-- [ ] **NAV-01**: CLAUDE.md exists at repo root with codebase overview, directory structure, key entry points, and conventions
-- [ ] **NAV-02**: CLAUDE.md references `.claude/skills/` for topic-specific deep dives
+- [x] **NAV-01**: CLAUDE.md exists at repo root with codebase overview, directory structure, key entry points, and conventions
+- [x] **NAV-02**: CLAUDE.md references `.claude/skills/` for topic-specific deep dives
 
 ### Solver System
 
@@ -52,8 +52,8 @@
 | Requirement | Phase | Status |
 |-------------|-------|--------|
 | CLEAN-01 | Phase 9 | Complete |
-| NAV-01 | Phase 10 | Pending |
-| NAV-02 | Phase 10 | Pending |
+| NAV-01 | Phase 10 | Complete |
+| NAV-02 | Phase 10 | Complete |
 | SOLVER-01 | Phase 11 | Pending |
 | SOLVER-02 | Phase 11 | Pending |
 | STAGE-01 | Phase 12 | Pending |
