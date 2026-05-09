@@ -4,10 +4,10 @@ from typing import TypeAlias
 
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.datatypes import LayerDim
-from stream.opt.solver import ConstraintSelection
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.mapping.mapping import Mapping
 from stream.opt.allocation.constraint_optimization.config import ConstraintOptStageConfig
+from stream.opt.solver import ConstraintSelection
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.workload import Workload

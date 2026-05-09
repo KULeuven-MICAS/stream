@@ -18,7 +18,7 @@ from stream.api import optimize_allocation_co
 from stream.hardware.architecture.core import Core
 from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
-from stream.opt.solver import ConstraintSelection, ORToolsBackend, SolverBackend
+from stream.opt.solver import ConstraintSelection, ORToolsBackend
 
 # ---------------------------------------------------------------------------
 # Constants (same as test_cross_backend.py)

@@ -8,12 +8,12 @@ from stream.opt.solver.solver import (
     GurobiBackend,
     LinExpr,
     ORToolsBackend,
-    SolveStats,
     SolverBackend,
     SolverModel,
     SolverParams,
     SolverVar,
     SolverVarType,
+    SolveStats,
     create_solver,
 )
 
