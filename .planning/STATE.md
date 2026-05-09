@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Codebase Documentation
 status: verifying
-stopped_at: Completed 10-02-PLAN.md
-last_updated: "2026-05-09T21:44:50.227Z"
+stopped_at: Completed 11-01-PLAN.md
+last_updated: "2026-05-09T22:38:46.037Z"
 last_activity: 2026-05-09
 progress:
   total_phases: 6
-  completed_phases: 2
-  total_plans: 3
-  completed_plans: 3
+  completed_phases: 3
+  total_plans: 4
+  completed_plans: 4
   percent: 0
 ---
 
@@ -21,12 +21,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-09)
 
 **Core value:** Make stream_aie navigable for both human developers and AI agents via structured documentation as Claude Code skills
-**Current focus:** Phase 10 — claude-md-skill-scaffolding
+**Current focus:** Phase 11 — solver-system-skills
 
 ## Current Position
 
-Phase: 10 (claude-md-skill-scaffolding) — EXECUTING
-Plan: 2 of 2
+Phase: 11 (solver-system-skills) — EXECUTING
+Plan: 1 of 1
 Status: Phase complete — ready for verification
 Last activity: 2026-05-09
 
@@ -52,6 +52,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 09-dead-code-cleanup P01 | 120 | 2 tasks | 3 files |
 | Phase 10-claude-md-skill-scaffolding P01 | 300 | 2 tasks | 5 files |
 | Phase 10 P02 | 1 | 1 tasks | 1 files |
+| Phase 11 P01 | 260 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -76,6 +77,8 @@ v1.2 decisions:
 - [Phase 10-claude-md-skill-scaffolding]: Replace blanket .claude/ gitignore exclusion with specific exclusions (settings.local.json, worktrees/, scheduled_tasks.lock) so .claude/skills/ can be committed
 - [Phase 10-claude-md-skill-scaffolding]: SKILL.md description field uses 'Use when...' triggering conditions only — follows superpowers plugin SKILL.md spec
 - [Phase 10]: CLAUDE.md is a navigation hub (D-01): 2-3 paragraph overview, not comprehensive reference; skills section (NAV-02) lists all four .claude/skills/ groups
+- [Phase 11]: D-01 through D-07 applied to skill files: conceptual guide style, no code examples, comparison tables, hardware mapping tables, self-contained, minimal cross-refs
+- [Phase 11]: Used git add -f to commit .claude/skills/ in worktree (worktree was at pre-Phase-10-gitignore-fix commit; main branch already updated)
 
 ### Pending Todos
 
@@ -87,6 +90,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-09T21:44:50.225Z
-Stopped at: Completed 10-02-PLAN.md
+Last session: 2026-05-09T22:38:46.035Z
+Stopped at: Completed 11-01-PLAN.md
 Resume file: None

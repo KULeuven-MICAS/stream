@@ -172,7 +172,10 @@ Plans:
   1. A solver-facade skill file documents SolverModel ABC methods, GurobiBackend vs ORToolsBackend differences (nonlinear dispatch, infeasibility handling, MPS export), the factory pattern, SolverBackend enum values, and guidance on when to use each backend
   2. A constraint-selection skill file documents the ConstraintSelection dataclass (4 fields, frozen, defaults), its relationship to NamespaceConstraints and AIE2Constraints, which constraint groups map to which hardware resources, and the nonsensical-combination warning logic
   3. Each skill file has a SKILL.md with accurate trigger phrases and is readable independently without requiring the other skill or CLAUDE.md
-**Plans**: TBD
+**Plans:** 1/1 plans complete
+
+Plans:
+- [x] 11-01-PLAN.md — Write solver-backends.md and constraint-selection.md skill files, update SKILL.md
 
 #### Phase 12: Pipeline Skills
 **Goal**: Anyone debugging or extending the TETRA pipeline can trace data flow from input parsing through cost estimation to allocation output, understanding each stage's responsibility and the execution model
@@ -220,8 +223,8 @@ Phase 9 is independent. Phase 10 depends on Phase 9. Phases 11-14 depend on Phas
 | 7. End-to-End Validation | v1.1 | 1/1 | Complete | 2026-05-08 |
 | 8. Constraint Toggle Study Script | v1.1 | 1/1 | Complete | 2026-05-08 |
 | 9. Dead Code Cleanup | v1.2 | 1/1 | Complete   | 2026-05-09 |
-| 10. CLAUDE.md & Skill Scaffolding | v1.2 | 2/2 | Complete   | 2026-05-09 |
-| 11. Solver System Skills | v1.2 | 0/? | Not started | - |
+| 10. CLAUDE.md & Skill Scaffolding | v1.2 | 2/2 | Complete    | 2026-05-09 |
+| 11. Solver System Skills | v1.2 | 1/1 | Complete   | 2026-05-09 |
 | 12. Pipeline Skills | v1.2 | 0/? | Not started | - |
 | 13. MILP & Constraint Skills | v1.2 | 0/? | Not started | - |
 | 14. API & Testing Skills | v1.2 | 0/? | Not started | - |

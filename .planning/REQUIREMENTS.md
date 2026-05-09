@@ -16,8 +16,8 @@
 
 ### Solver System
 
-- [ ] **SOLVER-01**: Skill doc covers SolverModel ABC, GurobiBackend, ORToolsBackend, factory pattern, and when to use each
-- [ ] **SOLVER-02**: Skill doc covers ConstraintSelection, its relationship to NamespaceConstraints, and which constraints apply to which hardware
+- [x] **SOLVER-01**: Skill doc covers SolverModel ABC, GurobiBackend, ORToolsBackend, factory pattern, and when to use each
+- [x] **SOLVER-02**: Skill doc covers ConstraintSelection, its relationship to NamespaceConstraints, and which constraints apply to which hardware
 
 ### Pipeline Stages
 
@@ -54,8 +54,8 @@
 | CLEAN-01 | Phase 9 | Complete |
 | NAV-01 | Phase 10 | Complete |
 | NAV-02 | Phase 10 | Complete |
-| SOLVER-01 | Phase 11 | Pending |
-| SOLVER-02 | Phase 11 | Pending |
+| SOLVER-01 | Phase 11 | Complete |
+| SOLVER-02 | Phase 11 | Complete |
 | STAGE-01 | Phase 12 | Pending |
 | STAGE-02 | Phase 12 | Pending |
 | MILP-01 | Phase 13 | Pending |
