@@ -55,9 +55,9 @@ CONSTRAINT_LABELS = {
 }
 
 # Color scheme for plots
-COLOR_BASELINE = "#2ecc71"   # green — all-enabled baseline
-COLOR_DEFAULT = "#3498db"    # blue — other combinations
-COLOR_FAILED = "#e74c3c"     # red — failed runs
+COLOR_BASELINE = "#2ecc71"  # green — all-enabled baseline
+COLOR_DEFAULT = "#3498db"  # blue — other combinations
+COLOR_FAILED = "#e74c3c"  # red — failed runs
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ def _all_combinations() -> list[tuple[str, ConstraintSelection]]:
             buffer_descriptors=bits[2],
             dma_channels=bits[3],
         )
-        enabled = [CONSTRAINT_LABELS[f] for f, on in zip(CONSTRAINT_FIELDS, bits) if on]
+        enabled = [CONSTRAINT_LABELS[f] for f, on in zip(CONSTRAINT_FIELDS, bits, strict=True) if on]
         label = " + ".join(enabled) if enabled else "None (all disabled)"
         combos.append((label, cs))
     return combos
@@ -165,10 +165,10 @@ def _run_swiglu_pipeline(  # noqa: PLR0913
         seq_len,
         embedding_dim,
         hidden_dim,
-        True,   # last_gemm_down
-        32,     # seq_len_tile_size (default from reference tests)
-        32,     # embedding_tile_size
-        64,     # hidden_tile_size
+        True,  # last_gemm_down
+        32,  # seq_len_tile_size (default from reference tests)
+        32,  # embedding_tile_size
+        64,  # hidden_tile_size
     )
 
     hw_name = ACCELERATOR.split("/")[-1].split(".")[0]
@@ -297,13 +297,13 @@ def run_study(args: argparse.Namespace) -> list[dict]:
     total = len(combos)
     results = []
 
-    print(f"\n=== Constraint Toggle Study ===")
+    print("\n=== Constraint Toggle Study ===")
     print(f"Workload: {args.workload.upper()}")
     print(f"Backend: {args.backend}")
     print()
 
     for i, (label, cs) in enumerate(combos, start=1):
-        print(f"[{i}/{total}] Running \"{label}\" ...", end=" ", flush=True)
+        print(f'[{i}/{total}] Running "{label}" ...', end=" ", flush=True)
         result = _run_single(args.workload, label, cs, args, output_root="")
         status_str = result["status"]
         obj_str = f"obj={result['objective']:,.0f}" if result["objective"] is not None else "obj=N/A"
@@ -440,7 +440,7 @@ def _plot_objective_bars(results: list[dict], output_dir: str) -> None:  # noqa:
     bars = ax.barh(y_pos, objectives, color=colors, edgecolor="black", linewidth=0.5)
 
     # Value labels at end of each bar
-    for bar, r in zip(bars, results):
+    for bar, r in zip(bars, results, strict=True):
         if r["objective"] is not None:
             val_str = f"{r['objective']:,.0f}"
             ax.text(
@@ -498,7 +498,7 @@ def _plot_solve_time_bars(results: list[dict], output_dir: str) -> None:  # noqa
     bars = ax.barh(y_pos, times, color=colors, edgecolor="black", linewidth=0.5)
 
     # Value labels
-    for bar, t in zip(bars, times):
+    for bar, t in zip(bars, times, strict=True):
         if t > 0:
             ax.text(
                 bar.get_width() * 1.005,
@@ -550,7 +550,7 @@ def _plot_constraint_heatmap(results: list[dict], output_dir: str) -> None:  # n
     table_data = []
     cell_colors = []
 
-    for i, r in enumerate(results):
+    for _i, r in enumerate(results):
         cs_dict = r.get("constraint_selection", {})
         obj = r["objective"]
 

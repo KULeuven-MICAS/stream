@@ -16,7 +16,6 @@ import pytest
 
 from stream.opt.solver import ConstraintSelection
 
-
 # ---------------------------------------------------------------------------
 # Default values
 # ---------------------------------------------------------------------------
@@ -67,9 +66,7 @@ def test_warning_nonsensical(caplog):
     with caplog.at_level(logging.WARNING, logger="stream.opt.solver.solver"):
         ConstraintSelection(memory_capacity=False, object_fifo_depth=True)
     assert any(
-        "nonsensical" in record.message.lower()
-        for record in caplog.records
-        if record.levelno == logging.WARNING
+        "nonsensical" in record.message.lower() for record in caplog.records if record.levelno == logging.WARNING
     ), f"Expected WARNING with 'nonsensical', got records: {caplog.records}"
 
 
@@ -96,16 +93,16 @@ def test_no_warning_all_true(caplog):
 
 def test_importable():
     """ConstraintSelection is importable from stream.opt.solver public API."""
-    from stream.opt.solver import ConstraintSelection as CS  # noqa: F401
+    from stream.opt.solver import ConstraintSelection as ConstraintSelectionImported  # noqa: F401
 
-    assert CS is ConstraintSelection
+    assert ConstraintSelectionImported is ConstraintSelection
 
 
 # ---------------------------------------------------------------------------
 # Guard verification tests (Phase 5 Plan 02)
 # ---------------------------------------------------------------------------
 
-from unittest.mock import MagicMock, patch  # noqa: E402
+from unittest.mock import MagicMock  # noqa: E402
 
 
 def _make_tta_stub(constraint_selection, *, bind_objective=False):
