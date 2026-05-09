@@ -54,7 +54,7 @@ logger = logging.getLogger(__name__)
 
 
 class SteadyStateScheduler:
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         workload: Workload,
         accelerator: "Accelerator",

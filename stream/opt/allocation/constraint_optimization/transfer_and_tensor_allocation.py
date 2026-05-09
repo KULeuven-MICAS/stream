@@ -34,8 +34,6 @@ from stream.opt.solver import (
     SolverVarType,
     create_solver,
 )
-
-_logger = logging.getLogger(__name__)
 from stream.workload.node import HasOutputs, TransferType
 from stream.workload.steady_state.iteration_space import (
     IterationVariableType,
@@ -53,6 +51,8 @@ from stream.workload.workload import (
     TransferNode,
     Workload,
 )
+
+_logger = logging.getLogger(__name__)
 
 TensorPlacementChoice: TypeAlias = tuple[Core, ...]
 
