@@ -1,9 +1,8 @@
+from stream.workload.dnn_workload import DNNWorkloadStream
+from stream.workload.mapping import InterCoreMappingAttributes
 from zigzag.parser.workload_factory import LayerNodeFactory
 from zigzag.parser.workload_factory import WorkloadFactory as ZigZagWorkloadFactory
 from zigzag.workload.layer_node import LayerNode
-
-from stream.workload.dnn_workload import DNNWorkloadStream
-from stream.workload.mapping import InterCoreMappingAttributes
 
 
 class WorkloadFactoryStream(ZigZagWorkloadFactory):

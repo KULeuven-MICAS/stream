@@ -1,6 +1,7 @@
+from stream.workload.dependency_propagation.split_node import SplitNode
+
 from stream.onnx_utils import get_split_attribute
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
-from stream.workload.dependency_propagation.split_node import SplitNode
 
 
 class SplitParser(OnnxOperatorParser):

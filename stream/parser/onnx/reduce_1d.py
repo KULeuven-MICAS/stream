@@ -1,7 +1,8 @@
 from typing import Any
 
-from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.mapping import InterCoreMappingAttributes
+
+from stream.parser.onnx.operator_parser import OnnxOperatorParser
 
 
 class Reduce1DParser(OnnxOperatorParser):

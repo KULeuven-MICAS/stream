@@ -4,6 +4,7 @@ After Phase 1 refactoring, the only permitted gurobipy imports are:
 1. stream/opt/solver/solver.py (the backend implementation)
 2. transfer_and_tensor_allocation.py: `from gurobipy import GRB` (callback constants, per D-04)
 """
+
 import ast
 from pathlib import Path
 
@@ -48,9 +49,8 @@ def test_no_gurobipy_in_co_files():
         if imports:
             violations[str(filepath.relative_to(REPO_ROOT))] = imports
 
-    assert not violations, (
-        "Gurobipy imports found outside solver backend:\n"
-        + "\n".join(f"  {path}: {imps}" for path, imps in violations.items())
+    assert not violations, "Gurobipy imports found outside solver backend:\n" + "\n".join(
+        f"  {path}: {imps}" for path, imps in violations.items()
     )
 
 

@@ -1,9 +1,9 @@
 import networkx as nx
 import pandas as pd
 import plotly.express as px
-
 from stream.workload.computation.computation_node import ComputationNode
 from stream.workload.onnx_workload import ComputationNodeWorkload
+
 from stream.workload.utils import prune_workload
 
 

@@ -14,7 +14,19 @@ _logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
 def run_main_aie_codegen_gemm(
-    M, K, N, m, k, n, in_dtype, out_dtype, trace_size, nb_rows, nb_cols, npu, backend: str = "ortools_gscip",
+    M,
+    K,
+    N,
+    m,
+    k,
+    n,
+    in_dtype,
+    out_dtype,
+    trace_size,
+    nb_rows,
+    nb_cols,
+    npu,
+    backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################

@@ -1,5 +1,6 @@
 from typing import Any
 
+from stream.workload.computation.pooling_node import PoolingNode
 from zigzag.parser.onnx.utils import (
     get_attribute_ints_with_name,
     get_node_input_output_dimension_shapes,
@@ -7,7 +8,6 @@ from zigzag.parser.onnx.utils import (
 from zigzag.parser.workload_factory import LayerNodeFactory
 
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
-from stream.workload.computation.pooling_node import PoolingNode
 
 
 class PoolingParser(OnnxOperatorParser):

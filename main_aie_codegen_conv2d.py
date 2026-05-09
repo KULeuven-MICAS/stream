@@ -2,8 +2,9 @@ import argparse
 import logging as _logging
 import re
 
-from stream.api import optimize_allocation_co
 from stream.inputs.aie.workload.make_conv2d_onnx import make_conv2d
+
+from stream.api import optimize_allocation_co
 from stream.utils import CostModelEvaluationLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.perfetto import convert_scme_to_perfetto_json

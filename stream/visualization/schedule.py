@@ -10,9 +10,10 @@ from zigzag.datatypes import LayerOperand
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 
 if TYPE_CHECKING:
+    from stream.workload.onnx_workload import ComputationNodeWorkload
+
     from stream.cost_model.cost_model import StreamCostModelEvaluation
     from stream.hardware.architecture.accelerator import Accelerator
-    from stream.workload.onnx_workload import ComputationNodeWorkload
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
