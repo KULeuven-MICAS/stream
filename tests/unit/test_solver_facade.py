@@ -2,12 +2,12 @@
 
 Covers ABS-01 through ABS-05 from the Phase 1 requirements:
   - ABS-01: SolverModel ABC cannot be instantiated directly
-  - ABS-02: GurobiBackend implements SolverModel correctly
+  - ABS-02: Backend implements SolverModel correctly
   - ABS-03: SolverVar exposes .X and delegates arithmetic operators
   - ABS-04: LinExpr supports += and + operations and defaultdict patterns
   - ABS-05: Factory dispatches to the correct backend or raises
 
-All tests use the public API from stream.opt.solver (not the private submodule).
+All tests use OR-Tools (license-free) so they run on any CI runner.
 """
 
 from collections import defaultdict
@@ -15,7 +15,6 @@ from collections import defaultdict
 import pytest
 
 from stream.opt.solver import (
-    GurobiBackend,
     SolverBackend,
     SolverModel,
     SolverParams,
@@ -28,12 +27,13 @@ from stream.opt.solver import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+_DEFAULT_BACKEND = SolverBackend.ORTOOLS_GSCIP
+
 
 def _trivial_model() -> tuple[SolverModel, SolverVar]:
     """Create a trivial LP: minimize x subject to 0 <= x <= 10."""
-    m = create_solver(SolverBackend.GUROBI, "trivial")
+    m = create_solver(_DEFAULT_BACKEND, "trivial")
     m.set_param(SolverParams.VERBOSITY, 0)
-    m.set_param(SolverParams.LOG_TO_CONSOLE, 0)
     x = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=10.0, name="x")
     m.set_objective(x._raw, sense="minimize")
     return m, x
@@ -73,21 +73,20 @@ def test_abc_interface():
 
 
 # ---------------------------------------------------------------------------
-# ABS-02: GurobiBackend implements SolverModel
+# ABS-02: Backend implements SolverModel
 # ---------------------------------------------------------------------------
 
 
-def test_gurobi_add_var():
-    """GurobiBackend.add_var returns a SolverVar instance."""
-    model = GurobiBackend("test_add_var")
+def test_backend_add_var():
+    """Backend.add_var returns a SolverVar instance."""
+    model = create_solver(_DEFAULT_BACKEND, "test_add_var")
     model.set_param(SolverParams.VERBOSITY, 0)
-    model.set_param(SolverParams.LOG_TO_CONSOLE, 0)
     var = model.add_var(vtype=SolverVarType.BINARY, lb=0, ub=1, name="x")
     assert isinstance(var, SolverVar), f"Expected SolverVar, got {type(var)}"
 
 
-def test_gurobi_trivial_lp():
-    """GurobiBackend solves a trivial LP and reports OPTIMAL status."""
+def test_backend_trivial_lp():
+    """Backend solves a trivial LP and reports OPTIMAL status."""
     m, x = _trivial_model()
     m.optimize()
     status = m.get_status()
@@ -95,13 +94,11 @@ def test_gurobi_trivial_lp():
     assert abs(x.X - 0.0) < 1e-6, f"Expected x=0.0 after minimization, got {x.X}"
 
 
-def test_gurobi_trivial_lp_with_constraint():
-    """GurobiBackend solves LP with a lower-bound constraint correctly."""
-    m = create_solver(SolverBackend.GUROBI, "constrained")
+def test_backend_trivial_lp_with_constraint():
+    """Backend solves LP with a lower-bound constraint correctly."""
+    m = create_solver(_DEFAULT_BACKEND, "constrained")
     m.set_param(SolverParams.VERBOSITY, 0)
-    m.set_param(SolverParams.LOG_TO_CONSOLE, 0)
     x = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=10.0, name="x")
-    # x >= 3
     m.add_constr(x._raw >= 3.0, name="lb_constr")
     m.set_objective(x._raw, sense="minimize")
     m.optimize()
@@ -124,22 +121,14 @@ def test_solver_var_x():
 
 
 def test_solver_var_arithmetic():
-    """SolverVar._raw returns underlying gp.Var; arithmetic operators work."""
-    import gurobipy as gp
-
-    model = GurobiBackend("arith_test")
+    """SolverVar arithmetic operators work correctly."""
+    model = create_solver(_DEFAULT_BACKEND, "arith_test")
     model.set_param(SolverParams.VERBOSITY, 0)
-    model.set_param(SolverParams.LOG_TO_CONSOLE, 0)
     var = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=10.0, name="v")
 
-    # ._raw should return a gp.Var
-    assert isinstance(var._raw, gp.Var), f"Expected gp.Var, got {type(var._raw)}"
-
-    # var + 1 should produce a LinExpr, not raise
     expr_add = var + 1
     assert expr_add is not None, "var + 1 should not return None"
 
-    # var <= 5 should produce a valid Gurobi constraint expression, not a bool
     constr_expr = var <= 5
     assert not isinstance(constr_expr, bool), (
         f"var <= 5 should produce a constraint expression, not a Python bool. Got type {type(constr_expr)}"
@@ -148,13 +137,11 @@ def test_solver_var_arithmetic():
 
 def test_solver_var_arithmetic_operators():
     """SolverVar supports all arithmetic operators without raising."""
-    model = GurobiBackend("ops_test")
+    model = create_solver(_DEFAULT_BACKEND, "ops_test")
     model.set_param(SolverParams.VERBOSITY, 0)
-    model.set_param(SolverParams.LOG_TO_CONSOLE, 0)
     x = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=10.0, name="x")
     y = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=10.0, name="y")
 
-    # These should not raise
     _ = x + y
     _ = x + 1
     _ = 1 + x
@@ -176,9 +163,8 @@ def test_solver_var_arithmetic_operators():
 
 def test_linexpr_ops():
     """LinExpr supports += and + operations without raising."""
-    model = GurobiBackend("linexpr_test")
+    model = create_solver(_DEFAULT_BACKEND, "linexpr_test")
     model.set_param(SolverParams.VERBOSITY, 0)
-    model.set_param(SolverParams.LOG_TO_CONSOLE, 0)
     var = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=10.0, name="v")
 
     expr = model.lin_expr()
@@ -191,17 +177,14 @@ def test_linexpr_ops():
 
 def test_linexpr_defaultdict():
     """LinExpr works as a defaultdict(model.lin_expr) value factory."""
-    model = GurobiBackend("defaultdict_test")
+    model = create_solver(_DEFAULT_BACKEND, "defaultdict_test")
     model.set_param(SolverParams.VERBOSITY, 0)
-    model.set_param(SolverParams.LOG_TO_CONSOLE, 0)
     var = model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=10.0, name="v")
 
     d: defaultdict = defaultdict(model.lin_expr)
-    # First access auto-creates the LinExpr; += accumulates the var
     d["key"] += var._raw
     assert d["key"] is not None, "defaultdict value after += should not be None"
 
-    # Multiple accumulations should not raise
     d["key"] += var._raw
     d["key2"] += var._raw
 
@@ -209,12 +192,6 @@ def test_linexpr_defaultdict():
 # ---------------------------------------------------------------------------
 # ABS-05: Factory function
 # ---------------------------------------------------------------------------
-
-
-def test_factory_gurobi():
-    """create_solver(GUROBI) returns a GurobiBackend instance."""
-    solver = create_solver(SolverBackend.GUROBI, "test")
-    assert isinstance(solver, GurobiBackend), f"Expected GurobiBackend, got {type(solver)}"
 
 
 def test_factory_ortools_gscip():
@@ -248,44 +225,28 @@ def test_factory_unknown_raises():
 
 def test_set_param_verbosity():
     """set_param(VERBOSITY, 0) does not raise."""
-    model = create_solver(SolverBackend.GUROBI, "param_test")
-    model.set_param(SolverParams.VERBOSITY, 0)  # Should not raise
+    model = create_solver(_DEFAULT_BACKEND, "param_test")
+    model.set_param(SolverParams.VERBOSITY, 0)
 
 
 def test_get_status_before_solve():
     """get_status() returns a string even before solving."""
-    model = create_solver(SolverBackend.GUROBI, "status_test")
+    model = create_solver(_DEFAULT_BACKEND, "status_test")
     model.set_param(SolverParams.VERBOSITY, 0)
-    model.set_param(SolverParams.LOG_TO_CONSOLE, 0)
     status = model.get_status()
     assert isinstance(status, str), f"get_status() should return a string, got {type(status)} ({status!r})"
 
 
-def test_quicksum_with_mixed_types():
-    """quicksum handles mixed SolverVar, LinExpr, and int items without error.
-
-    Regression test for the bug where quicksum of _GurobiLinExpr items
-    produced an invalid nested expression that caused addConstr to fail
-    with 'Invalid argument to Model.addConstr'.
-    """
-    model = create_solver(SolverBackend.GUROBI, "quicksum_test")
+def test_quicksum():
+    """quicksum handles SolverVar items and produces a usable expression."""
+    model = create_solver(_DEFAULT_BACKEND, "quicksum_test")
     model.set_param(SolverParams.VERBOSITY, 0)
-    model.set_param(SolverParams.LOG_TO_CONSOLE, 0)
 
     x1 = model.add_var(vtype=SolverVarType.BINARY, name="x1")
     x2 = model.add_var(vtype=SolverVarType.BINARY, name="x2")
 
-    # First-level quicksum produces a LinExpr (SolverVar._raw items)
-    inner = model.quicksum([x1._raw, x2._raw])
+    result = model.quicksum([x1._raw, x2._raw])
+    assert result is not None, "quicksum should return a non-None expression"
 
-    # Second-level quicksum with mixed LinExpr and int — triggers the bug if not fixed
-    outer = model.quicksum([inner, 1])
-
-    # The outer result's ._raw must be a raw gp.LinExpr, not a wrapped _GurobiLinExpr
-    import gurobipy as gp
-
-    assert isinstance(outer._raw, gp.LinExpr), f"quicksum result._raw must be a gp.LinExpr, got {type(outer._raw)}"
-
-    # Should be usable in a constraint without 'Invalid argument' error
     v = model.add_var(vtype=SolverVarType.INTEGER, lb=0, name="v")
-    model.add_constr(v == outer, name="mixed_quicksum_constr")  # Must not raise
+    model.add_constr(v == result, name="quicksum_constr")

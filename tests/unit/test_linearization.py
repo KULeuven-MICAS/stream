@@ -1,4 +1,5 @@
 """Tests for the piecewise division linearization (D-09, D-10)."""
+
 import pytest
 
 from stream.opt.solver import (
@@ -16,7 +17,7 @@ def _make_piecewise_model(numerator: float, denominators: list[float], force_sel
     Forces selector at index `force_selector` to 1.
     Result should equal numerator / denominators[force_selector].
     """
-    m = create_solver(SolverBackend.GUROBI, "test_lin")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "test_lin")
     m.set_param(SolverParams.VERBOSITY, 0)
 
     # Binary selectors (one-hot)
@@ -30,9 +31,7 @@ def _make_piecewise_model(numerator: float, denominators: list[float], force_sel
     min_d = min(denominators)
     result = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=numerator / min_d, name="result")
     m.add_constr(
-        result._raw == m.quicksum(
-            b[i]._raw * (numerator / d) for i, d in enumerate(denominators)
-        )._raw,
+        result._raw == m.quicksum(b[i]._raw * (numerator / d) for i, d in enumerate(denominators))._raw,
         name="div_def",
     )
     m.set_objective(result._raw, sense="minimize")
@@ -56,7 +55,7 @@ def test_piecewise_division_matches_expected(force_idx, expected):
 
 def test_binary_times_piecewise_division():
     """When binary gate y=0, result should be 0 regardless of selector."""
-    m = create_solver(SolverBackend.GUROBI, "test_gated")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "test_gated")
     m.set_param(SolverParams.VERBOSITY, 0)
 
     y = m.add_var(vtype=SolverVarType.BINARY, name="y")
@@ -72,9 +71,7 @@ def test_binary_times_piecewise_division():
     # Piecewise ratio
     ratio = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=50.0, name="ratio")
     m.add_constr(
-        ratio._raw == m.quicksum(
-            b[i]._raw * (numerator / d) for i, d in enumerate(denominators)
-        )._raw,
+        ratio._raw == m.quicksum(b[i]._raw * (numerator / d) for i, d in enumerate(denominators))._raw,
         name="ratio_def",
     )
 
@@ -93,7 +90,7 @@ def test_binary_times_piecewise_division():
 
 def test_binary_times_piecewise_division_active():
     """When binary gate y=1, result = ratio."""
-    m = create_solver(SolverBackend.GUROBI, "test_gated_active")
+    m = create_solver(SolverBackend.ORTOOLS_GSCIP, "test_gated_active")
     m.set_param(SolverParams.VERBOSITY, 0)
 
     y = m.add_var(vtype=SolverVarType.BINARY, name="y")
@@ -108,9 +105,7 @@ def test_binary_times_piecewise_division_active():
 
     ratio = m.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, ub=50.0, name="ratio")
     m.add_constr(
-        ratio._raw == m.quicksum(
-            b[i]._raw * (numerator / d) for i, d in enumerate(denominators)
-        )._raw,
+        ratio._raw == m.quicksum(b[i]._raw * (numerator / d) for i, d in enumerate(denominators))._raw,
         name="ratio_def",
     )
 
