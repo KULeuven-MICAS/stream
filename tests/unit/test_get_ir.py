@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from stream.datatypes import LayerDim
 from stream.mapping.mapping import FusedGroup, Mapping, NodeMapping
 
 
@@ -15,23 +16,33 @@ from stream.mapping.mapping import FusedGroup, Mapping, NodeMapping
 # ---------------------------------------------------------------------------
 
 
-def make_core(core_id: int, name: str = "") -> MagicMock:
-    """Create a minimal mock Core with id and name."""
-    core = MagicMock()
-    core.id = core_id
-    core.name = name or f"core_{core_id}"
-    return core
+def make_dim(prefix: str) -> LayerDim:
+    """Create a LayerDim with given prefix (used as logical dimension name)."""
+    return LayerDim(position=0, prefix=prefix)
 
 
-def make_multicast_path(sources: list[int], targets: list[int], hops: int) -> MagicMock:
-    """Create a minimal mock MulticastPathPlan."""
+def make_core(core_id: int, name: str = "") -> "Core":
+    """Create a minimal real Core with id and name."""
     from stream.hardware.architecture.core import Core
+
+    return Core(
+        core_id=core_id,
+        name=name or f"core_{core_id}",
+        core_type="compute",
+    )
+
+
+def make_multicast_path(sources: list[int], targets: list[int], hops: int) -> "MulticastPathPlan":
+    """Create a minimal mock MulticastPathPlan with real Core objects."""
     from stream.cost_model.communication_manager import MulticastPathPlan
+    from unittest.mock import MagicMock
 
     plan = MagicMock(spec=MulticastPathPlan)
     plan.sources = tuple(make_core(c) for c in sources)
     plan.targets = tuple(make_core(c) for c in targets)
     plan.total_hops_objective = hops
+    # Make isinstance(plan, MulticastPathPlan) work
+    plan.__class__ = MulticastPathPlan
     return plan
 
 
@@ -66,10 +77,11 @@ class TestMappingGetIr:
         node = make_node("matmul_0")
         core0 = make_core(0)
         core1 = make_core(1)
+        k_dim = make_dim("K")
 
         node_mapping = NodeMapping(
             resource_allocation=((core0, core1),),
-            inter_core_tiling=(((("K", 2),)),),
+            inter_core_tiling=(((k_dim, 2),),),
             memory_allocation=((core0,),),
         )
         mapping = Mapping(initial={node: node_mapping})
@@ -92,10 +104,12 @@ class TestMappingGetIr:
 
     def test_mapping_with_fused_groups(self):
         """Test 3: Mapping with FusedGroups returns correct fused_groups list."""
+        k_dim = make_dim("K")
+        n_dim = make_dim("N")
         fused_group = FusedGroup(
             name="group_0",
             layers=("matmul_0", "matmul_1"),
-            intra_core_tiling=(("K", 4), ("N", 2)),
+            intra_core_tiling=((k_dim, 4), (n_dim, 2)),
         )
         mapping = Mapping(fused_groups=[fused_group])
         result = mapping.get_ir()
@@ -104,22 +118,23 @@ class TestMappingGetIr:
         fg_ir = result["fused_groups"][0]
         assert fg_ir["name"] == "group_0"
         assert fg_ir["layers"] == ["matmul_0", "matmul_1"]
-        assert ["K", 4] in fg_ir["intra_core_tiling"]
-        assert ["N", 2] in fg_ir["intra_core_tiling"]
+        assert [str(k_dim), 4] in fg_ir["intra_core_tiling"]
+        assert [str(n_dim), 2] in fg_ir["intra_core_tiling"]
 
     def test_mapping_get_ir_json_round_trip(self):
         """Test 4: json.dumps(mapping.get_ir()) succeeds without TypeError."""
         node = make_node("layer_0")
         core0 = make_core(0)
         core1 = make_core(1)
+        m_dim = make_dim("M")
         fused_group = FusedGroup(
             name="group_0",
             layers=("layer_0",),
-            intra_core_tiling=(("M", 2),),
+            intra_core_tiling=((m_dim, 2),),
         )
         node_mapping = NodeMapping(
             resource_allocation=((core0, core1),),
-            inter_core_tiling=(((("M", 2),)),),
+            inter_core_tiling=(((m_dim, 2),),),
             memory_allocation=((core0,),),
         )
         mapping = Mapping(
