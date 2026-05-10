@@ -7,9 +7,9 @@
 
 ### Pre-flight Cleanup
 
-- [ ] **CLEAN-02**: All bare `print()` calls in the MILP solve path are replaced with logger calls so stdout remains clean for MCP stdio transport
+- [x] **CLEAN-02**: All bare `print()` calls in the MILP solve path are replaced with logger calls so stdout remains clean for MCP stdio transport
 - [x] **CLEAN-03**: Missing `get_ir()` methods added to SteadyStateScheduler and Mapping, returning serializable dict representations of allocation results
-- [ ] **CLEAN-04**: Module-level `logging.basicConfig()` in api.py moved to a callable helper so MCP server can configure logging independently
+- [x] **CLEAN-04**: Module-level `logging.basicConfig()` in api.py moved to a callable helper so MCP server can configure logging independently
 
 ### IR Design
 
@@ -44,9 +44,9 @@
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CLEAN-02 | Phase 15 | Pending |
+| CLEAN-02 | Phase 15 | Complete |
 | CLEAN-03 | Phase 15 | Complete |
-| CLEAN-04 | Phase 15 | Pending |
+| CLEAN-04 | Phase 15 | Complete |
 | IR-01 | Phase 16 | Pending |
 | IR-02 | Phase 16 | Pending |
 | MCP-01 | Phase 17 | Pending |

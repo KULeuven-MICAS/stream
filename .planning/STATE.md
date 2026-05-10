@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: MCP Server & Intermediate Representations
-status: executing
-stopped_at: Completed 15-02-PLAN.md
-last_updated: "2026-05-10T16:10:07.725Z"
+status: verifying
+stopped_at: Completed 15-01-PLAN.md
+last_updated: "2026-05-10T16:10:50.384Z"
 last_activity: 2026-05-10
 progress:
   total_phases: 4
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 2
-  completed_plans: 1
+  completed_plans: 2
   percent: 0
 ---
 
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-05-10)
 
 Phase: 15 (pre-flight-cleanup) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-05-10
 
 Progress: [░░░░░░░░░░] 0%
@@ -51,6 +51,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 13 P01 | 2 tasks | 900s | 3 files |
 | Phase 14 P01 | 2 tasks | 190s | 3 files |
 | Phase 15-pre-flight-cleanup P02 | 300 | 2 tasks | 3 files |
+| Phase 15 P01 | 900 | 2 tasks | 16 files |
 
 ## Accumulated Context
 
@@ -65,6 +66,7 @@ Key decisions carried forward:
 - [Phase 17 context]: Content-addressed experiment IDs (MCP-03) enable deterministic cache hits — hash of hardware + workload + mapping + backend + constraints
 - [Phase 15-pre-flight-cleanup]: Use isinstance checks (Core vs MulticastPathPlan) to serialize resource_allocation entries as typed dicts in get_ir()
 - [Phase 15-pre-flight-cleanup]: Exclude kernel field from Mapping.get_ir() — AIEKernel is compiler-internal, handled separately in Phase 16
+- [Phase 15]: configure_logging() pattern: move basicConfig into explicit helper so MCP server imports stream.api without logging side effects
 
 ### Pending Todos
 
@@ -76,6 +78,6 @@ None at roadmap time. Phase 15 (CLEAN-03, get_ir()) requires deep inspection of 
 
 ## Session Continuity
 
-Last session: 2026-05-10T16:10:07.723Z
-Stopped at: Completed 15-02-PLAN.md
+Last session: 2026-05-10T16:10:50.381Z
+Stopped at: Completed 15-01-PLAN.md
 Resume file: None
