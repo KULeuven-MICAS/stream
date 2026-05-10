@@ -4,7 +4,8 @@
 
 - ✅ **v1.0 OR-Tools TETRA Backend** - Phases 1-4 (shipped 2026-05-07)
 - ✅ **v1.1 Selective Constraints** - Phases 5-8 (shipped 2026-05-08)
-- 🚧 **v1.2 Codebase Documentation** - Phases 9-14 (in progress)
+- ✅ **v1.2 Codebase Documentation** - Phases 9-14 (shipped 2026-05-10)
+- 🚧 **v1.3 MCP Server & Intermediate Representations** - Phases 15-18 (in progress)
 
 ## Phases
 
@@ -130,13 +131,10 @@ Plans:
 
 </details>
 
-### 🚧 v1.2 Codebase Documentation (In Progress)
+<details>
+<summary>✅ v1.2 Codebase Documentation (Phases 9-14) - SHIPPED 2026-05-10</summary>
 
-**Milestone Goal:** Comprehensive documentation of stream_aie components and architecture, structured as Claude Code skills (`.claude/skills/`) for AI agent auto-discovery, while remaining readable for human developers.
-
-**Cross-cutting quality requirements:** SKILL-01 (trigger descriptions) and SKILL-02 (self-contained skills) are established in Phase 10 and enforced in every skill file produced in Phases 11-14.
-
-#### Phase 9: Dead Code Cleanup
+### Phase 9: Dead Code Cleanup
 **Goal**: The codebase contains only active, referenced code -- unused stage files and their dead imports are removed before documentation begins
 **Depends on**: Nothing (independent cleanup)
 **Requirements**: CLEAN-01
@@ -216,10 +214,73 @@ Plans:
 Plans:
 - [x] 14-01-PLAN.md — Write api-reference.md and testing-patterns.md skill files, update SKILL.md
 
+</details>
+
+### 🚧 v1.3 MCP Server & Intermediate Representations (In Progress)
+
+**Milestone Goal:** Expose stream_aie functionality to AI agents via a local MCP server with clean, serializable intermediate representations
+
+- [ ] **Phase 15: Pre-flight Cleanup** - Silence stdout, add get_ir(), decouple logging config
+- [ ] **Phase 16: IR Models** - Pydantic IR classes with JSON Schema and per-persona views
+- [ ] **Phase 17: MCP Server Skeleton** - FastMCP server with async job pattern and content-addressed experiment IDs
+- [ ] **Phase 18: MCP Tools** - End-to-end and inspection tools returning structured IR JSON
+
+## Phase Details
+
+### Phase 15: Pre-flight Cleanup
+**Goal**: The MILP solve path emits no stdout, SteadyStateScheduler and Mapping expose serializable get_ir() methods, and the MCP server can configure logging independently
+**Depends on**: Phase 14
+**Requirements**: CLEAN-02, CLEAN-03, CLEAN-04
+**Success Criteria** (what must be TRUE):
+  1. Running a full TETRA solve with OR-Tools produces zero lines on stdout — all diagnostic output goes through the logger
+  2. `SteadyStateScheduler.get_ir()` returns a dict with allocation results that round-trips cleanly through `json.dumps()` (no non-serializable objects)
+  3. `Mapping.get_ir()` returns a dict representation of the mapping that round-trips cleanly through `json.dumps()`
+  4. An MCP server process can call a helper to configure logging without triggering any module-level `basicConfig()` side effects from api.py
+**Plans:** 2 plans
+
+Plans:
+- [ ] 15-01-PLAN.md — Replace TTA print() calls with logger + move basicConfig to configure_logging helper
+- [ ] 15-02-PLAN.md — Add get_ir() methods to Mapping and SteadyStateScheduler + round-trip tests
+
+### Phase 16: IR Models
+**Goal**: Structured, versioned Pydantic IR classes exist for workloads, allocations, and hardware, with per-persona views that surface the right information for each user type
+**Depends on**: Phase 15
+**Requirements**: IR-01, IR-02
+**Success Criteria** (what must be TRUE):
+  1. `WorkloadIR`, `AllocationIR`, and `AcceleratorIR` Pydantic models exist, each with a `schema_version` field, and `Model.model_json_schema()` returns a valid JSON Schema dict
+  2. An algorithmic engineer calling the IR can access latency and objective-function breakdown without digging through raw solver output
+  3. A hardware engineer calling the IR can see per-core resource utilization derived from the allocation
+  4. A compiler engineer calling the IR can read node-to-core mapping and transfer routing in a structured, navigable format
+**Plans**: TBD
+**UI hint**: no
+
+### Phase 17: MCP Server Skeleton
+**Goal**: A FastMCP server boots cleanly as a Claude Code subprocess, registers tools, manages state across calls via lifespan, and handles long-running solves without timeout via an async job pattern
+**Depends on**: Phase 15
+**Requirements**: MCP-01, MCP-02, MCP-03
+**Success Criteria** (what must be TRUE):
+  1. Running the MCP server as a subprocess and connecting Claude Code to it takes under 1.5 seconds from process start to tools becoming discoverable
+  2. Submitting an optimization job returns a job ID immediately — the caller does not block waiting for the MILP solve to complete
+  3. Polling for job results returns the correct status (pending / complete / failed) and, once complete, the full result without re-running the solve
+  4. Submitting the same hardware + workload + backend + constraints combination twice reuses the cached result — the second call returns instantly with the same job ID
+**Plans**: TBD
+**UI hint**: no
+
+### Phase 18: MCP Tools
+**Goal**: AI agents can drive the full TETRA design space exploration workflow — launching solves, inspecting workloads and hardware, and retrieving allocation results — entirely through MCP tool calls returning structured IR JSON
+**Depends on**: Phase 16, Phase 17
+**Requirements**: TOOL-01, TOOL-02, TOOL-03
+**Success Criteria** (what must be TRUE):
+  1. An agent calling `run_optimization` with a workload path, hardware YAML, backend choice, and constraint selection receives a job ID and can subsequently retrieve the result via a polling tool
+  2. An agent calling `get_workload_ir` or `get_accelerator_ir` receives a JSON object that validates against the Pydantic IR schema for that type
+  3. An agent calling `get_allocation_ir` receives tensor placements and per-layer latencies as structured JSON; calling `get_solve_stats` receives solve time, objective value, and solver status
+**Plans**: TBD
+**UI hint**: no
+
 ## Progress
 
 **Execution Order:**
-Phase 9 is independent. Phase 10 depends on Phase 9. Phases 11-14 depend on Phase 10 and can run in any order: 9 -> 10 -> 11 -> 12 -> 13 -> 14
+Phases 1-14 complete. v1.3 order: 15 (blocker) -> 16 -> 17 (parallel after 15) -> 18 (depends on 16 + 17)
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
@@ -231,9 +292,13 @@ Phase 9 is independent. Phase 10 depends on Phase 9. Phases 11-14 depend on Phas
 | 6. Pipeline & API Surface | v1.1 | 2/2 | Complete | 2026-05-08 |
 | 7. End-to-End Validation | v1.1 | 1/1 | Complete | 2026-05-08 |
 | 8. Constraint Toggle Study Script | v1.1 | 1/1 | Complete | 2026-05-08 |
-| 9. Dead Code Cleanup | v1.2 | 1/1 | Complete   | 2026-05-09 |
-| 10. CLAUDE.md & Skill Scaffolding | v1.2 | 2/2 | Complete    | 2026-05-09 |
-| 11. Solver System Skills | v1.2 | 1/1 | Complete    | 2026-05-09 |
-| 12. Pipeline Skills | v1.2 | 1/1 | Complete    | 2026-05-09 |
-| 13. MILP & Constraint Skills | v1.2 | 1/1 | Complete    | 2026-05-10 |
-| 14. API & Testing Skills | v1.2 | 1/1 | Complete   | 2026-05-10 |
+| 9. Dead Code Cleanup | v1.2 | 1/1 | Complete | 2026-05-09 |
+| 10. CLAUDE.md & Skill Scaffolding | v1.2 | 2/2 | Complete | 2026-05-09 |
+| 11. Solver System Skills | v1.2 | 1/1 | Complete | 2026-05-09 |
+| 12. Pipeline Skills | v1.2 | 1/1 | Complete | 2026-05-09 |
+| 13. MILP & Constraint Skills | v1.2 | 1/1 | Complete | 2026-05-10 |
+| 14. API & Testing Skills | v1.2 | 1/1 | Complete | 2026-05-10 |
+| 15. Pre-flight Cleanup | v1.3 | 0/2 | Not started | - |
+| 16. IR Models | v1.3 | 0/TBD | Not started | - |
+| 17. MCP Server Skeleton | v1.3 | 0/TBD | Not started | - |
+| 18. MCP Tools | v1.3 | 0/TBD | Not started | - |
