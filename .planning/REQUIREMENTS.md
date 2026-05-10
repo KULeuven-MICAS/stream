@@ -25,7 +25,7 @@
 ### Tools
 
 - [x] **TOOL-01**: `run_optimization` tool accepts workload path, hardware YAML, backend, and constraint selection — launches async MILP solve and returns job ID
-- [ ] **TOOL-02**: `get_workload_ir` and `get_accelerator_ir` tools return parsed workload DAG and hardware topology as structured JSON matching Pydantic IR schemas
+- [x] **TOOL-02**: `get_workload_ir` and `get_accelerator_ir` tools return parsed workload DAG and hardware topology as structured JSON matching Pydantic IR schemas
 - [x] **TOOL-03**: `get_allocation_ir` and `get_solve_stats` tools return optimization results (tensor placements, latencies, solve statistics) as structured JSON
 
 ## Out of Scope
@@ -53,7 +53,7 @@
 | MCP-02 | Phase 17 | Complete |
 | MCP-03 | Phase 17 | Complete |
 | TOOL-01 | Phase 18 | Complete |
-| TOOL-02 | Phase 18 | Pending |
+| TOOL-02 | Phase 18 | Complete |
 | TOOL-03 | Phase 18 | Complete |
 
 **Coverage:**

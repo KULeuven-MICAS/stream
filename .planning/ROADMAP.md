@@ -223,7 +223,7 @@ Plans:
 - [x] **Phase 15: Pre-flight Cleanup** - Silence stdout, add get_ir(), decouple logging config (completed 2026-05-10)
 - [x] **Phase 16: IR Models** - Pydantic IR classes with JSON Schema and per-persona views (completed 2026-05-10)
 - [x] **Phase 17: MCP Server Skeleton** - FastMCP server with async job pattern and content-addressed experiment IDs (completed 2026-05-10)
-- [ ] **Phase 18: MCP Tools** - End-to-end and inspection tools returning structured IR JSON
+- [x] **Phase 18: MCP Tools** - End-to-end and inspection tools returning structured IR JSON (completed 2026-05-10)
 
 ## Phase Details
 
@@ -284,11 +284,11 @@ Plans:
   1. An agent calling `run_optimization` with a workload path, hardware YAML, backend choice, and constraint selection receives a job ID and can subsequently retrieve the result via a polling tool
   2. An agent calling `get_workload_ir` or `get_accelerator_ir` receives a JSON object that validates against the Pydantic IR schema for that type
   3. An agent calling `get_allocation_ir` receives tensor placements and per-layer latencies as structured JSON; calling `get_solve_stats` receives solve time, objective value, and solver status
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 
 Plans:
 - [x] 18-01-PLAN.md — Wire async job dispatch in run_optimization + implement get_allocation_ir and get_solve_stats
-- [ ] 18-02-PLAN.md — Implement get_workload_ir and get_accelerator_ir with dual-parameter pattern
+- [x] 18-02-PLAN.md — Implement get_workload_ir and get_accelerator_ir with dual-parameter pattern
 
 **UI hint**: no
 
@@ -316,4 +316,4 @@ Phases 1-14 complete. v1.3 order: 15 (blocker) -> 16 -> 17 (parallel after 15) -
 | 15. Pre-flight Cleanup | v1.3 | 2/2 | Complete    | 2026-05-10 |
 | 16. IR Models | v1.3 | 2/2 | Complete    | 2026-05-10 |
 | 17. MCP Server Skeleton | v1.3 | 2/2 | Complete    | 2026-05-10 |
-| 18. MCP Tools | v1.3 | 1/2 | In Progress|  |
+| 18. MCP Tools | v1.3 | 2/2 | Complete   | 2026-05-10 |

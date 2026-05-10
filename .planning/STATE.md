@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: MCP Server & Intermediate Representations
-status: executing
-stopped_at: Completed 18-mcp-tools-01-PLAN.md
-last_updated: "2026-05-10T21:51:03.745Z"
+status: verifying
+stopped_at: Completed 18-mcp-tools-02-PLAN.md
+last_updated: "2026-05-10T21:56:19.992Z"
 last_activity: 2026-05-10
 progress:
   total_phases: 4
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 8
-  completed_plans: 7
+  completed_plans: 8
   percent: 0
 ---
 
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-05-10)
 
 Phase: 18 (mcp-tools) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-05-10
 
 Progress: [░░░░░░░░░░] 0%
@@ -57,6 +57,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 17-mcp-server-skeleton P01 | 2 | 2 tasks | 4 files |
 | Phase 17-mcp-server-skeleton P02 | 93 | 1 tasks | 2 files |
 | Phase 18-mcp-tools P01 | 523 | 2 tasks | 3 files |
+| Phase 18-mcp-tools P02 | 120 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -86,6 +87,9 @@ Key decisions carried forward:
 - [Phase 18-01]: Lazy imports with noqa: PLC0415 for all heavy imports inside tool handlers (D-04 preserved)
 - [Phase 18-01]: test_poll_optimization_pending accepts 'running' status: background task transitions immediately from 'pending' when async dispatch is wired
 - [Phase 18-01]: StageContext stored as ctx dict in job result — scheduler object accessible for both get_allocation_ir and get_solve_stats without pickle
+- [Phase 18-02]: D-01 dual-parameter pattern: both workload/hardware and experiment_id are optional; experiment_id takes precedence when both provided
+- [Phase 18-02]: noqa: PLR0911 accepted for inspection tools — many return branches are inherent to dual-parameter + D-03 error handling
+- [Phase 18-02]: Stub test (test_stub_tools_return_not_implemented) removed after Plan 02 — no stubs remain in server.py
 
 ### Pending Todos
 
@@ -97,6 +101,6 @@ None at roadmap time. Phase 15 (CLEAN-03, get_ir()) requires deep inspection of 
 
 ## Session Continuity
 
-Last session: 2026-05-10T21:51:03.743Z
-Stopped at: Completed 18-mcp-tools-01-PLAN.md
+Last session: 2026-05-10T21:56:19.990Z
+Stopped at: Completed 18-mcp-tools-02-PLAN.md
 Resume file: None
