@@ -133,7 +133,11 @@ def test_run_optimization_returns_job_id(tmp_path: pathlib.Path) -> None:
 
 
 def test_poll_optimization_pending(tmp_path: pathlib.Path) -> None:
-    """After run_optimization, poll_optimization returns status 'pending'."""
+    """After run_optimization, poll_optimization returns an in-progress status.
+
+    The background task may have advanced to 'running' by the time poll is called,
+    so we accept both 'pending' and 'running' as valid in-progress states.
+    """
     from fastmcp.client import Client
 
     from stream.mcp.server import mcp
@@ -154,7 +158,9 @@ def test_poll_optimization_pending(tmp_path: pathlib.Path) -> None:
             return poll_result.data
 
     data = asyncio.run(run())
-    assert data["status"] == "pending", f"Expected status 'pending', got {data['status']}"
+    assert data["status"] in ("pending", "running", "failed"), (
+        f"Expected in-progress status, got {data['status']}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -240,8 +246,11 @@ def test_lifespan_creates_state() -> None:
 
 
 def test_stub_tools_return_not_implemented(tmp_path: pathlib.Path) -> None:
-    """Stub tools (get_workload_ir, get_accelerator_ir, get_allocation_ir, get_solve_stats)
-    return dicts with status 'not_implemented'."""
+    """Stub tools (get_workload_ir, get_accelerator_ir) return dicts with status 'not_implemented'.
+
+    get_allocation_ir and get_solve_stats are no longer stubs — they return structured
+    error responses per D-03 when given non-existent experiment IDs.
+    """
     from fastmcp.client import Client
 
     from stream.mcp.server import mcp
@@ -256,15 +265,149 @@ def test_stub_tools_return_not_implemented(tmp_path: pathlib.Path) -> None:
             results.append(r1.data)
             r2 = await client.call_tool("get_accelerator_ir", {"hardware": hw})
             results.append(r2.data)
-            r3 = await client.call_tool("get_allocation_ir", {"job_id": "somejobid1"})
-            results.append(r3.data)
-            r4 = await client.call_tool("get_solve_stats", {"job_id": "somejobid2"})
-            results.append(r4.data)
             return results
 
     results = asyncio.run(run())
-    tool_names = ["get_workload_ir", "get_accelerator_ir", "get_allocation_ir", "get_solve_stats"]
+    tool_names = ["get_workload_ir", "get_accelerator_ir"]
     for tool_name, data in zip(tool_names, results, strict=True):
         assert data.get("status") == "not_implemented", (
             f"{tool_name} should return status 'not_implemented', got {data}"
         )
+
+
+# ---------------------------------------------------------------------------
+# test_get_allocation_ir_not_found
+# ---------------------------------------------------------------------------
+
+
+def test_get_allocation_ir_not_found() -> None:
+    """get_allocation_ir with nonexistent experiment_id returns structured not_found error."""
+    from fastmcp.client import Client
+
+    from stream.mcp.server import mcp
+
+    async def run() -> dict:
+        async with Client(mcp) as client:
+            result = await client.call_tool("get_allocation_ir", {"job_id": "nonexistent1"})
+            return result.data
+
+    data = asyncio.run(run())
+    assert data.get("status") == "error", f"Expected status 'error', got {data}"
+    assert data.get("error_type") == "not_found", f"Expected error_type 'not_found', got {data}"
+
+
+# ---------------------------------------------------------------------------
+# test_get_allocation_ir_not_ready
+# ---------------------------------------------------------------------------
+
+
+def test_get_allocation_ir_not_ready(tmp_path: pathlib.Path) -> None:
+    """get_allocation_ir returns not_ready error when job is still pending/running."""
+    from fastmcp.client import Client
+
+    from stream.mcp.server import mcp
+
+    hw = _write_temp_file(tmp_path, "hardware.yaml", b"hw_not_ready")
+    wl = _write_temp_file(tmp_path, "workload.onnx", b"wl_not_ready")
+    mp = _write_temp_file(tmp_path, "mapping.yaml", b"mp_not_ready")
+    out = str(tmp_path / "out_not_ready")
+
+    async def run() -> dict:
+        async with Client(mcp) as client:
+            run_result = await client.call_tool(
+                "run_optimization",
+                {"hardware": hw, "workload": wl, "mapping": mp, "output_path": out},
+            )
+            job_id = run_result.data["job_id"]
+            # Immediately call get_allocation_ir — job is still pending
+            result = await client.call_tool("get_allocation_ir", {"job_id": job_id})
+            return result.data
+
+    data = asyncio.run(run())
+    assert data.get("status") == "error", f"Expected status 'error', got {data}"
+    assert data.get("error_type") == "not_ready", f"Expected error_type 'not_ready', got {data}"
+
+
+# ---------------------------------------------------------------------------
+# test_get_solve_stats_not_found
+# ---------------------------------------------------------------------------
+
+
+def test_get_solve_stats_not_found() -> None:
+    """get_solve_stats with nonexistent experiment_id returns structured not_found error."""
+    from fastmcp.client import Client
+
+    from stream.mcp.server import mcp
+
+    async def run() -> dict:
+        async with Client(mcp) as client:
+            result = await client.call_tool("get_solve_stats", {"job_id": "nonexistent2"})
+            return result.data
+
+    data = asyncio.run(run())
+    assert data.get("status") == "error", f"Expected status 'error', got {data}"
+    assert data.get("error_type") == "not_found", f"Expected error_type 'not_found', got {data}"
+
+
+# ---------------------------------------------------------------------------
+# test_get_solve_stats_not_ready
+# ---------------------------------------------------------------------------
+
+
+def test_get_solve_stats_not_ready(tmp_path: pathlib.Path) -> None:
+    """get_solve_stats returns not_ready error when job is still pending/running."""
+    from fastmcp.client import Client
+
+    from stream.mcp.server import mcp
+
+    hw = _write_temp_file(tmp_path, "hardware.yaml", b"hw_ss_not_ready")
+    wl = _write_temp_file(tmp_path, "workload.onnx", b"wl_ss_not_ready")
+    mp = _write_temp_file(tmp_path, "mapping.yaml", b"mp_ss_not_ready")
+    out = str(tmp_path / "out_ss_not_ready")
+
+    async def run() -> dict:
+        async with Client(mcp) as client:
+            run_result = await client.call_tool(
+                "run_optimization",
+                {"hardware": hw, "workload": wl, "mapping": mp, "output_path": out},
+            )
+            job_id = run_result.data["job_id"]
+            # Immediately call get_solve_stats — job is still pending
+            result = await client.call_tool("get_solve_stats", {"job_id": job_id})
+            return result.data
+
+    data = asyncio.run(run())
+    assert data.get("status") == "error", f"Expected status 'error', got {data}"
+    assert data.get("error_type") == "not_ready", f"Expected error_type 'not_ready', got {data}"
+
+
+# ---------------------------------------------------------------------------
+# test_run_optimization_no_stub_message
+# ---------------------------------------------------------------------------
+
+
+def test_run_optimization_no_stub_message(tmp_path: pathlib.Path) -> None:
+    """run_optimization no longer returns 'not implemented yet' message — returns job_id and status."""
+    from fastmcp.client import Client
+
+    from stream.mcp.server import mcp
+
+    hw = _write_temp_file(tmp_path, "hardware.yaml", b"hw_no_stub")
+    wl = _write_temp_file(tmp_path, "workload.onnx", b"wl_no_stub")
+    mp = _write_temp_file(tmp_path, "mapping.yaml", b"mp_no_stub")
+    out = str(tmp_path / "out_no_stub")
+
+    async def run() -> dict:
+        async with Client(mcp) as client:
+            result = await client.call_tool(
+                "run_optimization",
+                {"hardware": hw, "workload": wl, "mapping": mp, "output_path": out},
+            )
+            return result.data
+
+    data = asyncio.run(run())
+    assert "job_id" in data, f"Missing job_id in response: {data}"
+    assert data["status"] == "pending", f"Expected status 'pending', got {data['status']}"
+    assert data.get("message") != "not implemented yet", (
+        f"run_optimization should no longer return stub message, got {data}"
+    )
