@@ -221,7 +221,7 @@ Plans:
 **Milestone Goal:** Expose stream_aie functionality to AI agents via a local MCP server with clean, serializable intermediate representations
 
 - [x] **Phase 15: Pre-flight Cleanup** - Silence stdout, add get_ir(), decouple logging config (completed 2026-05-10)
-- [ ] **Phase 16: IR Models** - Pydantic IR classes with JSON Schema and per-persona views
+- [x] **Phase 16: IR Models** - Pydantic IR classes with JSON Schema and per-persona views (completed 2026-05-10)
 - [ ] **Phase 17: MCP Server Skeleton** - FastMCP server with async job pattern and content-addressed experiment IDs
 - [ ] **Phase 18: MCP Tools** - End-to-end and inspection tools returning structured IR JSON
 
@@ -251,7 +251,12 @@ Plans:
   2. An algorithmic engineer calling the IR can access latency and objective-function breakdown without digging through raw solver output
   3. A hardware engineer calling the IR can see per-core resource utilization derived from the allocation
   4. A compiler engineer calling the IR can read node-to-core mapping and transfer routing in a structured, navigable format
-**Plans**: TBD
+**Plans:** 2/2 plans complete
+
+Plans:
+- [x] 16-01-PLAN.md — WorkloadIR + AcceleratorIR Pydantic models with from_internal, views, and tests
+- [x] 16-02-PLAN.md — AllocationIR Pydantic model with three persona views + IR skill documentation
+
 **UI hint**: no
 
 ### Phase 17: MCP Server Skeleton
@@ -298,7 +303,7 @@ Phases 1-14 complete. v1.3 order: 15 (blocker) -> 16 -> 17 (parallel after 15) -
 | 12. Pipeline Skills | v1.2 | 1/1 | Complete | 2026-05-09 |
 | 13. MILP & Constraint Skills | v1.2 | 1/1 | Complete | 2026-05-10 |
 | 14. API & Testing Skills | v1.2 | 1/1 | Complete | 2026-05-10 |
-| 15. Pre-flight Cleanup | v1.3 | 2/2 | Complete   | 2026-05-10 |
-| 16. IR Models | v1.3 | 0/TBD | Not started | - |
+| 15. Pre-flight Cleanup | v1.3 | 2/2 | Complete    | 2026-05-10 |
+| 16. IR Models | v1.3 | 2/2 | Complete   | 2026-05-10 |
 | 17. MCP Server Skeleton | v1.3 | 0/TBD | Not started | - |
 | 18. MCP Tools | v1.3 | 0/TBD | Not started | - |

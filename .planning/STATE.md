@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: MCP Server & Intermediate Representations
 status: verifying
-stopped_at: Completed 15-01-PLAN.md
-last_updated: "2026-05-10T16:10:50.384Z"
+stopped_at: Completed 16-02-PLAN.md
+last_updated: "2026-05-10T20:35:29.767Z"
 last_activity: 2026-05-10
 progress:
   total_phases: 4
-  completed_phases: 1
-  total_plans: 2
-  completed_plans: 2
+  completed_phases: 2
+  total_plans: 4
+  completed_plans: 4
   percent: 0
 ---
 
@@ -21,11 +21,11 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-10)
 
 **Core value:** Enable AI agents to drive TETRA design space exploration via structured MCP tools with clean, serializable intermediate representations
-**Current focus:** Phase 15 — pre-flight-cleanup
+**Current focus:** Phase 16 — ir-models
 
 ## Current Position
 
-Phase: 15 (pre-flight-cleanup) — EXECUTING
+Phase: 16 (ir-models) — EXECUTING
 Plan: 2 of 2
 Status: Phase complete — ready for verification
 Last activity: 2026-05-10
@@ -52,6 +52,8 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 14 P01 | 2 tasks | 190s | 3 files |
 | Phase 15-pre-flight-cleanup P02 | 300 | 2 tasks | 3 files |
 | Phase 15 P01 | 900 | 2 tasks | 16 files |
+| Phase 16-ir-models P01 | 464 | 1 tasks | 5 files |
+| Phase 16-ir-models P02 | 900 | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -67,6 +69,12 @@ Key decisions carried forward:
 - [Phase 15-pre-flight-cleanup]: Use isinstance checks (Core vs MulticastPathPlan) to serialize resource_allocation entries as typed dicts in get_ir()
 - [Phase 15-pre-flight-cleanup]: Exclude kernel field from Mapping.get_ir() — AIEKernel is compiler-internal, handled separately in Phase 16
 - [Phase 15]: configure_logging() pattern: move basicConfig into explicit helper so MCP server imports stream.api without logging side effects
+- [Phase 16-01]: Use TYPE_CHECKING guard + from __future__ import annotations in IR files to avoid circular imports
+- [Phase 16-01]: CoreIR uses extra_fields dict for type-specific core data instead of discriminated union (deferred to Phase 17+)
+- [Phase 16-01]: View models include schema_version Literal['1.0'] for independent version tracking
+- [Phase 16-02]: AllocationIR.from_internal() raises ValueError on pre-solve scheduler (latency_total == -1 sentinel) to prevent confusing MCP consumers
+- [Phase 16-02]: NodeAllocationIR carries all three slot-indexed fields so both hardware_view and compiler_view share one sub-model
+- [Phase 16-02]: IR skill files use conceptual-guide style (no code examples) per Phase 11 decision
 
 ### Pending Todos
 
@@ -78,6 +86,6 @@ None at roadmap time. Phase 15 (CLEAN-03, get_ir()) requires deep inspection of 
 
 ## Session Continuity
 
-Last session: 2026-05-10T16:10:50.381Z
-Stopped at: Completed 15-01-PLAN.md
+Last session: 2026-05-10T20:35:29.765Z
+Stopped at: Completed 16-02-PLAN.md
 Resume file: None
