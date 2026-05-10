@@ -236,11 +236,11 @@ Plans:
   2. `SteadyStateScheduler.get_ir()` returns a dict with allocation results that round-trips cleanly through `json.dumps()` (no non-serializable objects)
   3. `Mapping.get_ir()` returns a dict representation of the mapping that round-trips cleanly through `json.dumps()`
   4. An MCP server process can call a helper to configure logging without triggering any module-level `basicConfig()` side effects from api.py
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 
 Plans:
 - [ ] 15-01-PLAN.md — Replace TTA print() calls with logger + move basicConfig to configure_logging helper
-- [ ] 15-02-PLAN.md — Add get_ir() methods to Mapping and SteadyStateScheduler + round-trip tests
+- [x] 15-02-PLAN.md — Add get_ir() methods to Mapping and SteadyStateScheduler + round-trip tests
 
 ### Phase 16: IR Models
 **Goal**: Structured, versioned Pydantic IR classes exist for workloads, allocations, and hardware, with per-persona views that surface the right information for each user type
@@ -298,7 +298,7 @@ Phases 1-14 complete. v1.3 order: 15 (blocker) -> 16 -> 17 (parallel after 15) -
 | 12. Pipeline Skills | v1.2 | 1/1 | Complete | 2026-05-09 |
 | 13. MILP & Constraint Skills | v1.2 | 1/1 | Complete | 2026-05-10 |
 | 14. API & Testing Skills | v1.2 | 1/1 | Complete | 2026-05-10 |
-| 15. Pre-flight Cleanup | v1.3 | 0/2 | Not started | - |
+| 15. Pre-flight Cleanup | v1.3 | 1/2 | In Progress|  |
 | 16. IR Models | v1.3 | 0/TBD | Not started | - |
 | 17. MCP Server Skeleton | v1.3 | 0/TBD | Not started | - |
 | 18. MCP Tools | v1.3 | 0/TBD | Not started | - |

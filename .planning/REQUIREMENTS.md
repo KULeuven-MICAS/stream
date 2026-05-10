@@ -1,75 +1,66 @@
-# Requirements: Stream AIE — Codebase Documentation
+# Requirements: Stream AIE — MCP Server & Intermediate Representations
 
-**Defined:** 2026-05-09
-**Core Value:** Make stream_aie navigable for both human developers and AI agents via structured documentation as Claude Code skills
+**Defined:** 2026-05-10
+**Core Value:** Enable AI agents to drive TETRA design space exploration via structured MCP tools with clean, serializable intermediate representations
 
-## v1.2 Requirements
+## v1.3 Requirements
 
-### Dead Code Cleanup
+### Pre-flight Cleanup
 
-- [x] **CLEAN-01**: Remove unused stage files (StreamCostModelEvaluationStage, SetFixedAllocationStage, UserDefinedModelParserStage) and any other dead imports referencing them
+- [ ] **CLEAN-02**: All bare `print()` calls in the MILP solve path are replaced with logger calls so stdout remains clean for MCP stdio transport
+- [x] **CLEAN-03**: Missing `get_ir()` methods added to SteadyStateScheduler and Mapping, returning serializable dict representations of allocation results
+- [ ] **CLEAN-04**: Module-level `logging.basicConfig()` in api.py moved to a callable helper so MCP server can configure logging independently
 
-### CLAUDE.md & Navigation
+### IR Design
 
-- [x] **NAV-01**: CLAUDE.md exists at repo root with codebase overview, directory structure, key entry points, and conventions
-- [x] **NAV-02**: CLAUDE.md references `.claude/skills/` for topic-specific deep dives
+- [ ] **IR-01**: Pydantic BaseModel IR classes (WorkloadIR, AllocationIR, AcceleratorIR) exist with `schema_version` field and produce valid JSON Schema via `.model_json_schema()`
+- [ ] **IR-02**: Per-persona IR views available: algorithmic (latency/objective focus), hardware (per-core resource utilization), compiler (node-to-core mapping + transfer routing)
 
-### Solver System
+### MCP Server
 
-- [x] **SOLVER-01**: Skill doc covers SolverModel ABC, GurobiBackend, ORToolsBackend, factory pattern, and when to use each
-- [x] **SOLVER-02**: Skill doc covers ConstraintSelection, its relationship to NamespaceConstraints, and which constraints apply to which hardware
+- [ ] **MCP-01**: FastMCP server with STDIO transport boots in under 1.5s, registers tools discoverable by Claude Code, and uses lifespan-based state management
+- [ ] **MCP-02**: `run_optimization` tool uses async job pattern — returns job ID immediately, results retrievable via polling tool (handles 2-15 min solves without timeout)
+- [ ] **MCP-03**: Experiment IDs are content-addressed (hash of hardware + workload + mapping + backend + constraints) enabling deterministic cache hits
 
-### Pipeline Stages
+### Tools
 
-- [x] **STAGE-01**: Skill doc covers each active pipeline stage (AcceleratorParser, ONNXModelParser, MappingParser, TilingGeneration, CoreCostEstimation, ConstraintOptimizationAllocation, MemoryAccessesEstimation, MappingGeneration) with responsibility, inputs/outputs, and where it fits in the flow
-- [x] **STAGE-02**: Skill doc covers StageContext and the MainStage/LeafStage execution model
-
-### MILP & Constraints
-
-- [x] **MILP-01**: Skill doc covers TransferAndTensorAllocator MILP structure (variables, constraint groups, objective function, ConstraintSelection guards)
-- [x] **MILP-02**: Skill doc covers NamespaceConstraints pattern, AIE2Constraints, and how hardware-specific constraints are dispatched
-
-### API & Testing
-
-- [x] **API-01**: Skill doc covers public API (optimize_allocation_co, optimize_mapping), CLI flags, and common usage patterns
-- [x] **API-02**: Skill doc covers testing patterns (unit vs integration, backend patching, study scripts)
-
-### Skill Structure
-
-- [x] **SKILL-01**: Each skill has a SKILL.md with trigger description so AI agents know when to load it
-- [x] **SKILL-02**: Skills are self-contained — each readable independently without requiring other skills
+- [ ] **TOOL-01**: `run_optimization` tool accepts workload path, hardware YAML, backend, and constraint selection — launches async MILP solve and returns job ID
+- [ ] **TOOL-02**: `get_workload_ir` and `get_accelerator_ir` tools return parsed workload DAG and hardware topology as structured JSON matching Pydantic IR schemas
+- [ ] **TOOL-03**: `get_allocation_ir` and `get_solve_stats` tools return optimization results (tensor placements, latencies, solve statistics) as structured JSON
 
 ## Out of Scope
 
 | Feature | Reason |
 |---------|--------|
-| Auto-generated API docs (Sphinx/mkdocs) | Focus on AI-agent-friendly skills, not hosted docs |
-| User tutorials / getting started guide | Separate concern — this milestone is reference documentation |
-| Inline code comments overhaul | Documentation lives in skills, not scattered through source |
+| HTTP/SSE transport | MCP server runs as local subprocess; network transport is a separate concern |
+| Authentication / API keys | Local subprocess model, no multi-user scenarios |
+| compare_backends tool | Can be composed by calling run_optimization twice; defer to v1.4 |
+| Transfer path traceability in IR | MulticastPathPlan serialization is complex; P2 feature |
+| Per-core resource breakdown IR | Requires deep TTA internals work; P2 feature |
+| MCP Resources / Prompts primitives | Tools are the right primitive for active computation |
+| Web platform integration | Existing web demo is a separate architecture |
 
 ## Traceability
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| CLEAN-01 | Phase 9 | Complete |
-| NAV-01 | Phase 10 | Complete |
-| NAV-02 | Phase 10 | Complete |
-| SOLVER-01 | Phase 11 | Complete |
-| SOLVER-02 | Phase 11 | Complete |
-| STAGE-01 | Phase 12 | Complete |
-| STAGE-02 | Phase 12 | Complete |
-| MILP-01 | Phase 13 | Complete |
-| MILP-02 | Phase 13 | Complete |
-| API-01 | Phase 14 | Complete |
-| API-02 | Phase 14 | Complete |
-| SKILL-01 | Phase 10 (cross-cutting: enforced in Phases 11-14) | Complete |
-| SKILL-02 | Phase 10 (cross-cutting: enforced in Phases 11-14) | Complete |
+| CLEAN-02 | Phase 15 | Pending |
+| CLEAN-03 | Phase 15 | Complete |
+| CLEAN-04 | Phase 15 | Pending |
+| IR-01 | Phase 16 | Pending |
+| IR-02 | Phase 16 | Pending |
+| MCP-01 | Phase 17 | Pending |
+| MCP-02 | Phase 17 | Pending |
+| MCP-03 | Phase 17 | Pending |
+| TOOL-01 | Phase 18 | Pending |
+| TOOL-02 | Phase 18 | Pending |
+| TOOL-03 | Phase 18 | Pending |
 
 **Coverage:**
-- v1.2 requirements: 13 total
-- Mapped to phases: 13
+- v1.3 requirements: 11 total
+- Mapped to phases: 11 (100%)
 - Unmapped: 0
 
 ---
-*Requirements defined: 2026-05-09*
-*Last updated: 2026-05-09*
+*Requirements defined: 2026-05-10*
+*Last updated: 2026-05-10 — traceability mapped after roadmap creation*
