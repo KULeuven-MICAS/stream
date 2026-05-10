@@ -198,7 +198,10 @@ Plans:
   1. A MILP-formulation skill file documents the TransferAndTensorAllocator model structure: decision variables (binary placement, transfer selection), constraint groups (memory, FIFO, buffer descriptors, DMA), objective function (latency minimization), and how ConstraintSelection guards interact with constraint dispatch
   2. A namespace-constraints skill file documents the NamespaceConstraints base class, AIE2Constraints implementation, how hardware-specific constraints are dispatched based on the target architecture, and the relationship between constraint namespaces and the solver facade
   3. Each skill file has a SKILL.md with accurate trigger phrases and is readable independently
-**Plans**: TBD
+**Plans:** 1 plan
+
+Plans:
+- [ ] 13-01-PLAN.md -- Write milp-formulation.md and namespace-constraints.md skill files, update SKILL.md
 
 #### Phase 14: API & Testing Skills
 **Goal**: Anyone using stream_aie programmatically or writing tests can find complete reference documentation for the public API surface and testing conventions
@@ -228,6 +231,6 @@ Phase 9 is independent. Phase 10 depends on Phase 9. Phases 11-14 depend on Phas
 | 9. Dead Code Cleanup | v1.2 | 1/1 | Complete   | 2026-05-09 |
 | 10. CLAUDE.md & Skill Scaffolding | v1.2 | 2/2 | Complete    | 2026-05-09 |
 | 11. Solver System Skills | v1.2 | 1/1 | Complete    | 2026-05-09 |
-| 12. Pipeline Skills | v1.2 | 1/1 | Complete   | 2026-05-09 |
+| 12. Pipeline Skills | v1.2 | 1/1 | Complete    | 2026-05-09 |
 | 13. MILP & Constraint Skills | v1.2 | 0/? | Not started | - |
 | 14. API & Testing Skills | v1.2 | 0/? | Not started | - |
