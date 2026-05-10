@@ -1,10 +1,10 @@
-"""Unit tests for WorkloadIR and AcceleratorIR Pydantic models.
+"""Unit tests for WorkloadIR, AcceleratorIR, and AllocationIR Pydantic models.
 
 Covers IR-01 and IR-02 from Phase 16 requirements:
   - IR-01: Pydantic BaseModel IR classes exist with schema_version field and produce valid JSON Schema
   - IR-02: Per-persona IR views available (algorithmic, hardware, compiler)
 
-Tests use synthetic dicts matching get_ir() shapes — no real Workload/Accelerator objects required.
+Tests use synthetic dicts matching get_ir() shapes — no real Workload/Accelerator/Scheduler objects required.
 Mock objects provide .get_ir() -> dict for from_internal() tests.
 """
 
@@ -15,11 +15,20 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from stream.ir import AcceleratorIR, WorkloadIR
+from stream.ir import AcceleratorIR, AllocationIR, WorkloadIR
 from stream.ir.accelerator import (
     AcceleratorCompilerView,
     AcceleratorHardwareView,
     CoreIR,
+)
+from stream.ir.allocation import (
+    AllocationAlgorithmicView,
+    AllocationCompilerView,
+    AllocationHardwareView,
+    ConstraintSelectionIR,
+    FusedGroupIR,
+    LatencyInfo,
+    NodeAllocationIR,
 )
 from stream.ir.workload import (
     NodeIR,
@@ -404,3 +413,208 @@ class TestAcceleratorIR:
         mock_accelerator.get_ir.return_value = raw
         ir = AcceleratorIR.from_internal(mock_accelerator)
         assert ir.offchip_core_id is None
+
+
+# ---------------------------------------------------------------------------
+# Fixtures: synthetic dict matching SteadyStateScheduler.get_ir() shape
+# ---------------------------------------------------------------------------
+
+ALLOCATION_RAW: dict = {
+    "latency": {
+        "total": 2000,
+        "per_iteration": 500,
+        "overlap_between_iterations": 100,
+    },
+    "backend": "ORTOOLS_GSCIP",
+    "constraint_selection": {
+        "memory_capacity": True,
+        "object_fifo_depth": False,
+        "buffer_descriptors": True,
+        "dma_channels": False,
+    },
+    "fusion_splits": {"K": 4, "M": 2},
+    "mapping": {
+        "nodes": {
+            "MatMul": {
+                "resource_allocation": [[{"type": "core", "id": 0}, {"type": "core", "id": 1}]],
+                "inter_core_tiling": [[["K", 2], ["M", 1]]],
+                "memory_allocation": [[0]],
+            },
+            "ReLU": {
+                "resource_allocation": [[{"type": "core", "id": 2}]],
+                "inter_core_tiling": [[["N", 1]]],
+                "memory_allocation": [[2]],
+            },
+        },
+        "fused_groups": [
+            {
+                "name": "group_0",
+                "layers": ["MatMul", "ReLU"],
+                "intra_core_tiling": [["K", 4], ["N", 2]],
+            }
+        ],
+        "runtime_args": {"buffer_depth": "4"},
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# TestAllocationIR
+# ---------------------------------------------------------------------------
+
+
+class TestAllocationIR:
+    def test_json_schema(self):
+        """AllocationIR.model_json_schema() must include schema_version const '1.0'."""
+        schema = AllocationIR.model_json_schema()
+        assert "schema_version" in schema["properties"]
+        sv = schema["properties"]["schema_version"]
+        assert sv.get("const") == "1.0", f"Expected const='1.0', got: {sv}"
+
+    def test_from_dict(self):
+        """AllocationIR constructed from a dict matching scheduler.get_ir() shape validates without error."""
+        raw = ALLOCATION_RAW
+        nodes = {
+            name: NodeAllocationIR(
+                resource_allocation=n["resource_allocation"],
+                inter_core_tiling=n["inter_core_tiling"],
+                memory_allocation=n["memory_allocation"],
+            )
+            for name, n in raw["mapping"]["nodes"].items()
+        }
+        fused_groups = [
+            FusedGroupIR(
+                name=fg["name"],
+                layers=fg["layers"],
+                intra_core_tiling=fg["intra_core_tiling"],
+            )
+            for fg in raw["mapping"]["fused_groups"]
+        ]
+        cs = ConstraintSelectionIR(**raw["constraint_selection"])
+        ir = AllocationIR(
+            latency=LatencyInfo(**raw["latency"]),
+            backend=raw["backend"],
+            constraint_selection=cs,
+            fusion_splits=raw["fusion_splits"],
+            mapping_nodes=nodes,
+            fused_groups=fused_groups,
+            runtime_args=raw["mapping"]["runtime_args"],
+        )
+        assert ir.latency.total == 2000
+        assert ir.backend == "ORTOOLS_GSCIP"
+        assert ir.schema_version == "1.0"
+
+    def test_from_internal_post_solve(self):
+        """AllocationIR.from_internal(mock_scheduler) constructs correctly when latency_total > 0."""
+        mock_scheduler = MagicMock()
+        mock_scheduler.latency_total = 2000
+        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
+
+        ir = AllocationIR.from_internal(mock_scheduler)
+
+        mock_scheduler.get_ir.assert_called_once()
+        assert ir.latency.total == 2000
+        assert ir.latency.per_iteration == 500
+        assert ir.latency.overlap_between_iterations == 100
+        assert ir.backend == "ORTOOLS_GSCIP"
+        assert ir.schema_version == "1.0"
+        assert len(ir.mapping_nodes) == 2
+        assert "MatMul" in ir.mapping_nodes
+        assert len(ir.fused_groups) == 1
+
+    def test_from_internal_pre_solve_raises(self):
+        """AllocationIR.from_internal() raises ValueError when latency_total == -1 (pre-solve sentinel)."""
+        mock_scheduler = MagicMock()
+        mock_scheduler.latency_total = -1
+
+        with pytest.raises(ValueError, match="Cannot build AllocationIR from unsolved"):
+            AllocationIR.from_internal(mock_scheduler)
+
+    def test_algorithmic_view(self):
+        """AllocationIR.algorithmic_view() returns AllocationAlgorithmicView with latency, backend, constraint_selection."""
+        mock_scheduler = MagicMock()
+        mock_scheduler.latency_total = 2000
+        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
+        ir = AllocationIR.from_internal(mock_scheduler)
+
+        view = ir.algorithmic_view()
+
+        assert isinstance(view, AllocationAlgorithmicView)
+        assert view.schema_version == "1.0"
+        assert view.latency.total == 2000
+        assert view.latency.per_iteration == 500
+        assert view.latency.overlap_between_iterations == 100
+        assert view.backend == "ORTOOLS_GSCIP"
+        assert view.constraint_selection is not None
+        assert view.constraint_selection.memory_capacity is True
+        assert view.constraint_selection.object_fifo_depth is False
+        assert view.fusion_splits == {"K": 4, "M": 2}
+
+    def test_hardware_view(self):
+        """AllocationIR.hardware_view() returns AllocationHardwareView with per-node resource and memory allocation."""
+        mock_scheduler = MagicMock()
+        mock_scheduler.latency_total = 2000
+        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
+        ir = AllocationIR.from_internal(mock_scheduler)
+
+        view = ir.hardware_view()
+
+        assert isinstance(view, AllocationHardwareView)
+        assert view.schema_version == "1.0"
+        assert "MatMul" in view.mapping_nodes
+        assert "ReLU" in view.mapping_nodes
+        matmul_node = view.mapping_nodes["MatMul"]
+        assert isinstance(matmul_node, NodeAllocationIR)
+        # resource_allocation and memory_allocation are accessible
+        assert len(matmul_node.resource_allocation) == 1
+        assert matmul_node.resource_allocation[0][0] == {"type": "core", "id": 0}
+        assert matmul_node.memory_allocation[0] == [0]
+
+    def test_compiler_view(self):
+        """AllocationIR.compiler_view() returns AllocationCompilerView with node-to-core mapping, fused_groups."""
+        mock_scheduler = MagicMock()
+        mock_scheduler.latency_total = 2000
+        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
+        ir = AllocationIR.from_internal(mock_scheduler)
+
+        view = ir.compiler_view()
+
+        assert isinstance(view, AllocationCompilerView)
+        assert view.schema_version == "1.0"
+        assert "MatMul" in view.mapping_nodes
+        matmul_node = view.mapping_nodes["MatMul"]
+        assert isinstance(matmul_node, NodeAllocationIR)
+        # inter_core_tiling accessible per node
+        assert len(matmul_node.inter_core_tiling) == 1
+        assert len(view.fused_groups) == 1
+        assert view.fused_groups[0].name == "group_0"
+        assert view.fused_groups[0].layers == ["MatMul", "ReLU"]
+        assert view.runtime_args == {"buffer_depth": "4"}
+
+    def test_constraint_selection_none(self):
+        """AllocationIR with constraint_selection=None validates correctly."""
+        raw = {**ALLOCATION_RAW, "constraint_selection": None}
+        mock_scheduler = MagicMock()
+        mock_scheduler.latency_total = 2000
+        mock_scheduler.get_ir.return_value = raw
+
+        ir = AllocationIR.from_internal(mock_scheduler)
+
+        assert ir.constraint_selection is None
+        view = ir.algorithmic_view()
+        assert view.constraint_selection is None
+
+    def test_json_round_trip(self):
+        """model_dump_json() on AllocationIR produces valid JSON that round-trips through json.loads."""
+        mock_scheduler = MagicMock()
+        mock_scheduler.latency_total = 2000
+        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
+        ir = AllocationIR.from_internal(mock_scheduler)
+
+        json_str = ir.model_dump_json()
+        parsed = json.loads(json_str)
+
+        assert parsed["schema_version"] == "1.0"
+        assert parsed["backend"] == "ORTOOLS_GSCIP"
+        assert parsed["latency"]["total"] == 2000
+        assert "MatMul" in parsed["mapping_nodes"]
