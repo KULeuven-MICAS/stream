@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: MCP Server & Intermediate Representations
-status: verifying
-stopped_at: Completed 16-02-PLAN.md
-last_updated: "2026-05-10T20:35:29.767Z"
+status: executing
+stopped_at: Completed 17-mcp-server-skeleton/17-01-PLAN.md
+last_updated: "2026-05-10T21:14:02.552Z"
 last_activity: 2026-05-10
 progress:
   total_phases: 4
   completed_phases: 2
-  total_plans: 4
-  completed_plans: 4
+  total_plans: 6
+  completed_plans: 5
   percent: 0
 ---
 
@@ -21,13 +21,13 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-10)
 
 **Core value:** Enable AI agents to drive TETRA design space exploration via structured MCP tools with clean, serializable intermediate representations
-**Current focus:** Phase 16 — ir-models
+**Current focus:** Phase 17 — mcp-server-skeleton
 
 ## Current Position
 
-Phase: 16 (ir-models) — EXECUTING
+Phase: 17 (mcp-server-skeleton) — EXECUTING
 Plan: 2 of 2
-Status: Phase complete — ready for verification
+Status: Ready to execute
 Last activity: 2026-05-10
 
 Progress: [░░░░░░░░░░] 0%
@@ -54,6 +54,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 15 P01 | 900 | 2 tasks | 16 files |
 | Phase 16-ir-models P01 | 464 | 1 tasks | 5 files |
 | Phase 16-ir-models P02 | 900 | 2 tasks | 5 files |
+| Phase 17-mcp-server-skeleton P01 | 2 | 2 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -75,6 +76,9 @@ Key decisions carried forward:
 - [Phase 16-02]: AllocationIR.from_internal() raises ValueError on pre-solve scheduler (latency_total == -1 sentinel) to prevent confusing MCP consumers
 - [Phase 16-02]: NodeAllocationIR carries all three slot-indexed fields so both hardware_view and compiler_view share one sub-model
 - [Phase 16-02]: IR skill files use conceptual-guide style (no code examples) per Phase 11 decision
+- [Phase 17-01]: make_experiment_id is public (no underscore prefix) since it is re-exported in __init__ and tested directly
+- [Phase 17-01]: ServerState is NOT frozen — mutable by design as it holds the live in-process job registry
+- [Phase 17-01]: jobs.py avoids importing fastmcp, stream.api, or solver backends — keeps unit tests FastMCP-free and cold-start import chain minimal
 
 ### Pending Todos
 
@@ -86,6 +90,6 @@ None at roadmap time. Phase 15 (CLEAN-03, get_ir()) requires deep inspection of 
 
 ## Session Continuity
 
-Last session: 2026-05-10T20:35:29.765Z
-Stopped at: Completed 16-02-PLAN.md
+Last session: 2026-05-10T21:14:02.549Z
+Stopped at: Completed 17-mcp-server-skeleton/17-01-PLAN.md
 Resume file: None

@@ -268,7 +268,12 @@ Plans:
   2. Submitting an optimization job returns a job ID immediately — the caller does not block waiting for the MILP solve to complete
   3. Polling for job results returns the correct status (pending / complete / failed) and, once complete, the full result without re-running the solve
   4. Submitting the same hardware + workload + backend + constraints combination twice reuses the cached result — the second call returns instantly with the same job ID
-**Plans**: TBD
+**Plans:** 1/2 plans executed
+
+Plans:
+- [x] 17-01-PLAN.md — Create stream/mcp/ package with jobs.py (ServerState + experiment ID) + add fastmcp dep
+- [ ] 17-02-PLAN.md — FastMCP server with lifespan, 6 tool stubs, async job pattern
+
 **UI hint**: no
 
 ### Phase 18: MCP Tools
@@ -304,6 +309,6 @@ Phases 1-14 complete. v1.3 order: 15 (blocker) -> 16 -> 17 (parallel after 15) -
 | 13. MILP & Constraint Skills | v1.2 | 1/1 | Complete | 2026-05-10 |
 | 14. API & Testing Skills | v1.2 | 1/1 | Complete | 2026-05-10 |
 | 15. Pre-flight Cleanup | v1.3 | 2/2 | Complete    | 2026-05-10 |
-| 16. IR Models | v1.3 | 2/2 | Complete   | 2026-05-10 |
-| 17. MCP Server Skeleton | v1.3 | 0/TBD | Not started | - |
+| 16. IR Models | v1.3 | 2/2 | Complete    | 2026-05-10 |
+| 17. MCP Server Skeleton | v1.3 | 1/2 | In Progress|  |
 | 18. MCP Tools | v1.3 | 0/TBD | Not started | - |

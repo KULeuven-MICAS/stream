@@ -13,14 +13,14 @@
 
 ### IR Design
 
-- [ ] **IR-01**: Pydantic BaseModel IR classes (WorkloadIR, AllocationIR, AcceleratorIR) exist with `schema_version` field and produce valid JSON Schema via `.model_json_schema()`
-- [ ] **IR-02**: Per-persona IR views available: algorithmic (latency/objective focus), hardware (per-core resource utilization), compiler (node-to-core mapping + transfer routing)
+- [x] **IR-01**: Pydantic BaseModel IR classes (WorkloadIR, AllocationIR, AcceleratorIR) exist with `schema_version` field and produce valid JSON Schema via `.model_json_schema()`
+- [x] **IR-02**: Per-persona IR views available: algorithmic (latency/objective focus), hardware (per-core resource utilization), compiler (node-to-core mapping + transfer routing)
 
 ### MCP Server
 
 - [ ] **MCP-01**: FastMCP server with STDIO transport boots in under 1.5s, registers tools discoverable by Claude Code, and uses lifespan-based state management
 - [ ] **MCP-02**: `run_optimization` tool uses async job pattern — returns job ID immediately, results retrievable via polling tool (handles 2-15 min solves without timeout)
-- [ ] **MCP-03**: Experiment IDs are content-addressed (hash of hardware + workload + mapping + backend + constraints) enabling deterministic cache hits
+- [x] **MCP-03**: Experiment IDs are content-addressed (hash of hardware + workload + mapping + backend + constraints) enabling deterministic cache hits
 
 ### Tools
 
@@ -47,11 +47,11 @@
 | CLEAN-02 | Phase 15 | Complete |
 | CLEAN-03 | Phase 15 | Complete |
 | CLEAN-04 | Phase 15 | Complete |
-| IR-01 | Phase 16 | Pending |
-| IR-02 | Phase 16 | Pending |
+| IR-01 | Phase 16 | Complete |
+| IR-02 | Phase 16 | Complete |
 | MCP-01 | Phase 17 | Pending |
 | MCP-02 | Phase 17 | Pending |
-| MCP-03 | Phase 17 | Pending |
+| MCP-03 | Phase 17 | Complete |
 | TOOL-01 | Phase 18 | Pending |
 | TOOL-02 | Phase 18 | Pending |
 | TOOL-03 | Phase 18 | Pending |
