@@ -196,26 +196,85 @@ async def poll_optimization(
 
 
 @mcp.tool()
-async def get_workload_ir(
-    workload: str,
+async def get_workload_ir(  # noqa: PLR0911
+    workload: str | None = None,
+    experiment_id: str | None = None,
     mcp_ctx: Context = None,
 ) -> dict[str, Any]:
     """Return the workload DAG as structured JSON matching the WorkloadIR schema.
 
-    Phase 18 will implement this tool by loading the workload ONNX file,
-    parsing it through the stream pipeline, and returning a WorkloadIR Pydantic
-    model serialized as JSON. The returned structure includes operator nodes,
-    tensor edges, layer dimensions, and tiling configurations.
+    Accepts either a direct ONNX file path or an experiment_id from a completed
+    optimization job (D-01 dual-parameter pattern). If both are provided,
+    experiment_id takes precedence (reuses parsed data from the completed job).
 
     Args:
-        workload: Path to workload ONNX file.
+        workload: Path to workload ONNX file (for ad-hoc inspection).
+        experiment_id: Completed job ID to reuse parsed workload data from.
         mcp_ctx: FastMCP context injected automatically by the framework.
 
     Returns:
-        Dict with WorkloadIR fields when implemented. Currently returns
-        {'status': 'not_implemented', 'message': ...}.
+        Dict with WorkloadIR fields (schema_version, num_nodes, nodes, …) on success,
+        or a structured error dict per D-03:
+          {'status': 'error', 'error_type': <type>, 'message': <text>}
+        where error_type is one of: 'invalid_input', 'not_found', 'not_ready'.
     """
-    return {"status": "not_implemented", "message": "Phase 18 will implement this tool"}
+    try:
+        # --- Validate: at least one parameter required ---
+        if experiment_id is None and workload is None:
+            return {
+                "status": "error",
+                "error_type": "invalid_input",
+                "message": "Provide either 'workload' (ONNX file path) or 'experiment_id', not neither",
+            }
+
+        # --- Path A: experiment_id provided ---
+        if experiment_id is not None:
+            state = _get_state(mcp_ctx)
+            job = state.jobs.get(experiment_id)
+            if job is None:
+                return {
+                    "status": "error",
+                    "error_type": "not_found",
+                    "message": f"No experiment with id '{experiment_id}'",
+                }
+            if job["status"] != "complete":
+                return {
+                    "status": "error",
+                    "error_type": "not_ready",
+                    "message": f"Experiment '{experiment_id}' status is '{job['status']}'",
+                }
+            from stream.ir import WorkloadIR  # noqa: PLC0415
+
+            workload_obj = job["result"]["ctx"].get("workload")
+            return WorkloadIR.from_internal(workload_obj).model_dump()
+
+        # --- Path B: file path provided ---
+        import os  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+
+        from stream.ir import WorkloadIR  # noqa: PLC0415
+        from stream.stages.context import StageContext  # noqa: PLC0415
+        from stream.stages.parsing.onnx_model_parser import (  # noqa: PLC0415
+            ONNXModelParserStage as StreamONNXModelParserStage,
+        )
+        from stream.stages.stage import LeafStage, MainStage  # noqa: PLC0415
+
+        if not os.path.exists(workload):
+            return {
+                "status": "error",
+                "error_type": "invalid_input",
+                "message": f"Workload file not found: {workload}",
+            }
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = StageContext.from_kwargs(workload_path=workload, output_path=tmp_dir)
+            stages = [StreamONNXModelParserStage, LeafStage]
+            mainstage = MainStage(stages, ctx)
+            ctxs = mainstage.run()
+            workload_obj = ctxs[0].get("workload")
+        return WorkloadIR.from_internal(workload_obj).model_dump()
+
+    except Exception as e:
+        return {"status": "error", "error_type": "invalid_input", "message": f"Failed to parse workload: {e}"}
 
 
 # ---------------------------------------------------------------------------
@@ -224,26 +283,86 @@ async def get_workload_ir(
 
 
 @mcp.tool()
-async def get_accelerator_ir(
-    hardware: str,
+async def get_accelerator_ir(  # noqa: PLR0911
+    hardware: str | None = None,
+    experiment_id: str | None = None,
     mcp_ctx: Context = None,
 ) -> dict[str, Any]:
     """Return the hardware accelerator model as structured JSON matching the AcceleratorIR schema.
 
-    Phase 18 will implement this tool by loading the hardware YAML, parsing it
-    through the stream hardware model, and returning an AcceleratorIR Pydantic model
-    serialized as JSON. The returned structure includes cores, memory hierarchy,
-    DMA channels, and interconnect topology.
+    Accepts either a direct hardware YAML file path or an experiment_id from a completed
+    optimization job (D-01 dual-parameter pattern). If both are provided,
+    experiment_id takes precedence (reuses parsed data from the completed job).
+
+    The returned structure includes cores, memory hierarchy, DMA channels, and
+    interconnect topology.
 
     Args:
-        hardware: Path to hardware architecture YAML file.
+        hardware: Path to hardware architecture YAML file (for ad-hoc inspection).
+        experiment_id: Completed job ID to reuse parsed accelerator data from.
         mcp_ctx: FastMCP context injected automatically by the framework.
 
     Returns:
-        Dict with AcceleratorIR fields when implemented. Currently returns
-        {'status': 'not_implemented', 'message': ...}.
+        Dict with AcceleratorIR fields (schema_version, name, num_cores, cores, …) on success,
+        or a structured error dict per D-03:
+          {'status': 'error', 'error_type': <type>, 'message': <text>}
+        where error_type is one of: 'invalid_input', 'not_found', 'not_ready'.
     """
-    return {"status": "not_implemented", "message": "Phase 18 will implement this tool"}
+    try:
+        # --- Validate: at least one parameter required ---
+        if experiment_id is None and hardware is None:
+            return {
+                "status": "error",
+                "error_type": "invalid_input",
+                "message": "Provide either 'hardware' (YAML file path) or 'experiment_id', not neither",
+            }
+
+        # --- Path A: experiment_id provided ---
+        if experiment_id is not None:
+            state = _get_state(mcp_ctx)
+            job = state.jobs.get(experiment_id)
+            if job is None:
+                return {
+                    "status": "error",
+                    "error_type": "not_found",
+                    "message": f"No experiment with id '{experiment_id}'",
+                }
+            if job["status"] != "complete":
+                return {
+                    "status": "error",
+                    "error_type": "not_ready",
+                    "message": f"Experiment '{experiment_id}' status is '{job['status']}'",
+                }
+            from stream.ir import AcceleratorIR  # noqa: PLC0415
+
+            accelerator_obj = job["result"]["ctx"].get("accelerator")
+            return AcceleratorIR.from_internal(accelerator_obj).model_dump()
+
+        # --- Path B: file path provided ---
+        import os  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+
+        from stream.ir import AcceleratorIR  # noqa: PLC0415
+        from stream.stages.context import StageContext  # noqa: PLC0415
+        from stream.stages.parsing.accelerator_parser import AcceleratorParserStage  # noqa: PLC0415
+        from stream.stages.stage import LeafStage, MainStage  # noqa: PLC0415
+
+        if not os.path.exists(hardware):
+            return {
+                "status": "error",
+                "error_type": "invalid_input",
+                "message": f"Hardware file not found: {hardware}",
+            }
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            ctx = StageContext.from_kwargs(accelerator=hardware, output_path=tmp_dir)
+            stages = [AcceleratorParserStage, LeafStage]
+            mainstage = MainStage(stages, ctx)
+            ctxs = mainstage.run()
+            accelerator_obj = ctxs[0].get("accelerator")
+        return AcceleratorIR.from_internal(accelerator_obj).model_dump()
+
+    except Exception as e:
+        return {"status": "error", "error_type": "invalid_input", "message": f"Failed to parse accelerator: {e}"}
 
 
 # ---------------------------------------------------------------------------
