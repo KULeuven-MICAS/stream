@@ -222,7 +222,7 @@ Plans:
 
 - [x] **Phase 15: Pre-flight Cleanup** - Silence stdout, add get_ir(), decouple logging config (completed 2026-05-10)
 - [x] **Phase 16: IR Models** - Pydantic IR classes with JSON Schema and per-persona views (completed 2026-05-10)
-- [ ] **Phase 17: MCP Server Skeleton** - FastMCP server with async job pattern and content-addressed experiment IDs
+- [x] **Phase 17: MCP Server Skeleton** - FastMCP server with async job pattern and content-addressed experiment IDs (completed 2026-05-10)
 - [ ] **Phase 18: MCP Tools** - End-to-end and inspection tools returning structured IR JSON
 
 ## Phase Details
@@ -268,11 +268,11 @@ Plans:
   2. Submitting an optimization job returns a job ID immediately — the caller does not block waiting for the MILP solve to complete
   3. Polling for job results returns the correct status (pending / complete / failed) and, once complete, the full result without re-running the solve
   4. Submitting the same hardware + workload + backend + constraints combination twice reuses the cached result — the second call returns instantly with the same job ID
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 
 Plans:
 - [x] 17-01-PLAN.md — Create stream/mcp/ package with jobs.py (ServerState + experiment ID) + add fastmcp dep
-- [ ] 17-02-PLAN.md — FastMCP server with lifespan, 6 tool stubs, async job pattern
+- [x] 17-02-PLAN.md — FastMCP server with lifespan, 6 tool stubs, async job pattern
 
 **UI hint**: no
 
@@ -310,5 +310,5 @@ Phases 1-14 complete. v1.3 order: 15 (blocker) -> 16 -> 17 (parallel after 15) -
 | 14. API & Testing Skills | v1.2 | 1/1 | Complete | 2026-05-10 |
 | 15. Pre-flight Cleanup | v1.3 | 2/2 | Complete    | 2026-05-10 |
 | 16. IR Models | v1.3 | 2/2 | Complete    | 2026-05-10 |
-| 17. MCP Server Skeleton | v1.3 | 1/2 | In Progress|  |
+| 17. MCP Server Skeleton | v1.3 | 2/2 | Complete   | 2026-05-10 |
 | 18. MCP Tools | v1.3 | 0/TBD | Not started | - |

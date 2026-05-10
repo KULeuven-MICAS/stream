@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.3
 milestone_name: MCP Server & Intermediate Representations
-status: executing
-stopped_at: Completed 17-mcp-server-skeleton/17-01-PLAN.md
-last_updated: "2026-05-10T21:14:02.552Z"
+status: verifying
+stopped_at: Completed 17-mcp-server-skeleton/17-02-PLAN.md
+last_updated: "2026-05-10T21:23:03.761Z"
 last_activity: 2026-05-10
 progress:
   total_phases: 4
-  completed_phases: 2
+  completed_phases: 3
   total_plans: 6
-  completed_plans: 5
+  completed_plans: 6
   percent: 0
 ---
 
@@ -27,7 +27,7 @@ See: .planning/PROJECT.md (updated 2026-05-10)
 
 Phase: 17 (mcp-server-skeleton) — EXECUTING
 Plan: 2 of 2
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-05-10
 
 Progress: [░░░░░░░░░░] 0%
@@ -55,6 +55,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 16-ir-models P01 | 464 | 1 tasks | 5 files |
 | Phase 16-ir-models P02 | 900 | 2 tasks | 5 files |
 | Phase 17-mcp-server-skeleton P01 | 2 | 2 tasks | 4 files |
+| Phase 17-mcp-server-skeleton P02 | 93 | 1 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,8 @@ Key decisions carried forward:
 - [Phase 17-01]: make_experiment_id is public (no underscore prefix) since it is re-exported in __init__ and tested directly
 - [Phase 17-01]: ServerState is NOT frozen — mutable by design as it holds the live in-process job registry
 - [Phase 17-01]: jobs.py avoids importing fastmcp, stream.api, or solver backends — keeps unit tests FastMCP-free and cold-start import chain minimal
+- [Phase 17-02]: FastMCP 3.x lifespan_context is accessed via ctx.lifespan_context['state'] not ctx.request_context.lifespan_context['state'] — _get_state helper centralizes this access
+- [Phase 17-02]: test_import_time measures marginal overhead (fastmcp pre-warmed) not cold-start total — fastmcp itself costs ~1.5s, server.py marginal cost is <5ms confirming no heavy module-level imports
 
 ### Pending Todos
 
@@ -90,6 +93,6 @@ None at roadmap time. Phase 15 (CLEAN-03, get_ir()) requires deep inspection of 
 
 ## Session Continuity
 
-Last session: 2026-05-10T21:14:02.549Z
-Stopped at: Completed 17-mcp-server-skeleton/17-01-PLAN.md
+Last session: 2026-05-10T21:23:03.757Z
+Stopped at: Completed 17-mcp-server-skeleton/17-02-PLAN.md
 Resume file: None

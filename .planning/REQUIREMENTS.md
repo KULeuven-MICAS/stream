@@ -18,8 +18,8 @@
 
 ### MCP Server
 
-- [ ] **MCP-01**: FastMCP server with STDIO transport boots in under 1.5s, registers tools discoverable by Claude Code, and uses lifespan-based state management
-- [ ] **MCP-02**: `run_optimization` tool uses async job pattern — returns job ID immediately, results retrievable via polling tool (handles 2-15 min solves without timeout)
+- [x] **MCP-01**: FastMCP server with STDIO transport boots in under 1.5s, registers tools discoverable by Claude Code, and uses lifespan-based state management
+- [x] **MCP-02**: `run_optimization` tool uses async job pattern — returns job ID immediately, results retrievable via polling tool (handles 2-15 min solves without timeout)
 - [x] **MCP-03**: Experiment IDs are content-addressed (hash of hardware + workload + mapping + backend + constraints) enabling deterministic cache hits
 
 ### Tools
@@ -49,8 +49,8 @@
 | CLEAN-04 | Phase 15 | Complete |
 | IR-01 | Phase 16 | Complete |
 | IR-02 | Phase 16 | Complete |
-| MCP-01 | Phase 17 | Pending |
-| MCP-02 | Phase 17 | Pending |
+| MCP-01 | Phase 17 | Complete |
+| MCP-02 | Phase 17 | Complete |
 | MCP-03 | Phase 17 | Complete |
 | TOOL-01 | Phase 18 | Pending |
 | TOOL-02 | Phase 18 | Pending |
