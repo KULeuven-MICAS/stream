@@ -1,11 +1,11 @@
 import logging as _logging
 import re
 
-from stream.api import optimize_allocation_co
+from stream.api import configure_logging, optimize_allocation_co
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-_logging.basicConfig(level=_logging_level, format=_logging_format)
+configure_logging(level=_logging_level, fmt=_logging_format)
 
 ############################################INPUTS############################################
 accelerator = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"

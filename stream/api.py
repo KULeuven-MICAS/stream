@@ -24,7 +24,11 @@ from stream.stages.stage import LeafStage, MainStage, StageCallable
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-_logging.basicConfig(level=_logging_level, format=_logging_format)
+
+
+def configure_logging(level: int = _logging_level, fmt: str = _logging_format) -> None:
+    """Configure root logging. Called by CLI scripts; MCP server manages its own logging."""
+    _logging.basicConfig(level=level, format=fmt)
 
 
 def _sanity_check_inputs(hardware: str, workload: str, mapping: str, output_path: str):

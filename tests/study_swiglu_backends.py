@@ -21,7 +21,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
-from stream.api import optimize_allocation_co
+from stream.api import configure_logging, optimize_allocation_co
 from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 
@@ -324,6 +324,7 @@ def plot_results(results, output_dir):  # noqa: PLR0912, PLR0915
 
 
 if __name__ == "__main__":
+    configure_logging()
     output_dir = "outputs/backend_study"
     os.makedirs(output_dir, exist_ok=True)
 

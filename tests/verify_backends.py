@@ -23,7 +23,7 @@ import tempfile
 import time
 import warnings
 
-from stream.api import optimize_allocation_co
+from stream.api import configure_logging, optimize_allocation_co
 from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping
 from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
@@ -446,6 +446,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 if __name__ == "__main__":
+    configure_logging()
     parser = _build_parser()
     args = parser.parse_args()
     sys.exit(verify(args))

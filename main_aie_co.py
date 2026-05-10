@@ -1,7 +1,7 @@
 import logging as _logging
 import re
 
-from stream.api import optimize_allocation_co
+from stream.api import configure_logging, optimize_allocation_co
 from stream.utils import CostModelEvaluationLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.schedule import (
@@ -10,7 +10,7 @@ from stream.visualization.schedule import (
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-_logging.basicConfig(level=_logging_level, format=_logging_format)
+configure_logging(level=_logging_level, fmt=_logging_format)
 
 ############################################INPUTS############################################
 workload_path = "stream/inputs/aie/workload/conv1x1_64_64_32_32.onnx"

@@ -3,14 +3,13 @@ import logging as _logging
 import os
 import re
 
-from stream.api import optimize_allocation_co
+from stream.api import configure_logging, optimize_allocation_co
 from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
 from stream.opt.solver import ConstraintSelection
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-_logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
 def run_main_aie_codegen_gemm(
@@ -81,6 +80,7 @@ def run_main_aie_codegen_gemm(
 
 
 if __name__ == "__main__":
+    configure_logging()
     parser = argparse.ArgumentParser(description="Run AIE code generation for Gemm")
     parser.add_argument("--M", type=int, required=True, help="M parameter for the model")
     parser.add_argument("--N", type=int, required=True, help="N parameter for the model")

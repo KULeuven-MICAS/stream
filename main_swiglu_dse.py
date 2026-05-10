@@ -5,7 +5,7 @@ import os
 import re
 import traceback
 
-from stream.api import optimize_mapping
+from stream.api import configure_logging, optimize_mapping
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 from stream.opt.solver import ConstraintSelection
 
@@ -162,6 +162,7 @@ def sweep_tile_size_combinations(args: argparse.Namespace) -> None:
 
 
 if __name__ == "__main__":
+    configure_logging()
     parser = argparse.ArgumentParser(description="Run AIE code generation for Gemm")
     parser.add_argument("--seq_len", type=int, required=True, help="Sequence length (seq_len dimension of the input)")
     parser.add_argument(

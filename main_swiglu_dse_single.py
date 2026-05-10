@@ -3,7 +3,7 @@ import logging as _logging
 import os
 import re
 
-from stream.api import optimize_allocation_co
+from stream.api import configure_logging, optimize_allocation_co
 from stream.inputs.aie.workload.make_onnx_swiglu import make_swiglu_workload
 from stream.opt.solver import ConstraintSelection
 
@@ -93,6 +93,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
 
 
 if __name__ == "__main__":
+    configure_logging()
     parser = argparse.ArgumentParser(description="Run AIE code generation for Gemm")
     parser.add_argument("--seq_len", type=int, required=True, help="Sequence length (seq_len dimension of the input)")
     parser.add_argument(
