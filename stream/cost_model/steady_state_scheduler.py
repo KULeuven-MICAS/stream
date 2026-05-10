@@ -95,6 +95,38 @@ class SteadyStateScheduler:
         if self.output_path:
             os.makedirs(self.output_path, exist_ok=True)
 
+    def get_ir(self) -> dict:
+        """Return a dictionary representation of the scheduler state for serialization/inspection.
+
+        This captures:
+        - Latency metrics (total, per-iteration, overlap)
+        - Backend and constraint configuration used for the solve
+        - Fusion splits applied
+        - Mapping with node-to-resource allocations
+        """
+        cs = self.constraint_selection
+        constraint_selection_ir = (
+            {
+                "memory_capacity": cs.memory_capacity,
+                "object_fifo_depth": cs.object_fifo_depth,
+                "buffer_descriptors": cs.buffer_descriptors,
+                "dma_channels": cs.dma_channels,
+            }
+            if cs is not None
+            else None
+        )
+        return {
+            "latency": {
+                "total": self.latency_total,
+                "per_iteration": self.latency_per_iteration,
+                "overlap_between_iterations": self.overlap_between_iterations,
+            },
+            "backend": self.backend,
+            "constraint_selection": constraint_selection_ir,
+            "fusion_splits": {str(dim): size for dim, size in self.fusion_splits.items()},
+            "mapping": self.mapping.get_ir(),
+        }
+
     def run(self) -> Workload:
         """
         Run the steady state scheduler on the given workload.
