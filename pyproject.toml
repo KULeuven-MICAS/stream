@@ -29,6 +29,7 @@ dependencies = [
     "pre-commit",
     "gurobipy",
     "ortools>=9.15",
+    "pydantic>=2.13",
     "pydot",
     "xdsl-aie @ git+https://github.com/xdslproject/xdsl-aie.git@378c4c69c7f643ec31c6ef96c2fd830a0fb87244",
     "snax-mlir @ git+https://github.com/kuleuven-micas/snax-mlir.git@1c01c5d100df128c9fa01d3336ebea98e19b20cf",
