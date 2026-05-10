@@ -26,8 +26,8 @@
 
 ### MILP & Constraints
 
-- [ ] **MILP-01**: Skill doc covers TransferAndTensorAllocator MILP structure (variables, constraint groups, objective function, ConstraintSelection guards)
-- [ ] **MILP-02**: Skill doc covers NamespaceConstraints pattern, AIE2Constraints, and how hardware-specific constraints are dispatched
+- [x] **MILP-01**: Skill doc covers TransferAndTensorAllocator MILP structure (variables, constraint groups, objective function, ConstraintSelection guards)
+- [x] **MILP-02**: Skill doc covers NamespaceConstraints pattern, AIE2Constraints, and how hardware-specific constraints are dispatched
 
 ### API & Testing
 
@@ -58,8 +58,8 @@
 | SOLVER-02 | Phase 11 | Complete |
 | STAGE-01 | Phase 12 | Complete |
 | STAGE-02 | Phase 12 | Complete |
-| MILP-01 | Phase 13 | Pending |
-| MILP-02 | Phase 13 | Pending |
+| MILP-01 | Phase 13 | Complete |
+| MILP-02 | Phase 13 | Complete |
 | API-01 | Phase 14 | Pending |
 | API-02 | Phase 14 | Pending |
 | SKILL-01 | Phase 10 (cross-cutting: enforced in Phases 11-14) | Complete |

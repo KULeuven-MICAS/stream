@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Codebase Documentation
 status: verifying
-stopped_at: Completed 12-01-PLAN.md (pipeline-stages.md + stage-execution.md + SKILL.md updated)
-last_updated: "2026-05-09T23:06:47.595Z"
-last_activity: 2026-05-09
+stopped_at: Completed 13-milp-constraint-skills 13-01-PLAN.md
+last_updated: "2026-05-10T08:31:25.714Z"
+last_activity: 2026-05-10
 progress:
   total_phases: 6
-  completed_phases: 4
-  total_plans: 5
-  completed_plans: 5
+  completed_phases: 5
+  total_plans: 6
+  completed_plans: 6
   percent: 0
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-09)
 
 **Core value:** Make stream_aie navigable for both human developers and AI agents via structured documentation as Claude Code skills
-**Current focus:** Phase 12 — pipeline-skills
+**Current focus:** Phase 13 — milp-constraint-skills
 
 ## Current Position
 
-Phase: 12 (pipeline-skills) — EXECUTING
+Phase: 13 (milp-constraint-skills) — EXECUTING
 Plan: 1 of 1
 Status: Phase complete — ready for verification
-Last activity: 2026-05-09
+Last activity: 2026-05-10
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -54,6 +54,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 10 P02 | 1 | 1 tasks | 1 files |
 | Phase 11 P01 | 260 | 2 tasks | 3 files |
 | Phase 12-pipeline-skills P01 | 312 | 2 tasks | 3 files |
+| Phase 13-milp-constraint-skills P01 | 900 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -82,6 +83,8 @@ v1.2 decisions:
 - [Phase 11]: Used git add -f to commit .claude/skills/ in worktree (worktree was at pre-Phase-10-gitignore-fix commit; main branch already updated)
 - [Phase 12-pipeline-skills]: ASCII flow diagram uses indented box art (4-space indent) rather than fenced code blocks to satisfy D-06 (no code examples)
 - [Phase 12-pipeline-skills]: Context key flow table is primary content of stage-execution.md with summary in pipeline-stages.md; both files are self-contained per D-08
+- [Phase 13-milp-constraint-skills]: milp-formulation.md covers both ComputeAllocator and TTA as two MILP stages; variable family table uses prefix notation; ConstraintSelection guard table placed inline with cross-reference
+- [Phase 13-milp-constraint-skills]: Three-level filtering documented in namespace-constraints.md: ConstraintSelection toggle -> TransferAndTensorContext dispatch -> applies_to() core filtering
 
 ### Pending Todos
 
@@ -93,6 +96,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-09T23:06:47.591Z
-Stopped at: Completed 12-01-PLAN.md (pipeline-stages.md + stage-execution.md + SKILL.md updated)
+Last session: 2026-05-10T08:31:25.712Z
+Stopped at: Completed 13-milp-constraint-skills 13-01-PLAN.md
 Resume file: None
