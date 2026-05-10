@@ -9,6 +9,7 @@ No stdout writes — stdout is owned by JSON-RPC (see Phase 15 stdout cleanup).
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -47,6 +48,49 @@ def _get_state(mcp_ctx: Context) -> ServerState:
     single fix rather than touching every tool handler.
     """
     return mcp_ctx.lifespan_context["state"]
+
+
+# ---------------------------------------------------------------------------
+# Background solve helper (D-04: lazy imports, async job pattern)
+# ---------------------------------------------------------------------------
+
+
+async def _run_solve_background(
+    job_id: str,
+    state: ServerState,
+    hardware: str,
+    workload: str,
+    mapping: str,
+    output_path: str,
+    backend: str,
+    constraint_dict: dict[str, bool],
+) -> None:
+    """Run optimize_allocation_co in a background thread and update job state.
+
+    Uses asyncio.to_thread to avoid blocking the event loop during the MILP solve.
+    Heavy imports (stream.api, ConstraintSelection) are lazy per D-04.
+    """
+    state.jobs[job_id]["status"] = "running"
+    try:
+        from stream.api import optimize_allocation_co  # noqa: PLC0415
+        from stream.opt.solver import ConstraintSelection  # noqa: PLC0415
+
+        cs = ConstraintSelection(**constraint_dict)
+        ctx = await asyncio.to_thread(
+            optimize_allocation_co,
+            hardware=hardware,
+            workload=workload,
+            mapping=mapping,
+            experiment_id=job_id,
+            output_path=output_path,
+            backend=backend,
+            constraint_selection=cs,
+        )
+        state.jobs[job_id]["result"] = {"ctx": ctx}
+        state.jobs[job_id]["status"] = "complete"
+    except Exception as e:
+        state.jobs[job_id]["status"] = "failed"
+        state.jobs[job_id]["error"] = str(e)
 
 
 # ---------------------------------------------------------------------------
@@ -106,11 +150,10 @@ async def run_optimization(  # noqa: PLR0913
     # Register job as pending
     state.jobs[job_id] = {"status": "pending", "result": None, "error": None}
 
-    # Phase 18 replaces the stub below with:
-    #   asyncio.create_task(_run_solve_background(job_id, state, hardware, workload,
-    #                                              mapping, output_path, backend,
-    #                                              constraint_dict))
-    return {"job_id": job_id, "status": "pending", "message": "not implemented yet"}
+    asyncio.create_task(
+        _run_solve_background(job_id, state, hardware, workload, mapping, output_path, backend, constraint_dict)
+    )
+    return {"job_id": job_id, "status": "pending"}
 
 
 # ---------------------------------------------------------------------------
@@ -215,9 +258,7 @@ async def get_allocation_ir(
 ) -> dict[str, Any]:
     """Return the TETRA allocation result as structured JSON matching the AllocationIR schema.
 
-    Phase 18 will implement this tool by loading the completed optimization result
-    (from the pickle cache at {output_path}/{job_id}/ctx.pickle) and returning an
-    AllocationIR Pydantic model with three persona views:
+    Returns an AllocationIR Pydantic model with three persona views:
     - algorithmic_view: tensor placement per operator
     - hardware_view: per-core allocation and memory usage
     - compiler_view: slot-indexed DMA schedule
@@ -226,14 +267,32 @@ async def get_allocation_ir(
     for poll_optimization to return status 'complete'.
 
     Args:
-        job_id: 12-char hex job ID returned by run_optimization.
+        job_id: 12-char hex experiment ID returned by run_optimization.
         mcp_ctx: FastMCP context injected automatically by the framework.
 
     Returns:
-        Dict with AllocationIR fields when implemented. Currently returns
-        {'status': 'not_implemented', 'message': ...}.
+        Dict with AllocationIR fields for completed experiments, or a structured
+        error dict with 'status', 'error_type', and 'message' fields per D-03.
     """
-    return {"status": "not_implemented", "message": "Phase 18 will implement this tool"}
+    state = _get_state(mcp_ctx)
+    job = state.jobs.get(job_id)
+    if job is None:
+        return {"status": "error", "error_type": "not_found", "message": f"No experiment with id '{job_id}'"}
+    if job["status"] != "complete":
+        return {
+            "status": "error",
+            "error_type": "not_ready",
+            "message": f"Experiment '{job_id}' status is '{job['status']}'",
+        }
+    try:
+        from stream.ir import AllocationIR  # noqa: PLC0415
+
+        ctx = job["result"]["ctx"]
+        scheduler = ctx.get("scheduler")
+        ir = AllocationIR.from_internal(scheduler)
+        return ir.model_dump()
+    except ValueError as e:
+        return {"status": "error", "error_type": "solve_failed", "message": str(e)}
 
 
 # ---------------------------------------------------------------------------
@@ -248,19 +307,35 @@ async def get_solve_stats(
 ) -> dict[str, Any]:
     """Return MILP solve statistics for a completed optimization job.
 
-    Phase 18 will implement this tool by extracting SolveStats from the pickle
-    cache and returning structured metrics including objective value, solve time,
-    gap, number of variables, number of constraints, and solver backend used.
+    Extracts SolveStats from the completed optimization result and returns
+    structured metrics including objective value, solve time, gap, node count,
+    iteration count, and solver backend used.
 
     Requires a completed optimization job. Call run_optimization first and wait
     for poll_optimization to return status 'complete'.
 
     Args:
-        job_id: 12-char hex job ID returned by run_optimization.
+        job_id: 12-char hex experiment ID returned by run_optimization.
         mcp_ctx: FastMCP context injected automatically by the framework.
 
     Returns:
-        Dict with SolveStats fields when implemented. Currently returns
-        {'status': 'not_implemented', 'message': ...}.
+        Dict with SolveStats fields for completed experiments, or a structured
+        error dict with 'status', 'error_type', and 'message' fields per D-03.
     """
-    return {"status": "not_implemented", "message": "Phase 18 will implement this tool"}
+    state = _get_state(mcp_ctx)
+    job = state.jobs.get(job_id)
+    if job is None:
+        return {"status": "error", "error_type": "not_found", "message": f"No experiment with id '{job_id}'"}
+    if job["status"] != "complete":
+        return {
+            "status": "error",
+            "error_type": "not_ready",
+            "message": f"Experiment '{job_id}' status is '{job['status']}'",
+        }
+    import dataclasses  # noqa: PLC0415
+
+    ctx = job["result"]["ctx"]
+    scheduler = ctx.get("scheduler")
+    if scheduler is None or scheduler.solve_stats is None:
+        return {"status": "error", "error_type": "solve_failed", "message": "No solve statistics available"}
+    return dataclasses.asdict(scheduler.solve_stats)

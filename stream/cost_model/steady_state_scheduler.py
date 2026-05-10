@@ -20,7 +20,7 @@ from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocatio
     TransferAlloc,
     TransferAndTensorAllocator,
 )
-from stream.opt.solver import ConstraintSelection
+from stream.opt.solver import ConstraintSelection, SolveStats
 from stream.visualization.steady_state_trace import export_steady_state_trace
 from stream.workload.node import (
     ComputationNode,
@@ -94,6 +94,8 @@ class SteadyStateScheduler:
         self.output_path = output_path
         if self.output_path:
             os.makedirs(self.output_path, exist_ok=True)
+
+        self.solve_stats: SolveStats | None = None
 
     def get_ir(self) -> dict:
         """Return a dictionary representation of the scheduler state for serialization/inspection.
@@ -179,6 +181,8 @@ class SteadyStateScheduler:
             overlap,
             latency_per_iteration,
         ) = tta.solve()
+        # Capture solve statistics before tta goes out of scope (tta.model is a local variable)
+        self.solve_stats = tta.model.solve_stats()
         # total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
         # assert total == total_latency_solver, (
         #     f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
