@@ -241,38 +241,129 @@ def test_lifespan_creates_state() -> None:
 
 
 # ---------------------------------------------------------------------------
-# test_stub_tools_return_not_implemented
+# test_get_workload_ir_no_params
 # ---------------------------------------------------------------------------
 
 
-def test_stub_tools_return_not_implemented(tmp_path: pathlib.Path) -> None:
-    """Stub tools (get_workload_ir, get_accelerator_ir) return dicts with status 'not_implemented'.
-
-    get_allocation_ir and get_solve_stats are no longer stubs — they return structured
-    error responses per D-03 when given non-existent experiment IDs.
-    """
+def test_get_workload_ir_no_params() -> None:
+    """get_workload_ir with no params returns invalid_input error."""
     from fastmcp.client import Client
 
     from stream.mcp.server import mcp
 
-    hw = _write_temp_file(tmp_path, "hardware.yaml", b"hw")
-    wl = _write_temp_file(tmp_path, "workload.onnx", b"wl")
-
-    async def run() -> list[dict]:
+    async def run() -> dict:
         async with Client(mcp) as client:
-            results = []
-            r1 = await client.call_tool("get_workload_ir", {"workload": wl})
-            results.append(r1.data)
-            r2 = await client.call_tool("get_accelerator_ir", {"hardware": hw})
-            results.append(r2.data)
-            return results
+            result = await client.call_tool("get_workload_ir", {})
+            return result.data
 
-    results = asyncio.run(run())
-    tool_names = ["get_workload_ir", "get_accelerator_ir"]
-    for tool_name, data in zip(tool_names, results, strict=True):
-        assert data.get("status") == "not_implemented", (
-            f"{tool_name} should return status 'not_implemented', got {data}"
-        )
+    data = asyncio.run(run())
+    assert data["status"] == "error", f"Expected status 'error', got {data}"
+    assert data["error_type"] == "invalid_input", f"Expected error_type 'invalid_input', got {data}"
+
+
+# ---------------------------------------------------------------------------
+# test_get_workload_ir_invalid_path
+# ---------------------------------------------------------------------------
+
+
+def test_get_workload_ir_invalid_path() -> None:
+    """get_workload_ir with a nonexistent file path returns invalid_input error."""
+    from fastmcp.client import Client
+
+    from stream.mcp.server import mcp
+
+    async def run() -> dict:
+        async with Client(mcp) as client:
+            result = await client.call_tool("get_workload_ir", {"workload": "/nonexistent/path.onnx"})
+            return result.data
+
+    data = asyncio.run(run())
+    assert data["status"] == "error", f"Expected status 'error', got {data}"
+    assert data["error_type"] == "invalid_input", f"Expected error_type 'invalid_input', got {data}"
+
+
+# ---------------------------------------------------------------------------
+# test_get_workload_ir_not_found_experiment
+# ---------------------------------------------------------------------------
+
+
+def test_get_workload_ir_not_found_experiment() -> None:
+    """get_workload_ir with a nonexistent experiment_id returns not_found error."""
+    from fastmcp.client import Client
+
+    from stream.mcp.server import mcp
+
+    async def run() -> dict:
+        async with Client(mcp) as client:
+            result = await client.call_tool("get_workload_ir", {"experiment_id": "nonexistent1"})
+            return result.data
+
+    data = asyncio.run(run())
+    assert data["status"] == "error", f"Expected status 'error', got {data}"
+    assert data["error_type"] == "not_found", f"Expected error_type 'not_found', got {data}"
+
+
+# ---------------------------------------------------------------------------
+# test_get_accelerator_ir_no_params
+# ---------------------------------------------------------------------------
+
+
+def test_get_accelerator_ir_no_params() -> None:
+    """get_accelerator_ir with no params returns invalid_input error."""
+    from fastmcp.client import Client
+
+    from stream.mcp.server import mcp
+
+    async def run() -> dict:
+        async with Client(mcp) as client:
+            result = await client.call_tool("get_accelerator_ir", {})
+            return result.data
+
+    data = asyncio.run(run())
+    assert data["status"] == "error", f"Expected status 'error', got {data}"
+    assert data["error_type"] == "invalid_input", f"Expected error_type 'invalid_input', got {data}"
+
+
+# ---------------------------------------------------------------------------
+# test_get_accelerator_ir_invalid_path
+# ---------------------------------------------------------------------------
+
+
+def test_get_accelerator_ir_invalid_path() -> None:
+    """get_accelerator_ir with a nonexistent file path returns invalid_input error."""
+    from fastmcp.client import Client
+
+    from stream.mcp.server import mcp
+
+    async def run() -> dict:
+        async with Client(mcp) as client:
+            result = await client.call_tool("get_accelerator_ir", {"hardware": "/nonexistent/hw.yaml"})
+            return result.data
+
+    data = asyncio.run(run())
+    assert data["status"] == "error", f"Expected status 'error', got {data}"
+    assert data["error_type"] == "invalid_input", f"Expected error_type 'invalid_input', got {data}"
+
+
+# ---------------------------------------------------------------------------
+# test_get_accelerator_ir_not_found_experiment
+# ---------------------------------------------------------------------------
+
+
+def test_get_accelerator_ir_not_found_experiment() -> None:
+    """get_accelerator_ir with a nonexistent experiment_id returns not_found error."""
+    from fastmcp.client import Client
+
+    from stream.mcp.server import mcp
+
+    async def run() -> dict:
+        async with Client(mcp) as client:
+            result = await client.call_tool("get_accelerator_ir", {"experiment_id": "nonexistent2"})
+            return result.data
+
+    data = asyncio.run(run())
+    assert data["status"] == "error", f"Expected status 'error', got {data}"
+    assert data["error_type"] == "not_found", f"Expected error_type 'not_found', got {data}"
 
 
 # ---------------------------------------------------------------------------
