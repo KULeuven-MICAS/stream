@@ -211,7 +211,10 @@ Plans:
   1. An API-reference skill file documents optimize_allocation_co() and optimize_mapping() signatures, all CLI flags (--backend, --disable-constraints), common usage patterns, and return types (SolveStats fields)
   2. A testing skill file documents the test organization (unit vs integration), backend patching patterns, study scripts (constraint_toggle_study.py, cross-backend verification), and how to add new tests for constraint groups or backends
   3. Each skill file has a SKILL.md with accurate trigger phrases and is readable independently
-**Plans**: TBD
+**Plans:** 1/1 plans complete
+
+Plans:
+- [x] 14-01-PLAN.md — Write api-reference.md and testing-patterns.md skill files, update SKILL.md
 
 ## Progress
 
@@ -232,5 +235,5 @@ Phase 9 is independent. Phase 10 depends on Phase 9. Phases 11-14 depend on Phas
 | 10. CLAUDE.md & Skill Scaffolding | v1.2 | 2/2 | Complete    | 2026-05-09 |
 | 11. Solver System Skills | v1.2 | 1/1 | Complete    | 2026-05-09 |
 | 12. Pipeline Skills | v1.2 | 1/1 | Complete    | 2026-05-09 |
-| 13. MILP & Constraint Skills | v1.2 | 1/1 | Complete   | 2026-05-10 |
-| 14. API & Testing Skills | v1.2 | 0/? | Not started | - |
+| 13. MILP & Constraint Skills | v1.2 | 1/1 | Complete    | 2026-05-10 |
+| 14. API & Testing Skills | v1.2 | 1/1 | Complete   | 2026-05-10 |

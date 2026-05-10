@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.2
 milestone_name: Codebase Documentation
 status: verifying
-stopped_at: Completed 13-milp-constraint-skills 13-01-PLAN.md
-last_updated: "2026-05-10T08:31:25.714Z"
+stopped_at: Completed 14-api-testing-skills-01-PLAN.md
+last_updated: "2026-05-10T09:34:18.233Z"
 last_activity: 2026-05-10
 progress:
   total_phases: 6
-  completed_phases: 5
-  total_plans: 6
-  completed_plans: 6
+  completed_phases: 6
+  total_plans: 7
+  completed_plans: 7
   percent: 0
 ---
 
@@ -21,11 +21,11 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-09)
 
 **Core value:** Make stream_aie navigable for both human developers and AI agents via structured documentation as Claude Code skills
-**Current focus:** Phase 13 — milp-constraint-skills
+**Current focus:** Phase 14 — api-testing-skills
 
 ## Current Position
 
-Phase: 13 (milp-constraint-skills) — EXECUTING
+Phase: 14 (api-testing-skills) — EXECUTING
 Plan: 1 of 1
 Status: Phase complete — ready for verification
 Last activity: 2026-05-10
@@ -55,6 +55,7 @@ Progress: [░░░░░░░░░░] 0%
 | Phase 11 P01 | 260 | 2 tasks | 3 files |
 | Phase 12-pipeline-skills P01 | 312 | 2 tasks | 3 files |
 | Phase 13-milp-constraint-skills P01 | 900 | 2 tasks | 3 files |
+| Phase 14-api-testing-skills P01 | 190 | 2 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -85,6 +86,8 @@ v1.2 decisions:
 - [Phase 12-pipeline-skills]: Context key flow table is primary content of stage-execution.md with summary in pipeline-stages.md; both files are self-contained per D-08
 - [Phase 13-milp-constraint-skills]: milp-formulation.md covers both ComputeAllocator and TTA as two MILP stages; variable family table uses prefix notation; ConstraintSelection guard table placed inline with cross-reference
 - [Phase 13-milp-constraint-skills]: Three-level filtering documented in namespace-constraints.md: ConstraintSelection toggle -> TransferAndTensorContext dispatch -> applies_to() core filtering
+- [Phase 14-api-testing-skills]: [Phase 14-api-testing-skills]: api-reference.md documents optimize_allocation_co (13 params), optimize_mapping (19 params), SolveStats, 10 CLI scripts table, and --backend/--disable-constraints flags
+- [Phase 14-api-testing-skills]: [Phase 14-api-testing-skills]: testing-patterns.md documents test directory layout, dual-target create_solver backend patching, infeasibility-flip integration test pattern, and 4 study scripts
 
 ### Pending Todos
 
@@ -96,6 +99,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-10T08:31:25.712Z
-Stopped at: Completed 13-milp-constraint-skills 13-01-PLAN.md
+Last session: 2026-05-10T09:34:18.229Z
+Stopped at: Completed 14-api-testing-skills-01-PLAN.md
 Resume file: None

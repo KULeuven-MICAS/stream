@@ -31,8 +31,8 @@
 
 ### API & Testing
 
-- [ ] **API-01**: Skill doc covers public API (optimize_allocation_co, optimize_mapping), CLI flags, and common usage patterns
-- [ ] **API-02**: Skill doc covers testing patterns (unit vs integration, backend patching, study scripts)
+- [x] **API-01**: Skill doc covers public API (optimize_allocation_co, optimize_mapping), CLI flags, and common usage patterns
+- [x] **API-02**: Skill doc covers testing patterns (unit vs integration, backend patching, study scripts)
 
 ### Skill Structure
 
@@ -60,8 +60,8 @@
 | STAGE-02 | Phase 12 | Complete |
 | MILP-01 | Phase 13 | Complete |
 | MILP-02 | Phase 13 | Complete |
-| API-01 | Phase 14 | Pending |
-| API-02 | Phase 14 | Pending |
+| API-01 | Phase 14 | Complete |
+| API-02 | Phase 14 | Complete |
 | SKILL-01 | Phase 10 (cross-cutting: enforced in Phases 11-14) | Complete |
 | SKILL-02 | Phase 10 (cross-cutting: enforced in Phases 11-14) | Complete |
 
