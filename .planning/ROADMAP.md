@@ -66,7 +66,7 @@
 
 **Milestone Goal:** Run ResNet18 end-to-end through the CO pipeline on TPU hardware with auto-generated mapping.
 
-- [ ] **Phase 22: ONNX Parser Completions** - Fix ConvParser bias crash, add shape inference, register Add/Relu/Pool ops so all 49 ResNet18 nodes parse
+- [x] **Phase 22: ONNX Parser Completions** - Fix ConvParser bias crash, add shape inference, register Add/Relu/Pool ops so all 49 ResNet18 nodes parse (completed 2026-05-11)
 - [ ] **Phase 23: Generic Mapping Generator** - Auto-infer fused_groups, allocations, and tilings from workload+hardware; wire stage into pipeline; fix FMT-05 YAML validation
 - [ ] **Phase 24: ResNet18 End-to-End Flow** - Fix fan-out transfer handling, run ResNet18 CO on TPU, verify main_stream_co.py produces output
 
@@ -82,7 +82,7 @@
   3. Add and Relu nodes each produce a valid ComputationNode via registered parsers
   4. MaxPool and GlobalAveragePool nodes produce valid ComputationNodes via rewritten PoolingParser
   5. Parsing the ResNet18 ONNX model completes with all 49 nodes accounted for (ComputationNode or passthrough)
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 Plans:
 - [x] 22-01-PLAN.md — FusionEdge node type + Workload integration
 - [x] 22-02-PLAN.md — ConvParser/GemmParser bias fix + shape inference + Relu registration
@@ -98,7 +98,11 @@ Plans:
   3. `MappingValidator` accepts the generated mapping without errors (nested-list format, all nodes covered)
   4. `GenericMappingGenerationStage` executes between ONNXModelParserStage and MappingParserStage in the pipeline
   5. The TPU mapping YAML validates against the current schema (FMT-05)
-**Plans**: TBD
+**Plans:** 3 plans
+Plans:
+- [ ] 23-01-PLAN.md — Hardware operator_types + GenericMappingGenerator class
+- [ ] 23-02-PLAN.md — Pipeline stages (GenericMappingGenerationStage + FusionGroupIterationStage) + api.py wiring
+- [ ] 23-03-PLAN.md — Test suite (MAP-01 through MAP-04, FMT-05 validation)
 
 ### Phase 24: ResNet18 End-to-End Flow
 **Goal**: ResNet18 runs fully through the CO pipeline on TPU hardware and main_stream_co.py produces a valid allocation result
@@ -135,6 +139,6 @@ Plans:
 | 19. GA Removal | v1.4 | 1/1 | Complete | 2026-05-11 |
 | 20. Mapping Format Fixes | v1.4 | 1/1 | Complete | 2026-05-11 |
 | 21. TPU End-to-End Test | v1.4 | 1/1 | Complete | 2026-05-11 |
-| 22. ONNX Parser Completions | v1.5 | 2/3 | In Progress|  |
-| 23. Generic Mapping Generator | v1.5 | 0/TBD | Not started | - |
+| 22. ONNX Parser Completions | v1.5 | 2/3 | Complete    | 2026-05-11 |
+| 23. Generic Mapping Generator | v1.5 | 0/3 | Not started | - |
 | 24. ResNet18 End-to-End Flow | v1.5 | 0/TBD | Not started | - |
