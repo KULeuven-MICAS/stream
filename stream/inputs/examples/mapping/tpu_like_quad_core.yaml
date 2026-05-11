@@ -1,43 +1,48 @@
 layers:
 - name: Conv
-  core_allocation: [0, 1, 2, 3]
+  core_allocation:
+  - [0, 1, 2, 3]
   inter_core_tiling:
-  - dim: D6
-    split: 4
-- name: Conv
-  core_allocation: [0, 1, 2, 3]
-  inter_core_tiling:
-  - dim: D6
-    split: 4
-  
+  - - dim: D6
+      split: 4
 - name: Gemm
-  core_allocation: [0, 1, 2, 3]
+  core_allocation:
+  - [0, 1, 2, 3]
   inter_core_tiling:
-  - dim: D2
-    split: 4
+  - - dim: D2
+      split: 4
 
 - name: Pool
-  core_allocation: [4]
+  core_allocation:
+  - [4]
 
 - name: MaxPool
-  core_allocation: [4]
+  core_allocation:
+  - [4]
 
 - name: AveragePool
-  core_allocation: [4]
+  core_allocation:
+  - [4]
 
 - name: GlobalAveragePool
-  core_allocation: [4]
+  core_allocation:
+  - [4]
 
 - name: Add
-  core_allocation: [5]
+  core_allocation:
+  - [5]
 
 - name: Relu
-  core_allocation: [0, 1, 2, 3]
+  core_allocation:
+  - [0, 1, 2, 3]
   inter_core_tiling:
-  - dim: D3
-    split: 4
+  - - dim: D3
+      split: 4
 
 fused_groups:
 - name: Fused_Group_1
   layers:
   - Conv
+  intra_core_tiling:
+  - dim: Conv.D0
+    tile: 1
