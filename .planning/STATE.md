@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 19-01-PLAN.md
-last_updated: "2026-05-11T10:25:10.523Z"
+stopped_at: Completed 20-01-PLAN.md
+last_updated: "2026-05-11T11:42:56.915Z"
 last_activity: 2026-05-11
 progress:
   total_phases: 3
-  completed_phases: 1
-  total_plans: 1
-  completed_plans: 1
+  completed_phases: 2
+  total_plans: 2
+  completed_plans: 2
   percent: 0
 ---
 
@@ -21,11 +21,11 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-11)
 
 **Core value:** Enable users to explore the TETRA design space efficiently — selecting solver backends, toggling constraint groups, and understanding the impact of hardware constraints on schedule optimality
-**Current focus:** Phase 19 — ga-removal
+**Current focus:** Phase 20 — mapping-format-fixes
 
 ## Current Position
 
-Phase: 19 (ga-removal) — EXECUTING
+Phase: 20 (mapping-format-fixes) — EXECUTING
 Plan: 1 of 1
 Status: Phase complete — ready for verification
 Last activity: 2026-05-11
@@ -59,6 +59,9 @@ Key decisions carried forward:
 - [v1.4 roadmap]: Phase 19 is a hard prerequisite for Phase 20 — GA top-level import in api.py couples GA files to the entire package import chain
 - [Phase 19-01]: Fixed optimize_allocation_co return type to StageContext (was incorrectly annotated as StreamCostModelEvaluation)
 - [Phase 19-01]: GA deletion is atomic with api.py import removal — confirmed this avoids ImportError if done separately
+- [Phase 20-01]: Dead mapping files deleted rather than fixed (no references from tests or scripts)
+- [Phase 20-01]: FMT-05 (tpu_like_quad_core.yaml in examples/ validates) deferred to v1.5 per D-01/D-02
+- [Phase 20-01]: No new unit tests for individual bug fixes; Phase 21 adds E2E TPU test (D-04)
 
 ### Pending Todos
 
@@ -70,6 +73,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-11T10:25:10.521Z
-Stopped at: Completed 19-01-PLAN.md
+Last session: 2026-05-11T11:42:56.913Z
+Stopped at: Completed 20-01-PLAN.md
 Resume file: None

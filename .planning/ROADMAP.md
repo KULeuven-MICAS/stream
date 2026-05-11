@@ -314,7 +314,10 @@ Plans:
   4. `_convert_intra_core_tiling_entry` parses dotted ONNX node names correctly (last dot separator only)
   5. `tpu_like_quad_core.yaml` passes `MappingValidator` validation without errors
   6. `test_core_cost_lut_caching` passes (all 177 tests green)
-**Plans**: TBD
+**Plans:** 1/1 plans complete
+
+Plans:
+- [x] 20-01-PLAN.md — Fix mapping format bugs (nested lists, NameError, IndexError, rsplit), delete dead files, verify 177 tests pass
 
 ### Phase 21: TPU End-to-End Test
 **Goal**: Users can run the two-conv TPU CO pipeline as a standard pytest test and verify it produces a valid scheduler result
@@ -351,6 +354,6 @@ Phases 1-18 complete. v1.4 order: 19 (blocker) -> 20 -> 21
 | 16. IR Models | v1.3 | 2/2 | Complete | 2026-05-10 |
 | 17. MCP Server Skeleton | v1.3 | 2/2 | Complete | 2026-05-10 |
 | 18. MCP Tools | v1.3 | 2/2 | Complete | 2026-05-10 |
-| 19. GA Removal | v1.4 | 1/1 | Complete   | 2026-05-11 |
-| 20. Mapping Format Fixes | v1.4 | 0/TBD | Not started | - |
+| 19. GA Removal | v1.4 | 1/1 | Complete    | 2026-05-11 |
+| 20. Mapping Format Fixes | v1.4 | 1/1 | Complete   | 2026-05-11 |
 | 21. TPU End-to-End Test | v1.4 | 0/TBD | Not started | - |
