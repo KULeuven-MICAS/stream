@@ -265,11 +265,11 @@ class Mapping:
             for dim, tile in fused_group.intra_core_tiling:
                 new_dim = get_equivalent_dimension(old_workload, new_workload, dim)
                 new_tilings.append((new_dim, tile))
-                new_fused_group = FusedGroup(
-                    name=fused_group.name,
-                    layers=fused_group.layers,
-                    intra_core_tiling=tuple(new_tilings),
-                )
+            new_fused_group = FusedGroup(
+                name=fused_group.name,
+                layers=fused_group.layers,
+                intra_core_tiling=tuple(new_tilings),
+            )
             new_fused_groups.append(new_fused_group)
         new_mapping = Mapping(fused_groups=new_fused_groups, runtime_args=self.runtime_args)
         for node in self.nodes():

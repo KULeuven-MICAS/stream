@@ -230,6 +230,8 @@ class Workload(DiGraphWrapper[Node]):
         node_mapping = mapping.get(node)
         assert node_mapping is not None, f"No mapping found for node {node.name}"
         unique_node_dims = self.get_dims(node)
+        if not node_mapping.inter_core_tiling:
+            return ()
         converted_tiling: list[tuple[LayerDim, int]] = []
         all_tilings_equal = all(t == node_mapping.inter_core_tiling[0] for t in node_mapping.inter_core_tiling)
         assert all_tilings_equal, f"Multiple different inter-core tilings for node {node.name} not supported for now."
@@ -285,6 +287,8 @@ class Workload(DiGraphWrapper[Node]):
         node_mapping = mapping.get(node)
         assert node_mapping is not None, f"No mapping found for node {node.name}"
         tilings = node_mapping.inter_core_tiling
+        if not tilings:
+            return tensor
         # Assert all possible tilings are equal for now and take first one
         assert all(t == tilings[0] for t in tilings), "Multiple different tilings not implemented yet."
         tiling = tilings[0]

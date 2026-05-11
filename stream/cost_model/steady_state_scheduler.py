@@ -769,7 +769,11 @@ class SteadyStateScheduler:
         }
         # Check the dims of node and find their unrolling factors in inter_core_tiling of src
         node_dims = self.ssw.get_dims(node)
-        inter_core_tiling_src = self.mapping.get(src).inter_core_tiling[0]
+        inter_core_tiling_entries = self.mapping.get(src).inter_core_tiling
+        if not inter_core_tiling_entries:
+            inter_core_tiling_src = ()
+        else:
+            inter_core_tiling_src = inter_core_tiling_entries[0]
         total_relevant_unrolling = 1
         for dim in node_dims:
             for tiling_dim, size in inter_core_tiling_src:

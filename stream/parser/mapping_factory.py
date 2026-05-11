@@ -111,7 +111,7 @@ class MappingFactory:
         return fused_groups
 
     def _convert_intra_core_tiling_entry(self, entry: dict[str, Any]) -> tuple[LayerDim, int]:
-        node_name, dim_name = entry["dim"].split(".")
+        node_name, dim_name = entry["dim"].rsplit(".", 1)
         assert dim_name[0] == "D", f"Unsupported intra_core_tiling dimension format: {entry['dim']!r}"
         dim_idx = int(dim_name[1:])
         node = self.workload.get_node_by_name(node_name)
