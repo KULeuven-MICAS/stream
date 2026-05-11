@@ -295,8 +295,20 @@ class SteadyStateScheduler:
         - one from the source to the on-chip memory buffer,
         - a second one from the on-chip memory buffer to the destination.
         This is to ensure that the constant tensor is properly allocated in memory and can be reused across iterations.
+
+        If the accelerator has no on-chip memory tiles (e.g. TPU-like hardware), falls back to a single
+        direct transfer from the source to the destinations (MEM_TO_COMPUTE).
         """
         assert isinstance(src, InEdge), f"Expected source of constant transfer to be an InEdge, found {type(src)}"
+        # Fall back to a single direct transfer when no memory tiles are available
+        if not self._get_accelerator_memory_cores():
+            transfer_type = self.determine_transfer_type(src, dsts)
+            out_name = f"{tensor.name}_1"
+            transfer_node, updated_tensors = self.generate_transfer_node(dsts, tensor, transfer_type, out_name)
+            new_nodes[transfer_node.name] = transfer_node
+            for dst, updated_tensor in zip(dsts, updated_tensors, strict=True):
+                self.update_destination_node_inputs(tensor, src, new_nodes, dst, updated_tensor)
+            return
         # First transfer node from source to on-chip buffer
         transfer_type_1 = self.determine_transfer_type(src, dsts, dst_type="memory")
         out_name_1 = f"{tensor.name}_1"
@@ -348,12 +360,25 @@ class SteadyStateScheduler:
         - one from the source to the on-chip memory buffer,
         - a second one from the on-chip memory buffer to the destination.
         This is to ensure that the constant tensor is properly allocated in memory and can be reused across iterations.
+
+        If the accelerator has no on-chip memory tiles (e.g. TPU-like hardware), falls back to a single
+        direct transfer from the source to the destinations (COMPUTE_TO_MEM).
         """
         assert len(dsts) == 1, "Currently only support single destination for constant output transfer."
         dst = dsts[0]
         assert isinstance(dst, OutEdge), (
             f"Expected destination of constant transfer to be an OutEdge, found {type(dst)}"
         )
+        # Fall back to a single direct transfer when no memory tiles are available
+        if not self._get_accelerator_memory_cores():
+            transfer_type = self.determine_transfer_type(src, dsts)
+            new_tensor = self.generate_transfer_input_tensor(tensor, src, name_suffix="_1")
+            out_name = f"{tensor.name}"
+            transfer_node, updated_tensors = self.generate_transfer_node([dst], new_tensor, transfer_type, out_name)
+            new_nodes[transfer_node.name] = transfer_node
+            new_src = self.update_source_tensor(tensor, src, new_nodes, new_tensor)
+            self.update_destination_tensor(tensor, new_src, new_nodes, dst, updated_tensors)
+            return
         # First transfer node from source to on-chip buffer
         transfer_type_1 = self.determine_transfer_type(src, dsts, dst_type="memory")
         new_tensor = self.generate_transfer_input_tensor(tensor, src, name_suffix="_1")
@@ -623,6 +648,10 @@ class SteadyStateScheduler:
             possible_memory_cores = self._retrieve_core_allocation(dst)
         elif node.transfer_type in (TransferType.COMPUTE_TO_MEM,):
             possible_memory_cores = self._get_possible_memory_core_allocations(src, node)
+            if not possible_memory_cores:
+                # No on-chip memory tiles — fall back to offchip core as the destination
+                offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
+                possible_memory_cores = ((offchip_core,),)
         else:
             possible_memory_cores_set: set[Core] = set()
             for dst in dsts:
