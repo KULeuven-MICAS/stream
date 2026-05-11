@@ -70,6 +70,9 @@ class AcceleratorFactory:
         col_id = coordinates[0] if coordinates else None
         row_id = coordinates[1] if coordinates else None
 
+        # Read operator_types from raw core_data before any validation strips unknown fields
+        operator_types = core_data.get("operator_types", None)
+
         if namespace == "aie2":
             # ---- AIE2 native path: lightweight backend ----
             mem = core_data["memory"]
@@ -78,7 +81,7 @@ class AcceleratorFactory:
                 bandwidth_min=mem.get("bandwidth_min", 0),
                 bandwidth_max=mem.get("bandwidth_max", 0),
             )
-            return Core(
+            core = Core(
                 backend=backend,
                 core_id=core_id,
                 name=core_data.get("name", f"core_{core_id}"),
@@ -88,6 +91,8 @@ class AcceleratorFactory:
                 col_id=col_id,
                 row_id=row_id,
             )
+            core.operator_types = operator_types
+            return core
 
         if namespace == "zigzag":
             # ---- ZigZag path: full hierarchy via ZigZagCoreFactory ----
@@ -97,7 +102,7 @@ class AcceleratorFactory:
             # (get_memory_capacity, get_max_memory_bandwidth, get_ir) are available.
             zigzag_core.__class__ = ZigZagCoreBackend
 
-            return Core(
+            core = Core(
                 backend=zigzag_core,
                 core_id=zigzag_core.id,
                 name=zigzag_core.name,
@@ -107,6 +112,8 @@ class AcceleratorFactory:
                 col_id=col_id,
                 row_id=row_id,
             )
+            core.operator_types = operator_types
+            return core
 
         raise ValueError(
             f"Unknown core namespace '{namespace}' in core type '{core_type}'. "
