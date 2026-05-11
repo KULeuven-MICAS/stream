@@ -14,6 +14,7 @@ from zigzag.utils import DiGraphWrapper
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.workload.node import (
     ComputationNode,
+    FusionEdge,
     HasInputs,
     HasIterationSpace,
     HasOutputs,
@@ -135,6 +136,84 @@ class Workload(DiGraphWrapper[Node]):
 
     def get_out_edges(self) -> tuple[OutEdge, ...]:
         return tuple(cast(OutEdge, node) for node in self.nodes if isinstance(node, OutEdge))
+
+    def get_fusion_edges(self) -> tuple[FusionEdge, ...]:
+        return tuple(cast(FusionEdge, node) for node in self.nodes if isinstance(node, FusionEdge))
+
+    def split_fusion_groups(self) -> list["Workload"]:
+        """Split the workload at FusionEdge boundaries into sub-workloads.
+
+        Each sub-workload is self-contained with InEdge at entries and OutEdge
+        at exits. FusionEdge nodes are consumed: the FusionEdge's input tensor
+        becomes an OutEdge in the preceding group, and its output tensor becomes
+        an InEdge in the following group.
+
+        Returns a list of Workloads. If there are no FusionEdge nodes, returns
+        [self] (single group).
+        """
+        fusion_edges = [n for n in self.nodes if isinstance(n, FusionEdge)]
+        if not fusion_edges:
+            return [self]
+
+        # Assign each non-FusionEdge node to a group index.
+        # Group boundaries are defined by FusionEdge nodes.
+        topo_order = list(nx.lexicographical_topological_sort(self, key=lambda n: n.name))
+
+        # Map each node to its group index
+        node_to_group: dict[Node, int] = {}
+        group_idx = 0
+        for node in topo_order:
+            if isinstance(node, FusionEdge):
+                group_idx += 1
+                # FusionEdge itself is not assigned to any group
+                continue
+            node_to_group[node] = group_idx
+
+        num_groups = group_idx + 1
+
+        # Build node lists per group
+        group_nodes: list[list[Node]] = [[] for _ in range(num_groups)]
+        for node in topo_order:
+            if node in node_to_group:
+                group_nodes[node_to_group[node]].append(node)
+
+        # For each FusionEdge, add OutEdge to preceding group and InEdge to following group
+        for fe in fusion_edges:
+            # FusionEdge's input tensor -> OutEdge in preceding group
+            assert len(fe.inputs) == 1, f"FusionEdge {fe.name} must have exactly 1 input"
+            assert len(fe.outputs) == 1, f"FusionEdge {fe.name} must have exactly 1 output"
+
+            # Find the group of the predecessor (producer of FusionEdge's input)
+            preds = list(self.predecessors(fe))
+            assert len(preds) == 1, f"FusionEdge {fe.name} must have exactly 1 predecessor"
+            pred_group = node_to_group[preds[0]]
+
+            # Find the group of the successor (consumer of FusionEdge's output)
+            succs = list(self.successors(fe))
+            assert len(succs) >= 1, f"FusionEdge {fe.name} must have at least 1 successor"
+            succ_group = node_to_group[succs[0]]
+
+            # Add OutEdge for the input tensor in the preceding group
+            out_edge = OutEdge(
+                name=f"{fe.name}_out",
+                inputs=(fe.inputs[0],),
+            )
+            group_nodes[pred_group].append(out_edge)
+
+            # Add InEdge for the output tensor in the following group
+            in_edge = InEdge(
+                name=f"{fe.name}_in",
+                outputs=(fe.outputs[0],),
+            )
+            group_nodes[succ_group].insert(0, in_edge)
+
+        # Build sub-workloads
+        sub_workloads = []
+        for nodes in group_nodes:
+            if nodes:
+                sub_workloads.append(Workload(nodes))
+
+        return sub_workloads
 
     def get_dimension_sizes(self) -> tuple[int, ...]:
         result_to_shape: list[tuple[AffineExpr, int]] = []
@@ -448,6 +527,16 @@ class Workload(DiGraphWrapper[Node]):
                     transfer_type=node.transfer_type,
                     operand_mapping=node.operand_mapping,
                 )
+            elif isinstance(node, FusionEdge):
+                # FusionEdge has no iteration space; pass tensors through unchanged (D-08)
+                new_inputs = tuple(cast(Tensor, tensor_map.get(inp.name, inp)) for inp in node.inputs)
+                new_outputs = tuple(cast(Tensor, tensor_map.get(out.name, out)) for out in node.outputs)
+                new_node = FusionEdge(
+                    name=node.name,
+                    inputs=new_inputs,
+                    outputs=new_outputs,
+                    op_type=node.op_type,
+                )
             elif isinstance(node, OutEdge):
                 new_inputs = tuple(cast(Tensor, tensor_map[inp.name]) for inp in node.inputs)
                 new_node = OutEdge(
@@ -558,6 +647,11 @@ class Workload(DiGraphWrapper[Node]):
                 n.set_label(f"{node.name}\nShape: {node.inputs[0].shape}")
                 n.set_style("filled")
                 n.set_fillcolor("#c2f0c2")
+            elif isinstance(node, FusionEdge):
+                n.set_shape("diamond")
+                n.set_label(f"{node.name}\n[{node.op_type}]")
+                n.set_style("filled")
+                n.set_fillcolor("#d9b3ff")  # light purple for fusion boundaries
             else:
                 raise ValueError(f"Unknown node type: {type(node)}")
 
@@ -568,8 +662,11 @@ class Workload(DiGraphWrapper[Node]):
                 continue
             n = dot_nodes[0]
             # Compact dim info: {dim: size, ...}
-            tensor_dims = self.get_tensor_dimensions(tensor)
-            dim_sizes = {str(d): self.get_dimension_size(d) for d in tensor_dims}
+            try:
+                tensor_dims = self.get_tensor_dimensions(tensor)
+                dim_sizes = {str(d): self.get_dimension_size(d) for d in tensor_dims}
+            except (StopIteration, KeyError):
+                dim_sizes = {}
             label = f"{tensor_name}\n{tensor.shape}"
             if dim_sizes:
                 label += f"\n{dim_sizes}"
@@ -649,9 +746,11 @@ class Workload(DiGraphWrapper[Node]):
                 return (0, node.name)
             if isinstance(node, TransferNode):
                 return (1, node.name)
-            if isinstance(node, InEdge):
+            if isinstance(node, FusionEdge):
                 return (2, node.name)
-            return (3, node.name)  # OutEdge last
+            if isinstance(node, InEdge):
+                return (3, node.name)
+            return (4, node.name)  # OutEdge last
 
         def get_options(node: Node) -> list[frozenset] | None:
             """Return candidate resource sets for a node, or None if unknown.
@@ -779,6 +878,9 @@ class Workload(DiGraphWrapper[Node]):
 
             if isinstance(node, TransferNode):
                 node_data["transfer_type"] = str(node.transfer_type)
+
+            if isinstance(node, FusionEdge):
+                node_data["fusion_op_type"] = node.op_type
 
             nodes_info.append(node_data)
 
