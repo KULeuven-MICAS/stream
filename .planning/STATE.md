@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: ResNet18 TPU CO Flow
 status: executing
-stopped_at: Completed 23-01-PLAN.md
-last_updated: "2026-05-11T22:42:37.956Z"
+stopped_at: Completed 23-03-PLAN.md
+last_updated: "2026-05-11T23:10:10.088Z"
 last_activity: 2026-05-11
 progress:
   total_phases: 3
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 6
-  completed_plans: 4
+  completed_plans: 6
   percent: 0
 ---
 
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-05-11)
 ## Current Position
 
 Phase: 23 (generic-mapping-generator) — EXECUTING
-Plan: 2 of 3
+Plan: 3 of 3
 Status: Ready to execute
 Last activity: 2026-05-11
 
@@ -55,6 +55,8 @@ Key decisions carried forward:
 - [Phase 22]: Shape inference runs in-memory via onnx.shape_inference.infer_shapes() in ONNXModelParser.run() before parse_workload() — populates intermediate tensor value_info
 - [Phase 23-generic-mapping-generator]: Strip operator_types from core data before ZigZag validation, re-inject after normalization
 - [Phase 23-generic-mapping-generator]: Specialized cores (non-None operator_types) take priority over generic compute cores in core selection
+- [Phase 23]: File reads inside TemporaryDirectory context block — avoid FileNotFoundError after cleanup
+- [Phase 23]: tpu_like_quad_core.yaml updated to nested-list format (FMT-05 validated)
 
 ### Pending Todos
 
@@ -68,6 +70,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-11T22:42:37.953Z
-Stopped at: Completed 23-01-PLAN.md
+Last session: 2026-05-11T23:10:10.087Z
+Stopped at: Completed 23-03-PLAN.md
 Resume file: None

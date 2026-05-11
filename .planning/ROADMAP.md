@@ -67,7 +67,7 @@
 **Milestone Goal:** Run ResNet18 end-to-end through the CO pipeline on TPU hardware with auto-generated mapping.
 
 - [x] **Phase 22: ONNX Parser Completions** - Fix ConvParser bias crash, add shape inference, register Add/Relu/Pool ops so all 49 ResNet18 nodes parse (completed 2026-05-11)
-- [ ] **Phase 23: Generic Mapping Generator** - Auto-infer fused_groups, allocations, and tilings from workload+hardware; wire stage into pipeline; fix FMT-05 YAML validation
+- [x] **Phase 23: Generic Mapping Generator** - Auto-infer fused_groups, allocations, and tilings from workload+hardware; wire stage into pipeline; fix FMT-05 YAML validation (completed 2026-05-11)
 - [ ] **Phase 24: ResNet18 End-to-End Flow** - Fix fan-out transfer handling, run ResNet18 CO on TPU, verify main_stream_co.py produces output
 
 ## Phase Details
@@ -98,11 +98,11 @@ Plans:
   3. `MappingValidator` accepts the generated mapping without errors (nested-list format, all nodes covered)
   4. `GenericMappingGenerationStage` executes between ONNXModelParserStage and MappingParserStage in the pipeline
   5. The TPU mapping YAML validates against the current schema (FMT-05)
-**Plans:** 1/3 plans executed
+**Plans:** 3/3 plans complete
 Plans:
 - [x] 23-01-PLAN.md — Hardware operator_types + GenericMappingGenerator class
-- [ ] 23-02-PLAN.md — Pipeline stages (GenericMappingGenerationStage + FusionGroupIterationStage) + api.py wiring
-- [ ] 23-03-PLAN.md — Test suite (MAP-01 through MAP-04, FMT-05 validation)
+- [x] 23-02-PLAN.md — Pipeline stages (GenericMappingGenerationStage + FusionGroupIterationStage) + api.py wiring
+- [x] 23-03-PLAN.md — Test suite (MAP-01 through MAP-04, FMT-05 validation)
 
 ### Phase 24: ResNet18 End-to-End Flow
 **Goal**: ResNet18 runs fully through the CO pipeline on TPU hardware and main_stream_co.py produces a valid allocation result
@@ -140,5 +140,5 @@ Plans:
 | 20. Mapping Format Fixes | v1.4 | 1/1 | Complete | 2026-05-11 |
 | 21. TPU End-to-End Test | v1.4 | 1/1 | Complete | 2026-05-11 |
 | 22. ONNX Parser Completions | v1.5 | 2/3 | Complete    | 2026-05-11 |
-| 23. Generic Mapping Generator | v1.5 | 1/3 | In Progress|  |
+| 23. Generic Mapping Generator | v1.5 | 3/3 | Complete   | 2026-05-11 |
 | 24. ResNet18 End-to-End Flow | v1.5 | 0/TBD | Not started | - |
