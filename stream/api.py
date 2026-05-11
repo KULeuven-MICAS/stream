@@ -1,16 +1,13 @@
 import logging as _logging
 import os
-from typing import Literal
 
 import yaml
 from onnx import ModelProto
 from zigzag.mapping.temporal_mapping import TemporalMappingType
-from zigzag.utils import pickle_load, pickle_save
+from zigzag.utils import pickle_load
 
-from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.opt.solver import ConstraintSelection, GurobiBackend, SolverBackend
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
-from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.context import StageContext
 from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
 from stream.stages.estimation.memory_accesses_estimation import MemoryAccessesEstimationStage
@@ -43,76 +40,6 @@ def _sanity_check_gurobi_license():
     GurobiBackend.check_license()
 
 
-def optimize_allocation_ga(  # noqa: PLR0913
-    hardware: str,
-    workload: str,
-    mapping: str,
-    mode: Literal["lbl"] | Literal["fused"],
-    layer_stacks: list[tuple[int, ...]],
-    nb_ga_generations: int,
-    nb_ga_individuals: int,
-    experiment_id: str,
-    output_path: str,
-    skip_if_exists: bool = False,
-    temporal_mapping_type: str = "uneven",
-) -> StreamCostModelEvaluation:
-    _sanity_check_inputs(hardware, workload, mapping, output_path)
-
-    # Create experiment_id path
-    output_path = f"{output_path}/{experiment_id}"
-    os.makedirs(output_path, exist_ok=True)
-
-    # Get logger
-    logger = _logging.getLogger(__name__)
-
-    # Determine temporal mapping type for ZigZag
-    if temporal_mapping_type == "uneven":
-        temporal_mapping_type = TemporalMappingType.UNEVEN
-    elif temporal_mapping_type == "even":
-        temporal_mapping_type = TemporalMappingType.EVEN
-    else:
-        raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
-
-    # Load SCME if it exists and skip_if_exists is True
-    scme_path = f"{output_path}/scme.pickle"
-    if os.path.exists(scme_path) and skip_if_exists:
-        scme = pickle_load(scme_path)
-        logger.info(f"Loaded SCME from {scme_path}")
-    else:
-        ctx = StageContext.from_kwargs(
-            accelerator=hardware,  # required by AcceleratorParserStage
-            workload_path=workload,  # required by ModelParserStage
-            mapping_path=mapping,  # required by ModelParserStage
-            loma_lpf_limit=6,  # required by LomaEngine
-            nb_ga_generations=nb_ga_generations,  # number of genetic algorithm (ga) generations
-            nb_ga_individuals=nb_ga_individuals,  # number of individuals in each ga generation
-            mode=mode,
-            layer_stacks=layer_stacks,
-            output_path=output_path,
-            temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
-            operands_to_prefetch=[],  # required by GeneticAlgorithmAllocationStage
-        )
-        mainstage = MainStage(
-            [  # Initializes the MainStage as entry point
-                AcceleratorParserStage,  # Parses the accelerator
-                StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-                MappingParserStage,
-                # LayerStacksGenerationStage,
-                # TilingGenerationStage,
-                # CoreCostEstimationStage,
-                # SetFixedAllocationPerformanceStage,
-                # SchedulingOrderGenerationStage,
-                GeneticAlgorithmAllocationStage,
-            ],
-            ctx,
-        )
-        # Launch the MainStage
-        answers = mainstage.run()
-        scme = answers[0][0]
-        pickle_save(scme, scme_path)  # type: ignore
-    return scme
-
-
 def optimize_allocation_co(  # noqa: PLR0913
     hardware: str,
     workload: str,
@@ -127,7 +54,7 @@ def optimize_allocation_co(  # noqa: PLR0913
     npu: str = "npu2",
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
-) -> StreamCostModelEvaluation:
+) -> StageContext:
     _sanity_check_inputs(hardware, workload, mapping, output_path)
     _backend_enum = SolverBackend[backend.upper()]
     if _backend_enum in (SolverBackend.GUROBI, SolverBackend.ORTOOLS_GUROBI):

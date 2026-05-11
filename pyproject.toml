@@ -24,7 +24,6 @@ keywords = ["stream", "multi-core", "accelerator", "layer-fused", "scheduling", 
 dependencies = [
     "zigzag-dse==3.8.5",
     "rtree",
-    "deap",
     "cerberus",
     "pre-commit",
     "gurobipy",
