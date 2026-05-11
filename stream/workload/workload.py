@@ -148,6 +148,10 @@ class Workload(DiGraphWrapper[Node]):
         becomes an OutEdge in the preceding group, and its output tensor becomes
         an InEdge in the following group.
 
+        InEdge nodes (model inputs and initializers) are assigned to the group
+        that contains their sole consumer. If an InEdge is consumed by nodes in
+        multiple groups, it is duplicated into each consuming group.
+
         Returns a list of Workloads. If there are no FusionEdge nodes, returns
         [self] (single group).
         """
@@ -155,11 +159,11 @@ class Workload(DiGraphWrapper[Node]):
         if not fusion_edges:
             return [self]
 
-        # Assign each non-FusionEdge node to a group index.
+        # Assign each non-FusionEdge, non-InEdge node to a group index.
         # Group boundaries are defined by FusionEdge nodes.
         topo_order = list(nx.lexicographical_topological_sort(self, key=lambda n: n.name))
 
-        # Map each node to its group index
+        # Map each non-InEdge node to its group index
         node_to_group: dict[Node, int] = {}
         group_idx = 0
         for node in topo_order:
@@ -167,15 +171,30 @@ class Workload(DiGraphWrapper[Node]):
                 group_idx += 1
                 # FusionEdge itself is not assigned to any group
                 continue
+            if isinstance(node, InEdge):
+                # Defer InEdge assignment -- they go into the group(s) of their consumers
+                continue
             node_to_group[node] = group_idx
 
         num_groups = group_idx + 1
 
-        # Build node lists per group
+        # Build node lists per group (excluding InEdges for now)
         group_nodes: list[list[Node]] = [[] for _ in range(num_groups)]
         for node in topo_order:
             if node in node_to_group:
                 group_nodes[node_to_group[node]].append(node)
+
+        # Assign InEdge nodes to the group(s) of their consumers.
+        # If consumed in multiple groups, duplicate the InEdge into each group.
+        for node in topo_order:
+            if not isinstance(node, InEdge):
+                continue
+            consuming_groups: set[int] = set()
+            for _, consumer in self.out_edges(node):
+                if consumer in node_to_group:
+                    consuming_groups.add(node_to_group[consumer])
+            for grp in sorted(consuming_groups):
+                group_nodes[grp].insert(0, node)
 
         # For each FusionEdge, add OutEdge to preceding group and InEdge to following group
         for fe in fusion_edges:
