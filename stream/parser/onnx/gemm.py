@@ -14,10 +14,14 @@ class GemmParser(OnnxOperatorParser):
             AffineMap.from_callable(lambda m, k, n: (m, n)),
         )
 
+        all_inputs = tuple(name_to_tensor_dict[inp] for inp in self.node.input)
+        assert len(all_inputs) >= 2, "Gemm must have at least activation and weight inputs."
+        inputs = all_inputs[:2]  # drop optional bias silently (D-01)
+
         return ComputationNode(
             type=self.node.op_type,
             name=self.node.name,
-            inputs=tuple(name_to_tensor_dict[input] for input in self.node.input),
+            inputs=inputs,
             outputs=self.get_output_tensors(),
             operand_mapping=mappings,
         )

@@ -32,11 +32,9 @@ class ConvParser(OnnxOperatorParser):
 
     def generate_node(self, name_to_tensor_dict: dict[str, Tensor]) -> ComputationNode:
         # Inputs
-        inputs = tuple(name_to_tensor_dict[input] for input in self.node.input)
-        nb_required_inputs = 2
-        assert len(inputs) == nb_required_inputs, (
-            "Conv operator must have exactly 2 inputs (bias is not supported yet)."
-        )
+        all_inputs = tuple(name_to_tensor_dict[inp] for inp in self.node.input)
+        assert len(all_inputs) >= 2, "Conv must have at least activation and weight inputs."
+        inputs = all_inputs[:2]  # drop optional bias silently (D-01)
         input_dimensionalities = tuple(len(tensor.shape) for tensor in inputs)
         assert all(dim == input_dimensionalities[0] for dim in input_dimensionalities), (
             "All input tensors must have the same dimensionality."
