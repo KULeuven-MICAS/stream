@@ -1,6 +1,7 @@
 import logging
 from typing import Any
 
+import onnx
 from onnx import NodeProto
 from zigzag.parser.onnx.utils import parse_onnx_model_from_path
 
@@ -8,6 +9,7 @@ from stream.parser.onnx.conv import ConvParser
 from stream.parser.onnx.gemm import GemmParser
 from stream.parser.onnx.mul import MulParser
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
+from stream.parser.onnx.relu import ReluParser
 from stream.parser.onnx.simd import SimdParser
 from stream.parser.onnx.utils import onnx_tensor_to_tensor
 from stream.workload.workload import InEdge, Node, OutEdge, Tensor, Workload
@@ -38,7 +40,7 @@ class ONNXModelParser:
         # Single-input element-wise
         # "Exp": ExpParser,
         # "ReduceMean": Reduce1DParser,
-        # "Relu": ReluParser,
+        "Relu": ReluParser,
         # "Gelu": GeluParser,
         "Silu": SimdParser,
         # "Sigmoid": SigmoidParser,
@@ -67,6 +69,7 @@ class ONNXModelParser:
         - iterate through the onnx model and generate the workload consisting of LayerNodes and DummyNodes
         """
         self.onnx_model = parse_onnx_model_from_path(self.onnx_model_path)
+        self.onnx_model = onnx.shape_inference.infer_shapes(self.onnx_model)
         self.workload = self.parse_workload()
 
     def get_parser_class(self, node: NodeProto):
