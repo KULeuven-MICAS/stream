@@ -5,7 +5,7 @@ import re
 from stream.inputs.aie.workload.make_conv2d_onnx import make_conv2d
 
 from stream.api import configure_logging, optimize_allocation_co
-from stream.utils import CostModelEvaluationLUT
+from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.visualization.memory_usage import plot_memory_usage
 from stream.visualization.perfetto import convert_scme_to_perfetto_json
 
@@ -19,10 +19,6 @@ def run_main_aie_codegen(H):  # noqa: N803
     workload_path = make_conv2d(H)
     accelerator = "stream/inputs/aie/hardware/single_aie_tile.yaml"
     mapping_path = "stream/inputs/aie/mapping/single_aie_tile.yaml"
-    # mode = "lbl"
-    # layer_stacks = [(0,),]
-    mode = "fused"
-    layer_stacks = [(0,)]
     ##############################################################################################
 
     ################################PARSING###############################
@@ -30,7 +26,7 @@ def run_main_aie_codegen(H):  # noqa: N803
     wl_name = re.split(r"/|\.", workload_path)[-1]
     if wl_name == "onnx":
         wl_name = re.split(r"/|\.", workload_path)[-2]
-    experiment_id = f"{hw_name}-{wl_name}-{mode}-constraint-optimization"
+    experiment_id = f"{hw_name}-{wl_name}-constraint-optimization"
     ######################################################################
 
     ##############PLOTTING###############
@@ -50,18 +46,14 @@ def run_main_aie_codegen(H):  # noqa: N803
         hardware=accelerator,
         workload=workload_path,
         mapping=mapping_path,
-        mode=mode,
-        layer_stacks=layer_stacks,
         experiment_id=experiment_id,
         output_path="outputs",
         skip_if_exists=False,
         enable_codegen=True,
     )
 
-    #####################CostModelEvaluationLUT LOAD#############################
     cost_lut_path = f"outputs/{experiment_id}/cost_lut_post_co.pickle"
-    cost_lut = CostModelEvaluationLUT(cost_lut_path)
-    #############################################################################
+    cost_lut = CoreCostLUT(cost_lut_path)
 
     # Save json for perfetto visualization (Visualize at http://ui.perfetto.dev/)
     convert_scme_to_perfetto_json(scme, cost_lut, json_path=json_path)
