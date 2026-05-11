@@ -39,6 +39,19 @@ class InEdge(HasOutputs): ...
 class OutEdge(HasInputs): ...
 
 
+@dataclass(frozen=True, repr=False)
+class FusionEdge(HasInputs, HasOutputs):
+    """A graph boundary node for shape-only ops (Flatten, Reshape).
+
+    FusionEdge marks a fusion group boundary in the workload graph.
+    It is NOT HasIterationSpace -- it has no affine iteration space
+    or operand_mapping. Its tensors pass through unchanged during
+    dimension resizing.
+    """
+
+    op_type: str  # original ONNX op type, e.g. "Flatten"
+
+
 class TransferType(Flag):
     """Flags for different types of data transfer operations (can be combined)."""
 
