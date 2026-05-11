@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: ResNet18 TPU CO Flow
 status: executing
-stopped_at: Completed 22-01 PLAN.md (FusionEdge + Workload integration)
-last_updated: "2026-05-11T19:07:20.410Z"
+stopped_at: Completed 23-01-PLAN.md
+last_updated: "2026-05-11T22:42:37.956Z"
 last_activity: 2026-05-11
 progress:
   total_phases: 3
-  completed_phases: 0
-  total_plans: 3
-  completed_plans: 2
+  completed_phases: 1
+  total_plans: 6
+  completed_plans: 4
   percent: 0
 ---
 
@@ -21,12 +21,12 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-11)
 
 **Core value:** Enable users to explore the TETRA design space efficiently — selecting solver backends, toggling constraint groups, and understanding the impact of hardware constraints on schedule optimality
-**Current focus:** Phase 22 — onnx-parser-completions
+**Current focus:** Phase 23 — generic-mapping-generator
 
 ## Current Position
 
-Phase: 22 (onnx-parser-completions) — EXECUTING
-Plan: 3 of 3
+Phase: 23 (generic-mapping-generator) — EXECUTING
+Plan: 2 of 3
 Status: Ready to execute
 Last activity: 2026-05-11
 
@@ -51,6 +51,10 @@ Key decisions carried forward:
 - [v1.4]: determine_fusion_splits single-group assert must be satisfied; GenericMappingGenerator must emit exactly one FusedGroup
 - [Phase 22]: FusionEdge(HasInputs, HasOutputs) not HasIterationSpace — dimension_relations auto-excludes FusionEdge edges
 - [Phase 22]: split_fusion_groups() consumes FusionEdge nodes, producing OutEdge/InEdge boundary pairs in adjacent sub-workloads
+- [Phase 22]: Drop optional bias silently via all_inputs[:2] — bias is not modeled in cost model; assert >= 2 guards minimum required inputs
+- [Phase 22]: Shape inference runs in-memory via onnx.shape_inference.infer_shapes() in ONNXModelParser.run() before parse_workload() — populates intermediate tensor value_info
+- [Phase 23-generic-mapping-generator]: Strip operator_types from core data before ZigZag validation, re-inject after normalization
+- [Phase 23-generic-mapping-generator]: Specialized cores (non-None operator_types) take priority over generic compute cores in core selection
 
 ### Pending Todos
 
@@ -64,6 +68,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-11T19:07:12.247Z
-Stopped at: Completed 22-01 PLAN.md (FusionEdge + Workload integration)
+Last session: 2026-05-11T22:42:37.953Z
+Stopped at: Completed 23-01-PLAN.md
 Resume file: None

@@ -98,9 +98,9 @@ Plans:
   3. `MappingValidator` accepts the generated mapping without errors (nested-list format, all nodes covered)
   4. `GenericMappingGenerationStage` executes between ONNXModelParserStage and MappingParserStage in the pipeline
   5. The TPU mapping YAML validates against the current schema (FMT-05)
-**Plans:** 3 plans
+**Plans:** 1/3 plans executed
 Plans:
-- [ ] 23-01-PLAN.md — Hardware operator_types + GenericMappingGenerator class
+- [x] 23-01-PLAN.md — Hardware operator_types + GenericMappingGenerator class
 - [ ] 23-02-PLAN.md — Pipeline stages (GenericMappingGenerationStage + FusionGroupIterationStage) + api.py wiring
 - [ ] 23-03-PLAN.md — Test suite (MAP-01 through MAP-04, FMT-05 validation)
 
@@ -140,5 +140,5 @@ Plans:
 | 20. Mapping Format Fixes | v1.4 | 1/1 | Complete | 2026-05-11 |
 | 21. TPU End-to-End Test | v1.4 | 1/1 | Complete | 2026-05-11 |
 | 22. ONNX Parser Completions | v1.5 | 2/3 | Complete    | 2026-05-11 |
-| 23. Generic Mapping Generator | v1.5 | 0/3 | Not started | - |
+| 23. Generic Mapping Generator | v1.5 | 1/3 | In Progress|  |
 | 24. ResNet18 End-to-End Flow | v1.5 | 0/TBD | Not started | - |
