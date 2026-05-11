@@ -1,25 +1,25 @@
 layers:
 - name: Conv1
   core_allocation:
-  - 0
-  - 1
-  - 2
-  - 3
+  - - 0
+    - 1
+    - 2
+    - 3
   inter_core_tiling:
-  - dim: D6
-    split: 4
+  - - dim: D6
+      split: 4
   kernel:
     name: conv
     kwargs: {}
 - name: Conv2
   core_allocation:
-  - 0
-  - 1
-  - 2
-  - 3
+  - - 0
+    - 1
+    - 2
+    - 3
   inter_core_tiling:
-  - dim: D6
-    split: 4
+  - - dim: D6
+      split: 4
   kernel:
     name: conv
     kwargs: {}
