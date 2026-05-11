@@ -140,7 +140,10 @@ async def run_optimization(  # noqa: PLR0913
         "memory_capacity": memory_capacity,
         "object_fifo_depth": object_fifo_depth,
     }
-    job_id = make_experiment_id(hardware, workload, mapping, backend, constraint_dict)
+    try:
+        job_id = make_experiment_id(hardware, workload, mapping, backend, constraint_dict)
+    except FileNotFoundError as e:
+        return {"status": "error", "error_type": "invalid_input", "message": str(e)}
     state = _get_state(mcp_ctx)
 
     # Cache hit: same experiment already completed — return without re-solving (D-08)
