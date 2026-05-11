@@ -3,14 +3,14 @@ gsd_state_version: 1.0
 milestone: v1.0
 milestone_name: milestone
 status: verifying
-stopped_at: Completed 20-01-PLAN.md
-last_updated: "2026-05-11T11:42:56.915Z"
+stopped_at: Completed 21-01-PLAN.md
+last_updated: "2026-05-11T14:59:13.820Z"
 last_activity: 2026-05-11
 progress:
   total_phases: 3
-  completed_phases: 2
-  total_plans: 2
-  completed_plans: 2
+  completed_phases: 3
+  total_plans: 3
+  completed_plans: 3
   percent: 0
 ---
 
@@ -21,11 +21,11 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-11)
 
 **Core value:** Enable users to explore the TETRA design space efficiently — selecting solver backends, toggling constraint groups, and understanding the impact of hardware constraints on schedule optimality
-**Current focus:** Phase 20 — mapping-format-fixes
+**Current focus:** Phase 21 — tpu-end-to-end-test
 
 ## Current Position
 
-Phase: 20 (mapping-format-fixes) — EXECUTING
+Phase: 21 (tpu-end-to-end-test) — EXECUTING
 Plan: 1 of 1
 Status: Phase complete — ready for verification
 Last activity: 2026-05-11
@@ -62,6 +62,7 @@ Key decisions carried forward:
 - [Phase 20-01]: Dead mapping files deleted rather than fixed (no references from tests or scripts)
 - [Phase 20-01]: FMT-05 (tpu_like_quad_core.yaml in examples/ validates) deferred to v1.5 per D-01/D-02
 - [Phase 20-01]: No new unit tests for individual bug fixes; Phase 21 adds E2E TPU test (D-04)
+- [Phase 21]: Memory-less hardware (no on-chip memory tiles) falls back to single direct transfer; COMPUTE_TO_MEM uses offchip core as destination
 
 ### Pending Todos
 
@@ -73,6 +74,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-11T11:42:56.913Z
-Stopped at: Completed 20-01-PLAN.md
+Last session: 2026-05-11T14:59:13.817Z
+Stopped at: Completed 21-01-PLAN.md
 Resume file: None

@@ -327,7 +327,10 @@ Plans:
   1. `test_co.py` exists under `tests/` and is discovered and executed by `pytest tests/`
   2. The two-conv TPU CO pipeline runs without error from parsing through MILP allocation to memory estimation
   3. The scheduler result contains non-empty allocation data for both conv layers
-**Plans**: TBD
+**Plans:** 1/1 plans complete
+
+Plans:
+- [x] 21-01-PLAN.md — Fix offchip transfer type bug, create tests/test_co.py with structural assertions, delete root test_co.py
 
 ## Progress
 
@@ -355,5 +358,5 @@ Phases 1-18 complete. v1.4 order: 19 (blocker) -> 20 -> 21
 | 17. MCP Server Skeleton | v1.3 | 2/2 | Complete | 2026-05-10 |
 | 18. MCP Tools | v1.3 | 2/2 | Complete | 2026-05-10 |
 | 19. GA Removal | v1.4 | 1/1 | Complete    | 2026-05-11 |
-| 20. Mapping Format Fixes | v1.4 | 1/1 | Complete   | 2026-05-11 |
-| 21. TPU End-to-End Test | v1.4 | 0/TBD | Not started | - |
+| 20. Mapping Format Fixes | v1.4 | 1/1 | Complete    | 2026-05-11 |
+| 21. TPU End-to-End Test | v1.4 | 1/1 | Complete   | 2026-05-11 |
