@@ -669,8 +669,9 @@ class SteadyStateScheduler:
             if nb_cores == 1:
                 possible_inter_core_tiling.append(tuple())
             else:
-                # For now, we only support a single destination with one tiling possibility
-                dst = dsts[0]
+                # For fan-out: use the destination with the largest resource allocation
+                # as the tiling reference (consistent with determine_possible_memory_allocations strategy)
+                dst = get_node_with_largest_resource_allocation(dsts, self.mapping)
                 try:
                     dst_tiling = tuple(self.ssw.get_unique_dims_inter_core_tiling(dst, self.mapping))
                 except KeyError:
