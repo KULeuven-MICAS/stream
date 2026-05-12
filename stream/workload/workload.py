@@ -137,15 +137,52 @@ class Workload(DiGraphWrapper[Node]):
         return tuple(cast(OutEdge, node) for node in self.nodes if isinstance(node, OutEdge))
 
     def get_dimension_sizes(self) -> tuple[int, ...]:
-        results = []
-        shapes: list[int] = []
+        result_to_shape: list[tuple[AffineExpr, int]] = []
         for node in self.get_iteration_space_nodes():
             for tensor, mapping in zip(node.tensors, node.operand_mapping, strict=True):
                 global_mapping = self.global_mapping(node, mapping)
-                results.extend(global_mapping.results)
-                shapes.extend(tensor.shape)
-        total_map = AffineMap(self.num_dims, 0, tuple(results))
-        return total_map.inverse_permutation().eval(shapes, [])
+                for expr, sz in zip(global_mapping.results, tensor.shape, strict=True):
+                    result_to_shape.append((expr, sz))
+
+        # Step 1: direct read for dims that appear as pure AffineDimExpr
+        dim_to_size: dict[int, int] = {}
+        for expr, sz in result_to_shape:
+            if isinstance(expr, AffineDimExpr) and expr.position not in dim_to_size:
+                dim_to_size[expr.position] = sz
+
+        # Step 2: infer size for remaining dims (kernel dims in strided ops like MaxPool)
+        # These dims only appear in affine expressions like: stride*other_dim + kernel_dim + offset
+        # Their range is derived from: tensor_size, stride, output_size, and offset
+        missing = sorted(set(range(self.num_dims)) - set(dim_to_size.keys()))
+        for missing_dim in missing:
+            for expr, sz in result_to_shape:
+                probe = [0] * self.num_dims
+                at_0 = int(expr.eval(probe, []))
+                probe[missing_dim] = 1
+                at_1 = int(expr.eval(probe, []))
+                coeff = at_1 - at_0
+                if coeff == 0:
+                    continue  # this dim does not appear in this expression
+                # Compute max contribution from all other known dims
+                other_max = 0
+                for d, dsize in dim_to_size.items():
+                    probe2 = [0] * self.num_dims
+                    probe2[d] = dsize - 1
+                    val_hi = int(expr.eval(probe2, []))
+                    probe2[d] = 0
+                    val_lo = int(expr.eval(probe2, []))
+                    if val_hi > val_lo:
+                        other_max += val_hi - val_lo
+                const_term = int(expr.eval([0] * self.num_dims, []))
+                d_i_max = (sz - 1 - const_term - other_max) // coeff
+                dim_to_size[missing_dim] = int(d_i_max) + 1
+                break
+
+        assert len(dim_to_size) == self.num_dims, (
+            f"Could not determine sizes for all {self.num_dims} dims: "
+            f"missing {sorted(set(range(self.num_dims)) - set(dim_to_size.keys()))}"
+        )
+        return tuple(dim_to_size[i] for i in range(self.num_dims))
 
     def get_dims(self, node: HasIterationSpace) -> list[LayerDim]:
         global_idxs = self.global_idxs
