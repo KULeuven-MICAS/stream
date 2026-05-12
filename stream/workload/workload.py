@@ -140,7 +140,7 @@ class Workload(DiGraphWrapper[Node]):
     def get_fusion_edges(self) -> tuple[FusionEdge, ...]:
         return tuple(cast(FusionEdge, node) for node in self.nodes if isinstance(node, FusionEdge))
 
-    def split_fusion_groups(self) -> list["Workload"]:
+    def split_fusion_groups(self) -> list["Workload"]:  # noqa: PLR0912
         """Split the workload at FusionEdge boundaries into sub-workloads.
 
         Each sub-workload is self-contained with InEdge at entries and OutEdge
