@@ -531,7 +531,8 @@ class TestAllocationIR:
             AllocationIR.from_internal(mock_scheduler)
 
     def test_algorithmic_view(self):
-        """AllocationIR.algorithmic_view() returns AllocationAlgorithmicView with latency, backend, constraint_selection."""
+        """AllocationIR.algorithmic_view() returns AllocationAlgorithmicView with latency,
+        backend, constraint_selection."""
         mock_scheduler = MagicMock()
         mock_scheduler.latency_total = 2000
         mock_scheduler.get_ir.return_value = ALLOCATION_RAW

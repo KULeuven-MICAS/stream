@@ -120,12 +120,8 @@ class WorkloadIR(BaseModel):
         raw = workload.get_ir()
         nodes = []
         for n in raw["nodes"]:
-            inputs = (
-                [TensorOperandIR(**t) for t in n["inputs"]] if n.get("inputs") is not None else None
-            )
-            outputs = (
-                [TensorOperandIR(**t) for t in n["outputs"]] if n.get("outputs") is not None else None
-            )
+            inputs = [TensorOperandIR(**t) for t in n["inputs"]] if n.get("inputs") is not None else None
+            outputs = [TensorOperandIR(**t) for t in n["outputs"]] if n.get("outputs") is not None else None
             nodes.append(
                 NodeIR(
                     name=n["name"],

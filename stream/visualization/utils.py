@@ -2,10 +2,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
-from stream.workload.computation.computation_node import ComputationNode
 
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
+from stream.workload.computation.computation_node import ComputationNode
 
 if TYPE_CHECKING:
     from stream.cost_model.cost_model import StreamCostModelEvaluation

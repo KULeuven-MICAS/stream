@@ -130,9 +130,7 @@ class AllocationIR(BaseModel):
     mapping_nodes: dict[str, NodeAllocationIR] = Field(
         description="Per-node allocation result: resource, tiling, and memory allocation"
     )
-    fused_groups: list[FusedGroupIR] = Field(
-        description="Groups of fused layers with their intra-core tiling factors"
-    )
+    fused_groups: list[FusedGroupIR] = Field(description="Groups of fused layers with their intra-core tiling factors")
     runtime_args: dict[str, str] = Field(description="Runtime arguments for code generation (e.g. buffer depths)")
 
     @classmethod

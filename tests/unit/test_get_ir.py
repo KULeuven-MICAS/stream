@@ -5,11 +5,10 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock
 
-import pytest
-
+from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import LayerDim
+from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import FusedGroup, Mapping, NodeMapping
-
 
 # ---------------------------------------------------------------------------
 # Minimal mock helpers
@@ -21,7 +20,7 @@ def make_dim(prefix: str) -> LayerDim:
     return LayerDim(position=0, prefix=prefix)
 
 
-def make_core(core_id: int, name: str = "") -> "Core":
+def make_core(core_id: int, name: str = "") -> Core:
     """Create a minimal real Core with id and name."""
     from stream.hardware.architecture.core import Core
 
@@ -32,10 +31,11 @@ def make_core(core_id: int, name: str = "") -> "Core":
     )
 
 
-def make_multicast_path(sources: list[int], targets: list[int], hops: int) -> "MulticastPathPlan":
+def make_multicast_path(sources: list[int], targets: list[int], hops: int) -> MulticastPathPlan:
     """Create a minimal mock MulticastPathPlan with real Core objects."""
-    from stream.cost_model.communication_manager import MulticastPathPlan
     from unittest.mock import MagicMock
+
+    from stream.cost_model.communication_manager import MulticastPathPlan
 
     plan = MagicMock(spec=MulticastPathPlan)
     plan.sources = tuple(make_core(c) for c in sources)
@@ -151,8 +151,6 @@ class TestMappingGetIr:
 
     def test_mapping_with_multicast_path_plan(self):
         """Test 5: Mapping with TransferNode mapped to MulticastPathPlans serializes correctly."""
-        from stream.hardware.architecture.core import Core
-        from stream.cost_model.communication_manager import MulticastPathPlan
 
         node = make_node("Transfer(tensor_0)")
         path_plan = make_multicast_path(sources=[0, 1], targets=[2, 3], hops=5)
@@ -235,7 +233,9 @@ class TestSteadyStateSchedulerGetIr:
         """Test 3: get_ir() includes backend (str) and constraint_selection (dict or None)."""
         from stream.opt.solver import ConstraintSelection
 
-        cs = ConstraintSelection(memory_capacity=True, object_fifo_depth=False, buffer_descriptors=True, dma_channels=False)
+        cs = ConstraintSelection(
+            memory_capacity=True, object_fifo_depth=False, buffer_descriptors=True, dma_channels=False
+        )
         scheduler = self._make_scheduler(backend="ORTOOLS_HIGHS", constraint_selection=cs)
         result = scheduler.get_ir()
 

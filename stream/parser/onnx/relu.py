@@ -27,9 +27,7 @@ class ReluParser(OnnxOperatorParser):
         assert len(inputs) == 1, f"Relu must have exactly 1 input, got {len(inputs)}."
         ndim = len(inputs[0].shape)
         if ndim not in _IDENTITY_MAPS:
-            raise NotImplementedError(
-                f"ReluParser does not support {ndim}D tensors (only 2D and 4D)."
-            )
+            raise NotImplementedError(f"ReluParser does not support {ndim}D tensors (only 2D and 4D).")
         mappings = _IDENTITY_MAPS[ndim]
 
         return ComputationNode(

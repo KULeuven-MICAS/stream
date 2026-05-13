@@ -29,12 +29,8 @@ def test_resnet18_full_parse():
 
     # 48 ComputationNodes (Conv x20 + Relu x17 + Add x8 + MaxPool x1 + GlobalAveragePool x1 + Gemm x1)
     # 1 FusionEdge (Flatten)
-    assert len(computation_nodes) == 48, (
-        f"Expected 48 ComputationNodes, got {len(computation_nodes)}"
-    )
-    assert len(fusion_edges) == 1, (
-        f"Expected 1 FusionEdge (Flatten), got {len(fusion_edges)}"
-    )
+    assert len(computation_nodes) == 48, f"Expected 48 ComputationNodes, got {len(computation_nodes)}"
+    assert len(fusion_edges) == 1, f"Expected 1 FusionEdge (Flatten), got {len(fusion_edges)}"
     assert fusion_edges[0].op_type == "Flatten", (
         f"Expected FusionEdge op_type='Flatten', got '{fusion_edges[0].op_type}'"
     )
@@ -84,9 +80,7 @@ def test_resnet18_split_fusion_groups():
     workload = parser.workload
 
     groups = workload.split_fusion_groups()
-    assert len(groups) == 2, (
-        f"Expected 2 fusion groups (split at Flatten), got {len(groups)}"
-    )
+    assert len(groups) == 2, f"Expected 2 fusion groups (split at Flatten), got {len(groups)}"
     # First group: all conv/relu/add/maxpool/globalavgpool nodes
     # Second group: Gemm node
     group_0_comp = [n for n in groups[0].nodes if isinstance(n, ComputationNode)]

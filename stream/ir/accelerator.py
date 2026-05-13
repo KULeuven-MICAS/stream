@@ -48,9 +48,7 @@ class AcceleratorHardwareView(BaseModel):
     name: str = Field(description="Accelerator name")
     num_cores: int = Field(description="Total number of cores including offchip")
     cores: list[CoreIR] = Field(description="All cores with full resource info (including extra_fields)")
-    core_connectivity: list[dict[str, Any]] = Field(
-        description="Bus and link connectivity entries between cores"
-    )
+    core_connectivity: list[dict[str, Any]] = Field(description="Bus and link connectivity entries between cores")
 
 
 class AcceleratorCompilerView(BaseModel):
@@ -63,9 +61,7 @@ class AcceleratorCompilerView(BaseModel):
     schema_version: Literal["1.0"] = "1.0"
     name: str = Field(description="Accelerator name")
     cores: list[CoreIR] = Field(description="All cores — use id, core_type, row_id, col_id for placement")
-    core_connectivity: list[dict[str, Any]] = Field(
-        description="Bus and link connectivity entries between cores"
-    )
+    core_connectivity: list[dict[str, Any]] = Field(description="Bus and link connectivity entries between cores")
 
 
 class AcceleratorIR(BaseModel):

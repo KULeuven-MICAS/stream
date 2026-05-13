@@ -41,7 +41,7 @@ class FusionGroupIterationStage(Stage):
             f"Mismatch: {len(sub_workloads)} sub-workloads vs {len(group_mapping_paths)} mapping paths"
         )
 
-        for i, (sub_workload, mapping_path) in enumerate(zip(sub_workloads, group_mapping_paths)):
+        for i, (sub_workload, mapping_path) in enumerate(zip(sub_workloads, group_mapping_paths, strict=False)):
             group_output = os.path.join(self.output_path, f"group_{i}")
             os.makedirs(group_output, exist_ok=True)
 

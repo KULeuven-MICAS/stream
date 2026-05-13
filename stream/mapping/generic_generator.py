@@ -87,9 +87,7 @@ class GenericMappingGenerator:
 
         validator = MappingValidator(mapping_dict)
         if not validator.validate():
-            raise ValueError(
-                f"Generated mapping for group {group_idx} failed MappingValidator: {validator.errors}"
-            )
+            raise ValueError(f"Generated mapping for group {group_idx} failed MappingValidator: {validator.errors}")
 
         out_dir = os.path.join(self.output_dir, f"group_{group_idx}")
         os.makedirs(out_dir, exist_ok=True)
@@ -181,9 +179,7 @@ class GenericMappingGenerator:
 
         # D-06 fallback: no match — use all cores with kind 'compute'
         fallback = [c for c in self.accelerator.core_list if c.type == "compute"]
-        logger.warning(
-            "No core found for operator '%s'; falling back to all compute cores.", node_op
-        )
+        logger.warning("No core found for operator '%s'; falling back to all compute cores.", node_op)
         return fallback
 
     def _find_split_dim(self, sub_workload: Workload, cn: ComputationNode, n_cores: int) -> int | None:

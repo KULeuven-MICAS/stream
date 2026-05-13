@@ -10,16 +10,25 @@ class MaxPoolParser(OnnxOperatorParser):
     Uses 2 AffineMaps (input activation + output) per D-16 -- no fake weight operand.
     """
 
+    EXPECTED_NB_OF_INPUTS = 1
+    EXPECTED_NB_OF_STRIDES = 2
+    EXPECTED_NB_OF_PADS = 4
+
     def generate_node(self, name_to_tensor_dict: dict[str, Tensor]) -> ComputationNode:
         strides = self.get_node_attribute_ints("strides")
         if not strides:
             strides = [1, 1]
-        assert len(strides) == 2, "MaxPool strides must be 2D."
+        assert len(strides) == self.EXPECTED_NB_OF_STRIDES, (
+            f"MaxPool strides must be {self.EXPECTED_NB_OF_STRIDES}D, got {len(strides)}."
+        )
         sx, sy = strides
 
         pads = self.get_node_attribute_ints("pads")
         if not pads:
             pads = [0, 0, 0, 0]
+        assert len(pads) == self.EXPECTED_NB_OF_PADS, (
+            f"MaxPool pads must be {self.EXPECTED_NB_OF_PADS}D, got {len(pads)}."
+        )
         if not all(p == pads[0] for p in pads):
             raise NotImplementedError("Asymmetric padding not supported for MaxPool.")
         p = pads[0]
@@ -31,7 +40,9 @@ class MaxPoolParser(OnnxOperatorParser):
         )
 
         inputs = tuple(name_to_tensor_dict[inp] for inp in self.node.input)
-        assert len(inputs) == 1, "MaxPool must have exactly 1 input."
+        assert len(inputs) == self.EXPECTED_NB_OF_INPUTS, (
+            f"MaxPool must have exactly {self.EXPECTED_NB_OF_INPUTS} input."
+        )
 
         return ComputationNode(
             type=self.node.op_type,

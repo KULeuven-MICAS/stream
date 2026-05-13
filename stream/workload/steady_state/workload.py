@@ -2,13 +2,13 @@ from typing import Any
 
 import networkx as nx
 from networkx.drawing.nx_pydot import to_pydot  # type: ignore
-from stream.workload.steady_state.tensor import SteadyStateTensor, TensorFlag
 from zigzag.utils import DiGraphWrapper
 
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import Resource, TimeSlotAllocation
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.node import Node
 from stream.workload.steady_state.rolling_buffer import SteadyStateRollingBuffer
+from stream.workload.steady_state.tensor import SteadyStateTensor, TensorFlag
 from stream.workload.steady_state.transfer import SteadyStateTransfer
 
 

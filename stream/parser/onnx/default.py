@@ -1,6 +1,5 @@
-from stream.workload.dependency_propagation.dummy_node import DummyNode
-
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
+from stream.workload.dependency_propagation.dummy_node import DummyNode
 
 
 class DefaultNodeParser(OnnxOperatorParser):

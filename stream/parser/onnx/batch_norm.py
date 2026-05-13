@@ -14,6 +14,8 @@ class BatchNormParser(OnnxOperatorParser):
     project from the channel dimension only.
     """
 
+    EXPECTED_NB_OF_INPUTS = 5
+
     def generate_node(self, name_to_tensor_dict: dict[str, Tensor]) -> ComputationNode:
         # 6 AffineMaps: input (4D) + scale (1D) + bias (1D) + mean (1D) + var (1D) + output (4D)
         mappings = (
@@ -26,8 +28,9 @@ class BatchNormParser(OnnxOperatorParser):
         )
 
         inputs = tuple(name_to_tensor_dict[inp] for inp in self.node.input)
-        assert len(inputs) == 5, (
-            f"BatchNormalization must have exactly 5 inputs (X, scale, B, mean, var), got {len(inputs)}."
+        assert len(inputs) == self.EXPECTED_NB_OF_INPUTS, (
+            f"BatchNormalization must have exactly {self.EXPECTED_NB_OF_INPUTS} inputs (X, scale, B, mean, var),"
+            f" got {len(inputs)}."
         )
 
         return ComputationNode(

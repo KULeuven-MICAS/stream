@@ -1,8 +1,6 @@
-from collections.abc import Generator
-
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.workload.node import FusionEdge
-from stream.workload.workload import HasOutputs, Tensor
+from stream.workload.workload import Tensor
 
 
 class FusionEdgeParser(OnnxOperatorParser):

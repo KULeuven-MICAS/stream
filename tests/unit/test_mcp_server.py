@@ -158,9 +158,7 @@ def test_poll_optimization_pending(tmp_path: pathlib.Path) -> None:
             return poll_result.data
 
     data = asyncio.run(run())
-    assert data["status"] in ("pending", "running", "failed"), (
-        f"Expected in-progress status, got {data['status']}"
-    )
+    assert data["status"] in ("pending", "running", "failed"), f"Expected in-progress status, got {data['status']}"
 
 
 # ---------------------------------------------------------------------------

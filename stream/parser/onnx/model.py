@@ -17,7 +17,6 @@ from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.parser.onnx.relu import ReluParser
 from stream.parser.onnx.simd import SimdParser
 from stream.parser.onnx.utils import onnx_tensor_to_tensor
-from stream.workload.node import FusionEdge
 from stream.workload.workload import InEdge, Node, OutEdge, Tensor, Workload
 
 logger = logging.getLogger(__name__)
@@ -85,9 +84,7 @@ class ONNXModelParser:
             return FusionEdgeParser
         parser_class = ONNXModelParser.OP_TYPE_TO_PARSER.get(node.op_type)
         if not parser_class:
-            raise NotImplementedError(
-                f"No parser registered for ONNX op type '{node.op_type}'."
-            )
+            raise NotImplementedError(f"No parser registered for ONNX op type '{node.op_type}'.")
         return parser_class
 
     def parse_workload(self):

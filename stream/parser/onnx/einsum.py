@@ -2,10 +2,9 @@ import logging
 import re
 from typing import Any
 
-from stream.workload.mapping import InterCoreMappingAttributes
-
 from stream.onnx_utils import get_onnx_input_shapes, get_onnx_output_shapes
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
+from stream.workload.mapping import InterCoreMappingAttributes
 
 logger = logging.getLogger(__name__)
 

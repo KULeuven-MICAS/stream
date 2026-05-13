@@ -1,7 +1,6 @@
-from stream.workload.dependency_propagation.slice_node import SliceNode
-
 from stream.onnx_utils import get_slice_attributes
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
+from stream.workload.dependency_propagation.slice_node import SliceNode
 
 
 class SliceParser(OnnxOperatorParser):
