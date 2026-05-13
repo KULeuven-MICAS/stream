@@ -667,19 +667,18 @@ class SteadyStateScheduler:
         for dst_allocs in possible_dst_allocs:
             nb_cores = len(dst_allocs)
             if nb_cores == 1:
-                possible_inter_core_tiling.append(tuple())
-            else:
+                dst_tiling = tuple()
+            elif all(isinstance(dst, ComputationNode) for dst in dsts):
                 # For fan-out: use the destination with the largest resource allocation
                 # as the tiling reference (consistent with determine_possible_memory_allocations strategy)
                 dst = get_node_with_largest_resource_allocation(dsts, self.mapping)
-                try:
-                    dst_tiling = tuple(self.ssw.get_unique_dims_inter_core_tiling(dst, self.mapping))
-                except KeyError:
-                    dst_tiling = self.get_inter_core_tiling_for_mem_allocations(node, dst_allocs)
-                possible_inter_core_tiling.append(dst_tiling)
+                dst_tiling = tuple(self.ssw.get_unique_dims_inter_core_tiling(dst, self.mapping))
+            else:
+                dst_tiling = self.get_inter_core_tiling_for_transfer(node, dst_allocs)
+            possible_inter_core_tiling.append(dst_tiling)
         return tuple(possible_inter_core_tiling)
 
-    def get_inter_core_tiling_for_mem_allocations(
+    def get_inter_core_tiling_for_transfer(
         self, node: TransferNode, memory_allocs: tuple[tuple[Core, ...], ...]
     ) -> tuple[InterCoreTiling, ...]:
         assert isinstance(node, TransferNode), "Node must be a TransferNode for inter-core tiling determination."
