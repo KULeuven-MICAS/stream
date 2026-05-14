@@ -77,7 +77,7 @@
 
 - [x] **Phase 25: ResNet18 Sub-Graph Patterns** - Test key ResNet18 patterns (stride-2 conv, residual skip connections, pooling→flatten boundary) as isolated multi-node sub-graphs through the full CO pipeline (completed 2026-05-14)
 - [x] **Phase 26: Post-Transfer Dimension Invariant** - Fix unique_dimensions() RREF to solve A*x+b=0 (not A*x=0); restore spatial unrolling assert; filter INT64 metadata initializers (completed 2026-05-14)
-- [ ] **Phase 27: ResNet18 Fusion Strategy** - Implement smarter fusion group splitting (bounded aperture, memory-aware group sizing) so ResNet18 produces manageable groups instead of one 47-node group
+- [ ] **Phase 27: ResNet18 Fusion Strategy** - Implement Add+Relu residual boundary heuristic and extend split_fusion_groups() with explicit cut points so ResNet18 splits into 11 manageable groups
 - [ ] **Phase 28: ResNet18 Full Workload E2E** - Run the complete ResNet18 ONNX through the CO pipeline end-to-end, verify positive latency, confirm main_stream_co.py produces valid YAML summary
 
 ## Phase Details
@@ -151,14 +151,17 @@ Plans:
 **Plans:** TBD
 
 ### Phase 27: ResNet18 Fusion Strategy
-**Goal**: Implement bounded fusion group splitting so ResNet18 produces multiple manageable groups (not one 47-node monolith) with controllable aperture depth
+**Goal**: Implement Add+Relu residual boundary heuristic (`determine_fusion_cut_points()`) and extend `split_fusion_groups()` with explicit cut points so ResNet18 splits into 11 manageable groups instead of one 47-node monolith
 **Depends on**: Phase 26
 **Requirements**: RNET-04, RNET-05
 **Success Criteria** (what must be TRUE):
-  1. A `max_group_depth` parameter limits fusion group size (e.g., max 8 layers per group)
-  2. ResNet18 splits into N groups (N > 2) where each group has at most `max_group_depth` computation nodes
+  1. `determine_fusion_cut_points()` returns 9 cut points for ResNet18 (1 MaxPool + 8 Add+Relu Relu nodes)
+  2. ResNet18 splits into 11 groups where each group has manageable size (3-6 computation nodes)
   3. The generated per-group mappings all pass MappingValidator
-**Plans:** TBD
+**Plans:** 2 plans
+Plans:
+- [x] 27-01-PLAN.md — Core implementation: determine_fusion_cut_points() + extended split_fusion_groups() + pipeline threading + unit tests
+- [ ] 27-02-PLAN.md — Integration test (MappingValidator for 11 groups) + skills documentation update
 
 ### Phase 28: ResNet18 Full Workload E2E
 **Goal**: The complete ResNet18 ONNX model runs end-to-end through the CO pipeline on TPU hardware with bounded fusion groups and produces a valid YAML summary
@@ -200,5 +203,5 @@ Plans:
 | 24. Multi-Group Pipeline Integration | v1.5 | 2/2 | Complete | 2026-05-14 |
 | 25. ResNet18 Sub-Graph Patterns | v1.6 | 2/2 | Complete   | 2026-05-14 |
 | 26. Post-Transfer Dimension Invariant | v1.6 | 1/1 | Complete | 2026-05-14 |
-| 27. ResNet18 Fusion Strategy | v1.6 | TBD | Not started | - |
+| 27. ResNet18 Fusion Strategy | v1.6 | 1/2 | In progress | - |
 | 28. ResNet18 Full Workload E2E | v1.6 | TBD | Not started | - |

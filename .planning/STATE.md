@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.6
 milestone_name: ResNet18 Full Workload
-status: planning
-stopped_at: Phase 26 complete — ready for Phase 27
-last_updated: "2026-05-14T20:00:00.000Z"
-last_activity: 2026-05-14
+status: executing
+stopped_at: Completed 27-01-PLAN.md
+last_updated: "2026-05-14T21:35:11Z"
+last_activity: 2026-05-14 -- Completed 27-01-PLAN.md (bounded fusion group splitting)
 progress:
-  total_phases: 4
-  completed_phases: 2
-  total_plans: 5
-  completed_plans: 5
+  total_phases: 7
+  completed_phases: 4
+  total_plans: 12
+  completed_plans: 10
   percent: 50
 ---
 
@@ -21,14 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-14)
 
 **Core value:** Enable users to explore the TETRA design space efficiently — selecting solver backends, toggling constraint groups, and understanding the impact of hardware constraints on schedule optimality
-**Current focus:** Phase 27 — ResNet18 Fusion Strategy (next)
+**Current focus:** Phase 27 — resnet18-fusion-strategy
 
 ## Current Position
 
 Milestone: v1.6 (ResNet18 Full Workload) — IN PROGRESS
-Phase: 27 (ResNet18 Fusion Strategy) — Not started
-Status: Ready for discuss-phase
-Last activity: 2026-05-14
+Phase: 27 (resnet18-fusion-strategy) — EXECUTING
+Plan: 2 of 2
+Status: Executing Phase 27
+Last activity: 2026-05-14 -- Completed 27-01-PLAN.md
 
 Progress: [█████░░░░░] 50%
 
@@ -63,6 +64,9 @@ Key decisions carried forward:
 - [Phase 24]: Conv-Relu-Flatten-Gemm synthetic workload replaces ResNet18 test: same multi-group mechanics in seconds
 - [Phase 25]: Spatial unrolling assertion relaxed to fallback for fan-out workloads where transfer-graph shifts dimension decomposition
 - [Phase 25]: INT64 tensor type added to onnx_type_to_xdsl_type for Reshape shape initializers
+- [Phase 27]: determine_fusion_cut_points() identifies Add+Relu residual boundaries and MaxPool front-end as cut points (9 for ResNet18)
+- [Phase 27]: split_fusion_groups(cut_points=None) backward-compatible extension; cut-point nodes create OutEdge/InEdge pairs at group boundaries
+- [Phase 27]: Fan-out guard removed: ResNet Relu nodes naturally fan out to 2 successors via skip connections; all go into the same next group
 
 ### Pending Todos
 
@@ -76,6 +80,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-14T19:18:29.541Z
-Stopped at: Completed 25-02-PLAN.md
+Last session: 2026-05-14T21:35:11Z
+Stopped at: Completed 27-01-PLAN.md
 Resume file: None
