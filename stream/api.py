@@ -42,7 +42,7 @@ def _sanity_check_gurobi_license():
     GurobiBackend.check_license()
 
 
-def optimize_allocation_co(  # noqa: PLR0913
+def optimize_allocation_co_with_mapping(  # noqa: PLR0913
     hardware: str,
     workload: str,
     mapping: str,
@@ -119,6 +119,10 @@ def optimize_allocation_co(  # noqa: PLR0913
         assert len(answers) == 1, "Expected a single result from the optimization."
         ctx = answers[0]
     return ctx
+
+
+# Backward-compatible alias: old name -> new name
+optimize_allocation_co = optimize_allocation_co_with_mapping
 
 
 def optimize_allocation_co_generic(  # noqa: PLR0913

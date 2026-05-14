@@ -35,6 +35,7 @@ class FusionGroupIterationStage(Stage):
         sub_workloads = self.sub_workloads
         group_mapping_paths = self.group_mapping_paths
         total_latency = 0.0
+        group_latencies: dict[int, float] = {}
         final_ctx = None
 
         assert len(sub_workloads) == len(group_mapping_paths), (
@@ -62,11 +63,13 @@ class FusionGroupIterationStage(Stage):
             scheduler = ctx.get("scheduler")
             group_latency = scheduler.latency_total
             total_latency += group_latency
+            group_latencies[i] = group_latency
             logger.info(f"Group {i} latency: {group_latency}")
             final_ctx = ctx
 
         # Per D-05: Store aggregated result
         assert final_ctx is not None, "No groups processed"
-        final_ctx.set(total_latency=total_latency)
+        final_ctx.set(total_latency=total_latency, group_latencies=group_latencies)
         logger.info(f"Total latency across all groups: {total_latency}")
+        logger.info(f"Per-group latencies: {group_latencies}")
         yield final_ctx
