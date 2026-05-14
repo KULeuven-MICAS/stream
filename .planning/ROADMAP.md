@@ -8,7 +8,7 @@
 - ✅ **v1.3 MCP Server & Intermediate Representations** - Phases 15-18 (shipped 2026-05-11)
 - ✅ **v1.4 Robust Non-AIE Support** - Phases 19-21 (shipped 2026-05-11)
 - ✅ **v1.5 Multi-Group CO Pipeline** - Phases 22-24 (shipped 2026-05-14)
-- 🚧 **v1.6 ResNet18 Full Workload** - Phases 25-27 (planned)
+- 🚧 **v1.6 ResNet18 Full Workload** - Phases 25-28 (in progress)
 
 ## Phases
 
@@ -76,8 +76,9 @@
 **Milestone Goal:** Progressively verify ResNet18 sub-graph patterns through the CO pipeline, then run the complete workload end-to-end.
 
 - [x] **Phase 25: ResNet18 Sub-Graph Patterns** - Test key ResNet18 patterns (stride-2 conv, residual skip connections, pooling→flatten boundary) as isolated multi-node sub-graphs through the full CO pipeline (completed 2026-05-14)
-- [ ] **Phase 26: ResNet18 Fusion Strategy** - Implement smarter fusion group splitting (bounded aperture, memory-aware group sizing) so ResNet18 produces manageable groups instead of one 47-node group
-- [ ] **Phase 27: ResNet18 Full Workload E2E** - Run the complete ResNet18 ONNX through the CO pipeline end-to-end, verify positive latency, confirm main_stream_co.py produces valid YAML summary
+- [ ] **Phase 26: Post-Transfer Dimension Invariant** - Debug and fix why unique_dimensions() RREF produces different z-variable sizes after transfer-graph construction; remove spatial unrolling band-aid; filter Reshape shape tensor from data-flow parsing
+- [ ] **Phase 27: ResNet18 Fusion Strategy** - Implement smarter fusion group splitting (bounded aperture, memory-aware group sizing) so ResNet18 produces manageable groups instead of one 47-node group
+- [ ] **Phase 28: ResNet18 Full Workload E2E** - Run the complete ResNet18 ONNX through the CO pipeline end-to-end, verify positive latency, confirm main_stream_co.py produces valid YAML summary
 
 ## Phase Details
 
@@ -139,9 +140,19 @@ Plans:
 - [x] 25-01-PLAN.md — FusionEdgeParser Reshape fix + parametric ResNet18 sub-graph builder (4 patterns)
 - [x] 25-02-PLAN.md — Integration tests for all 4 patterns + pipeline fixes (D-07)
 
-### Phase 26: ResNet18 Fusion Strategy
-**Goal**: Implement bounded fusion group splitting so ResNet18 produces multiple manageable groups (not one 47-node monolith) with controllable aperture depth
+### Phase 26: Post-Transfer Dimension Invariant
+**Goal**: Diagnose and fix why unique_dimensions() RREF produces different z-variable sizes after transfer-graph construction for fan-out workloads; restore the spatial unrolling assert; filter Reshape shape tensors from data-flow parsing
 **Depends on**: Phase 25
+**Requirements**: RNET-07, RNET-08
+**Success Criteria** (what must be TRUE):
+  1. The spatial unrolling assert (`dim_size % spatial_unrolling == 0`) passes for all 4 Phase 25 sub-graph patterns WITHOUT the fallback — dimension sizes are invariant across transfer node insertion
+  2. Reshape ONNX shape tensors (INT64 initializers) are not included in the workload's data-flow graph (filtered before or during FusionEdge parsing)
+  3. All 191 existing tests pass with the band-aid removed
+**Plans:** TBD
+
+### Phase 27: ResNet18 Fusion Strategy
+**Goal**: Implement bounded fusion group splitting so ResNet18 produces multiple manageable groups (not one 47-node monolith) with controllable aperture depth
+**Depends on**: Phase 26
 **Requirements**: RNET-04, RNET-05
 **Success Criteria** (what must be TRUE):
   1. A `max_group_depth` parameter limits fusion group size (e.g., max 8 layers per group)
@@ -149,9 +160,9 @@ Plans:
   3. The generated per-group mappings all pass MappingValidator
 **Plans:** TBD
 
-### Phase 27: ResNet18 Full Workload E2E
+### Phase 28: ResNet18 Full Workload E2E
 **Goal**: The complete ResNet18 ONNX model runs end-to-end through the CO pipeline on TPU hardware with bounded fusion groups and produces a valid YAML summary
-**Depends on**: Phase 26
+**Depends on**: Phase 27
 **Requirements**: RNET-06
 **Success Criteria** (what must be TRUE):
   1. `optimize_allocation_co_generic` completes for `resnet18.onnx` on TPU hardware with positive total_latency
@@ -188,5 +199,6 @@ Plans:
 | 23. Generic Mapping Generator | v1.5 | 3/3 | Complete | 2026-05-11 |
 | 24. Multi-Group Pipeline Integration | v1.5 | 2/2 | Complete | 2026-05-14 |
 | 25. ResNet18 Sub-Graph Patterns | v1.6 | 2/2 | Complete   | 2026-05-14 |
-| 26. ResNet18 Fusion Strategy | v1.6 | TBD | Not started | - |
-| 27. ResNet18 Full Workload E2E | v1.6 | TBD | Not started | - |
+| 26. Post-Transfer Dimension Invariant | v1.6 | TBD | Not started | - |
+| 27. ResNet18 Fusion Strategy | v1.6 | TBD | Not started | - |
+| 28. ResNet18 Full Workload E2E | v1.6 | TBD | Not started | - |
