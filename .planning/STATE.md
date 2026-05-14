@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.6
 milestone_name: ResNet18 Full Workload
-status: planning
-stopped_at: v1.5 complete — Phase 24 shipped
-last_updated: "2026-05-14T16:30:00.000Z"
-last_activity: 2026-05-14
+status: executing
+stopped_at: Completed 24-02-PLAN.md
+last_updated: "2026-05-14T18:23:04.564Z"
+last_activity: 2026-05-14 -- Phase 25 execution started
 progress:
-  total_phases: 3
-  completed_phases: 0
-  total_plans: 0
-  completed_plans: 0
+  total_phases: 6
+  completed_phases: 3
+  total_plans: 10
+  completed_plans: 8
   percent: 0
 ---
 
@@ -21,14 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-14)
 
 **Core value:** Enable users to explore the TETRA design space efficiently — selecting solver backends, toggling constraint groups, and understanding the impact of hardware constraints on schedule optimality
-**Current focus:** v1.6 — ResNet18 Full Workload (Phase 25 next)
+**Current focus:** Phase 25 — resnet18-sub-graph-patterns
 
 ## Current Position
 
 Milestone: v1.6 (ResNet18 Full Workload) — PLANNING
-Phase: 25 (ResNet18 Sub-Graph Patterns) — Not started
-Status: Ready for discuss-phase
-Last activity: 2026-05-14
+Phase: 25 (resnet18-sub-graph-patterns) — EXECUTING
+Plan: 2 of 2
+Status: Executing Phase 25
+Last activity: 2026-05-14 -- Completed 25-01-PLAN.md (FusionEdgeParser fix + ResNet18 sub-graph builder)
 
 Progress: [░░░░░░░░░░] 0%
 
