@@ -301,25 +301,35 @@ class Workload(DiGraphWrapper[Node]):
         transform = AffineTransform.from_affine_map(relations)
 
         A_sp = sp.Matrix(transform.A)
-        rref_A, pivots = A_sp.rref()
-
+        b_sp = sp.Matrix(transform.b).reshape(len(transform.b), 1)
         n_vars = transform.A.shape[1]
+
+        # Solve A*x = -b via augmented matrix RREF: [A | -b]
+        augmented = A_sp.row_join(-b_sp)
+        rref_aug, pivots = augmented.rref()
+
         free_vars = [i for i in range(n_vars) if i not in pivots]
 
+        # Null space basis: homogeneous solutions (from free variable columns of A)
         basis_vectors = []
         for free in free_vars:
             v = sp.zeros(n_vars, 1)
             v[free] = 1
             for row, pivot in enumerate(pivots):
-                v[pivot] = -rref_A[row, free]
+                v[pivot] = -rref_aug[row, free]
             basis_vectors.append(v)
 
         N = sp.Matrix.hstack(*basis_vectors)
         z_syms = sp.symbols(f"z0:{len(free_vars)}")
-        x = N * sp.Matrix(z_syms)
+
+        # Particular solution from the last column of the augmented RREF
+        x_p = sp.zeros(n_vars, 1)
+        for row, pivot in enumerate(pivots):
+            x_p[pivot] = rref_aug[row, n_vars]
+
+        x = N * sp.Matrix(z_syms) + x_p
 
         dim_values = [sympy_to_xdsl(sp.simplify(expr)) for expr in x]
-        # IMPORTANT: z dimensions are LayerDim, so expressions.index(LayerDim(i)) works
         z = [LayerDim(position=i, prefix="z") for i in range(len(free_vars))]
         return z, dim_values
 

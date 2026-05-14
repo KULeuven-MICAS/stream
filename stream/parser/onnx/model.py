@@ -2,7 +2,7 @@ import logging
 from typing import Any
 
 import onnx
-from onnx import NodeProto
+from onnx import NodeProto, TensorProto
 from zigzag.parser.onnx.utils import parse_onnx_model_from_path
 
 from stream.parser.onnx.add import AddParser
@@ -122,6 +122,8 @@ class ONNXModelParser:
             workload_nodes.append(InEdge(name=input.name, outputs=(tensor,)))
             name_to_tensor_dict[input.name] = tensor
         for initializer in self.onnx_model.graph.initializer:
+            if initializer.data_type in (TensorProto.INT64, TensorProto.INT32):
+                continue
             tensor = onnx_tensor_to_tensor(initializer)
             workload_nodes.append(InEdge(name=initializer.name, outputs=(tensor,)))
             name_to_tensor_dict[initializer.name] = tensor
