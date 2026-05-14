@@ -1,16 +1,16 @@
 ---
 gsd_state_version: 1.0
-milestone: v1.5
-milestone_name: ResNet18 TPU CO Flow
-status: verifying
-stopped_at: Completed 24-02-PLAN.md
-last_updated: "2026-05-14T15:24:09.244Z"
+milestone: v1.6
+milestone_name: ResNet18 Full Workload
+status: planning
+stopped_at: v1.5 complete — Phase 24 shipped
+last_updated: "2026-05-14T16:30:00.000Z"
 last_activity: 2026-05-14
 progress:
   total_phases: 3
   completed_phases: 0
-  total_plans: 5
-  completed_plans: 4
+  total_plans: 0
+  completed_plans: 0
   percent: 0
 ---
 
@@ -18,16 +18,16 @@ progress:
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-05-11)
+See: .planning/PROJECT.md (updated 2026-05-14)
 
 **Core value:** Enable users to explore the TETRA design space efficiently — selecting solver backends, toggling constraint groups, and understanding the impact of hardware constraints on schedule optimality
-**Current focus:** Phase 23 — generic-mapping-generator
+**Current focus:** v1.6 — ResNet18 Full Workload (Phase 25 next)
 
 ## Current Position
 
-Phase: 23 (generic-mapping-generator) — EXECUTING
-Plan: 3 of 3
-Status: Phase complete — ready for verification
+Milestone: v1.6 (ResNet18 Full Workload) — PLANNING
+Phase: 25 (ResNet18 Sub-Graph Patterns) — Not started
+Status: Ready for discuss-phase
 Last activity: 2026-05-14
 
 Progress: [░░░░░░░░░░] 0%

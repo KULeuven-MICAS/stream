@@ -7,7 +7,8 @@
 - ✅ **v1.2 Codebase Documentation** - Phases 9-14 (shipped 2026-05-10)
 - ✅ **v1.3 MCP Server & Intermediate Representations** - Phases 15-18 (shipped 2026-05-11)
 - ✅ **v1.4 Robust Non-AIE Support** - Phases 19-21 (shipped 2026-05-11)
-- 🚧 **v1.5 ResNet18 TPU CO Flow** - Phases 22-24 (in progress)
+- ✅ **v1.5 Multi-Group CO Pipeline** - Phases 22-24 (shipped 2026-05-14)
+- 🚧 **v1.6 ResNet18 Full Workload** - Phases 25-27 (planned)
 
 ## Phases
 
@@ -62,13 +63,21 @@
 
 </details>
 
-### 🚧 v1.5 ResNet18 TPU CO Flow (In Progress)
+### ✅ v1.5 Multi-Group CO Pipeline (Shipped 2026-05-14)
 
-**Milestone Goal:** Run ResNet18 end-to-end through the CO pipeline on TPU hardware with auto-generated mapping.
+**Milestone Goal:** Build and verify the multi-group CO pipeline infrastructure — generic mapping generation, fusion group iteration, and multi-destination transfer handling — using fast synthetic workloads.
 
 - [x] **Phase 22: ONNX Parser Completions** - Fix ConvParser bias crash, add shape inference, register Add/Relu/Pool ops so all 49 ResNet18 nodes parse (completed 2026-05-11)
 - [x] **Phase 23: Generic Mapping Generator** - Auto-infer fused_groups, allocations, and tilings from workload+hardware; wire stage into pipeline; fix FMT-05 YAML validation (completed 2026-05-11)
-- [ ] **Phase 24: ResNet18 End-to-End Flow** - Fix fan-out transfer handling, run ResNet18 CO on TPU, verify main_stream_co.py produces output
+- [x] **Phase 24: Multi-Group Pipeline Integration** - Fix pipeline bugs (inverse_permutation, fan-out, ZigZag), verify multi-group CO with synthetic workload, wire main_stream_co.py generic entry point (completed 2026-05-14)
+
+### ⬚ v1.6 ResNet18 Full Workload (Planned)
+
+**Milestone Goal:** Progressively verify ResNet18 sub-graph patterns through the CO pipeline, then run the complete workload end-to-end.
+
+- [ ] **Phase 25: ResNet18 Sub-Graph Patterns** - Test key ResNet18 patterns (stride-2 conv, residual skip connections, pooling→flatten boundary) as isolated multi-node sub-graphs through the full CO pipeline
+- [ ] **Phase 26: ResNet18 Fusion Strategy** - Implement smarter fusion group splitting (bounded aperture, memory-aware group sizing) so ResNet18 produces manageable groups instead of one 47-node group
+- [ ] **Phase 27: ResNet18 Full Workload E2E** - Run the complete ResNet18 ONNX through the CO pipeline end-to-end, verify positive latency, confirm main_stream_co.py produces valid YAML summary
 
 ## Phase Details
 
@@ -86,7 +95,7 @@
 Plans:
 - [x] 22-01-PLAN.md — FusionEdge node type + Workload integration
 - [x] 22-02-PLAN.md — ConvParser/GemmParser bias fix + shape inference + Relu registration
-- [ ] 22-03-PLAN.md — New parsers (Add, MaxPool, GlobalAveragePool, FusionEdge) + ResNet18 test
+- [x] 22-03-PLAN.md — New parsers (Add, MaxPool, GlobalAveragePool, FusionEdge) + ResNet18 test
 
 ### Phase 23: Generic Mapping Generator
 **Goal**: A deterministic GenericMappingGenerator produces a schema-valid mapping for any workload+hardware pair and is wired into the pipeline
@@ -104,18 +113,48 @@ Plans:
 - [x] 23-02-PLAN.md — Pipeline stages (GenericMappingGenerationStage + FusionGroupIterationStage) + api.py wiring
 - [x] 23-03-PLAN.md — Test suite (MAP-01 through MAP-04, FMT-05 validation)
 
-### Phase 24: ResNet18 End-to-End Flow
-**Goal**: ResNet18 runs fully through the CO pipeline on TPU hardware and main_stream_co.py produces a valid allocation result
+### Phase 24: Multi-Group Pipeline Integration
+**Goal**: The multi-group CO pipeline completes end-to-end for a synthetic multi-group workload (Conv->Relu->Flatten->Gemm producing 2 fusion groups) and main_stream_co.py provides both manual and generic entry points with YAML summary output
 **Depends on**: Phase 23
 **Requirements**: RES-01, RES-02, RES-03
 **Success Criteria** (what must be TRUE):
-  1. The CO pipeline completes for ResNet18 on TPU hardware and the SteadyStateScheduler returns a positive latency value
-  2. All 8 fan-out transfer points in ResNet18 are handled without index errors (multi-destination tensors routed correctly)
-  3. `python main_stream_co.py` with the ResNet18 workload and auto-generated mapping exits without error and prints allocation output
-**Plans:** 1/2 plans executed
+  1. The CO pipeline completes for a multi-group workload with FusionEdge splitting and the SteadyStateScheduler returns positive per-group latencies
+  2. Fan-out transfer handling uses `get_node_with_largest_resource_allocation` for multi-destination tensors (no `dsts[0]` assumption)
+  3. `main_stream_co.py` has both `optimize_allocation_co_with_mapping` (manual) and `optimize_allocation_co_generic` (auto) entry points and prints YAML summary with per-group latency breakdown
+**Plans:** 2/2 plans complete
 Plans:
-- [ ] 24-01-PLAN.md — Core pipeline bug fixes (inverse_permutation + fan-out tiling)
-- [x] 24-02-PLAN.md — ZigZag estimation fixes + main_stream_co.py integration + YAML output + test verification
+- [x] 24-01-PLAN.md — Core pipeline bug fixes (inverse_permutation + fan-out tiling)
+- [x] 24-02-PLAN.md — ZigZag estimation fixes + synthetic workload builder + multi-group test + main_stream_co.py integration
+
+### Phase 25: ResNet18 Sub-Graph Patterns
+**Goal**: Key ResNet18 structural patterns (stride-2 conv, residual add with fan-out, pooling→flatten transitions) each run successfully through the full CO pipeline as isolated multi-node sub-graphs
+**Depends on**: Phase 24
+**Requirements**: RNET-01, RNET-02, RNET-03
+**Success Criteria** (what must be TRUE):
+  1. A stride-2 Conv + BN + ReLU sub-graph completes CO allocation with positive latency
+  2. A residual block sub-graph (two conv paths + Add with fan-out input) completes CO allocation with fan-out transfers correctly routed
+  3. A MaxPool → Conv → GlobalAveragePool sub-graph completes on mixed core types (compute + pooling)
+**Plans:** TBD
+
+### Phase 26: ResNet18 Fusion Strategy
+**Goal**: Implement bounded fusion group splitting so ResNet18 produces multiple manageable groups (not one 47-node monolith) with controllable aperture depth
+**Depends on**: Phase 25
+**Requirements**: RNET-04, RNET-05
+**Success Criteria** (what must be TRUE):
+  1. A `max_group_depth` parameter limits fusion group size (e.g., max 8 layers per group)
+  2. ResNet18 splits into N groups (N > 2) where each group has at most `max_group_depth` computation nodes
+  3. The generated per-group mappings all pass MappingValidator
+**Plans:** TBD
+
+### Phase 27: ResNet18 Full Workload E2E
+**Goal**: The complete ResNet18 ONNX model runs end-to-end through the CO pipeline on TPU hardware with bounded fusion groups and produces a valid YAML summary
+**Depends on**: Phase 26
+**Requirements**: RNET-06
+**Success Criteria** (what must be TRUE):
+  1. `optimize_allocation_co_generic` completes for `resnet18.onnx` on TPU hardware with positive total_latency
+  2. All fusion groups produce positive per-group latencies in the YAML summary
+  3. `python main_stream_co.py` exits without error and prints the full ResNet18 allocation summary
+**Plans:** TBD
 
 ## Progress
 
@@ -142,6 +181,9 @@ Plans:
 | 19. GA Removal | v1.4 | 1/1 | Complete | 2026-05-11 |
 | 20. Mapping Format Fixes | v1.4 | 1/1 | Complete | 2026-05-11 |
 | 21. TPU End-to-End Test | v1.4 | 1/1 | Complete | 2026-05-11 |
-| 22. ONNX Parser Completions | v1.5 | 2/3 | Complete    | 2026-05-11 |
-| 23. Generic Mapping Generator | v1.5 | 3/3 | Complete    | 2026-05-11 |
-| 24. ResNet18 End-to-End Flow | v1.5 | 1/2 | In Progress|  |
+| 22. ONNX Parser Completions | v1.5 | 3/3 | Complete | 2026-05-11 |
+| 23. Generic Mapping Generator | v1.5 | 3/3 | Complete | 2026-05-11 |
+| 24. Multi-Group Pipeline Integration | v1.5 | 2/2 | Complete | 2026-05-14 |
+| 25. ResNet18 Sub-Graph Patterns | v1.6 | TBD | Not started | - |
+| 26. ResNet18 Fusion Strategy | v1.6 | TBD | Not started | - |
+| 27. ResNet18 Full Workload E2E | v1.6 | TBD | Not started | - |
