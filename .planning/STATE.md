@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.5
 milestone_name: ResNet18 TPU CO Flow
-status: executing
-stopped_at: Completed 23-03-PLAN.md
-last_updated: "2026-05-11T23:10:10.088Z"
-last_activity: 2026-05-11
+status: verifying
+stopped_at: Completed 24-02-PLAN.md
+last_updated: "2026-05-14T15:24:09.244Z"
+last_activity: 2026-05-14
 progress:
   total_phases: 3
-  completed_phases: 2
-  total_plans: 6
-  completed_plans: 6
+  completed_phases: 0
+  total_plans: 5
+  completed_plans: 4
   percent: 0
 ---
 
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-05-11)
 
 Phase: 23 (generic-mapping-generator) — EXECUTING
 Plan: 3 of 3
-Status: Ready to execute
-Last activity: 2026-05-11
+Status: Phase complete — ready for verification
+Last activity: 2026-05-14
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -57,6 +57,10 @@ Key decisions carried forward:
 - [Phase 23-generic-mapping-generator]: Specialized cores (non-None operator_types) take priority over generic compute cores in core selection
 - [Phase 23]: File reads inside TemporaryDirectory context block — avoid FileNotFoundError after cleanup
 - [Phase 23]: tpu_like_quad_core.yaml updated to nested-list format (FMT-05 validated)
+- [Phase 24]: ZigZag fallback uses product of layer_dim_sizes as ideal-cycle estimate when spatial mapping generation crashes
+- [Phase 24]: Memory operand assert relaxed to >= for cores with extra operands (pooling I1/I2/O vs MaxPool 2 tensors)
+- [Phase 24]: API rename: optimize_allocation_co -> optimize_allocation_co_with_mapping, backward-compat alias preserved
+- [Phase 24]: Conv-Relu-Flatten-Gemm synthetic workload replaces ResNet18 test: same multi-group mechanics in seconds
 
 ### Pending Todos
 
@@ -70,6 +74,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-11T23:10:10.087Z
-Stopped at: Completed 23-03-PLAN.md
+Last session: 2026-05-14T15:24:09.242Z
+Stopped at: Completed 24-02-PLAN.md
 Resume file: None

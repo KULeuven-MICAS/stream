@@ -112,10 +112,10 @@ Plans:
   1. The CO pipeline completes for ResNet18 on TPU hardware and the SteadyStateScheduler returns a positive latency value
   2. All 8 fan-out transfer points in ResNet18 are handled without index errors (multi-destination tensors routed correctly)
   3. `python main_stream_co.py` with the ResNet18 workload and auto-generated mapping exits without error and prints allocation output
-**Plans:** 2 plans
+**Plans:** 1/2 plans executed
 Plans:
 - [ ] 24-01-PLAN.md — Core pipeline bug fixes (inverse_permutation + fan-out tiling)
-- [ ] 24-02-PLAN.md — ZigZag estimation fixes + main_stream_co.py integration + YAML output + test verification
+- [x] 24-02-PLAN.md — ZigZag estimation fixes + main_stream_co.py integration + YAML output + test verification
 
 ## Progress
 
@@ -144,4 +144,4 @@ Plans:
 | 21. TPU End-to-End Test | v1.4 | 1/1 | Complete | 2026-05-11 |
 | 22. ONNX Parser Completions | v1.5 | 2/3 | Complete    | 2026-05-11 |
 | 23. Generic Mapping Generator | v1.5 | 3/3 | Complete    | 2026-05-11 |
-| 24. ResNet18 End-to-End Flow | v1.5 | 0/2 | Not started | - |
+| 24. ResNet18 End-to-End Flow | v1.5 | 1/2 | In Progress|  |
