@@ -148,3 +148,64 @@ def test_dual_residual():
         assert abs(total_latency - sum(group_latencies.values())) < 1e-6, (
             f"total_latency ({total_latency}) != sum of group_latencies ({sum(group_latencies.values())})"
         )
+
+
+@pytest.mark.timeout(60)
+def test_fusion_cut_points_heuristic():
+    """RNET-04: determine_fusion_cut_points() returns correct cut-point names for ResNet18.
+
+    Expected: 1 MaxPool + 8 Add+Relu = 9 cut points total.
+    """
+    from stream.parser.onnx.model import ONNXModelParser
+    from stream.workload.workload import determine_fusion_cut_points
+
+    parser = ONNXModelParser("stream/inputs/examples/workload/resnet18.onnx")
+    parser.run()
+    workload = parser.workload
+
+    cut_points = determine_fusion_cut_points(workload)
+
+    # Exactly 9 cut points: 1 MaxPool + 8 Relu (after Add)
+    assert len(cut_points) == 9, f"Expected 9 cut points, got {len(cut_points)}: {cut_points}"
+
+    # First cut point is the MaxPool (front-end boundary)
+    assert "MaxPool" in cut_points[0], f"First cut point should be MaxPool, got {cut_points[0]}"
+
+    # Remaining 8 are Relu nodes following Add nodes
+    relu_cut_points = [cp for cp in cut_points if "Relu" in cp or "relu" in cp]
+    assert len(relu_cut_points) == 8, f"Expected 8 Relu cut points, got {len(relu_cut_points)}"
+
+
+@pytest.mark.timeout(60)
+def test_resnet18_split_with_cut_points():
+    """RNET-04: split_fusion_groups(cut_points=...) produces 11 groups for ResNet18.
+
+    9 cut points + 1 FusionEdge (Flatten) = 10 boundaries -> 11 groups.
+    """
+    from stream.parser.onnx.model import ONNXModelParser
+    from stream.workload.node import ComputationNode
+    from stream.workload.workload import determine_fusion_cut_points
+
+    parser = ONNXModelParser("stream/inputs/examples/workload/resnet18.onnx")
+    parser.run()
+    workload = parser.workload
+
+    cut_points = determine_fusion_cut_points(workload)
+    groups = workload.split_fusion_groups(cut_points=cut_points)
+
+    assert len(groups) == 11, f"Expected 11 groups, got {len(groups)}"
+
+    # Verify each group has at least 1 ComputationNode
+    for i, group in enumerate(groups):
+        comp_nodes = [n for n in group.nodes if isinstance(n, ComputationNode)]
+        assert len(comp_nodes) >= 1, f"Group {i} has no ComputationNodes"
+        # No single group should have more than 8 computation nodes
+        assert len(comp_nodes) <= 8, f"Group {i} has {len(comp_nodes)} ComputationNodes (> 8)"
+
+    # Group 0 (front-end): Conv + Relu + MaxPool = 3 ComputationNodes
+    g0_comp = [n for n in groups[0].nodes if isinstance(n, ComputationNode)]
+    assert len(g0_comp) == 3, f"Front-end group should have 3 nodes, got {len(g0_comp)}"
+
+    # Last group (post-Flatten): just Gemm = 1 ComputationNode
+    g_last_comp = [n for n in groups[-1].nodes if isinstance(n, ComputationNode)]
+    assert len(g_last_comp) == 1, f"Last group should have 1 node (Gemm), got {len(g_last_comp)}"

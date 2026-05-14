@@ -51,15 +51,20 @@ class GenericMappingGenerator:
     # Public API                                                              #
     # ---------------------------------------------------------------------- #
 
-    def generate_all_groups(self) -> tuple[list[str], list[Workload]]:
+    def generate_all_groups(self, cut_points: list[str] | None = None) -> tuple[list[str], list[Workload]]:
         """Generate one mapping YAML per fusion group.
+
+        Args:
+            cut_points: Optional list of node names at which to split the workload
+                in addition to FusionEdge boundaries. Passed through to
+                ``split_fusion_groups(cut_points=...)``.
 
         Returns:
             A tuple ``(paths, sub_workloads)`` where *paths* is a list of
             absolute file paths to the written YAML files and *sub_workloads*
             is the list of sub-workloads returned by ``split_fusion_groups()``.
         """
-        sub_workloads = self.workload.split_fusion_groups()
+        sub_workloads = self.workload.split_fusion_groups(cut_points=cut_points)
         paths: list[str] = []
         for i, sub_workload in enumerate(sub_workloads):
             path = self._generate_group_yaml(sub_workload, i)
