@@ -209,3 +209,53 @@ def test_resnet18_split_with_cut_points():
     # Last group (post-Flatten): just Gemm = 1 ComputationNode
     g_last_comp = [n for n in groups[-1].nodes if isinstance(n, ComputationNode)]
     assert len(g_last_comp) == 1, f"Last group should have 1 node (Gemm), got {len(g_last_comp)}"
+
+
+@pytest.mark.timeout(120)
+def test_resnet18_cut_point_groups():
+    """RNET-05: Per-group mappings for ResNet18 (11 groups) all pass MappingValidator."""
+    from zigzag.utils import open_yaml
+
+    from stream.mapping.generic_generator import GenericMappingGenerator
+    from stream.parser.accelerator_factory import AcceleratorFactory
+    from stream.parser.accelerator_validator import AcceleratorValidator
+    from stream.parser.mapping_validator import MappingValidator
+    from stream.parser.onnx.model import ONNXModelParser
+    from stream.workload.workload import determine_fusion_cut_points
+
+    # Parse workload
+    parser = ONNXModelParser("stream/inputs/examples/workload/resnet18.onnx")
+    parser.run()
+    workload = parser.workload
+
+    # Parse accelerator (matching pipeline pattern: open_yaml -> validate -> factory.create)
+    accel_data = open_yaml(_ACCELERATOR)
+    validator = AcceleratorValidator(accel_data, _ACCELERATOR)
+    accel_data = validator.normalized_data
+    assert validator.validate(), f"Accelerator validation failed: {validator.errors}"
+    factory = AcceleratorFactory(accel_data)
+    accelerator = factory.create()
+
+    # Determine cut points and generate per-group mappings
+    cut_points = determine_fusion_cut_points(workload)
+    assert len(cut_points) == 9
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        generator = GenericMappingGenerator(
+            accelerator=accelerator,
+            workload=workload,
+            output_dir=tmpdir,
+        )
+        paths, sub_workloads = generator.generate_all_groups(cut_points=cut_points)
+
+        # 11 groups = 11 YAML paths
+        assert len(paths) == 11, f"Expected 11 group mapping paths, got {len(paths)}"
+        assert len(sub_workloads) == 11, f"Expected 11 sub-workloads, got {len(sub_workloads)}"
+
+        # Each YAML must pass MappingValidator
+        for i, path in enumerate(paths):
+            assert os.path.exists(path), f"Group {i} mapping file not found: {path}"
+            with open(path) as f:
+                mapping_data = yaml.safe_load(f)
+            mv = MappingValidator(mapping_data)
+            assert mv.validate(), f"Group {i} mapping failed validation: {mv.errors}"
