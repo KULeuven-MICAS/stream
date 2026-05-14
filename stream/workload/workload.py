@@ -518,8 +518,13 @@ class Workload(DiGraphWrapper[Node]):
         new_nodes: list[Node] = []
         for node in nx.lexicographical_topological_sort(self, key=lambda n: n.name):
             if isinstance(node, InEdge):
-                new_output = tensor_map.get(node.name)
-                assert new_output is not None, f"InEdge tensor {node.name} must have been inferred"
+                # InEdge node name may differ from output tensor name (e.g. Flatten1_in vs flatten_out)
+                # Look up by the actual output tensor name first, then fall back to node name
+                out_tensor_name = node.outputs[0].name if node.outputs else node.name
+                new_output = tensor_map.get(out_tensor_name) or tensor_map.get(node.name)
+                assert new_output is not None, (
+                    f"InEdge tensor {node.name} (output: {out_tensor_name}) must have been inferred"
+                )
                 new_node = InEdge(
                     name=node.name,
                     outputs=(new_output,),

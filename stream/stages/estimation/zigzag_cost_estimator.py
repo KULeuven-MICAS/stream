@@ -288,7 +288,11 @@ class ZigZagCostEstimator:
             logger.warning(
                 f"ZigZag estimation failed for {node.name} on core {core.id}. Falling back to ideal-cycle estimate."
             )
-            ideal_cycle = float(node.total_mac_count)
+            # Compute ideal cycle from product of all layer dimension sizes
+            from functools import reduce  # noqa: PLC0415
+
+            dim_sizes = layer_node.layer_dim_sizes
+            ideal_cycle = float(reduce(lambda a, b: a * b, dim_sizes.data.values(), 1))
             return CoreCostEntry(
                 energy_total=0.0,
                 latency_total=ideal_cycle,
