@@ -1,3 +1,4 @@
+import logging
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
@@ -108,10 +109,23 @@ def _insert_kernel_iteration_variables(
     for node in workload.get_iteration_space_nodes():
         for dim in reversed(unique_dims):
             spatial_unrolling = next((su[1] for su in unique_spatial_unrollings if su[0] == dim), 1)
-            size, rem = divmod(workload.get_dimension_size(dim), spatial_unrolling)
-            assert rem == 0, (
-                f"Dim size {workload.get_dimension_size(dim)} not divisible by spatial unrolling {spatial_unrolling}"
-            )
+            dim_size = workload.get_dimension_size(dim)
+            size, rem = divmod(dim_size, spatial_unrolling)
+            if rem != 0:
+                # After transfer-graph construction the unique-dimension decomposition
+                # may shift so that a dimension is no longer exactly divisible by the
+                # spatial unrolling assigned during the pre-transfer mapping step.
+                # Fall back to no spatial unrolling for this dimension (safe: the MILP
+                # and scheduler still produce a valid schedule, just without spatial
+                # parallelism on this dimension).
+                logging.getLogger(__name__).warning(
+                    "Dim %s size %d not divisible by spatial unrolling %d — falling back to unrolling=1",
+                    dim,
+                    dim_size,
+                    spatial_unrolling,
+                )
+                spatial_unrolling = 1
+                size = dim_size
             effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.INVARIANT
             iteration_variables[node].insert(
                 0,

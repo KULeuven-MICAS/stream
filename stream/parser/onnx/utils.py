@@ -1,5 +1,5 @@
 from onnx import TensorProto, ValueInfoProto
-from xdsl.dialects.builtin import FixedBitwidthType, MemRefType, bf16, f32, i8, i16, i32
+from xdsl.dialects.builtin import FixedBitwidthType, MemRefType, bf16, f32, i8, i16, i32, i64
 from xdsl.dialects.memref import AllocOp, SubviewOp
 from zigzag.parser.onnx.utils import OnnxTensorType
 
@@ -14,6 +14,7 @@ def onnx_tensor_to_tensor(tensor: ValueInfoProto | OnnxTensorType | TensorProto,
         TensorProto.INT8: i8,
         TensorProto.INT16: i16,
         TensorProto.INT32: i32,
+        TensorProto.INT64: i64,
     }
     if isinstance(tensor, ValueInfoProto):
         operand_type = onnx_type_to_xdsl_type[tensor.type.tensor_type.elem_type]
