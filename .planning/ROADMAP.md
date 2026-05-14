@@ -134,7 +134,10 @@ Plans:
   1. A stride-2 Conv + BN + ReLU sub-graph completes CO allocation with positive latency
   2. A residual block sub-graph (two conv paths + Add with fan-out input) completes CO allocation with fan-out transfers correctly routed
   3. A MaxPool → Conv → GlobalAveragePool sub-graph completes on mixed core types (compute + pooling)
-**Plans:** TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 25-01-PLAN.md — FusionEdgeParser Reshape fix + parametric ResNet18 sub-graph builder (4 patterns)
+- [ ] 25-02-PLAN.md — Integration tests for all 4 patterns + pipeline fixes (D-07)
 
 ### Phase 26: ResNet18 Fusion Strategy
 **Goal**: Implement bounded fusion group splitting so ResNet18 produces multiple manageable groups (not one 47-node monolith) with controllable aperture depth
@@ -184,6 +187,6 @@ Plans:
 | 22. ONNX Parser Completions | v1.5 | 3/3 | Complete | 2026-05-11 |
 | 23. Generic Mapping Generator | v1.5 | 3/3 | Complete | 2026-05-11 |
 | 24. Multi-Group Pipeline Integration | v1.5 | 2/2 | Complete | 2026-05-14 |
-| 25. ResNet18 Sub-Graph Patterns | v1.6 | TBD | Not started | - |
+| 25. ResNet18 Sub-Graph Patterns | v1.6 | 0/2 | Planning | - |
 | 26. ResNet18 Fusion Strategy | v1.6 | TBD | Not started | - |
 | 27. ResNet18 Full Workload E2E | v1.6 | TBD | Not started | - |
