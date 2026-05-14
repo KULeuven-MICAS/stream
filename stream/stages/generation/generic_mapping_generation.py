@@ -24,12 +24,17 @@ class GenericMappingGenerationStage(Stage):
         self.output_path = self.ctx.require_value("output_path", self.__class__.__name__)
 
     def run(self):
+        from stream.workload.workload import determine_fusion_cut_points  # noqa: PLC0415
+
+        cut_points = determine_fusion_cut_points(self.workload)
+        logger.info(f"Determined {len(cut_points)} fusion cut points: {cut_points}")
+
         generator = GenericMappingGenerator(
             accelerator=self.accelerator,
             workload=self.workload,
             output_dir=self.output_path,
         )
-        group_mapping_paths, sub_workloads = generator.generate_all_groups()
+        group_mapping_paths, sub_workloads = generator.generate_all_groups(cut_points=cut_points)
         logger.info(f"Generated {len(group_mapping_paths)} group mapping(s): {group_mapping_paths}")
 
         # Write both paths AND sub_workloads to context so FusionGroupIterationStage
