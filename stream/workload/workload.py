@@ -140,23 +140,35 @@ class Workload(DiGraphWrapper[Node]):
     def get_fusion_edges(self) -> tuple[FusionEdge, ...]:
         return tuple(cast(FusionEdge, node) for node in self.nodes if isinstance(node, FusionEdge))
 
-    def split_fusion_groups(self) -> list["Workload"]:  # noqa: PLR0912
-        """Split the workload at FusionEdge boundaries into sub-workloads.
+    def split_fusion_groups(self, cut_points: list[str] | None = None) -> list["Workload"]:  # noqa: PLR0912
+        """Split the workload at FusionEdge boundaries and explicit cut points.
 
         Each sub-workload is self-contained with InEdge at entries and OutEdge
         at exits. FusionEdge nodes are consumed: the FusionEdge's input tensor
         becomes an OutEdge in the preceding group, and its output tensor becomes
         an InEdge in the following group.
 
+        When *cut_points* is provided, the listed node names act as additional
+        group boundaries (the cut-point node stays in the preceding group).
+        OutEdge/InEdge boundary pairs are created using the cut-point node's
+        output tensor, analogous to FusionEdge boundaries.
+
         InEdge nodes (model inputs and initializers) are assigned to the group
         that contains their sole consumer. If an InEdge is consumed by nodes in
         multiple groups, it is duplicated into each consuming group.
 
-        Returns a list of Workloads. If there are no FusionEdge nodes, returns
-        [self] (single group).
+        Args:
+            cut_points: Optional list of node names at which to insert group
+                boundaries.  When ``None`` (default), only FusionEdge
+                boundaries are used (backward compatible).
+
+        Returns:
+            A list of Workloads. If there are no FusionEdge nodes and no cut
+            points, returns ``[self]`` (single group).
         """
         fusion_edges = [n for n in self.nodes if isinstance(n, FusionEdge)]
-        if not fusion_edges:
+        cut_point_set: set[str] = set(cut_points) if cut_points else set()
+        if not fusion_edges and not cut_point_set:
             return [self]
 
         # Assign each non-FusionEdge, non-InEdge node to a group index.
@@ -175,6 +187,9 @@ class Workload(DiGraphWrapper[Node]):
                 # Defer InEdge assignment -- they go into the group(s) of their consumers
                 continue
             node_to_group[node] = group_idx
+            # Cut-point nodes end their group: subsequent nodes go into next group
+            if cut_point_set and node.name in cut_point_set:
+                group_idx += 1
 
         num_groups = group_idx + 1
 
@@ -224,6 +239,18 @@ class Workload(DiGraphWrapper[Node]):
                 name=f"{fe.name}_in",
                 outputs=(fe.outputs[0],),
             )
+            group_nodes[succ_group].insert(0, in_edge)
+
+        # For each cut-point node, add OutEdge/InEdge boundary pairs
+        for node, grp in node_to_group.items():
+            if not isinstance(node, ComputationNode) or node.name not in cut_point_set:
+                continue
+            assert len(node.outputs) == 1, f"Cut-point node {node.name} must have exactly 1 output"
+            out_tensor = node.outputs[0]
+            succ_group = grp + 1
+            out_edge = OutEdge(name=f"{node.name}_cut_out", inputs=(out_tensor,))
+            group_nodes[grp].append(out_edge)
+            in_edge = InEdge(name=f"{node.name}_cut_in", outputs=(out_tensor,))
             group_nodes[succ_group].insert(0, in_edge)
 
         # Build sub-workloads
@@ -963,3 +990,45 @@ class Workload(DiGraphWrapper[Node]):
             "tensors": tensor_dim_relations,
             "generations": timeslots,
         }
+
+
+def determine_fusion_cut_points(workload: Workload) -> list[str]:
+    """Identify node names at which to split the workload into bounded fusion groups.
+
+    Heuristic (per D-01 / D-02):
+    - **MaxPool front-end boundary (D-02):** Each ``MaxPool`` node ends the
+      front-end group (Conv -> Relu -> MaxPool).  Splitting after it keeps the
+      pooling-core allocation separate from the main residual backbone.
+    - **Add+Relu residual boundary (D-01):** An ``Add`` node followed by
+      exactly one ``Relu`` successor (among ComputationNodes) marks the end of
+      a residual block.  The *Relu* is the cut point so that both Add and Relu
+      remain in the preceding group and the next Conv starts a new group.
+      A fan-out guard ensures that if the Relu feeds more than one
+      ComputationNode successor the split is skipped (avoids breaking fan-out
+      topology).
+
+    Args:
+        workload: The full parsed workload graph.
+
+    Returns:
+        An ordered list of node *names* (strings) suitable for passing to
+        ``Workload.split_fusion_groups(cut_points=...)``.
+    """
+    cut_points: list[str] = []
+    for node in nx.lexicographical_topological_sort(workload, key=lambda n: n.name):
+        if not isinstance(node, ComputationNode):
+            continue
+
+        # D-02: MaxPool ends the front-end group
+        if node.type == "MaxPool":
+            cut_points.append(node.name)
+            continue
+
+        # D-01: Add followed by a single Relu successor -> split after Relu
+        if node.type == "Add":
+            comp_succs = [s for s in workload.successors(node) if isinstance(s, ComputationNode)]
+            if len(comp_succs) == 1 and comp_succs[0].type == "Relu":
+                relu = comp_succs[0]
+                cut_points.append(relu.name)
+
+    return cut_points
