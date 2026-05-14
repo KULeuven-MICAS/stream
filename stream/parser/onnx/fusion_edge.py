@@ -11,7 +11,12 @@ class FusionEdgeParser(OnnxOperatorParser):
     """
 
     def generate_node(self, name_to_tensor_dict: dict[str, Tensor]) -> FusionEdge:
-        inputs = tuple(name_to_tensor_dict[inp] for inp in self.node.input if inp in name_to_tensor_dict)
+        # FusionEdge is a shape-only boundary node. Only the first input (data tensor)
+        # is a real data-flow edge. Additional inputs (e.g., Reshape's shape tensor)
+        # are metadata and must not become graph edges — split_fusion_groups()
+        # asserts len(fe.inputs) == 1.
+        data_input_name = self.node.input[0]
+        inputs = (name_to_tensor_dict[data_input_name],)
         outputs = self.get_output_tensors()
 
         return FusionEdge(
