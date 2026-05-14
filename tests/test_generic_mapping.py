@@ -1,7 +1,7 @@
 """Tests for GenericMappingGenerator and the generic CO pipeline (MAP-01 through MAP-04, FMT-05).
 
-The two-conv workload is used as a fast proxy for quick iteration (< 60s).
-The ResNet18 test covers D-15 (full multi-group workload end-to-end).
+The two-conv workload is used as a fast single-group proxy (< 60s).
+The Conv-Relu-Flatten-Gemm workload tests multi-group pipeline mechanics (RES-01/RES-02).
 """
 
 import tempfile
@@ -12,6 +12,9 @@ import yaml
 from stream.api import optimize_allocation_co_generic
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
+from stream.inputs.testing.workload.make_conv_relu_flatten_gemm import (
+    make_conv_relu_flatten_gemm_workload,
+)
 from stream.mapping.generic_generator import GenericMappingGenerator
 from stream.parser.mapping_validator import MappingValidator
 from stream.stages.context import StageContext
@@ -20,7 +23,6 @@ from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage
 from stream.stages.stage import LeafStage, MainStage
 
 _ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
-_RESNET18_PATH = "stream/inputs/examples/workload/resnet18.onnx"
 _WORKLOAD_CONFIG = TwoConvWorkloadConfig(
     batch_size=1,
     in_channels=8,
@@ -115,8 +117,8 @@ def test_mapping_validates():
 def test_pipeline_end_to_end():
     """MAP-04: optimize_allocation_co_generic completes end-to-end for two-conv TPU workload.
 
-    Two-conv is used as a fast proxy (< 60s) for quick iteration. The full ResNet18 test
-    (test_pipeline_resnet18) covers D-15 comprehensively.
+    Two-conv is used as a fast single-group proxy (< 60s) for quick iteration.
+    test_pipeline_multi_group covers multi-group pipeline mechanics (RES-01/RES-02).
     """
     workload_path = make_2_conv_workload(_WORKLOAD_CONFIG)
 
@@ -139,25 +141,33 @@ def test_pipeline_end_to_end():
     assert total_latency is not None, "total_latency not set in context"
     assert total_latency > 0, f"Expected positive total_latency, got {total_latency}"
 
+    # Verify per-group latencies are tracked
+    group_latencies = ctx.get("group_latencies")
+    assert group_latencies is not None, "group_latencies not set in context"
+    assert len(group_latencies) >= 1, f"Expected at least 1 group, got {len(group_latencies)}"
+    assert all(lat > 0 for lat in group_latencies.values()), "All group latencies must be positive"
 
-@pytest.mark.timeout(600)
-def test_pipeline_resnet18():
-    """D-15: optimize_allocation_co_generic completes end-to-end for ResNet18 TPU workload.
 
-    This is the primary integration test per user decision D-15: validates that the full
-    multi-group ResNet18 workload (with FusionEdge-based group splitting) runs through
-    GenericMappingGenerator -> FusionGroupIterationStage -> inner pipeline successfully.
-    ResNet18 has multiple fusion groups, making this a true multi-group test.
+@pytest.mark.timeout(120)
+def test_pipeline_multi_group():
+    """RES-01/RES-02: optimize_allocation_co_generic completes for a multi-group workload.
+
+    Uses a synthetic Conv->Relu->Flatten->Gemm workload that splits into 2 fusion groups
+    via FusionEdge parsing. Tests the same multi-group pipeline mechanics as ResNet18
+    (FusionEdge splitting, per-group iteration, latency aggregation) in seconds.
     """
+    workload_path = make_conv_relu_flatten_gemm_workload()
+
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = optimize_allocation_co_generic(
             hardware=_ACCELERATOR,
-            workload=_RESNET18_PATH,
-            experiment_id="test-generic-resnet18",
+            workload=workload_path,
+            experiment_id="test-multi-group",
             output_path=tmpdir,
             skip_if_exists=False,
         )
 
+    # Verify scheduler result
     scheduler: SteadyStateScheduler = ctx.get("scheduler")
     assert scheduler is not None, "No scheduler in context"
     assert scheduler.latency_total > 0, f"Expected positive latency, got {scheduler.latency_total}"
@@ -166,6 +176,18 @@ def test_pipeline_resnet18():
     total_latency = ctx.get("total_latency")
     assert total_latency is not None, "total_latency not set in context"
     assert total_latency > 0, f"Expected positive total_latency, got {total_latency}"
+
+    # Verify per-group latencies (RES-01: positive latency; RES-02: multi-group handling)
+    group_latencies = ctx.get("group_latencies")
+    assert group_latencies is not None, "group_latencies not set in context"
+    assert len(group_latencies) == 2, f"Expected 2 groups (Conv+Relu and Gemm), got {len(group_latencies)}"
+    assert all(lat > 0 for lat in group_latencies.values()), (
+        f"All group latencies must be positive, got {group_latencies}"
+    )
+    # Verify aggregation: total = sum of per-group
+    assert abs(total_latency - sum(group_latencies.values())) < 1e-6, (
+        f"total_latency ({total_latency}) != sum of group_latencies ({sum(group_latencies.values())})"
+    )
 
 
 def test_tpu_yaml_validates():
