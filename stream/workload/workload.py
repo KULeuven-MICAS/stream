@@ -1014,6 +1014,13 @@ def determine_fusion_cut_points(workload: Workload) -> list[str]:
         An ordered list of node *names* (strings) suitable for passing to
         ``Workload.split_fusion_groups(cut_points=...)``.
     """
+    # Collect ComputationNode names in topological order for the "last node" guard
+    topo_comp_names: list[str] = []
+    for node in nx.lexicographical_topological_sort(workload, key=lambda n: n.name):
+        if isinstance(node, ComputationNode):
+            topo_comp_names.append(node.name)
+    last_comp_name = topo_comp_names[-1] if topo_comp_names else None
+
     cut_points: list[str] = []
     for node in nx.lexicographical_topological_sort(workload, key=lambda n: n.name):
         if not isinstance(node, ComputationNode):
@@ -1030,5 +1037,10 @@ def determine_fusion_cut_points(workload: Workload) -> list[str]:
             if len(comp_succs) == 1 and comp_succs[0].type == "Relu":
                 relu = comp_succs[0]
                 cut_points.append(relu.name)
+
+    # Guard: do not split after the last ComputationNode in the workload — that
+    # would create an empty trailing group with no ComputationNodes.
+    if cut_points and cut_points[-1] == last_comp_name:
+        cut_points.pop()
 
     return cut_points
