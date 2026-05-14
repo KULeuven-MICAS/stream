@@ -75,7 +75,7 @@
 
 **Milestone Goal:** Progressively verify ResNet18 sub-graph patterns through the CO pipeline, then run the complete workload end-to-end.
 
-- [ ] **Phase 25: ResNet18 Sub-Graph Patterns** - Test key ResNet18 patterns (stride-2 conv, residual skip connections, pooling→flatten boundary) as isolated multi-node sub-graphs through the full CO pipeline
+- [x] **Phase 25: ResNet18 Sub-Graph Patterns** - Test key ResNet18 patterns (stride-2 conv, residual skip connections, pooling→flatten boundary) as isolated multi-node sub-graphs through the full CO pipeline (completed 2026-05-14)
 - [ ] **Phase 26: ResNet18 Fusion Strategy** - Implement smarter fusion group splitting (bounded aperture, memory-aware group sizing) so ResNet18 produces manageable groups instead of one 47-node group
 - [ ] **Phase 27: ResNet18 Full Workload E2E** - Run the complete ResNet18 ONNX through the CO pipeline end-to-end, verify positive latency, confirm main_stream_co.py produces valid YAML summary
 
@@ -134,10 +134,10 @@ Plans:
   1. A stride-2 Conv + BN + ReLU sub-graph completes CO allocation with positive latency
   2. A residual block sub-graph (two conv paths + Add with fan-out input) completes CO allocation with fan-out transfers correctly routed
   3. A MaxPool → Conv → GlobalAveragePool sub-graph completes on mixed core types (compute + pooling)
-**Plans:** 2 plans
+**Plans:** 2/2 plans complete
 Plans:
-- [ ] 25-01-PLAN.md — FusionEdgeParser Reshape fix + parametric ResNet18 sub-graph builder (4 patterns)
-- [ ] 25-02-PLAN.md — Integration tests for all 4 patterns + pipeline fixes (D-07)
+- [x] 25-01-PLAN.md — FusionEdgeParser Reshape fix + parametric ResNet18 sub-graph builder (4 patterns)
+- [x] 25-02-PLAN.md — Integration tests for all 4 patterns + pipeline fixes (D-07)
 
 ### Phase 26: ResNet18 Fusion Strategy
 **Goal**: Implement bounded fusion group splitting so ResNet18 produces multiple manageable groups (not one 47-node monolith) with controllable aperture depth
@@ -187,6 +187,6 @@ Plans:
 | 22. ONNX Parser Completions | v1.5 | 3/3 | Complete | 2026-05-11 |
 | 23. Generic Mapping Generator | v1.5 | 3/3 | Complete | 2026-05-11 |
 | 24. Multi-Group Pipeline Integration | v1.5 | 2/2 | Complete | 2026-05-14 |
-| 25. ResNet18 Sub-Graph Patterns | v1.6 | 0/2 | Planning | - |
+| 25. ResNet18 Sub-Graph Patterns | v1.6 | 2/2 | Complete   | 2026-05-14 |
 | 26. ResNet18 Fusion Strategy | v1.6 | TBD | Not started | - |
 | 27. ResNet18 Full Workload E2E | v1.6 | TBD | Not started | - |

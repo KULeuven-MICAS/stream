@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.6
 milestone_name: ResNet18 Full Workload
-status: executing
-stopped_at: Completed 24-02-PLAN.md
-last_updated: "2026-05-14T18:23:04.564Z"
-last_activity: 2026-05-14 -- Phase 25 execution started
+status: verifying
+stopped_at: Completed 25-02-PLAN.md
+last_updated: "2026-05-14T19:18:29.543Z"
+last_activity: 2026-05-14
 progress:
   total_phases: 6
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 10
-  completed_plans: 8
+  completed_plans: 10
   percent: 0
 ---
 
@@ -28,8 +28,8 @@ See: .planning/PROJECT.md (updated 2026-05-14)
 Milestone: v1.6 (ResNet18 Full Workload) — PLANNING
 Phase: 25 (resnet18-sub-graph-patterns) — EXECUTING
 Plan: 2 of 2
-Status: Executing Phase 25
-Last activity: 2026-05-14 -- Completed 25-01-PLAN.md (FusionEdgeParser fix + ResNet18 sub-graph builder)
+Status: Phase complete — ready for verification
+Last activity: 2026-05-14
 
 Progress: [░░░░░░░░░░] 0%
 
@@ -62,6 +62,8 @@ Key decisions carried forward:
 - [Phase 24]: Memory operand assert relaxed to >= for cores with extra operands (pooling I1/I2/O vs MaxPool 2 tensors)
 - [Phase 24]: API rename: optimize_allocation_co -> optimize_allocation_co_with_mapping, backward-compat alias preserved
 - [Phase 24]: Conv-Relu-Flatten-Gemm synthetic workload replaces ResNet18 test: same multi-group mechanics in seconds
+- [Phase 25]: Spatial unrolling assertion relaxed to fallback for fan-out workloads where transfer-graph shifts dimension decomposition
+- [Phase 25]: INT64 tensor type added to onnx_type_to_xdsl_type for Reshape shape initializers
 
 ### Pending Todos
 
@@ -75,6 +77,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-14T15:24:09.242Z
-Stopped at: Completed 24-02-PLAN.md
+Last session: 2026-05-14T19:18:29.541Z
+Stopped at: Completed 25-02-PLAN.md
 Resume file: None
