@@ -96,9 +96,7 @@ class ZigZagCostEstimator:
 
     def create_equation_and_dimension_relations_and_padding_and_pr_sizes(
         self, node: ComputationNode
-    ) -> tuple[
-        ZigZagLayerEquation, list[ZigZagLayerDimRelation], ZigZagLayerPadding, ZigZagLayerDimSizes, list[ZigZagLayerDim]
-    ]:
+    ) -> tuple[ZigZagLayerEquation, list[ZigZagLayerDimRelation], ZigZagLayerPadding, ZigZagLayerDimSizes]:
         """Create the ZigZag equation, e.g. O[b][k][oy][ox]+=W[k][c][fy][fx]*I[b][c][ix][iy].
         If a node has a AffineBinaryOpExpr as one of its dims, it is replaced with a generic dim name,
         and the dimension_relations attribute is used to capture the relation."""
@@ -147,10 +145,6 @@ class ZigZagCostEstimator:
                     padding[dim] = (constant, constant)
                     # Set pr dim sizes
                     pr_sizes[dim] = tensor_shape[i]  # logical size of the tensor (without padding)
-                elif isinstance(expr, AffineConstantExpr):
-                    dim = ZigZagLayerDim(f"D{len(base_dims) + len(extra_dims)}")
-                    extra_dims.append(dim)
-                    operand_dims.append(dim)
                 else:
                     raise NotImplementedError(f"Unsupported affine expr type {type(expr)} in mapping.")
             # Create equation string part for this operand
@@ -165,7 +159,6 @@ class ZigZagCostEstimator:
             dimension_relations,
             ZigZagLayerPadding(padding),
             ZigZagLayerDimSizes(pr_sizes),
-            extra_dims,
         )
 
     def create_layer_dim_sizes(self, node: ComputationNode) -> ZigZagLayerDimSizes:
@@ -206,13 +199,10 @@ class ZigZagCostEstimator:
 
     def get_layer_node_attributes(self, node: ComputationNode) -> ZigZagLayerNodeAttributes:
         layer_type: str = node.type
-        equation, dimension_relations, padding, pr_sizes, extra_dims = (
+        equation, dimension_relations, padding, pr_sizes = (
             self.create_equation_and_dimension_relations_and_padding_and_pr_sizes(node)
         )
         layer_dim_sizes = self.create_layer_dim_sizes(node)
-        for dim in extra_dims:
-            if dim not in layer_dim_sizes.data:
-                layer_dim_sizes.data[dim] = 1
         operand_precision = self.create_operand_precision(node)
         constant_operands = self.create_constant_operands(node)
         input_operand_source = self.create_operand_source(node)
