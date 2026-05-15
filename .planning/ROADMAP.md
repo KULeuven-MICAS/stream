@@ -171,7 +171,10 @@ Plans:
   1. `optimize_allocation_co_generic` completes for `resnet18.onnx` on TPU hardware with positive total_latency
   2. All fusion groups produce positive per-group latencies in the YAML summary
   3. `python main_stream_co.py` exits without error and prints the full ResNet18 allocation summary
-**Plans:** TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 28-01-PLAN.md — Fix visualization hang + SRAM infeasibility blockers + wall-clock timing instrumentation
+- [ ] 28-02-PLAN.md — Full ResNet18 E2E integration test + human verification
 
 ## Progress
 
@@ -204,4 +207,4 @@ Plans:
 | 25. ResNet18 Sub-Graph Patterns | v1.6 | 2/2 | Complete   | 2026-05-14 |
 | 26. Post-Transfer Dimension Invariant | v1.6 | 1/1 | Complete | 2026-05-14 |
 | 27. ResNet18 Fusion Strategy | v1.6 | 2/2 | Complete   | 2026-05-14 |
-| 28. ResNet18 Full Workload E2E | v1.6 | TBD | Not started | - |
+| 28. ResNet18 Full Workload E2E | v1.6 | 0/2 | In progress | - |

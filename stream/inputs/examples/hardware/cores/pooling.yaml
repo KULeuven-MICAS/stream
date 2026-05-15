@@ -2,8 +2,8 @@ name: pooling
 type: zigzag.compute
 
 memories:
-  sram_128KB:
-    size: 1048576
+  sram_4MB:
+    size: 33554432
     r_cost: 60
     w_cost: 75
     area: 0

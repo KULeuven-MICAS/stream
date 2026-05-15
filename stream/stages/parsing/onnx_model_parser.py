@@ -7,6 +7,8 @@ from stream.stages.stage import Stage, StageCallable
 
 logger = logging.getLogger(__name__)
 
+_VIZ_NODE_LIMIT = 30
+
 
 class ONNXModelParserStage(Stage):
     REQUIRED_FIELDS = ("workload_path", "output_path")
@@ -26,7 +28,11 @@ class ONNXModelParserStage(Stage):
         onnx_model_parser.run()
         onnx_model = onnx_model_parser.onnx_model
         workload = onnx_model_parser.workload
-        workload.visualize(self.workload_visualization_path)
+        node_count = len(list(workload.nodes))
+        if node_count > _VIZ_NODE_LIMIT:
+            logger.warning("Skipping workload visualization: %d nodes exceeds limit %d", node_count, _VIZ_NODE_LIMIT)
+        else:
+            workload.visualize(self.workload_visualization_path)
 
         self.ctx.set(
             onnx_model=onnx_model,
