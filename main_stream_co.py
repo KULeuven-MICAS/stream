@@ -36,17 +36,23 @@ def _write_yaml_summary(ctx, output_path: str) -> None:
     """Write a YAML summary with total latency, per-group latencies, and percentages."""
     total_latency = ctx.get("total_latency")
     group_latencies = ctx.get("group_latencies", {})
+    group_wall_times = ctx.get("group_wall_times", {})
 
     summary: dict = {"total_latency": total_latency}
+    if group_wall_times:
+        summary["total_wall_time_s"] = round(sum(group_wall_times.values()), 2)
 
     if group_latencies:
         groups = {}
         for group_id, latency in sorted(group_latencies.items()):
             pct = (latency / total_latency * 100) if total_latency > 0 else 0.0
-            groups[f"group_{group_id}"] = {
+            entry = {
                 "latency": latency,
                 "percentage": round(pct, 2),
             }
+            if group_id in group_wall_times:
+                entry["wall_time_s"] = round(group_wall_times[group_id], 2)
+            groups[f"group_{group_id}"] = entry
         summary["groups"] = groups
 
     summary_path = os.path.join(output_path, "summary.yaml")
@@ -57,7 +63,8 @@ def _write_yaml_summary(ctx, output_path: str) -> None:
     if group_latencies:
         for group_id, latency in sorted(group_latencies.items()):
             pct = (latency / total_latency * 100) if total_latency > 0 else 0.0
-            logger.info(f"  Group {group_id}: {latency} ({pct:.1f}%)")
+            wt = f", wall={group_wall_times[group_id]:.1f}s" if group_id in group_wall_times else ""
+            logger.info(f"  Group {group_id}: {latency} ({pct:.1f}%{wt})")
 
 
 def main():

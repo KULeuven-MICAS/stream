@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
@@ -36,6 +37,7 @@ class FusionGroupIterationStage(Stage):
         group_mapping_paths = self.group_mapping_paths
         total_latency = 0.0
         group_latencies: dict[int, float] = {}
+        group_wall_times: dict[int, float] = {}
         final_ctx = None
 
         assert len(sub_workloads) == len(group_mapping_paths), (
@@ -55,8 +57,10 @@ class FusionGroupIterationStage(Stage):
 
             logger.info(f"Running inner pipeline for group {i} ({len(sub_workload.get_computation_nodes())} nodes)")
 
+            t_group_start = time.time()
             sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
             ctxs = list(sub_stage.run())
+            group_wall_times[i] = time.time() - t_group_start
             assert len(ctxs) == 1, f"Expected 1 context from inner pipeline, got {len(ctxs)}"
             ctx = ctxs[0]
 
@@ -65,11 +69,12 @@ class FusionGroupIterationStage(Stage):
             total_latency += group_latency
             group_latencies[i] = group_latency
             logger.info(f"Group {i} latency: {group_latency}")
+            logger.info(f"Group {i} wall time: {group_wall_times[i]:.2f}s")
             final_ctx = ctx
 
         # Per D-05: Store aggregated result
         assert final_ctx is not None, "No groups processed"
-        final_ctx.set(total_latency=total_latency, group_latencies=group_latencies)
+        final_ctx.set(total_latency=total_latency, group_latencies=group_latencies, group_wall_times=group_wall_times)
         logger.info(f"Total latency across all groups: {total_latency}")
         logger.info(f"Per-group latencies: {group_latencies}")
         yield final_ctx
