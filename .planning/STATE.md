@@ -2,15 +2,15 @@
 gsd_state_version: 1.0
 milestone: v1.6
 milestone_name: ResNet18 Full Workload
-status: verifying
-stopped_at: Completed 27-02-PLAN.md
-last_updated: "2026-05-14T21:48:57.307Z"
-last_activity: 2026-05-14
+status: executing
+stopped_at: Completed 28-01-PLAN.md
+last_updated: "2026-05-15T09:27:32.821Z"
+last_activity: 2026-05-15
 progress:
   total_phases: 7
   completed_phases: 5
-  total_plans: 12
-  completed_plans: 12
+  total_plans: 14
+  completed_plans: 13
   percent: 50
 ---
 
@@ -21,15 +21,15 @@ progress:
 See: .planning/PROJECT.md (updated 2026-05-14)
 
 **Core value:** Enable users to explore the TETRA design space efficiently — selecting solver backends, toggling constraint groups, and understanding the impact of hardware constraints on schedule optimality
-**Current focus:** Phase 27 — resnet18-fusion-strategy
+**Current focus:** Phase 28 — resnet18-full-workload-e2e
 
 ## Current Position
 
 Milestone: v1.6 (ResNet18 Full Workload) — IN PROGRESS
-Phase: 27 (resnet18-fusion-strategy) — EXECUTING
+Phase: 28 (resnet18-full-workload-e2e) — EXECUTING
 Plan: 2 of 2
-Status: Phase complete — ready for verification
-Last activity: 2026-05-14
+Status: Ready to execute
+Last activity: 2026-05-15
 
 Progress: [█████░░░░░] 50%
 
@@ -68,6 +68,9 @@ Key decisions carried forward:
 - [Phase 27]: split_fusion_groups(cut_points=None) backward-compatible extension; cut-point nodes create OutEdge/InEdge pairs at group boundaries
 - [Phase 27]: Fan-out guard removed: ResNet Relu nodes naturally fan out to 2 successors via skip connections; all go into the same next group
 - [Phase 27]: Used AcceleratorFactory pattern (open_yaml -> validate -> factory.create) in integration tests matching existing conventions
+- [Phase 28]: VIZ_NODE_LIMIT=30: skip visualization for workloads exceeding 30 nodes to prevent hang on 93-node ResNet18
+- [Phase 28]: SRAM 4MB (33554432 bits): covers Group 0 reuse-factored tensor (3.07MB) with margin for MILP feasibility
+- [Phase 28]: Wall-clock timing uses time.time() around outer pipeline call, stored in group_wall_times context dict
 
 ### Pending Todos
 
@@ -81,6 +84,6 @@ None.
 
 ## Session Continuity
 
-Last session: 2026-05-14T21:48:57.305Z
-Stopped at: Completed 27-02-PLAN.md
+Last session: 2026-05-15T09:27:32.818Z
+Stopped at: Completed 28-01-PLAN.md
 Resume file: None
