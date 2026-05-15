@@ -2,8 +2,8 @@ name: simd
 type: zigzag.compute
 
 memories:
-  sram_4MB_2rw:
-    size: 33554432
+  sram_128KB_2rw:
+    size: 1048576
     r_cost: 60
     w_cost: 75
     area: 0
