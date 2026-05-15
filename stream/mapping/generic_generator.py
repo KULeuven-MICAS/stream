@@ -215,52 +215,17 @@ class GenericMappingGenerator:
     def _build_intra_core_tiling(
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...]
     ) -> list[dict[str, Any]]:
-        """Build intra-core tiling for the fused group.
+        """Build intra-core tiling entries for the fused group.
 
-        Tiles the largest spatial dimension (by unique z-variable size) to
-        produce multiple temporal iterations. The constraint optimizer handles
-        the actual memory fitting across spatial + temporal tiling.
+        Uses the first computation node that has dimensions as the reference.
+        Tiles the first dimension at its full size (no temporal splitting),
+        which always produces nb_splits=1 — a valid no-op tiling.
+
+        Returns an empty list if no computation node has dimensions.
         """
-        unique_dims = sub_workload.unique_dimensions()[0]
-        if not unique_dims:
-            return []
-
-        candidates = sorted(
-            [(d, sub_workload.get_dimension_size(d)) for d in unique_dims if sub_workload.get_dimension_size(d) > 1],
-            key=lambda x: x[1],
-            reverse=True,
-        )
-        if not candidates:
-            ref_cn = cns[0]
-            return [{"dim": f"{ref_cn.name}.D0", "tile": sub_workload.get_dimension_size(unique_dims[0])}]
-
-        # Pick the largest dim NOT used by inter_core_tiling (avoids
-        # spatial_unrolling × tile_size divisibility conflicts).
-        inter_core_dims = self._get_inter_core_tiling_dims(sub_workload, cns)
-        for dim, size in candidates:
-            if dim not in inter_core_dims:
-                tile_dim = dim
-                tile_size = size
-                break
-        else:
-            tile_dim = candidates[0][0]
-            tile_size = candidates[0][1]
-
-        ref_cn = next((cn for cn in cns if tile_dim in sub_workload.get_dims(cn)), cns[0])
-        ref_dims = sub_workload.get_dims(ref_cn)
-        ref_dim_idx = ref_dims.index(tile_dim) if tile_dim in ref_dims else 0
-        return [{"dim": f"{ref_cn.name}.D{ref_dim_idx}", "tile": tile_size}]
-
-    def _get_inter_core_tiling_dims(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> set:
-        """Return unique dims used by inter_core_tiling across all nodes."""
-        inter_dims = set()
-        for cn in cns:
-            cores = self._select_cores_for_node(cn)
-            if len(cores) <= 1:
-                continue
-            split_dim_idx = self._find_split_dim(sub_workload, cn, len(cores))
-            if split_dim_idx is not None:
-                node_dims = sub_workload.get_dims(cn)
-                if split_dim_idx < len(node_dims):
-                    inter_dims.add(node_dims[split_dim_idx])
-        return inter_dims
+        for ref_cn in cns:
+            dims = sub_workload.get_dims(ref_cn)
+            if dims:
+                dim_size = sub_workload.get_dimension_size(dims[0])
+                return [{"dim": f"{ref_cn.name}.D0", "tile": dim_size}]
+        return []
