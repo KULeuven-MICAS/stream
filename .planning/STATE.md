@@ -3,8 +3,8 @@ gsd_state_version: 1.0
 milestone: v1.6
 milestone_name: ResNet18 Full Workload
 status: executing
-stopped_at: Completed 28-01-PLAN.md
-last_updated: "2026-05-15T09:27:32.821Z"
+stopped_at: Phase 28 in progress — fixed mapping YAML approach, implementation pending
+last_updated: "2026-05-15T16:30:00.000Z"
 last_activity: 2026-05-15
 progress:
   total_phases: 7
@@ -26,9 +26,9 @@ See: .planning/PROJECT.md (updated 2026-05-14)
 ## Current Position
 
 Milestone: v1.6 (ResNet18 Full Workload) — IN PROGRESS
-Phase: 28 (resnet18-full-workload-e2e) — EXECUTING
-Plan: 2 of 2
-Status: Ready to execute
+Phase: 28 (resnet18-full-workload-e2e) — EXECUTING (inline, no formal plan)
+Plan: Bug fixes done, fixed mapping YAML + E2E test remaining
+Status: Create fixed mapping YAML for 11 groups, write E2E test
 Last activity: 2026-05-15
 
 Progress: [█████░░░░░] 50%

@@ -1,7 +1,7 @@
 # Phase 28: ResNet18 Full Workload E2E - Context
 
 **Gathered:** 2026-05-15
-**Status:** Ready for planning
+**Status:** In progress — fixed mapping YAML approach decided, implementation pending
 
 <domain>
 ## Phase Boundary
@@ -14,7 +14,8 @@ Run the complete ResNet18 ONNX model end-to-end through the CO pipeline on TPU h
 ## Implementation Decisions
 
 ### Test Strategy
-- **D-01:** Single `test_resnet18_full_e2e()` integration test. Runs `optimize_allocation_co_generic` on `resnet18.onnx`, asserts: positive `total_latency`, exactly 11 `group_latencies` entries, all positive, `total_latency == sum(group_latencies)`. Sub-graph patterns are already tested individually in Phase 25.
+- **D-01:** Single `test_resnet18_full_e2e()` integration test. Uses `optimize_allocation_co_with_mapping` with a **fixed hand-crafted mapping YAML** (NOT auto-generated). The fixed mapping specifies proper spatial tiling (tile=1 on one spatial dim per group) so activation tiles fit in 128KB SRAM. Asserts: positive `total_latency`, exactly 11 `group_latencies` entries, all positive, `total_latency == sum(group_latencies)`.
+- **D-01b (REVISED):** The `GenericMappingGenerator` stays simple (Phase 27 version, no memory-aware tiling logic). It doesn't know how to tile for memory — that's the MILP's job given a proper mapping. The E2E test uses a fixed mapping that encodes the correct spatial tiling per group.
 
 ### Timeout & Performance
 - **D-02:** Mark with `@pytest.mark.slow` and `@pytest.mark.timeout(900)`. Default test runs skip it (`pytest -m "not slow"`). Explicit opt-in: `pytest -m slow`. Update `conftest.py` to register the `slow` marker. Keeps CI fast while the test exists for manual verification.
@@ -30,10 +31,34 @@ Run the complete ResNet18 ONNX model end-to-end through the CO pipeline on TPU h
 - **D-06:** The full ResNet18 workload should produce exactly 11 groups via `determine_fusion_cut_points()` (from Phase 27). The test asserts this count. The groups should correspond to: 1 front-end (Conv1+Relu+MaxPool), 8 residual blocks (each Conv+Relu+Conv+Add+Relu), 1 tail (GlobalAveragePool), and 1 post-Flatten (Gemm).
 
 ### Claude's Discretion
-- Log parsing approach (regex on timestamps vs structured log parsing)
+- Exact dimension indices for the fixed mapping YAML per group (requires inspecting each group's unique_dimensions)
+- Whether the empty `links_used` crash (from 28-02 worktree) needs fixing
 - Exact YAML summary format for timing data
-- Whether to update main_stream_co.py directly or add a helper function
 - Test file location (extend test_resnet_patterns.py or new file)
+
+### Implementation Progress (as of 2026-05-15)
+
+**COMPLETED:**
+- `e51daa2`: GlobalAveragePool parser fixed — proper 6D iteration space `(b, c, oh, ow, ih, iw)` instead of AffineConstantExpr(0) hack
+- `c1b0247`: SRAM reverted to original 128KB on simd/pooling cores (hardware must not change)
+- `f73fb25`: GenericMappingGenerator reverted to clean Phase 27 version (no intra_core_tiling spaghetti)
+- `2bbf655`: Visualization guard for large workloads (skip >30 nodes)
+- `45507fb`: Wall-clock timing per fusion group (group_wall_times in FusionGroupIterationStage)
+- All 194 existing tests pass
+
+**REMAINING:**
+1. Create `stream/inputs/examples/mapping/resnet18_tpu_quad_core.yaml` — a fixed mapping for all 11 ResNet18 fusion groups with proper spatial tiling. Each group tiles one spatial dim to tile=1 so that per-iteration activation tiles fit in 128KB. The mapping uses `optimize_allocation_co_with_mapping` (takes explicit mapping path).
+2. Investigate each group's dimension structure to determine which local dim index corresponds to the spatial height for that group's reference node.
+3. Fix the empty `links_used` crash if it surfaces (transfer paths with no communication links → min() on empty iterable in `_transfer_latency_for_path`).
+4. Write `test_resnet18_full_e2e()` in `tests/test_resnet_patterns.py` with @pytest.mark.slow.
+5. Verify the full pipeline completes with positive latency for all 11 groups.
+
+**KEY INSIGHT (from debugging session):**
+- The MILP becomes infeasible when activations don't fit in 128KB SRAM
+- The fix is NOT to increase SRAM, but to tile one spatial dim to 1 in the intra_core_tiling
+- For Group 0: Conv output is (1, 64, 112, 112). Tile the last spatial dim (W=112) to 1 → per-iteration tile becomes (1, 64, 112, 1) = 14 KB. Fits easily.
+- The inter_core_tiling already splits channels (D1 split=4 for Conv on 4 cores)
+- Each group needs: identify the z-variable for height/W, find which node+local_dim it maps to, set tile=1
 
 </decisions>
 
