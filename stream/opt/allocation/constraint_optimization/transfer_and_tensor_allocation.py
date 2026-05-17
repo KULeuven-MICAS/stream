@@ -255,7 +255,7 @@ class TransferAndTensorAllocator:
 
     @staticmethod
     def _transfer_latency_for_path(tr: TransferNode, path: MulticastPathPlan) -> int:
-        if not path:
+        if not path or not path.links_used:
             return 0
         min_bw = min(link.bandwidth for link in path.links_used)
         assert len(tr.inputs) == 1, "Only single-input transfers are supported for latency calculation."
