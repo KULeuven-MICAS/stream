@@ -3,16 +3,16 @@ from enum import StrEnum
 from typing import Any
 
 from onnx import ModelProto, NodeProto
-from stream.workload.computation.computation_node import GeneratedComputationNode
-from stream.workload.dependency_propagation.concat_node import ConcatNode
-from stream.workload.dependency_propagation.split_node import SplitNode
-from stream.workload.mapping import InterCoreMappingAttributes
 from zigzag.datatypes import LayerDim
 from zigzag.parser.workload_factory import LayerNodeFactory
 
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.onnx_utils import get_onnx_output_shapes
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
+from stream.workload.computation.computation_node import GeneratedComputationNode
+from stream.workload.dependency_propagation.concat_node import ConcatNode
+from stream.workload.dependency_propagation.split_node import SplitNode
+from stream.workload.mapping import InterCoreMappingAttributes
 
 logger = logging.getLogger(__name__)
 

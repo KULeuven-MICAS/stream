@@ -1,13 +1,20 @@
 import logging
 from typing import Any
 
-from onnx import NodeProto
+import onnx
+from onnx import NodeProto, TensorProto
 from zigzag.parser.onnx.utils import parse_onnx_model_from_path
 
+from stream.parser.onnx.add import AddParser
+from stream.parser.onnx.batch_norm import BatchNormParser
 from stream.parser.onnx.conv import ConvParser
+from stream.parser.onnx.fusion_edge import FusionEdgeParser
 from stream.parser.onnx.gemm import GemmParser
+from stream.parser.onnx.global_average_pool import GlobalAveragePoolParser
+from stream.parser.onnx.max_pool import MaxPoolParser
 from stream.parser.onnx.mul import MulParser
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
+from stream.parser.onnx.relu import ReluParser
 from stream.parser.onnx.simd import SimdParser
 from stream.parser.onnx.utils import onnx_tensor_to_tensor
 from stream.workload.workload import InEdge, Node, OutEdge, Tensor, Workload
@@ -18,6 +25,9 @@ logger = logging.getLogger(__name__)
 class ONNXModelParser:
     """Parse the ONNX model into a workload."""
 
+    # Op types dispatched to FusionEdgeParser (shape-only boundary ops)
+    FUSION_EDGE_OPS: set[str] = {"Flatten", "Reshape"}
+
     # Map the node's op_type to the corresponding Parser class
     OP_TYPE_TO_PARSER: dict[str, type[OnnxOperatorParser]] = {
         # General
@@ -26,11 +36,11 @@ class ONNXModelParser:
         # "MatMul": MatMulParser,
         "Gemm": GemmParser,
         # "Einsum": EinsumParser,
-        # "MaxPool": PoolingParser,
+        "MaxPool": MaxPoolParser,
         # "AveragePool": PoolingParser,
         # "GlobalMaxPool": PoolingParser,
-        # "GlobalAveragePool": PoolingParser,
-        # "Add": MulParser,
+        "GlobalAveragePool": GlobalAveragePoolParser,
+        "Add": AddParser,
         "Mul": MulParser,
         # Special operators
         # "SSM": SSMParser,
@@ -38,7 +48,7 @@ class ONNXModelParser:
         # Single-input element-wise
         # "Exp": ExpParser,
         # "ReduceMean": Reduce1DParser,
-        # "Relu": ReluParser,
+        "Relu": ReluParser,
         # "Gelu": GeluParser,
         "Silu": SimdParser,
         # "Sigmoid": SigmoidParser,
@@ -50,11 +60,10 @@ class ONNXModelParser:
         # "LpNormalization": LpNormalizationParser,
         # "Gather": GatherParser,
         # "Transpose": TransposeParser,
-        # "Reshape": ReshapeParser,
-        # "Flatten": FlattenParser,
         # "Concat": ConcatParser,
         # "Split": SplitParser,
         # "Slice": SliceParser,
+        "BatchNormalization": BatchNormParser,
     }
 
     def __init__(self, onnx_model_path: str) -> None:
@@ -67,12 +76,15 @@ class ONNXModelParser:
         - iterate through the onnx model and generate the workload consisting of LayerNodes and DummyNodes
         """
         self.onnx_model = parse_onnx_model_from_path(self.onnx_model_path)
+        self.onnx_model = onnx.shape_inference.infer_shapes(self.onnx_model)
         self.workload = self.parse_workload()
 
     def get_parser_class(self, node: NodeProto):
+        if node.op_type in ONNXModelParser.FUSION_EDGE_OPS:
+            return FusionEdgeParser
         parser_class = ONNXModelParser.OP_TYPE_TO_PARSER.get(node.op_type)
         if not parser_class:
-            raise NotImplementedError()
+            raise NotImplementedError(f"No parser registered for ONNX op type '{node.op_type}'.")
         return parser_class
 
     def parse_workload(self):
@@ -110,6 +122,8 @@ class ONNXModelParser:
             workload_nodes.append(InEdge(name=input.name, outputs=(tensor,)))
             name_to_tensor_dict[input.name] = tensor
         for initializer in self.onnx_model.graph.initializer:
+            if initializer.data_type in (TensorProto.INT64, TensorProto.INT32):
+                continue
             tensor = onnx_tensor_to_tensor(initializer)
             workload_nodes.append(InEdge(name=initializer.name, outputs=(tensor,)))
             name_to_tensor_dict[initializer.name] = tensor

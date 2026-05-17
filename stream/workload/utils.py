@@ -108,10 +108,9 @@ def _insert_kernel_iteration_variables(
     for node in workload.get_iteration_space_nodes():
         for dim in reversed(unique_dims):
             spatial_unrolling = next((su[1] for su in unique_spatial_unrollings if su[0] == dim), 1)
-            size, rem = divmod(workload.get_dimension_size(dim), spatial_unrolling)
-            assert rem == 0, (
-                f"Dim size {workload.get_dimension_size(dim)} not divisible by spatial unrolling {spatial_unrolling}"
-            )
+            dim_size = workload.get_dimension_size(dim)
+            size, rem = divmod(dim_size, spatial_unrolling)
+            assert rem == 0, f"Dim size {dim_size} not divisible by spatial unrolling {spatial_unrolling}"
             effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.INVARIANT
             iteration_variables[node].insert(
                 0,

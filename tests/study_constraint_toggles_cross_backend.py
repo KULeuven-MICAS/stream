@@ -22,6 +22,8 @@ import sys
 
 import matplotlib
 
+from stream.api import configure_logging
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -273,6 +275,7 @@ def _plot_solve_time_comparison(
 
 
 def main() -> int:
+    configure_logging()
     parser = argparse.ArgumentParser(
         description="Cross-backend comparison of constraint toggle study results.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,

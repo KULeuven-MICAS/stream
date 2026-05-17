@@ -1,0 +1,159 @@
+# Fixed mapping for ResNet18 on TPU quad-core (11 fusion groups).
+#
+# Core allocation by operator type:
+#   Conv/Gemm/Relu → 4 compute cores [0,1,2,3] with inter-core tiling
+#   MaxPool/GlobalAveragePool → pooling core [4]
+#   Add → SIMD core [5]
+#
+# Spatial tiling: each group tiles one spatial dim to 1 via intra_core_tiling,
+# keeping per-iteration activations within 128 KB SRAM.
+#
+# Group 0 (frontend):  Conv(7x7,s=2) + Relu + MaxPool(s=2)
+#   inter_core_tiling on Conv channels (D6) not spatial — ZigZag can't handle
+#   spatial compound dims for the 7x7 Conv on the 16-byte register file.
+#   intra_core_tiling on MaxPool output_H (D2, z5=56), NOT output_W (D3, z6)
+#   because z6 participates in Conv D1's compound expression.
+#
+# Groups 1-8 (residual blocks): tile second Conv's D2 (spatial width, pure z-var)
+# Groups 9-10 (GlobalAveragePool, Gemm): D0 tile=1 (batch, no-op — already tiny)
+
+layers:
+- name: Conv
+  core_allocation:
+  - [0, 1, 2, 3]
+  inter_core_tiling:
+  - - dim: D6
+      split: 4
+
+- name: Gemm
+  core_allocation:
+  - [0, 1, 2, 3]
+  inter_core_tiling:
+  - - dim: D2
+      split: 4
+
+- name: MaxPool
+  core_allocation:
+  - [4]
+
+- name: GlobalAveragePool
+  core_allocation:
+  - [4]
+
+- name: Add
+  core_allocation:
+  - [5]
+
+- name: Relu
+  core_allocation:
+  - [0, 1, 2, 3]
+  inter_core_tiling:
+  - - dim: D1
+      split: 4
+
+fused_groups:
+# Group 0: Frontend — Conv(7x7,s=2) + Relu + MaxPool(3x3,s=2)
+- name: Group_0_Frontend
+  layers:
+  - Conv
+  - Relu
+  - MaxPool
+  intra_core_tiling:
+  - dim: /maxpool/MaxPool.D2
+    tile: 1
+
+# Group 1: layer1.0 basic residual (64ch, 56x56)
+- name: Group_1_Layer1_Block0
+  layers:
+  - Conv
+  - Relu
+  - Add
+  intra_core_tiling:
+  - dim: /layer1/layer1.0/conv2/Conv.D2
+    tile: 1
+
+# Group 2: layer1.1 basic residual (64ch, 56x56)
+- name: Group_2_Layer1_Block1
+  layers:
+  - Conv
+  - Relu
+  - Add
+  intra_core_tiling:
+  - dim: /layer1/layer1.1/conv2/Conv.D2
+    tile: 1
+
+# Group 3: layer2.0 stride-2 downsample (64→128ch, 56→28)
+- name: Group_3_Layer2_Block0
+  layers:
+  - Conv
+  - Relu
+  - Add
+  intra_core_tiling:
+  - dim: /layer2/layer2.0/conv2/Conv.D2
+    tile: 1
+
+# Group 4: layer2.1 basic residual (128ch, 28x28)
+- name: Group_4_Layer2_Block1
+  layers:
+  - Conv
+  - Relu
+  - Add
+  intra_core_tiling:
+  - dim: /layer2/layer2.1/conv2/Conv.D2
+    tile: 1
+
+# Group 5: layer3.0 stride-2 downsample (128→256ch, 28→14)
+- name: Group_5_Layer3_Block0
+  layers:
+  - Conv
+  - Relu
+  - Add
+  intra_core_tiling:
+  - dim: /layer3/layer3.0/conv2/Conv.D2
+    tile: 1
+
+# Group 6: layer3.1 basic residual (256ch, 14x14)
+- name: Group_6_Layer3_Block1
+  layers:
+  - Conv
+  - Relu
+  - Add
+  intra_core_tiling:
+  - dim: /layer3/layer3.1/conv2/Conv.D2
+    tile: 1
+
+# Group 7: layer4.0 stride-2 downsample (256→512ch, 14→7)
+- name: Group_7_Layer4_Block0
+  layers:
+  - Conv
+  - Relu
+  - Add
+  intra_core_tiling:
+  - dim: /layer4/layer4.0/conv2/Conv.D2
+    tile: 1
+
+# Group 8: layer4.1 basic residual (512ch, 7x7)
+- name: Group_8_Layer4_Block1
+  layers:
+  - Conv
+  - Relu
+  - Add
+  intra_core_tiling:
+  - dim: /layer4/layer4.1/conv2/Conv.D2
+    tile: 1
+
+# Group 9: GlobalAveragePool tail (512ch, 7x7 → 1x1)
+- name: Group_9_AvgPool
+  layers:
+  - GlobalAveragePool
+  intra_core_tiling:
+  - dim: /avgpool/GlobalAveragePool.D0
+    tile: 1
+
+# Group 10: FC head (Gemm, 512 → 1000)
+- name: Group_10_FC
+  layers:
+  - Gemm
+  intra_core_tiling:
+  - dim: /fc/Gemm.D0
+    tile: 1

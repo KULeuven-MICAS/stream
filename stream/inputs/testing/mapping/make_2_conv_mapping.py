@@ -28,8 +28,8 @@ def make_2_conv_mapping(config: TwoConvWorkloadConfig):  # noqa: N803
     compute_allocation_conv1 = [0, 1, 2, 3]
     conv1 = {
         "name": "Conv1",
-        "core_allocation": copy.deepcopy(compute_allocation_conv1),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling_conv1),
+        "core_allocation": [copy.deepcopy(compute_allocation_conv1)],
+        "inter_core_tiling": [copy.deepcopy(inter_core_tiling_conv1)],
         "kernel": copy.deepcopy(kernel_conv1),
     }
     # Right Gemm
@@ -38,8 +38,8 @@ def make_2_conv_mapping(config: TwoConvWorkloadConfig):  # noqa: N803
     compute_allocation_conv2 = [0, 1, 2, 3]
     conv2 = {
         "name": "Conv2",
-        "core_allocation": copy.deepcopy(compute_allocation_conv2),
-        "inter_core_tiling": copy.deepcopy(inter_core_tiling_conv2),
+        "core_allocation": [copy.deepcopy(compute_allocation_conv2)],
+        "inter_core_tiling": [copy.deepcopy(inter_core_tiling_conv2)],
         "kernel": copy.deepcopy(kernel_conv2),
     }
 

@@ -255,7 +255,7 @@ class TransferAndTensorAllocator:
 
     @staticmethod
     def _transfer_latency_for_path(tr: TransferNode, path: MulticastPathPlan) -> int:
-        if not path:
+        if not path or not path.links_used:
             return 0
         min_bw = min(link.bandwidth for link in path.links_used)
         assert len(tr.inputs) == 1, "Only single-input transfers are supported for latency calculation."
@@ -1750,7 +1750,7 @@ class TransferAndTensorAllocator:
 
         with open(save_path, "w") as fh:
             yaml.safe_dump(metrics, fh, sort_keys=False, default_flow_style=False)
-        print(f"Optimization metrics saved to {save_path}")
+        _logger.info("Optimization metrics saved to %s", save_path)
 
     def save_slot_latency_breakdown(self, save_path: str) -> None:  # noqa: PLR0915, PLR0912
         """Dump a debug-friendly per-slot latency breakdown next to the metrics yaml.
@@ -1903,10 +1903,10 @@ class TransferAndTensorAllocator:
 
             with open(save_path, "w") as fh:
                 yaml.safe_dump(summary, fh, sort_keys=False, default_flow_style=False)
-            print(f"Slot latency breakdown saved to {save_path}")
+            _logger.info("Slot latency breakdown saved to %s", save_path)
         except Exception as e:
             # Never block the pipeline on this debug artifact.
-            print(f"[warn] save_slot_latency_breakdown failed: {e}")
+            _logger.warning("save_slot_latency_breakdown failed: %s", e)
 
     def plot_optimization_progress(  # noqa: PLR0912, PLR0915
         self,
@@ -2080,7 +2080,7 @@ class TransferAndTensorAllocator:
 
         if save_path is not None:
             fig.savefig(save_path, dpi=200, bbox_inches="tight")
-            print(f"Optimization progress plot saved to {save_path}")
+            _logger.info("Optimization progress plot saved to %s", save_path)
 
         if show:
             plt.show()
@@ -2152,4 +2152,4 @@ class TransferAndTensorAllocator:
         with open(file_path, "w") as f:
             yaml.dump({"trace": entries}, f, default_flow_style=False, sort_keys=False)
 
-        print(f"Optimization trace saved to {file_path}")
+        _logger.info("Optimization trace saved to %s", file_path)

@@ -20,7 +20,7 @@ from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocatio
     TransferAlloc,
     TransferAndTensorAllocator,
 )
-from stream.opt.solver import ConstraintSelection
+from stream.opt.solver import ConstraintSelection, SolveStats
 from stream.visualization.steady_state_trace import export_steady_state_trace
 from stream.workload.node import (
     ComputationNode,
@@ -95,6 +95,40 @@ class SteadyStateScheduler:
         if self.output_path:
             os.makedirs(self.output_path, exist_ok=True)
 
+        self.solve_stats: SolveStats | None = None
+
+    def get_ir(self) -> dict:
+        """Return a dictionary representation of the scheduler state for serialization/inspection.
+
+        This captures:
+        - Latency metrics (total, per-iteration, overlap)
+        - Backend and constraint configuration used for the solve
+        - Fusion splits applied
+        - Mapping with node-to-resource allocations
+        """
+        cs = self.constraint_selection
+        constraint_selection_ir = (
+            {
+                "memory_capacity": cs.memory_capacity,
+                "object_fifo_depth": cs.object_fifo_depth,
+                "buffer_descriptors": cs.buffer_descriptors,
+                "dma_channels": cs.dma_channels,
+            }
+            if cs is not None
+            else None
+        )
+        return {
+            "latency": {
+                "total": self.latency_total,
+                "per_iteration": self.latency_per_iteration,
+                "overlap_between_iterations": self.overlap_between_iterations,
+            },
+            "backend": self.backend,
+            "constraint_selection": constraint_selection_ir,
+            "fusion_splits": {str(dim): size for dim, size in self.fusion_splits.items()},
+            "mapping": self.mapping.get_ir(),
+        }
+
     def run(self) -> Workload:
         """
         Run the steady state scheduler on the given workload.
@@ -147,6 +181,8 @@ class SteadyStateScheduler:
             overlap,
             latency_per_iteration,
         ) = tta.solve()
+        # Capture solve statistics before tta goes out of scope (tta.model is a local variable)
+        self.solve_stats = tta.model.solve_stats()
         # total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
         # assert total == total_latency_solver, (
         #     f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
@@ -259,8 +295,20 @@ class SteadyStateScheduler:
         - one from the source to the on-chip memory buffer,
         - a second one from the on-chip memory buffer to the destination.
         This is to ensure that the constant tensor is properly allocated in memory and can be reused across iterations.
+
+        If the accelerator has no on-chip memory tiles (e.g. TPU-like hardware), falls back to a single
+        direct transfer from the source to the destinations (MEM_TO_COMPUTE).
         """
         assert isinstance(src, InEdge), f"Expected source of constant transfer to be an InEdge, found {type(src)}"
+        # Fall back to a single direct transfer when no memory tiles are available
+        if not self._get_accelerator_memory_cores():
+            transfer_type = self.determine_transfer_type(src, dsts)
+            out_name = f"{tensor.name}_1"
+            transfer_node, updated_tensors = self.generate_transfer_node(dsts, tensor, transfer_type, out_name)
+            new_nodes[transfer_node.name] = transfer_node
+            for dst, updated_tensor in zip(dsts, updated_tensors, strict=True):
+                self.update_destination_node_inputs(tensor, src, new_nodes, dst, updated_tensor)
+            return
         # First transfer node from source to on-chip buffer
         transfer_type_1 = self.determine_transfer_type(src, dsts, dst_type="memory")
         out_name_1 = f"{tensor.name}_1"
@@ -312,12 +360,25 @@ class SteadyStateScheduler:
         - one from the source to the on-chip memory buffer,
         - a second one from the on-chip memory buffer to the destination.
         This is to ensure that the constant tensor is properly allocated in memory and can be reused across iterations.
+
+        If the accelerator has no on-chip memory tiles (e.g. TPU-like hardware), falls back to a single
+        direct transfer from the source to the destinations (COMPUTE_TO_MEM).
         """
         assert len(dsts) == 1, "Currently only support single destination for constant output transfer."
         dst = dsts[0]
         assert isinstance(dst, OutEdge), (
             f"Expected destination of constant transfer to be an OutEdge, found {type(dst)}"
         )
+        # Fall back to a single direct transfer when no memory tiles are available
+        if not self._get_accelerator_memory_cores():
+            transfer_type = self.determine_transfer_type(src, dsts)
+            new_tensor = self.generate_transfer_input_tensor(tensor, src, name_suffix="_1")
+            out_name = f"{tensor.name}"
+            transfer_node, updated_tensors = self.generate_transfer_node([dst], new_tensor, transfer_type, out_name)
+            new_nodes[transfer_node.name] = transfer_node
+            new_src = self.update_source_tensor(tensor, src, new_nodes, new_tensor)
+            self.update_destination_tensor(tensor, new_src, new_nodes, dst, updated_tensors)
+            return
         # First transfer node from source to on-chip buffer
         transfer_type_1 = self.determine_transfer_type(src, dsts, dst_type="memory")
         new_tensor = self.generate_transfer_input_tensor(tensor, src, name_suffix="_1")
@@ -587,6 +648,10 @@ class SteadyStateScheduler:
             possible_memory_cores = self._retrieve_core_allocation(dst)
         elif node.transfer_type in (TransferType.COMPUTE_TO_MEM,):
             possible_memory_cores = self._get_possible_memory_core_allocations(src, node)
+            if not possible_memory_cores:
+                # No on-chip memory tiles — fall back to offchip core as the destination
+                offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
+                possible_memory_cores = ((offchip_core,),)
         else:
             possible_memory_cores_set: set[Core] = set()
             for dst in dsts:
@@ -602,18 +667,18 @@ class SteadyStateScheduler:
         for dst_allocs in possible_dst_allocs:
             nb_cores = len(dst_allocs)
             if nb_cores == 1:
-                possible_inter_core_tiling.append(tuple())
+                dst_tiling = tuple()
+            elif all(isinstance(dst, ComputationNode) for dst in dsts):
+                # For fan-out: use the destination with the largest resource allocation
+                # as the tiling reference (consistent with determine_possible_memory_allocations strategy)
+                dst = get_node_with_largest_resource_allocation(dsts, self.mapping)
+                dst_tiling = tuple(self.ssw.get_unique_dims_inter_core_tiling(dst, self.mapping))
             else:
-                # For now, we only support a single destination with one tiling possibility
-                dst = dsts[0]
-                try:
-                    dst_tiling = tuple(self.ssw.get_unique_dims_inter_core_tiling(dst, self.mapping))
-                except KeyError:
-                    dst_tiling = self.get_inter_core_tiling_for_mem_allocations(node, dst_allocs)
-                possible_inter_core_tiling.append(dst_tiling)
+                dst_tiling = self.get_inter_core_tiling_for_transfer(node, dst_allocs)
+            possible_inter_core_tiling.append(dst_tiling)
         return tuple(possible_inter_core_tiling)
 
-    def get_inter_core_tiling_for_mem_allocations(
+    def get_inter_core_tiling_for_transfer(
         self, node: TransferNode, memory_allocs: tuple[tuple[Core, ...], ...]
     ) -> tuple[InterCoreTiling, ...]:
         assert isinstance(node, TransferNode), "Node must be a TransferNode for inter-core tiling determination."
@@ -698,11 +763,11 @@ class SteadyStateScheduler:
             )  # flatten the list of dst allocations
         if src_type == "compute" and dst_type == "compute":
             return TransferType.COMPUTE_TO_COMPUTE
-        elif src_type == "compute" and dst_type in ("memory", "shim"):
+        elif src_type == "compute" and dst_type in ("memory", "shim", "offchip"):
             return TransferType.COMPUTE_TO_MEM
-        elif src_type in ("memory", "shim") and dst_type == "compute":
+        elif src_type in ("memory", "shim", "offchip") and dst_type == "compute":
             return TransferType.MEM_TO_COMPUTE
-        elif src_type in ("memory", "shim") and dst_type in ("memory", "shim"):
+        elif src_type in ("memory", "shim", "offchip") and dst_type in ("memory", "shim", "offchip"):
             return TransferType.MEM_TO_MEM
         raise ValueError(f"Unsupported transfer type from {src_type} to {dst_type}")
 
@@ -733,7 +798,11 @@ class SteadyStateScheduler:
         }
         # Check the dims of node and find their unrolling factors in inter_core_tiling of src
         node_dims = self.ssw.get_dims(node)
-        inter_core_tiling_src = self.mapping.get(src).inter_core_tiling[0]
+        inter_core_tiling_entries = self.mapping.get(src).inter_core_tiling
+        if not inter_core_tiling_entries:
+            inter_core_tiling_src = ()
+        else:
+            inter_core_tiling_src = inter_core_tiling_entries[0]
         total_relevant_unrolling = 1
         for dim in node_dims:
             for tiling_dim, size in inter_core_tiling_src:

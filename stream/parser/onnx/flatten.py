@@ -1,6 +1,5 @@
-from stream.workload.dependency_propagation.flatten_node import FlattenNode
-
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
+from stream.workload.dependency_propagation.flatten_node import FlattenNode
 
 
 class FlattenParser(OnnxOperatorParser):

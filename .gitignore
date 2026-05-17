@@ -176,4 +176,7 @@ stream/inputs/aie/mapping/*.yml
 # planning and docs artifacts
 .planning/
 docs/
-.claude/
+# .claude/ personal files (keep .claude/skills/ committable)
+.claude/settings.local.json
+.claude/worktrees/
+.claude/scheduled_tasks.lock

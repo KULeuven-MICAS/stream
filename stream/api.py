@@ -1,19 +1,18 @@
 import logging as _logging
 import os
-from typing import Literal
 
 import yaml
 from onnx import ModelProto
 from zigzag.mapping.temporal_mapping import TemporalMappingType
-from zigzag.utils import pickle_load, pickle_save
+from zigzag.utils import pickle_load
 
-from stream.cost_model.cost_model import StreamCostModelEvaluation
 from stream.opt.solver import ConstraintSelection, GurobiBackend, SolverBackend
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
-from stream.stages.allocation.genetic_algorithm_allocation import GeneticAlgorithmAllocationStage
 from stream.stages.context import StageContext
 from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
 from stream.stages.estimation.memory_accesses_estimation import MemoryAccessesEstimationStage
+from stream.stages.generation.fusion_group_iteration import FusionGroupIterationStage
+from stream.stages.generation.generic_mapping_generation import GenericMappingGenerationStage
 from stream.stages.generation.mapping_generation import MappingGenerationStage
 from stream.stages.generation.mapping_generation_multi import MappingGenerationMultiThreadedStage
 from stream.stages.generation.tiling_generation import TilingGenerationStage
@@ -24,7 +23,11 @@ from stream.stages.stage import LeafStage, MainStage, StageCallable
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-_logging.basicConfig(level=_logging_level, format=_logging_format)
+
+
+def configure_logging(level: int = _logging_level, fmt: str = _logging_format) -> None:
+    """Configure root logging. Called by CLI scripts; MCP server manages its own logging."""
+    _logging.basicConfig(level=level, format=fmt)
 
 
 def _sanity_check_inputs(hardware: str, workload: str, mapping: str, output_path: str):
@@ -39,77 +42,7 @@ def _sanity_check_gurobi_license():
     GurobiBackend.check_license()
 
 
-def optimize_allocation_ga(  # noqa: PLR0913
-    hardware: str,
-    workload: str,
-    mapping: str,
-    mode: Literal["lbl"] | Literal["fused"],
-    layer_stacks: list[tuple[int, ...]],
-    nb_ga_generations: int,
-    nb_ga_individuals: int,
-    experiment_id: str,
-    output_path: str,
-    skip_if_exists: bool = False,
-    temporal_mapping_type: str = "uneven",
-) -> StreamCostModelEvaluation:
-    _sanity_check_inputs(hardware, workload, mapping, output_path)
-
-    # Create experiment_id path
-    output_path = f"{output_path}/{experiment_id}"
-    os.makedirs(output_path, exist_ok=True)
-
-    # Get logger
-    logger = _logging.getLogger(__name__)
-
-    # Determine temporal mapping type for ZigZag
-    if temporal_mapping_type == "uneven":
-        temporal_mapping_type = TemporalMappingType.UNEVEN
-    elif temporal_mapping_type == "even":
-        temporal_mapping_type = TemporalMappingType.EVEN
-    else:
-        raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
-
-    # Load SCME if it exists and skip_if_exists is True
-    scme_path = f"{output_path}/scme.pickle"
-    if os.path.exists(scme_path) and skip_if_exists:
-        scme = pickle_load(scme_path)
-        logger.info(f"Loaded SCME from {scme_path}")
-    else:
-        ctx = StageContext.from_kwargs(
-            accelerator=hardware,  # required by AcceleratorParserStage
-            workload_path=workload,  # required by ModelParserStage
-            mapping_path=mapping,  # required by ModelParserStage
-            loma_lpf_limit=6,  # required by LomaEngine
-            nb_ga_generations=nb_ga_generations,  # number of genetic algorithm (ga) generations
-            nb_ga_individuals=nb_ga_individuals,  # number of individuals in each ga generation
-            mode=mode,
-            layer_stacks=layer_stacks,
-            output_path=output_path,
-            temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
-            operands_to_prefetch=[],  # required by GeneticAlgorithmAllocationStage
-        )
-        mainstage = MainStage(
-            [  # Initializes the MainStage as entry point
-                AcceleratorParserStage,  # Parses the accelerator
-                StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
-                MappingParserStage,
-                # LayerStacksGenerationStage,
-                # TilingGenerationStage,
-                # CoreCostEstimationStage,
-                # SetFixedAllocationPerformanceStage,
-                # SchedulingOrderGenerationStage,
-                GeneticAlgorithmAllocationStage,
-            ],
-            ctx,
-        )
-        # Launch the MainStage
-        answers = mainstage.run()
-        scme = answers[0][0]
-        pickle_save(scme, scme_path)  # type: ignore
-    return scme
-
-
-def optimize_allocation_co(  # noqa: PLR0913
+def optimize_allocation_co_with_mapping(  # noqa: PLR0913
     hardware: str,
     workload: str,
     mapping: str,
@@ -123,7 +56,7 @@ def optimize_allocation_co(  # noqa: PLR0913
     npu: str = "npu2",
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
-) -> StreamCostModelEvaluation:
+) -> StageContext:
     _sanity_check_inputs(hardware, workload, mapping, output_path)
     _backend_enum = SolverBackend[backend.upper()]
     if _backend_enum in (SolverBackend.GUROBI, SolverBackend.ORTOOLS_GUROBI):
@@ -182,6 +115,88 @@ def optimize_allocation_co(  # noqa: PLR0913
 
         mainstage = MainStage(stages, ctx)
         # Launch the MainStage
+        answers = mainstage.run()
+        assert len(answers) == 1, "Expected a single result from the optimization."
+        ctx = answers[0]
+    return ctx
+
+
+# Backward-compatible alias: old name -> new name
+optimize_allocation_co = optimize_allocation_co_with_mapping
+
+
+def optimize_allocation_co_generic(  # noqa: PLR0913
+    hardware: str,
+    workload: str,
+    experiment_id: str,
+    output_path: str,
+    skip_if_exists: bool = False,
+    temporal_mapping_type: str = "uneven",
+    nb_cols_to_use: int = 4,
+    backend: str = "ortools_gscip",
+    constraint_selection: ConstraintSelection | None = None,
+) -> StageContext:
+    """Run the CO pipeline with auto-generated mapping from workload+hardware.
+
+    Unlike optimize_allocation_co, this does not require a hand-written mapping YAML.
+    GenericMappingGenerationStage infers the mapping, then FusionGroupIterationStage
+    runs the inner pipeline once per fusion group.
+
+    Returns the final StageContext with total_latency aggregated across all groups.
+    """
+    assert os.path.exists(hardware), f"Hardware file {hardware} does not exist"
+    assert isinstance(workload, ModelProto) or os.path.exists(workload), f"Workload file {workload} does not exist"
+    if not os.path.exists(output_path):
+        os.makedirs(output_path)
+
+    _backend_enum = SolverBackend[backend.upper()]
+    if _backend_enum in (SolverBackend.GUROBI, SolverBackend.ORTOOLS_GUROBI):
+        _sanity_check_gurobi_license()
+
+    # Create experiment_id path
+    output_path = f"{output_path}/{experiment_id}"
+    os.makedirs(output_path, exist_ok=True)
+
+    # Get logger
+    logger = _logging.getLogger(__name__)
+
+    # Determine temporal mapping type for ZigZag
+    if temporal_mapping_type == "uneven":
+        temporal_mapping_type = TemporalMappingType.UNEVEN
+    elif temporal_mapping_type == "even":
+        temporal_mapping_type = TemporalMappingType.EVEN
+    else:
+        raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
+
+    # Load final resulting context if it exists and skip_if_exists is True
+    ctx_path = f"{output_path}/ctx.pickle"
+    if os.path.exists(ctx_path) and skip_if_exists:
+        ctx = pickle_load(ctx_path)
+        logger.info(f"Loaded context from {ctx_path}")
+    else:
+        stages: list[StageCallable] = [
+            AcceleratorParserStage,  # Parses the accelerator
+            StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+            GenericMappingGenerationStage,  # generates per-group YAMLs + sub_workloads
+            FusionGroupIterationStage,  # outer loop over groups (reads sub_workloads from ctx)
+            MappingParserStage,  # inner pipeline starts here
+            TilingGenerationStage,
+            CoreCostEstimationStage,
+            ConstraintOptimizationAllocationStage,
+            MemoryAccessesEstimationStage,
+        ]
+        ctx = StageContext.from_kwargs(
+            accelerator=hardware,  # required by AcceleratorParserStage
+            workload_path=workload,  # required by ModelParserStage
+            loma_lpf_limit=6,  # required by LomaEngine
+            output_path=output_path,
+            temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
+            nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
+            backend=_backend_enum.value,
+            constraint_selection=constraint_selection,
+        )
+
+        mainstage = MainStage(stages, ctx)
         answers = mainstage.run()
         assert len(answers) == 1, "Expected a single result from the optimization."
         ctx = answers[0]

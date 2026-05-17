@@ -1,11 +1,11 @@
 from typing import Any
 
-from stream.workload.mapping import InterCoreMappingAttributes
 from zigzag.datatypes import Constants
 
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
 from stream.parser.onnx.reduce_1d import Reduce1DParser
 from stream.parser.onnx.simd import SimdParser
+from stream.workload.mapping import InterCoreMappingAttributes
 
 
 class SoftmaxParser(OnnxOperatorParser):

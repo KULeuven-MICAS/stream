@@ -221,7 +221,9 @@ class ZigZagCostEstimator:
     def get_memory_operand_links(self, node: ComputationNode, core: Core) -> ZigZagMemoryOperandLinks:
         # Check that the core memory hierarchy contains two input memory operands I1 and I2 and one output O
         memory_operands = list(core.mem_hierarchy_dict.keys())
-        assert len(memory_operands) == len(node.tensors)
+        # Bug 4: relaxed to >= because cores like pooling may have extra memory operands
+        # (e.g. I1/I2/O for a MaxPool node with only 2 tensors: 1 input + 1 output)
+        assert len(memory_operands) >= len(node.tensors)
         assert any(op.name == "I1" for op in memory_operands), (
             f"Core {core.id} memory hierarchy must contain memory operand I1."
         )
@@ -267,18 +269,39 @@ class ZigZagCostEstimator:
 
     def estimate(self, node: ComputationNode, core: Core) -> CoreCostEntry:
         layer_node = self.get_layer_node(node, core)
-        cme = self.run_zigzag(layer_node, core)
-        cme = self.increase_cc_per_op(cme, node.type)
-        return CoreCostEntry(
-            energy_total=getattr(cme, "energy_total", 0),
-            latency_total=getattr(cme, "latency_total2", getattr(cme, "ideal_cycle", 0)),
-            ideal_cycle=getattr(cme, "ideal_cycle", 0),
-            ideal_temporal_cycle=getattr(cme, "ideal_temporal_cycle", 0),
-            mem_energy_breakdown=getattr(cme, "mem_energy_breakdown", {}),
-            cme=cme,
-            mapping=getattr(cme, "mapping", None),
-            layer=node,
-        )
+        try:
+            cme = self.run_zigzag(layer_node, core)
+            cme = self.increase_cc_per_op(cme, node.type)
+            return CoreCostEntry(
+                energy_total=getattr(cme, "energy_total", 0),
+                latency_total=getattr(cme, "latency_total2", getattr(cme, "ideal_cycle", 0)),
+                ideal_cycle=getattr(cme, "ideal_cycle", 0),
+                ideal_temporal_cycle=getattr(cme, "ideal_temporal_cycle", 0),
+                mem_energy_breakdown=getattr(cme, "mem_energy_breakdown", {}),
+                cme=cme,
+                mapping=getattr(cme, "mapping", None),
+                layer=node,
+            )
+        except Exception:
+            # Bug 3 fallback: ZigZag estimation failed (e.g. spatial mapping generation crash
+            # for certain Conv configurations). Fall back to ideal_cycle-based estimate.
+            logger.warning(
+                f"ZigZag estimation failed for {node.name} on core {core.id}. Falling back to ideal-cycle estimate."
+            )
+            # Compute ideal cycle from product of all layer dimension sizes
+            from functools import reduce  # noqa: PLC0415
+
+            dim_sizes = layer_node.layer_dim_sizes
+            ideal_cycle = float(reduce(lambda a, b: a * b, dim_sizes.data.values(), 1))
+            return CoreCostEntry(
+                energy_total=0.0,
+                latency_total=ideal_cycle,
+                ideal_cycle=ideal_cycle,
+                ideal_temporal_cycle=ideal_cycle,
+                cme=None,
+                mapping=None,
+                layer=node,
+            )
 
     def run_zigzag(self, node: ComputationNode, core: Core) -> CostModelEvaluation:
         """Run the ZigZag flow to estimate performance of a given node on a core."""

@@ -9,6 +9,7 @@ from xdsl.xdsl_opt_main import xDSLOptMain
 from xdsl_aie.dialects.aie import AIE
 from xdsl_aie.dialects.aiex import AIEX
 
+from stream.api import configure_logging
 from stream.compiler.context.aie_context import AIEContext
 from stream.compiler.dialects.stream import Stream
 from stream.compiler.kernels.gemm import GemmKernel
@@ -22,7 +23,6 @@ from stream.compiler.transforms.unroll import SpatialUnrollPass
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
-_logging.basicConfig(level=_logging_level, format=_logging_format)
 
 
 def generate_mlir(m_size, n_size, k_size):
@@ -228,6 +228,7 @@ def run_main_aie_codegen_gemm(m_size, k_size, n_size):
 
 
 if __name__ == "__main__":
+    configure_logging()
     parser = argparse.ArgumentParser(description="Run AIE code generation for Gemm")
     parser.add_argument("--M", type=int, required=True, help="M parameter for the model")
     parser.add_argument("--N", type=int, required=True, help="N parameter for the model")

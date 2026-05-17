@@ -229,11 +229,18 @@ class AcceleratorValidator:
 
         validator_cls(self.data, self.invalidate).validate()
 
+    # Stream-level extension fields that are not known to namespace validators
+    # (e.g. ZigZag) and must be stripped before validation then re-injected.
+    _STREAM_EXTENSION_FIELDS: tuple[str, ...] = ("operator_types",)
+
     def validate_single_core(self, core_file_name: str) -> None | dict[str, Any]:
         core_data = self.open_core(core_file_name)
         # Stop validation if invalid core name is found
         if core_data is None:
             return
+
+        # Extract Stream-level extension fields before namespace validation strips them.
+        extension_fields = {k: core_data.pop(k) for k in self._STREAM_EXTENSION_FIELDS if k in core_data}
 
         raw_type = core_data.get("type")
         default_kind = raw_type if raw_type in ALLOWED_KINDS else "compute"
@@ -256,8 +263,9 @@ class AcceleratorValidator:
             self.invalidate(f"User-given core {core_file_name} cannot be validated.")
             self.errors.extend(core_validator.errors)
 
-        # Fill in default values
+        # Fill in default values and re-inject Stream-level extension fields.
         normalized_core_data = core_validator.normalized_data
+        normalized_core_data.update(extension_fields)
         return normalized_core_data
 
     def open_core(self, core_file_name: str) -> dict[str, Any] | None:

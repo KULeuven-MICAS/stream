@@ -14,6 +14,7 @@ from zigzag.utils import DiGraphWrapper
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.workload.node import (
     ComputationNode,
+    FusionEdge,
     HasInputs,
     HasIterationSpace,
     HasOutputs,
@@ -136,16 +137,177 @@ class Workload(DiGraphWrapper[Node]):
     def get_out_edges(self) -> tuple[OutEdge, ...]:
         return tuple(cast(OutEdge, node) for node in self.nodes if isinstance(node, OutEdge))
 
+    def get_fusion_edges(self) -> tuple[FusionEdge, ...]:
+        return tuple(cast(FusionEdge, node) for node in self.nodes if isinstance(node, FusionEdge))
+
+    def split_fusion_groups(self, cut_points: list[str] | None = None) -> list["Workload"]:  # noqa: PLR0912
+        """Split the workload at FusionEdge boundaries and explicit cut points.
+
+        Each sub-workload is self-contained with InEdge at entries and OutEdge
+        at exits. FusionEdge nodes are consumed: the FusionEdge's input tensor
+        becomes an OutEdge in the preceding group, and its output tensor becomes
+        an InEdge in the following group.
+
+        When *cut_points* is provided, the listed node names act as additional
+        group boundaries (the cut-point node stays in the preceding group).
+        OutEdge/InEdge boundary pairs are created using the cut-point node's
+        output tensor, analogous to FusionEdge boundaries.
+
+        InEdge nodes (model inputs and initializers) are assigned to the group
+        that contains their sole consumer. If an InEdge is consumed by nodes in
+        multiple groups, it is duplicated into each consuming group.
+
+        Args:
+            cut_points: Optional list of node names at which to insert group
+                boundaries.  When ``None`` (default), only FusionEdge
+                boundaries are used (backward compatible).
+
+        Returns:
+            A list of Workloads. If there are no FusionEdge nodes and no cut
+            points, returns ``[self]`` (single group).
+        """
+        fusion_edges = [n for n in self.nodes if isinstance(n, FusionEdge)]
+        cut_point_set: set[str] = set(cut_points) if cut_points else set()
+        if not fusion_edges and not cut_point_set:
+            return [self]
+
+        # Assign each non-FusionEdge, non-InEdge node to a group index.
+        # Group boundaries are defined by FusionEdge nodes.
+        topo_order = list(nx.lexicographical_topological_sort(self, key=lambda n: n.name))
+
+        # Map each non-InEdge node to its group index
+        node_to_group: dict[Node, int] = {}
+        group_idx = 0
+        for node in topo_order:
+            if isinstance(node, FusionEdge):
+                group_idx += 1
+                # FusionEdge itself is not assigned to any group
+                continue
+            if isinstance(node, InEdge):
+                # Defer InEdge assignment -- they go into the group(s) of their consumers
+                continue
+            node_to_group[node] = group_idx
+            # Cut-point nodes end their group: subsequent nodes go into next group
+            if cut_point_set and node.name in cut_point_set:
+                group_idx += 1
+
+        num_groups = group_idx + 1
+
+        # Build node lists per group (excluding InEdges for now)
+        group_nodes: list[list[Node]] = [[] for _ in range(num_groups)]
+        for node in topo_order:
+            if node in node_to_group:
+                group_nodes[node_to_group[node]].append(node)
+
+        # Assign InEdge nodes to the group(s) of their consumers.
+        # If consumed in multiple groups, duplicate the InEdge into each group.
+        for node in topo_order:
+            if not isinstance(node, InEdge):
+                continue
+            consuming_groups: set[int] = set()
+            for _, consumer in self.out_edges(node):
+                if consumer in node_to_group:
+                    consuming_groups.add(node_to_group[consumer])
+            for grp in sorted(consuming_groups):
+                group_nodes[grp].insert(0, node)
+
+        # For each FusionEdge, add OutEdge to preceding group and InEdge to following group
+        for fe in fusion_edges:
+            # FusionEdge's input tensor -> OutEdge in preceding group
+            assert len(fe.inputs) == 1, f"FusionEdge {fe.name} must have exactly 1 input"
+            assert len(fe.outputs) == 1, f"FusionEdge {fe.name} must have exactly 1 output"
+
+            # Find the group of the predecessor (producer of FusionEdge's input)
+            preds = list(self.predecessors(fe))
+            assert len(preds) == 1, f"FusionEdge {fe.name} must have exactly 1 predecessor"
+            pred_group = node_to_group[preds[0]]
+
+            # Find the group of the successor (consumer of FusionEdge's output)
+            succs = list(self.successors(fe))
+            assert len(succs) >= 1, f"FusionEdge {fe.name} must have at least 1 successor"
+            succ_group = node_to_group[succs[0]]
+
+            # Add OutEdge for the input tensor in the preceding group
+            out_edge = OutEdge(
+                name=f"{fe.name}_out",
+                inputs=(fe.inputs[0],),
+            )
+            group_nodes[pred_group].append(out_edge)
+
+            # Add InEdge for the output tensor in the following group
+            in_edge = InEdge(
+                name=f"{fe.name}_in",
+                outputs=(fe.outputs[0],),
+            )
+            group_nodes[succ_group].insert(0, in_edge)
+
+        # For each cut-point node, add OutEdge/InEdge boundary pairs
+        for node, grp in node_to_group.items():
+            if not isinstance(node, ComputationNode) or node.name not in cut_point_set:
+                continue
+            assert len(node.outputs) == 1, f"Cut-point node {node.name} must have exactly 1 output"
+            out_tensor = node.outputs[0]
+            succ_group = grp + 1
+            out_edge = OutEdge(name=f"{node.name}_cut_out", inputs=(out_tensor,))
+            group_nodes[grp].append(out_edge)
+            in_edge = InEdge(name=f"{node.name}_cut_in", outputs=(out_tensor,))
+            group_nodes[succ_group].insert(0, in_edge)
+
+        # Build sub-workloads
+        sub_workloads = []
+        for nodes in group_nodes:
+            if nodes:
+                sub_workloads.append(Workload(nodes))
+
+        return sub_workloads
+
     def get_dimension_sizes(self) -> tuple[int, ...]:
-        results = []
-        shapes: list[int] = []
+        result_to_shape: list[tuple[AffineExpr, int]] = []
         for node in self.get_iteration_space_nodes():
             for tensor, mapping in zip(node.tensors, node.operand_mapping, strict=True):
                 global_mapping = self.global_mapping(node, mapping)
-                results.extend(global_mapping.results)
-                shapes.extend(tensor.shape)
-        total_map = AffineMap(self.num_dims, 0, tuple(results))
-        return total_map.inverse_permutation().eval(shapes, [])
+                for expr, sz in zip(global_mapping.results, tensor.shape, strict=True):
+                    result_to_shape.append((expr, sz))
+
+        # Step 1: direct read for dims that appear as pure AffineDimExpr
+        dim_to_size: dict[int, int] = {}
+        for expr, sz in result_to_shape:
+            if isinstance(expr, AffineDimExpr) and expr.position not in dim_to_size:
+                dim_to_size[expr.position] = sz
+
+        # Step 2: infer size for remaining dims (kernel dims in strided ops like MaxPool)
+        # These dims only appear in affine expressions like: stride*other_dim + kernel_dim + offset
+        # Their range is derived from: tensor_size, stride, output_size, and offset
+        missing = sorted(set(range(self.num_dims)) - set(dim_to_size.keys()))
+        for missing_dim in missing:
+            for expr, sz in result_to_shape:
+                probe = [0] * self.num_dims
+                at_0 = int(expr.eval(probe, []))
+                probe[missing_dim] = 1
+                at_1 = int(expr.eval(probe, []))
+                coeff = at_1 - at_0
+                if coeff == 0:
+                    continue  # this dim does not appear in this expression
+                # Compute max contribution from all other known dims
+                other_max = 0
+                for d, dsize in dim_to_size.items():
+                    probe2 = [0] * self.num_dims
+                    probe2[d] = dsize - 1
+                    val_hi = int(expr.eval(probe2, []))
+                    probe2[d] = 0
+                    val_lo = int(expr.eval(probe2, []))
+                    if val_hi > val_lo:
+                        other_max += val_hi - val_lo
+                const_term = int(expr.eval([0] * self.num_dims, []))
+                d_i_max = (sz - 1 - const_term - other_max) // coeff
+                dim_to_size[missing_dim] = int(d_i_max) + 1
+                break
+
+        assert len(dim_to_size) == self.num_dims, (
+            f"Could not determine sizes for all {self.num_dims} dims: "
+            f"missing {sorted(set(range(self.num_dims)) - set(dim_to_size.keys()))}"
+        )
+        return tuple(dim_to_size[i] for i in range(self.num_dims))
 
     def get_dims(self, node: HasIterationSpace) -> list[LayerDim]:
         global_idxs = self.global_idxs
@@ -166,25 +328,35 @@ class Workload(DiGraphWrapper[Node]):
         transform = AffineTransform.from_affine_map(relations)
 
         A_sp = sp.Matrix(transform.A)
-        rref_A, pivots = A_sp.rref()
-
+        b_sp = sp.Matrix(transform.b).reshape(len(transform.b), 1)
         n_vars = transform.A.shape[1]
+
+        # Solve A*x = -b via augmented matrix RREF: [A | -b]
+        augmented = A_sp.row_join(-b_sp)
+        rref_aug, pivots = augmented.rref()
+
         free_vars = [i for i in range(n_vars) if i not in pivots]
 
+        # Null space basis: homogeneous solutions (from free variable columns of A)
         basis_vectors = []
         for free in free_vars:
             v = sp.zeros(n_vars, 1)
             v[free] = 1
             for row, pivot in enumerate(pivots):
-                v[pivot] = -rref_A[row, free]
+                v[pivot] = -rref_aug[row, free]
             basis_vectors.append(v)
 
         N = sp.Matrix.hstack(*basis_vectors)
         z_syms = sp.symbols(f"z0:{len(free_vars)}")
-        x = N * sp.Matrix(z_syms)
+
+        # Particular solution from the last column of the augmented RREF
+        x_p = sp.zeros(n_vars, 1)
+        for row, pivot in enumerate(pivots):
+            x_p[pivot] = rref_aug[row, n_vars]
+
+        x = N * sp.Matrix(z_syms) + x_p
 
         dim_values = [sympy_to_xdsl(sp.simplify(expr)) for expr in x]
-        # IMPORTANT: z dimensions are LayerDim, so expressions.index(LayerDim(i)) works
         z = [LayerDim(position=i, prefix="z") for i in range(len(free_vars))]
         return z, dim_values
 
@@ -193,6 +365,8 @@ class Workload(DiGraphWrapper[Node]):
         node_mapping = mapping.get(node)
         assert node_mapping is not None, f"No mapping found for node {node.name}"
         unique_node_dims = self.get_dims(node)
+        if not node_mapping.inter_core_tiling:
+            return ()
         converted_tiling: list[tuple[LayerDim, int]] = []
         all_tilings_equal = all(t == node_mapping.inter_core_tiling[0] for t in node_mapping.inter_core_tiling)
         assert all_tilings_equal, f"Multiple different inter-core tilings for node {node.name} not supported for now."
@@ -248,6 +422,8 @@ class Workload(DiGraphWrapper[Node]):
         node_mapping = mapping.get(node)
         assert node_mapping is not None, f"No mapping found for node {node.name}"
         tilings = node_mapping.inter_core_tiling
+        if not tilings:
+            return tensor
         # Assert all possible tilings are equal for now and take first one
         assert all(t == tilings[0] for t in tilings), "Multiple different tilings not implemented yet."
         tiling = tilings[0]
@@ -379,8 +555,13 @@ class Workload(DiGraphWrapper[Node]):
         new_nodes: list[Node] = []
         for node in nx.lexicographical_topological_sort(self, key=lambda n: n.name):
             if isinstance(node, InEdge):
-                new_output = tensor_map.get(node.name)
-                assert new_output is not None, f"InEdge tensor {node.name} must have been inferred"
+                # InEdge node name may differ from output tensor name (e.g. Flatten1_in vs flatten_out)
+                # Look up by the actual output tensor name first, then fall back to node name
+                out_tensor_name = node.outputs[0].name if node.outputs else node.name
+                new_output = tensor_map.get(out_tensor_name) or tensor_map.get(node.name)
+                assert new_output is not None, (
+                    f"InEdge tensor {node.name} (output: {out_tensor_name}) must have been inferred"
+                )
                 new_node = InEdge(
                     name=node.name,
                     outputs=(new_output,),
@@ -406,6 +587,16 @@ class Workload(DiGraphWrapper[Node]):
                     outputs=(new_output,),
                     transfer_type=node.transfer_type,
                     operand_mapping=node.operand_mapping,
+                )
+            elif isinstance(node, FusionEdge):
+                # FusionEdge has no iteration space; pass tensors through unchanged (D-08)
+                new_inputs = tuple(cast(Tensor, tensor_map.get(inp.name, inp)) for inp in node.inputs)
+                new_outputs = tuple(cast(Tensor, tensor_map.get(out.name, out)) for out in node.outputs)
+                new_node = FusionEdge(
+                    name=node.name,
+                    inputs=new_inputs,
+                    outputs=new_outputs,
+                    op_type=node.op_type,
                 )
             elif isinstance(node, OutEdge):
                 new_inputs = tuple(cast(Tensor, tensor_map[inp.name]) for inp in node.inputs)
@@ -517,6 +708,11 @@ class Workload(DiGraphWrapper[Node]):
                 n.set_label(f"{node.name}\nShape: {node.inputs[0].shape}")
                 n.set_style("filled")
                 n.set_fillcolor("#c2f0c2")
+            elif isinstance(node, FusionEdge):
+                n.set_shape("diamond")
+                n.set_label(f"{node.name}\n[{node.op_type}]")
+                n.set_style("filled")
+                n.set_fillcolor("#d9b3ff")  # light purple for fusion boundaries
             else:
                 raise ValueError(f"Unknown node type: {type(node)}")
 
@@ -527,8 +723,11 @@ class Workload(DiGraphWrapper[Node]):
                 continue
             n = dot_nodes[0]
             # Compact dim info: {dim: size, ...}
-            tensor_dims = self.get_tensor_dimensions(tensor)
-            dim_sizes = {str(d): self.get_dimension_size(d) for d in tensor_dims}
+            try:
+                tensor_dims = self.get_tensor_dimensions(tensor)
+                dim_sizes = {str(d): self.get_dimension_size(d) for d in tensor_dims}
+            except (StopIteration, KeyError):
+                dim_sizes = {}
             label = f"{tensor_name}\n{tensor.shape}"
             if dim_sizes:
                 label += f"\n{dim_sizes}"
@@ -608,9 +807,11 @@ class Workload(DiGraphWrapper[Node]):
                 return (0, node.name)
             if isinstance(node, TransferNode):
                 return (1, node.name)
-            if isinstance(node, InEdge):
+            if isinstance(node, FusionEdge):
                 return (2, node.name)
-            return (3, node.name)  # OutEdge last
+            if isinstance(node, InEdge):
+                return (3, node.name)
+            return (4, node.name)  # OutEdge last
 
         def get_options(node: Node) -> list[frozenset] | None:
             """Return candidate resource sets for a node, or None if unknown.
@@ -739,6 +940,9 @@ class Workload(DiGraphWrapper[Node]):
             if isinstance(node, TransferNode):
                 node_data["transfer_type"] = str(node.transfer_type)
 
+            if isinstance(node, FusionEdge):
+                node_data["fusion_op_type"] = node.op_type
+
             nodes_info.append(node_data)
 
         # Build edges info
@@ -786,3 +990,57 @@ class Workload(DiGraphWrapper[Node]):
             "tensors": tensor_dim_relations,
             "generations": timeslots,
         }
+
+
+def determine_fusion_cut_points(workload: Workload) -> list[str]:
+    """Identify node names at which to split the workload into bounded fusion groups.
+
+    Heuristic (per D-01 / D-02):
+    - **MaxPool front-end boundary (D-02):** Each ``MaxPool`` node ends the
+      front-end group (Conv -> Relu -> MaxPool).  Splitting after it keeps the
+      pooling-core allocation separate from the main residual backbone.
+    - **Add+Relu residual boundary (D-01):** An ``Add`` node followed by
+      exactly one ``Relu`` successor (among ComputationNodes) marks the end of
+      a residual block.  The *Relu* is the cut point so that both Add and Relu
+      remain in the preceding group and the next Conv starts a new group.
+      A fan-out guard ensures that if the Relu feeds more than one
+      ComputationNode successor the split is skipped (avoids breaking fan-out
+      topology).
+
+    Args:
+        workload: The full parsed workload graph.
+
+    Returns:
+        An ordered list of node *names* (strings) suitable for passing to
+        ``Workload.split_fusion_groups(cut_points=...)``.
+    """
+    # Collect ComputationNode names in topological order for the "last node" guard
+    topo_comp_names: list[str] = []
+    for node in nx.lexicographical_topological_sort(workload, key=lambda n: n.name):
+        if isinstance(node, ComputationNode):
+            topo_comp_names.append(node.name)
+    last_comp_name = topo_comp_names[-1] if topo_comp_names else None
+
+    cut_points: list[str] = []
+    for node in nx.lexicographical_topological_sort(workload, key=lambda n: n.name):
+        if not isinstance(node, ComputationNode):
+            continue
+
+        # D-02: MaxPool ends the front-end group
+        if node.type == "MaxPool":
+            cut_points.append(node.name)
+            continue
+
+        # D-01: Add followed by a single Relu successor -> split after Relu
+        if node.type == "Add":
+            comp_succs = [s for s in workload.successors(node) if isinstance(s, ComputationNode)]
+            if len(comp_succs) == 1 and comp_succs[0].type == "Relu":
+                relu = comp_succs[0]
+                cut_points.append(relu.name)
+
+    # Guard: do not split after the last ComputationNode in the workload — that
+    # would create an empty trailing group with no ComputationNodes.
+    if cut_points and cut_points[-1] == last_comp_name:
+        cut_points.pop()
+
+    return cut_points

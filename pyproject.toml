@@ -24,11 +24,11 @@ keywords = ["stream", "multi-core", "accelerator", "layer-fused", "scheduling", 
 dependencies = [
     "zigzag-dse==3.8.5",
     "rtree",
-    "deap",
     "cerberus",
     "pre-commit",
     "gurobipy",
     "ortools>=9.15",
+    "pydantic>=2.0,<2.12",
     "pydot",
     "xdsl-aie @ git+https://github.com/xdslproject/xdsl-aie.git@378c4c69c7f643ec31c6ef96c2fd830a0fb87244",
     "snax-mlir @ git+https://github.com/kuleuven-micas/snax-mlir.git@1c01c5d100df128c9fa01d3336ebea98e19b20cf",
@@ -37,6 +37,7 @@ requires-python = ">=3.11"
 
 
 [project.optional-dependencies]
+mcp = ["fastmcp>=3.2.4"]
 dev = ["bumpver", "pip-tools", "build", "twine", "pre-commit", "pytest"]
 
 [project.urls]

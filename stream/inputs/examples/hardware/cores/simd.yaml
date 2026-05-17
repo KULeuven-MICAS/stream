@@ -36,3 +36,5 @@ operational_array:
   dimensions: [D1]
   sizes: [64]
 
+operator_types: [Add, Relu]
+

@@ -36,3 +36,5 @@ operational_array:
   dimensions: [D1, D2, D3]
   sizes: [3, 3, 8]
 
+operator_types: [MaxPool, AveragePool, GlobalAveragePool, GlobalMaxPool]
+

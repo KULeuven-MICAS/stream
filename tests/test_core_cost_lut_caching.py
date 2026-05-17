@@ -81,7 +81,6 @@ def test_core_cost_lut_caches_and_loads(tmp_path):
             mapping=mapping,
             loma_lpf_limit=6,
             cost_lut_path=str(cost_lut_path),
-            layer_stacks=[(0, 1)],
             temporal_mapping_type=TemporalMappingType.UNEVEN,
             output_path=tmp_path,
             nb_spatial_mappings_generated=1,

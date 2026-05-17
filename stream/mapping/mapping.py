@@ -164,6 +164,72 @@ class Mapping:
     def values(self) -> Iterable[NodeMapping]:
         return self._by_node.values()
 
+    def get_ir(self) -> dict:
+        """Return a dictionary representation of the mapping for serialization/inspection.
+
+        This captures:
+        - All nodes with their resource allocations (as core IDs or path descriptors)
+        - Inter-core tiling as dimension/factor pairs
+        - Memory allocation as lists of core IDs
+        - Fused groups with their layers and intra-core tiling
+        - Runtime arguments
+        """
+        nodes_ir: dict[str, dict] = {}
+        for node, nm in self._by_node.items():
+            node_key = str(getattr(node, "name", None) or repr(node))
+
+            # Serialize resource_allocation: tuple[tuple[Resource, ...], ...] -> list of lists of dicts
+            resource_allocation_ir = []
+            for slot in nm.resource_allocation:
+                slot_ir = []
+                for resource in slot:
+                    if isinstance(resource, Core):
+                        slot_ir.append({"type": "core", "id": resource.id})
+                    elif isinstance(resource, MulticastPathPlan):
+                        slot_ir.append(
+                            {
+                                "type": "path",
+                                "sources": [c.id for c in resource.sources],
+                                "targets": [c.id for c in resource.targets],
+                                "hops": resource.total_hops_objective,
+                            }
+                        )
+                    else:
+                        slot_ir.append({"type": "unknown", "repr": repr(resource)})
+                resource_allocation_ir.append(slot_ir)
+
+            # Serialize inter_core_tiling: tuple[InterCoreTiling, ...] -> list of lists of [dim_str, factor]
+            inter_core_tiling_ir = []
+            for slot in nm.inter_core_tiling:
+                slot_ir = [[str(dim), factor] for dim, factor in slot]
+                inter_core_tiling_ir.append(slot_ir)
+
+            # Serialize memory_allocation: tuple[tuple[Core, ...], ...] -> list of lists of core IDs
+            memory_allocation_ir = [[core.id for core in slot] for slot in nm.memory_allocation]
+
+            nodes_ir[node_key] = {
+                "resource_allocation": resource_allocation_ir,
+                "inter_core_tiling": inter_core_tiling_ir,
+                "memory_allocation": memory_allocation_ir,
+            }
+
+        # Serialize fused_groups
+        fused_groups_ir = []
+        for fg in self._fused_groups:
+            fused_groups_ir.append(
+                {
+                    "name": fg.name,
+                    "layers": list(fg.layers),
+                    "intra_core_tiling": [[str(dim), factor] for dim, factor in fg.intra_core_tiling],
+                }
+            )
+
+        return {
+            "nodes": nodes_ir,
+            "fused_groups": fused_groups_ir,
+            "runtime_args": dict(self._runtime_args),
+        }
+
     def to_dict(self) -> dict[str, dict[str, Any]]:
         """
         Serialize to a JSON-friendly dict keyed by a stable node identifier.
@@ -199,11 +265,11 @@ class Mapping:
             for dim, tile in fused_group.intra_core_tiling:
                 new_dim = get_equivalent_dimension(old_workload, new_workload, dim)
                 new_tilings.append((new_dim, tile))
-                new_fused_group = FusedGroup(
-                    name=fused_group.name,
-                    layers=fused_group.layers,
-                    intra_core_tiling=tuple(new_tilings),
-                )
+            new_fused_group = FusedGroup(
+                name=fused_group.name,
+                layers=fused_group.layers,
+                intra_core_tiling=tuple(new_tilings),
+            )
             new_fused_groups.append(new_fused_group)
         new_mapping = Mapping(fused_groups=new_fused_groups, runtime_args=self.runtime_args)
         for node in self.nodes():
