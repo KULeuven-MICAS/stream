@@ -280,7 +280,7 @@ _RESNET18_MAPPING = "stream/inputs/examples/mapping/resnet18_tpu_quad_core.yaml"
 
 @pytest.mark.slow
 @pytest.mark.timeout(900)
-def test_resnet18_full_e2e():
+def test_resnet18_full_e2e(request, tmp_path):
     """Full ResNet18 E2E through CO pipeline: 11 fusion groups, all with positive latency.
 
     Uses FixedMappingGenerationStage to parse the fixed mapping YAML and build
@@ -289,49 +289,58 @@ def test_resnet18_full_e2e():
     memory_capacity constraints are disabled because ZigZag's fallback estimator
     (triggered by the 7x7 stride-2 Conv in Group 0) produces invalid memory loads
     that make the MILP infeasible. The spatial tiling already guarantees tensors fit.
+
+    Run with ``pytest --keep-output`` to persist outputs in ``outputs/resnet18_e2e/``.
     """
+    from pathlib import Path  # noqa: PLC0415
+
     from stream.opt.solver import ConstraintSelection  # noqa: PLC0415
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        output_path = os.path.join(tmpdir, "resnet18-e2e")
-        os.makedirs(output_path, exist_ok=True)
+    keep = request.config.getoption("--keep-output")
+    if keep:
+        output_path = Path("outputs/resnet18_e2e")
+        output_path.mkdir(parents=True, exist_ok=True)
+    else:
+        output_path = tmp_path / "resnet18-e2e"
+        output_path.mkdir()
+    output_path = str(output_path)
 
-        stages: list[StageCallable] = [
-            AcceleratorParserStage,
-            StreamONNXModelParserStage,
-            FixedMappingGenerationStage,
-            FusionGroupIterationStage,
-            TilingGenerationStage,
-            CoreCostEstimationStage,
-            ConstraintOptimizationAllocationStage,
-            MemoryAccessesEstimationStage,
-        ]
-        ctx = StageContext.from_kwargs(
-            accelerator=_ACCELERATOR,
-            workload_path=_RESNET18,
-            mapping_path=_RESNET18_MAPPING,
-            loma_lpf_limit=6,
-            output_path=output_path,
-            temporal_mapping_type=TemporalMappingType.UNEVEN,
-            nb_cols_to_use=4,
-            backend=SolverBackend.ORTOOLS_GSCIP.value,
-            constraint_selection=ConstraintSelection(memory_capacity=False),
-        )
+    stages: list[StageCallable] = [
+        AcceleratorParserStage,
+        StreamONNXModelParserStage,
+        FixedMappingGenerationStage,
+        FusionGroupIterationStage,
+        TilingGenerationStage,
+        CoreCostEstimationStage,
+        ConstraintOptimizationAllocationStage,
+        MemoryAccessesEstimationStage,
+    ]
+    ctx = StageContext.from_kwargs(
+        accelerator=_ACCELERATOR,
+        workload_path=_RESNET18,
+        mapping_path=_RESNET18_MAPPING,
+        loma_lpf_limit=6,
+        output_path=output_path,
+        temporal_mapping_type=TemporalMappingType.UNEVEN,
+        nb_cols_to_use=4,
+        backend=SolverBackend.ORTOOLS_GSCIP.value,
+        constraint_selection=ConstraintSelection(memory_capacity=False),
+    )
 
-        mainstage = MainStage(stages, ctx)
-        answers = mainstage.run()
-        assert len(answers) == 1, f"Expected 1 result, got {len(answers)}"
-        ctx = answers[0]
+    mainstage = MainStage(stages, ctx)
+    answers = mainstage.run()
+    assert len(answers) == 1, f"Expected 1 result, got {len(answers)}"
+    ctx = answers[0]
 
-        total_latency = ctx.get("total_latency")
-        assert total_latency is not None and total_latency > 0, f"Expected positive total_latency, got {total_latency}"
+    total_latency = ctx.get("total_latency")
+    assert total_latency is not None and total_latency > 0, f"Expected positive total_latency, got {total_latency}"
 
-        group_latencies = ctx.get("group_latencies")
-        assert group_latencies is not None, "group_latencies not set in context"
-        assert len(group_latencies) == 11, f"Expected 11 groups, got {len(group_latencies)}"
-        assert all(lat > 0 for lat in group_latencies.values()), (
-            f"All group latencies must be positive, got {group_latencies}"
-        )
-        assert abs(total_latency - sum(group_latencies.values())) < 1e-6, (
-            f"total_latency ({total_latency}) != sum of group_latencies ({sum(group_latencies.values())})"
-        )
+    group_latencies = ctx.get("group_latencies")
+    assert group_latencies is not None, "group_latencies not set in context"
+    assert len(group_latencies) == 11, f"Expected 11 groups, got {len(group_latencies)}"
+    assert all(lat > 0 for lat in group_latencies.values()), (
+        f"All group latencies must be positive, got {group_latencies}"
+    )
+    assert abs(total_latency - sum(group_latencies.values())) < 1e-6, (
+        f"total_latency ({total_latency}) != sum of group_latencies ({sum(group_latencies.values())})"
+    )
