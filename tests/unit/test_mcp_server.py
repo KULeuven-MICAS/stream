@@ -16,6 +16,10 @@ from __future__ import annotations
 import asyncio
 import pathlib
 
+import pytest
+
+pytest.importorskip("fastmcp", reason="fastmcp not installed (optional [mcp] extra)")
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
