@@ -2,6 +2,7 @@
 
 Tests RNET-01 (basic residual), RNET-02 (stride-2 downsample), RNET-03 (front-end + pooling core).
 Also tests dual-residual multi-group split via identity Reshape FusionEdge.
+Full ResNet18 E2E test with fixed spatial tiling across 11 fusion groups.
 
 Per D-05: dedicated test file separate from test_generic_mapping.py.
 Per D-06: assertions check positive latency, correct group count, and core type allocation.
@@ -12,6 +13,7 @@ import tempfile
 
 import pytest
 import yaml
+from zigzag.mapping.temporal_mapping import TemporalMappingType
 
 from stream.api import optimize_allocation_co_generic
 from stream.inputs.testing.workload.make_resnet_subgraph import (
@@ -19,8 +21,21 @@ from stream.inputs.testing.workload.make_resnet_subgraph import (
     ResNetSubgraphConfig,
     make_resnet_subgraph,
 )
+from stream.opt.solver import SolverBackend
+from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
+from stream.stages.context import StageContext
+from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
+from stream.stages.estimation.memory_accesses_estimation import MemoryAccessesEstimationStage
+from stream.stages.generation.fixed_mapping_generation import FixedMappingGenerationStage
+from stream.stages.generation.fusion_group_iteration import FusionGroupIterationStage
+from stream.stages.generation.tiling_generation import TilingGenerationStage
+from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
+from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
+from stream.stages.stage import MainStage, StageCallable
+from stream.workload.node import ComputationNode
 
 _ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
+_RESNET18 = "stream/inputs/examples/workload/resnet18.onnx"
 
 
 @pytest.mark.timeout(120)
@@ -183,7 +198,6 @@ def test_resnet18_split_with_cut_points():
     9 cut points + 1 FusionEdge (Flatten) = 10 boundaries -> 11 groups.
     """
     from stream.parser.onnx.model import ONNXModelParser
-    from stream.workload.node import ComputationNode
     from stream.workload.workload import determine_fusion_cut_points
 
     parser = ONNXModelParser("stream/inputs/examples/workload/resnet18.onnx")
@@ -259,3 +273,65 @@ def test_resnet18_cut_point_groups():
                 mapping_data = yaml.safe_load(f)
             mv = MappingValidator(mapping_data)
             assert mv.validate(), f"Group {i} mapping failed validation: {mv.errors}"
+
+
+_RESNET18_MAPPING = "stream/inputs/examples/mapping/resnet18_tpu_quad_core.yaml"
+
+
+@pytest.mark.slow
+@pytest.mark.timeout(900)
+def test_resnet18_full_e2e():
+    """Full ResNet18 E2E through CO pipeline: 11 fusion groups, all with positive latency.
+
+    Uses FixedMappingGenerationStage to parse the fixed mapping YAML and build
+    per-group Mappings in-memory — no intermediate YAML file round-trips.
+
+    memory_capacity constraints are disabled because ZigZag's fallback estimator
+    (triggered by the 7x7 stride-2 Conv in Group 0) produces invalid memory loads
+    that make the MILP infeasible. The spatial tiling already guarantees tensors fit.
+    """
+    from stream.opt.solver import ConstraintSelection  # noqa: PLC0415
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        output_path = os.path.join(tmpdir, "resnet18-e2e")
+        os.makedirs(output_path, exist_ok=True)
+
+        stages: list[StageCallable] = [
+            AcceleratorParserStage,
+            StreamONNXModelParserStage,
+            FixedMappingGenerationStage,
+            FusionGroupIterationStage,
+            TilingGenerationStage,
+            CoreCostEstimationStage,
+            ConstraintOptimizationAllocationStage,
+            MemoryAccessesEstimationStage,
+        ]
+        ctx = StageContext.from_kwargs(
+            accelerator=_ACCELERATOR,
+            workload_path=_RESNET18,
+            mapping_path=_RESNET18_MAPPING,
+            loma_lpf_limit=6,
+            output_path=output_path,
+            temporal_mapping_type=TemporalMappingType.UNEVEN,
+            nb_cols_to_use=4,
+            backend=SolverBackend.ORTOOLS_GSCIP.value,
+            constraint_selection=ConstraintSelection(memory_capacity=False),
+        )
+
+        mainstage = MainStage(stages, ctx)
+        answers = mainstage.run()
+        assert len(answers) == 1, f"Expected 1 result, got {len(answers)}"
+        ctx = answers[0]
+
+        total_latency = ctx.get("total_latency")
+        assert total_latency is not None and total_latency > 0, f"Expected positive total_latency, got {total_latency}"
+
+        group_latencies = ctx.get("group_latencies")
+        assert group_latencies is not None, "group_latencies not set in context"
+        assert len(group_latencies) == 11, f"Expected 11 groups, got {len(group_latencies)}"
+        assert all(lat > 0 for lat in group_latencies.values()), (
+            f"All group latencies must be positive, got {group_latencies}"
+        )
+        assert abs(total_latency - sum(group_latencies.values())) < 1e-6, (
+            f"total_latency ({total_latency}) != sum of group_latencies ({sum(group_latencies.values())})"
+        )
