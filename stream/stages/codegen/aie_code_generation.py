@@ -1,14 +1,13 @@
 import os
 from collections.abc import Iterable, Sequence
 from typing import cast
-from warnings import warn
 
 from snaxc.dialects.tsl import TSL
 from xdsl.dialects.builtin import (
     ModuleOp,
     ShapedType,
 )
-from xdsl.ir import Block, Operation, OpResult, Region, SSAValue
+from xdsl.ir import Block, Operation, Region, SSAValue
 from xdsl.parser import StringAttr
 
 from stream.compiler.context.aie_context import AIEContext
@@ -117,70 +116,9 @@ class AIECodeGenerationStage(Stage):
             assert target.col_id is not None
             cores.append(StringAttr(f"tile_{target.col_id}_{target.row_id}"))
 
-        # determine reuse index
-        # FIXME: this completely ignores constraint optimization because the reuse index there does not make sense
-
-        if input_type.reuse_index.data > 0:
-            # make destination stationary because we're not retransmitting
-            if (
-                isinstance(inputs[0], OpResult)
-                and isinstance(inputs[0].op, ComputationNodeOp)
-                and isinstance(next(workload.successors(node)), ComputationNode)
-            ):
-                relevant_dims = {var.dim for var in ss.get_kernel_variables()}
-
-                # just make sure we are output stationary
-                for i, var in enumerate(ss.vars):
-                    reuse_index = len(ss.vars) - i
-                    if var.type == StrensorVarType.TEMPORAL and var.dim not in relevant_dims:
-                        break
-                    if var.type == StrensorVarType.KERNEL:
-                        break
-            elif isinstance(inputs[0], OpResult) and isinstance(inputs[0].op, TransferOp):
-                # remove unnecessary reuse
-                relevant_dims = {var.dim for var in ss.get_kernel_variables()}
-
-                # just make sure we are output stationary
-                for i, var in enumerate(ss.vars[-input_type.reuse_index.data :]):
-                    reuse_index = input_type.reuse_index.data - i
-                    if var.type == StrensorVarType.TEMPORAL and var.dim not in relevant_dims:
-                        break
-                    if var.type == StrensorVarType.KERNEL:
-                        break
-            else:
-                # keep reuse index of input if available
-                reuse_index = input_type.reuse_index.data
-        # else we are input transfer for memtile, cover spatial of destination
-        elif isinstance((next_t := next(workload.successors(node))), TransferNode):
-            next_ssis = ssis_dict[next_t]
-            total_spatial = (
-                next_ssis.variables.index(next_ssis.get_spatial_variables()[-1])
-                - next_ssis.variables.index(next_ssis.get_spatial_variables()[0])
-                + 1
-            )
-            count_spatial = 0
-            new_reuse_index = 0
-            for i, var in enumerate(reversed(ss.vars)):
-                if var.type in (StrensorVarType.SPATIAL, StrensorVarType.TEMPORAL):
-                    count_spatial += 1
-                if count_spatial == total_spatial:
-                    new_reuse_index = i + 1
-                    break
-            reuse_index = new_reuse_index
-
-        # FIXME: end
-
         if len(cores) == 1:
-            # FIXME: hardcoded fix:
             if any(x.type == StrensorVarType.SPATIAL for x in ss.vars):
-                warn("hardcoding spatial loop to be absent because of wrong input", stacklevel=2)
-                ss_new = StrensorSpace(
-                    tuple(
-                        StrensorVar(StrensorVarType.ABSENT, x.size, x.dim) if x.type == StrensorVarType.SPATIAL else x
-                        for x in ss.vars
-                    )
-                )
-                ss = ss_new
+                raise ValueError("Spatial Strensor for single-core transfer found.")
 
         if cores == [StringAttr("tile_0_0")]:
             shape = cast(ShapedType, node.output.subview.source.type).get_shape()
@@ -246,7 +184,9 @@ class AIECodeGenerationStage(Stage):
     ) -> ComputationNodeOp:
         # FIXME: recomputes reuse index because constraint optimization seems broken
         relevant_dims = {var.dim for var in ss.get_kernel_variables()}
-
+        print()
+        print(f"SSIS for node {node.name}: {ssis}")
+        print(f"REuse index before for {node.name}: {reuse_index}")
         # just make sure we are output stationary
         for i, var in enumerate(ss.vars):
             reuse_index = len(ss.vars) - i
@@ -254,7 +194,7 @@ class AIECodeGenerationStage(Stage):
                 break
             if var.type == StrensorVarType.KERNEL:
                 break
-
+        print(f"REuse index after for {node.name}: {reuse_index}")
         # FIXME: end
 
         # # add spatio-temporal dims to get only inner shape:

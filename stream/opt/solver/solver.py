@@ -17,6 +17,7 @@ import datetime
 import logging
 import math
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
@@ -116,6 +117,32 @@ class ConstraintSelection:
                 "is nonsensical -- object-FIFO depth constraints assume memory capacity "
                 "is enforced. Continuing with this configuration."
             )
+
+
+@dataclass(frozen=True)
+class ObjectiveLevel:
+    """A single level in a lexicographic objective hierarchy.
+
+    Higher ``priority`` objectives are optimized first.  Lower-priority
+    objectives are optimized subject to the constraint that all
+    higher-priority objectives do not degrade beyond the specified
+    tolerances.
+
+    Attributes:
+        expr: Backend expression for this objective (raw or wrapped).
+        priority: Priority of this level (higher = optimized first).
+        name: Human-readable name for logging and debugging.
+        abs_tol: Absolute degradation tolerance when locking this level
+            for lower-priority objectives.
+        rel_tol: Relative degradation tolerance (fraction of optimal value)
+            when locking this level for lower-priority objectives.
+    """
+
+    expr: Any
+    priority: int
+    name: str = ""
+    abs_tol: float = 0.0
+    rel_tol: float = 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +422,35 @@ class SolverModel(ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} does not support non-linear constraints")
 
+    def set_lexicographic_objectives(
+        self,
+        objectives: Sequence[ObjectiveLevel],
+        *,
+        sense: str = "minimize",
+    ) -> None:
+        """Register a hierarchy of objectives for lexicographic optimization.
+
+        Objectives are optimized in decreasing ``priority`` order.  Each
+        level is optimized subject to the constraint that higher-priority
+        objectives do not degrade beyond their specified tolerances.
+
+        Must be called before :meth:`optimize`.  Replaces any previously
+        set single objective.
+
+        **GurobiBackend** uses native multi-objective support
+        (``setObjectiveN``).  **ORToolsBackend** performs sequential
+        solves, locking each level with a constraint before proceeding to
+        the next.
+
+        Args:
+            objectives: One or more objective levels.
+            sense: ``"minimize"`` or ``"maximize"`` — applies to all levels.
+
+        Raises:
+            ValueError: If *objectives* is empty.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support lexicographic objectives")
+
     def infinity(self) -> float:
         """Convenience accessor for INFINITY class constant."""
         return self.INFINITY
@@ -588,6 +644,25 @@ class GurobiBackend(SolverModel):
         else:
             raise ValueError(f"Unknown objective sense: {sense!r}. Use 'minimize' or 'maximize'.")
         self._model.setObjective(expr, grb_sense)
+
+    def set_lexicographic_objectives(
+        self,
+        objectives: Sequence[ObjectiveLevel],
+        *,
+        sense: str = "minimize",
+    ) -> None:
+        if not objectives:
+            raise ValueError("At least one ObjectiveLevel is required")
+        self._model.ModelSense = GRB.MINIMIZE if sense == self.MINIMIZE else GRB.MAXIMIZE
+        for idx, obj in enumerate(sorted(objectives, key=lambda o: o.priority, reverse=True)):
+            self._model.setObjectiveN(
+                _unwrap(obj.expr),
+                index=idx,
+                priority=obj.priority,
+                abstol=obj.abs_tol,
+                reltol=obj.rel_tol,
+                name=obj.name,
+            )
 
     def optimize(self, callback: Any = None) -> None:
         if callback is not None:
@@ -863,6 +938,9 @@ class ORToolsBackend(SolverModel):
         # be used a second time (Gurobi silently allows duplicate names; MathOpt does not).
         self._var_name_count: dict[str, int] = {}
         self._constr_name_count: dict[str, int] = {}
+        # Lexicographic objective state (set by set_lexicographic_objectives)
+        self._lex_objectives: list[ObjectiveLevel] | None = None
+        self._lex_sense: str = self.MINIMIZE
 
     def _unique_var_name(self, name: str) -> str:
         """Return a unique variable name by appending a counter on collision."""
@@ -907,10 +985,48 @@ class ORToolsBackend(SolverModel):
         else:
             raise ValueError(f"Unknown objective sense: {sense!r}. Use 'minimize' or 'maximize'.")
 
+    def set_lexicographic_objectives(
+        self,
+        objectives: Sequence[ObjectiveLevel],
+        *,
+        sense: str = "minimize",
+    ) -> None:
+        if not objectives:
+            raise ValueError("At least one ObjectiveLevel is required")
+        self._lex_objectives = sorted(objectives, key=lambda o: o.priority, reverse=True)
+        self._lex_sense = sense
+
     def optimize(self, callback: Any = None) -> None:
-        # callback is ignored per Phase 1 D-04 (non-Gurobi backends may ignore it)
+        if self._lex_objectives is not None:
+            self._optimize_lexicographic()
+        else:
+            params = mathopt.SolveParameters(**self._params)
+            self._result = mathopt.solve(self._model, self._solver_type, params=params)
+
+    def _optimize_lexicographic(self) -> None:
+        assert self._lex_objectives is not None
         params = mathopt.SolveParameters(**self._params)
-        self._result = mathopt.solve(self._model, self._solver_type, params=params)
+
+        for i, obj in enumerate(self._lex_objectives):
+            raw_expr = _unwrap_ort(obj.expr)
+            if self._lex_sense == self.MINIMIZE:
+                self._model.minimize(raw_expr)
+            else:
+                self._model.maximize(raw_expr)
+
+            self._result = mathopt.solve(self._model, self._solver_type, params=params)
+
+            if self._result is None or not self._result.has_primal_feasible_solution():
+                _logger.warning("Lexicographic solve: phase %d (%s) found no feasible solution", i, obj.name)
+                return
+
+            if i < len(self._lex_objectives) - 1:
+                opt_val = self._result.objective_value()
+                tol = obj.abs_tol + abs(opt_val) * obj.rel_tol
+                if self._lex_sense == self.MINIMIZE:
+                    self.add_constr(raw_expr <= opt_val + tol, name=f"_lex_lock_{obj.name}_{i}")
+                else:
+                    self.add_constr(raw_expr >= opt_val - tol, name=f"_lex_lock_{obj.name}_{i}")
 
     def set_param(self, param: SolverParams, value: Any) -> None:
         if param not in _ORT_PARAM_MAP:

@@ -226,12 +226,9 @@ class SteadyStateScheduler:
                         iv.reuse = Reuse.REUSE
                     else:
                         iv.reuse = Reuse.NO_REUSE
-                for iv in ssis.variables:
-                    if iv.type == IterationVariableType.SPATIAL and iv.applicable:
-                        iv.reuse = Reuse.REUSE
         # Propagate spatial reuse across transfer boundaries: when one side of a
-        # transfer has a SPATIAL variable that is represented as a TEMPORAL on the
-        # other side (same dimension and size), mark that temporal as REUSE so that
+        # transfer has a SPATIAL variable that is represented as a SPATIOTEMPORAL on the
+        # other side (same dimension and size), mark that spatiotemporal as REUSE so that
         # both endpoints display the same reuse boundary.
         for node in self.ssw.get_transfer_nodes():
             for src in node.inputs:
@@ -240,10 +237,8 @@ class SteadyStateScheduler:
                     self._propagate_spatial_reuse(dst, src)
 
     def _propagate_spatial_reuse(self, spatial_side: Tensor, temporal_side: Tensor) -> None:
-        """Mark (spatio)temporal variables on ``temporal_side`` as REUSE when they
-        match (dimension, size) of an applicable spatial variable on
-        ``spatial_side``. Codegen renders both TEMPORAL and SPATIOTEMPORAL as ``t``,
-        so either may stand in for a spatial distribution on the other endpoint."""
+        """Mark spatiotemporal variables on ``temporal_side`` as REUSE when they
+        match (dimension, size) of an applicable spatial variable on ``spatial_side``."""
         if spatial_side not in self.ssis or temporal_side not in self.ssis:
             return
         spatial_keys_not_in_temporal = {
@@ -257,16 +252,14 @@ class SteadyStateScheduler:
             return
         seen_spatial_keys = set()
         for iv in self.ssis[temporal_side].variables:
-            if iv.applicable and iv.type in (
-                IterationVariableType.TEMPORAL,
-                IterationVariableType.SPATIOTEMPORAL,
-            ):
-                if (iv.dimension, iv.size) in spatial_keys_not_in_temporal and (
-                    iv.dimension,
-                    iv.size,
-                ) not in seen_spatial_keys:
+            is_spatiotemporal = iv.type in (IterationVariableType.SPATIOTEMPORAL,)
+            match = (iv.dimension, iv.size) in spatial_keys_not_in_temporal
+            not_seen = (iv.dimension, iv.size) not in seen_spatial_keys
+            if is_spatiotemporal and match and not_seen:
+                is_applicable = iv.applicable
+                if is_applicable:  # Only set to reuse if it's applicable
                     iv.reuse = Reuse.REUSE
-                    seen_spatial_keys.add((iv.dimension, iv.size))
+                seen_spatial_keys.add((iv.dimension, iv.size))
 
     def build_transfer_graph(self) -> Workload:
         new_nodes: dict[str, Node] = {node.name: node for node in self.workload.nodes}

@@ -39,9 +39,11 @@ ACCELERATOR = os.path.join(
     "../../stream/inputs/aie/hardware/whole_array_strix.yaml",
 )
 
-# Gurobi baseline objectives (verified in Phase 1 Plan 04 / important_context)
-GEMM_GUROBI_OBJ = 48_730_630.0
-SWIGLU_GUROBI_OBJ = 9_396_485.0
+# Gurobi baseline latency_total values.
+# Updated after switching from weighted-sum objective (total_lat + Σ reuse_factors)
+# to lexicographic optimization (primary: total_lat, secondary: Σ tiles_needed).
+GEMM_GUROBI_OBJ = 32_084_000.0
+SWIGLU_GUROBI_OBJ = 4_514_048.0
 
 # Relative tolerance for cross-backend comparison (1%)
 REL_TOL = 0.01
@@ -148,14 +150,10 @@ def _run_swiglu_pipeline(output_path: str):
 
 
 def _extract_latency_total(ctx) -> float:
-    """Extract ``latency_total`` (solver objective) from a completed pipeline context.
+    """Extract ``latency_total`` from a completed pipeline context.
 
-    ``latency_total`` is the value minimised by the MILP solver — the metric
-    used for cross-backend objective comparison (Gurobi baseline: GEMM 48,730,630;
-    SwiGLU 9,396,485).
-
-    ``latency_per_iteration`` (~12,409 for GEMM) is a separate per-iteration
-    breakdown computed after the solve and is NOT the solver objective.
+    ``latency_total`` is the primary value minimised by the MILP solver —
+    the metric used for cross-backend objective comparison.
     """
     scheduler = ctx.get("scheduler")
     return float(scheduler.latency_total)

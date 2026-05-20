@@ -133,11 +133,12 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
             dim, unrolling = spatial_unrolling
             if spatial_unrolling in spatial_unrollings[node]:
                 # Create a spatial iteration variable
+                effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.INVARIANT
                 iteration_variables[node].append(
                     IterationVariable(
                         dimension=dim,
                         size=unrolling,
-                        effect=LoopEffect.VARYING,
+                        effect=effect,
                         type=IterationVariableType.SPATIAL,
                     )
                 )
