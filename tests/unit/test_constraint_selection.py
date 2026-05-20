@@ -184,7 +184,7 @@ def test_dma_enabled():
 
 
 def test_dma_objective_no_dma_terms():
-    """When dma_channels=False, objective = total_lat only (no DMA vars)."""
+    """When dma_channels=False, primary objective = total_lat only (no DMA vars)."""
     cs = ConstraintSelection(dma_channels=False)
     tta = _make_tta_stub(cs, bind_objective=True)
     # Set up minimal mocks for _set_total_latency_and_objective
@@ -197,11 +197,14 @@ def test_dma_objective_no_dma_terms():
     tta.overlap = MagicMock()
     tta.iterations = 1
     tta.slot_latency = {}
+    tta.tensors_to_optimize_reuse_for = []
     tta._set_total_latency_and_objective()
-    # Verify set_objective was called with just total_lat._raw (no DMA terms)
-    mock_model.set_objective.assert_called_once()
-    obj_arg = mock_model.set_objective.call_args[0][0]
-    assert obj_arg == "total_lat_raw"
+    # Verify lexicographic objectives were set with primary = total_lat only
+    mock_model.set_lexicographic_objectives.assert_called_once()
+    objectives = mock_model.set_lexicographic_objectives.call_args[0][0]
+    primary = next(o for o in objectives if o.name == "latency")
+    assert primary.expr == "total_lat_raw"
+    assert primary.priority == 2
 
 
 def test_skip_warnings(caplog):

@@ -27,6 +27,7 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency
 from stream.opt.solver import (
     ConstraintSelection,
+    ObjectiveLevel,
     SolverBackend,
     SolverModel,
     SolverParams,
@@ -161,7 +162,7 @@ class TransferAndTensorAllocator:
 
         # transfer fire helpers init
         self._ensure_same_ssis_for_all_transfers()
-        self.reuse_levels: dict[tuple[Tensor, int], tuple[int, int]] = {}
+        self.reuse_levels: dict[tuple[Tensor, int], int] = {}
         self.tiles_needed_levels: dict[tuple[Tensor, int], int] = {}
         self.bds_needed_levels: dict[tuple[Tensor, int], int] = {}
         self.tensors_to_optimize_reuse_for: list[Tensor] = []
@@ -285,19 +286,17 @@ class TransferAndTensorAllocator:
             if any(r != Reuse.NOT_SET for r in reuses):
                 continue
             self.tensors_to_optimize_reuse_for.append(t)
-            fires = math.prod(sizes)
-            size_factor = 1
-            tiles_needed = 1
+            reuse_factor = 1
+            tiles_factor = 1
             bds_needed = 1
-            self.reuse_levels[(t, -1)] = (fires, size_factor)
-            self.tiles_needed_levels[(t, -1)] = tiles_needed
+            self.reuse_levels[(t, -1)] = reuse_factor
+            self.tiles_needed_levels[(t, -1)] = tiles_factor
             self.bds_needed_levels[(t, -1)] = bds_needed
             for i, (Nl, relevancy) in enumerate(zip(sizes, relevancies, strict=True)):
-                size_factor *= Nl if relevancy else 1
-                tiles_needed *= Nl if relevancy else 1
-                fires //= Nl
-                self.reuse_levels[(t, i)] = (fires, size_factor)
-                self.tiles_needed_levels[(t, i)] = tiles_needed
+                reuse_factor *= Nl if not relevancy else 1
+                tiles_factor *= Nl if relevancy else 1
+                self.reuse_levels[(t, i)] = reuse_factor
+                self.tiles_needed_levels[(t, i)] = tiles_factor
                 if relevancy:
                     bds_needed = 1
                 else:
@@ -612,7 +611,6 @@ class TransferAndTensorAllocator:
     def _create_constraints(self):
         self._tensor_placement_constraints()
         self._path_choice_constraints()
-        self._transfer_fire_rate_constraints()
         self._reuse_factor_rate_constraints()
         self._link_contention_constraints()
         if self.constraint_selection.memory_capacity:
@@ -633,26 +631,6 @@ class TransferAndTensorAllocator:
         self._ensure_memory_and_compute_reuse_compatibility()
         self._force_reuse_includes_spatial()
 
-    def _transfer_fire_rate_constraints(self):
-        self.fires: dict[TransferNode, SolverVar] = {}
-        for tr in self.transfer_nodes:
-            assert len(tr.inputs) == 1, (
-                f"Only single-input transfers are supported for fire rate constraints, "
-                f"but {tr.name} has inputs {tr.inputs}."
-            )
-            t = tr.outputs[0]
-            fires = self.model.add_var(vtype=SolverVarType.INTEGER, name=f"fires_{tr.name}")
-            self.fires[tr] = fires
-
-            self.model.add_constr(
-                fires
-                == self.model.quicksum(
-                    self.reuse_levels[(t, s)][0] * self.z_stop[(t, s)]._raw
-                    for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
-                ),
-                name=f"fires_def_{tr.name}",
-            )
-
     def _reuse_factor_rate_constraints(self):
         self.reuse_factors: dict[TransferNode, SolverVar] = {}
         for tr in self.transfer_nodes:
@@ -667,7 +645,7 @@ class TransferAndTensorAllocator:
             self.model.add_constr(
                 reuse_factor
                 == self.model.quicksum(
-                    self.reuse_levels[(t, s)][1] * self.z_stop[(t, s)]._raw
+                    self.reuse_levels[(t, s)] * self.z_stop[(t, s)]._raw
                     for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
                 ),
                 name=f"reuse_factor_def_{tr.name}",
@@ -777,7 +755,7 @@ class TransferAndTensorAllocator:
                     assert isinstance(c, Core)
                     u = self._tensor_uses_core_var(t, c)
                     for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
-                        _, size_factor = self.reuse_levels[(t, stop)]
+                        size_factor = self.tiles_needed_levels[(t, stop)]
                         req_size = ceil(size_factor * tensor_size)
                         uz = self._add_binary_product(
                             a=u,
@@ -1231,11 +1209,27 @@ class TransferAndTensorAllocator:
             == self.iterations * self.model.quicksum(v._raw for v in self.slot_latency.values())
             - (self.iterations - 1) * self.overlap
         )
+
+        # Primary objective: minimize total latency (+ DMA balancing if enabled)
         if self.constraint_selection.dma_channels:
-            obj_func = self.total_lat._raw + self.max_core_dma_in._raw + self.max_core_dma_out._raw
+            primary_expr = self.total_lat._raw + self.max_core_dma_in._raw + self.max_core_dma_out._raw
         else:
-            obj_func = self.total_lat._raw
-        self.model.set_objective(obj_func, sense="minimize")
+            primary_expr = self.total_lat._raw
+
+        # Secondary objective (tiebreaker): minimize total buffering depth
+        secondary_expr = self.model.quicksum(
+            self.tiles_needed_levels[(t, s)] * self.z_stop[(t, s)]._raw
+            for t in self.tensors_to_optimize_reuse_for
+            for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
+        )
+
+        self.model.set_lexicographic_objectives(
+            [
+                ObjectiveLevel(expr=primary_expr, priority=2, name="latency"),
+                ObjectiveLevel(expr=secondary_expr, priority=1, name="buffering"),
+            ],
+            sense="minimize",
+        )
 
     # ------------------------------------------------------------------ #
     # public solve()                                                     #
@@ -1556,7 +1550,7 @@ class TransferAndTensorAllocator:
             t = tr.outputs[0]
             applicable_temporal = self.ssis[t].get_applicable_temporal_variables()
             selectors = [
-                (self.z_stop[(t, s)], float(self.reuse_levels[(t, s)][1])) for s in range(-1, len(applicable_temporal))
+                (self.z_stop[(t, s)], float(self.reuse_levels[(t, s)])) for s in range(-1, len(applicable_temporal))
             ]
 
             active_latency_absent_loops_and_reuse_factor = self._add_binary_times_const_over_linexpr(
