@@ -39,6 +39,18 @@ requires-python = ">=3.11"
 [project.optional-dependencies]
 mcp = ["fastmcp>=3.2.4"]
 dev = ["bumpver", "pip-tools", "build", "twine", "pre-commit", "pytest"]
+# AIE toolchain (AMD Strix NPU codegen + tracing). Linux x86_64 only.
+# Upstream Xilinx does not publish cp311 wheels; supported: cp310, cp312, cp313.
+# After pip install, also run: source setup_mlir_aie_pythonpath.sh (adds mlir_aie/python to PYTHONPATH)
+# aie-python-extras (aie.extras.context) is NOT on PyPI — installed by setup_mlir_aie_requirements.sh.
+aie = [
+    # mlir_aie — cp312 build
+    "mlir_aie @ https://github.com/Xilinx/mlir-aie/releases/download/latest-wheels/mlir_aie-0.0.1.2025070704%2Bd7dc968-cp312-cp312-manylinux_2_35_x86_64.whl ; python_version == \"3.12\" and sys_platform == \"linux\" and platform_machine == \"x86_64\"",
+    # mlir_aie — cp313 build
+    "mlir_aie @ https://github.com/Xilinx/mlir-aie/releases/download/latest-wheels/mlir_aie-0.0.1.2025070704%2Bd7dc968-cp313-cp313-manylinux_2_35_x86_64.whl ; python_version == \"3.13\" and sys_platform == \"linux\" and platform_machine == \"x86_64\"",
+    # llvm-aie (Peano compiler); py3-none — compatible with all supported Python versions
+    "llvm_aie @ https://github.com/Xilinx/llvm-aie/releases/download/nightly/llvm_aie-19.0.0.2025063001%2B6a9e0b4f-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; sys_platform == \"linux\" and platform_machine == \"x86_64\"",
+]
 
 [project.urls]
 Homepage = "https://github.com/ZigZag-Project/stream"

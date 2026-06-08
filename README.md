@@ -25,6 +25,15 @@ pip install -e .
 
 The authoritative dependency source is `pyproject.toml` (package `stream-dse`). The base install pulls in `zigzag-dse`, `ortools>=9.15` (the default MILP backend), `gurobipy`, `pydantic`, and the xDSL/SNAX MLIR packages. The `[mcp]` extra adds `fastmcp` (required for the MCP server).
 
+The `[aie]` extra adds the AMD AIE toolchain (`mlir_aie` + `llvm-aie`) for AIE-target MLIR codegen and tracing:
+
+```bash
+pip install -e ".[aie]"
+source setup_mlir_aie_pythonpath.sh  # adds mlir_aie/python to PYTHONPATH
+```
+
+**Platform caveat:** the `[aie]` extra is Linux x86_64 only (manylinux wheels). Python 3.11 is not supported by upstream — use Python 3.12 or 3.13.
+
 **Solver license note:** OR-Tools (`ortools_gscip`, the default backend) is open-source and needs no license. Gurobi requires a separate commercial license — installation succeeds, but `backend="gurobi"` errors at solve time without a valid license.
 
 Optional pre-commit setup:
