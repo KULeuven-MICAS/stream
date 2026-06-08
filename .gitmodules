@@ -1,3 +1,0 @@
-[submodule "mlir-aie"]
-	path = mlir-aie
-	url = git@github.com:KULeuven-MICAS/mlir-aie.git
