@@ -1,6 +1,17 @@
-import aie.utils.trace as trace_utils
-from aie.dialects.aie import AIEDevice, device, tile
-from aie.extras.context import mlir_mod_ctx
+try:
+    import aie.utils.trace as trace_utils
+    from aie.dialects.aie import AIEDevice, device, tile
+    from aie.extras.context import mlir_mod_ctx
+
+    _AIE_AVAILABLE = True
+except ImportError:
+    trace_utils = None  # type: ignore[assignment]
+    AIEDevice = None  # type: ignore[assignment]
+    device = None  # type: ignore[assignment]
+    tile = None  # type: ignore[assignment]
+    mlir_mod_ctx = None  # type: ignore[assignment]
+    _AIE_AVAILABLE = False
+
 from xdsl.context import Context
 from xdsl.dialects.builtin import ModuleOp
 from xdsl.ir import Operation
@@ -15,6 +26,12 @@ class AIEAddTracingScript(ModulePass):
     name = "aie-add-tracing-script"
 
     def __init__(self, trace_size=1048576):
+        if not _AIE_AVAILABLE:
+            raise ImportError(
+                "AIEAddTracingScript requires the [aie] extra. "
+                "Install with: pip install '.[aie]' then source setup_mlir_aie_pythonpath.sh "
+                "(Python 3.12 or 3.13 required; cp311 wheels are not published)."
+            )
         self.trace_size = trace_size
 
     def apply(self, ctx: Context, op: ModuleOp) -> None:

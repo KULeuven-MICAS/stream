@@ -10,9 +10,6 @@ python3 -m pip install mlir_aie -f https://github.com/Xilinx/mlir-aie/releases/e
 # Install Peano from llvm-aie wheel
 python3 -m pip install "llvm-aie==19.0.0.2025063001" -f https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly
 
-# Install basic Python requirements (still needed for release v1.0, but is no longer needed for latest wheels)
-python3 -m pip install -r mlir-aie/python/requirements.txt
-
-# Install MLIR Python Extras
-HOST_MLIR_PYTHON_PACKAGE_PREFIX=aie python3 -m pip install -r mlir-aie/python/requirements_extras.txt
+# Install aie-python-extras (provides aie.extras.context for tracing; not on PyPI)
+HOST_MLIR_PYTHON_PACKAGE_PREFIX=aie python3 -m pip install "git+https://github.com/makslevental/mlir-python-extras@f08db06"
 
