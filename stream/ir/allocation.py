@@ -103,6 +103,70 @@ class AllocationCompilerView(BaseModel):
     runtime_args: dict[str, str] = Field(description="Runtime arguments for code generation (e.g. buffer depths)")
 
 
+class NodePerformanceIR(BaseModel):
+    """Per-node utilization/efficiency summary for the performance view."""
+
+    kind: str = Field(description="Node kind, e.g. 'compute'")
+    n_cores: int = Field(description="Number of cores the node is inter-core-tiled across")
+    latency_cycles: int = Field(description="The node's latency contribution to one steady-state iteration")
+    ideal_compute_cycles: float | None = Field(
+        default=None, description="Cycles at perfect MAC spatial utilization (the compute-ideal floor)"
+    )
+    mac_spatial_utilization: float | None = Field(
+        default=None, description="Fraction of the core's MAC array used spatially (1.0 = full PE array)"
+    )
+    compute_efficiency: float | None = Field(
+        default=None, description="ideal_compute_cycles / latency_cycles; how close to the compute-ideal this node runs"
+    )
+
+
+class BottleneckIR(BaseModel):
+    """Per-iteration latency split by the resource class that sets each slot's latency."""
+
+    compute_bound_cycles: int = Field(description="Per-iteration cycles in slots whose latency is set by compute")
+    transfer_bound_cycles: int = Field(
+        description="Per-iteration cycles in slots whose latency is set by data transfer/DMA"
+    )
+    compute_bound_pct: float | None = Field(
+        default=None, description="Percent of per-iteration latency that is compute-bound"
+    )
+    transfer_bound_pct: float | None = Field(
+        default=None, description="Percent of per-iteration latency that is transfer/DMA-bound"
+    )
+
+
+class PerformanceAggregateIR(BaseModel):
+    """Accelerator-wide utilization aggregates."""
+
+    compute_cores_available: int = Field(description="Non-offchip cores in the accelerator")
+    compute_cores_used: int = Field(description="Distinct cores any computation node is mapped to")
+    latency_weighted_mac_spatial_utilization: float | None = Field(
+        default=None,
+        description="Latency-weighted mean MAC spatial utilization across compute nodes (1.0 = full PE arrays)",
+    )
+    min_mac_spatial_utilization: float | None = Field(
+        default=None, description="Worst per-node MAC spatial utilization"
+    )
+
+
+class AllocationPerformanceView(BaseModel):
+    """Performance-persona projection of AllocationIR.
+
+    Exposes WHERE the schedule's latency goes, so a reader can tell whether a schedule is
+    compute-bound, transfer/DMA-bound, or simply under-utilized -- instead of reading
+    total latency alone. Look here first when a result is surprising (e.g. adding cores
+    doesn't change latency): check `bottleneck` (compute vs transfer split),
+    `aggregate.latency_weighted_mac_spatial_utilization` and `compute_cores_used` vs
+    `compute_cores_available`, and per-node `mac_spatial_utilization` / `compute_efficiency`.
+    """
+
+    schema_version: Literal["1.0"] = "1.0"
+    latency: LatencyInfo = Field(description="Latency metrics: total, per-iteration, and overlap cycles")
+    bottleneck: BottleneckIR = Field(description="Per-iteration compute-bound vs transfer/DMA-bound cycle split")
+    aggregate: PerformanceAggregateIR = Field(description="Accelerator-wide core usage and MAC utilization")
+    nodes: dict[str, NodePerformanceIR] = Field(description="Per-node utilization and compute efficiency")
+
+
 class AllocationIR(BaseModel):
     """Typed Pydantic model wrapping SteadyStateScheduler.get_ir() output.
 
@@ -132,6 +196,10 @@ class AllocationIR(BaseModel):
     )
     fused_groups: list[FusedGroupIR] = Field(description="Groups of fused layers with their intra-core tiling factors")
     runtime_args: dict[str, str] = Field(description="Runtime arguments for code generation (e.g. buffer depths)")
+    performance: AllocationPerformanceView | None = Field(
+        default=None,
+        description="Read-only utilization/bottleneck summary; None if stats were unavailable for this solve",
+    )
 
     @classmethod
     def from_internal(cls, scheduler: SteadyStateScheduler) -> AllocationIR:
@@ -167,6 +235,18 @@ class AllocationIR(BaseModel):
             for fg in mapping["fused_groups"]
         ]
 
+        perf_raw = raw.get("performance")
+        performance = (
+            AllocationPerformanceView(
+                latency=LatencyInfo(**raw["latency"]),
+                bottleneck=BottleneckIR(**perf_raw["bottleneck"]),
+                aggregate=PerformanceAggregateIR(**perf_raw["aggregate"]),
+                nodes={name: NodePerformanceIR(**d) for name, d in perf_raw["per_node"].items()},
+            )
+            if perf_raw
+            else None
+        )
+
         return cls(
             latency=LatencyInfo(**raw["latency"]),
             backend=raw["backend"],
@@ -175,6 +255,7 @@ class AllocationIR(BaseModel):
             mapping_nodes=mapping_nodes,
             fused_groups=fused_groups,
             runtime_args=mapping["runtime_args"],
+            performance=performance,
         )
 
     def algorithmic_view(self) -> AllocationAlgorithmicView:
@@ -199,3 +280,10 @@ class AllocationIR(BaseModel):
             fused_groups=self.fused_groups,
             runtime_args=self.runtime_args,
         )
+
+    def performance_view(self) -> AllocationPerformanceView | None:
+        """Return performance-persona projection: bottleneck split + per-node/aggregate utilization.
+
+        Returns None if performance stats were not captured for this solve.
+        """
+        return self.performance
