@@ -49,6 +49,24 @@ _HARDWARE = [
         "stream/inputs/examples/hardware/tpu_like_quad_core.yaml",
         id="tpu_like_quad_core",
     ),
+    pytest.param(
+        "stream/inputs/examples/hardware/simba_small.yaml",
+        id="simba_small",
+    ),
+    pytest.param(
+        "stream/inputs/examples/hardware/simba.yaml",
+        id="simba",
+        marks=[
+            pytest.mark.slow,
+            pytest.mark.xfail(
+                raises=AssertionError,
+                reason=(
+                    "simba 36-core mesh: spatial unrolling 36 is not divisible by any dimension "
+                    "of the small 2-conv workload (max dim=32). Use a larger workload or fewer cores."
+                ),
+            ),
+        ],
+    ),
 ]
 
 _SMALL_2CONV_CONFIG = TwoConvWorkloadConfig(
