@@ -151,7 +151,7 @@ memories:
           - I2, fh
     served_dimensions: [D1, D2, D3, D4]
 
-multipliers:
+operational_array:
   unit_energy: 0.04 # pJ
   unit_area: 1 # unit
   dimensions: [D1, D2, D3, D4]

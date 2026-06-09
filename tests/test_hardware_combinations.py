@@ -65,6 +65,10 @@ _HARDWARE = [
         "stream/inputs/examples/hardware/fusemax.yaml",
         id="fusemax",
     ),
+    pytest.param(
+        "stream/inputs/examples/hardware/meta_prototype_dual_core_simd_offchip.yaml",
+        id="meta_prototype",
+    ),
 ]
 
 _SMALL_2CONV_CONFIG = TwoConvWorkloadConfig(
