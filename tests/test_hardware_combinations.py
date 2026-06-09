@@ -61,6 +61,10 @@ _HARDWARE = [
         id="simba",
         marks=pytest.mark.slow,
     ),
+    pytest.param(
+        "stream/inputs/examples/hardware/fusemax.yaml",
+        id="fusemax",
+    ),
 ]
 
 _SMALL_2CONV_CONFIG = TwoConvWorkloadConfig(
