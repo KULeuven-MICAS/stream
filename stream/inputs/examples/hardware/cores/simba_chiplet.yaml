@@ -15,13 +15,13 @@ memories:
         type: read
         bandwidth_min: 8
         bandwidth_max: 8
-        allocation: 
+        allocation:
           - I2, tl
       - name: w_port_1
         type: write
         bandwidth_min: 8
         bandwidth_max: 8
-        allocation: 
+        allocation:
           - I2, fh
     served_dimensions: []
 
@@ -37,73 +37,88 @@ memories:
         type: read
         bandwidth_min: 64
         bandwidth_max: 64
-        allocation: 
+        allocation:
           - I2, tl
       - name: w_port_1
         type: write
         bandwidth_min: 64
         bandwidth_max: 64
-        allocation: 
+        allocation:
           - I2, fh
     served_dimensions: [D3, D4]
 
   accumulation_buffer:
     size: 3072   # 128 depth * 24 width
-    r_bw: 192  # partial sums are 24 bits * 8 units reading in parallel
-    w_bw: 192
     r_cost: 0.1  # TODO
     w_cost: 0.1
     area: 0
-    r_port: 1
-    w_port: 1
-    rw_port: 0
     latency: 1
     operands: [O]  # Partial sums
     ports:
-      - fh: w_port_1
-        tl: r_port_1
-        fl: w_port_1
-        th: r_port_1
+      - name: r_port_1
+        type: read
+        bandwidth_min: 192
+        bandwidth_max: 192
+        allocation:
+          - O, tl
+          - O, th
+      - name: w_port_1
+        type: write
+        bandwidth_min: 192
+        bandwidth_max: 192
+        allocation:
+          - O, fh
+          - O, fl
     served_dimensions: [D3, D4]
 
   input_buffer:
     size: 524288   # 8192 depth * 64 width
-    r_bw: 64
-    w_bw: 64
     r_cost: 7  # TODO
     w_cost: 7  # TODO
     area: 0
-    r_port: 1
-    w_port: 1
-    rw_port: 0
     latency: 1
     operands: [I1]  # Input activations
     ports:
-      - fh: w_port_1
-        tl: r_port_1
+      - name: r_port_1
+        type: read
+        bandwidth_min: 64
+        bandwidth_max: 64
+        allocation:
+          - I1, tl
+      - name: w_port_1
+        type: write
+        bandwidth_min: 64
+        bandwidth_max: 64
+        allocation:
+          - I1, fh
     served_dimensions: [D3, D4]
 
   global_buffer:
     size: 2097152  # 2048 depth * 256 width * 4 banks
-    r_bw: 1024  # 256 bits width * 4 banks
-    w_bw: 1024
     r_cost: 10  # Example cost, refine with more details
     w_cost: 10
     area: 0
-    r_port: 1
-    w_port: 1
-    rw_port: 0
     latency: 1
     operands: [I1, I2, O]  # Input activations, weights, partial sums
     ports:
-      - fh: w_port_1
-        tl: r_port_1
-      - fh: w_port_1
-        tl: r_port_1
-      - fh: w_port_1
-        tl: r_port_1
-        fl: w_port_1
-        th: r_port_1
+      - name: r_port_1
+        type: read
+        bandwidth_min: 1024
+        bandwidth_max: 1024
+        allocation:
+          - I1, tl
+          - I2, tl
+          - O, tl
+          - O, th
+      - name: w_port_1
+        type: write
+        bandwidth_min: 1024
+        bandwidth_max: 1024
+        allocation:
+          - I1, fh
+          - I2, fh
+          - O, fh
+          - O, fl
     served_dimensions: [D1, D2, D3, D4]
 
 
