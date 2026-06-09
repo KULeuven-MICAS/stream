@@ -25,6 +25,7 @@ from stream.api import optimize_allocation_co_generic
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
+from stream.inputs.testing.workload.make_swiglu import make_small_swiglu_workload
 from stream.workload.node import ComputationNode
 
 # ---------------------------------------------------------------------------
@@ -145,3 +146,25 @@ def test_hardware_two_conv(hardware: str) -> None:
         )
     accelerator = ctx.get("accelerator")
     _assert_co_result(ctx, accelerator, expected_node_count=2)
+
+
+@pytest.mark.parametrize("hardware", _HARDWARE)
+def test_hardware_swiglu_small(hardware: str) -> None:
+    """Run the swiglu workload through the generic CO pipeline on each hardware.
+
+    Selected by: pytest -k swiglu
+    Exercises HWFIX-04: Silu and Mul ops dispatch (to the simd core where available, or a
+    generic compute core) rather than failing at the parser or mapper stage.
+    """
+    # 4-node count confirmed by running: Gemm_Left, Gemm_Right, Silu, Elt_Mul (last_gemm_down=False)
+    workload_path = make_small_swiglu_workload()
+    hw_stem = Path(hardware).stem
+    with tempfile.TemporaryDirectory() as tmpdir:
+        ctx = optimize_allocation_co_generic(
+            hardware=hardware,
+            workload=workload_path,
+            experiment_id=f"swiglu_{hw_stem}",
+            output_path=tmpdir,
+        )
+    accelerator = ctx.get("accelerator")
+    _assert_co_result(ctx, accelerator, expected_node_count=4)
