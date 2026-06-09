@@ -33,7 +33,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .venv
-          key: venv-${{ runner.os }}-py${{ steps.pyver.outputs.version }}-${{ hashFiles('pyproject.toml', 'setup_mlir_aie_requirements.sh') }}
+          key: venv-${{ runner.os }}-py${{ steps.pyver.outputs.version }}-${{ hashFiles('pyproject.toml', 'setup_aie_python_extras.sh') }}
           restore-keys: |
             venv-${{ runner.os }}-py${{ steps.pyver.outputs.version }}-
             venv-${{ runner.os }}-
@@ -46,12 +46,12 @@ jobs:
 
           python -m pip install --upgrade pip
 
-          # Install project deps from pyproject.toml.
-          # Use dev extras if you want tooling like pytest/pre-commit/etc available here too.
-          python -m pip install -e ".[dev]"
+          # Install project deps + dev tooling + the AIE toolchain (pinned mlir_aie + llvm_aie).
+          python -m pip install -e ".[dev,aie]"
 
-          if [ -f setup_mlir_aie_requirements.sh ]; then
-            bash setup_mlir_aie_requirements.sh
+          # aie-python-extras can't live in [aie] (needs a build-time env var) — install it separately.
+          if [ -f setup_aie_python_extras.sh ]; then
+            bash setup_aie_python_extras.sh
           fi
 
       - name: Run Snakemake

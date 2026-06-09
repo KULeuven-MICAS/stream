@@ -3,7 +3,7 @@
 Stream is a design space exploration (DSE) and constraint-optimization framework for **heterogeneous dataflow accelerators** — accelerator systems built by combining **heterogeneous dataflow cores**. Each core has its own dataflow and performance model; **AIE** and **TPU-like** are two example core types among others. Scheduling is **layer-fused**, and the **TETRA constraint optimization** uses MILP (Mixed-Integer Linear Programming) to decide tensor placement and transfer paths across the cores of such a system. Stream builds on top of the [ZigZag](https://zigzag-project.github.io/zigzag/) framework for per-core cost estimation.
 
 **What the TETRA CO pipeline does:**
-- `ComputeAllocator` assigns computation nodes to cores.
+- Computation nodes are placed on cores from the mapping (hand-written or auto-generated), partitioned across cores via inter-core tiling.
 - `TransferAndTensorAllocator` decides tensor placement and routing paths via MILP (TETRA).
 - Solver backends: **OR-Tools GSCIP** (default, license-free), **OR-Tools HiGHS**, and **Gurobi** (commercial license required) — all behind a unified `SolverModel` API.
 
@@ -29,6 +29,7 @@ The `[aie]` extra adds the AMD AIE toolchain (`mlir_aie` + `llvm-aie`) for AIE-t
 
 ```bash
 pip install -e ".[aie]"
+bash setup_aie_python_extras.sh      # aie.extras.context (tracing) — not installable as a pip extra
 source setup_mlir_aie_pythonpath.sh  # adds mlir_aie/python to PYTHONPATH
 ```
 
@@ -47,7 +48,7 @@ pre-commit install
 Run the CO pipeline on a small two-Conv workload with an auto-generated mapping (approximately 11 seconds):
 
 ```bash
-python main_stream_co.py \
+python scripts/main_stream_co.py \
   --hardware stream/inputs/examples/hardware/tpu_like_quad_core.yaml \
   --workload stream/inputs/testing/workload/2conv_1_8_32_32_16_32_3.onnx
 ```
@@ -78,25 +79,24 @@ A mapping can be auto-generated (as in Quick Start above) or hand-written and pa
 
 ## Command-Line Entry Points
 
-All `main_*.py` scripts live at the repo root.
+All entry-point scripts live in `scripts/` and are run from the repo root (so relative input paths resolve and `stream` imports as the installed package).
 
 | Script | Purpose |
 |--------|---------|
-| `main_stream_co.py` | Generic CO pipeline for any workload + hardware pair; manual or auto-generated mapping; YAML summary output. **General-purpose (non-AIE).** |
-| `main_gemm.py` | CO allocation + optional AIE MLIR codegen for GEMM workloads (AMD Strix AIE). |
-| `main_swiglu.py` | CO allocation + optional AIE MLIR codegen for SwiGLU workloads (AMD Strix AIE). |
-| `main_swiglu_dse_single.py` | Single-mapping SwiGLU DSE evaluation (AIE). |
-| `main_swiglu_dse.py` | Multi-mapping SwiGLU DSE sweep over tile sizes (AIE). |
-| `main_aie_co.py` | CO allocation for a hard-coded single AIE tile workload (no args; run as `python main_aie_co.py`). |
-| `main_aie_codegen_conv2d.py` | CO allocation + AIE MLIR codegen for Conv2D workloads. |
-| `main_gemm_manual.py` | Manual GEMM CO/codegen configuration (fixed AIE hardware). |
+| `scripts/main_stream_co.py` | Generic CO pipeline for any workload + hardware pair; manual or auto-generated mapping; YAML summary output. **General-purpose (non-AIE).** |
+| `scripts/main_gemm.py` | CO allocation + optional AIE MLIR codegen for GEMM workloads (AMD Strix AIE). |
+| `scripts/main_swiglu.py` | CO allocation + optional AIE MLIR codegen for SwiGLU workloads (AMD Strix AIE). |
+| `scripts/main_swiglu_dse_single.py` | Single-mapping SwiGLU DSE evaluation (AIE). |
+| `scripts/main_swiglu_dse.py` | Multi-mapping SwiGLU DSE sweep over tile sizes (AIE). |
+| `scripts/main_aie_co.py` | CO allocation for a hard-coded single AIE tile workload (no args; run as `python scripts/main_aie_co.py`). |
+| `scripts/main_gemm_codegen.py` | Direct GEMM->AIE MLIR codegen via xDSL transforms (no CO pipeline); `--M/--N/--K`. |
 
-`main_stream_co.py` is the general-purpose entry point. The others are AIE-specific — they hardwire AMD Strix or single-tile AIE hardware, and codegen requires NPU hardware. Note that `main_aie_co.py` takes no arguments (all paths are hard-coded).
+`scripts/main_stream_co.py` is the general-purpose entry point. The others are AIE-specific — they hardwire AMD Strix or single-tile AIE hardware, and codegen requires NPU hardware. Note that `scripts/main_aie_co.py` takes no arguments (all paths are hard-coded). Plotting and trace post-processing utilities live in `scripts/analysis/`.
 
-Full `main_stream_co.py` CLI syntax:
+Full `scripts/main_stream_co.py` CLI syntax:
 
 ```bash
-python main_stream_co.py \
+python scripts/main_stream_co.py \
   --hardware PATH_TO_HW_YAML \
   --workload PATH_TO_ONNX \
   [--mapping PATH_TO_MAPPING_YAML]  # omit for auto-generated mapping

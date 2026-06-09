@@ -1,6 +1,6 @@
 gemm:
   stream_hw_id: whole_array
-  stream_main_file: "main_gemm.py"
+  stream_main_file: "scripts/main_gemm.py"
   trace_size: 1048576
   npu: "npu2"
   m: 32
@@ -13,7 +13,7 @@ gemm:
   Ns: [256]
 swiglu:  # to be updated later
   stream_hw_id: whole_array
-  stream_main_file: "main_swiglu.py"
+  stream_main_file: "scripts/main_swiglu.py"
   trace_size: 1048576
   npu: "npu2"
   m: 32

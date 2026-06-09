@@ -30,7 +30,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     constraint_selection: ConstraintSelection | None = None,
 ):  # noqa: N803, PLR0913
     ############################################INPUTS############################################
-    accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
+    accelerator = os.path.join(os.path.dirname(__file__), "../stream/inputs/aie/hardware/whole_array_strix.yaml")
     # CREATE THE SWIGLU ONNX MODEL AND MAPPING
     workload_path = make_swiglu_workload(
         seq_len, embedding_dim, hidden_dim, in_dtype, out_dtype, last_gemm_down=last_gemm_down

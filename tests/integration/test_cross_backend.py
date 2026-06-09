@@ -7,11 +7,11 @@ Per D-09: Tests cover both performance (resulting objective value) and time.
 Per D-10: Tests cover both main_gemm.py and main_swiglu.py configurations.
 
 Backend injection strategy:
-  Both ComputeAllocator and TransferAndTensorAllocator create their solver via
+  TransferAndTensorAllocator creates its solver via
   ``create_solver(SolverBackend.GUROBI, ...)``.  We use ``unittest.mock.patch``
-  to intercept those calls and return an ORToolsBackend instead.  Two patch
-  targets are needed because each allocator module imports ``create_solver``
-  into its own namespace.
+  to intercept that call and return an ORToolsBackend instead.  The patch must
+  target the allocator module, which imports ``create_solver`` into its own
+  namespace.
 """
 
 import os

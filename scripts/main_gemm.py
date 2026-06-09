@@ -1,5 +1,4 @@
 import argparse
-import logging as _logging
 import os
 import re
 
@@ -7,9 +6,6 @@ from stream.api import configure_logging, optimize_allocation_co
 from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
 from stream.opt.solver import ConstraintSelection
-
-_logging_level = _logging.INFO
-_logging_format = "%(asctime)s - %(name)s.%(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
 
 
 def run_main_aie_codegen_gemm(
@@ -31,7 +27,7 @@ def run_main_aie_codegen_gemm(
     ############################################INPUTS############################################
     # CREATE THE CONV ONNX MODEL
     workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
-    accelerator = os.path.join(os.path.dirname(__file__), "stream/inputs/aie/hardware/whole_array_strix.yaml")
+    accelerator = os.path.join(os.path.dirname(__file__), "../stream/inputs/aie/hardware/whole_array_strix.yaml")
     mapping_path = make_gemm_mapping(M, K, N, m, k, n, nb_rows_to_use=nb_rows, nb_cols_to_use=nb_cols)
     ##############################################################################################
 
@@ -43,16 +39,6 @@ def run_main_aie_codegen_gemm(
     mapping_name = f"{nb_rows}_row_{nb_cols}_col"
     experiment_id = f"{hw_name}-{wl_name}-{mapping_name}"
     ######################################################################
-
-    ##############PLOTTING###############
-    # section_start_percent = (0,)
-    # percent_shown = (100,)
-    #####################################
-
-    ################################PATHS################################
-    # memory_fig_path = f"outputs/{experiment_id}/memory.png"
-    # json_path = f"outputs/{experiment_id}/scme.json"
-    #####################################################################
 
     ctx = optimize_allocation_co(
         hardware=accelerator,
