@@ -1,31 +1,34 @@
 """Parametrized CO pipeline tests across non-AIE example hardware.
 
-Phase 32 covers 4 non-AIE hardware definitions; all run the 2-conv workload green via the
-generic CO pipeline (eyeriss_like single/dual/quad + tpu_like_quad_core).
+v1.9 milestone final state (Phase 37):
 
-The initial run surfaced two failures on the eyeriss cores that turned out to share one
-root cause: example accelerators reference cores by bare filename (e.g. ``pooling.yaml``),
-and core resolution was an ambiguous input-tree search that loaded the *testing* core files
-(which lack ``operator_types``) instead of the examples ones. With ``operator_types`` lost,
-the generic mapper treated pooling+simd as generic compute cores and tiled Conv across all
-non-offchip cores (6 on quad → ``32 % 6`` assert; over-subscription on single-core). The fix
-(accelerator-local core resolution + correct elementwise ``operator_types`` on simd) makes
-Conv tile across the real compute cores only, so all four pass.
+Matrix: 8 non-AIE hardware x {2-conv, swiglu} = 16 CO-pipeline combinations — all green.
+Parse check: test_hardware_parses covers all 8 boards in the fast suite (HWFIX-05).
+Slow suite: simba (36-core mesh) 2-conv + swiglu slow-marked; run with -m slow; both green.
+No xfail/skip: every combination passes.
 
-Phases 33-35 append stale hardware (with optional slow marks) to _HARDWARE. Phase 36 adds a
-swiglu test arm as a separate function reusing the same _assert_co_result helper.
+Fast suite (default pytest): 22 tests from this file (14 CO + 8 parse), 2 deselected (slow simba).
+
+Background (Phase 32): example accelerators referenced cores by bare filename; core resolution
+used an ambiguous input-tree search that loaded testing core files (lacking operator_types) instead
+of examples ones. Fix: accelerator-local core resolution + correct elementwise operator_types on
+simd. Phases 33-35 brought stale YAML definitions current (simba, fusemax, meta_prototype + simd
+Silu/Mul). Phase 36 added the swiglu workload builder and swiglu arm.
 """
 
 import tempfile
 from pathlib import Path
 
 import pytest
+from zigzag.utils import open_yaml
 
 from stream.api import optimize_allocation_co_generic
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.inputs.testing.workload.make_swiglu import make_small_swiglu_workload
+from stream.parser.accelerator_factory import AcceleratorFactory
+from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.workload.node import ComputationNode
 
 # ---------------------------------------------------------------------------
@@ -70,6 +73,20 @@ _HARDWARE = [
         "stream/inputs/examples/hardware/meta_prototype_dual_core_simd_offchip.yaml",
         id="meta_prototype",
     ),
+]
+
+# All 8 board paths as plain strings (NO pytest marks). Separate from _HARDWARE so that simba's
+# `slow` mark is NOT inherited — parsing is cheap (<1s), only simba's 36-core MILP is slow, so all
+# 8 parse-checks must run in the fast suite (HWFIX-05).
+_ALL_HARDWARE_PATHS = [
+    "stream/inputs/examples/hardware/eyeriss_like_single_core.yaml",
+    "stream/inputs/examples/hardware/eyeriss_like_dual_core.yaml",
+    "stream/inputs/examples/hardware/eyeriss_like_quad_core.yaml",
+    "stream/inputs/examples/hardware/tpu_like_quad_core.yaml",
+    "stream/inputs/examples/hardware/simba_small.yaml",
+    "stream/inputs/examples/hardware/simba.yaml",
+    "stream/inputs/examples/hardware/fusemax.yaml",
+    "stream/inputs/examples/hardware/meta_prototype_dual_core_simd_offchip.yaml",
 ]
 
 _SMALL_2CONV_CONFIG = TwoConvWorkloadConfig(
@@ -168,3 +185,20 @@ def test_hardware_swiglu_small(hardware: str) -> None:
         )
     accelerator = ctx.get("accelerator")
     _assert_co_result(ctx, accelerator, expected_node_count=4)
+
+
+@pytest.mark.parametrize("path", _ALL_HARDWARE_PATHS)
+def test_hardware_parses(path: str) -> None:
+    """All 8 non-AIE hardware definitions parse, validate, and load without error (HWFIX-05).
+
+    Uses the validator + factory load chain directly (open_yaml -> validate -> create) rather than
+    the pipeline parser stage, which requires a pre-populated StageContext. Simba is included
+    without a slow mark: parsing is cheap (<1s); only the 36-core MILP is slow.
+    """
+    data = open_yaml(path)
+    validator = AcceleratorValidator(data, path)
+    normalized = validator.normalized_data
+    validate_ok = validator.validate()
+    assert validate_ok, f"AcceleratorValidator.validate() returned False for {path}"
+    accelerator = AcceleratorFactory(normalized).create()
+    assert accelerator is not None
