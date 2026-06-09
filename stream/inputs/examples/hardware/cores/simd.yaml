@@ -36,5 +36,8 @@ operational_array:
   dimensions: [D1]
   sizes: [64]
 
-operator_types: [Add, Relu]
+# SIMD/vector unit handles element-wise ops only (arithmetic + activations). These are the op
+# types the ONNX parser routes through the element-wise/SIMD parsers; listing a forward-looking
+# superset is harmless — core selection only matches against node types actually present.
+operator_types: [Add, Sub, Mul, Div, Exp, Pow, Silu, Sigmoid, Gelu, Tanh, Relu]
 

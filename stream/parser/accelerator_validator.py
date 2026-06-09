@@ -269,31 +269,57 @@ class AcceleratorValidator:
         return normalized_core_data
 
     def open_core(self, core_file_name: str) -> dict[str, Any] | None:
-        """Find core with given yaml file name and read data."""
+        """Resolve a core reference to its YAML data.
+
+        Resolution order:
+        1. An explicit relative (``./foo.yaml``) or path-qualified (``a/b/foo.yaml``) reference is
+           opened as given.
+        2. A bare filename (``foo.yaml``) is resolved *relative to this accelerator's own directory* —
+           first ``<accelerator_dir>/cores/foo.yaml``, then ``<accelerator_dir>/foo.yaml``. Core files
+           live next to the accelerator that uses them, so this is unambiguous.
+        3. As a last resort the whole input tree is searched. This is ambiguous when the same filename
+           exists under several ``hardware`` dirs (e.g. examples/ vs testing/) — so it warns. Keeping
+           core files in the accelerator's own ``cores/`` dir avoids silently loading the wrong file.
+        """
         if "./" in core_file_name:
-            core_file_path = os.path.normpath(os.path.join(self.accelerator_dirname, core_file_name))
-            core_data = open_yaml(core_file_path)
-            assert isinstance(core_data, dict), "Core data must be a dictionary."
-            return core_data
+            return self._read_core_yaml(os.path.normpath(os.path.join(self.accelerator_dirname, core_file_name)))
         if "/" in core_file_name:
-            core_data = open_yaml(core_file_name)
-            assert isinstance(core_data, dict), "Core data must be a dictionary."
-            return core_data
+            return self._read_core_yaml(core_file_name)
+
+        # Bare filename: prefer the accelerator-local cores (deterministic).
+        for candidate in (
+            os.path.join(self.accelerator_dirname, "cores", core_file_name),
+            os.path.join(self.accelerator_dirname, core_file_name),
+        ):
+            if os.path.isfile(candidate):
+                return self._read_core_yaml(candidate)
+
+        # Fallback: search the input tree (legacy, ambiguous across hardware dirs).
         input_location = AcceleratorValidator.INPUT_DIR_LOCATION
         for dir_root_name, _, files_this_dir in os.walk(input_location):
-            # Only consider subdirectories of `hardware` folder
-            if "hardware" in dir_root_name:
-                if core_file_name in files_this_dir:
-                    core_file_path = dir_root_name + "/" + core_file_name
-                    core_data = open_yaml(core_file_path)
-                    assert isinstance(core_data, dict), "Core data must be a dictionary."
-                    return core_data
+            if "hardware" in dir_root_name and core_file_name in files_this_dir:
+                core_file_path = os.path.join(dir_root_name, core_file_name)
+                logger.warning(
+                    "Core '%s' was not found next to its accelerator ('%s'); resolved via input-tree "
+                    "search to '%s'. Place core files in the accelerator's 'cores/' dir to avoid loading "
+                    "the wrong file when the name is reused elsewhere.",
+                    core_file_name,
+                    self.accelerator_dirname,
+                    core_file_path,
+                )
+                return self._read_core_yaml(core_file_path)
 
         self.invalidate(
-            f"Core with filename `{core_file_name}` not found. Make sure `{input_location}` contains a folder "
-            f"called `hardware` that contains the core file."
+            f"Core with filename `{core_file_name}` not found. Looked in "
+            f"`{os.path.join(self.accelerator_dirname, 'cores')}` and under `{input_location}`."
         )
         return None
+
+    @staticmethod
+    def _read_core_yaml(core_file_path: str) -> dict[str, Any]:
+        core_data = open_yaml(core_file_path)
+        assert isinstance(core_data, dict), "Core data must be a dictionary."
+        return core_data
 
     def validate_core_connectivity(self):
         connections = self.data["core_connectivity"]
