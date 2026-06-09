@@ -129,12 +129,7 @@ operational_array:
   dimensions: [D1, D2, D3, D4]
   sizes: [4, 4, 8, 8]
 
-dataflows:
-  D1:
-    - K, 4
-  D2:
-    - C, 4
-  D3:
-    - K, 8
-  D4:
-    - C, 8
+# No fixed `dataflows`: let ZigZag generate the spatial (PE-array) mapping per layer.
+# A fixed dataflow here yielded an EMPTY spatial mapping (near-zero MAC utilization) in
+# the generic-mapping pipeline; letting ZigZag generate adapts the unrolling to each
+# workload and actually fills the array.
