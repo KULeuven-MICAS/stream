@@ -107,13 +107,18 @@ class ZigZagCostEstimator:
         pr_sizes: dict[ZigZagLayerDim, int] = {}
         unique_dims, _ = self.workload.unique_dimensions()
         unique_dim_sizes = [self.workload.get_dimension_size(dim) for dim in unique_dims]
+        # Per-core tile: shrink inter-core-tiled dims so the PR (affine) tensor extents derived
+        # below stay consistent with the per-core loop sizes from create_layer_dim_sizes.
+        factors = self._inter_core_factors(node)
+        per_core_dim_sizes = {
+            dim: self._per_core_size(size, factors.get(str(dim), 1))
+            for dim, size in zip(unique_dims, unique_dim_sizes, strict=False)
+        }
         tensors = (node.outputs[0],) + node.inputs
         operand_names = ["O"] + self.input_operand_names[: len(node.inputs)]
         equation_str = ""
         for tensor, operand_name in zip(tensors, operand_names, strict=True):
-            tensor_shape = self.workload.get_tensor_shape_with_dimension_sizes(
-                tensor, {dim: size for dim, size in zip(unique_dims, unique_dim_sizes, strict=False)}
-            )
+            tensor_shape = self.workload.get_tensor_shape_with_dimension_sizes(tensor, per_core_dim_sizes)
             mapping = node.get_mapping(tensor)
             operand_dims: list[ZigZagLayerDim] = []
             for i, expr in enumerate(mapping.results):
@@ -161,11 +166,35 @@ class ZigZagCostEstimator:
             ZigZagLayerDimSizes(pr_sizes),
         )
 
+    def _inter_core_factors(self, node: ComputationNode) -> dict[str, int]:
+        """Total inter-core split factor per workload dimension for *node* (keyed by ``str(dim)``).
+
+        A layer tiled across N cores has each core compute only its tile, so the cost model
+        should see the per-core tile size (full dim size / split factor), not the full layer.
+        Returns ``{}`` when the node has no inter-core tiling. Keyed by ``str(dim)`` for robust
+        matching across the workload's dimension representations.
+        """
+        factors: dict[str, int] = {}
+        try:
+            for dim, factor in self.workload.get_unique_dims_inter_core_tiling(node, self.mapping):
+                factors[str(dim)] = factors.get(str(dim), 1) * factor
+        except Exception:
+            return {}
+        return factors
+
+    @staticmethod
+    def _per_core_size(full_size: int, factor: int) -> int:
+        """Per-core tile size: divide the full dimension size by its inter-core split factor when it
+        divides evenly; otherwise leave it unchanged (never produce a 0 or partial dimension size)."""
+        return full_size // factor if factor > 1 and full_size % factor == 0 else full_size
+
     def create_layer_dim_sizes(self, node: ComputationNode) -> ZigZagLayerDimSizes:
         dims = self.workload.get_dims(node)
-        zigzag_dims = [ZigZagLayerDim(f"D{i}") for i, _ in enumerate(dims)]
-        dim_sizes = [self.workload.get_dimension_size(dim) for dim in dims]
-        data = {dim: size for dim, size in zip(zigzag_dims, dim_sizes, strict=False)}
+        factors = self._inter_core_factors(node)
+        data: dict[ZigZagLayerDim, int] = {}
+        for i, dim in enumerate(dims):
+            full = self.workload.get_dimension_size(dim)
+            data[ZigZagLayerDim(f"D{i}")] = self._per_core_size(full, factors.get(str(dim), 1))
         return ZigZagLayerDimSizes(data)
 
     def create_operand_precision(self, node: ComputationNode) -> ZigZagLayerOperandPrecision:
