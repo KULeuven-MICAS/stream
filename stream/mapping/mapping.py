@@ -178,11 +178,14 @@ class Mapping:
         for node, nm in self._by_node.items():
             node_key = str(getattr(node, "name", None) or repr(node))
 
-            # Serialize resource_allocation: tuple[tuple[Resource, ...], ...] -> list of lists of dicts
+            # Serialize resource_allocation -> list of lists of dicts.
+            # A slot is usually a tuple of Resources (compute nodes), but transfer nodes may
+            # carry a bare Resource (e.g. a MulticastPathPlan) per slot; normalize to an iterable.
             resource_allocation_ir = []
             for slot in nm.resource_allocation:
                 slot_ir = []
-                for resource in slot:
+                resources = slot if isinstance(slot, tuple | list) else (slot,)
+                for resource in resources:
                     if isinstance(resource, Core):
                         slot_ir.append({"type": "core", "id": resource.id})
                     elif isinstance(resource, MulticastPathPlan):
@@ -204,8 +207,11 @@ class Mapping:
                 slot_ir = [[str(dim), factor] for dim, factor in slot]
                 inter_core_tiling_ir.append(slot_ir)
 
-            # Serialize memory_allocation: tuple[tuple[Core, ...], ...] -> list of lists of core IDs
-            memory_allocation_ir = [[core.id for core in slot] for slot in nm.memory_allocation]
+            # Serialize memory_allocation -> list of lists of core IDs (a slot may be a bare Core).
+            memory_allocation_ir = [
+                [core.id for core in (slot if isinstance(slot, tuple | list) else (slot,))]
+                for slot in nm.memory_allocation
+            ]
 
             nodes_ir[node_key] = {
                 "resource_allocation": resource_allocation_ir,
