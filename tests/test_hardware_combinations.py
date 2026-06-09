@@ -54,18 +54,12 @@ _HARDWARE = [
         id="simba_small",
     ),
     pytest.param(
+        # 36 compute chiplets: the generic mapper splits the 2-conv across dimensions
+        # (e.g. OY x FY x FX = 4 x 3 x 3 = 36) since no single dim is divisible by 36.
+        # slow-marked because the 36-core MILP is the heaviest case in the matrix.
         "stream/inputs/examples/hardware/simba.yaml",
         id="simba",
-        marks=[
-            pytest.mark.slow,
-            pytest.mark.xfail(
-                raises=AssertionError,
-                reason=(
-                    "simba 36-core mesh: spatial unrolling 36 is not divisible by any dimension "
-                    "of the small 2-conv workload (max dim=32). Use a larger workload or fewer cores."
-                ),
-            ),
-        ],
+        marks=pytest.mark.slow,
     ),
 ]
 

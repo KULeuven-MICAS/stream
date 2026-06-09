@@ -11,6 +11,7 @@ written to disk.  A ValueError is raised if validation fails.
 """
 
 import logging
+import math
 import os
 from typing import Any
 
@@ -119,9 +120,23 @@ class GenericMappingGenerator:
             core_allocation: list[list[int]] = [[c.id for c in cores]]
 
             if n_cores > 1:
-                split_dim_idx = self._find_split_dim(sub_workload, cn, n_cores)
-                if split_dim_idx is not None:
-                    inter_core_tiling: list[list[dict[str, Any]]] = [[{"dim": f"D{split_dim_idx}", "split": n_cores}]]
+                split_factors = self._factor_split_across_dims(sub_workload, cn, n_cores)
+                if split_factors:
+                    inter_core_tiling: list[list[dict[str, Any]]] = [
+                        [{"dim": f"D{dim_idx}", "split": factor} for dim_idx, factor in split_factors]
+                    ]
+                    cores_used = math.prod(factor for _, factor in split_factors)
+                    if cores_used < n_cores:
+                        # The workload's dimensions can't be tiled across every core; use the
+                        # largest achievable subset rather than forcing an indivisible split.
+                        logger.info(
+                            "Node %s: inter-core tiling spans %d of %d cores; %d core(s) stay idle.",
+                            cn.name,
+                            cores_used,
+                            n_cores,
+                            n_cores - cores_used,
+                        )
+                        core_allocation = [[c.id for c in cores[:cores_used]]]
                 else:
                     inter_core_tiling = []
             else:
@@ -187,30 +202,49 @@ class GenericMappingGenerator:
         logger.warning("No core found for operator '%s'; falling back to all compute cores.", node_op)
         return fallback
 
-    def _find_split_dim(self, sub_workload: Workload, cn: ComputationNode, n_cores: int) -> int | None:
-        """Find the best dimension index to split across *n_cores*.
+    def _factor_split_across_dims(
+        self, sub_workload: Workload, cn: ComputationNode, n_cores: int
+    ) -> list[tuple[int, int]]:
+        """Distribute an inter-core split of *n_cores* across the node's dimensions.
 
-        Iterates node dimensions sorted by size descending.  Returns the index
-        of the first dimension whose size is divisible by *n_cores*.  If none
-        is perfectly divisible, returns the index of the largest dimension.
-        Returns None if the node has no dimensions.
+        Unrolling a single dimension by ``n_cores`` fails whenever no dimension is
+        divisible by it -- e.g. a 36-core mesh on a 2-conv whose dimensions are powers
+        of two plus 3x3 kernels (``32 % 36 != 0``). Instead, factor ``n_cores`` across
+        multiple dimensions so the per-dimension factors multiply back to ``n_cores``
+        (a "dataflow-style" split). Each factor divides its dimension's size, so the
+        resulting tiling is always valid.
+
+        Dimensions are consumed largest-first, so parallel output dimensions (OY/OX/K)
+        absorb the split before the small reduction/kernel dimensions, keeping
+        cross-core reduction minimal. If ``n_cores`` cannot be fully factored over the
+        available dimensions, the largest achievable subset is returned (product of
+        factors < ``n_cores``) rather than forcing an indivisible split.
+
+        Returns a list of ``(dim_index, factor)`` pairs, empty when the node has no
+        splittable dimensions.
         """
         dims = sub_workload.get_dims(cn)
         if not dims:
-            return None
+            return []
 
-        # Pair each dim with (index, size)
-        dim_sizes = [(i, sub_workload.get_dimension_size(dim)) for i, dim in enumerate(dims)]
-        # Sort descending by size
-        dim_sizes_sorted = sorted(dim_sizes, key=lambda x: x[1], reverse=True)
+        # (index, size) per dimension, largest first.
+        dim_sizes = sorted(
+            ((idx, sub_workload.get_dimension_size(dim)) for idx, dim in enumerate(dims)),
+            key=lambda pair: pair[1],
+            reverse=True,
+        )
 
-        # Try to find a perfectly divisible dimension
-        for dim_idx, size in dim_sizes_sorted:
-            if size >= n_cores and size % n_cores == 0:
-                return dim_idx
-
-        # Fallback: use the largest dimension (relaxed divisibility)
-        return dim_sizes_sorted[0][0]
+        remaining = n_cores
+        split_factors: list[tuple[int, int]] = []
+        for dim_idx, size in dim_sizes:
+            if remaining == 1:
+                break
+            # Largest factor of `remaining` that also divides this dimension's size.
+            factor = math.gcd(remaining, size)
+            if factor > 1:
+                split_factors.append((dim_idx, factor))
+                remaining //= factor
+        return split_factors
 
     def _build_intra_core_tiling(
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...]
