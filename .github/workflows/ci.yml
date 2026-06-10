@@ -27,6 +27,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Graphviz
+        # The CO pipeline renders workload/schedule graphs via pydot, which
+        # shells out to the Graphviz `dot` binary (not bundled with the runner).
+        run: sudo apt-get update && sudo apt-get install -y graphviz
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"

@@ -4,6 +4,7 @@
 
 - Python **≥ 3.11**
 - `git` and `pip`
+- **Graphviz** (the `dot` binary) — the pipeline renders the workload and schedule graphs to PNG via `pydot`, which calls `dot`. Install it with your system package manager, e.g. `sudo apt-get install graphviz` (Debian/Ubuntu) or `brew install graphviz` (macOS).
 
 ## Clone
 
