@@ -29,7 +29,7 @@ co-swiglu hw="tpu_like_quad_core":
       --hardware stream/inputs/examples/hardware/{{hw}}.yaml \
       --workload stream/inputs/testing/workload/swiglu_1_16_32.onnx
 
-# Run the full hardware x workload test matrix (parse + 2-conv + swiglu over all 8 non-AIE boards).
+# Run the full hardware x workload test matrix (parse + 2-conv + swiglu over all 8 non-AIE architectures).
 matrix:
     python -m pytest tests/test_hardware_combinations.py
 

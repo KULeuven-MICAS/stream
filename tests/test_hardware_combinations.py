@@ -1,11 +1,11 @@
 """Parametrized CO pipeline tests across non-AIE example hardware.
 
 Matrix: 8 non-AIE hardware x {2-conv, swiglu} = 16 CO-pipeline combinations — all green.
-Parse check: test_hardware_parses covers all 8 boards (HWFIX-05).
+Parse check: test_hardware_parses covers all 8 architectures (HWFIX-05).
 No xfail/skip and no slow marks: every combination runs in the default fast suite. The 36-core
 simba mesh is included — on these small single-fusion-group workloads it runs in ~16s (2-conv) /
-~7s (swiglu), on par with the other boards. (Multi-fusion-group workloads, where the CO runs once
-per group, are where large meshes get expensive — none of those live here.)
+~7s (swiglu), on par with the other architectures. (Multi-fusion-group workloads, where the CO runs
+once per group, are where large meshes get expensive — none of those live here.)
 
 Fast suite (default pytest): 24 tests from this file (16 CO + 8 parse), none deselected.
 
@@ -32,7 +32,7 @@ from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.workload.node import ComputationNode
 
 # ---------------------------------------------------------------------------
-# Hardware under test — the 8 non-AIE example boards. Append pytest.param entries
+# Hardware under test — the 8 non-AIE example architectures. Append pytest.param entries
 # to extend; use xfail/skip (with a written reason) only for a genuinely-infeasible
 # workload x hardware combination, never to hide a fixable failure.
 # ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ _HARDWARE = [
         # 36 compute chiplets: the generic mapper splits the 2-conv across dimensions
         # (e.g. OY x FY x FX = 4 x 3 x 3 = 36) since no single dim is divisible by 36.
         # Not slow-marked: on these small single-fusion-group workloads the 36-core case
-        # runs in ~16s (2-conv) / ~7s (swiglu) — on par with simba_small and the other boards.
+        # runs in ~16s (2-conv) / ~7s (swiglu) — on par with simba_small and the other architectures.
         "stream/inputs/examples/hardware/simba.yaml",
         id="simba",
     ),
@@ -76,7 +76,7 @@ _HARDWARE = [
     ),
 ]
 
-# All 8 board paths as plain strings (NO pytest marks). Separate from _HARDWARE so that simba's
+# All 8 architecture paths as plain strings (NO pytest marks). Separate from _HARDWARE so that simba's
 # `slow` mark is NOT inherited — parsing is cheap (<1s), only simba's 36-core MILP is slow, so all
 # 8 parse-checks must run in the fast suite (HWFIX-05).
 _ALL_HARDWARE_PATHS = [

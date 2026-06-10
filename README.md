@@ -79,7 +79,7 @@ A mapping can be auto-generated (as in Quick Start above) or hand-written and pa
 
 ## Workload × Hardware Matrix
 
-The generic CO pipeline runs any ONNX workload on any of the example hardware systems. The repo ships two small workloads and exercises them across all eight non-AIE example boards — both from the `scripts/main_stream_co.py` entry point and from the pytest suite (`tests/test_hardware_combinations.py`).
+The generic CO pipeline runs any ONNX workload on any of the example hardware systems. The repo ships two small workloads and exercises them across all eight non-AIE example architectures — both from the `scripts/main_stream_co.py` entry point and from the pytest suite (`tests/test_hardware_combinations.py`).
 
 **Workloads** — committed test fixtures under `stream/inputs/testing/workload/` (weight values are cleared — only tensor shapes matter for cost estimation, so the ONNX stay tiny; `just gen-workloads` regenerates them via the builders):
 
@@ -102,8 +102,8 @@ The generic CO pipeline runs any ONNX workload on any of the example hardware sy
 **Run one combination** — the `justfile` wraps `scripts/main_stream_co.py`; `hw` is any hardware stem from the table (default `tpu_like_quad_core`):
 
 ```bash
-just co-2conv fusemax           # 2-conv on a board
-just co-swiglu simba_small      # swiglu on a board
+just co-2conv fusemax           # 2-conv on an architecture
+just co-swiglu simba_small      # swiglu on an architecture
 ```
 
 Equivalently, the raw entry-point call:
@@ -114,10 +114,10 @@ python scripts/main_stream_co.py \
   --workload stream/inputs/testing/workload/2conv_1_8_32_32_16_32_3.onnx
 ```
 
-**Run the whole matrix** — the `justfile` wraps `pytest tests/test_hardware_combinations.py`, which runs 2-conv + swiglu over all eight boards plus a parse-only check confirming every hardware definition loads:
+**Run the whole matrix** — the `justfile` wraps `pytest tests/test_hardware_combinations.py`, which runs 2-conv + swiglu over all eight architectures plus a parse-only check confirming every hardware definition loads:
 
 ```bash
-just matrix          # parse + 2-conv + swiglu over all 8 boards (incl. simba)
+just matrix          # parse + 2-conv + swiglu over all 8 architectures (incl. simba)
 ```
 
 ## Command-Line Entry Points
