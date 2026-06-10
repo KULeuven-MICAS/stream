@@ -1,36 +1,56 @@
-# Installing Stream
+# Installation
 
-## Manual clone
+## Requirements
 
-If you want to add custom functionality to the framework, you can clone
-the repository manually:
+- Python **≥ 3.11**
+- `git` and `pip`
 
-### Prerequisites
+## Clone
 
--   `git`: for cloning the repository
--   `pip`: for installing the required packages
--   `python>=3.8`: for running the framework
-
-### Installation
-
-Clone the repository
-
-``` sh
-git clone git@github.com:KULeuven-MICAS/stream.git
+```bash
+git clone https://github.com/KULeuven-MICAS/stream_aie.git
+cd stream_aie
 ```
 
-or
+## Install
 
-``` sh
-git clone https://github.com/KULeuven-MICAS/stream.git
+Stream is an installable package (`stream-dse`); install it in editable mode from the repo root. The authoritative dependency list is `pyproject.toml`.
+
+**Base install** — everything needed for the constraint-optimization pipeline:
+
+```bash
+pip install -e .
 ```
 
-Install requirements through pip. Alternatively, anaconda spec file is
-also provided.
+This pulls in `zigzag-dse`, `ortools>=9.15` (the default MILP backend), `gurobipy`, `pydantic`, and the xDSL/SNAX MLIR packages.
 
-``` sh
-pip install -r requirements.txt
+**With the MCP server** (for driving Stream from an AI agent — see [Using Stream with an AI agent](ai-agents.md)):
+
+```bash
+pip install -e ".[mcp]"
 ```
 
-Once the dependencies are installed, Stream can be run through the main
-file. More details are provided in [Getting Started](getting-started.md).
+The `[mcp]` extra adds `fastmcp`.
+
+**With the AMD AIE toolchain** (only needed for AIE-target MLIR codegen and on-device tracing):
+
+```bash
+pip install -e ".[aie]"
+bash setup_aie_python_extras.sh      # aie.extras.context — not installable as a pip extra
+source setup_mlir_aie_pythonpath.sh  # adds mlir_aie/python to PYTHONPATH
+```
+
+The `[aie]` extra is **Linux x86_64 only** (manylinux wheels) and not supported on Python 3.11 — use 3.12 or 3.13 for it. The base CO pipeline has no such restriction.
+
+## Solver license note
+
+The default backend `ortools_gscip` is open-source and needs **no license**. Gurobi requires a separate commercial license: the package installs fine, but selecting `backend="gurobi"` errors at solve time without a valid license. For most users the default is all you need.
+
+## Optional: pre-commit hooks
+
+```bash
+pip install pre-commit
+pre-commit install   # runs ruff check + ruff format on every commit
+```
+
+Once installed, head to [Getting Started](getting-started.md).

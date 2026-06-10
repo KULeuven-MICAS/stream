@@ -1,65 +1,48 @@
 # Welcome to Stream
 
-**Stream** is a design space exploration (DSE) framework for mapping deep neural networks (DNNs) onto **multi-core heterogeneous dataflow accelerators**. It supports a wide spectrum of architectural designs and scheduling granularities—from traditional layer-by-layer execution to advanced **layer-fused processing**—enabling scalable, efficient deployment of modern DNNs.
+**Stream** is a design-space-exploration (DSE) and constraint-optimization framework for **heterogeneous dataflow accelerators** — systems built by combining cores that each have their own dataflow and performance model. **AIE** and **TPU-like** cores are two example core types among others.
 
-Stream builds upon the [ZigZag framework](https://zigzag-project.github.io/zigzag/) but significantly extends its capabilities to multi-core and fine-grained scheduling contexts.
-
----
-
-## ✨ Key Features
-
-- **Layer Fusion Support**  
-  Enables splitting and scheduling *parts of layers* across multiple cores for higher utilization and lower memory access costs.
-
-- **Heterogeneous Multi-Core Scheduling**  
-  Models realistic accelerator architectures including cores with different compute/memory capabilities and interconnects.
-
-- **Memory & Communication-Aware Analysis (COALA)**  
-  Stream integrates COALA: a validated latency and energy model that captures data reuse, communication overhead, and memory hierarchies.
-
-- **Workload Allocation via Constraint Optimization (WACO)**  
-  Stream includes a built-in engine that explores valid allocations across cores using constraint-based optimization.
-
-- **Validated Against Real Hardware**  
-  Performance models and predictions are benchmarked against three state-of-the-art accelerator designs.
-
-- **Modular & Extensible**  
-  Stages of the mapping process are customizable, enabling easy experimentation and research integration.
+Given a neural-network workload (ONNX) and a hardware description (YAML), Stream schedules the workload **layer-fused** across the cores and uses **MILP (Mixed-Integer Linear Programming)** — the *TETRA* constraint optimization — to decide tensor placement and the transfer paths between cores. Stream builds on the [ZigZag framework](https://zigzag-project.github.io/zigzag/) for per-core cost estimation.
 
 ---
 
-## 🚀 Get Started
+## ✨ What it does
 
-1. **Clone and install requirements**
-
-   ```bash
-   git clone https://github.com/KULeuven-MICAS/stream.git
-   cd stream
-   pip install -r requirements.txt
-   ```
-
-2. **Try the tutorial**
-
-   ```bash
-   git checkout tutorial
-   python lab1/main.py
-   ```
-
-More step-by-step setup help can be found in the [Getting Started](getting-started.md) and [Installation](installation.md) pages.
+- **Heterogeneous multi-core modelling** — accelerators are described as a system of cores with different compute/memory capabilities, connected by links and buses.
+- **Layer-fused scheduling** — parts of layers can be split and co-scheduled across cores for higher utilization and lower memory traffic.
+- **Constraint-optimization allocation (TETRA)** — a MILP `TransferAndTensorAllocator` decides where each tensor lives and how it is routed.
+- **Pluggable solvers** — OR-Tools **GSCIP** (default, license-free), OR-Tools **HiGHS**, and **Gurobi** (commercial license), all behind one API.
+- **Memory- and communication-aware cost model** — captures data reuse, memory hierarchy, and interconnect cost.
+- **Modular pipeline** — the mapping process is a sequence of stages you can configure or extend.
+- **Agent-friendly** — a documented public API, typed IR models, and an MCP server let an AI agent drive the framework (see [Using Stream with an AI agent](ai-agents.md)).
 
 ---
 
-## 📚 Publications
+## 🚀 Get started
 
-The framework and methodology are described in:
+```bash
+git clone https://github.com/KULeuven-MICAS/stream_aie.git
+cd stream_aie
+pip install -e .
+```
 
-> A. Symons, L. Mei, S. Colleman, P. Houshmand, S. Karl and M. Verhelst,  
-> *“Stream: Design Space Exploration of Layer-Fused DNNs on Heterogeneous Dataflow Accelerators”*,  
-> IEEE Transactions on Computers, 2025.  
-> [📄 Read our paper](https://ieeexplore.ieee.org/abstract/document/10713407)
+Then run the CO pipeline on a bundled workload, with an auto-generated mapping:
+
+```bash
+python scripts/main_stream_co.py \
+  --hardware stream/inputs/examples/hardware/tpu_like_quad_core.yaml \
+  --workload stream/inputs/testing/workload/2conv_1_8_32_32_16_32_3.onnx
+```
+
+See [Installation](installation.md) and [Getting Started](getting-started.md) for details, and the [User Guide](user-guide.md) for the workload, hardware, and mapping input formats.
 
 ---
 
-Stream enables researchers and developers to design, evaluate, and optimize novel DNN hardware accelerators — particularly for **latency-sensitive, power-constrained edge applications**.
+## 📚 Publication
 
-Happy exploring!
+> A. Symons, L. Mei, S. Colleman, P. Houshmand, S. Karl and M. Verhelst,
+> *"Stream: Design Space Exploration of Layer-Fused DNNs on Heterogeneous Dataflow Accelerators"*,
+> IEEE Transactions on Computers, vol. 74, no. 1, pp. 237–249, Jan. 2025.
+> [📄 Read the paper](https://ieeexplore.ieee.org/abstract/document/10713407)
+
+Developed as part of the **TETRA** project at **KU Leuven MICAS**.

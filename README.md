@@ -213,8 +213,9 @@ The 6 tools:
 
 An AI agent working in this repo should read `CLAUDE.md` first — it is the navigation hub (directory structure, entry points, conventions, and a skills index).
 
-Deep-dive documentation lives in `.claude/skills/`. The 5 existing skill groups:
+Deep-dive documentation lives in `.claude/skills/`. The 6 existing skill groups:
 
+- `.claude/skills/hardware/` — core types and namespaces, adding a core architecture, per-core performance estimation.
 - `.claude/skills/optimization/` — solver backends (Gurobi, OR-Tools), ConstraintSelection configuration.
 - `.claude/skills/pipeline/` — pipeline stages, StageContext data flow, adding stages.
 - `.claude/skills/constraints/` — MILP formulation, TransferAndTensorAllocator, NamespaceConstraints dispatch.
@@ -241,6 +242,6 @@ allocation_data = allocation_ir.model_dump()
 ## Further Documentation
 
 - **AI-agent / TETRA docs:** `CLAUDE.md` and `.claude/skills/` in this repo — the primary documentation for the TETRA CO features (solver backends, constraint selection, MCP server, IR models).
-- **Hosted documentation site:** https://kuleuven-micas.github.io/stream/ — background on the base Stream framework (predates the TETRA CO extensions; see the skills for TETRA-specific docs).
+- **Hosted documentation site:** https://kuleuven-micas.github.io/stream_aie/ — the human-facing docs (installation, getting started, and the workload/hardware/mapping input formats), rebuilt from `docs/` on every push to `main`.
 - **Stream paper (IEEE):** https://ieeexplore.ieee.org/abstract/document/10713407 — "A. Symons, L. Mei, S. Colleman, P. Houshmand, S. Karl and M. Verhelst, Stream: Design Space Exploration of Layer-Fused DNNs on Heterogeneous Dataflow Accelerators".
 - **ZigZag:** https://zigzag-project.github.io/zigzag/ — the per-core cost-estimation framework Stream builds on.

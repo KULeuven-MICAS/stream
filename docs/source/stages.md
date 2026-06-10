@@ -1,111 +1,52 @@
 # Stages
 
-This document explains the concept of stages within the **Stream** framework. It details the different implemented stages and explains how to create your own.
+Stream's mapping flow is a **pipeline of stages**. Each stage does one job — parse an input, generate tilings, estimate cost, run the MILP allocation — and passes shared state to the next through a `StageContext`. This makes the flow easy to read, configure, and extend.
+
+The framework lives in `stream/stages/`; the deep-dive is the [`pipeline` skill](ai-agents.md) (`.claude/skills/pipeline/`).
 
 ---
 
-## Introduction
+## Execution model
 
-Stages in Stream allow modular customization of the framework’s behavior. The sequence of stages defines what the framework will execute. These are configured in the `MainStage`. Example:
+- **`Stage`** — the base unit of work. A **`LeafStage`** does work and yields results; a **`MainStage`** owns an ordered list of sub-stages and runs them as a pipeline.
+- **`StageContext`** (`stream/stages/context.py`) — the shared, mutable state threaded through the run. Inputs (hardware/workload/mapping paths, backend, output path) go in; results (`total_latency`, `group_latencies`, `scheduler`, `workload`, `accelerator`, …) come out. You read results with `ctx.get("…")`.
+
+The public API functions in `stream/api.py` assemble the right stage list for you — you normally don't build a `MainStage` by hand.
+
+---
+
+## The CO pipeline
+
+`optimize_allocation_co_generic` (auto-mapping) and `optimize_allocation_co_with_mapping` (manual mapping) run essentially these stages:
+
+1. **`AcceleratorParserStage`** — parse the hardware YAML into the accelerator model (cores, memories, interconnect).
+2. **`ONNXModelParserStage`** — parse the ONNX workload into a computation graph (see [Workload](workload.md)).
+3. **Mapping** — either:
+   - **`GenericMappingGenerationStage`** + **`FusionGroupIterationStage`** (generic path) — auto-generate a mapping and iterate the inner pipeline once per fusion group; or
+   - **`MappingParserStage`** (manual path) — parse the supplied mapping YAML.
+4. **`TilingGenerationStage`** — generate the intra-/inter-core tilings for each node.
+5. **`CoreCostEstimationStage`** — estimate per-(node, core) cost. ZigZag cores are costed with ZigZag's model; AIE cores use the native AIE cost model.
+6. **`ConstraintOptimizationAllocationStage`** — build and solve the MILP (`TransferAndTensorAllocator`, TETRA): decide tensor placement and transfer paths, producing the schedule.
+7. **`MemoryAccessesEstimationStage`** — estimate memory traffic for the chosen allocation.
+
+For a workload with several fusion groups, the CO runs **once per group**; this is the loop that dominates wall-clock time on large workloads.
+
+`optimize_mapping` wraps this pipeline in an outer DSE loop that enumerates mapping variants and evaluates each one.
+
+---
+
+## Writing a custom stage
+
+To add behaviour, subclass `Stage` (or `LeafStage`), accept the downstream stages as your sub-stage list, and yield `(result, info)` tuples as you iterate them:
 
 ```python
-ctx = StageContext.from_kwargs(
-    accelerator=accelerator,
-    workload_path=workload_path,
-    mapping_path=mapping_path,
-    loma_lpf_limit=6,
-    nb_ga_individuals=32,
-    nb_ga_generations=100,
-    cost_lut_path=cost_lut_path,
-    plot_hof=True,
-    plot_file_name=plot_file_name,
-    plot_full_schedule=plot_full_schedule,
-    plot_data_transfer=plot_data_transfer,
-    cn_define_mode=CN_define_mode,
-    hint_loops=hint_loops,
-    scheduler_candidate_selection="memory",
-    operands_to_prefetch=[],
-    split_onnx_model_path=split_onnx_model_path,
-    split_W_double_buffered=split_W_double_buffered,
-)
+from stream.stages.stage import LeafStage
 
-mainstage = MainStage(
-    [
-        AcceleratorParserStage,
-        StreamONNXModelParserStage,
-        LayerSplittingStage,
-        StreamONNXModelParserStage,
-        GenerateCNWorkloadHybridStage,
-        IntraCoreMappingStage,
-        InterCoreMappingStage,
-    ],
-    ctx,
-)
-
-scme, _ = mainstage.run()
-scme = scme[0]
+class MyStage(LeafStage):
+    def run(self):
+        for result, info in self.sub_stage.run():
+            # transform / measure / filter here
+            yield result, info
 ```
 
----
-
-## Implemented Stages
-
-See the [stream/stages/](https://github.com/KULeuven-MICAS/stream/tree/master/stream/stages) folder for up-to-date source definitions.
-
-### [CustomSpatialMappingGeneratorStage](https://github.com/KULeuven-MICAS/stream/blob/master/stream/classes/stages/CustomSpatialMappingGeneratorStage.py#L23)
-
-Finds spatial mappings given an accelerator, core allocation, and interconnection pattern. Uses the innermost memory levels to determine dataflow.
-
----
-
-### [GenerateCNWorkloadHybridStage](https://github.com/KULeuven-MICAS/stream/blob/master/stream/classes/stages/GenerateCNWorkloadHybridStage.py#L29)
-
-Transforms a layer-by-layer workload into a fine-grained CN workload graph. Configurable via `cn_define_mode` and `hint_loops`.
-
-Modes include:
-
-1. `hint_loops` defines outer-cn loops for splitting.
-2. `hint_loops` defines inner-cn loops; all others become outer-cn.
-3. `hint_loops` is a list-of-lists; `layer_cutoffs` defines to which layers each applies.
-4. `hint_loops` defines outer-cn; `split_W_percentage` limits constant operand memory footprint. Layers exceeding the limit are split in K.
-
----
-
-### [InterCoreMappingStage](https://github.com/KULeuven-MICAS/stream/blob/master/stream/classes/stages/InterCoreMappingStage.py#L17)
-
-Performs inter-core mapping using a genetic algorithm. Starts from CMEs collected during intra-core mapping.
-
----
-
-### [IntraCoreMappingStage](https://github.com/KULeuven-MICAS/stream/blob/master/stream/classes/stages/IntraCoreMappingStage.py#L22)
-
-Finds optimal CMEs per node-core allocation. Groups nodes based on `loop_ranges` differences in relevant dimensions (e.g., `K` for convolution).
-
----
-
-### [ONNXModelParserStage](https://github.com/KULeuven-MICAS/stream/blob/master/stream/classes/stages/ModelParserStage.py#L11)
-
-Parses a workload file into a `NetworkX` graph. Converts ONNX into Stream’s internal representation.
-
----
-
-You can also reuse [ZigZag’s implemented stages](https://kuleuven-micas.github.io/zigzag/stages.html#implemented-stages) within Stream.
-
----
-
-## Creating a Custom Stage
-
-To create a custom stage (e.g., optimize for something other than energy), copy an existing stage and modify it as needed. Make sure to:
-
-- Inherit from the abstract `Stage` class
-- Initialize your substage at the beginning of your callables list:
-  ```python
-  substages = [YourNextStage(...), ...]
-  stage = YourStage(substages, **kwargs)
-  ```
-- Iterate over `for cme, extra_info in substage.run():` to yield results
-- If you're reducing (like `MinimalLatencyStage`), yield **outside** the loop
-
----
-
-Creating custom stages enables targeted optimization and full control over the pipeline logic.
+Insert your stage at the right position in the list passed to `MainStage`. If your stage reduces (keeps only the best result), `yield` once **after** the loop rather than inside it. See `.claude/skills/pipeline/` for the full contract and worked examples.
