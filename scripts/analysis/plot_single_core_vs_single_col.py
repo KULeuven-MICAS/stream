@@ -6,6 +6,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import seaborn as sns
+from matplotlib.patches import Rectangle
 
 sns.set(style="whitegrid", context="talk")
 
@@ -127,8 +128,8 @@ def plot_two_panels(
     # Single legend for both subplots
     # Use proxy artists with labels
     proxy = [
-        plt.Rectangle((0, 0), 1, 1, color=colors[0]),
-        plt.Rectangle((0, 0), 1, 1, color=colors[1]),
+        Rectangle((0, 0), 1, 1, color=colors[0]),
+        Rectangle((0, 0), 1, 1, color=colors[1]),
     ]
     fig.legend(proxy, labels, loc="lower center", ncol=2, bbox_to_anchor=(0.5, -0.02))
 

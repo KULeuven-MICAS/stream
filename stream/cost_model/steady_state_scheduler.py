@@ -200,6 +200,7 @@ class SteadyStateScheduler:
             overlap,
         )
         # Export Perfetto-compatible JSON traces of the solved schedule
+        fname = ""
         try:
             for compact, fname in [(True, "steady_state_trace_compact.json"), (False, "steady_state_trace.json")]:
                 trace_path = export_steady_state_trace(
@@ -602,7 +603,7 @@ class SteadyStateScheduler:
             prod_iv_dim = prod_iv.dimension
             if prod_iv_dim in tensor_dims:
                 tensor_effect = LoopEffect.VARYING
-            if prod_iv_dim not in tensor_dims:
+            else:
                 tensor_effect = LoopEffect.ABSENT if prod_iv.effect == LoopEffect.ABSENT else LoopEffect.INVARIANT
             tensor_ivs.append(
                 IterationVariable(

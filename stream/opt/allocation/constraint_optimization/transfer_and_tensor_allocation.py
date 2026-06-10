@@ -2129,6 +2129,7 @@ class TransferAndTensorAllocator:
 
         if num_subplots == 1:
             ax1 = axes
+            ax3 = None
         else:
             ax1, ax3 = axes
 

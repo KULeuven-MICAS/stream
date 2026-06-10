@@ -5,8 +5,7 @@ import sys
 from enum import Enum, auto
 from io import StringIO
 from itertools import count
-
-from pyparsing import Any
+from typing import Any
 
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink

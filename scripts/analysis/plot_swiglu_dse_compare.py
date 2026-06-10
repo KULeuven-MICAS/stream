@@ -27,6 +27,7 @@ from dataclasses import dataclass
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 from matplotlib.ticker import ScalarFormatter
 
 # ---------------------------------------------------------------------------
@@ -166,7 +167,7 @@ def _apply_sci_notation(ax: Axes, axis: str = "y") -> None:
         ax.yaxis.set_major_formatter(_sci_formatter())
 
 
-def _save_fig(fig: plt.Figure, out_path_no_ext: str) -> None:
+def _save_fig(fig: Figure, out_path_no_ext: str) -> None:
     for ext in ("pdf", "png"):
         fig.savefig(f"{out_path_no_ext}.{ext}")
     plt.close(fig)
