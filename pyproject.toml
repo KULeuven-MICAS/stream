@@ -21,7 +21,6 @@ classifiers = [
 keywords = ["stream", "multi-core", "accelerator", "layer-fused", "scheduling", "zigzag", "dse", "design-space-exploration", "machine-learning", "deep-learning", "mapping"]
 dependencies = [
     "zigzag-dse==3.8.5",
-    "rtree",
     "cerberus",
     "pre-commit",
     "gurobipy",
@@ -51,7 +50,7 @@ aie = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ZigZag-Project/stream"
+Homepage = "https://github.com/KULeuven-MICAS/stream_aie"
 
 [tool.bumpver]
 current_version = "0.0.8"

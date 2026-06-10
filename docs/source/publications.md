@@ -20,7 +20,7 @@ project](https://kuleuven-micas.github.io/zigzag/).
     Transactions on Computers, vol. 74, no. 1, pp. 237-249, Jan. 2025.
 
     [[paper]](https://ieeexplore.ieee.org/abstract/document/10713407),
-    [[github]](https://github.com/ZigZag-Project/stream)
+    [[github]](https://github.com/KULeuven-MICAS/stream_aie)
 
 -   S. Karl, A. Symons, N. Fasfous and M. Verhelst, "Genetic
     Algorithm-based Framework for Layer-Fused Scheduling of Multiple

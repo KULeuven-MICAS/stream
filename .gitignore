@@ -148,10 +148,6 @@ outputs*/*.png
 *.png
 
 
-# docs makefile and make.bat
-docs/Makefile
-docs/make.bat
-
 # html files
 *.html
 
