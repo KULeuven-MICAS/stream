@@ -83,3 +83,32 @@ lint.ignore = ["D401", "N806", "N802", "UP038", "PLW1641"]
 lint.pylint.max-args = 8
 lint.per-file-ignores."tests/**" = ["PLR2004", "PLC0415", "PLR0915", "N803"]
 lint.per-file-ignores."scripts/**" = ["PLR0913", "N803"]
+
+[tool.pyright]
+# Version-controlled Pylance/Pyright settings so every contributor gets the same,
+# signal-rich diagnostics regardless of their personal global VS Code setting.
+include = ["stream", "scripts", "tests"]
+typeCheckingMode = "standard"
+useLibraryCodeForTypes = true
+# KEPT ON (cheap, high-signal — catch real bugs): reportMissingImports,
+# reportUndefinedVariable, reportPossiblyUnbound, reportSelfClsParameterName,
+# reportRedeclaration, and all syntax errors (pyright defaults).
+# SILENCED below: deep type-inference rules dominated by untyped third-party code
+# (xDSL IRDL dialect ops, zigzag, gurobipy, numpy/matplotlib) and intentional dynamic
+# patterns (CoreCostEntry.__getattr__ delegation, StageContext.get() -> Any). These
+# produced ~470 non-actionable diagnostics. Re-enable selectively if adopting typing.
+reportArgumentType = "none"
+reportAttributeAccessIssue = "none"
+reportCallIssue = "none"
+reportOptionalMemberAccess = "none"
+reportOptionalCall = "none"
+reportOptionalOperand = "none"
+reportOptionalSubscript = "none"
+reportOptionalIterable = "none"
+reportIndexIssue = "none"
+reportReturnType = "none"
+reportAssignmentType = "none"
+reportGeneralTypeIssues = "none"
+reportIncompatibleMethodOverride = "none"
+reportIncompatibleVariableOverride = "none"
+reportOperatorIssue = "none"
