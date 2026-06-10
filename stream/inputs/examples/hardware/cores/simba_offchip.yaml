@@ -1,5 +1,5 @@
 name: simba_offchip
-type: compute
+type: zigzag.offchip
 
 memories:
   dram:

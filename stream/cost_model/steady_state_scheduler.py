@@ -85,6 +85,7 @@ class SteadyStateScheduler:
         self.latency_total = -1
         self.latency_per_iteration = -1
         self.overlap_between_iterations = -1
+        self.performance_stats: dict | None = None
         self.tensor_depths: TensorDepths = {}
 
         self.nb_cols_to_use = nb_cols_to_use
@@ -127,6 +128,7 @@ class SteadyStateScheduler:
             "constraint_selection": constraint_selection_ir,
             "fusion_splits": {str(dim): size for dim, size in self.fusion_splits.items()},
             "mapping": self.mapping.get_ir(),
+            "performance": self.performance_stats,
         }
 
     def run(self) -> Workload:
@@ -183,6 +185,11 @@ class SteadyStateScheduler:
         ) = tta.solve()
         # Capture solve statistics before tta goes out of scope (tta.model is a local variable)
         self.solve_stats = tta.model.solve_stats()
+        # Capture the read-only performance summary while the solved tta is still in scope.
+        try:
+            self.performance_stats = tta.compute_performance_stats()
+        except Exception as exc:  # observability must never break the solve
+            logger.warning("Failed to compute performance stats: %s", exc)
         # total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
         # assert total == total_latency_solver, (
         #     f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."

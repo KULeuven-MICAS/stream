@@ -10,9 +10,16 @@ offchip_core_id: 2          # core that fronts external memory
 unit_energy_cost: 512       # default energy per transferred word
 
 core_connectivity:
-  # Shared bus that links both compute cores to the DRAM controller
-  - type: bus
-    cores: [0, 1, 2]
+  # Each compute core links to the DRAM controller (core 2). Cores 0 and 1 are NOT
+  # connected to each other here — they communicate through the shared top-level memory
+  # (see core_memory_sharing below). The validator forbids a memory-sharing pair from also
+  # appearing together in a connectivity link, so this is two point-to-point links, not one
+  # [0, 1, 2] bus.
+  - type: link
+    cores: [0, 2]
+    bandwidth: 512
+  - type: link
+    cores: [1, 2]
     bandwidth: 512
 
 core_memory_sharing:

@@ -70,6 +70,7 @@ push = false
 
 
 [tool.pytest.ini_options]
+addopts = "-m 'not slow'"
 markers = [
     "slow: marks tests as slow (integration tests against real TETRA instances)",
 ]

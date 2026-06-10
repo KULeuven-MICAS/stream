@@ -1746,6 +1746,112 @@ class TransferAndTensorAllocator:
             yaml.safe_dump(metrics, fh, sort_keys=False, default_flow_style=False)
         _logger.info("Optimization metrics saved to %s", save_path)
 
+    @staticmethod
+    def _json_scalar(v: Any) -> Any:
+        """Coerce a solver/cost value into a JSON-safe scalar (int when integral, else float)."""
+        if v is None or isinstance(v, bool | str):
+            return v
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            return str(v)
+        if not math.isfinite(f):
+            return str(v)
+        return int(f) if f.is_integer() else f
+
+    def compute_performance_stats(self) -> dict[str, Any]:
+        """Read-only performance summary of the solved schedule.
+
+        Derives -- WITHOUT changing any cost or latency model -- a structured view of
+        where the schedule's latency goes, so callers (and AI agents via the IR
+        performance view) can reason about *utilization*, not just total latency:
+
+          * per compute node: how many cores it is inter-core-tiled across, its latency
+            contribution, the ideal (perfect-spatial-utilization) compute cycles, the
+            MAC spatial utilization, and the compute efficiency (ideal / actual);
+          * the per-iteration latency split into compute-bound vs transfer-bound cycles
+            (which resource class sets each slot's latency);
+          * aggregate utilization (cores used vs available, latency-weighted MAC util).
+
+        Every value comes straight from the cost LUT (CostModelEvaluation) and the
+        solved slot latencies; this method is purely observational.
+        """
+
+        def _node_active(n: Node) -> tuple[int, list[Core]]:
+            cores = self.cost_lut.get_cores(n)
+            runtime = ceil(max(self.cost_lut.get_cost(n, c).latency_total for c in cores)) if cores else 0
+            return get_active_latency(n, float(runtime), self.ssis), cores
+
+        # ── Per compute-node utilization ── #
+        per_node: dict[str, dict[str, Any]] = {}
+        for n in self.ssc_nodes:
+            try:
+                active, cores = _node_active(n)
+                if not cores:
+                    continue
+                entry = self.cost_lut.get_cost(n, cores[0])
+                ideal = getattr(entry, "ideal_cycle", None)
+                mac_util = getattr(entry, "mac_spatial_utilization", None)
+                efficiency = (float(ideal) / active) if (ideal and active) else None
+                per_node[getattr(n, "name", str(n))] = {
+                    "kind": "compute",
+                    "n_cores": len(cores),
+                    "latency_cycles": int(active),
+                    "ideal_compute_cycles": self._json_scalar(ideal),
+                    "mac_spatial_utilization": self._json_scalar(mac_util),
+                    "compute_efficiency": self._json_scalar(efficiency),
+                }
+            except Exception:
+                continue
+
+        # ── Per-iteration latency split by the resource class that sets each slot ── #
+        compute_active_by_slot: dict[int, float] = {}
+        for n in self.ssc_nodes:
+            try:
+                active, _ = _node_active(n)
+                s = int(self.slot_of[n])
+                compute_active_by_slot[s] = max(compute_active_by_slot.get(s, 0.0), float(active))
+            except Exception:
+                continue
+        compute_cycles = transfer_cycles = 0.0
+        for s, lat_var in self.slot_latency.items():
+            try:
+                lat = float(lat_var.X)
+            except Exception:
+                continue
+            if lat <= 0:
+                continue
+            if compute_active_by_slot.get(int(s), 0.0) >= lat * 0.999:
+                compute_cycles += lat
+            else:
+                transfer_cycles += lat
+        per_iter = compute_cycles + transfer_cycles
+        bottleneck = {
+            "compute_bound_cycles": int(compute_cycles),
+            "transfer_bound_cycles": int(transfer_cycles),
+            "compute_bound_pct": round(100.0 * compute_cycles / per_iter, 2) if per_iter else None,
+            "transfer_bound_pct": round(100.0 * transfer_cycles / per_iter, 2) if per_iter else None,
+        }
+
+        # ── Aggregate utilization ── #
+        nodes = list(per_node.values())
+        total_active = sum(d["latency_cycles"] for d in nodes) or 1
+        weighted_util = sum((d["mac_spatial_utilization"] or 0.0) * d["latency_cycles"] for d in nodes) / total_active
+        utils = [d["mac_spatial_utilization"] for d in nodes if d["mac_spatial_utilization"] is not None]
+        cores_used: set[int] = set()
+        for n in self.ssc_nodes:
+            for c in self.cost_lut.get_cores(n) or []:
+                cores_used.add(c.id)
+        offchip_id = self.accelerator.offchip_core_id
+        aggregate = {
+            "compute_cores_available": sum(1 for c in self.accelerator.core_list if c.id != offchip_id),
+            "compute_cores_used": len(cores_used),
+            "latency_weighted_mac_spatial_utilization": self._json_scalar(weighted_util),
+            "min_mac_spatial_utilization": self._json_scalar(min(utils) if utils else None),
+        }
+
+        return {"per_node": per_node, "bottleneck": bottleneck, "aggregate": aggregate}
+
     def save_slot_latency_breakdown(self, save_path: str) -> None:  # noqa: PLR0915, PLR0912
         """Dump a debug-friendly per-slot latency breakdown next to the metrics yaml.
 

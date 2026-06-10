@@ -1,76 +1,42 @@
 # Contribute
 
-## Contributing Guidelines
+## Guidelines
 
-When contributing to the framework, please follow these guidelines:
+- Update the documentation when you change or add public functionality.
+- Follow the conventions in the repo's `CLAUDE.md` (absolute imports, `snake_case` files, `PascalCase` classes, stage classes end in `Stage`).
 
-- Use Google's [Python Style Guide](https://google.github.io/styleguide/pyguide.html)
-- Use Google-style docstrings for classes, functions, and methods.  
-  See examples [here](https://sphinxcontrib-napoleon.readthedocs.io/en/latest/example_google.html)
-- Update the documentation when you change or add public functionality
+## Setup
 
----
+```bash
+git clone <your-fork-url>
+cd stream_aie
+git checkout -b <feature-or-fix>
 
-## Quick Setup
+# Python >= 3.11
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+pre-commit install        # ruff check + ruff format on every commit
+```
 
-1. **Clone & create a branch**
+If you use VS Code, install the **Ruff** extension (`charliermarsh.ruff`), enable format-on-save, and disable other Python formatters to avoid conflicts.
 
-   ```bash
-   git clone <your-fork-url>
-   cd stream
-   git checkout -b <feature-or-fix>
-   ```
+## Coding style
 
-2. **Install the dev tools (one-time only)**
+- **Formatter / linter** — ruff-format and `ruff check` (rules E, F, W, I, PL, N, UP, B); line length **120**.
+- **Python target** — 3.11+: use `X | Y` unions and built-in generics (`list[X]`, `dict[K, V]`).
+- **Imports** — absolute only; isort order stdlib → third-party → internal.
+- **Type hints** — required on public functions, classes, and methods.
+- **Docstrings** — Google-style.
 
-   ```bash
-   # Python ≥ 3.11
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install -U pip ruff pre-commit pytest
-   pre-commit install  # hooks run on every commit
-   ```
+## Before opening a PR
 
-3. **Use VS Code with Ruff**
+```bash
+ruff check .
+ruff format --check .
+pytest tests/ -m "not slow"
+```
 
-   - Install the **Ruff** extension (`charliermarsh.ruff`)
-   - Enable **Format on Save**
-   - Disable other formatters/linters to avoid conflicts
+Add or update tests for your change, update the docs if public APIs change, then open a pull request.
 
-4. **Run the full check suite**
-
-   ```bash
-   ruff check .       # lint + auto-fix suggestions
-   ruff format .      # apply formatting
-   pytest             # run tests
-   ```
-
----
-
-## Coding Style
-
-- **Style guide** – [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html)
-- **Line length** – 120 characters (enforced by Ruff)
-- **Docstrings** – Google-style  
-  (see [example](https://sphinxcontrib-napoleon.readthedocs.io/en/latest/example_google.html))
-- **Type hints** – Required for all public functions, classes, and methods
-
----
-
-## Submitting a Pull Request
-
-1. Ensure all checks pass:
-
-   ```bash
-   ruff check .
-   ruff format --check .
-   pytest
-   ```
-
-2. Add or update unit tests  
-3. Update documentation if public APIs change  
-4. Open a pull request and fill out the PR template
-
----
-
-Thanks for contributing to **Stream**!
+Thanks for contributing!

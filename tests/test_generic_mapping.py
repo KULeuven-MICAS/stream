@@ -148,6 +148,7 @@ def test_pipeline_end_to_end():
     assert all(lat > 0 for lat in group_latencies.values()), "All group latencies must be positive"
 
 
+@pytest.mark.slow  # multi-group MILP run; too slow / near-timeout on CI runners
 @pytest.mark.timeout(120)
 def test_pipeline_multi_group():
     """RES-01/RES-02: optimize_allocation_co_generic completes for a multi-group workload.

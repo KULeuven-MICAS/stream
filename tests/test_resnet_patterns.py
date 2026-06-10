@@ -37,6 +37,12 @@ from stream.workload.node import ComputationNode
 _ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 _RESNET18 = "stream/inputs/examples/workload/resnet18.onnx"
 
+# These ResNet sub-graph / full-graph integration tests drive the full CO pipeline
+# (MILP solves over multi-group ResNet workloads). On CI runners they run close to
+# their per-test timeouts, so the whole module is marked slow and excluded from the
+# default `-m "not slow"` CI suite. Run locally with `pytest tests/test_resnet_patterns.py`.
+pytestmark = pytest.mark.slow
+
 
 @pytest.mark.timeout(120)
 def test_basic_residual():

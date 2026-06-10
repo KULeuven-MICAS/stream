@@ -72,9 +72,7 @@ nav:
       - Mapping: mapping.md
       - Stages: stages.md
       - Outputs: outputs.md
+      - Using an AI agent: ai-agents.md
   - Future Plans: future.md
   - Contributing: contribute.md
   - Publications: publications.md
-  - CI:
-    - Latest: ci/latest.md
-    - Reports index: ci/index.md
