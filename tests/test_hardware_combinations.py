@@ -1,19 +1,19 @@
 """Parametrized CO pipeline tests across non-AIE example hardware.
 
-v1.9 milestone final state (Phase 37):
-
 Matrix: 8 non-AIE hardware x {2-conv, swiglu} = 16 CO-pipeline combinations — all green.
-Parse check: test_hardware_parses covers all 8 boards in the fast suite (HWFIX-05).
-Slow suite: simba (36-core mesh) 2-conv + swiglu slow-marked; run with -m slow; both green.
-No xfail/skip: every combination passes.
+Parse check: test_hardware_parses covers all 8 boards (HWFIX-05).
+No xfail/skip and no slow marks: every combination runs in the default fast suite. The 36-core
+simba mesh is included — on these small single-fusion-group workloads it runs in ~16s (2-conv) /
+~7s (swiglu), on par with the other boards. (Multi-fusion-group workloads, where the CO runs once
+per group, are where large meshes get expensive — none of those live here.)
 
-Fast suite (default pytest): 22 tests from this file (14 CO + 8 parse), 2 deselected (slow simba).
+Fast suite (default pytest): 24 tests from this file (16 CO + 8 parse), none deselected.
 
 Background (Phase 32): example accelerators referenced cores by bare filename; core resolution
 used an ambiguous input-tree search that loaded testing core files (lacking operator_types) instead
 of examples ones. Fix: accelerator-local core resolution + correct elementwise operator_types on
-simd. Phases 33-35 brought stale YAML definitions current (simba, fusemax, meta_prototype + simd
-Silu/Mul). Phase 36 added the swiglu workload builder and swiglu arm.
+simd. Later work brought stale YAML definitions current (simba, fusemax, meta_prototype + simd
+Silu/Mul) and added the swiglu workload builder and swiglu arm.
 """
 
 import tempfile
@@ -32,8 +32,9 @@ from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.workload.node import ComputationNode
 
 # ---------------------------------------------------------------------------
-# Hardware under test — extend in phases 33-35 (append pytest.param entries,
-# with optional slow / xfail marks).
+# Hardware under test — the 8 non-AIE example boards. Append pytest.param entries
+# to extend; use xfail/skip (with a written reason) only for a genuinely-infeasible
+# workload x hardware combination, never to hide a fixable failure.
 # ---------------------------------------------------------------------------
 
 _HARDWARE = [
@@ -60,10 +61,10 @@ _HARDWARE = [
     pytest.param(
         # 36 compute chiplets: the generic mapper splits the 2-conv across dimensions
         # (e.g. OY x FY x FX = 4 x 3 x 3 = 36) since no single dim is divisible by 36.
-        # slow-marked because the 36-core MILP is the heaviest case in the matrix.
+        # Not slow-marked: on these small single-fusion-group workloads the 36-core case
+        # runs in ~16s (2-conv) / ~7s (swiglu) — on par with simba_small and the other boards.
         "stream/inputs/examples/hardware/simba.yaml",
         id="simba",
-        marks=pytest.mark.slow,
     ),
     pytest.param(
         "stream/inputs/examples/hardware/fusemax.yaml",
@@ -173,7 +174,7 @@ def test_hardware_swiglu_small(hardware: str) -> None:
     Exercises HWFIX-04: Silu and Mul ops dispatch (to the simd core where available, or a
     generic compute core) rather than failing at the parser or mapper stage.
     """
-    # 4-node count confirmed by running: Gemm_Left, Gemm_Right, Silu, Elt_Mul (last_gemm_down=False)
+    # 5-node count confirmed by running: Gemm_Left, Gemm_Right, Silu, Elt_Mul, Gemm_Down
     workload_path = make_small_swiglu_workload()
     hw_stem = Path(hardware).stem
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -184,7 +185,7 @@ def test_hardware_swiglu_small(hardware: str) -> None:
             output_path=tmpdir,
         )
     accelerator = ctx.get("accelerator")
-    _assert_co_result(ctx, accelerator, expected_node_count=4)
+    _assert_co_result(ctx, accelerator, expected_node_count=5)
 
 
 @pytest.mark.parametrize("path", _ALL_HARDWARE_PATHS)

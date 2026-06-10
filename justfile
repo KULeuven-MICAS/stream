@@ -10,33 +10,28 @@ default:
 # Non-AIE generic CO matrix (scripts/main_stream_co.py + the pytest test matrix)
 # ----------------------------------------------------------------------------
 
-# Generate the small test workloads (2-conv + swiglu ONNX) into stream/inputs/testing/workload/.
-# These ONNX are gitignored, so generate them once before the co-* recipes.
+# Regenerate the committed CI workload fixtures (2-conv + swiglu ONNX, weight values cleared) in
+# stream/inputs/testing/workload/. The ONNX are committed to the repo — run this only to refresh them.
 gen-workloads:
     python -c "from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload; make_2_conv_workload(TwoConvWorkloadConfig(batch_size=1, in_channels=8, height=32, width=32, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype='bf16', weight_dtype='bf16'))"
     python -c "from stream.inputs.testing.workload.make_swiglu import make_small_swiglu_workload; make_small_swiglu_workload()"
 
 # Run the 2-conv workload on one hardware (default tpu_like_quad_core) via the generic CO pipeline.
 # `hw` is a stem from stream/inputs/examples/hardware/ (e.g. fusemax, simba_small, eyeriss_like_dual_core).
-co-2conv hw="tpu_like_quad_core": gen-workloads
+co-2conv hw="tpu_like_quad_core":
     python scripts/main_stream_co.py \
       --hardware stream/inputs/examples/hardware/{{hw}}.yaml \
       --workload stream/inputs/testing/workload/2conv_1_8_32_32_16_32_3.onnx
 
-# Run the small swiglu workload on one hardware (default tpu_like_quad_core) via the generic CO pipeline.
-co-swiglu hw="tpu_like_quad_core": gen-workloads
+# Run the swiglu workload on one hardware (default tpu_like_quad_core) via the generic CO pipeline.
+co-swiglu hw="tpu_like_quad_core":
     python scripts/main_stream_co.py \
       --hardware stream/inputs/examples/hardware/{{hw}}.yaml \
-      --workload stream/inputs/testing/workload/swiglu_1_16_32_no_gemm_down.onnx
+      --workload stream/inputs/testing/workload/swiglu_1_16_32.onnx
 
 # Run the full hardware x workload test matrix (parse + 2-conv + swiglu over all 8 non-AIE boards).
-# Fast suite: the 36-core simba CO cases are slow-marked and excluded by default.
 matrix:
     python -m pytest tests/test_hardware_combinations.py
-
-# Same matrix including the slow simba (36-core) CO cases.
-matrix-slow:
-    python -m pytest tests/test_hardware_combinations.py -m "slow or not slow"
 
 # ----------------------------------------------------------------------------
 # AIE codegen (AMD Strix NPU — requires the [aie] extra and NPU hardware)

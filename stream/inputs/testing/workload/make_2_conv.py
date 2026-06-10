@@ -6,6 +6,16 @@ import onnx
 from onnx import TensorProto, helper, shape_inference
 
 
+def _clear_tensor_data(tensor: TensorProto) -> None:
+    """Remove raw weight data from a tensor, keeping only shape and type metadata.
+
+    Clears every possible data field -- bf16 weights are packed into int32_data, so clearing
+    only float_data would leave the values in place and bloat the saved ONNX.
+    """
+    for field in ("float_data", "double_data", "int32_data", "int64_data", "uint64_data", "raw_data"):
+        tensor.ClearField(field)
+
+
 @dataclass
 class TwoConvWorkloadConfig:
     batch_size: int
@@ -63,7 +73,7 @@ def make_2_conv_workload(config: TwoConvWorkloadConfig):
         [out_channels_1, in_channels, kernel_size, kernel_size],
         np.zeros((out_channels_1, in_channels, kernel_size, kernel_size)),
     )
-    w1.ClearField("float_data")
+    _clear_tensor_data(w1)
 
     w2 = helper.make_tensor(
         "weights_2",
@@ -71,7 +81,7 @@ def make_2_conv_workload(config: TwoConvWorkloadConfig):
         [out_channels_2, out_channels_1, kernel_size, kernel_size],
         np.zeros((out_channels_2, out_channels_1, kernel_size, kernel_size)),
     )
-    w2.ClearField("float_data")
+    _clear_tensor_data(w2)
 
     # I/O
     inp = helper.make_tensor_value_info("input", in_tensor_type, [batch_size, in_channels, height, width])

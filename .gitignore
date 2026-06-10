@@ -167,6 +167,9 @@ docs/make.bat
 # workload and mapping input files
 stream/inputs/aie/workload/*.onnx
 stream/inputs/testing/workload/*.onnx
+# ...except the small committed CI fixtures (cleared weights — see make_2_conv.py / make_swiglu.py)
+!stream/inputs/testing/workload/2conv_1_8_32_32_16_32_3.onnx
+!stream/inputs/testing/workload/swiglu_1_16_32.onnx
 stream/inputs/aie/mapping/*.yaml
 stream/inputs/aie/mapping/*.yml
 
