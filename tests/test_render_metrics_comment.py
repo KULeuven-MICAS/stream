@@ -259,3 +259,39 @@ def test_table_rows_have_equal_cell_counts():
     assert all(c == header_count for c in counts), (
         f"all table rows must have {header_count} cells; got {counts}. Header may be missing inner pipe separators."
     )
+
+
+# ---------------------------------------------------------------------------
+# Test 9: solve_time_s is rendered at higher precision so the value/Δ/Δ% are consistent
+# ---------------------------------------------------------------------------
+
+
+def test_solve_time_s_higher_precision():
+    """solve_time_s sub-0.01s values render at 4 decimals (not rounded to 0.00), so the
+    data row is not internally contradictory (value 0.00 but Δ% +95%)."""
+    mod = _load_script()
+    base = {
+        "_meta": _ONE_CELL_BASE["_meta"],
+        "tests/test_hw.py::test_two_conv[eyeriss]": {
+            "group_latencies_max": 1000.0,
+            "mip_gap": None,
+            "objective": 10.0,
+            "solve_time_s": 0.0051,
+            "total_latency": 1000.0,
+        },
+    }
+    current = {
+        "tests/test_hw.py::test_two_conv[eyeriss]": {
+            "group_latencies_max": 1000.0,
+            "mip_gap": None,
+            "objective": 10.0,
+            "solve_time_s": 0.0099,
+            "total_latency": 1000.0,
+        },
+    }
+    rows, captured, total = mod.compute_diffs(current, base, tol=0.001)
+    comment = mod.render_comment(rows, captured, total, base["_meta"], tol=0.001)
+    # The sub-0.01s solve_time_s values must appear at >2 decimals (not collapsed to 0.00)
+    assert "0.0051" in comment and "0.0099" in comment, (
+        f"solve_time_s should render at 4 decimals; comment table:\n{comment}"
+    )

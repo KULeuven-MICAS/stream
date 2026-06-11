@@ -126,13 +126,20 @@ def _fmt_val(v: float | None, precision: int = 2) -> str:
     return str(v)
 
 
-def _fmt_delta(delta: float | None, delta_pct: float | None) -> tuple[str, str]:
+def _fmt_delta(delta: float | None, delta_pct: float | None, precision: int = 2) -> tuple[str, str]:
     """Format delta and delta_pct with direction arrows."""
     if delta is None or delta_pct is None:
         return "—", "—"
     sign = "+" if delta >= 0 else ""
     arrow = "↑" if delta > 0 else ("↓" if delta < 0 else "")
-    return f"{sign}{delta:.2f}", f"{arrow}{sign}{delta_pct:.2f}%"
+    return f"{sign}{delta:.{precision}f}", f"{arrow}{sign}{delta_pct:.2f}%"
+
+
+def _metric_precision(metric: str) -> int:
+    """Display precision per metric. solve_time_s is sub-0.01s wall-time, so 2 decimals
+    round it to 0.00 while its Δ% (computed on the true value) reads ~95% — internally
+    contradictory. 4 decimals keeps the value, Δ, and Δ% consistent."""
+    return 4 if metric == "solve_time_s" else 2
 
 
 def _short_node_id(node_id: str) -> str:
@@ -234,7 +241,7 @@ def render_comment(  # noqa: PLR0912, PLR0915
             for m in METRICS_ALL:
                 cur_entry = row.get(m, {})
                 cur_val = cur_entry.get("current") if isinstance(cur_entry, dict) else None
-                row_cells += f" — | {_fmt_val(cur_val)} | — | — |"
+                row_cells += f" — | {_fmt_val(cur_val, _metric_precision(m))} | — | — |"
             lines.append(row_cells)
             continue
 
@@ -242,9 +249,10 @@ def render_comment(  # noqa: PLR0912, PLR0915
         row_parts = [f"| {node_short}"]
         for m in METRICS_ALL:
             m_data = row[m]
-            base_str = _fmt_val(m_data["baseline"])
-            cur_str = _fmt_val(m_data["current"])
-            d_str, dp_str = _fmt_delta(m_data["delta"], m_data["delta_pct"])
+            prec = _metric_precision(m)
+            base_str = _fmt_val(m_data["baseline"], prec)
+            cur_str = _fmt_val(m_data["current"], prec)
+            d_str, dp_str = _fmt_delta(m_data["delta"], m_data["delta_pct"], prec)
             if m_data.get("flagged"):
                 # Prepend warning to the delta% cell
                 dp_str = f"⚠ {dp_str}"
