@@ -153,6 +153,8 @@ outputs*/*.png
 
 # json files (for perfetto)
 *.json
+# ...except the committed golden metrics baseline (Phase 40 regression guard)
+!tests/golden_metrics.json
 
 # auto-generated mlir files
 *.mlir
