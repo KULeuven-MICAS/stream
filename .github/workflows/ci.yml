@@ -50,3 +50,93 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -x -q --tb=short -m "not slow"
+
+      - name: Upload metrics artifact
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-metrics
+          path: metrics_current.json
+          retention-days: 7
+
+  # Advisory only — must NOT be added as a branch-protection required check (D-09 / CI-02).
+  # Do NOT add "Metrics regression comment (advisory)" to branch-protection required checks.
+  metrics-comment:
+    name: Metrics regression comment (advisory)
+    needs: [tests]
+    runs-on: ubuntu-latest
+    # Fork-guard (D-01) + PR-only (D-06): skips on fork PRs (read-only token) → no 403,
+    # and runs even when `tests` failed (always()) so a partial-data comment still posts (D-05).
+    if: >-
+      always() &&
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository
+    # Per-job permissions FULLY REPLACE the top-level block — must list BOTH (D-03):
+    permissions:
+      contents: read
+      pull-requests: write
+    # Dedup rapid pushes (D-07):
+    concurrency:
+      group: metrics-comment-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download metrics artifact
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ci-metrics
+          path: ./artifact
+
+      - name: Fetch base baseline
+        id: fetch_baseline
+        continue-on-error: true
+        run: |
+          git fetch origin ${{ github.base_ref }} --depth=1
+          if git show origin/${{ github.base_ref }}:tests/golden_metrics.json > base_golden.json 2>/dev/null; then
+            echo "source=origin/${{ github.base_ref }}" >> "$GITHUB_OUTPUT"
+          else
+            # Introducing-PR fallback: tests/golden_metrics.json is not on the base branch yet
+            # (it ships with THIS PR). Fall back to the PR-branch's committed baseline so the
+            # self-test PR renders a sensible "no changes / all OK" comment. After v1.10 merges
+            # to main, the primary `git show` path is used and this branch becomes dead code.
+            cp tests/golden_metrics.json base_golden.json
+            echo "source=pr-branch-fallback" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Render delta comment
+        continue-on-error: true
+        run: |
+          python scripts/analysis/render_metrics_comment.py \
+            --current  artifact/metrics_current.json \
+            --baseline base_golden.json \
+            --output   comment.md
+
+      - name: Find existing comment
+        id: find_comment
+        continue-on-error: true
+        uses: peter-evans/find-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: github-actions[bot]
+          body-includes: stream-aie-metrics-regression-guard-v1
+
+      - name: Post or update comment
+        continue-on-error: true
+        uses: peter-evans/create-or-update-comment@v5
+        with:
+          token: ${{ github.token }}
+          comment-id: ${{ steps.find_comment.outputs.comment-id }}
+          issue-number: ${{ github.event.pull_request.number }}
+          body-path: comment.md
+          edit-mode: replace
