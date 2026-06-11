@@ -12,7 +12,7 @@ from stream.hardware.architecture.noc.communication_link import CommunicationLin
 if TYPE_CHECKING:
     from stream.cost_model.cost_model import StreamCostModelEvaluation
     from stream.hardware.architecture.accelerator import Accelerator
-    from stream.workload.onnx_workload import ComputationNodeWorkload
+    from stream.workload.workload import Workload
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -121,12 +121,12 @@ def plot_timeline_brokenaxes(
     plot_data_transfer: bool = False,
     fig_path: str = "outputs/schedule_plot.png",
 ) -> None:
-    G: ComputationNodeWorkload = scme.workload
+    G: Workload = scme.workload
     accelerator: Accelerator = scme.accelerator
 
     @dataclass
     class PlotContext:
-        G: "ComputationNodeWorkload"
+        G: "Workload"
         accelerator: "Accelerator"
         nb_layers: int
         nb_cores: int

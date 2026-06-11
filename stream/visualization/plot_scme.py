@@ -16,8 +16,9 @@ def bar_plot_stream_cost_model_evaluations_breakdown(scmes: list[StreamCostModel
 
     attribute_list_corrected = []
     for attribute in list_attributes:
+        attribute_new = attribute
         for removal in ["_energy_cost", "input_", "output_"]:
-            attribute_new = attribute.replace(removal, "")
+            attribute_new = attribute_new.replace(removal, "")
         attribute_list_corrected.append(
             attribute_new.replace("_", "-")
             .replace("energy", "Tot-Energy")

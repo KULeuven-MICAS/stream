@@ -86,6 +86,7 @@ class MappingGenerationStage(Stage):
             )
             logger.info(f"Evaluating mapping: {mapping_path}")
             sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
+            ctx = None
             try:
                 ctxs = list(sub_stage.run())
                 assert len(ctxs) == 1, f"Expected exactly one context, but got {len(ctxs)}"

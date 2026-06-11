@@ -1,6 +1,6 @@
 try:
-    import aie.utils.trace as trace_utils
-    from aie.dialects.aie import AIEDevice, device, tile
+    import aie.utils.trace as trace_utils  # pyright: ignore[reportMissingImports]
+    from aie.dialects.aie import AIEDevice, device, tile  # pyright: ignore[reportMissingImports]
     from aie.extras.context import mlir_mod_ctx
 
     _AIE_AVAILABLE = True

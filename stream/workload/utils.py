@@ -92,6 +92,8 @@ def _add_temporal_iteration_variables(
                     effect = LoopEffect.INVARIANT
                 else:
                     effect = LoopEffect.ABSENT
+            else:
+                raise TypeError(f"Unexpected node type for iteration-variable effect: {type(node).__name__}")
             iteration_variables[node].append(
                 IterationVariable(dimension=dim, size=size, effect=effect, type=IterationVariableType.TEMPORAL)
             )

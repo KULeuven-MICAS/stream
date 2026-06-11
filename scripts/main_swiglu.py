@@ -56,7 +56,7 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
     # Get root logger and remove any existing handlers
     logger = _logging.getLogger()
     logger.setLevel(_logging_level)  # or use _logging_level if you define one
-    # Remove all existing handlers (e.g., ones added by Snakemake or libraries)
+    # Remove all existing handlers (e.g., ones added by libraries)
     for handler in logger.handlers[:]:
         logger.removeHandler(handler)
     # Create a file handler explicitly
