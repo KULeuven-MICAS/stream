@@ -148,7 +148,7 @@ def _assert_co_result(ctx, accelerator: Accelerator, expected_node_count: int) -
 
 
 @pytest.mark.parametrize("hardware", _HARDWARE)
-def test_hardware_two_conv(hardware: str) -> None:
+def test_hardware_two_conv(hardware: str, record_metric) -> None:
     """Run the 2-conv workload through the generic CO pipeline on each green hardware.
 
     Selected by: pytest -k two_conv
@@ -164,10 +164,21 @@ def test_hardware_two_conv(hardware: str) -> None:
         )
     accelerator = ctx.get("accelerator")
     _assert_co_result(ctx, accelerator, expected_node_count=2)
+    # metrics capture — read-only advisory side-effect (Phase 39 CAP-01/CAP-02)
+    scheduler = ctx.get("scheduler")
+    solve_stats = scheduler.solve_stats if scheduler is not None else None
+    record_metric("total_latency", ctx.get("total_latency"))
+    record_metric(
+        "group_latencies_max",
+        max(ctx.get("group_latencies").values()) if ctx.get("group_latencies") else None,
+    )
+    record_metric("objective", solve_stats.objective if solve_stats is not None else None)
+    record_metric("mip_gap", solve_stats.mip_gap if solve_stats is not None else None)
+    record_metric("solve_time_s", solve_stats.solve_time_s if solve_stats is not None else None)
 
 
 @pytest.mark.parametrize("hardware", _HARDWARE)
-def test_hardware_swiglu_small(hardware: str) -> None:
+def test_hardware_swiglu_small(hardware: str, record_metric) -> None:
     """Run the swiglu workload through the generic CO pipeline on each hardware.
 
     Selected by: pytest -k swiglu
@@ -186,6 +197,17 @@ def test_hardware_swiglu_small(hardware: str) -> None:
         )
     accelerator = ctx.get("accelerator")
     _assert_co_result(ctx, accelerator, expected_node_count=5)
+    # metrics capture — read-only advisory side-effect (Phase 39 CAP-01/CAP-02)
+    scheduler = ctx.get("scheduler")
+    solve_stats = scheduler.solve_stats if scheduler is not None else None
+    record_metric("total_latency", ctx.get("total_latency"))
+    record_metric(
+        "group_latencies_max",
+        max(ctx.get("group_latencies").values()) if ctx.get("group_latencies") else None,
+    )
+    record_metric("objective", solve_stats.objective if solve_stats is not None else None)
+    record_metric("mip_gap", solve_stats.mip_gap if solve_stats is not None else None)
+    record_metric("solve_time_s", solve_stats.solve_time_s if solve_stats is not None else None)
 
 
 @pytest.mark.parametrize("path", _ALL_HARDWARE_PATHS)
