@@ -227,3 +227,35 @@ def test_update_baseline_roundtrip(tmp_path):
     # Metric body must mirror current (cell key must be present)
     cell_key = "tests/test_hw.py::test_two_conv[eyeriss]"
     assert cell_key in base, "cell key missing from baseline after --update-baseline"
+
+
+# ---------------------------------------------------------------------------
+# Test 8: the GFM delta table is well-formed (header/separator/data cell counts match)
+# ---------------------------------------------------------------------------
+
+
+def test_table_rows_have_equal_cell_counts():
+    """Every Markdown table row (header, separator, data) has the same number of
+    pipe-delimited cells — otherwise GitHub renders the header jammed into one cell.
+
+    Regression guard for the header-join bug (header used "".join instead of " |".join).
+    """
+    mod = _load_script()
+    rows, captured, total = mod.compute_diffs(_ONE_CELL_CURRENT_SAME, _ONE_CELL_BASE, tol=0.001)
+    comment = mod.render_comment(rows, captured, total, _ONE_CELL_BASE["_meta"], tol=0.001)
+
+    # The table rows are the lines that start with "|" (header, separator, data).
+    table_lines = [ln for ln in comment.splitlines() if ln.lstrip().startswith("|")]
+    assert len(table_lines) >= 3, f"expected header + separator + >=1 data row, got {table_lines}"
+
+    # Cell count for a GFM row = pieces after stripping the outer pipes.
+    def _cells(line: str) -> int:
+        return len(line.strip().strip("|").split("|"))
+
+    counts = [_cells(ln) for ln in table_lines]
+    header_count = counts[0]
+    # node-id + 3 metrics × 4 sub-columns = 13 cells
+    assert header_count == 13, f"header should have 13 cells, got {header_count}: {table_lines[0]!r}"
+    assert all(c == header_count for c in counts), (
+        f"all table rows must have {header_count} cells; got {counts}. Header may be missing inner pipe separators."
+    )

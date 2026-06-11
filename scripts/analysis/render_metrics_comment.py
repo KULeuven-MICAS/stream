@@ -216,7 +216,7 @@ def render_comment(  # noqa: PLR0912, PLR0915
         header_parts.append(f" {label} Δ")
         header_parts.append(f" {label} Δ%")
         sep_parts.extend(["|---", "|---", "|---", "|---"])
-    lines.append("".join(header_parts) + " |")
+    lines.append(" |".join(header_parts) + " |")
     lines.append("".join(sep_parts) + "|")
 
     # Table rows
