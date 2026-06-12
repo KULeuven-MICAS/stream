@@ -6,12 +6,12 @@ import networkx as nx
 import numpy as np
 import sympy as sp
 from networkx.drawing.nx_pydot import to_pydot  # type: ignore
-from snaxc.ir.dart.affine_transform import AffineTransform
 from xdsl.dialects.memref import SubviewOp
 from xdsl.ir.affine import AffineDimExpr, AffineExpr, AffineMap
 from zigzag.utils import DiGraphWrapper
 
 from stream.datatypes import InterCoreTiling, LayerDim
+from stream.workload.affine_transform import AffineTransform
 from stream.workload.node import (
     ComputationNode,
     FusionEdge,
