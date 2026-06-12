@@ -27,7 +27,7 @@ dependencies = [
     "pydot",
     "xdsl>=0.29.1,<0.30",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 
 
 [project.optional-dependencies]
@@ -70,11 +70,14 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 120
 fix = true
 lint.select = ["E", "F", "W", "I", "PL", "N", "UP", "B"]
-lint.ignore = ["D401", "N806", "N802", "PLW1641"]
+# UP040: keep the explicit `X: TypeAlias = ...` idiom (used throughout); the py312 target would
+# otherwise push the PEP 695 `type X = ...` form, whose lazy TypeAliasType has different runtime
+# semantics (e.g. not usable in isinstance) — not a change we want to force here.
+lint.ignore = ["D401", "N806", "N802", "PLW1641", "UP040"]
 lint.pylint.max-args = 8
 lint.per-file-ignores."tests/**" = ["PLR2004", "PLC0415", "PLR0915", "N803"]
 lint.per-file-ignores."scripts/**" = ["PLR0913", "N803"]

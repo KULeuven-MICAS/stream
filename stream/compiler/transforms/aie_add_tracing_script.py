@@ -30,7 +30,7 @@ class AIEAddTracingScript(ModulePass):
             raise ImportError(
                 "AIEAddTracingScript requires the optional AIE toolchain. "
                 "Install it by running `stream-setup-aie` after installing stream-dse "
-                "(Python 3.12 or 3.13 required; cp311 wheels are not published)."
+                "(Python 3.12 or 3.13 required)."
             )
         self.trace_size = trace_size
 

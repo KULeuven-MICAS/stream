@@ -9,7 +9,7 @@ Stream is a design space exploration (DSE) and constraint-optimization framework
 
 ## Installation
 
-Python `>=3.11` is required.
+Python `>=3.12` is required.
 
 Full install with MCP server support (from repo root):
 
@@ -32,7 +32,7 @@ pip install -e .       # or, once published: pip install stream-dse
 stream-setup-aie       # installs the AIE toolchain into the current environment
 ```
 
-`stream-setup-aie --dry-run` prints exactly what it will install without making changes. **Platform caveat:** the AIE toolchain is Linux x86_64 only (manylinux wheels). Python 3.11 is not supported by upstream — use Python 3.12 or 3.13.
+`stream-setup-aie --dry-run` prints exactly what it will install without making changes. **Platform caveat:** the AIE toolchain is Linux x86_64 only (manylinux wheels), CPython 3.12 or 3.13.
 
 **Solver license note:** OR-Tools (`ortools_gscip`, the default backend) is open-source and needs no license. Gurobi requires the `[gurobi]` extra (`pip install -e ".[gurobi]"`) plus a separate commercial license — `backend="gurobi"` errors at solve time without a valid license.
 
