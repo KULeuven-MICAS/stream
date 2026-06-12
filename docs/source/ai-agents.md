@@ -6,11 +6,11 @@ Stream is built to be driven by an AI coding agent (such as Claude Code) as well
 
 ## Start here: `CLAUDE.md` and the skills
 
-The repo root contains a **`CLAUDE.md`** file — the navigation hub an agent reads first. It describes the directory structure, the entry points, the coding conventions, and indexes the skills below.
+The repo root contains a **`CLAUDE.md`** file - the navigation hub an agent reads first. It describes the directory structure, the entry points, the coding conventions, and indexes the skills below.
 
 Deep-dive documentation lives under **`.claude/skills/`**. Each skill is a focused, self-contained guide that an agent loads on demand; its `SKILL.md` header says when to use it.
 
-| Skill | Load it when you're working on… |
+| Skill | Load it when you're working on... |
 |-------|----------------------------------|
 | `.claude/skills/hardware/` | core types and namespaces, adding a core architecture, per-core performance estimation. |
 | `.claude/skills/pipeline/` | pipeline stages, execution order, `StageContext` data flow, adding a stage. |
@@ -48,7 +48,7 @@ The server (`stream/mcp/server.py`, name `stream-aie`) exposes six tools:
 | `get_allocation_ir(job_id)` | The allocation result as `AllocationIR` JSON (three persona views). |
 | `get_solve_stats(job_id)` | MILP solve statistics (objective, time, gap, node count, backend). |
 
-Typical flow: `run_optimization(...)` → poll `poll_optimization(job_id)` until `complete` → inspect with `get_allocation_ir(job_id)` and `get_solve_stats(job_id)`.
+Typical flow: `run_optimization(...)` -> poll `poll_optimization(job_id)` until `complete` -> inspect with `get_allocation_ir(job_id)` and `get_solve_stats(job_id)`.
 
 ---
 
@@ -67,7 +67,7 @@ allocation_ir  = AllocationIR.from_internal(ctx.get("scheduler"))
 allocation_data = allocation_ir.model_dump()   # JSON-compatible dict
 ```
 
-`AllocationIR` offers persona-specific views of the same result — `.algorithmic_view()`, `.hardware_view()`, `.compiler_view()` — so a consumer asks for the shape it needs (the algorithmic graph, the hardware placement, or the compiler-facing detail). The `ir` skill explains which view to pick for which consumer.
+`AllocationIR` offers persona-specific views of the same result - `.algorithmic_view()`, `.hardware_view()`, `.compiler_view()` - so a consumer asks for the shape it needs (the algorithmic graph, the hardware placement, or the compiler-facing detail). The `ir` skill explains which view to pick for which consumer.
 
 ---
 

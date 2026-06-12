@@ -1,12 +1,12 @@
 # Getting Started
 
-This page runs Stream end-to-end twice. **Part 1** runs the constraint-optimization (CO) pipeline on a small workload — no code generation, only the base install needed. **Part 2** adds AIE code generation: it maps a SwiGLU block onto an AMD Ryzen AI NPU and emits the MLIR that AMD's toolchain compiles for the device.
+This page runs Stream end-to-end twice. **Part 1** runs the constraint-optimization (CO) pipeline on a small workload - no code generation, only the base install needed. **Part 2** adds AIE code generation: it maps a SwiGLU block onto an AMD Ryzen AI NPU and emits the MLIR that AMD's toolchain compiles for the device.
 
 Both assume you have [installed](installation.md) Stream and are in the repository root, so the relative `stream/inputs/...` paths resolve.
 
 ---
 
-## Part 1 — A first run: 2-conv on a TPU-like accelerator
+## Part 1 - A first run: 2-conv on a TPU-like accelerator
 
 This needs only the base install (`pip install -e .`). We map a tiny two-layer convolution onto a multi-core accelerator and let Stream's MILP solver place every tensor and choose every transfer path.
 
@@ -14,9 +14,9 @@ This needs only the base install (`pip install -e .`). We map a tiny two-layer c
 
 `scripts/main_stream_co.py` takes two required inputs and one optional one:
 
-- **`--hardware`** — a hardware description. `tpu_like_quad_core.yaml` is a system of **four TPU-like compute cores** plus a pooling engine, a SIMD unit, and an off-chip DRAM controller, wired together by an on-chip interconnect.
-- **`--workload`** — an ONNX graph. `2conv_1_8_32_32_16_32_3.onnx` is **two chained `Conv` layers** (a committed test fixture; only the tensor shapes matter for cost estimation, so the weights are cleared and the file stays tiny).
-- **`--mapping`** *(optional)* — a hand-written mapping YAML. **Omit it** and Stream auto-generates one: which cores each layer may run on, and how layers are tiled across cores.
+- **`--hardware`** - a hardware description. `tpu_like_quad_core.yaml` is a system of **four TPU-like compute cores** plus a pooling engine, a SIMD unit, and an off-chip DRAM controller, wired together by an on-chip interconnect.
+- **`--workload`** - an ONNX graph. `2conv_1_8_32_32_16_32_3.onnx` is **two chained `Conv` layers** (a committed test fixture; only the tensor shapes matter for cost estimation, so the weights are cleared and the file stays tiny).
+- **`--mapping`** *(optional)* - a hand-written mapping YAML. **Omit it** and Stream auto-generates one: which cores each layer may run on, and how layers are tiled across cores.
 
 ### Run it
 
@@ -27,7 +27,7 @@ python scripts/main_stream_co.py \
   --experiment-id first-run
 ```
 
-Stream runs the full CO pipeline — **parse** hardware/workload/mapping → **generate tilings** → **estimate per-core cost** → **MILP allocation** (the `TransferAndTensorAllocator`) → **memory estimation**. It finishes in a few seconds. Amid the pipeline logs you will see the headline result:
+Stream runs the full CO pipeline - **parse** hardware/workload/mapping -> **generate tilings** -> **estimate per-core cost** -> **MILP allocation** (the `TransferAndTensorAllocator`) -> **memory estimation**. It finishes in a few seconds. Amid the pipeline logs you will see the headline result:
 
 ```
 Total latency: 14344.0
@@ -36,7 +36,7 @@ Total latency: 14344.0
 
 `14344` is the steady-state latency in cycles; `wall` is how long the solver took.
 
-> Omitting `--experiment-id` is fine — Stream derives one from the file names. We pass `first-run` here only so the output path below is short.
+> Omitting `--experiment-id` is fine - Stream derives one from the file names. We pass `first-run` here only so the output path below is short.
 
 ### What you get
 
@@ -44,17 +44,17 @@ Everything lands under `outputs/<experiment-id>/`:
 
 ```
 outputs/first-run/
-├── summary.yaml                         # headline latency result
-├── workload_graph.png                   # the ONNX workload as a DAG
-└── group_0/                             # one fused group of layers
-    ├── mapping.yaml                     # the auto-generated mapping that was used
-    ├── tiled_workload.png               # the workload after inter-core tiling
-    ├── core_cost_lut.yaml               # per-node, per-core cost estimates
-    └── tetra/                           # the MILP allocation result
-        ├── optimization_metrics.yaml    # objective, solve time, gap, ...
-        ├── slot_latency_breakdown.yaml  # where the latency is spent
-        ├── steady_state_trace.json      # schedule trace (open in Perfetto)
-        └── steady_state_workload_final.png
+    summary.yaml                         # headline latency result
+    workload_graph.png                   # the ONNX workload as a DAG
+    group_0/                             # one fused group of layers
+        mapping.yaml                     # the auto-generated mapping that was used
+        tiled_workload.png               # the workload after inter-core tiling
+        core_cost_lut.yaml               # per-node, per-core cost estimates
+        tetra/                           # the MILP allocation result
+            optimization_metrics.yaml    # objective, solve time, gap, ...
+            slot_latency_breakdown.yaml  # where the latency is spent
+            steady_state_trace.json      # schedule trace (open in Perfetto)
+            steady_state_workload_final.png
 ```
 
 `summary.yaml` is the headline result:
@@ -93,11 +93,11 @@ with tempfile.TemporaryDirectory() as tmp:
 
 Every API entry point returns a `StageContext`; useful keys include `total_latency`, `group_latencies`, `scheduler`, `workload`, and `accelerator`. The companions are `optimize_allocation_co_with_mapping(...)` (run CO with a hand-written mapping) and `optimize_mapping(...)` (a DSE sweep over mapping variants). All accept `backend=` (default `"ortools_gscip"`; also `"ortools_highs"` and `"gurobi"`).
 
-You can run the same command against any of the bundled example architectures or the swiglu workload — see the [User Guide](user-guide.md) for the input formats.
+You can run the same command against any of the bundled example architectures or the swiglu workload - see the [User Guide](user-guide.md) for the input formats.
 
 ---
 
-## Part 2 — AIE code generation: SwiGLU on the AMD Strix NPU
+## Part 2 - AIE code generation: SwiGLU on the AMD Strix NPU
 
 The same CO pipeline can additionally **generate MLIR** for AMD's AI Engine (AIE) array. Here we map a **SwiGLU** block onto the **AMD Strix** NPU and emit the MLIR that AMD's toolchain turns into an NPU binary.
 
@@ -115,9 +115,9 @@ This requires **Linux x86_64** and **CPython 3.12 or 3.13**. See [Installation](
 
 The AIE entry points hard-wire their hardware and build the workload and mapping for you, so you only choose the problem size:
 
-- **Hardware** — `stream/inputs/aie/hardware/whole_array_strix.yaml`: the AIE array of the **AMD Strix** NPU. It has eight columns, each with a shim-DMA tile, a 256 KB memory tile, and four AIE compute tiles — a 4×8 grid of compute tiles.
-- **Workload** — a **SwiGLU** block: two projection `Gemm`s, a `SiLU` activation, an elementwise `Mul`, and a down-projection `Gemm`. It is built from the `--seq_len` / `--embedding_dim` / `--hidden_dim` you pass.
-- **Mapping** — generated automatically from the tile-size flags (`--embedding_tile_size`, `--hidden_tile_size`, ...).
+- **Hardware** - `stream/inputs/aie/hardware/whole_array_strix.yaml`: the AIE array of the **AMD Strix** NPU. It has eight columns, each with a shim-DMA tile, a 256 KB memory tile, and four AIE compute tiles - a 4x8 grid of compute tiles.
+- **Workload** - a **SwiGLU** block: two projection `Gemm`s, a `SiLU` activation, an elementwise `Mul`, and a down-projection `Gemm`. It is built from the `--seq_len` / `--embedding_dim` / `--hidden_dim` you pass.
+- **Mapping** - generated automatically from the tile-size flags (`--embedding_tile_size`, `--hidden_tile_size`, ...).
 
 ### Run it
 
@@ -129,7 +129,7 @@ python scripts/main_swiglu.py \
   --embedding_tile_size 32 --hidden_tile_size 64
 ```
 
-`--rows 4 --cols 8` uses the full 4×8 compute-tile array, and `--npu npu2` targets the Strix (XDNA2) NPU. This runs the CO pipeline **and** the AIE code-generation stage; the MILP allocation over the whole array takes a minute or two. The generated module is written into the run's experiment folder under `outputs/` (the same place Part 1's artifacts went):
+`--rows 4 --cols 8` uses the full 4x8 compute-tile array, and `--npu npu2` targets the Strix (XDNA2) NPU. This runs the CO pipeline **and** the AIE code-generation stage; the MILP allocation over the whole array takes a minute or two. The generated module is written into the run's experiment folder under `outputs/` (the same place Part 1's artifacts went):
 
 ```
 Saved generated module to outputs/whole_array_strix-swiglu_256_512_2048-4_row_8_col/output.mlir
@@ -137,7 +137,7 @@ Saved generated module to outputs/whole_array_strix-swiglu_256_512_2048-4_row_8_
 
 ### The generated MLIR
 
-The output is an MLIR module in AMD's `aie` / `aiex` dialects — tile placement, compute cores, and the object-FIFO data movement for the whole SwiGLU block:
+The output is an MLIR module in AMD's `aie` / `aiex` dialects - tile placement, compute cores, and the object-FIFO data movement for the whole SwiGLU block:
 
 ```
 builtin.module {
@@ -155,7 +155,7 @@ For this example that is roughly 2,400 lines: one `aie.device(npu2)`, 48 `aie.ti
 
 ### From MLIR to a running NPU binary
 
-This `.mlir` is the **hand-off point** to AMD's AIE toolchain. The `aie` / `aiex` dialects it uses are exactly those of [**mlir-aie**](https://github.com/Xilinx/mlir-aie) and its **IRON** programming framework. mlir-aie lowers and compiles the module — placing the cores, building the object-FIFOs, and generating the host control program — into an NPU binary (an `xclbin` plus an instruction sequence) that **runs on AMD Ryzen AI NPUs** (the `npu2` target here is the XDNA2 NPU in AMD Strix).
+This `.mlir` is the **hand-off point** to AMD's AIE toolchain. The `aie` / `aiex` dialects it uses are exactly those of [**mlir-aie**](https://github.com/Xilinx/mlir-aie) and its **IRON** programming framework. mlir-aie lowers and compiles the module - placing the cores, building the object-FIFOs, and generating the host control program - into an NPU binary (an `xclbin` plus an instruction sequence) that **runs on AMD Ryzen AI NPUs** (the `npu2` target here is the XDNA2 NPU in AMD Strix).
 
 In short: Stream decides *what* runs *where* and emits the MLIR; **mlir-aie** and **IRON** build that MLIR and deploy it on the device.
 
@@ -163,6 +163,6 @@ In short: Stream decides *what* runs *where* and emits the MLIR; **mlir-aie** an
 
 ## Where to go next
 
-- [User Guide](user-guide.md) — the workload, hardware, and mapping input formats in detail.
-- [Stages](stages.md) — what each pipeline stage does and how to extend the pipeline.
-- [Using Stream with an AI agent](ai-agents.md) — the skills, MCP server, and IR models.
+- [User Guide](user-guide.md) - the workload, hardware, and mapping input formats in detail.
+- [Stages](stages.md) - what each pipeline stage does and how to extend the pipeline.
+- [Using Stream with an AI agent](ai-agents.md) - the skills, MCP server, and IR models.

@@ -2,12 +2,12 @@
 
 A hardware target in Stream is a **system of heterogeneous dataflow cores**. You describe it with YAML in two layers:
 
-1. An **accelerator file** — names the system, lists its cores, and defines how the cores are connected.
-2. One **core file per core type** — describes a single core's compute array, memory hierarchy, and role.
+1. An **accelerator file** - names the system, lists its cores, and defines how the cores are connected.
+2. One **core file per core type** - describes a single core's compute array, memory hierarchy, and role.
 
 Accelerator files live in `stream/inputs/examples/hardware/`; the core files they reference live in `stream/inputs/examples/hardware/cores/`. Several cores in an accelerator may point at the *same* core file (e.g. four identical compute cores).
 
-The format is validated by `stream/parser/accelerator_validator.py` and built by `stream/parser/accelerator_factory.py` — those files are the authoritative schema if anything below is ambiguous.
+The format is validated by `stream/parser/accelerator_validator.py` and built by `stream/parser/accelerator_factory.py` - those files are the authoritative schema if anything below is ambiguous.
 
 ---
 
@@ -45,9 +45,9 @@ core_connectivity:
   - type: link
     cores: [1, 2]
     bandwidth: 32
-  # … more links …
+  # ... more links ...
 
-  # shared bus to off-chip memory (all cores ↔ DRAM)
+  # shared bus to off-chip memory (all cores <-> DRAM)
   - type: bus
     cores: [0, 1, 2, 3, 4, 5, 6]
     bandwidth: 128
@@ -56,11 +56,11 @@ core_connectivity:
 | Field | Required | Meaning |
 |-------|:---:|---------|
 | `name` | yes | A label for the system. |
-| `cores` | yes | Map of integer **core id → core file**. Paths may be relative (`./cores/foo.yaml`); a bare filename is resolved against `<accelerator_dir>/cores/` then `<accelerator_dir>/`. |
+| `cores` | yes | Map of integer **core id -> core file**. Paths may be relative (`./cores/foo.yaml`); a bare filename is resolved against `<accelerator_dir>/cores/` then `<accelerator_dir>/`. |
 | `offchip_core_id` | yes | The id of the core that fronts external memory (DRAM). Must appear in `cores`. No computation is ever placed here. |
 | `core_connectivity` | yes | List of links and buses connecting the cores (see below). |
 | `unit_energy_cost` | no | Default energy per transferred word for every connection, unless overridden per-connection. Defaults to `0`. |
-| `core_coordinates` | no | Map of core id → `[col, row]`. Used for placement-aware models; required for the AIE namespace, optional otherwise. |
+| `core_coordinates` | no | Map of core id -> `[col, row]`. Used for placement-aware models; required for the AIE namespace, optional otherwise. |
 | `core_memory_sharing` | no | Groups of core ids that share L1 memory, e.g. `["0, 1", "2, 3"]`. |
 
 ### Connections: `link` vs `bus`
@@ -82,8 +82,8 @@ Connections are how the MILP allocator routes tensors between cores. A typical a
 
 Every core declares a `type` of the form `<namespace>.<kind>`:
 
-- **namespace** — `zigzag` (a full dataflow core modelled with ZigZag's cost model) or `aie2` (an AMD AIE tile).
-- **kind** — `compute`, `memory`, `shim`, or `offchip`.
+- **namespace** - `zigzag` (a full dataflow core modelled with ZigZag's cost model) or `aie2` (an AMD AIE tile).
+- **kind** - `compute`, `memory`, `shim`, or `offchip`.
 
 A bare kind (e.g. `type: compute`) is accepted and defaults to the `zigzag` namespace.
 
@@ -141,14 +141,14 @@ operational_array:
   unit_energy: 0.04            # pJ per MAC
   unit_area: 1
   dimensions: [D1, D2]         # spatial (unrolled) dimensions of the array
-  sizes: [32, 32]              # 32 × 32 systolic array
+  sizes: [32, 32]              # 32 x 32 systolic array
 ```
 
 **Operands.** Stream uses three algorithmic operands: `I1` (weights / first input), `I2` (activations / second input), and `O` (output). A memory's `operands` field lists which of these it stores.
 
-**Ports and `allocation`.** Each memory exposes `ports`. An `allocation` entry pairs an operand with a port-direction tag — `fh` (write the *high* / final value), `fl` (write the *low* / partial value), `tl` (read *low* / from lower level), `th` (read *high* / to higher level). This is how Stream knows which port carries which data movement when it builds the cost model.
+**Ports and `allocation`.** Each memory exposes `ports`. An `allocation` entry pairs an operand with a port-direction tag - `fh` (write the *high* / final value), `fl` (write the *low* / partial value), `tl` (read *low* / from lower level), `th` (read *high* / to higher level). This is how Stream knows which port carries which data movement when it builds the cost model.
 
-**`served_dimensions`.** The operational-array dimensions (`D1`, `D2`, …) that this memory feeds. An empty list means the memory is innermost (feeds a single MAC lane).
+**`served_dimensions`.** The operational-array dimensions (`D1`, `D2`, ...) that this memory feeds. An empty list means the memory is innermost (feeds a single MAC lane).
 
 **`operational_array`.** The spatial compute fabric: `dimensions` names the unrolled axes, `sizes` gives their extent, and `unit_energy` / `unit_area` are the per-MAC cost.
 
@@ -187,11 +187,11 @@ A compute core can be limited to specific operator types with an `operator_types
 ```yaml
 name: pooling
 type: zigzag.compute
-# … memories, operational_array …
+# ... memories, operational_array ...
 operator_types: [MaxPool, AveragePool, GlobalAveragePool]
 ```
 
-If `operator_types` is omitted, the core accepts **any** operator. The auto-mapper (see [Mapping](mapping.md)) uses this field to decide which nodes a core is eligible for — e.g. SiLU/Mul go to the SIMD core, pooling to the pooling core, and Conv/Gemm to the general compute cores.
+If `operator_types` is omitted, the core accepts **any** operator. The auto-mapper (see [Mapping](mapping.md)) uses this field to decide which nodes a core is eligible for - e.g. SiLU/Mul go to the SIMD core, pooling to the pooling core, and Conv/Gemm to the general compute cores.
 
 ### AIE cores
 
@@ -211,7 +211,7 @@ memory:
 
 ## Example systems
 
-Eight non-AIE example accelerators ship under `stream/inputs/examples/hardware/` and are exercised across both example workloads in the test matrix (see the [Workload × Hardware matrix](https://github.com/KULeuven-MICAS/stream_aie#workload--hardware-matrix) in the README):
+Eight non-AIE example accelerators ship under `stream/inputs/examples/hardware/` and are exercised across both example workloads in the test matrix (see the [Workload x Hardware matrix](https://github.com/KULeuven-MICAS/stream_aie#workload-x-hardware-matrix) in the README):
 
 `eyeriss_like_single_core`, `eyeriss_like_dual_core`, `eyeriss_like_quad_core`, `tpu_like_quad_core`, `simba_small`, `simba` (a 36-core chiplet mesh), `fusemax`, and `meta_prototype_dual_core_simd_offchip`.
 

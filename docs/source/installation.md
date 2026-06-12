@@ -2,9 +2,9 @@
 
 ## Requirements
 
-- Python **≥ 3.12**
+- Python **>= 3.12**
 - `git` and `pip`
-- **Graphviz** (the `dot` binary) — the pipeline renders the workload and schedule graphs to PNG via `pydot`, which calls `dot`. Install it with your system package manager, e.g. `sudo apt-get install graphviz` (Debian/Ubuntu) or `brew install graphviz` (macOS).
+- **Graphviz** (the `dot` binary) - the pipeline renders the workload and schedule graphs to PNG via `pydot`, which calls `dot`. Install it with your system package manager, e.g. `sudo apt-get install graphviz` (Debian/Ubuntu) or `brew install graphviz` (macOS).
 
 ## Clone
 
@@ -17,7 +17,7 @@ cd stream_aie
 
 Stream is an installable package (`stream-dse`); install it in editable mode from the repo root. The authoritative dependency list is `pyproject.toml`.
 
-**Base install** — everything needed for the constraint-optimization pipeline:
+**Base install** - everything needed for the constraint-optimization pipeline:
 
 ```bash
 pip install -e .
@@ -25,7 +25,7 @@ pip install -e .
 
 This pulls in `zigzag-dse`, `ortools>=9.15` (the default, license-free MILP backend), `pydantic`, `pydot`, and `xdsl`.
 
-**With the MCP server** (for driving Stream from an AI agent — see [Using Stream with an AI agent](ai-agents.md)):
+**With the MCP server** (for driving Stream from an AI agent - see [Using Stream with an AI agent](ai-agents.md)):
 
 ```bash
 pip install -e ".[mcp]"
@@ -33,7 +33,7 @@ pip install -e ".[mcp]"
 
 The `[mcp]` extra adds `fastmcp`.
 
-**With the Gurobi solver** (optional — OR-Tools GSCIP is the default, license-free backend):
+**With the Gurobi solver** (optional - OR-Tools GSCIP is the default, license-free backend):
 
 ```bash
 pip install -e ".[gurobi]"
@@ -48,7 +48,7 @@ pip install -e .       # or, once published: pip install stream-dse
 stream-setup-aie       # installs the AIE toolchain into the current environment
 ```
 
-The base install carries no AIE dependencies — those are git/URL installs that PyPI does not allow in package metadata. The `stream-setup-aie` console script installs the toolchain (`mlir_aie`, `llvm-aie`, `xdsl-aie`, `snax-mlir`, and `aie-python-extras`) and writes a `.pth` file so the `mlir_aie` bindings are importable with no further `PYTHONPATH` setup. Run `stream-setup-aie --dry-run` to preview the exact steps. It is **Linux x86_64 only** (manylinux wheels), **CPython 3.12 or 3.13**. After it completes, the AIE codegen entry points and `enable_codegen=True` work; the base CO pipeline has no such restriction.
+The base install carries no AIE dependencies - those are git/URL installs that PyPI does not allow in package metadata. The `stream-setup-aie` console script installs the toolchain (`mlir_aie`, `llvm-aie`, `xdsl-aie`, `snax-mlir`, and `aie-python-extras`) and writes a `.pth` file so the `mlir_aie` bindings are importable with no further `PYTHONPATH` setup. Run `stream-setup-aie --dry-run` to preview the exact steps. It is **Linux x86_64 only** (manylinux wheels), **CPython 3.12 or 3.13**. After it completes, the AIE codegen entry points and `enable_codegen=True` work; the base CO pipeline has no such restriction.
 
 ## Solver license note
 
