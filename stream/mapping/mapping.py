@@ -2,15 +2,20 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, TypeAlias
+from typing import TYPE_CHECKING, Any, TypeAlias
 
-from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.core import Core
 from stream.workload.node import ComputationNode
 from stream.workload.utils import get_equivalent_dimension
 from stream.workload.workload import Node, Workload
+
+if TYPE_CHECKING:
+    # AIEKernel lives in stream.compiler (AIE codegen), an optional install. Only used as an
+    # annotation here and validated at runtime when a kernel is actually set (AIE mappings),
+    # so importing it eagerly would force the AIE toolchain onto the base install.
+    from stream.compiler.kernels.aie_kernel import AIEKernel
 
 Resource: TypeAlias = Core | MulticastPathPlan
 
@@ -57,6 +62,8 @@ class NodeMapping:
                     raise ValueError(f"Tiling factor for '{dim}' must be a positive int, got {factor!r}.")
 
         if self.kernel is not None:
+            from stream.compiler.kernels.aie_kernel import AIEKernel  # noqa: PLC0415
+
             if not isinstance(self.kernel, AIEKernel):
                 raise TypeError("Kernel must be an AIEKernel instance. Other kernel types are not supported yet.")
 

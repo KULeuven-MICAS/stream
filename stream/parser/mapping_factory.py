@@ -1,19 +1,24 @@
+from __future__ import annotations
+
 import inspect
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from xdsl.context import Context
 from xdsl.dialects.builtin import AffineMapAttr
 from xdsl.ir.affine import AffineMap
 from xdsl.parser import Parser
 
-from stream.compiler.kernels import AIEKernels
-from stream.compiler.kernels.aie_kernel import AIEKernel
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import FusedGroup, Mapping, NodeMapping
 from stream.workload.node import OutEdge
 from stream.workload.workload import ComputationNode, InEdge, Workload
+
+if TYPE_CHECKING:
+    # AIE kernels live in stream.compiler (optional AIE install). Imported lazily inside
+    # create_kernel so the base mapping path stays free of the AIE toolchain.
+    from stream.compiler.kernels.aie_kernel import AIEKernel
 
 
 class MappingFactory:
@@ -48,7 +53,7 @@ class MappingFactory:
                 return mapping_data
         raise ValueError(f"No mapping data found for node with name {node.name}")
 
-    def get_resource_allocation(self, mapping_data: dict[str, Any]) -> tuple[tuple["Core", ...], ...]:
+    def get_resource_allocation(self, mapping_data: dict[str, Any]) -> tuple[tuple[Core, ...], ...]:
         cores = []
         for core_ids in mapping_data["core_allocation"]:
             core_group = []
@@ -68,7 +73,17 @@ class MappingFactory:
             return False
 
     def create_kernel(self, mapping_data: dict[str, Any]) -> AIEKernel | None:
-        kernel_name = mapping_data["kernel"]["name"]
+        kernel_name = (mapping_data.get("kernel") or {}).get("name")
+        if not kernel_name:
+            return None
+        try:
+            from stream.compiler.kernels import AIEKernels  # noqa: PLC0415
+        except ModuleNotFoundError:
+            # The AIE codegen toolchain isn't installed (base, non-AIE install), so no AIE kernels
+            # exist to build. NodeMapping.kernel is only consumed by AIE codegen and AIE-core cost
+            # estimation, so leaving it None is correct for the base pipeline.
+            return None
+
         kernel = AIEKernels.get(kernel_name, None)
         if kernel is None:
             return None
