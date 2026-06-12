@@ -1,9 +1,17 @@
 name: meta_prototype
 type: compute
 
+# Register-file sizes (bits) and port bandwidths are sized for the 16-bit operands the
+# example workloads use (bf16). The original 8-bit weight RF / 16-bit psum RF were sized for
+# an int8 datatype: with bf16, a single weight element (16 bits) did not fit in the 8-bit
+# rf_1B, so ZigZag's spatial-mapping generator collapsed the D3/D4 unrolling to 0 and the
+# whole estimate fell back to a 1-MAC/cycle scalar cost (latency ~100x too high). rf_1B now
+# holds one bf16 weight (16 bits) and rf_2B one fp32 partial sum (32 bits), keeping the
+# original 1:2 weight:psum width ratio. Do NOT enlarge rf_1B further: at 32 bits ZigZag picks
+# a different spatial mapping that re-triggers the fallback on the swiglu Gemms.
 memories:
   rf_1B:
-    size: 8
+    size: 16
     r_cost: 0.01
     w_cost: 0.01
     area: 0
@@ -13,20 +21,20 @@ memories:
     ports:
       - name: r_port_1
         type: read
-        bandwidth_min: 8
-        bandwidth_max: 8
+        bandwidth_min: 16
+        bandwidth_max: 16
         allocation:
           - I2, tl
       - name: w_port_1
         type: write
-        bandwidth_min: 8
-        bandwidth_max: 8
+        bandwidth_min: 16
+        bandwidth_max: 16
         allocation:
           - I2, fh
     served_dimensions: [D3, D4]
 
   rf_2B:
-    size: 16
+    size: 32
     r_cost: 0.02
     w_cost: 0.02
     area: 0
@@ -35,26 +43,26 @@ memories:
     ports:
       - name: r_port_1
         type: read
-        bandwidth_min: 16
-        bandwidth_max: 16
+        bandwidth_min: 32
+        bandwidth_max: 32
         allocation:
           - O, tl
       - name: r_port_2
         type: read
-        bandwidth_min: 16
-        bandwidth_max: 16
+        bandwidth_min: 32
+        bandwidth_max: 32
         allocation:
           - O, th
       - name: w_port_1
         type: write
-        bandwidth_min: 16
-        bandwidth_max: 16
+        bandwidth_min: 32
+        bandwidth_max: 32
         allocation:
           - O, fh
       - name: w_port_2
         type: write
-        bandwidth_min: 16
-        bandwidth_max: 16
+        bandwidth_min: 32
+        bandwidth_max: 32
         allocation:
           - O, fl
     served_dimensions: [D2]

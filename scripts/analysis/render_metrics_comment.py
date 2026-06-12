@@ -12,7 +12,15 @@ import sys
 METRICS_GATED = ("total_latency",)
 METRICS_INFO = ("objective", "solve_time_s")
 METRICS_ALL = METRICS_GATED + METRICS_INFO
+# Observational, non-diffed per-cell fields surfaced in the table (current-run values only).
+# mac_spatial_utilization: how full the spatial array is (latency-weighted).
+# degenerate: True iff a matmul/conv node fell back to ZigZag's scalar cost (latency untrustworthy).
+EXTRA_FIELDS = ("mac_spatial_utilization", "degenerate")
 META_KEY = "_meta"
+# Below this MAC spatial utilization a (non-degenerate) cell gets a "low array utilization" note.
+LOW_UTIL_THRESHOLD = 0.05
+# At/above this utilization percentage, render with 0 decimals; below it, 1 decimal (so 1.4% != 1%).
+UTIL_PCT_INT_THRESHOLD = 10.0
 MARKER = "<!-- stream-aie-metrics-regression-guard-v1 -->"
 
 
@@ -75,8 +83,14 @@ def compute_diffs(
             continue
 
         if in_cur and not in_base:
-            # Current-only: newly added cell
-            rows.append({"node_id": node_id, "status": "NEW"})
+            # Current-only: newly added cell — carry its current values so the table can show them
+            cur_entry = current[node_id]
+            new_metrics = {
+                m: {"baseline": None, "current": cur_entry.get(m), "delta": None, "delta_pct": None, "flagged": False}
+                for m in METRICS_ALL
+            }
+            extra = {f: cur_entry.get(f) for f in EXTRA_FIELDS}
+            rows.append({"node_id": node_id, "status": "NEW", "extra": extra, **new_metrics})
             continue
 
         # Both present — compute per-metric sub-dicts
@@ -112,7 +126,8 @@ def compute_diffs(
             }
 
         status = "FLAGGED" if any_flagged else "OK"
-        rows.append({"node_id": node_id, "status": status, **metrics})
+        extra = {f: cur_entry.get(f) for f in EXTRA_FIELDS}
+        rows.append({"node_id": node_id, "status": status, "extra": extra, **metrics})
 
     return rows, captured, total
 
@@ -142,16 +157,65 @@ def _metric_precision(metric: str) -> int:
     return 4 if metric == "solve_time_s" else 2
 
 
-def _short_node_id(node_id: str) -> str:
-    """Truncate a long pytest node ID to its [param] suffix for readability."""
+def _split_node_id(node_id: str) -> tuple[str, str]:
+    """Split a pytest node ID into (workload, hardware).
+
+    ``tests/test_hardware_combinations.py::test_hardware_two_conv[meta_prototype]``
+    -> ``("hardware_two_conv", "meta_prototype")``. The workload is the test-function name with a
+    leading ``test_`` stripped; the hardware is the ``[param]`` id. For an un-parametrized node the
+    hardware label falls back to the workload name so it still renders as a single-row group.
+    """
     bracket = node_id.rfind("[")
     if bracket != -1:
-        return node_id[bracket:]
-    # Fallback: keep the last component after ::
-    colon = node_id.rfind("::")
-    if colon != -1:
-        return node_id[colon + 2 :]
-    return node_id
+        hardware = node_id[bracket + 1 :].rstrip("]")
+        prefix = node_id[:bracket]
+    else:
+        hardware, prefix = "", node_id
+    colon = prefix.rfind("::")
+    func = prefix[colon + 2 :] if colon != -1 else prefix
+    workload = func[len("test_") :] if func.startswith("test_") else func
+    if not hardware:
+        hardware = workload
+    return workload, hardware
+
+
+def _cell_label(node_id: str) -> str:
+    """Short ``workload[hardware]`` label for status/callout lines."""
+    workload, hardware = _split_node_id(node_id)
+    return f"{workload}[{hardware}]"
+
+
+def _fmt_latency(v: float | None) -> str:
+    """Format a latency value: integer when whole, else 2 decimals; em-dash for missing."""
+    if v is None:
+        return "—"
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    return _fmt_val(v)
+
+
+def _fmt_util(util: float | None) -> str:
+    """Format a 0..1 spatial-utilization fraction as a percentage (n/a when unmeasured)."""
+    if util is None:
+        return "n/a"
+    pct = util * 100.0
+    return f"{pct:.0f}%" if pct >= UTIL_PCT_INT_THRESHOLD else f"{pct:.1f}%"
+
+
+def _row_note(extra: dict | None) -> str:
+    """Per-row diagnostic note derived from the current-run extras.
+
+    Flags a degenerate (ZigZag-fallback) estimate, or a genuinely under-filled array. Both are
+    derived from captured data only; neither changes the gated regression verdict.
+    """
+    if not extra:
+        return ""
+    if extra.get("degenerate"):
+        return "⚠ ZigZag fallback (scalar estimate — latency untrustworthy)"
+    util = extra.get("mac_spatial_utilization")
+    if util is not None and util < LOW_UTIL_THRESHOLD:
+        return "low array utilization"
+    return ""
 
 
 def render_comment(  # noqa: PLR0912, PLR0915
@@ -161,10 +225,10 @@ def render_comment(  # noqa: PLR0912, PLR0915
     meta: dict | None,
     tol: float,
 ) -> str:
-    """Assemble the full Markdown comment body per D-07.
+    """Assemble the full Markdown comment body.
 
-    Order: marker, header, status line, X-of-Y banner, provenance, collapsible table, regen hint.
-    Always returns a str (never raises).
+    Order: marker, header, status line, degenerate callout, X-of-Y banner, provenance, one
+    collapsible table per workload (rows = hardware), regen hint. Always returns a str (never raises).
     """
     lines: list[str] = []
 
@@ -176,19 +240,28 @@ def render_comment(  # noqa: PLR0912, PLR0915
     lines.append("## Stream AIE Metrics Regression Guard")
     lines.append("")
 
-    # (c) Status line
+    # (c) Status line — gated regression verdict
     flagged_rows = [r for r in rows if r.get("status") == "FLAGGED"]
     if flagged_rows:
-        node_ids_flagged = ", ".join(_short_node_id(r["node_id"]) for r in flagged_rows)
+        labels = ", ".join(_cell_label(r["node_id"]) for r in flagged_rows)
         tol_pct = tol * 100.0
-        lines.append(
-            f"**⚠ {len(flagged_rows)} cell(s) flagged** (total_latency > {tol_pct:.1f}% tol): {node_ids_flagged}"
-        )
+        lines.append(f"**⚠ {len(flagged_rows)} cell(s) flagged** (total_latency > {tol_pct:.1f}% tol): {labels}")
     else:
         lines.append("**✅ no changes — all gated cells within tol**")
     lines.append("")
 
-    # (d) X-of-Y captured banner
+    # (d) Degenerate callout — advisory (does NOT affect the gated verdict). A degenerate cell's
+    # latency is a 1-MAC/cycle scalar fallback, so its number is untrustworthy regardless of Δ.
+    degenerate_rows = [r for r in rows if (r.get("extra") or {}).get("degenerate")]
+    if degenerate_rows:
+        labels = ", ".join(_cell_label(r["node_id"]) for r in degenerate_rows)
+        lines.append(
+            f"**⚠ {len(degenerate_rows)} degenerate cell(s)** "
+            f"(ZigZag fell back to a 1-MAC/cycle scalar cost — latency untrustworthy): {labels}"
+        )
+        lines.append("")
+
+    # (e) X-of-Y captured banner
     no_data_count = sum(1 for r in rows if r.get("status") == "NO_DATA")
     banner = f"**{captured} of {total} cells captured**"
     if no_data_count > 0:
@@ -196,7 +269,7 @@ def render_comment(  # noqa: PLR0912, PLR0915
     lines.append(banner)
     lines.append("")
 
-    # (e) Provenance line from _meta + mip_gap note
+    # (f) Provenance line from _meta + mip_gap note
     if meta:
         sha = meta.get("baseline_sha", "unknown")
         date = meta.get("baseline_date", "unknown")
@@ -208,62 +281,48 @@ def render_comment(  # noqa: PLR0912, PLR0915
     lines.append("**Note:** mip_gap: null — OR-Tools GSCIP")
     lines.append("")
 
-    # (f) Delta table in collapsible <details>
-    lines.append("<details>")
-    lines.append("<summary><strong>Metric delta table (click to expand)</strong></summary>")
-    lines.append("")
+    # (g) One collapsible table per workload, rows = hardware
+    groups: dict[str, list[dict]] = {}
+    for r in rows:
+        workload, _ = _split_node_id(r["node_id"])
+        groups.setdefault(workload, []).append(r)
 
-    # Table header: node-id + 3 metrics × 4 sub-columns
-    header_parts = ["| Node ID"]
-    sep_parts = ["|---"]
-    for m in METRICS_ALL:
-        label = "objective (lex-last-phase)" if m == "objective" else m
-        header_parts.append(f" {label} (base)")
-        header_parts.append(f" {label} (cur)")
-        header_parts.append(f" {label} Δ")
-        header_parts.append(f" {label} Δ%")
-        sep_parts.extend(["|---", "|---", "|---", "|---"])
-    lines.append(" |".join(header_parts) + " |")
-    lines.append("".join(sep_parts) + "|")
-
-    # Table rows
-    for row in rows:
-        status = row.get("status", "OK")
-        node_short = _short_node_id(row["node_id"])
-        if status == "NO_DATA":
-            row_cells = f"| {node_short} |"
-            for _ in METRICS_ALL:
-                row_cells += " NO DATA | NO DATA | — | — |"
-            lines.append(row_cells)
-            continue
-        if status == "NEW":
-            row_cells = f"| {node_short} (NEW) |"
-            for m in METRICS_ALL:
-                cur_entry = row.get(m, {})
-                cur_val = cur_entry.get("current") if isinstance(cur_entry, dict) else None
-                row_cells += f" — | {_fmt_val(cur_val, _metric_precision(m))} | — | — |"
-            lines.append(row_cells)
-            continue
-
-        # OK or FLAGGED
-        row_parts = [f"| {node_short}"]
-        for m in METRICS_ALL:
-            m_data = row[m]
-            prec = _metric_precision(m)
-            base_str = _fmt_val(m_data["baseline"], prec)
-            cur_str = _fmt_val(m_data["current"], prec)
-            d_str, dp_str = _fmt_delta(m_data["delta"], m_data["delta_pct"], prec)
-            if m_data.get("flagged"):
-                # Prepend warning to the delta% cell
+    for workload in sorted(groups):
+        grows = groups[workload]
+        n_flagged = sum(1 for r in grows if r.get("status") == "FLAGGED")
+        n_degen = sum(1 for r in grows if (r.get("extra") or {}).get("degenerate"))
+        annot = []
+        if n_flagged:
+            annot.append(f"⚠ {n_flagged} flagged")
+        if n_degen:
+            annot.append(f"⚠ {n_degen} degenerate")
+        suffix = f" ({', '.join(annot)})" if annot else ""
+        lines.append("<details>")
+        lines.append(f"<summary><strong>{workload} — {len(grows)} hardware{suffix}</strong></summary>")
+        lines.append("")
+        lines.append("| Hardware | total_latency (base → cur) | Δ% | MAC util | note |")
+        lines.append("|---|---|---|---|---|")
+        for r in sorted(grows, key=lambda r: _split_node_id(r["node_id"])[1]):
+            _, hardware = _split_node_id(r["node_id"])
+            status = r.get("status", "OK")
+            if status == "NO_DATA":
+                lines.append(f"| {hardware} | NO DATA | — | n/a | capture failed |")
+                continue
+            tl = r.get("total_latency", {})
+            cell = f"{_fmt_latency(tl.get('baseline'))} → {_fmt_latency(tl.get('current'))}"
+            _, dp_str = _fmt_delta(tl.get("delta"), tl.get("delta_pct"))
+            if tl.get("flagged"):
                 dp_str = f"⚠ {dp_str}"
-            row_parts.extend([f" {base_str}", f" {cur_str}", f" {d_str}", f" {dp_str}"])
-        lines.append(" |".join(row_parts) + " |")
+            extra = r.get("extra") or {}
+            util_s = _fmt_util(extra.get("mac_spatial_utilization"))
+            note = _row_note(extra)
+            label = f"{hardware} (NEW)" if status == "NEW" else hardware
+            lines.append(f"| {label} | {cell} | {dp_str} | {util_s} | {note} |")
+        lines.append("")
+        lines.append("</details>")
+        lines.append("")
 
-    lines.append("")
-    lines.append("</details>")
-    lines.append("")
-
-    # (g) Regen hint
+    # (h) Regen hint
     lines.append("**To regenerate baseline:** `python scripts/analysis/render_metrics_comment.py --update-baseline`")
     lines.append("")
 

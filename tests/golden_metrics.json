@@ -1,120 +1,152 @@
 {
   "_meta": {
     "backend": "ortools_gscip",
-    "baseline_date": "2026-06-11",
-    "baseline_sha": "78479a8734a41724fcee4ab744be07e91973d50a",
+    "baseline_date": "2026-06-12",
+    "baseline_sha": "3e9dbcb1f2eb1d4a3faede5894a9546a16098e07",
     "python_version": "3.12.3"
   },
   "tests/test_hardware_combinations.py::test_hardware_swiglu_small[eyeriss_like_dual_core]": {
+    "degenerate": false,
     "group_latencies_max": 303,
+    "mac_spatial_utilization": 0.38768115942028986,
     "mip_gap": null,
     "objective": 19.0,
-    "solve_time_s": 0.001937,
+    "solve_time_s": 0.001992,
     "total_latency": 303.0
   },
   "tests/test_hardware_combinations.py::test_hardware_swiglu_small[eyeriss_like_quad_core]": {
+    "degenerate": false,
     "group_latencies_max": 270,
+    "mac_spatial_utilization": 0.32386363636363635,
     "mip_gap": null,
     "objective": 19.0,
-    "solve_time_s": 0.002887,
+    "solve_time_s": 0.002801,
     "total_latency": 270.0
   },
   "tests/test_hardware_combinations.py::test_hardware_swiglu_small[eyeriss_like_single_core]": {
+    "degenerate": false,
     "group_latencies_max": 559,
+    "mac_spatial_utilization": 0.5720720720720721,
     "mip_gap": null,
     "objective": 19.0,
-    "solve_time_s": 0.00153,
+    "solve_time_s": 0.001522,
     "total_latency": 559.0
   },
   "tests/test_hardware_combinations.py::test_hardware_swiglu_small[fusemax]": {
+    "degenerate": false,
     "group_latencies_max": 148,
+    "mac_spatial_utilization": 0.8608695652173913,
     "mip_gap": null,
     "objective": 19.0,
-    "solve_time_s": 0.002565,
+    "solve_time_s": 0.002556,
     "total_latency": 148.0
   },
   "tests/test_hardware_combinations.py::test_hardware_swiglu_small[meta_prototype]": {
-    "group_latencies_max": 937,
+    "degenerate": false,
+    "group_latencies_max": 255,
+    "mac_spatial_utilization": 0.07765151515151515,
     "mip_gap": null,
     "objective": 19.0,
-    "solve_time_s": 0.001933,
-    "total_latency": 937.0
+    "solve_time_s": 0.003207,
+    "total_latency": 255.0
   },
   "tests/test_hardware_combinations.py::test_hardware_swiglu_small[simba]": {
+    "degenerate": false,
     "group_latencies_max": 131,
+    "mac_spatial_utilization": 0.84,
     "mip_gap": null,
     "objective": 19.0,
-    "solve_time_s": 0.002904,
+    "solve_time_s": 0.002919,
     "total_latency": 131.0
   },
   "tests/test_hardware_combinations.py::test_hardware_swiglu_small[simba_small]": {
+    "degenerate": false,
     "group_latencies_max": 233,
+    "mac_spatial_utilization": 0.84,
     "mip_gap": null,
     "objective": 19.0,
-    "solve_time_s": 0.00304,
+    "solve_time_s": 0.002955,
     "total_latency": 233.0
   },
   "tests/test_hardware_combinations.py::test_hardware_swiglu_small[tpu_like_quad_core]": {
+    "degenerate": false,
     "group_latencies_max": 241,
+    "mac_spatial_utilization": 0.28888888888888886,
     "mip_gap": null,
     "objective": 19.0,
-    "solve_time_s": 0.002938,
+    "solve_time_s": 0.002795,
     "total_latency": 241.0
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[eyeriss_like_dual_core]": {
+    "degenerate": false,
     "group_latencies_max": 76675,
+    "mac_spatial_utilization": 0.5079571759259259,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.001202,
+    "solve_time_s": 0.001173,
     "total_latency": 76675.0
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[eyeriss_like_quad_core]": {
+    "degenerate": false,
     "group_latencies_max": 41961,
+    "mac_spatial_utilization": 0.5079861954556435,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.001817,
+    "solve_time_s": 0.001762,
     "total_latency": 41961.0
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[eyeriss_like_single_core]": {
+    "degenerate": false,
     "group_latencies_max": 114999,
+    "mac_spatial_utilization": 0.6772569799425848,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.00091,
+    "solve_time_s": 0.000911,
     "total_latency": 114999.0
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[fusemax]": {
+    "degenerate": false,
     "group_latencies_max": 186148,
+    "mac_spatial_utilization": 0.0140625,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.001743,
+    "solve_time_s": 0.001639,
     "total_latency": 186148.0
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[meta_prototype]": {
-    "group_latencies_max": 2956432,
+    "degenerate": false,
+    "group_latencies_max": 17369,
+    "mac_spatial_utilization": 0.5101297603659143,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.00119,
-    "total_latency": 2956432.0
+    "solve_time_s": 0.001222,
+    "total_latency": 17369.0
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[simba]": {
+    "degenerate": false,
     "group_latencies_max": 4316,
+    "mac_spatial_utilization": 0.5,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.013929,
+    "solve_time_s": 0.013048,
     "total_latency": 4316.0
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[simba_small]": {
+    "degenerate": false,
     "group_latencies_max": 10750,
+    "mac_spatial_utilization": 0.5,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.001786,
+    "solve_time_s": 0.001717,
     "total_latency": 10750.0
   },
   "tests/test_hardware_combinations.py::test_hardware_two_conv[tpu_like_quad_core]": {
+    "degenerate": false,
     "group_latencies_max": 14344,
+    "mac_spatial_utilization": 0.41552901023890787,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.001767,
+    "solve_time_s": 0.001734,
     "total_latency": 14344.0
   }
 }
