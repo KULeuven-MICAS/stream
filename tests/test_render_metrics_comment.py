@@ -253,9 +253,9 @@ def test_table_rows_have_equal_cell_counts():
         return len(line.strip().strip("|").split("|"))
 
     counts = [_cells(ln) for ln in table_lines]
-    # Per-workload table: Hardware | total_latency (base → cur) | Δ% | MAC util | note = 5 cells
-    assert all(c == 5 for c in counts), (
-        f"all table rows must have 5 cells; got {counts}. Header may be missing inner pipe separators."
+    # Per-workload table: Hardware | total_latency (base → cur) | Δ% | array fill | MAC eff (e2e) | note = 6
+    assert all(c == 6 for c in counts), (
+        f"all table rows must have 6 cells; got {counts}. Header may be missing inner pipe separators."
     )
 
 
@@ -331,6 +331,25 @@ def test_workload_hparams_caption():
     rows, captured, total = mod.compute_diffs(base, base, tol=0.001)
     comment = mod.render_comment(rows, captured, total, base["_meta"], tol=0.001)
     assert f"`{hp}`" in comment, f"hparams code-span caption missing:\n{comment}"
+
+
+def test_end_to_end_mac_utilization_column():
+    """The end-to-end MAC utilization renders in its own column (sub-1% kept to 2 decimals), and the
+    column legend is present so it is not confused with the per-layer array-fill column."""
+    mod = _load_script()
+    base = {
+        "_meta": _ONE_CELL_BASE["_meta"],
+        "tests/test_hw.py::test_hardware_swiglu[simba]": {
+            "total_latency": 1000.0,
+            "mac_spatial_utilization": 0.683,  # array fill (dataflow quality)
+            "end_to_end_mac_utilization": 0.0034,  # true chip utilization (mostly-idle mesh)
+        },
+    }
+    rows, captured, total = mod.compute_diffs(base, base, tol=0.001)
+    comment = mod.render_comment(rows, captured, total, base["_meta"], tol=0.001)
+    assert "MAC eff (e2e)" in comment, "e2e column header missing"
+    assert "68%" in comment and "0.34%" in comment, f"array-fill / e2e values not both rendered:\n{comment}"
+    assert "**Columns:**" in comment, "column legend missing"
 
 
 def test_low_utilization_note():

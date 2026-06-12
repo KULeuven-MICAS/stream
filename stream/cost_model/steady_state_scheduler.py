@@ -65,12 +65,15 @@ class SteadyStateScheduler:
         output_path: str = "",
         backend: str = "ORTOOLS_GSCIP",
         constraint_selection: ConstraintSelection | None = None,
+        total_mac_ops: int | None = None,
     ):
         """
         Initialize the SteadyStateScheduler with the allocation and accelerator.
 
         Args:
             workload (ComputationNodeWorkload): The workload to be scheduled.
+            total_mac_ops: Total multiply-accumulate ops of the untiled fusion group, used to report
+                end-to-end MAC utilization. None disables that stat.
         """
         self.workload = workload  # Only contains nodes that are part of the current fusion stack
         self.accelerator = accelerator
@@ -91,6 +94,7 @@ class SteadyStateScheduler:
         self.nb_cols_to_use = nb_cols_to_use
         self.backend = backend
         self.constraint_selection = constraint_selection
+        self.total_mac_ops = total_mac_ops
 
         self.output_path = output_path
         if self.output_path:
@@ -199,6 +203,13 @@ class SteadyStateScheduler:
             latency_per_iteration,
             overlap,
         )
+        # End-to-end MAC utilization: useful MACs vs the whole chip's peak over the full runtime
+        # (so it folds in spatial fill, temporal stalls, idle cores AND transfer overhead). Purely
+        # observational; never let it break the solve.
+        try:
+            self._augment_performance_stats_end_to_end()
+        except Exception as exc:
+            logger.warning("Failed to compute end-to-end MAC utilization: %s", exc)
         # Export Perfetto-compatible JSON traces of the solved schedule
         fname = ""
         trace_path = ""
@@ -224,6 +235,35 @@ class SteadyStateScheduler:
         # tla = TensorLifetimeAnalyzer(self.ssw)
         self.steady_state_workload = self.ssw
         return self.ssw
+
+    def _augment_performance_stats_end_to_end(self) -> None:
+        """Add end-to-end MAC utilization to performance_stats['aggregate'] in place.
+
+        ``end_to_end_mac_utilization = total_mac_ops / (peak_macs_per_cycle * total_latency)``, where
+        ``peak_macs_per_cycle`` is the summed operational-array size over all on-chip (non-offchip)
+        cores. Unlike ``mac_spatial_utilization`` (per-layer PE-array spatial fill), this folds in
+        temporal stalls, idle cores AND transfer overhead, so it is the true fraction of the chip's
+        compute throughput the inference actually used. Also records the raw ``total_mac_ops`` and
+        ``peak_macs_per_cycle`` for transparency. Per fusion group (so it equals the whole-inference
+        figure for single-group workloads).
+        """
+        if not isinstance(self.performance_stats, dict):
+            return
+        agg = self.performance_stats.get("aggregate")
+        if not isinstance(agg, dict):
+            return
+        offchip_id = self.accelerator.offchip_core_id
+        peak = sum(
+            getattr(getattr(c, "operational_array", None), "total_unit_count", 0) or 0
+            for c in self.accelerator.core_list
+            if c.id != offchip_id
+        )
+        macs = self.total_mac_ops
+        lat = self.latency_total
+        util = (macs / (peak * lat)) if (macs and peak and lat and lat > 0) else None
+        agg["total_mac_ops"] = macs
+        agg["peak_macs_per_cycle"] = peak
+        agg["end_to_end_mac_utilization"] = util
 
     def update_tensor_steady_state_iteration_spaces(self, tensor_reuse_levels: TensorReuseLevels):
         for t, ssis in self.ssis.items():

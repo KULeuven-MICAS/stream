@@ -13,10 +13,12 @@ METRICS_GATED = ("total_latency",)
 METRICS_INFO = ("objective", "solve_time_s")
 METRICS_ALL = METRICS_GATED + METRICS_INFO
 # Observational, non-diffed per-cell fields surfaced in the comment (current-run values only).
-# mac_spatial_utilization: how full the spatial array is (latency-weighted).
+# mac_spatial_utilization: per-layer PE-array spatial fill (latency-weighted) -- dataflow quality.
+# end_to_end_mac_utilization: useful MACs / (chip peak MACs/cycle x total latency) -- true fraction
+#   of the chip's compute used (folds in idle cores, temporal stalls AND transfer overhead).
 # degenerate: True iff a matmul/conv node fell back to ZigZag's scalar cost (latency untrustworthy).
 # workload_hparams: human-readable dims/tiles of the combination (shown once per workload caption).
-EXTRA_FIELDS = ("mac_spatial_utilization", "degenerate", "workload_hparams")
+EXTRA_FIELDS = ("mac_spatial_utilization", "end_to_end_mac_utilization", "degenerate", "workload_hparams")
 META_KEY = "_meta"
 # Below this MAC spatial utilization a (non-degenerate) cell gets a "low array utilization" note.
 LOW_UTIL_THRESHOLD = 0.05
@@ -196,11 +198,18 @@ def _fmt_latency(v: float | None) -> str:
 
 
 def _fmt_util(util: float | None) -> str:
-    """Format a 0..1 spatial-utilization fraction as a percentage (n/a when unmeasured)."""
+    """Format a 0..1 utilization fraction as a percentage (n/a when unmeasured).
+
+    More precision for small values so end-to-end figures below 1% (e.g. a tiny workload on a huge
+    mesh) stay legible: >=10% -> 0 decimals, >=1% -> 1 decimal, else 2 decimals."""
     if util is None:
         return "n/a"
     pct = util * 100.0
-    return f"{pct:.0f}%" if pct >= UTIL_PCT_INT_THRESHOLD else f"{pct:.1f}%"
+    if pct >= UTIL_PCT_INT_THRESHOLD:
+        return f"{pct:.0f}%"
+    if pct >= 1.0:
+        return f"{pct:.1f}%"
+    return f"{pct:.2f}%"
 
 
 def _row_note(extra: dict | None) -> str:
@@ -280,6 +289,11 @@ def render_comment(  # noqa: PLR0912, PLR0915
     else:
         lines.append("**Provenance:** unknown")
     lines.append("**Note:** mip_gap: null — OR-Tools GSCIP")
+    lines.append(
+        "**Columns:** `array fill` = per-layer PE-array spatial fill (dataflow quality); "
+        "`MAC eff (e2e)` = useful MACs / (chip peak MACs/cycle × total latency), the true fraction "
+        "of the chip's compute used (incl. idle cores, temporal stalls & transfers)."
+    )
     lines.append("")
 
     # (g) One collapsible table per workload, rows = hardware
@@ -311,13 +325,13 @@ def render_comment(  # noqa: PLR0912, PLR0915
             # that would otherwise be parsed as markdown emphasis.
             lines.append(f"`{hparams}`")
             lines.append("")
-        lines.append("| Hardware | total_latency (base → cur) | Δ% | MAC util | note |")
-        lines.append("|---|---|---|---|---|")
+        lines.append("| Hardware | total_latency (base → cur) | Δ% | array fill | MAC eff (e2e) | note |")
+        lines.append("|---|---|---|---|---|---|")
         for r in sorted(grows, key=lambda r: _split_node_id(r["node_id"])[1]):
             _, hardware = _split_node_id(r["node_id"])
             status = r.get("status", "OK")
             if status == "NO_DATA":
-                lines.append(f"| {hardware} | NO DATA | — | n/a | capture failed |")
+                lines.append(f"| {hardware} | NO DATA | — | n/a | n/a | capture failed |")
                 continue
             tl = r.get("total_latency", {})
             cell = f"{_fmt_latency(tl.get('baseline'))} → {_fmt_latency(tl.get('current'))}"
@@ -325,10 +339,11 @@ def render_comment(  # noqa: PLR0912, PLR0915
             if tl.get("flagged"):
                 dp_str = f"⚠ {dp_str}"
             extra = r.get("extra") or {}
-            util_s = _fmt_util(extra.get("mac_spatial_utilization"))
+            fill_s = _fmt_util(extra.get("mac_spatial_utilization"))
+            e2e_s = _fmt_util(extra.get("end_to_end_mac_utilization"))
             note = _row_note(extra)
             label = f"{hardware} (NEW)" if status == "NEW" else hardware
-            lines.append(f"| {label} | {cell} | {dp_str} | {util_s} | {note} |")
+            lines.append(f"| {label} | {cell} | {dp_str} | {fill_s} | {e2e_s} | {note} |")
         lines.append("")
         lines.append("</details>")
         lines.append("")

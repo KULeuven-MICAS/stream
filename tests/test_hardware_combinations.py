@@ -190,6 +190,8 @@ def _record_co_metrics(record_metric, ctx, workload_hparams: str | None = None) 
     Beyond the gated total_latency, records observability metrics derived from the solved
     schedule's performance summary so the CI comment can explain outliers:
       - mac_spatial_utilization: latency-weighted MAC spatial utilization (how full the array is)
+      - end_to_end_mac_utilization: useful MACs / (chip peak MACs/cycle x total latency), i.e. the
+        true fraction of the chip's compute used (folds in idle cores, temporal stalls, transfers)
       - degenerate: True iff a matmul/conv node fell back to ZigZag's 1-MAC/cycle scalar cost,
         i.e. the spatial array was not modelled and the latency is untrustworthy.
       - workload_hparams: human-readable dims/tiles of this combination (per-workload caption).
@@ -205,6 +207,7 @@ def _record_co_metrics(record_metric, ctx, workload_hparams: str | None = None) 
     record_metric("mip_gap", solve_stats.mip_gap if solve_stats is not None else None)
     record_metric("solve_time_s", solve_stats.solve_time_s if solve_stats is not None else None)
     record_metric("mac_spatial_utilization", agg.get("latency_weighted_mac_spatial_utilization") if agg else None)
+    record_metric("end_to_end_mac_utilization", agg.get("end_to_end_mac_utilization") if agg else None)
     record_metric("degenerate", agg.get("degenerate") if agg else None)
     record_metric("workload_hparams", workload_hparams)
 

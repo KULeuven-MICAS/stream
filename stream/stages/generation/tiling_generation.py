@@ -26,6 +26,9 @@ class TilingGenerationStage(Stage):
 
     REQUIRED_FIELDS = ("workload", "mapping", "output_path")
 
+    # Operator types whose iteration space counts as multiply-accumulate work (for total_mac_ops).
+    _MAC_OP_TYPES = ("conv", "gemm", "matmul", "linear")
+
     def __init__(
         self,
         list_of_callables: list[StageCallable],
@@ -52,9 +55,25 @@ class TilingGenerationStage(Stage):
             workload=self.tiled_workload,
             mapping=self.tiled_mapping,
             fusion_splits=self.fusion_splits,
+            # Total MAC work of the UNTILED group, for the downstream end-to-end utilization stat.
+            total_mac_ops=self._total_mac_ops(),
         )
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
+
+    def _total_mac_ops(self) -> int:
+        """Total multiply-accumulate ops in this (untiled) fusion group.
+
+        Product of the full loop-dimension sizes over matmul/conv nodes -- a hardware-independent
+        workload property. Consumed by the scheduler to report end-to-end MAC utilization
+        (useful MACs / (peak MACs/cycle x total latency)). Must be read from ``self.workload``
+        BEFORE tiling shrinks the dimension sizes.
+        """
+        total = 0
+        for node in self.workload.get_computation_nodes():
+            if any(k in str(node.type).lower() for k in self._MAC_OP_TYPES):
+                total += prod(self.workload.get_dimension_size(d) for d in self.workload.get_dims(node))
+        return total
 
     def substitute_loop_sizes_with_tiled_sizes(self):
         """
