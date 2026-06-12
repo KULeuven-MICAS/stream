@@ -23,19 +23,18 @@ Base install (no MCP server):
 pip install -e .
 ```
 
-The authoritative dependency source is `pyproject.toml` (package `stream-dse`). The base install pulls in `zigzag-dse`, `ortools>=9.15` (the default MILP backend), `gurobipy`, `pydantic`, and the xDSL/SNAX MLIR packages. The `[mcp]` extra adds `fastmcp` (required for the MCP server).
+The authoritative dependency source is `pyproject.toml` (package `stream-dse`). The base install pulls in `zigzag-dse`, `ortools>=9.15` (the default, license-free MILP backend), `pydantic`, `pydot`, and `xdsl`. Optional extras: `[mcp]` adds `fastmcp` (required for the MCP server); `[gurobi]` adds `gurobipy` (commercial solver, opt-in).
 
-The `[aie]` extra adds the AMD AIE toolchain (`mlir_aie` + `llvm-aie`) for AIE-target MLIR codegen and tracing:
+AIE-target MLIR codegen and tracing additionally need the AMD AIE toolchain (`mlir_aie`, `llvm-aie`, `xdsl-aie`, `snax-mlir`, `aie-python-extras`). These are git/URL installs that PyPI does not allow in package metadata, so they are installed by a console script after the base install rather than via an extra:
 
 ```bash
-pip install -e ".[aie]"
-bash setup_aie_python_extras.sh      # aie.extras.context (tracing) — not installable as a pip extra
-source setup_mlir_aie_pythonpath.sh  # adds mlir_aie/python to PYTHONPATH
+pip install -e .       # or, once published: pip install stream-dse
+stream-setup-aie       # installs the AIE toolchain into the current environment
 ```
 
-**Platform caveat:** the `[aie]` extra is Linux x86_64 only (manylinux wheels). Python 3.11 is not supported by upstream — use Python 3.12 or 3.13.
+`stream-setup-aie --dry-run` prints exactly what it will install without making changes. **Platform caveat:** the AIE toolchain is Linux x86_64 only (manylinux wheels). Python 3.11 is not supported by upstream — use Python 3.12 or 3.13.
 
-**Solver license note:** OR-Tools (`ortools_gscip`, the default backend) is open-source and needs no license. Gurobi requires a separate commercial license — installation succeeds, but `backend="gurobi"` errors at solve time without a valid license.
+**Solver license note:** OR-Tools (`ortools_gscip`, the default backend) is open-source and needs no license. Gurobi requires the `[gurobi]` extra (`pip install -e ".[gurobi]"`) plus a separate commercial license — `backend="gurobi"` errors at solve time without a valid license.
 
 Optional pre-commit setup:
 

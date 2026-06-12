@@ -28,8 +28,8 @@ class AIEAddTracingScript(ModulePass):
     def __init__(self, trace_size=1048576):
         if not _AIE_AVAILABLE:
             raise ImportError(
-                "AIEAddTracingScript requires the [aie] extra. "
-                "Install with: pip install '.[aie]' then source setup_mlir_aie_pythonpath.sh "
+                "AIEAddTracingScript requires the optional AIE toolchain. "
+                "Install it by running `stream-setup-aie` after installing stream-dse "
                 "(Python 3.12 or 3.13 required; cp311 wheels are not published)."
             )
         self.trace_size = trace_size
