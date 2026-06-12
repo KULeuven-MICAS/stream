@@ -9,7 +9,7 @@ namespaces = true
 
 [project]
 name = "stream-dse"
-version = "0.0.8"
+version = "1.11.0"
 description = "Stream - Multi-core accelerator design space exploration with layer-fused scheduling"
 readme = "README.md"
 authors = [{ name = "Arne Symons", email = "arne.symons@kuleuven.be" }, { name = "Linyan Mei", email = "linyan.mei@kuleuven.be" }]
@@ -22,38 +22,33 @@ keywords = ["stream", "multi-core", "accelerator", "layer-fused", "scheduling", 
 dependencies = [
     "zigzag-dse==3.8.5",
     "cerberus",
-    "pre-commit",
-    "gurobipy",
     "ortools>=9.15",
     "pydantic>=2.0,<2.12",
     "pydot",
-    "xdsl-aie @ git+https://github.com/xdslproject/xdsl-aie.git@378c4c69c7f643ec31c6ef96c2fd830a0fb87244",
-    "snax-mlir @ git+https://github.com/kuleuven-micas/snax-mlir.git@1c01c5d100df128c9fa01d3336ebea98e19b20cf",
+    "xdsl>=0.29.1,<0.30",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 
 
 [project.optional-dependencies]
 mcp = ["fastmcp>=3.2.4"]
+# Gurobi is a commercial solver (license required at solve time); OR-Tools GSCIP is the
+# default, license-free backend, so gurobipy is opt-in rather than a base dependency.
+gurobi = ["gurobipy"]
 dev = ["bumpver", "pip-tools", "build", "twine", "pre-commit", "pytest"]
-# AIE toolchain (AMD Strix NPU codegen + tracing). Linux x86_64 only.
-# Upstream Xilinx does not publish cp311 wheels; supported: cp310, cp312, cp313.
-# After pip install, also run: source setup_mlir_aie_pythonpath.sh (adds mlir_aie/python to PYTHONPATH)
-# aie-python-extras (aie.extras.context) is NOT on PyPI — installed by setup_aie_python_extras.sh.
-aie = [
-    # mlir_aie — cp312 build
-    "mlir_aie @ https://github.com/Xilinx/mlir-aie/releases/download/latest-wheels/mlir_aie-0.0.1.2025070704%2Bd7dc968-cp312-cp312-manylinux_2_35_x86_64.whl ; python_version == \"3.12\" and sys_platform == \"linux\" and platform_machine == \"x86_64\"",
-    # mlir_aie — cp313 build
-    "mlir_aie @ https://github.com/Xilinx/mlir-aie/releases/download/latest-wheels/mlir_aie-0.0.1.2025070704%2Bd7dc968-cp313-cp313-manylinux_2_35_x86_64.whl ; python_version == \"3.13\" and sys_platform == \"linux\" and platform_machine == \"x86_64\"",
-    # llvm-aie (Peano compiler); py3-none — compatible with all supported Python versions
-    "llvm_aie @ https://github.com/Xilinx/llvm-aie/releases/download/nightly/llvm_aie-19.0.0.2025063001%2B6a9e0b4f-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl ; sys_platform == \"linux\" and platform_machine == \"x86_64\"",
-]
+# The optional AIE codegen toolchain (mlir_aie/llvm_aie wheels, xdsl-aie, snax-mlir,
+# aie-python-extras) cannot be an extra: those are direct-reference (git/URL) installs that
+# PyPI forbids in package metadata. Install it after `pip install stream-dse` with the
+# `stream-setup-aie` console script (see [project.scripts] below). Linux x86_64, CPython 3.12/3.13.
+
+[project.scripts]
+stream-setup-aie = "stream.aie_setup:main"
 
 [project.urls]
 Homepage = "https://github.com/KULeuven-MICAS/stream_aie"
 
 [tool.bumpver]
-current_version = "0.0.8"
+current_version = "1.11.0"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "bump version {old_version} -> {new_version}"
 commit = true
@@ -75,11 +70,14 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py311"
+target-version = "py312"
 line-length = 120
 fix = true
 lint.select = ["E", "F", "W", "I", "PL", "N", "UP", "B"]
-lint.ignore = ["D401", "N806", "N802", "PLW1641"]
+# UP040: keep the explicit `X: TypeAlias = ...` idiom (used throughout); the py312 target would
+# otherwise push the PEP 695 `type X = ...` form, whose lazy TypeAliasType has different runtime
+# semantics (e.g. not usable in isinstance) — not a change we want to force here.
+lint.ignore = ["D401", "N806", "N802", "PLW1641", "UP040"]
 lint.pylint.max-args = 8
 lint.per-file-ignores."tests/**" = ["PLR2004", "PLC0415", "PLR0915", "N803"]
 lint.per-file-ignores."scripts/**" = ["PLR0913", "N803"]

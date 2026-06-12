@@ -57,10 +57,11 @@ def run_main_aie_codegen_gemm(
 
     module = ctx.get("module")
 
-    # Save the mlir module to output.mlir
+    # Save the generated MLIR module inside the experiment folder.
     mlir_path = f"outputs/{experiment_id}/output.mlir"
     with open(mlir_path, "w") as f:
         f.write(str(module))
+    print(f"Saved generated module to {mlir_path}")
 
     return module
 
@@ -108,7 +109,7 @@ if __name__ == "__main__":
         else None
     )
 
-    module = run_main_aie_codegen_gemm(
+    run_main_aie_codegen_gemm(
         args.M,
         args.K,
         args.N,
@@ -124,7 +125,3 @@ if __name__ == "__main__":
         args.backend,
         constraint_selection=_constraint_selection,
     )
-    save_path = f"outputs/swiglu_module_{args.M}_{args.N}_{args.K}.mlir"
-    with open(save_path, "w") as f:
-        f.write(str(module))
-    print(f"Saved generated module to {save_path}")

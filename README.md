@@ -1,17 +1,41 @@
-# Stream
+# 🌊 Stream
 
-Stream is a design space exploration (DSE) and constraint-optimization framework for **heterogeneous dataflow accelerators** — accelerator systems built by combining **heterogeneous dataflow cores**. Each core has its own dataflow and performance model; **AIE** and **TPU-like** are two example core types among others. Scheduling is **layer-fused**, and the **TETRA constraint optimization** uses MILP (Mixed-Integer Linear Programming) to decide tensor placement and transfer paths across the cores of such a system. Stream builds on top of the [ZigZag](https://zigzag-project.github.io/zigzag/) framework for per-core cost estimation.
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
+[![Docs](https://img.shields.io/badge/docs-stream__aie-blue)](https://kuleuven-micas.github.io/stream_aie/)
 
-**What the TETRA CO pipeline does:**
-- Computation nodes are placed on cores from the mapping (hand-written or auto-generated), partitioned across cores via inter-core tiling.
-- `TransferAndTensorAllocator` decides tensor placement and routing paths via MILP (TETRA).
-- Solver backends: **OR-Tools GSCIP** (default, license-free), **OR-Tools HiGHS**, and **Gurobi** (commercial license required) — all behind a unified `SolverModel` API.
+**Stream** is a design space exploration (DSE) and constraint-optimization framework for **heterogeneous dataflow accelerators**: accelerator systems built by combining cores that each have their own dataflow and performance model (**AIE** and **TPU-like** are two example core types among others). Scheduling is **layer-fused**, and the **TETRA constraint optimization** uses MILP (Mixed-Integer Linear Programming) to decide tensor placement and transfer paths across the cores of such a system. Stream builds on top of [ZigZag](https://zigzag-project.github.io/zigzag/) for per-core cost estimation.
 
-## Installation
+### 📖 [**Explore the Documentation**](https://kuleuven-micas.github.io/stream_aie/)
+### 🚀 [**Getting Started Guide**](https://kuleuven-micas.github.io/stream_aie/getting-started/)
 
-Python `>=3.11` is required.
+---
 
-Full install with MCP server support (from repo root):
+## ✨ Key Features
+
+✔ **Heterogeneous dataflow cores**: compose an accelerator from cores that each carry their own dataflow and cost model (AIE, TPU-like, pooling, SIMD, and more).
+
+✔ **Layer-fused scheduling** across the whole system of cores.
+
+✔ **TETRA constraint optimization**: a MILP (`TransferAndTensorAllocator`) decides tensor placement and transfer-path routing.
+
+✔ **Pluggable solver backends**: OR-Tools GSCIP (default, license-free), OR-Tools HiGHS, and Gurobi behind one unified `SolverModel` API.
+
+✔ **ONNX workloads** with auto-generated or hand-written mappings.
+
+✔ **AMD AIE code generation**: emit `aie` / `aiex` MLIR for the Ryzen AI NPU, ready for the [mlir-aie](https://github.com/Xilinx/mlir-aie) / IRON toolchain.
+
+✔ **Built for AI agents**: an MCP server and typed IR models expose the pipeline programmatically.
+
+The pipeline runs as a chain of stages: parse → tile → cost → MILP allocation → memory estimation.
+
+---
+
+## 🚀 Installation
+
+Python `>=3.12` is required.
+
+Full install with MCP server support (from the repo root):
 
 ```bash
 pip install -e ".[mcp]"
@@ -23,19 +47,22 @@ Base install (no MCP server):
 pip install -e .
 ```
 
-The authoritative dependency source is `pyproject.toml` (package `stream-dse`). The base install pulls in `zigzag-dse`, `ortools>=9.15` (the default MILP backend), `gurobipy`, `pydantic`, and the xDSL/SNAX MLIR packages. The `[mcp]` extra adds `fastmcp` (required for the MCP server).
+The authoritative dependency source is `pyproject.toml` (package `stream-dse`). The base install pulls in `zigzag-dse`, `ortools>=9.15` (the default, license-free MILP backend), `pydantic`, `pydot`, and `xdsl`. Optional extras: `[mcp]` adds `fastmcp` (required for the MCP server); `[gurobi]` adds `gurobipy` (commercial solver, opt-in).
 
-The `[aie]` extra adds the AMD AIE toolchain (`mlir_aie` + `llvm-aie`) for AIE-target MLIR codegen and tracing:
+### AIE code generation
+
+AIE-target MLIR codegen and tracing additionally need the AMD AIE toolchain (`mlir_aie`, `llvm-aie`, `xdsl-aie`, `snax-mlir`, `aie-python-extras`). These are git/URL installs that PyPI does not allow in package metadata, so a console script installs them after the base install rather than via an extra:
 
 ```bash
-pip install -e ".[aie]"
-bash setup_aie_python_extras.sh      # aie.extras.context (tracing) — not installable as a pip extra
-source setup_mlir_aie_pythonpath.sh  # adds mlir_aie/python to PYTHONPATH
+pip install -e .       # or, once published: pip install stream-dse
+stream-setup-aie       # installs the AIE toolchain into the current environment
 ```
 
-**Platform caveat:** the `[aie]` extra is Linux x86_64 only (manylinux wheels). Python 3.11 is not supported by upstream — use Python 3.12 or 3.13.
+`stream-setup-aie --dry-run` prints exactly what it will install without making changes.
 
-**Solver license note:** OR-Tools (`ortools_gscip`, the default backend) is open-source and needs no license. Gurobi requires a separate commercial license — installation succeeds, but `backend="gurobi"` errors at solve time without a valid license.
+> ⚠️ **Platform caveat:** the AIE toolchain is Linux x86_64 only (manylinux wheels), CPython 3.12 or 3.13.
+
+> 💡 **Solver license note:** OR-Tools (`ortools_gscip`, the default backend) is open-source and needs no license. Gurobi requires the `[gurobi]` extra (`pip install -e ".[gurobi]"`) plus a separate commercial license; `backend="gurobi"` errors at solve time without a valid license.
 
 Optional pre-commit setup:
 
@@ -43,7 +70,9 @@ Optional pre-commit setup:
 pre-commit install
 ```
 
-## Quick Start
+---
+
+## ⚡ Quick Start
 
 Run the CO pipeline on a small two-Conv workload (a committed test fixture) with an auto-generated mapping (approximately 11 seconds):
 
@@ -53,7 +82,7 @@ python scripts/main_stream_co.py \
   --workload stream/inputs/testing/workload/2conv_1_8_32_32_16_32_3.onnx
 ```
 
-…or simply `just co-2conv` (this repo uses [`just`](https://github.com/casey/just) as a task runner; defaults to `tpu_like_quad_core` — see the [matrix](#workload--hardware-matrix) below). `--mapping` is omitted, so the mapping is auto-generated by the pipeline; the hardware is a TPU-like quad-core system.
+Or simply `just co-2conv` (this repo uses [`just`](https://github.com/casey/just) as a task runner; it defaults to `tpu_like_quad_core`, see the [matrix](#workload--hardware-matrix) below). `--mapping` is omitted, so the mapping is auto-generated by the pipeline; the hardware is a TPU-like quad-core system.
 
 Expected output:
 
@@ -64,27 +93,31 @@ Total latency: 14344.0
 
 A YAML summary is written to `outputs/.../summary.yaml` with `total_latency: 14344.0`, plus workload/tiling/schedule PNG visualizations.
 
-## Hardware and Core Types
+---
+
+## 🧩 Hardware and Core Types
 
 An accelerator in Stream is described as a **system of heterogeneous dataflow cores**. Core roles include compute, memory, shim, and offchip; example dataflow core types include **AIE**, **TPU-like**, and **pooling**.
 
 Hardware and mapping files are organized as follows:
 
-- `stream/inputs/examples/hardware/` — system-level hardware YAMLs (e.g. `tpu_like_quad_core.yaml`, `eyeriss_like_*.yaml`, `simba*.yaml`, `fusemax.yaml`).
-- `stream/inputs/examples/hardware/cores/` — per-core-type YAMLs (e.g. `tpu_like.yaml`, `pooling.yaml`, `simd.yaml`, `offchip.yaml`, `eyeriss_like.yaml`).
-- `stream/inputs/aie/hardware/` and `stream/inputs/aie/hardware/cores/` — AMD AIE example core types (e.g. `aie_tile.yaml`, `mem_tile_256KB.yaml`, `shim_dma.yaml`).
-- `stream/inputs/examples/mapping/`, `stream/inputs/aie/mapping/`, and `stream/inputs/testing/mapping/` — mapping descriptions.
+- `stream/inputs/examples/hardware/` - system-level hardware YAMLs (e.g. `tpu_like_quad_core.yaml`, `eyeriss_like_*.yaml`, `simba*.yaml`, `fusemax.yaml`).
+- `stream/inputs/examples/hardware/cores/` - per-core-type YAMLs (e.g. `tpu_like.yaml`, `pooling.yaml`, `simd.yaml`, `offchip.yaml`, `eyeriss_like.yaml`).
+- `stream/inputs/aie/hardware/` and `stream/inputs/aie/hardware/cores/` - AMD AIE example core types (e.g. `aie_tile.yaml`, `mem_tile_256KB.yaml`, `shim_dma.yaml`).
+- `stream/inputs/examples/mapping/`, `stream/inputs/aie/mapping/`, and `stream/inputs/testing/mapping/` - mapping descriptions.
 
 A mapping can be auto-generated (as in Quick Start above) or hand-written and passed via `--mapping`.
 
-## Workload × Hardware Matrix
+---
 
-The generic CO pipeline runs any ONNX workload on any of the example hardware systems. The repo ships two small workloads and exercises them across all eight non-AIE example architectures — both from the `scripts/main_stream_co.py` entry point and from the pytest suite (`tests/test_hardware_combinations.py`).
+## 📊 Workload × Hardware Matrix
 
-**Workloads** — committed test fixtures under `stream/inputs/testing/workload/` (weight values are cleared — only tensor shapes matter for cost estimation, so the ONNX stay tiny; `just gen-workloads` regenerates them via the builders):
+The generic CO pipeline runs any ONNX workload on any of the example hardware systems. The repo ships two small workloads and exercises them across all eight non-AIE example architectures, both from the `scripts/main_stream_co.py` entry point and from the pytest suite (`tests/test_hardware_combinations.py`).
 
-- **2-conv** — two chained Conv layers (`make_2_conv.py`).
-- **swiglu** — a 5-node SwiGLU block: two Gemms, SiLU, an elementwise Mul, and a down-projection Gemm (`make_swiglu.py`).
+**Workloads** - committed test fixtures under `stream/inputs/testing/workload/` (weight values are cleared, only tensor shapes matter for cost estimation, so the ONNX stay tiny; `just gen-workloads` regenerates them via the builders):
+
+- **2-conv** - two chained Conv layers (`make_2_conv.py`).
+- **swiglu** - a 5-node SwiGLU block: two Gemms, SiLU, an elementwise Mul, and a down-projection Gemm (`make_swiglu.py`).
 
 | Hardware (`stream/inputs/examples/hardware/`) | Description | 2-conv | swiglu |
 |---|---|:---:|:---:|
@@ -97,9 +130,9 @@ The generic CO pipeline runs any ONNX workload on any of the example hardware sy
 | `fusemax` | FuseMax array + vector + DRAM | ✓ | ✓ |
 | `meta_prototype_dual_core_simd_offchip` | two Meta-prototype compute cores (+ pooling, SIMD, DRAM) | ✓ | ✓ |
 
-✓ = completes through the generic CO pipeline. All combinations run in the default fast suite — on these small single-fusion-group workloads even the 36-core `simba` mesh finishes in seconds.
+✓ = completes through the generic CO pipeline. All combinations run in the default fast suite; on these small single-fusion-group workloads even the 36-core `simba` mesh finishes in seconds.
 
-**Run one combination** — the `justfile` wraps `scripts/main_stream_co.py`; `hw` is any hardware stem from the table (default `tpu_like_quad_core`):
+**Run one combination** - the `justfile` wraps `scripts/main_stream_co.py`; `hw` is any hardware stem from the table (default `tpu_like_quad_core`):
 
 ```bash
 just co-2conv fusemax           # 2-conv on an architecture
@@ -114,13 +147,15 @@ python scripts/main_stream_co.py \
   --workload stream/inputs/testing/workload/2conv_1_8_32_32_16_32_3.onnx
 ```
 
-**Run the whole matrix** — the `justfile` wraps `pytest tests/test_hardware_combinations.py`, which runs 2-conv + swiglu over all eight architectures plus a parse-only check confirming every hardware definition loads:
+**Run the whole matrix** - the `justfile` wraps `pytest tests/test_hardware_combinations.py`, which runs 2-conv + swiglu over all eight architectures plus a parse-only check confirming every hardware definition loads:
 
 ```bash
 just matrix          # parse + 2-conv + swiglu over all 8 architectures (incl. simba)
 ```
 
-## Command-Line Entry Points
+---
+
+## 🖥️ Command-Line Entry Points
 
 All entry-point scripts live in `scripts/` and are run from the repo root (so relative input paths resolve and `stream` imports as the installed package).
 
@@ -132,9 +167,9 @@ All entry-point scripts live in `scripts/` and are run from the repo root (so re
 | `scripts/main_swiglu_dse_single.py` | Single-mapping SwiGLU DSE evaluation (AIE). |
 | `scripts/main_swiglu_dse.py` | Multi-mapping SwiGLU DSE sweep over tile sizes (AIE). |
 | `scripts/main_aie_co.py` | CO allocation for a hard-coded single AIE tile workload (no args; run as `python scripts/main_aie_co.py`). |
-| `scripts/main_gemm_codegen.py` | Direct GEMM->AIE MLIR codegen via xDSL transforms (no CO pipeline); `--M/--N/--K`. |
+| `scripts/main_gemm_codegen.py` | Direct GEMM → AIE MLIR codegen via xDSL transforms (no CO pipeline); `--M/--N/--K`. |
 
-`scripts/main_stream_co.py` is the general-purpose entry point. The others are AIE-specific — they hardwire AMD Strix or single-tile AIE hardware, and codegen requires NPU hardware. Note that `scripts/main_aie_co.py` takes no arguments (all paths are hard-coded). Plotting and trace post-processing utilities live in `scripts/analysis/`.
+`scripts/main_stream_co.py` is the general-purpose entry point. The others are AIE-specific: they hardwire AMD Strix or single-tile AIE hardware, and codegen requires NPU hardware. Note that `scripts/main_aie_co.py` takes no arguments (all paths are hard-coded). Plotting and trace post-processing utilities live in `scripts/analysis/`.
 
 Full `scripts/main_stream_co.py` CLI syntax:
 
@@ -148,11 +183,13 @@ python scripts/main_stream_co.py \
   [--skip-if-exists]
 ```
 
-## Public API
+---
+
+## 🐍 Public API
 
 The public API lives in `stream/api.py`.
 
-The primary entry point is `optimize_allocation_co_generic`, which auto-generates the mapping from the workload and hardware — no hand-written mapping YAML needed. This snippet is confirmed to run and print `total_latency: 14344.0` (the 2-conv ONNX it references is produced by `just gen-workloads`):
+The primary entry point is `optimize_allocation_co_generic`, which auto-generates the mapping from the workload and hardware (no hand-written mapping YAML needed). This snippet is confirmed to run and print `total_latency: 14344.0` (the 2-conv ONNX it references is produced by `just gen-workloads`):
 
 ```python
 import tempfile
@@ -175,16 +212,18 @@ Expected output: `total_latency: 14344.0`.
 
 The other two public functions:
 
-- `optimize_allocation_co_with_mapping(hardware, workload, mapping, experiment_id, output_path, ...)` — runs CO with a hand-written mapping YAML. `optimize_allocation_co` is a backward-compatible **alias** for it (both names importable).
-- `optimize_mapping(hardware, workload, experiment_id, output_path, max_nb_mappings=20, ...)` — DSE pipeline: enumerates mapping variants and runs CO for each.
+- `optimize_allocation_co_with_mapping(hardware, workload, mapping, experiment_id, output_path, ...)` - runs CO with a hand-written mapping YAML. `optimize_allocation_co` is a backward-compatible **alias** for it (both names importable).
+- `optimize_mapping(hardware, workload, experiment_id, output_path, max_nb_mappings=20, ...)` - DSE pipeline: enumerates mapping variants and runs CO for each.
 
 All three return a `StageContext`. Useful keys: `ctx.get("total_latency")`, `ctx.get("group_latencies")`, `ctx.get("scheduler")`, `ctx.get("workload")`, `ctx.get("accelerator")`.
 
-## MCP Server (for AI agents)
+---
+
+## 🤖 MCP Server (for AI agents)
 
 Stream ships an MCP server (`stream/mcp/server.py`, server name `stream-aie`) that lets an AI agent submit and inspect TETRA CO jobs. Requires the `[mcp]` extra (`pip install -e ".[mcp]"`).
 
-Launch command (from repo root):
+Launch command (from the repo root):
 
 ```bash
 python3 -c "from stream.mcp.server import mcp; mcp.run(transport='stdio')"
@@ -203,24 +242,26 @@ The 6 tools:
 | `get_allocation_ir(job_id)` | Return the TETRA allocation result as `AllocationIR` JSON (3 persona views). |
 | `get_solve_stats(job_id)` | Return MILP solve statistics (objective, time, gap, node count, backend). |
 
-**Run/poll/inspect flow:**
+**Run / poll / inspect flow:**
 
 1. `run_optimization(...)` returns `{"job_id": "...", "status": "pending"}`.
 2. Poll `poll_optimization(job_id)` until `{"status": "complete"}`.
 3. Inspect with `get_allocation_ir(job_id)` for the `AllocationIR` (algorithmic / hardware / compiler views) and `get_solve_stats(job_id)` for solve statistics.
 
-## Working in This Repo (AI agents)
+---
 
-An AI agent working in this repo should read `CLAUDE.md` first — it is the navigation hub (directory structure, entry points, conventions, and a skills index).
+## 🧠 Working in This Repo (AI agents)
+
+An AI agent working in this repo should read `CLAUDE.md` first; it is the navigation hub (directory structure, entry points, conventions, and a skills index).
 
 Deep-dive documentation lives in `.claude/skills/`. The 6 existing skill groups:
 
-- `.claude/skills/hardware/` — core types and namespaces, adding a core architecture, per-core performance estimation.
-- `.claude/skills/optimization/` — solver backends (Gurobi, OR-Tools), ConstraintSelection configuration.
-- `.claude/skills/pipeline/` — pipeline stages, StageContext data flow, adding stages.
-- `.claude/skills/constraints/` — MILP formulation, TransferAndTensorAllocator, NamespaceConstraints dispatch.
-- `.claude/skills/api-testing/` — public API reference, CLI flags, testing patterns.
-- `.claude/skills/ir/` — IR models (WorkloadIR, AllocationIR, AcceleratorIR) and JSON serialization.
+- `.claude/skills/hardware/` - core types and namespaces, adding a core architecture, per-core performance estimation.
+- `.claude/skills/optimization/` - solver backends (Gurobi, OR-Tools), ConstraintSelection configuration.
+- `.claude/skills/pipeline/` - pipeline stages, StageContext data flow, adding stages.
+- `.claude/skills/constraints/` - MILP formulation, TransferAndTensorAllocator, NamespaceConstraints dispatch.
+- `.claude/skills/api-testing/` - public API reference, CLI flags, testing patterns.
+- `.claude/skills/ir/` - IR models (WorkloadIR, AllocationIR, AcceleratorIR) and JSON serialization.
 
 **Programmatic / IR API** for structured JSON output:
 
@@ -239,9 +280,11 @@ allocation_data = allocation_ir.model_dump()
 
 `AllocationIR` offers `.algorithmic_view()`, `.hardware_view()`, and `.compiler_view()` persona views.
 
-## Further Documentation
+---
 
-- **AI-agent / TETRA docs:** `CLAUDE.md` and `.claude/skills/` in this repo — the primary documentation for the TETRA CO features (solver backends, constraint selection, MCP server, IR models).
-- **Hosted documentation site:** https://kuleuven-micas.github.io/stream_aie/ — the human-facing docs (installation, getting started, and the workload/hardware/mapping input formats), rebuilt from `docs/` on every push to `main`.
-- **Stream paper (IEEE):** https://ieeexplore.ieee.org/abstract/document/10713407 — "A. Symons, L. Mei, S. Colleman, P. Houshmand, S. Karl and M. Verhelst, Stream: Design Space Exploration of Layer-Fused DNNs on Heterogeneous Dataflow Accelerators".
-- **ZigZag:** https://zigzag-project.github.io/zigzag/ — the per-core cost-estimation framework Stream builds on.
+## 📚 Further Documentation
+
+- **AI-agent / TETRA docs:** `CLAUDE.md` and `.claude/skills/` in this repo, the primary documentation for the TETRA CO features (solver backends, constraint selection, MCP server, IR models).
+- **Hosted documentation site:** [kuleuven-micas.github.io/stream_aie](https://kuleuven-micas.github.io/stream_aie/), the human-facing docs (installation, getting started, and the workload/hardware/mapping input formats), rebuilt from `docs/` on every push to `main`.
+- **Stream paper (IEEE):** [A. Symons, L. Mei, S. Colleman, P. Houshmand, S. Karl and M. Verhelst, "Stream: Design Space Exploration of Layer-Fused DNNs on Heterogeneous Dataflow Accelerators"](https://ieeexplore.ieee.org/abstract/document/10713407).
+- **ZigZag:** [zigzag-project.github.io/zigzag](https://zigzag-project.github.io/zigzag/), the per-core cost-estimation framework Stream builds on.

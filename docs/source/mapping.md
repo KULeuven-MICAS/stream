@@ -4,7 +4,7 @@ The mapping ties a [workload](workload.md) to a [hardware](hardware.md) system: 
 
 There are two things to keep distinct:
 
-- The **spatial mapping (dataflow)** — how a single operator is unrolled across a core's MAC array — lives on the **core**, in the hardware file (`operational_array.dimensions` / `sizes`). It is a property of the core, not of the mapping file.
+- The **spatial mapping (dataflow)** - how a single operator is unrolled across a core's MAC array - lives on the **core**, in the hardware file (`operational_array.dimensions` / `sizes`). It is a property of the core, not of the mapping file.
 - The **mapping file** decides **core allocation**, **inter-core tiling** (splitting an operator across multiple cores), and **intra-core tiling / fusion** (how operators group and tile within a core).
 
 A mapping can be **auto-generated** by the pipeline or **hand-written**. The format is validated by `stream/parser/mapping_validator.py`.
@@ -21,7 +21,7 @@ The generic generator (`stream/stages/generation/generic_mapping_generation.py`)
 - **Splits work across cores** when several compute cores are eligible, by factoring the node's dimensions into an inter-core tiling.
 - **Writes per-fusion-group `mapping.yaml` files** under the run's output directory, so you can inspect (and later hand-edit) exactly what it chose.
 
-This is enough to run any of the example workloads on any of the example architectures — see the matrix in the README.
+This is enough to run any of the example workloads on any of the example architectures - see the matrix in the README.
 
 ---
 
@@ -65,10 +65,10 @@ fused_groups:
 
 For each node in the workload, Stream looks for a mapping entry in this order:
 
-1. **Exact name** — the entry `name` equals the node's name (e.g. `Gemm_Left`).
-2. **Operator type** — the entry `name` equals the node's op type (e.g. `Gemm`, `Conv`, `Add`). This is the common case, letting one entry cover all nodes of a type.
+1. **Exact name** - the entry `name` equals the node's name (e.g. `Gemm_Left`).
+2. **Operator type** - the entry `name` equals the node's op type (e.g. `Gemm`, `Conv`, `Add`). This is the common case, letting one entry cover all nodes of a type.
 
-If neither matches, validation fails — every node must resolve to an entry (use a type-level entry to catch the rest).
+If neither matches, validation fails - every node must resolve to an entry (use a type-level entry to catch the rest).
 
 ### Layer fields
 
@@ -76,7 +76,7 @@ If neither matches, validation fails — every node must resolve to an entry (us
 |-------|:---:|---------|
 | `name` | yes | Node name or operator type to match (see above). |
 | `core_allocation` | yes | A list of **candidate core-id groups**. `[[0,1,2,3]]` is one group of four cores; the MILP allocator chooses the actual placement within that candidate set. A single-core role is just `[[4]]`. |
-| `inter_core_tiling` | no | How to split the operator **across** cores. Each inner entry is `{dim: D<n>, split: k}` — split loop dimension `D<n>` (0-indexed in the node's loop nest) by factor `k`. |
+| `inter_core_tiling` | no | How to split the operator **across** cores. Each inner entry is `{dim: D<n>, split: k}` - split loop dimension `D<n>` (0-indexed in the node's loop nest) by factor `k`. |
 | `kernel` | no | Kernel hint used by the AIE codegen path: `{name: <kernel>, kwargs: {utilization: <pct>}}`. Ignored by the non-AIE CO pipeline. |
 
 ### Fused-group fields
@@ -87,13 +87,13 @@ If neither matches, validation fails — every node must resolve to an entry (us
 |-------|:---:|---------|
 | `name` | yes | Group label. |
 | `layers` | yes | Names of the layers in this group. |
-| `intra_core_tiling` | no | Per-dimension temporal tiling, each `{dim: <Node>.D<n>, tile: size}` — note the **fully-qualified** dimension name (e.g. `Conv.D0`). |
+| `intra_core_tiling` | no | Per-dimension temporal tiling, each `{dim: <Node>.D<n>, tile: size}` - note the **fully-qualified** dimension name (e.g. `Conv.D0`). |
 
 ---
 
 ## How the mapping feeds the optimizer
 
-`core_allocation` defines the **candidate set**, not a fixed assignment (unless a role has only one core). The MILP allocator (`TransferAndTensorAllocator`) then chooses, within those candidates, where each tensor lives and which links carry each transfer — minimizing latency subject to memory and bandwidth constraints. `inter_core_tiling` determines how many parallel pieces exist to place; `fused_groups` / `intra_core_tiling` determine what is co-scheduled and how it is temporally tiled on a core.
+`core_allocation` defines the **candidate set**, not a fixed assignment (unless a role has only one core). The MILP allocator (`TransferAndTensorAllocator`) then chooses, within those candidates, where each tensor lives and which links carry each transfer - minimizing latency subject to memory and bandwidth constraints. `inter_core_tiling` determines how many parallel pieces exist to place; `fused_groups` / `intra_core_tiling` determine what is co-scheduled and how it is temporally tiled on a core.
 
 For a workload with multiple fusion groups, the pipeline runs the CO once per group (see [Stages](stages.md)).
 

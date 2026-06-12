@@ -12,7 +12,7 @@ git clone <your-fork-url>
 cd stream_aie
 git checkout -b <feature-or-fix>
 
-# Python >= 3.11
+# Python >= 3.12
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
@@ -23,11 +23,11 @@ If you use VS Code, install the **Ruff** extension (`charliermarsh.ruff`), enabl
 
 ## Coding style
 
-- **Formatter / linter** — ruff-format and `ruff check` (rules E, F, W, I, PL, N, UP, B); line length **120**.
-- **Python target** — 3.11+: use `X | Y` unions and built-in generics (`list[X]`, `dict[K, V]`).
-- **Imports** — absolute only; isort order stdlib → third-party → internal.
-- **Type hints** — required on public functions, classes, and methods.
-- **Docstrings** — Google-style.
+- **Formatter / linter** - ruff-format and `ruff check` (rules E, F, W, I, PL, N, UP, B); line length **120**.
+- **Python target** - 3.12+: use `X | Y` unions and built-in generics (`list[X]`, `dict[K, V]`).
+- **Imports** - absolute only; isort order stdlib → third-party → internal.
+- **Type hints** - required on public functions, classes, and methods.
+- **Docstrings** - Google-style.
 
 ## Before opening a PR
 

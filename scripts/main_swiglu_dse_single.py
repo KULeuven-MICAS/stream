@@ -89,6 +89,12 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
 
     module = ctx.get("module")
 
+    # Save the generated MLIR module inside the experiment folder.
+    mlir_path = f"outputs/{experiment_id}/output.mlir"
+    with open(mlir_path, "w") as f:
+        f.write(str(module))
+    print(f"Saved generated module to {mlir_path}")
+
     return module
 
 
@@ -142,7 +148,7 @@ if __name__ == "__main__":
         if _disabled
         else None
     )
-    module = run_main_aie_codegen_swiglu(
+    run_main_aie_codegen_swiglu(
         args.seq_len,
         args.embedding_dim,
         args.hidden_dim,
@@ -158,7 +164,3 @@ if __name__ == "__main__":
         last_gemm_down=args.last_gemm_down,
         constraint_selection=_constraint_selection,
     )
-    save_path = f"outputs/swiglu_module_{args.seq_len}_{args.embedding_dim}_{args.hidden_dim}.mlir"
-    with open(save_path, "w") as f:
-        f.write(str(module))
-    print(f"Saved generated module to {save_path}")

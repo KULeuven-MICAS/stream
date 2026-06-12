@@ -8,8 +8,12 @@ from typing import Any, TypeAlias
 import matplotlib.pyplot as plt
 import yaml
 
-# GRB.Callback constants — used only by _mip_progress_callback (Gurobi-specific, per D-04)
-from gurobipy import GRB
+# GRB.Callback constants — used only by _mip_progress_callback (Gurobi-specific, per D-04).
+# gurobipy is optional (Gurobi backend only); GRB is touched solely on the Gurobi solve path.
+try:
+    from gurobipy import GRB
+except ModuleNotFoundError:
+    GRB = None  # type: ignore[assignment]
 
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.core_cost_lut import CoreCostLUT
@@ -1677,22 +1681,27 @@ class TransferAndTensorAllocator:
             return value
 
         status = _attr("Status")
-        status_name = {
-            GRB.LOADED: "LOADED",
-            GRB.OPTIMAL: "OPTIMAL",
-            GRB.INFEASIBLE: "INFEASIBLE",
-            GRB.INF_OR_UNBD: "INF_OR_UNBD",
-            GRB.UNBOUNDED: "UNBOUNDED",
-            GRB.CUTOFF: "CUTOFF",
-            GRB.ITERATION_LIMIT: "ITERATION_LIMIT",
-            GRB.NODE_LIMIT: "NODE_LIMIT",
-            GRB.TIME_LIMIT: "TIME_LIMIT",
-            GRB.SOLUTION_LIMIT: "SOLUTION_LIMIT",
-            GRB.INTERRUPTED: "INTERRUPTED",
-            GRB.NUMERIC: "NUMERIC",
-            GRB.SUBOPTIMAL: "SUBOPTIMAL",
-            GRB.WORK_LIMIT: "WORK_LIMIT",
-        }.get(status, str(status))
+        # The status code is a Gurobi attribute (None for other backends). Only translate it via
+        # GRB constants when gurobipy is installed; otherwise it is already None.
+        if GRB is not None:
+            status_name = {
+                GRB.LOADED: "LOADED",
+                GRB.OPTIMAL: "OPTIMAL",
+                GRB.INFEASIBLE: "INFEASIBLE",
+                GRB.INF_OR_UNBD: "INF_OR_UNBD",
+                GRB.UNBOUNDED: "UNBOUNDED",
+                GRB.CUTOFF: "CUTOFF",
+                GRB.ITERATION_LIMIT: "ITERATION_LIMIT",
+                GRB.NODE_LIMIT: "NODE_LIMIT",
+                GRB.TIME_LIMIT: "TIME_LIMIT",
+                GRB.SOLUTION_LIMIT: "SOLUTION_LIMIT",
+                GRB.INTERRUPTED: "INTERRUPTED",
+                GRB.NUMERIC: "NUMERIC",
+                GRB.SUBOPTIMAL: "SUBOPTIMAL",
+                GRB.WORK_LIMIT: "WORK_LIMIT",
+            }.get(status, str(status))
+        else:
+            status_name = str(status)
 
         # Per-event trace, normalized to a compact form (drop None values)
         trace_records: list[dict[str, Any]] = []

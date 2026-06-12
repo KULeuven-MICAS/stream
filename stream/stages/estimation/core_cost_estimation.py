@@ -14,7 +14,6 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
-from stream.stages.estimation.aie_cost_estimator import AIECostEstimator
 from stream.stages.estimation.zigzag_cost_estimator import ZigZagCostEstimator
 from stream.stages.stage import Stage, StageCallable
 from stream.visualization.cost_model_evaluation_lut import (
@@ -126,6 +125,10 @@ class CoreCostEstimationStage(Stage):
 
     def get_estimator(self, core: Core):
         if self.is_aie_compute_core(core):
+            # Lazy import: AIECostEstimator pulls in the AIE toolchain (xdsl-aie), which is an
+            # optional install. Only AIE compute cores need it, so keep the base path import-clean.
+            from stream.stages.estimation.aie_cost_estimator import AIECostEstimator  # noqa: PLC0415
+
             return AIECostEstimator(self.workload, self.mapping)
         return ZigZagCostEstimator(
             workload=self.workload,

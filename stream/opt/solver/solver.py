@@ -22,8 +22,12 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
 
-import gurobipy as gp
-from gurobipy import GRB
+try:
+    import gurobipy as gp
+    from gurobipy import GRB
+except ModuleNotFoundError:  # gurobipy is optional — only the Gurobi backend needs it.
+    gp = None  # type: ignore[assignment]
+    GRB = None  # type: ignore[assignment]
 
 _logger = logging.getLogger(__name__)
 
@@ -581,11 +585,24 @@ class _GurobiLinExpr(LinExpr):
 # GurobiBackend
 # ---------------------------------------------------------------------------
 
-_VTYPE_MAP: dict[SolverVarType, str] = {
-    SolverVarType.BINARY: GRB.BINARY,
-    SolverVarType.INTEGER: GRB.INTEGER,
-    SolverVarType.CONTINUOUS: GRB.CONTINUOUS,
-}
+# _VTYPE_MAP and _STATUS_MAP key off gurobipy's GRB constants, so they can only be built when
+# gurobipy is installed. They are consumed exclusively by GurobiBackend (guarded in __init__).
+_VTYPE_MAP: dict[SolverVarType, str] = {}
+_STATUS_MAP: dict[int, str] = {}
+if gp is not None:
+    _VTYPE_MAP = {
+        SolverVarType.BINARY: GRB.BINARY,
+        SolverVarType.INTEGER: GRB.INTEGER,
+        SolverVarType.CONTINUOUS: GRB.CONTINUOUS,
+    }
+    _STATUS_MAP = {
+        GRB.OPTIMAL: "OPTIMAL",
+        GRB.INFEASIBLE: "INFEASIBLE",
+        GRB.TIME_LIMIT: "TIME_LIMIT",
+        GRB.UNBOUNDED: "UNBOUNDED",
+        GRB.INF_OR_UNBD: "INF_OR_UNBD",
+        GRB.SUBOPTIMAL: "SUBOPTIMAL",
+    }
 
 _PARAM_MAP: dict[SolverParams, str] = {
     SolverParams.VERBOSITY: "OutputFlag",
@@ -593,15 +610,6 @@ _PARAM_MAP: dict[SolverParams, str] = {
     SolverParams.THREADS: "Threads",
     SolverParams.POOL_GAP: "PoolGap",
     SolverParams.LOG_TO_CONSOLE: "LogToConsole",
-}
-
-_STATUS_MAP: dict[int, str] = {
-    GRB.OPTIMAL: "OPTIMAL",
-    GRB.INFEASIBLE: "INFEASIBLE",
-    GRB.TIME_LIMIT: "TIME_LIMIT",
-    GRB.UNBOUNDED: "UNBOUNDED",
-    GRB.INF_OR_UNBD: "INF_OR_UNBD",
-    GRB.SUBOPTIMAL: "SUBOPTIMAL",
 }
 
 
@@ -615,6 +623,12 @@ class GurobiBackend(SolverModel):
     INFINITY: float = float("inf")  # Maps to GRB.INFINITY (also float('inf'))
 
     def __init__(self, name: str = "") -> None:
+        if gp is None:
+            raise ImportError(
+                "The Gurobi backend requires gurobipy, which is not installed. Install it with "
+                "`pip install 'stream-dse[gurobi]'` (a valid Gurobi license is also required at solve "
+                "time). The default OR-Tools GSCIP backend needs no extra install."
+            )
         self._model = gp.Model(name)
 
     def add_var(

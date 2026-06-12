@@ -10,7 +10,7 @@ After a run, read results off the returned context with `ctx.get(...)`:
 |-----|-----------|
 | `total_latency` | Total scheduled latency (cycles) for the workload. |
 | `group_latencies` | Per-fusion-group latency breakdown. |
-| `scheduler` | The `SteadyStateScheduler` — the full schedule and timing. |
+| `scheduler` | The `SteadyStateScheduler` - the full schedule and timing. |
 | `workload` | The parsed computation graph. |
 | `accelerator` | The parsed hardware model. |
 
@@ -23,8 +23,8 @@ scheduler = ctx.get("scheduler")
 
 ## Files written to disk
 
-- **`summary.yaml`** — a machine-readable summary of the run (e.g. `total_latency`, per-group latencies).
-- **Visualizations (PNG)** — workload graph, tiling, and the schedule, written into the run directory.
+- **`summary.yaml`** - a machine-readable summary of the run (e.g. `total_latency`, per-group latencies).
+- **Visualizations (PNG)** - workload graph, tiling, and the schedule, written into the run directory.
 
 ## Schedule trace (Perfetto)
 
@@ -44,4 +44,4 @@ allocation_ir  = AllocationIR.from_internal(ctx.get("scheduler"))
 allocation_data = allocation_ir.model_dump()      # JSON-compatible dict
 ```
 
-`AllocationIR` exposes persona views — `.algorithmic_view()`, `.hardware_view()`, `.compiler_view()` — each shaping the same result for a different consumer. The performance view surfaces bottleneck (compute- vs transfer-bound) cycles and per-node utilization. See [Using Stream with an AI agent](ai-agents.md) and the `ir` skill for details.
+`AllocationIR` exposes persona views - `.algorithmic_view()`, `.hardware_view()`, `.compiler_view()` - each shaping the same result for a different consumer. The performance view surfaces bottleneck (compute- vs transfer-bound) cycles and per-node utilization. See [Using Stream with an AI agent](ai-agents.md) and the `ir` skill for details.

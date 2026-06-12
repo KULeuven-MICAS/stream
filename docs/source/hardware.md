@@ -2,12 +2,12 @@
 
 A hardware target in Stream is a **system of heterogeneous dataflow cores**. You describe it with YAML in two layers:
 
-1. An **accelerator file** — names the system, lists its cores, and defines how the cores are connected.
-2. One **core file per core type** — describes a single core's compute array, memory hierarchy, and role.
+1. An **accelerator file** - names the system, lists its cores, and defines how the cores are connected.
+2. One **core file per core type** - describes a single core's compute array, memory hierarchy, and role.
 
 Accelerator files live in `stream/inputs/examples/hardware/`; the core files they reference live in `stream/inputs/examples/hardware/cores/`. Several cores in an accelerator may point at the *same* core file (e.g. four identical compute cores).
 
-The format is validated by `stream/parser/accelerator_validator.py` and built by `stream/parser/accelerator_factory.py` — those files are the authoritative schema if anything below is ambiguous.
+The format is validated by `stream/parser/accelerator_validator.py` and built by `stream/parser/accelerator_factory.py` - those files are the authoritative schema if anything below is ambiguous.
 
 ---
 
@@ -82,8 +82,8 @@ Connections are how the MILP allocator routes tensors between cores. A typical a
 
 Every core declares a `type` of the form `<namespace>.<kind>`:
 
-- **namespace** — `zigzag` (a full dataflow core modelled with ZigZag's cost model) or `aie2` (an AMD AIE tile).
-- **kind** — `compute`, `memory`, `shim`, or `offchip`.
+- **namespace** - `zigzag` (a full dataflow core modelled with ZigZag's cost model) or `aie2` (an AMD AIE tile).
+- **kind** - `compute`, `memory`, `shim`, or `offchip`.
 
 A bare kind (e.g. `type: compute`) is accepted and defaults to the `zigzag` namespace.
 
@@ -146,7 +146,7 @@ operational_array:
 
 **Operands.** Stream uses three algorithmic operands: `I1` (weights / first input), `I2` (activations / second input), and `O` (output). A memory's `operands` field lists which of these it stores.
 
-**Ports and `allocation`.** Each memory exposes `ports`. An `allocation` entry pairs an operand with a port-direction tag — `fh` (write the *high* / final value), `fl` (write the *low* / partial value), `tl` (read *low* / from lower level), `th` (read *high* / to higher level). This is how Stream knows which port carries which data movement when it builds the cost model.
+**Ports and `allocation`.** Each memory exposes `ports`. An `allocation` entry pairs an operand with a port-direction tag - `fh` (write the *high* / final value), `fl` (write the *low* / partial value), `tl` (read *low* / from lower level), `th` (read *high* / to higher level). This is how Stream knows which port carries which data movement when it builds the cost model.
 
 **`served_dimensions`.** The operational-array dimensions (`D1`, `D2`, …) that this memory feeds. An empty list means the memory is innermost (feeds a single MAC lane).
 
@@ -191,7 +191,7 @@ type: zigzag.compute
 operator_types: [MaxPool, AveragePool, GlobalAveragePool]
 ```
 
-If `operator_types` is omitted, the core accepts **any** operator. The auto-mapper (see [Mapping](mapping.md)) uses this field to decide which nodes a core is eligible for — e.g. SiLU/Mul go to the SIMD core, pooling to the pooling core, and Conv/Gemm to the general compute cores.
+If `operator_types` is omitted, the core accepts **any** operator. The auto-mapper (see [Mapping](mapping.md)) uses this field to decide which nodes a core is eligible for - e.g. SiLU/Mul go to the SIMD core, pooling to the pooling core, and Conv/Gemm to the general compute cores.
 
 ### AIE cores
 
