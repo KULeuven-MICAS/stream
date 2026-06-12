@@ -96,6 +96,13 @@ def run_main_aie_codegen_swiglu(  # noqa: PLR0913
 
     module = ctx.get("module")
 
+    # Save the generated MLIR module inside the experiment folder.
+    if module is not None:
+        mlir_path = f"outputs/{experiment_id}/output.mlir"
+        with open(mlir_path, "w") as f:
+            f.write(str(module))
+        print(f"Saved generated module to {mlir_path}")
+
     return module
 
 
@@ -126,7 +133,7 @@ def sweep_tile_size_combinations(args: argparse.Namespace) -> None:
             f"embedding_tile_size={e_tile}, hidden_tile_size={h_tile} ====="
         )
         try:
-            module = run_main_aie_codegen_swiglu(
+            run_main_aie_codegen_swiglu(
                 args.seq_len,
                 args.embedding_dim,
                 args.hidden_dim,
@@ -150,15 +157,6 @@ def sweep_tile_size_combinations(args: argparse.Namespace) -> None:
             )
             traceback.print_exc()
             continue
-
-        if module is not None:
-            save_path = (
-                f"outputs/swiglu_module_{args.seq_len}_{args.embedding_dim}_{args.hidden_dim}_"
-                f"{s_tile}_{e_tile}_{h_tile}.mlir"
-            )
-            with open(save_path, "w") as f:
-                f.write(str(module))
-            print(f"Saved generated module to {save_path}")
 
 
 if __name__ == "__main__":

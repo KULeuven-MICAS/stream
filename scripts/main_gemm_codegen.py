@@ -1,5 +1,6 @@
 import argparse
 import logging as _logging
+import os
 from collections.abc import Sequence
 
 from xdsl.dialects.builtin import ModuleOp, bf16
@@ -219,7 +220,9 @@ def run_main_aie_codegen_gemm(m_size, k_size, n_size):
         generate_mlir(m_size, n_size, k_size),
     ).parse_module()
     stream_main.pipeline.apply(stream_main.ctx, module)
-    save_path = f"outputs/swiglu_module_{m_size}_{n_size}_{k_size}.mlir"
+    experiment_id = f"gemm-codegen-{m_size}_{n_size}_{k_size}"
+    os.makedirs(f"outputs/{experiment_id}", exist_ok=True)
+    save_path = f"outputs/{experiment_id}/output.mlir"
     with open(save_path, "w") as f:
         f.write(str(module))
     print(f"Saved generated module to {save_path}")
@@ -251,7 +254,9 @@ if __name__ == "__main__":
     ).parse_module()
     print(module)
     stream_main.pipeline.apply(stream_main.ctx, module)
-    save_path = f"outputs/swiglu_module_{args.M}_{args.N}_{args.K}.mlir"
+    experiment_id = f"gemm-codegen-{args.M}_{args.N}_{args.K}"
+    os.makedirs(f"outputs/{experiment_id}", exist_ok=True)
+    save_path = f"outputs/{experiment_id}/output.mlir"
     with open(save_path, "w") as f:
         f.write(str(module))
     print(f"Saved generated module to {save_path}")

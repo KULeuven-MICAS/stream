@@ -129,10 +129,10 @@ python scripts/main_swiglu.py \
   --embedding_tile_size 32 --hidden_tile_size 64
 ```
 
-`--rows 4 --cols 8` uses the full 4×8 compute-tile array, and `--npu npu2` targets the Strix (XDNA2) NPU. This runs the CO pipeline **and** the AIE code-generation stage; the MILP allocation over the whole array takes a minute or two. On success:
+`--rows 4 --cols 8` uses the full 4×8 compute-tile array, and `--npu npu2` targets the Strix (XDNA2) NPU. This runs the CO pipeline **and** the AIE code-generation stage; the MILP allocation over the whole array takes a minute or two. The generated module is written into the run's experiment folder under `outputs/` (the same place Part 1's artifacts went):
 
 ```
-Saved generated module to outputs/swiglu_module_256_512_2048.mlir
+Saved generated module to outputs/whole_array_strix-swiglu_256_512_2048-4_row_8_col/output.mlir
 ```
 
 ### The generated MLIR
