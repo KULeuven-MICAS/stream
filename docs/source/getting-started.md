@@ -27,7 +27,7 @@ python scripts/main_stream_co.py \
   --experiment-id first-run
 ```
 
-Stream runs the full CO pipeline - **parse** hardware/workload/mapping -> **generate tilings** -> **estimate per-core cost** -> **MILP allocation** (the `TransferAndTensorAllocator`) -> **memory estimation**. It finishes in a few seconds. Amid the pipeline logs you will see the headline result:
+Stream runs the full CO pipeline - **parse** hardware/workload/mapping → **generate tilings** → **estimate per-core cost** → **MILP allocation** (the `TransferAndTensorAllocator`) → **memory estimation**. It finishes in a few seconds. Amid the pipeline logs you will see the headline result:
 
 ```
 Total latency: 14344.0
@@ -44,17 +44,17 @@ Everything lands under `outputs/<experiment-id>/`:
 
 ```
 outputs/first-run/
-    summary.yaml                         # headline latency result
-    workload_graph.png                   # the ONNX workload as a DAG
-    group_0/                             # one fused group of layers
-        mapping.yaml                     # the auto-generated mapping that was used
-        tiled_workload.png               # the workload after inter-core tiling
-        core_cost_lut.yaml               # per-node, per-core cost estimates
-        tetra/                           # the MILP allocation result
-            optimization_metrics.yaml    # objective, solve time, gap, ...
-            slot_latency_breakdown.yaml  # where the latency is spent
-            steady_state_trace.json      # schedule trace (open in Perfetto)
-            steady_state_workload_final.png
+├── summary.yaml                         # headline latency result
+├── workload_graph.png                   # the ONNX workload as a DAG
+└── group_0/                             # one fused group of layers
+    ├── mapping.yaml                     # the auto-generated mapping that was used
+    ├── tiled_workload.png               # the workload after inter-core tiling
+    ├── core_cost_lut.yaml               # per-node, per-core cost estimates
+    └── tetra/                           # the MILP allocation result
+        ├── optimization_metrics.yaml    # objective, solve time, gap, ...
+        ├── slot_latency_breakdown.yaml  # where the latency is spent
+        ├── steady_state_trace.json      # schedule trace (open in Perfetto)
+        └── steady_state_workload_final.png
 ```
 
 `summary.yaml` is the headline result:
@@ -115,7 +115,7 @@ This requires **Linux x86_64** and **CPython 3.12 or 3.13**. See [Installation](
 
 The AIE entry points hard-wire their hardware and build the workload and mapping for you, so you only choose the problem size:
 
-- **Hardware** - `stream/inputs/aie/hardware/whole_array_strix.yaml`: the AIE array of the **AMD Strix** NPU. It has eight columns, each with a shim-DMA tile, a 256 KB memory tile, and four AIE compute tiles - a 4x8 grid of compute tiles.
+- **Hardware** - `stream/inputs/aie/hardware/whole_array_strix.yaml`: the AIE array of the **AMD Strix** NPU. It has eight columns, each with a shim-DMA tile, a 256 KB memory tile, and four AIE compute tiles - a 4×8 grid of compute tiles.
 - **Workload** - a **SwiGLU** block: two projection `Gemm`s, a `SiLU` activation, an elementwise `Mul`, and a down-projection `Gemm`. It is built from the `--seq_len` / `--embedding_dim` / `--hidden_dim` you pass.
 - **Mapping** - generated automatically from the tile-size flags (`--embedding_tile_size`, `--hidden_tile_size`, ...).
 
@@ -129,7 +129,7 @@ python scripts/main_swiglu.py \
   --embedding_tile_size 32 --hidden_tile_size 64
 ```
 
-`--rows 4 --cols 8` uses the full 4x8 compute-tile array, and `--npu npu2` targets the Strix (XDNA2) NPU. This runs the CO pipeline **and** the AIE code-generation stage; the MILP allocation over the whole array takes a minute or two. The generated module is written into the run's experiment folder under `outputs/` (the same place Part 1's artifacts went):
+`--rows 4 --cols 8` uses the full 4×8 compute-tile array, and `--npu npu2` targets the Strix (XDNA2) NPU. This runs the CO pipeline **and** the AIE code-generation stage; the MILP allocation over the whole array takes a minute or two. The generated module is written into the run's experiment folder under `outputs/` (the same place Part 1's artifacts went):
 
 ```
 Saved generated module to outputs/whole_array_strix-swiglu_256_512_2048-4_row_8_col/output.mlir

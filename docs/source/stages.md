@@ -9,7 +9,7 @@ The framework lives in `stream/stages/`; the deep-dive is the [`pipeline` skill]
 ## Execution model
 
 - **`Stage`** - the base unit of work. A **`LeafStage`** does work and yields results; a **`MainStage`** owns an ordered list of sub-stages and runs them as a pipeline.
-- **`StageContext`** (`stream/stages/context.py`) - the shared, mutable state threaded through the run. Inputs (hardware/workload/mapping paths, backend, output path) go in; results (`total_latency`, `group_latencies`, `scheduler`, `workload`, `accelerator`, ...) come out. You read results with `ctx.get("...")`.
+- **`StageContext`** (`stream/stages/context.py`) - the shared, mutable state threaded through the run. Inputs (hardware/workload/mapping paths, backend, output path) go in; results (`total_latency`, `group_latencies`, `scheduler`, `workload`, `accelerator`, …) come out. You read results with `ctx.get("…")`.
 
 The public API functions in `stream/api.py` assemble the right stage list for you - you normally don't build a `MainStage` by hand.
 

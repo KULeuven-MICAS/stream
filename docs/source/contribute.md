@@ -25,7 +25,7 @@ If you use VS Code, install the **Ruff** extension (`charliermarsh.ruff`), enabl
 
 - **Formatter / linter** - ruff-format and `ruff check` (rules E, F, W, I, PL, N, UP, B); line length **120**.
 - **Python target** - 3.12+: use `X | Y` unions and built-in generics (`list[X]`, `dict[K, V]`).
-- **Imports** - absolute only; isort order stdlib -> third-party -> internal.
+- **Imports** - absolute only; isort order stdlib → third-party → internal.
 - **Type hints** - required on public functions, classes, and methods.
 - **Docstrings** - Google-style.
 

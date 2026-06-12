@@ -10,7 +10,7 @@ The repo root contains a **`CLAUDE.md`** file - the navigation hub an agent read
 
 Deep-dive documentation lives under **`.claude/skills/`**. Each skill is a focused, self-contained guide that an agent loads on demand; its `SKILL.md` header says when to use it.
 
-| Skill | Load it when you're working on... |
+| Skill | Load it when you're working on… |
 |-------|----------------------------------|
 | `.claude/skills/hardware/` | core types and namespaces, adding a core architecture, per-core performance estimation. |
 | `.claude/skills/pipeline/` | pipeline stages, execution order, `StageContext` data flow, adding a stage. |
@@ -48,7 +48,7 @@ The server (`stream/mcp/server.py`, name `stream-aie`) exposes six tools:
 | `get_allocation_ir(job_id)` | The allocation result as `AllocationIR` JSON (three persona views). |
 | `get_solve_stats(job_id)` | MILP solve statistics (objective, time, gap, node count, backend). |
 
-Typical flow: `run_optimization(...)` -> poll `poll_optimization(job_id)` until `complete` -> inspect with `get_allocation_ir(job_id)` and `get_solve_stats(job_id)`.
+Typical flow: `run_optimization(...)` → poll `poll_optimization(job_id)` until `complete` → inspect with `get_allocation_ir(job_id)` and `get_solve_stats(job_id)`.
 
 ---
 

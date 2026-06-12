@@ -6,7 +6,7 @@ Given a neural-network workload (ONNX) and a hardware description (YAML), Stream
 
 ---
 
-## What it does
+## ✨ What it does
 
 - **Heterogeneous multi-core modelling** - accelerators are described as a system of cores with different compute/memory capabilities, connected by links and buses.
 - **Layer-fused scheduling** - parts of layers can be split and co-scheduled across cores for higher utilization and lower memory traffic.
@@ -18,7 +18,7 @@ Given a neural-network workload (ONNX) and a hardware description (YAML), Stream
 
 ---
 
-## Get started
+## 🚀 Get started
 
 ```bash
 git clone https://github.com/KULeuven-MICAS/stream_aie.git
@@ -38,11 +38,11 @@ See [Installation](installation.md) and [Getting Started](getting-started.md) fo
 
 ---
 
-## Publication
+## 📚 Publication
 
 > A. Symons, L. Mei, S. Colleman, P. Houshmand, S. Karl and M. Verhelst,
 > *"Stream: Design Space Exploration of Layer-Fused DNNs on Heterogeneous Dataflow Accelerators"*,
 > IEEE Transactions on Computers, vol. 74, no. 1, pp. 237-249, Jan. 2025.
-> [Read the paper](https://ieeexplore.ieee.org/abstract/document/10713407)
+> [📄 Read the paper](https://ieeexplore.ieee.org/abstract/document/10713407)
 
 Developed as part of the **TETRA** project at **KU Leuven MICAS**.
