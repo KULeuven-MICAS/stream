@@ -9,7 +9,7 @@ namespaces = true
 
 [project]
 name = "stream-dse"
-version = "0.0.8"
+version = "1.11.0"
 description = "Stream - Multi-core accelerator design space exploration with layer-fused scheduling"
 readme = "README.md"
 authors = [{ name = "Arne Symons", email = "arne.symons@kuleuven.be" }, { name = "Linyan Mei", email = "linyan.mei@kuleuven.be" }]
@@ -48,7 +48,7 @@ stream-setup-aie = "stream.aie_setup:main"
 Homepage = "https://github.com/KULeuven-MICAS/stream_aie"
 
 [tool.bumpver]
-current_version = "0.0.8"
+current_version = "1.11.0"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "bump version {old_version} -> {new_version}"
 commit = true
