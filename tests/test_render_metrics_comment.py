@@ -319,6 +319,20 @@ def test_degenerate_cell_surfaced():
     assert "no changes" in comment.lower() or "✅" in comment
 
 
+def test_workload_hparams_caption():
+    """The per-workload hyperparameter string renders as a code-span caption under the summary
+    (code span, not italics, so the underscores in seq_len/embedding_dim are shown literally)."""
+    mod = _load_script()
+    hp = "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; layer-fused tiles seq=16/embedding=128/hidden=32"
+    base = {
+        "_meta": _ONE_CELL_BASE["_meta"],
+        "tests/test_hw.py::test_hardware_swiglu[simba]": {"total_latency": 100.0, "workload_hparams": hp},
+    }
+    rows, captured, total = mod.compute_diffs(base, base, tol=0.001)
+    comment = mod.render_comment(rows, captured, total, base["_meta"], tol=0.001)
+    assert f"`{hp}`" in comment, f"hparams code-span caption missing:\n{comment}"
+
+
 def test_low_utilization_note():
     """A non-degenerate cell with very low MAC utilization gets a 'low array utilization' note
     (e.g. a tiny workload on an oversized array) — distinct from the degenerate fallback note."""

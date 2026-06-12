@@ -33,6 +33,8 @@ class GenericMappingGenerationStage(Stage):
             accelerator=self.accelerator,
             workload=self.workload,
             output_dir=self.output_path,
+            # Optional layer-fusion intra-core tiling (None -> generic mapper's trivial no-op tiling).
+            intra_core_tiling=self.ctx.get("intra_core_tiling", None),
         )
         group_mapping_paths, sub_workloads = generator.generate_all_groups(cut_points=cut_points)
         logger.info(f"Generated {len(group_mapping_paths)} group mapping(s): {group_mapping_paths}")

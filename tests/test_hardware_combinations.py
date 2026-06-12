@@ -2,10 +2,11 @@
 
 Matrix: 8 non-AIE hardware x {2-conv, swiglu} = 16 CO-pipeline combinations — all green.
 Parse check: test_hardware_parses covers all 8 architectures (HWFIX-05).
-No xfail/skip and no slow marks: every combination runs in the default fast suite. The 36-core
-simba mesh is included — on these small single-fusion-group workloads it runs in ~16s (2-conv) /
-~7s (swiglu), on par with the other architectures. (Multi-fusion-group workloads, where the CO runs
-once per group, are where large meshes get expensive — none of those live here.)
+The 2-conv arm is a small workload with generic auto-tiling. The swiglu arm is a realistically-sized,
+layer-fused FFN block (seq_len=256, embedding_dim=2048, hidden_dim=8192) driven with the justfile's
+fused intra-core tiling (seq=16/embedding=128/hidden=32), so the solver costs one steady-state tile
+rather than the full layer and stays fast (~6-10s per hardware, including the 36-core simba mesh).
+No xfail/skip and no slow marks: every combination runs in the default fast suite.
 
 Fast suite (default pytest): 24 tests from this file (16 CO + 8 parse), none deselected.
 
@@ -103,6 +104,42 @@ _SMALL_2CONV_CONFIG = TwoConvWorkloadConfig(
 )
 
 # ---------------------------------------------------------------------------
+# SwiGLU CO config — dims and fused intra-core tiles mirror the AIE `just swiglu` recipe, so the CO
+# matrix exercises a realistically-sized, layer-fused FFN block. The fused intra-core tiling makes
+# the solver cost ONE steady-state tile (then x iterations), keeping the big workload tractable.
+# ---------------------------------------------------------------------------
+
+_SWIGLU_SEQ_LEN = 256
+_SWIGLU_EMBEDDING_DIM = 2048
+_SWIGLU_HIDDEN_DIM = 8192
+_SWIGLU_SEQ_TILE = 16
+_SWIGLU_EMBEDDING_TILE = 128
+_SWIGLU_HIDDEN_TILE = 32
+
+# Fused-group intra-core tiling. Gemm_Left dims: D0=seq, D1=embedding, D2=hidden; Gemm_Down: D2=embedding.
+# seq (D0) and hidden (D2 of the branch gemms) are shared across the fused group; embedding is the
+# reduction dim of the branch gemms (Gemm_Left.D1) and the output dim of the down-proj (Gemm_Down.D2).
+_SWIGLU_INTRA_CORE_TILING = [
+    {"dim": "Gemm_Left.D1", "tile": _SWIGLU_EMBEDDING_TILE},  # embedding (K of left/right gemm)
+    {"dim": "Gemm_Down.D2", "tile": _SWIGLU_EMBEDDING_TILE},  # embedding (N of down-proj gemm)
+    {"dim": "Gemm_Left.D2", "tile": _SWIGLU_HIDDEN_TILE},  # hidden (N of left/right gemm)
+    {"dim": "Gemm_Left.D0", "tile": _SWIGLU_SEQ_TILE},  # seq_len (M, shared across the group)
+]
+
+# Human-readable hyperparameter summaries surfaced in the CI metrics comment (per-workload caption).
+_TWO_CONV_HPARAMS = (
+    f"batch={_SMALL_2CONV_CONFIG.batch_size}, in_ch={_SMALL_2CONV_CONFIG.in_channels}, "
+    f"H={_SMALL_2CONV_CONFIG.height}, W={_SMALL_2CONV_CONFIG.width}, "
+    f"out_ch1={_SMALL_2CONV_CONFIG.out_channels_1}, out_ch2={_SMALL_2CONV_CONFIG.out_channels_2}, "
+    f"kernel={_SMALL_2CONV_CONFIG.kernel_size}x{_SMALL_2CONV_CONFIG.kernel_size}, "
+    f"{_SMALL_2CONV_CONFIG.in_dtype} (generic auto-tiling, not layer-fused)"
+)
+_SWIGLU_HPARAMS = (
+    f"seq_len={_SWIGLU_SEQ_LEN}, embedding_dim={_SWIGLU_EMBEDDING_DIM}, hidden_dim={_SWIGLU_HIDDEN_DIM}, bf16; "
+    f"layer-fused tiles seq={_SWIGLU_SEQ_TILE}/embedding={_SWIGLU_EMBEDDING_TILE}/hidden={_SWIGLU_HIDDEN_TILE}"
+)
+
+# ---------------------------------------------------------------------------
 # Shared assertion helper — reused by Phase 36 swiglu arm
 # ---------------------------------------------------------------------------
 
@@ -147,14 +184,15 @@ def _assert_co_result(ctx, accelerator: Accelerator, expected_node_count: int) -
 # ---------------------------------------------------------------------------
 
 
-def _record_co_metrics(record_metric, ctx) -> None:
+def _record_co_metrics(record_metric, ctx, workload_hparams: str | None = None) -> None:
     """Capture advisory CO metrics from the solved context (read-only side-effect, Phase 39).
 
-    Beyond the gated total_latency, records two observability metrics derived from the solved
+    Beyond the gated total_latency, records observability metrics derived from the solved
     schedule's performance summary so the CI comment can explain outliers:
       - mac_spatial_utilization: latency-weighted MAC spatial utilization (how full the array is)
       - degenerate: True iff a matmul/conv node fell back to ZigZag's 1-MAC/cycle scalar cost,
         i.e. the spatial array was not modelled and the latency is untrustworthy.
+      - workload_hparams: human-readable dims/tiles of this combination (per-workload caption).
     """
     scheduler = ctx.get("scheduler")
     solve_stats = scheduler.solve_stats if scheduler is not None else None
@@ -168,6 +206,7 @@ def _record_co_metrics(record_metric, ctx) -> None:
     record_metric("solve_time_s", solve_stats.solve_time_s if solve_stats is not None else None)
     record_metric("mac_spatial_utilization", agg.get("latency_weighted_mac_spatial_utilization") if agg else None)
     record_metric("degenerate", agg.get("degenerate") if agg else None)
+    record_metric("workload_hparams", workload_hparams)
 
 
 # ---------------------------------------------------------------------------
@@ -193,19 +232,26 @@ def test_hardware_two_conv(hardware: str, record_metric) -> None:
     accelerator = ctx.get("accelerator")
     _assert_co_result(ctx, accelerator, expected_node_count=2)
     # metrics capture — read-only advisory side-effect (Phase 39 CAP-01/CAP-02)
-    _record_co_metrics(record_metric, ctx)
+    _record_co_metrics(record_metric, ctx, _TWO_CONV_HPARAMS)
 
 
 @pytest.mark.parametrize("hardware", _HARDWARE)
-def test_hardware_swiglu_small(hardware: str, record_metric) -> None:
-    """Run the swiglu workload through the generic CO pipeline on each hardware.
+def test_hardware_swiglu(hardware: str, record_metric) -> None:
+    """Run the layer-fused SwiGLU through the generic CO pipeline on each hardware.
 
     Selected by: pytest -k swiglu
+    Uses the justfile `just swiglu` dims (seq_len=256, embedding_dim=2048, hidden_dim=8192) and the
+    fused intra-core tiling (seq=16/embedding=128/hidden=32) so the whole 5-node block is processed
+    layer-fused: the solver costs ONE steady-state tile and multiplies by the iteration count.
     Exercises HWFIX-04: Silu and Mul ops dispatch (to the simd core where available, or a
     generic compute core) rather than failing at the parser or mapper stage.
     """
     # 5-node count confirmed by running: Gemm_Left, Gemm_Right, Silu, Elt_Mul, Gemm_Down
-    workload_path = make_small_swiglu_workload()
+    workload_path = make_small_swiglu_workload(
+        seq_len=_SWIGLU_SEQ_LEN,
+        embedding_dim=_SWIGLU_EMBEDDING_DIM,
+        hidden_dim=_SWIGLU_HIDDEN_DIM,
+    )
     hw_stem = Path(hardware).stem
     with tempfile.TemporaryDirectory() as tmpdir:
         ctx = optimize_allocation_co_generic(
@@ -213,11 +259,12 @@ def test_hardware_swiglu_small(hardware: str, record_metric) -> None:
             workload=workload_path,
             experiment_id=f"swiglu_{hw_stem}",
             output_path=tmpdir,
+            intra_core_tiling=_SWIGLU_INTRA_CORE_TILING,
         )
     accelerator = ctx.get("accelerator")
     _assert_co_result(ctx, accelerator, expected_node_count=5)
     # metrics capture — read-only advisory side-effect (Phase 39 CAP-01/CAP-02)
-    _record_co_metrics(record_metric, ctx)
+    _record_co_metrics(record_metric, ctx, _SWIGLU_HPARAMS)
 
 
 @pytest.mark.parametrize("path", _ALL_HARDWARE_PATHS)

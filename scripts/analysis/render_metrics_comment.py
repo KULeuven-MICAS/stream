@@ -12,10 +12,11 @@ import sys
 METRICS_GATED = ("total_latency",)
 METRICS_INFO = ("objective", "solve_time_s")
 METRICS_ALL = METRICS_GATED + METRICS_INFO
-# Observational, non-diffed per-cell fields surfaced in the table (current-run values only).
+# Observational, non-diffed per-cell fields surfaced in the comment (current-run values only).
 # mac_spatial_utilization: how full the spatial array is (latency-weighted).
 # degenerate: True iff a matmul/conv node fell back to ZigZag's scalar cost (latency untrustworthy).
-EXTRA_FIELDS = ("mac_spatial_utilization", "degenerate")
+# workload_hparams: human-readable dims/tiles of the combination (shown once per workload caption).
+EXTRA_FIELDS = ("mac_spatial_utilization", "degenerate", "workload_hparams")
 META_KEY = "_meta"
 # Below this MAC spatial utilization a (non-degenerate) cell gets a "low array utilization" note.
 LOW_UTIL_THRESHOLD = 0.05
@@ -300,6 +301,16 @@ def render_comment(  # noqa: PLR0912, PLR0915
         lines.append("<details>")
         lines.append(f"<summary><strong>{workload} — {len(grows)} hardware{suffix}</strong></summary>")
         lines.append("")
+        # Per-workload hyperparameter caption (dims/tiles), pulled from any captured cell.
+        hparams = next(
+            (r["extra"]["workload_hparams"] for r in grows if (r.get("extra") or {}).get("workload_hparams")),
+            None,
+        )
+        if hparams:
+            # Code span (not italics): the hparam string contains underscores (seq_len, embedding_dim)
+            # that would otherwise be parsed as markdown emphasis.
+            lines.append(f"`{hparams}`")
+            lines.append("")
         lines.append("| Hardware | total_latency (base → cur) | Δ% | MAC util | note |")
         lines.append("|---|---|---|---|---|")
         for r in sorted(grows, key=lambda r: _split_node_id(r["node_id"])[1]):

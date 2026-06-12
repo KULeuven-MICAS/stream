@@ -135,12 +135,21 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
     nb_cols_to_use: int = 4,
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
+    intra_core_tiling: list[dict] | None = None,
 ) -> StageContext:
     """Run the CO pipeline with auto-generated mapping from workload+hardware.
 
     Unlike optimize_allocation_co, this does not require a hand-written mapping YAML.
     GenericMappingGenerationStage infers the mapping, then FusionGroupIterationStage
     runs the inner pipeline once per fusion group.
+
+    Args:
+        intra_core_tiling: Optional fused-group intra-core (layer-fusion) tiling, e.g.
+            ``[{"dim": "Gemm_Left.D0", "tile": 16}, ...]``. When given, it overrides the generic
+            mapper's trivial no-op tiling, so the solver costs one steady-state tile instead of the
+            full layer (enabling layer-fused processing of large workloads). Entries are filtered per
+            fusion group to the nodes that group contains; a group with no matching entry keeps the
+            trivial default. When None, every group uses the trivial default (current behaviour).
 
     Returns the final StageContext with total_latency aggregated across all groups.
     """
@@ -194,6 +203,7 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
             backend=_backend_enum.value,
             constraint_selection=constraint_selection,
+            intra_core_tiling=intra_core_tiling,  # optional layer-fusion tiling for GenericMappingGenerationStage
         )
 
         mainstage = MainStage(stages, ctx)
