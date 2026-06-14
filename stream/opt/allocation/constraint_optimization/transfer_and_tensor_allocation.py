@@ -1872,7 +1872,48 @@ class TransferAndTensorAllocator:
             "degenerate_nodes": degenerate_nodes,
         }
 
-        return {"per_node": per_node, "bottleneck": bottleneck, "aggregate": aggregate}
+        return {
+            "per_node": per_node,
+            "bottleneck": bottleneck,
+            "aggregate": aggregate,
+            "overlap": self._overlap_section(),
+        }
+
+    def _overlap_section(self) -> dict[str, Any]:
+        """Overlap summary: the inter-iteration overlap, which resource(s) bind it, and the
+        per-resource slack it is the minimum of. ``binding_resources`` are those whose slack equals
+        the overlap (a busy-throughout resource has slack 0 and pins the overlap to 0)."""
+        slack = self._resource_slack_breakdown()
+        try:
+            overlap_cycles = int(self.overlap.X) if self.overlap is not None else None
+        except Exception:  # noqa: BLE001
+            overlap_cycles = None
+        binding = [d["resource"] for d in slack if overlap_cycles is not None and d["slack_cycles"] <= overlap_cycles]
+        return {"overlap_cycles": overlap_cycles, "binding_resources": binding, "per_resource_slack": slack}
+
+    def _resource_slack_breakdown(self) -> list[dict[str, Any]]:
+        """Per-resource steady-state slack (boundary idle within one iteration), ascending.
+
+        The TETRA inter-iteration overlap equals the MINIMUM slack across all resources (compute
+        cores AND communication links): a resource busy from an early to a late slot has zero
+        boundary idle and therefore pins the overlap to zero. Sorted ascending so the binding
+        resource(s) come first. Purely observational.
+        """
+        rows: list[dict[str, Any]] = []
+        for res, var in (getattr(self, "idle_lat", None) or {}).items():
+            try:
+                slack = int(round(float(var.X)))
+            except Exception:
+                continue
+            rows.append(
+                {
+                    "resource": str(res),
+                    "kind": "core" if isinstance(res, Core) else "link",
+                    "slack_cycles": slack,
+                }
+            )
+        rows.sort(key=lambda d: d["slack_cycles"])
+        return rows
 
     def save_slot_latency_breakdown(self, save_path: str) -> None:  # noqa: PLR0915, PLR0912
         """Dump a debug-friendly per-slot latency breakdown next to the metrics yaml.
@@ -2020,6 +2061,8 @@ class TransferAndTensorAllocator:
                     "iter_step": _scalar(iter_step_val),
                     "total_latency": _scalar(total_latency_val),
                 },
+                # Per-resource slack; the overlap equals the minimum (the binding resource(s) first).
+                "resource_slack": self._resource_slack_breakdown(),
                 "slots": [{"slot": s, **breakdown[s]} for s in sorted(breakdown)],
             }
 
