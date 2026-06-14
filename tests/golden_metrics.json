@@ -1,8 +1,8 @@
 {
   "_meta": {
     "backend": "ortools_gscip",
-    "baseline_date": "2026-06-12",
-    "baseline_sha": "a98e3440db0fdda8dd77139b23bbf9401a14069f",
+    "baseline_date": "2026-06-14",
+    "baseline_sha": "1d13642a1a988031d702c8a2a936ecb48203079c",
     "python_version": "3.12.3"
   },
   "tests/test_hardware_combinations.py::test_hardware_swiglu[eyeriss_like_dual_core]": {
@@ -12,7 +12,7 @@
     "mac_spatial_utilization": 0.5168547678146655,
     "mip_gap": null,
     "objective": 102.99999999999999,
-    "solve_time_s": 0.022505,
+    "solve_time_s": 0.022672,
     "total_latency": 222298112.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; layer-fused tiles seq=16/embedding=128/hidden=32"
   },
@@ -23,7 +23,7 @@
     "mac_spatial_utilization": 0.5098937608407307,
     "mip_gap": null,
     "objective": 102.99999999999999,
-    "solve_time_s": 0.016031,
+    "solve_time_s": 0.016394,
     "total_latency": 153616384.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; layer-fused tiles seq=16/embedding=128/hidden=32"
   },
@@ -34,7 +34,7 @@
     "mac_spatial_utilization": 0.5204070342601271,
     "mip_gap": null,
     "objective": 102.99999999999999,
-    "solve_time_s": 0.056662,
+    "solve_time_s": 0.04953,
     "total_latency": 442499072.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; layer-fused tiles seq=16/embedding=128/hidden=32"
   },
@@ -45,7 +45,7 @@
     "mac_spatial_utilization": 0.061553030303030304,
     "mip_gap": null,
     "objective": 103.0,
-    "solve_time_s": 0.029745,
+    "solve_time_s": 0.029798,
     "total_latency": 78118930.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; layer-fused tiles seq=16/embedding=128/hidden=32"
   },
@@ -56,19 +56,19 @@
     "mac_spatial_utilization": 0.9148936170212766,
     "mip_gap": null,
     "objective": 102.99999999999999,
-    "solve_time_s": 0.026407,
+    "solve_time_s": 0.027283,
     "total_latency": 118489088.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; layer-fused tiles seq=16/embedding=128/hidden=32"
   },
   "tests/test_hardware_combinations.py::test_hardware_swiglu[simba]": {
     "degenerate": false,
-    "end_to_end_mac_utilization": 0.003367003367003367,
-    "group_latencies_max": 103809024,
+    "end_to_end_mac_utilization": 0.004040400957822743,
+    "group_latencies_max": 86507586,
     "mac_spatial_utilization": 0.6830188679245283,
     "mip_gap": null,
-    "objective": 102.99999999999999,
-    "solve_time_s": 0.018344,
-    "total_latency": 103809024.0,
+    "objective": 103.0,
+    "solve_time_s": 0.021297,
+    "total_latency": 86507586.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; layer-fused tiles seq=16/embedding=128/hidden=32"
   },
   "tests/test_hardware_combinations.py::test_hardware_swiglu[simba_small]": {
@@ -78,7 +78,7 @@
     "mac_spatial_utilization": 0.6830188679245283,
     "mip_gap": null,
     "objective": 102.99999999999999,
-    "solve_time_s": 0.016521,
+    "solve_time_s": 0.016454,
     "total_latency": 149684224.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; layer-fused tiles seq=16/embedding=128/hidden=32"
   },
@@ -89,7 +89,7 @@
     "mac_spatial_utilization": 0.7241379310344828,
     "mip_gap": null,
     "objective": 102.99999999999999,
-    "solve_time_s": 0.014152,
+    "solve_time_s": 0.014268,
     "total_latency": 106954752.0,
     "workload_hparams": "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; layer-fused tiles seq=16/embedding=128/hidden=32"
   },
@@ -100,7 +100,7 @@
     "mac_spatial_utilization": 0.5079571759259259,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.001308,
+    "solve_time_s": 0.001186,
     "total_latency": 76675.0,
     "workload_hparams": "batch=1, in_ch=8, H=32, W=32, out_ch1=16, out_ch2=32, kernel=3x3, bf16 (generic auto-tiling, not layer-fused)"
   },
@@ -111,7 +111,7 @@
     "mac_spatial_utilization": 0.5079861954556435,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.001768,
+    "solve_time_s": 0.001841,
     "total_latency": 41961.0,
     "workload_hparams": "batch=1, in_ch=8, H=32, W=32, out_ch1=16, out_ch2=32, kernel=3x3, bf16 (generic auto-tiling, not layer-fused)"
   },
@@ -122,7 +122,7 @@
     "mac_spatial_utilization": 0.6772569799425848,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.000905,
+    "solve_time_s": 0.000897,
     "total_latency": 114999.0,
     "workload_hparams": "batch=1, in_ch=8, H=32, W=32, out_ch1=16, out_ch2=32, kernel=3x3, bf16 (generic auto-tiling, not layer-fused)"
   },
@@ -133,7 +133,7 @@
     "mac_spatial_utilization": 0.0140625,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.001655,
+    "solve_time_s": 0.001636,
     "total_latency": 186148.0,
     "workload_hparams": "batch=1, in_ch=8, H=32, W=32, out_ch1=16, out_ch2=32, kernel=3x3, bf16 (generic auto-tiling, not layer-fused)"
   },
@@ -144,7 +144,7 @@
     "mac_spatial_utilization": 0.5101297603659143,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.001175,
+    "solve_time_s": 0.001178,
     "total_latency": 17369.0,
     "workload_hparams": "batch=1, in_ch=8, H=32, W=32, out_ch1=16, out_ch2=32, kernel=3x3, bf16 (generic auto-tiling, not layer-fused)"
   },
@@ -155,7 +155,7 @@
     "mac_spatial_utilization": 0.5,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.013111,
+    "solve_time_s": 0.046735,
     "total_latency": 4316.0,
     "workload_hparams": "batch=1, in_ch=8, H=32, W=32, out_ch1=16, out_ch2=32, kernel=3x3, bf16 (generic auto-tiling, not layer-fused)"
   },
@@ -166,7 +166,7 @@
     "mac_spatial_utilization": 0.5,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.001715,
+    "solve_time_s": 0.001794,
     "total_latency": 10750.0,
     "workload_hparams": "batch=1, in_ch=8, H=32, W=32, out_ch1=16, out_ch2=32, kernel=3x3, bf16 (generic auto-tiling, not layer-fused)"
   },
@@ -177,7 +177,7 @@
     "mac_spatial_utilization": 0.41552901023890787,
     "mip_gap": null,
     "objective": 10.0,
-    "solve_time_s": 0.001752,
+    "solve_time_s": 0.001795,
     "total_latency": 14344.0,
     "workload_hparams": "batch=1, in_ch=8, H=32, W=32, out_ch1=16, out_ch2=32, kernel=3x3, bf16 (generic auto-tiling, not layer-fused)"
   }
