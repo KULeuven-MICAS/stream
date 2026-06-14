@@ -1877,7 +1877,46 @@ class TransferAndTensorAllocator:
             "bottleneck": bottleneck,
             "aggregate": aggregate,
             "overlap": self._overlap_section(),
+            "tensor_reuse": self._tensor_reuse_breakdown(),
         }
+
+    def _tensor_reuse_breakdown(self) -> list[dict[str, Any]]:
+        """Per-tensor on-chip reuse chosen by the solver -- to make the fused execution legible.
+
+        For each tensor: how many steady-state iterations it stays resident on-chip
+        (``reuse_factor``; 1 means it is re-fetched every iteration, e.g. streamed weights), the loop
+        level reuse stops at (``reuse_stop_level``; -1 = none), the tile buffers that residency needs
+        (``on_chip_tiles``), the tensor size, and its steady-state loop nest (outermost -> innermost;
+        each loop shows type S/K/ST/T and effect V=varying / I=invariant / A=absent). A large tensor
+        with ``reuse_factor == 1`` is the signature of a memory-bandwidth-bound fused schedule -- e.g.
+        gemm weights that the solver chose to re-stream from DRAM every iteration. Sorted largest
+        first. Purely observational.
+        """
+        try:
+            stops = self.get_tensor_reuse_levels()
+        except Exception:  # noqa: BLE001
+            return []
+        rows: list[dict[str, Any]] = []
+        for t, ssis in self.ssis.items():
+            if not isinstance(t, Tensor):
+                continue
+            stop = stops.get(t)
+            try:
+                size_bits = int(t.size_bits())
+            except Exception:  # noqa: BLE001
+                size_bits = None
+            rows.append(
+                {
+                    "tensor": getattr(t, "name", str(t)),
+                    "size_bits": size_bits,
+                    "reuse_factor": self.reuse_levels.get((t, stop)) if stop is not None else None,
+                    "reuse_stop_level": stop,
+                    "on_chip_tiles": self.tiles_needed_levels.get((t, stop)) if stop is not None else None,
+                    "loop_nest_out_to_in": [repr(v) for v in reversed(ssis.variables)],
+                }
+            )
+        rows.sort(key=lambda d: -(d["size_bits"] or 0))
+        return rows
 
     def _overlap_section(self) -> dict[str, Any]:
         """Overlap summary: the inter-iteration overlap, which resource(s) bind it, and the
@@ -2063,6 +2102,8 @@ class TransferAndTensorAllocator:
                 },
                 # Per-resource slack; the overlap equals the minimum (the binding resource(s) first).
                 "resource_slack": self._resource_slack_breakdown(),
+                # Per-tensor on-chip reuse (reuse_factor 1 = re-streamed every iteration).
+                "tensor_reuse": self._tensor_reuse_breakdown(),
                 "slots": [{"slot": s, **breakdown[s]} for s in sorted(breakdown)],
             }
 
