@@ -253,45 +253,118 @@ def test_table_rows_have_equal_cell_counts():
         return len(line.strip().strip("|").split("|"))
 
     counts = [_cells(ln) for ln in table_lines]
-    header_count = counts[0]
-    # node-id + 3 metrics × 4 sub-columns = 13 cells
-    assert header_count == 13, f"header should have 13 cells, got {header_count}: {table_lines[0]!r}"
-    assert all(c == header_count for c in counts), (
-        f"all table rows must have {header_count} cells; got {counts}. Header may be missing inner pipe separators."
+    # Per-workload table: Hardware | total_latency (base → cur) | Δ% | array fill | MAC eff (e2e) | note = 6
+    assert all(c == 6 for c in counts), (
+        f"all table rows must have 6 cells; got {counts}. Header may be missing inner pipe separators."
     )
 
 
 # ---------------------------------------------------------------------------
-# Test 9: solve_time_s is rendered at higher precision so the value/Δ/Δ% are consistent
+# Test 9: per-workload grouping — one collapsible table per test function
 # ---------------------------------------------------------------------------
 
 
-def test_solve_time_s_higher_precision():
-    """solve_time_s sub-0.01s values render at 4 decimals (not rounded to 0.00), so the
-    data row is not internally contradictory (value 0.00 but Δ% +95%)."""
+def test_per_workload_grouping():
+    """Cells from two workloads render as two separate collapsible tables titled by workload,
+    with the hardware as the row key (fixes the lost-workload-identity problem)."""
     mod = _load_script()
     base = {
         "_meta": _ONE_CELL_BASE["_meta"],
-        "tests/test_hw.py::test_two_conv[eyeriss]": {
-            "group_latencies_max": 1000.0,
-            "mip_gap": None,
-            "objective": 10.0,
-            "solve_time_s": 0.0051,
-            "total_latency": 1000.0,
-        },
+        "tests/test_hw.py::test_hardware_two_conv[simba]": {"total_latency": 4316.0, "objective": 10.0},
+        "tests/test_hw.py::test_hardware_swiglu_small[simba]": {"total_latency": 131.0, "objective": 19.0},
     }
     current = {
-        "tests/test_hw.py::test_two_conv[eyeriss]": {
-            "group_latencies_max": 1000.0,
-            "mip_gap": None,
-            "objective": 10.0,
-            "solve_time_s": 0.0099,
-            "total_latency": 1000.0,
-        },
+        "tests/test_hw.py::test_hardware_two_conv[simba]": {"total_latency": 4316.0, "objective": 10.0},
+        "tests/test_hw.py::test_hardware_swiglu_small[simba]": {"total_latency": 131.0, "objective": 19.0},
     }
     rows, captured, total = mod.compute_diffs(current, base, tol=0.001)
     comment = mod.render_comment(rows, captured, total, base["_meta"], tol=0.001)
-    # The sub-0.01s solve_time_s values must appear at >2 decimals (not collapsed to 0.00)
-    assert "0.0051" in comment and "0.0099" in comment, (
-        f"solve_time_s should render at 4 decimals; comment table:\n{comment}"
-    )
+    # Two <details> blocks, one per workload, each titled by the (test_-stripped) function name.
+    assert comment.count("<details>") == 2, f"expected one table per workload:\n{comment}"
+    assert "hardware_two_conv —" in comment and "hardware_swiglu_small —" in comment
+    # Hardware is the row key; the workload is no longer ambiguous between the two tables.
+    assert "| simba |" in comment
+
+
+# ---------------------------------------------------------------------------
+# Test 10: degenerate (ZigZag-fallback) cells are surfaced and never gate the verdict
+# ---------------------------------------------------------------------------
+
+
+def test_degenerate_cell_surfaced():
+    """A current cell flagged degenerate is called out, annotated in its row note and summary,
+    but does NOT by itself set the gated FLAGGED verdict (total_latency unchanged)."""
+    mod = _load_script()
+    base = {
+        "_meta": _ONE_CELL_BASE["_meta"],
+        "tests/test_hw.py::test_hardware_two_conv[meta_prototype]": {
+            "total_latency": 2956432.0,
+            "mac_spatial_utilization": None,
+            "degenerate": True,
+        },
+    }
+    current = {
+        "tests/test_hw.py::test_hardware_two_conv[meta_prototype]": {
+            "total_latency": 2956432.0,  # identical -> not a numeric regression
+            "mac_spatial_utilization": None,
+            "degenerate": True,
+        },
+    }
+    rows, captured, total = mod.compute_diffs(current, base, tol=0.001)
+    assert all(r["status"] != "FLAGGED" for r in rows), "degenerate alone must not gate FLAGGED"
+    comment = mod.render_comment(rows, captured, total, base["_meta"], tol=0.001)
+    assert "degenerate cell(s)" in comment, f"degenerate callout missing:\n{comment}"
+    assert "ZigZag fallback" in comment, "degenerate row note missing"
+    # Gated verdict still clean (no total_latency change)
+    assert "no changes" in comment.lower() or "✅" in comment
+
+
+def test_workload_hparams_caption():
+    """The per-workload hyperparameter string renders as a code-span caption under the summary
+    (code span, not italics, so the underscores in seq_len/embedding_dim are shown literally)."""
+    mod = _load_script()
+    hp = "seq_len=256, embedding_dim=2048, hidden_dim=8192, bf16; layer-fused tiles seq=16/embedding=128/hidden=32"
+    base = {
+        "_meta": _ONE_CELL_BASE["_meta"],
+        "tests/test_hw.py::test_hardware_swiglu[simba]": {"total_latency": 100.0, "workload_hparams": hp},
+    }
+    rows, captured, total = mod.compute_diffs(base, base, tol=0.001)
+    comment = mod.render_comment(rows, captured, total, base["_meta"], tol=0.001)
+    assert f"`{hp}`" in comment, f"hparams code-span caption missing:\n{comment}"
+
+
+def test_end_to_end_mac_utilization_column():
+    """The end-to-end MAC utilization renders in its own column (sub-1% kept to 2 decimals), and the
+    column legend is present so it is not confused with the per-layer array-fill column."""
+    mod = _load_script()
+    base = {
+        "_meta": _ONE_CELL_BASE["_meta"],
+        "tests/test_hw.py::test_hardware_swiglu[simba]": {
+            "total_latency": 1000.0,
+            "mac_spatial_utilization": 0.683,  # array fill (dataflow quality)
+            "end_to_end_mac_utilization": 0.0034,  # true chip utilization (mostly-idle mesh)
+        },
+    }
+    rows, captured, total = mod.compute_diffs(base, base, tol=0.001)
+    comment = mod.render_comment(rows, captured, total, base["_meta"], tol=0.001)
+    assert "MAC eff (e2e)" in comment, "e2e column header missing"
+    assert "68%" in comment and "0.34%" in comment, f"array-fill / e2e values not both rendered:\n{comment}"
+    assert "**Columns:**" in comment, "column legend missing"
+
+
+def test_low_utilization_note():
+    """A non-degenerate cell with very low MAC utilization gets a 'low array utilization' note
+    (e.g. a tiny workload on an oversized array) — distinct from the degenerate fallback note."""
+    mod = _load_script()
+    base = {
+        "_meta": _ONE_CELL_BASE["_meta"],
+        "tests/test_hw.py::test_hardware_two_conv[fusemax]": {
+            "total_latency": 186148.0,
+            "mac_spatial_utilization": 0.0140625,
+            "degenerate": False,
+        },
+    }
+    rows, captured, total = mod.compute_diffs(base, base, tol=0.001)
+    comment = mod.render_comment(rows, captured, total, base["_meta"], tol=0.001)
+    assert "low array utilization" in comment, f"low-util note missing:\n{comment}"
+    assert "degenerate cell(s)" not in comment, "low util must not be reported as degenerate"

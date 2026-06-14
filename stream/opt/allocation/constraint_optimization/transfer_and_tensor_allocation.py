@@ -1802,6 +1802,14 @@ class TransferAndTensorAllocator:
                 ideal = getattr(entry, "ideal_cycle", None)
                 mac_util = getattr(entry, "mac_spatial_utilization", None)
                 efficiency = (float(ideal) / active) if (ideal and active) else None
+                # "Degenerate" = a matmul/conv node whose ZigZag estimate fell back to the
+                # 1-MAC/cycle scalar cost (cme is None): the spatial array was not modelled, so
+                # the latency is untrustworthy (typically orders of magnitude too high). Activation
+                # / elementwise ops (silu, mul, ...) also report cme None but their scalar estimate
+                # is legitimate, so they are NOT counted as degenerate.
+                node_type = str(getattr(getattr(entry, "layer", None), "type", "")).lower()
+                is_mac = any(k in node_type for k in ("conv", "gemm", "matmul", "linear"))
+                fallback = bool(getattr(entry, "cme", None) is None and is_mac)
                 per_node[getattr(n, "name", str(n))] = {
                     "kind": "compute",
                     "n_cores": len(cores),
@@ -1809,6 +1817,7 @@ class TransferAndTensorAllocator:
                     "ideal_compute_cycles": self._json_scalar(ideal),
                     "mac_spatial_utilization": self._json_scalar(mac_util),
                     "compute_efficiency": self._json_scalar(efficiency),
+                    "fallback": fallback,
                 }
             except Exception:
                 continue
@@ -1852,11 +1861,15 @@ class TransferAndTensorAllocator:
             for c in self.cost_lut.get_cores(n) or []:
                 cores_used.add(c.id)
         offchip_id = self.accelerator.offchip_core_id
+        degenerate_nodes = [name for name, d in per_node.items() if d.get("fallback")]
         aggregate = {
             "compute_cores_available": sum(1 for c in self.accelerator.core_list if c.id != offchip_id),
             "compute_cores_used": len(cores_used),
             "latency_weighted_mac_spatial_utilization": self._json_scalar(weighted_util),
             "min_mac_spatial_utilization": self._json_scalar(min(utils) if utils else None),
+            # True iff a matmul/conv node fell back to the scalar cost (latency untrustworthy).
+            "degenerate": bool(degenerate_nodes),
+            "degenerate_nodes": degenerate_nodes,
         }
 
         return {"per_node": per_node, "bottleneck": bottleneck, "aggregate": aggregate}

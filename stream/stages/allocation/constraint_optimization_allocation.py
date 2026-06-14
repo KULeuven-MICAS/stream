@@ -81,6 +81,7 @@ class ConstraintOptimizationAllocationStage(Stage):
             output_path,
             backend=self.backend,
             constraint_selection=self.constraint_selection,
+            total_mac_ops=self.ctx.get("total_mac_ops"),
         )
         workload = scheduler.run()
         return workload, scheduler

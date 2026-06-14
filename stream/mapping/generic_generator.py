@@ -43,10 +43,20 @@ class GenericMappingGenerator:
       (no temporal splitting), which is always valid per MappingValidator rules.
     """
 
-    def __init__(self, accelerator: Accelerator, workload: Workload, output_dir: str) -> None:
+    def __init__(
+        self,
+        accelerator: Accelerator,
+        workload: Workload,
+        output_dir: str,
+        intra_core_tiling: list[dict[str, Any]] | None = None,
+    ) -> None:
         self.accelerator = accelerator
         self.workload = workload
         self.output_dir = output_dir
+        # Optional caller-supplied fused-group intra-core (layer-fusion) tiling. Entries look like
+        # {"dim": "NodeName.D{n}", "tile": size}; they override the trivial default in
+        # _build_intra_core_tiling, filtered per group to the nodes that group actually contains.
+        self.intra_core_tiling = intra_core_tiling
 
     # ---------------------------------------------------------------------- #
     # Public API                                                              #
@@ -251,12 +261,18 @@ class GenericMappingGenerator:
     ) -> list[dict[str, Any]]:
         """Build intra-core tiling entries for the fused group.
 
-        Uses the first computation node that has dimensions as the reference.
-        Tiles the first dimension at its full size (no temporal splitting),
-        which always produces nb_splits=1 — a valid no-op tiling.
-
-        Returns an empty list if no computation node has dimensions.
+        When the caller supplied ``intra_core_tiling`` (layer-fusion tiling), use the entries that
+        reference nodes present in this group -- this costs one steady-state tile rather than the
+        full layer. Otherwise (or when no supplied entry matches this group) fall back to the trivial
+        default: tile the first computation node's first dimension at full size (nb_splits=1, a valid
+        no-op). Returns an empty list only if no computation node has dimensions.
         """
+        if self.intra_core_tiling:
+            group_node_names = {cn.name for cn in cns}
+            selected = [e for e in self.intra_core_tiling if str(e["dim"]).split(".")[0] in group_node_names]
+            if selected:
+                return [dict(e) for e in selected]
+
         for ref_cn in cns:
             dims = sub_workload.get_dims(ref_cn)
             if dims:
