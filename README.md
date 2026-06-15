@@ -223,6 +223,8 @@ All three return a `StageContext`. Useful keys: `ctx.get("total_latency")`, `ctx
 
 Stream ships an MCP server (`stream/mcp/server.py`, server name `stream`) that lets an AI agent submit and inspect TETRA CO jobs. Requires the `[mcp]` extra (`pip install -e ".[mcp]"`).
 
+> ⚠️ **Install caveat:** `[mcp]` does not currently resolve against the pinned PyPI `xdsl 0.29.1` - fastmcp's dependency tree needs newer `typing-extensions`/`pydantic` than xdsl 0.29.1 permits. For now it installs only in the dev environment that uses the git build of xdsl; a clean fix awaits the xdsl upgrade.
+
 Launch command (from the repo root):
 
 ```bash
