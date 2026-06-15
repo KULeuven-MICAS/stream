@@ -31,6 +31,11 @@ requires-python = ">=3.12"
 
 
 [project.optional-dependencies]
+# NOTE: `[mcp]` does not resolve against the pinned `xdsl<0.30` today. fastmcp's transitive
+# deps (py-key-value-aio, mcp) need typing-extensions>=4.15 and pydantic>=2.12, but xdsl 0.29.1
+# caps typing-extensions<4.13 (and we cap pydantic<2.12), so a fresh `pip install .[mcp]` fails.
+# It installs only against a newer/git xdsl. Clean fix = bump xdsl (>=0.36 loosens the cap),
+# which first needs the AIE toolchain (xdsl-aie/snax-mlir) updated to that xdsl.
 mcp = ["fastmcp>=3.2.4"]
 # Gurobi is a commercial solver (license required at solve time); OR-Tools GSCIP is the
 # default, license-free backend, so gurobipy is opt-in rather than a base dependency.
