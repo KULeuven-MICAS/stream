@@ -44,4 +44,4 @@ allocation_ir  = AllocationIR.from_internal(ctx.get("scheduler"))
 allocation_data = allocation_ir.model_dump()      # JSON-compatible dict
 ```
 
-`AllocationIR` exposes persona views - `.algorithmic_view()`, `.hardware_view()`, `.compiler_view()` - each shaping the same result for a different consumer. The performance view surfaces bottleneck (compute- vs transfer-bound) cycles and per-node utilization. See [Using Stream with an AI agent](ai-agents.md) and the `ir` skill for details.
+`AllocationIR` exposes persona views - `.algorithmic_view()`, `.hardware_view()`, `.compiler_view()` - each shaping the same result for a different consumer. The performance view surfaces bottleneck (compute- vs transfer-bound) cycles and per-node utilization. See [Using Stream with an AI agent](ai-agents.md) for details.

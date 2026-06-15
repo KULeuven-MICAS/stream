@@ -165,4 +165,4 @@ In short: Stream decides *what* runs *where* and emits the MLIR; **mlir-aie** an
 
 - [User Guide](user-guide.md) - the workload, hardware, and mapping input formats in detail.
 - [Stages](stages.md) - what each pipeline stage does and how to extend the pipeline.
-- [Using Stream with an AI agent](ai-agents.md) - the skills, MCP server, and IR models.
+- [Using Stream with an AI agent](ai-agents.md) - the MCP server and IR models.

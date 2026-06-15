@@ -17,6 +17,6 @@ Stream's mapping flow is built from a few well-defined inputs and a modular pipe
 
 ## Driving Stream from an agent
 
-- [Using Stream with an AI agent](ai-agents.md) - the in-repo skills, the MCP server, and the IR models for programmatic/structured access.
+- [Using Stream with an AI agent](ai-agents.md) - the MCP server and the IR models for programmatic/structured access.
 
 For design rationale, see the [publications](publications.md) page or read the [source](https://github.com/KULeuven-MICAS/stream_aie) on GitHub.

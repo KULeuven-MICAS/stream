@@ -2,7 +2,7 @@
 
 Stream's mapping flow is a **pipeline of stages**. Each stage does one job - parse an input, generate tilings, estimate cost, run the MILP allocation - and passes shared state to the next through a `StageContext`. This makes the flow easy to read, configure, and extend.
 
-The framework lives in `stream/stages/`; the deep-dive is the [`pipeline` skill](ai-agents.md) (`.claude/skills/pipeline/`).
+The framework lives in `stream/stages/`.
 
 ---
 
@@ -49,4 +49,4 @@ class MyStage(LeafStage):
             yield result, info
 ```
 
-Insert your stage at the right position in the list passed to `MainStage`. If your stage reduces (keeps only the best result), `yield` once **after** the loop rather than inside it. See `.claude/skills/pipeline/` for the full contract and worked examples.
+Insert your stage at the right position in the list passed to `MainStage`. If your stage reduces (keeps only the best result), `yield` once **after** the loop rather than inside it.

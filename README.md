@@ -252,17 +252,6 @@ The 6 tools:
 
 ## 🧠 Working in This Repo (AI agents)
 
-An AI agent working in this repo should read `CLAUDE.md` first; it is the navigation hub (directory structure, entry points, conventions, and a skills index).
-
-Deep-dive documentation lives in `.claude/skills/`. The 6 existing skill groups:
-
-- `.claude/skills/hardware/` - core types and namespaces, adding a core architecture, per-core performance estimation.
-- `.claude/skills/optimization/` - solver backends (Gurobi, OR-Tools), ConstraintSelection configuration.
-- `.claude/skills/pipeline/` - pipeline stages, StageContext data flow, adding stages.
-- `.claude/skills/constraints/` - MILP formulation, TransferAndTensorAllocator, NamespaceConstraints dispatch.
-- `.claude/skills/api-testing/` - public API reference, CLI flags, testing patterns.
-- `.claude/skills/ir/` - IR models (WorkloadIR, AllocationIR, AcceleratorIR) and JSON serialization.
-
 **Programmatic / IR API** for structured JSON output:
 
 ```python
@@ -284,7 +273,6 @@ allocation_data = allocation_ir.model_dump()
 
 ## 📚 Further Documentation
 
-- **AI-agent / TETRA docs:** `CLAUDE.md` and `.claude/skills/` in this repo, the primary documentation for the TETRA CO features (solver backends, constraint selection, MCP server, IR models).
-- **Hosted documentation site:** [kuleuven-micas.github.io/stream_aie](https://kuleuven-micas.github.io/stream_aie/), the human-facing docs (installation, getting started, and the workload/hardware/mapping input formats), rebuilt from `docs/` on every push to `main`.
+- **Hosted documentation site:** [kuleuven-micas.github.io/stream_aie](https://kuleuven-micas.github.io/stream_aie/), the human-facing docs (installation, getting started, the workload/hardware/mapping input formats, and driving Stream from an AI agent via the MCP server and IR models), rebuilt from `docs/` on every push to `main`.
 - **Stream paper (IEEE):** [A. Symons, L. Mei, S. Colleman, P. Houshmand, S. Karl and M. Verhelst, "Stream: Design Space Exploration of Layer-Fused DNNs on Heterogeneous Dataflow Accelerators"](https://ieeexplore.ieee.org/abstract/document/10713407).
 - **ZigZag:** [zigzag-project.github.io/zigzag](https://zigzag-project.github.io/zigzag/), the per-core cost-estimation framework Stream builds on.

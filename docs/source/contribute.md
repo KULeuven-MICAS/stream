@@ -3,7 +3,7 @@
 ## Guidelines
 
 - Update the documentation when you change or add public functionality.
-- Follow the conventions in the repo's `CLAUDE.md` (absolute imports, `snake_case` files, `PascalCase` classes, stage classes end in `Stage`).
+- Follow the repo's coding conventions: absolute imports, `snake_case` files, `PascalCase` classes, and stage classes ending in `Stage`.
 
 ## Setup
 
