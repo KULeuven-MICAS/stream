@@ -45,7 +45,7 @@ dev = ["bumpver", "pip-tools", "build", "twine", "pre-commit", "pytest"]
 stream-setup-aie = "stream.aie_setup:main"
 
 [project.urls]
-Homepage = "https://github.com/KULeuven-MICAS/stream_aie"
+Homepage = "https://github.com/KULeuven-MICAS/stream"
 
 [tool.bumpver]
 current_version = "1.11.0"

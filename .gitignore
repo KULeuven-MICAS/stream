@@ -122,8 +122,8 @@ venv.bak/
 # Rope project settings
 .ropeproject
 
-# mkdocs documentation
-/site
+# mkdocs documentation (generated site only; source pages under docs/source/ ARE tracked)
+docs/site/
 
 # mypy
 .mypy_cache/
@@ -140,27 +140,11 @@ dmypy.json
 *.pkl
 *.pickle
 
-# result json files
-outputs*/*.json
-
-# result png files
-outputs*/*.png
-*.png
-
-
-# html files
-*.html
-
-# json files (for perfetto)
-*.json
-# ...except the committed golden metrics baseline (Phase 40 regression guard)
-!tests/golden_metrics.json
-
-# auto-generated mlir files
-*.mlir
-
-# snakemake files
-.snakemake
+# Generated run artifacts (plots, perfetto traces, MLIR codegen) are always written
+# under outputs*/ -- ignore those trees wholesale instead of blanket-ignoring every
+# *.json/*.png/*.html/*.mlir/*.svg, which forced a ! negation for each committed
+# fixture (tests/golden_metrics.json, docs/source/images/*.svg).
+outputs*/
 
 # workload and mapping input files
 stream/inputs/aie/workload/*.onnx
@@ -171,12 +155,8 @@ stream/inputs/testing/workload/*.onnx
 stream/inputs/aie/mapping/*.yaml
 stream/inputs/aie/mapping/*.yml
 
-# svg files (e.g. flamegraphs)
-*.svg
-
-# planning and docs artifacts
+# planning artifacts
 .planning/
-docs/
 # .claude/ personal files (keep .claude/skills/ committable)
 .claude/settings.local.json
 .claude/worktrees/
