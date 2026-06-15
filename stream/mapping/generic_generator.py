@@ -123,6 +123,11 @@ class GenericMappingGenerator:
         cns = sub_workload.get_computation_nodes()
 
         layers: list[dict[str, Any]] = []
+        # Cores already given to earlier layers of this fused group. Used to place each layer on a
+        # DISJOINT core set where possible, so the layers pipeline across steady-state iterations
+        # (TETRA inter-iteration overlap) instead of time-sharing one core set. Degrades gracefully:
+        # when a layer's candidate pool cannot give it an unused block, it shares cores as before.
+        allocated_ids: set[int] = set()
         for cn in cns:
             cores = self._select_cores_for_node(cn)
             n_cores = len(cores)
@@ -137,21 +142,19 @@ class GenericMappingGenerator:
                     ]
                     cores_used = math.prod(factor for _, factor in split_factors)
                     if cores_used < n_cores:
-                        # The workload's dimensions can't be tiled across every core; use the
-                        # largest achievable subset rather than forcing an indivisible split.
-                        logger.info(
-                            "Node %s: inter-core tiling spans %d of %d cores; %d core(s) stay idle.",
-                            cn.name,
-                            cores_used,
-                            n_cores,
-                            n_cores - cores_used,
-                        )
-                        core_allocation = [[c.id for c in cores[:cores_used]]]
+                        # The workload's dimensions can't be tiled across every core; use the largest
+                        # achievable subset, preferring cores not yet taken by earlier layers so the
+                        # layers run on disjoint sets (fall back to the first cores_used when the pool
+                        # of free cores is exhausted).
+                        free = [c for c in cores if c.id not in allocated_ids]
+                        block = free[:cores_used] if len(free) >= cores_used else cores[:cores_used]
+                        core_allocation = [[c.id for c in block]]
                 else:
                     inter_core_tiling = []
             else:
                 inter_core_tiling = []
 
+            allocated_ids.update(core_id for group in core_allocation for core_id in group)
             layers.append(
                 {
                     "name": cn.name,
