@@ -9,8 +9,8 @@
 ## Clone
 
 ```bash
-git clone https://github.com/KULeuven-MICAS/stream_aie.git
-cd stream_aie
+git clone https://github.com/KULeuven-MICAS/stream.git
+cd stream
 ```
 
 ## Install

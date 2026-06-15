@@ -9,7 +9,7 @@
 
 ```bash
 git clone <your-fork-url>
-cd stream_aie
+cd stream
 git checkout -b <feature-or-fix>
 
 # Python >= 3.12

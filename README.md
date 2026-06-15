@@ -2,12 +2,12 @@
 
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
-[![Docs](https://img.shields.io/badge/docs-stream__aie-blue)](https://kuleuven-micas.github.io/stream_aie/)
+[![Docs](https://img.shields.io/badge/docs-stream-blue)](https://kuleuven-micas.github.io/stream/)
 
 **Stream** is a design space exploration (DSE) and constraint-optimization framework for **heterogeneous dataflow accelerators**: accelerator systems built by combining cores that each have their own dataflow and performance model (**AIE** and **TPU-like** are two example core types among others). Scheduling is **layer-fused**, and the **TETRA constraint optimization** uses MILP (Mixed-Integer Linear Programming) to decide tensor placement and transfer paths across the cores of such a system. Stream builds on top of [ZigZag](https://zigzag-project.github.io/zigzag/) for per-core cost estimation.
 
-### 📖 [**Explore the Documentation**](https://kuleuven-micas.github.io/stream_aie/)
-### 🚀 [**Getting Started Guide**](https://kuleuven-micas.github.io/stream_aie/getting-started/)
+### 📖 [**Explore the Documentation**](https://kuleuven-micas.github.io/stream/)
+### 🚀 [**Getting Started Guide**](https://kuleuven-micas.github.io/stream/getting-started/)
 
 ---
 
@@ -273,6 +273,6 @@ allocation_data = allocation_ir.model_dump()
 
 ## 📚 Further Documentation
 
-- **Hosted documentation site:** [kuleuven-micas.github.io/stream_aie](https://kuleuven-micas.github.io/stream_aie/), the human-facing docs (installation, getting started, the workload/hardware/mapping input formats, and driving Stream from an AI agent via the MCP server and IR models), rebuilt from `docs/` on every push to `main`.
+- **Hosted documentation site:** [kuleuven-micas.github.io/stream](https://kuleuven-micas.github.io/stream/), the human-facing docs (installation, getting started, the workload/hardware/mapping input formats, and driving Stream from an AI agent via the MCP server and IR models), rebuilt from `docs/` on every push to `main`.
 - **Stream paper (IEEE):** [A. Symons, L. Mei, S. Colleman, P. Houshmand, S. Karl and M. Verhelst, "Stream: Design Space Exploration of Layer-Fused DNNs on Heterogeneous Dataflow Accelerators"](https://ieeexplore.ieee.org/abstract/document/10713407).
 - **ZigZag:** [zigzag-project.github.io/zigzag](https://zigzag-project.github.io/zigzag/), the per-core cost-estimation framework Stream builds on.

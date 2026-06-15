@@ -21,8 +21,8 @@ Given a neural-network workload (ONNX) and a hardware description (YAML), Stream
 ## 🚀 Get started
 
 ```bash
-git clone https://github.com/KULeuven-MICAS/stream_aie.git
-cd stream_aie
+git clone https://github.com/KULeuven-MICAS/stream.git
+cd stream
 pip install -e .
 ```
 
