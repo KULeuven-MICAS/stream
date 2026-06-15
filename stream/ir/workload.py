@@ -89,7 +89,7 @@ class WorkloadIR(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": "stream_aie/workload_ir/v1",
+            "$id": "stream/workload_ir/v1",
         }
     )
 

@@ -221,7 +221,7 @@ All three return a `StageContext`. Useful keys: `ctx.get("total_latency")`, `ctx
 
 ## 🤖 MCP Server (for AI agents)
 
-Stream ships an MCP server (`stream/mcp/server.py`, server name `stream-aie`) that lets an AI agent submit and inspect TETRA CO jobs. Requires the `[mcp]` extra (`pip install -e ".[mcp]"`).
+Stream ships an MCP server (`stream/mcp/server.py`, server name `stream`) that lets an AI agent submit and inspect TETRA CO jobs. Requires the `[mcp]` extra (`pip install -e ".[mcp]"`).
 
 Launch command (from the repo root):
 

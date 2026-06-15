@@ -74,7 +74,7 @@ class AcceleratorIR(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": "stream_aie/accelerator_ir/v1",
+            "$id": "stream/accelerator_ir/v1",
         }
     )
 

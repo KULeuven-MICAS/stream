@@ -18,7 +18,7 @@ Launch it (STDIO / JSON-RPC transport) from the repo root:
 python3 -c "from stream.mcp.server import mcp; mcp.run(transport='stdio')"
 ```
 
-The server (`stream/mcp/server.py`, name `stream-aie`) exposes six tools:
+The server (`stream/mcp/server.py`, name `stream`) exposes six tools:
 
 | Tool | Purpose |
 |------|---------|

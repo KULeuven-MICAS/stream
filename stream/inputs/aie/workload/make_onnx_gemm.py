@@ -74,7 +74,7 @@ def make_gemm_workload(M, K, N, in_dtype, out_dtype):  # noqa: N803
     )
 
     # Create the model
-    model = helper.make_model(graph, producer_name="stream-aie")
+    model = helper.make_model(graph, producer_name="stream")
 
     # Run shape inference to automatically infer the shapes of all tensors
     inferred_model = onnx.shape_inference.infer_shapes(model)

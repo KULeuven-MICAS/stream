@@ -1,6 +1,6 @@
 """stream.mcp.server — FastMCP server with lifespan, 6 tool stubs, and async job pattern.
 
-This module boots the stream-aie MCP server. It is intentionally minimal at module level
+This module boots the stream MCP server. It is intentionally minimal at module level
 to keep cold-start import time under budget (MCP-01). Heavy imports (stream.api, solver
 backends) are NOT imported here — they belong in Phase 18 tool handlers only.
 
@@ -33,7 +33,7 @@ async def lifespan(server: FastMCP) -> Any:
 # FastMCP app instance
 # ---------------------------------------------------------------------------
 
-mcp = FastMCP("stream-aie", lifespan=lifespan)
+mcp = FastMCP("stream", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------

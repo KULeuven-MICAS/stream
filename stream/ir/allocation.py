@@ -180,7 +180,7 @@ class AllocationIR(BaseModel):
     model_config = ConfigDict(
         json_schema_extra={
             "$schema": "https://json-schema.org/draft/2020-12/schema",
-            "$id": "stream_aie/allocation_ir/v1",
+            "$id": "stream/allocation_ir/v1",
         }
     )
 
