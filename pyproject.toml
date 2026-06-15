@@ -35,7 +35,7 @@ mcp = ["fastmcp>=3.2.4"]
 # Gurobi is a commercial solver (license required at solve time); OR-Tools GSCIP is the
 # default, license-free backend, so gurobipy is opt-in rather than a base dependency.
 gurobi = ["gurobipy"]
-dev = ["bumpver", "pip-tools", "build", "twine", "pre-commit", "pytest"]
+dev = ["bumpver", "pip-tools", "build", "twine", "pre-commit", "pytest", "pytest-timeout"]
 # The optional AIE codegen toolchain (mlir_aie/llvm_aie wheels, xdsl-aie, snax-mlir,
 # aie-python-extras) cannot be an extra: those are direct-reference (git/URL) installs that
 # PyPI forbids in package metadata. Install it after `pip install stream-dse` with the
