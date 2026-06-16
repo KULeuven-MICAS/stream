@@ -1,0 +1,107 @@
+name: AIE codegen (fresh install)
+
+# Validates that a clean `pip install` + `stream-setup-aie` can still install the
+# pinned AMD/Xilinx AIE toolchain and generate SwiGLU MLIR. This guards two failure
+# modes that the normal test suite does not exercise:
+#   1. our own `stream/aie_setup.py` pins/logic regressing, and
+#   2. upstream rotating wheels out from under the pins (the rolling Xilinx release
+#      tags drop builds within days) -- caught by the weekly schedule even with no
+#      code change.
+# Heavy job (downloads the mlir_aie + llvm-aie wheels), so on PRs it only runs when
+# AIE-relevant paths change. It is advisory: do NOT add it to branch-protection
+# required checks.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "stream/aie_setup.py"
+      - "stream/compiler/**"
+      - "stream/inputs/aie/**"
+      - "scripts/main_swiglu.py"
+      - "scripts/main_gemm.py"
+      - ".github/workflows/aie-codegen.yml"
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC -- catches upstream wheel-index rotation
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aie-codegen-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fresh-install-codegen:
+    name: Fresh-install SwiGLU codegen
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Graphviz
+        # The CO pipeline renders workload/schedule graphs via pydot, which shells
+        # out to the Graphviz `dot` binary (not bundled with the runner).
+        run: sudo apt-get update && sudo apt-get install -y graphviz
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache pip
+        # Caches the large mlir_aie / llvm-aie wheels too. Keyed on aie_setup.py so
+        # the cache busts whenever the toolchain pins change.
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-aie-${{ runner.os }}-py3.12-${{ hashFiles('pyproject.toml', 'stream/aie_setup.py') }}
+          restore-keys: pip-aie-${{ runner.os }}-py3.12-
+
+      - name: Install base stream-dse (no AIE toolchain yet)
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install .
+
+      - name: Install AIE toolchain via stream-setup-aie
+        # The console script under test: pins + GitHub release index pages + .pth.
+        run: stream-setup-aie
+
+      - name: Generate SwiGLU MLIR
+        # Open-source GSCIP backend so no Gurobi license is needed in CI. Feasible
+        # 256/512/2048 config (the infeasible big shape lives only in `just swiglu`'s
+        # docs, not here).
+        run: |
+          python scripts/main_swiglu.py \
+            --seq_len 256 --embedding_dim 512 --hidden_dim 2048 \
+            --in_dtype bf16 --out_dtype bf16 --trace_size 1048576 \
+            --rows 4 --cols 8 --npu npu2 \
+            --embedding_tile_size 32 --hidden_tile_size 64 --seq_len_tile_size 32 \
+            --backend ortools_gscip
+
+      - name: Assert MLIR output is valid
+        run: |
+          OUT="outputs/whole_array_strix-swiglu_256_512_2048-4_row_8_col/output.mlir"
+          if [ ! -f "$OUT" ]; then
+            echo "::error::no output.mlir was produced at $OUT"
+            exit 1
+          fi
+          ops=$(grep -cE 'aie\.|aiex\.' "$OUT")
+          echo "generated $OUT with $ops aie/aiex ops"
+          if ! grep -q 'aie.device(npu2)' "$OUT"; then
+            echo "::error::output.mlir is missing the aie.device(npu2) module"
+            exit 1
+          fi
+          if [ "$ops" -lt 100 ]; then
+            echo "::error::output.mlir has only $ops aie/aiex ops (expected >100)"
+            exit 1
+          fi
+
+      - name: Upload generated MLIR
+        if: always()
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: swiglu-mlir
+          path: outputs/whole_array_strix-swiglu_256_512_2048-4_row_8_col/output.mlir
+          retention-days: 7

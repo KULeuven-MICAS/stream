@@ -2,9 +2,8 @@
 
 ``pip install stream-dse`` gives you the base constraint-optimization pipeline. AIE MLIR
 code generation additionally needs the AMD/Xilinx AIE toolchain, which cannot be expressed
-as PyPI dependencies: the ``mlir_aie``/``llvm_aie`` wheels are platform-specific and hosted
-on GitHub releases, ``xdsl-aie``/``snax-mlir`` are installed from git, and
-``aie-python-extras`` must be built with a build-time environment variable. PyPI rejects all
+as PyPI dependencies: the ``mlir_aie``/``llvm-aie`` wheels are platform-specific and hosted
+on GitHub releases, and ``xdsl-aie``/``snax-mlir`` are installed from git. PyPI rejects all
 such direct-reference dependencies, so this console script installs them into the active
 environment instead.
 
@@ -13,9 +12,9 @@ Usage (after ``pip install stream-dse``)::
     stream-setup-aie            # install the toolchain into the current environment
     stream-setup-aie --dry-run  # print the steps without running them
 
-Supported platform: Linux x86_64 with CPython 3.12 or 3.13 (matching the upstream Xilinx
-wheels). After it completes, ``optimize_allocation_co_generic(..., enable_codegen=True)`` and
-the AIE ``scripts/main_*.py`` entry points work without any further PYTHONPATH setup.
+Supported platform: Linux x86_64 with CPython 3.10-3.12 or 3.14 (matching the pinned upstream
+Xilinx wheels). After it completes, ``optimize_allocation_co_generic(..., enable_codegen=True)``
+and the AIE ``scripts/main_*.py`` entry points work without any further PYTHONPATH setup.
 """
 
 from __future__ import annotations
@@ -29,29 +28,35 @@ import sysconfig
 from pathlib import Path
 
 # --- Pinned AIE toolchain components -----------------------------------------------------
-# Bump these together, and only after re-validating the AIE codegen path. Keeping the pins
-# here (rather than in pyproject) is what lets stream-dse ship to PyPI with clean metadata.
-_MLIR_AIE_WHEELS = {
-    (3, 12): (
-        "https://github.com/Xilinx/mlir-aie/releases/download/latest-wheels/"
-        "mlir_aie-0.0.1.2025070704+d7dc968-cp312-cp312-manylinux_2_35_x86_64.whl"
-    ),
-    (3, 13): (
-        "https://github.com/Xilinx/mlir-aie/releases/download/latest-wheels/"
-        "mlir_aie-0.0.1.2025070704+d7dc968-cp313-cp313-manylinux_2_35_x86_64.whl"
-    ),
-}
-_LLVM_AIE_WHEEL = (
-    "https://github.com/Xilinx/llvm-aie/releases/download/nightly/"
-    "llvm_aie-19.0.0.2025063001+6a9e0b4f-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl"
-)
+# These mirror amd/iron's `devel` requirements.txt (the toolchain that consumes the MLIR we
+# emit, and the pickiest pin in the stack). Bump them in lockstep with IRON's pins, and only
+# after re-validating the AIE codegen path. We install mlir_aie / llvm-aie with pip from the
+# GitHub "expanded_assets" index pages (the same mechanism IRON uses) rather than hardcoded
+# wheel URLs: the rolling release tags rotate old builds out within days, so a hardcoded URL
+# rots. We list both the rolling `nightly` and the dated archival llvm-aie tag, so the pinned
+# build still resolves once it has left the rolling window. pip auto-selects the wheel matching
+# the active interpreter/platform. Keeping the pins here (not in pyproject) is what lets
+# stream-dse ship to PyPI with clean metadata.
+_MLIR_AIE_PIN = "mlir_aie==0.0.1.2026033104+e4f35d6"  # amd/iron devel
+_LLVM_AIE_PIN = "llvm-aie==21.0.0.2026051101+adc9df1a"  # amd/iron devel
+_AIE_WHEEL_INDICES = [
+    "--extra-index-url",
+    "https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3",
+    "--extra-index-url",
+    "https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly",
+    "--extra-index-url",
+    "https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly-20240501-20260527",
+]
+# CPython versions for which the pinned mlir_aie build publishes wheels on latest-wheels-3.
+_SUPPORTED_PYTHONS = {(3, 10), (3, 11), (3, 12), (3, 14)}
 # xdsl-aie and snax-mlir pin xdsl to a git commit; install them with --no-deps so they do not
 # clobber the released xdsl that stream-dse depends on (their runtime needs are already met).
 _XDSL_AIE = "git+https://github.com/xdslproject/xdsl-aie.git@378c4c69c7f643ec31c6ef96c2fd830a0fb87244"
 _SNAX_MLIR = "git+https://github.com/kuleuven-micas/snax-mlir.git@1c01c5d100df128c9fa01d3336ebea98e19b20cf"
-# aie-python-extras provides aie.extras.context; it must be built with this prefix.
-_AIE_PYTHON_EXTRAS = "git+https://github.com/makslevental/mlir-python-extras@f08db06"
-_AIE_EXTRAS_BUILD_ENV = {"HOST_MLIR_PYTHON_PACKAGE_PREFIX": "aie"}
+# Note: aie.extras.context / aie.utils.trace (the optional tracing helpers) are now bundled in
+# the mlir_aie wheel itself, reachable once the .pth below puts mlir_aie/python on sys.path.
+# The old separate makslevental/mlir-python-extras pin is therefore dropped: it is redundant and
+# no longer builds (its eudsl-llvmpy build dependency is unpublished).
 
 _PTH_FILENAME = "_stream_mlir_aie.pth"
 
@@ -64,11 +69,11 @@ def _check_platform() -> tuple[int, int]:
             f"stream-setup-aie: the AIE toolchain is Linux x86_64 only "
             f"(got {sys.platform} / {sysconfig.get_platform()})."
         )
-    if version not in _MLIR_AIE_WHEELS:
-        supported = ", ".join(f"{a}.{b}" for a, b in sorted(_MLIR_AIE_WHEELS))
+    if version not in _SUPPORTED_PYTHONS:
+        supported = ", ".join(f"{a}.{b}" for a, b in sorted(_SUPPORTED_PYTHONS))
         raise SystemExit(
             f"stream-setup-aie: no mlir_aie wheel for Python {version[0]}.{version[1]}. "
-            f"Upstream Xilinx publishes wheels for: {supported}."
+            f"The pinned build publishes wheels for: {supported}."
         )
     return version
 
@@ -81,14 +86,17 @@ def _site_packages() -> Path:
     return Path(sysconfig.get_paths()["purelib"])
 
 
-def _steps(version: tuple[int, int]) -> list[tuple[str, list[str], dict[str, str]]]:
+def _steps() -> list[tuple[str, list[str], dict[str, str]]]:
     """Return (description, pip-args, extra-env) for each install step."""
     pip = [sys.executable, "-m", "pip", "install"]
     return [
-        ("mlir_aie + llvm_aie (Xilinx wheels)", [*pip, _MLIR_AIE_WHEELS[version], _LLVM_AIE_WHEEL], {}),
+        (
+            "mlir_aie + llvm-aie (Xilinx wheels via GitHub release index)",
+            [*pip, *_AIE_WHEEL_INDICES, _MLIR_AIE_PIN, _LLVM_AIE_PIN],
+            {},
+        ),
         ("xdsl-aie (git, no-deps)", [*pip, "--no-deps", _XDSL_AIE], {}),
         ("snax-mlir (git, no-deps)", [*pip, "--no-deps", _SNAX_MLIR], {}),
-        ("aie-python-extras (custom build prefix)", [*pip, _AIE_PYTHON_EXTRAS], _AIE_EXTRAS_BUILD_ENV),
     ]
 
 
@@ -112,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     version = _check_platform()
     print(f"stream-setup-aie: installing the AIE toolchain for Python {version[0]}.{version[1]} (Linux x86_64)")
 
-    for description, cmd, extra_env in _steps(version):
+    for description, cmd, extra_env in _steps():
         print(f"\n==> {description}")
         if args.dry_run:
             env_prefix = " ".join(f"{k}={v}" for k, v in extra_env.items())
