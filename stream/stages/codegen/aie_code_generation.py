@@ -368,21 +368,6 @@ class AIECodeGenerationStage(Stage):
 
         ssis_dict: dict[Tensor, SteadyStateIterationSpace] = self.ctx.get("scheduler").ssis
 
-        keys = [
-            "left_swished",
-            "left_swished_1",
-            "intermediate_1",
-            "output",
-            "output_2",
-            "output_1",
-        ]
-        keys = [x for x in ssis_dict.keys() if x.name in keys]
-        for key in keys:
-            ssis = ssis_dict[key]
-            for var in ssis.variables:
-                if var.dimension == LayerDim(1) and var.type == IterationVariableType.SPATIAL:
-                    var.type = IterationVariableType.TEMPORAL
-
         module = self.generate_steady_state_workload(workload, mapping, ssis_dict)
 
         self.module = module
