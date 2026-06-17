@@ -611,7 +611,31 @@ class ChannelToObjectFifoPass(RewritePattern):
             ofs.extend(switch_join)
 
         else:
-            raise NotImplementedError()
+            # Straight (non-join) mem -> shim copy. This is the terminal-output path:
+            # when a fused region ends in an element-wise op (e.g. SwiGLU without the
+            # down-projection GEMM), the inter-core spatial gather already happened on
+            # the compute -> mem transfer, so the mem -> shim transfer is a plain 1:1
+            # copy of one mem tile to the shim (host). Mirror of shim_to_mem's
+            # non-distribute branch, with producer/consumer roles reversed.
+            assert len(producers) == 1
+            producer = producers[0]
+            assert isinstance(strensor := producer.input.type, StrensorType)
+            producer_tile = self.get_tile(producer)
+            consumer_tiles = tuple(
+                self.get_tile(consumer, strensor.core_allocation.data[0].data) for consumer in consumers
+            )
+            object_fifo = ObjectFifoOp.from_referenced_type(
+                producerTile=producer_tile,
+                consumerTiles=consumer_tiles,
+                name=name_base + "mem",
+                elemNumber=(2, 2),
+                referenced_type=strensor.get_element_type(),
+                shape=strensor.get_local_shape() + strensor.get_kernel_shape(),
+            )
+            producer.attributes["of"] = object_fifo.sym_name
+            for consumer in consumers:
+                consumer.attributes["of"] = object_fifo.sym_name
+            ofs.append(object_fifo)
 
         return ofs
 
