@@ -7,9 +7,22 @@ where = ["."]
 include = ["stream*"]  # only ship the stream package, not top-level scripts/outputs/plots dirs
 namespaces = true
 
+[tool.setuptools.package-data]
+# Ship the static hardware-description YAMLs so a pip-installed package can run
+# codegen without a checkout. (.py-only is the setuptools default; declare the
+# data files explicitly.) cores/ holds the per-tile descriptions referenced by
+# the top-level accelerator YAMLs. Test workloads/onnx fixtures are intentionally
+# NOT shipped.
+"stream" = [
+    "inputs/aie/hardware/*.yaml",
+    "inputs/aie/hardware/cores/*.yaml",
+    "inputs/examples/hardware/*.yaml",
+    "inputs/examples/hardware/cores/*.yaml",
+]
+
 [project]
 name = "stream-dse"
-version = "1.13.2"
+version = "1.13.3"
 description = "Stream - Multi-core accelerator design space exploration with layer-fused scheduling"
 readme = "README.md"
 authors = [{ name = "Arne Symons", email = "arne.symons@kuleuven.be" }, { name = "Linyan Mei", email = "linyan.mei@kuleuven.be" }]
@@ -53,7 +66,7 @@ stream-setup-aie = "stream.aie_setup:main"
 Homepage = "https://github.com/KULeuven-MICAS/stream"
 
 [tool.bumpver]
-current_version = "1.13.2"
+current_version = "1.13.3"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "bump version {old_version} -> {new_version}"
 commit = true
