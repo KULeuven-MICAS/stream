@@ -22,12 +22,21 @@ if TYPE_CHECKING:
 
 
 class MappingFactory:
-    def __init__(self, mapping_data: dict[str, Any], workload: Workload, accelerator: Accelerator):
+    def __init__(
+        self,
+        mapping_data: dict[str, Any],
+        workload: Workload,
+        accelerator: Accelerator,
+        kernels: dict[str, Any] | None = None,
+    ):
         self.layers_data: list[dict[str, Any]] = mapping_data.get("layers", [])
         self.fused_groups_data: list[dict[str, Any]] = mapping_data.get("fused_groups", [])
         self.runtime_args_data: dict[str, str] = mapping_data.get("runtime_args", {})
         self.workload = workload
         self.accelerator = accelerator
+        # Caller-supplied kernel factories that override the built-in AIEKernels by
+        # name (used to inject externally-authored operand layouts into codegen).
+        self.kernel_overrides: dict[str, Any] = kernels or {}
 
     def create(self) -> Mapping:
         mapping = Mapping(fused_groups=self.create_fused_groups(), runtime_args=self.create_runtime_args())
@@ -84,7 +93,7 @@ class MappingFactory:
             # estimation, so leaving it None is correct for the base pipeline.
             return None
 
-        kernel = AIEKernels.get(kernel_name, None)
+        kernel = {**AIEKernels, **self.kernel_overrides}.get(kernel_name, None)
         if kernel is None:
             return None
         kernel_kwargs = mapping_data["kernel"].get("kwargs", {})

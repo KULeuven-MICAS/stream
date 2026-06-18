@@ -1,5 +1,6 @@
 import logging as _logging
 import os
+from typing import Any
 
 import yaml
 from onnx import ModelProto
@@ -56,6 +57,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913
     npu: str = "npu2",
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
+    kernels: dict[str, Any] | None = None,
 ) -> StageContext:
     _sanity_check_inputs(hardware, workload, mapping, output_path)
     _backend_enum = SolverBackend[backend.upper()]
@@ -103,6 +105,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
             backend=_backend_enum.value,
             constraint_selection=constraint_selection,
+            kernels=kernels,  # optional caller-supplied kernel factory overrides
         )
         # optionally add code generation stage
         if enable_codegen:
