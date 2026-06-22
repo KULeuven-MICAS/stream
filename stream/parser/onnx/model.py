@@ -12,6 +12,7 @@ from stream.parser.onnx.fusion_edge import FusionEdgeParser
 from stream.parser.onnx.gemm import GemmParser
 from stream.parser.onnx.global_average_pool import GlobalAveragePoolParser
 from stream.parser.onnx.matmul import MatMulParser
+from stream.parser.onnx.matmul_integer import MatMulIntegerParser
 from stream.parser.onnx.max_pool import MaxPoolParser
 from stream.parser.onnx.normalization import NormalizationParser
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
@@ -71,6 +72,7 @@ class ONNXModelParser:
         # machinery, since the softmax is elementwise over the block it produces.
         "MatmulSoftmax": GemmParser,
         "MatMul": MatMulParser,
+        "MatMulInteger": MatMulIntegerParser,
         "MaxPool": MaxPoolParser,
         "GlobalAveragePool": GlobalAveragePoolParser,
         "BatchNormalization": BatchNormParser,
