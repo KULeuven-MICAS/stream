@@ -115,6 +115,9 @@ class SteadyStateScheduler:
         self.latency_total = -1
         self.latency_per_iteration = -1
         self.overlap_between_iterations = -1
+        # Fixed per-layer accelerator setup (config) overhead folded into latency_total;
+        # 0 unless a core declares a setup_cost model (see hardware/architecture/setup_cost.py).
+        self.setup_latency_total = 0
         self.performance_stats: dict | None = None
         self.tensor_depths: TensorDepths = {}
 
@@ -170,6 +173,7 @@ class SteadyStateScheduler:
                 "total": self.latency_total,
                 "per_iteration": self.latency_per_iteration,
                 "overlap_between_iterations": self.overlap_between_iterations,
+                "setup_total": self.setup_latency_total,
             },
             "backend": self.backend,
             "solve": solve_ir,
@@ -348,6 +352,15 @@ class SteadyStateScheduler:
             latency_per_iteration,
             overlap,
         )
+        # Fold in the fixed per-layer accelerator setup (config) overhead. The dataflow
+        # solver above models compute + operand transfer; some accelerators (e.g. SNAX
+        # gemmx) additionally pay a roughly constant per-invocation cost to program their
+        # config registers, which the steady-state model does not capture. It is charged
+        # once per computation node (per layer launch) -- independent of the inner
+        # temporal tiling -- so it is added here, outside the iteration multiplier. Cores
+        # without a setup_cost model contribute 0, preserving existing behaviour.
+        self.setup_latency_total = self._compute_setup_latency()
+        self.latency_total += self.setup_latency_total
         # End-to-end MAC utilization: useful MACs vs the whole chip's peak over the full runtime
         # (so it folds in spatial fill, temporal stalls, idle cores AND transfer overhead). Purely
         # observational; never let it break the solve.
@@ -398,6 +411,41 @@ class SteadyStateScheduler:
             peak += units
             n_cores += 1
         return peak, n_cores
+
+    def _compute_setup_latency(self) -> int:
+        """Sum the setup (config) overhead over the scheduled computation nodes.
+
+        Two components per the ``setup_cost_model`` of the (compute) core a node runs on:
+        a one-time **activation** charged once per accelerator on its first use (it
+        amortises across layers), plus a **per-layer config** charged for every
+        computation node. Cores without a model -- including every accelerator that does
+        not opt in -- contribute 0. Per-layer costs are added (config sequences on a
+        single accelerator do not overlap); exact for sequential single-accelerator
+        execution and a safe upper bound when layers pipeline across cores.
+        """
+        if self.ssw is None:
+            return 0
+        offchip_id = self.accelerator.offchip_core_id
+        total = 0
+        activated: set[int] = set()  # cores that have already paid their one-time activation
+        for node in self.ssw.get_computation_nodes():
+            try:
+                node_mapping = self.mapping.get(node)
+                allocation = node_mapping.resource_allocation if node_mapping is not None else None
+                cores = allocation[0] if allocation else ()
+                # One config per launch: the compute cores running a node's tiles do so in
+                # parallel, so charge the (identical) setup once, via the first compute core.
+                core = next((c for c in cores if getattr(c, "id", None) != offchip_id), None)
+                model = getattr(core, "setup_cost_model", None) if core is not None else None
+                if model is None or model.is_zero:
+                    continue
+                if core.id not in activated:
+                    total += int(model.activation_cycles)  # one-time cold start, amortised over layers
+                    activated.add(core.id)
+                total += int(model.cycles(node))  # per-layer config
+            except Exception as exc:  # never let setup accounting abort the solve
+                logger.warning("Failed to compute setup cost for node %s: %s", getattr(node, "name", node), exc)
+        return total
 
     def _augment_performance_stats_end_to_end(self) -> None:
         """Add end-to-end MAC utilization (``total_mac_ops / (peak_macs_per_cycle * total_latency)``,

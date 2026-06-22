@@ -6,6 +6,7 @@ from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
 from stream.hardware.architecture.backends import AIE2CoreBackend, ZigZagCoreBackend
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
+from stream.hardware.architecture.setup_cost import build_setup_cost_model
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 
@@ -72,6 +73,8 @@ class AcceleratorFactory:
 
         # Read operator_types from raw core_data before any validation strips unknown fields
         operator_types = core_data.get("operator_types", None)
+        # Optional per-core setup (config) cost model; absent -> zero overhead (default).
+        setup_cost_model = build_setup_cost_model(core_data.get("setup_cost", None))
 
         if namespace == "aie2":
             # ---- AIE2 native path: lightweight backend ----
@@ -92,6 +95,7 @@ class AcceleratorFactory:
                 row_id=row_id,
             )
             core.operator_types = operator_types
+            core.setup_cost_model = setup_cost_model
             return core
 
         if namespace == "zigzag":
@@ -113,6 +117,7 @@ class AcceleratorFactory:
                 row_id=row_id,
             )
             core.operator_types = operator_types
+            core.setup_cost_model = setup_cost_model
             return core
 
         raise ValueError(
