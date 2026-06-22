@@ -29,13 +29,22 @@ A core declares its model with an optional ``setup_cost`` block in its hardware 
       per_operation:                # type-aware extra per-layer CSRs, keyed by operation kind
         default: 0
         requantized_matmul: 0       # gemmx SIMD requant overlaps the GEMM pipeline
+      restream_cycles_per_tile: 220 # per extra output-tile block on the streamed axis
+      restream_tile_lanes: 8        # array lanes on that axis (ceil(extent/lanes) blocks)
+
+There is also an optional **re-stream** term, charged per layer like the config: with a
+stationary operand (SNAX gemmx is B-stationary) each extra block of the streamed output
+axis re-streams the other operand, a cost zigzag's idealized (L1-resident) transfer model
+overlaps with compute. It is ``(ceil(last_output_dim / restream_tile_lanes) - 1) *
+restream_cycles_per_tile`` — **zero** for a single block, so single-output-block workloads
+are unchanged. ``restream_cycles_per_tile = 0`` (default) disables it.
 
 Cores **without** a ``setup_cost`` block get :class:`ZeroSetupCostModel` — i.e. the
 framework's standard behaviour of zero setup overhead is preserved for every existing
 accelerator/core definition. The model is intentionally *close-but-not-cycle-accurate*:
 the per-layer term estimates configuration-register writes from the execution (how many
 operand streamers it engages, which functional units its operation type needs) times a
-per-write cost; the activation term is a measured cold-start constant.
+per-write cost; the activation + re-stream terms are measured constants.
 """
 
 from __future__ import annotations
@@ -106,6 +115,23 @@ def _operation_kind(node: Any) -> str:
     return str(t).strip().lower() if t is not None else "default"
 
 
+def _restream_tile_count(node: Any, lanes: int) -> int:
+    """How many tiles the re-stream axis (the node's last output dim) splits into.
+
+    For a stationary-operand dataflow (e.g. SNAX gemmx is B-stationary), each block of
+    the streamed output axis re-streams the other operand. The number of blocks is
+    ``ceil(extent / lanes)`` of the last output dimension. Returns 1 (no extra re-stream)
+    when the extent cannot be read.
+    """
+    if lanes <= 0:
+        return 1
+    try:
+        extent = int(node.outputs[0].shape[-1])
+    except Exception:
+        return 1
+    return max(1, -(-extent // lanes))  # ceil
+
+
 class AccfgSetupCostModel(SetupCostModel):
     """Config-register-count setup model (SNAX-accfg style).
 
@@ -128,6 +154,8 @@ class AccfgSetupCostModel(SetupCostModel):
         base_csrs: int = 0,
         csrs_per_operand_streamer: int = 0,
         per_operation: dict[str, int] | None = None,
+        restream_cycles_per_tile: int = 0,
+        restream_tile_lanes: int = 0,
     ) -> None:
         self.cycles_per_csr = float(cycles_per_csr)
         self._activation_cycles = int(activation_cycles)
@@ -135,6 +163,11 @@ class AccfgSetupCostModel(SetupCostModel):
         self.csrs_per_operand_streamer = int(csrs_per_operand_streamer)
         self.per_operation = {str(k).strip().lower(): int(v) for k, v in (per_operation or {}).items()}
         self._default_op_csrs = self.per_operation.get("default", 0)
+        # Per-output-tile re-stream: with a stationary operand, each extra block of the
+        # streamed output axis re-streams the other operand -- a cost zigzag's idealized
+        # (resident-operand) transfer model overlaps with compute. 0 (default) -> no term.
+        self.restream_cycles_per_tile = int(restream_cycles_per_tile)
+        self.restream_tile_lanes = int(restream_tile_lanes)
 
     def _operation_csrs(self, op_kind: str) -> int:
         return self.per_operation.get(op_kind, self._default_op_csrs)
@@ -143,7 +176,12 @@ class AccfgSetupCostModel(SetupCostModel):
         n_streamers = _count_operand_streamers(node)
         op_kind = _operation_kind(node)
         n_csr = self.base_csrs + self.csrs_per_operand_streamer * n_streamers + self._operation_csrs(op_kind)
-        return int(round(self.cycles_per_csr * max(n_csr, 0)))
+        config = int(round(self.cycles_per_csr * max(n_csr, 0)))
+        restream = 0
+        if self.restream_cycles_per_tile:
+            tiles = _restream_tile_count(node, self.restream_tile_lanes)
+            restream = (tiles - 1) * self.restream_cycles_per_tile  # 0 for a single block
+        return config + restream
 
     @property
     def activation_cycles(self) -> int:
@@ -168,6 +206,8 @@ _MODEL_BUILDERS = {
         base_csrs=spec.get("base_csrs", 0),
         csrs_per_operand_streamer=spec.get("csrs_per_operand_streamer", 0),
         per_operation=spec.get("per_operation"),
+        restream_cycles_per_tile=spec.get("restream_cycles_per_tile", 0),
+        restream_tile_lanes=spec.get("restream_tile_lanes", 0),
     ),
 }
 
