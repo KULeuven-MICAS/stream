@@ -29,15 +29,25 @@ A core declares its model with an optional ``setup_cost`` block in its hardware 
       per_operation:                # type-aware extra per-layer CSRs, keyed by operation kind
         default: 0
         requantized_matmul: 0       # gemmx SIMD requant overlaps the GEMM pipeline
-      restream_cycles_per_tile: 220 # per extra output-tile block on the streamed axis
-      restream_tile_lanes: 8        # array lanes on that axis (ceil(extent/lanes) blocks)
+      restream_cycles_per_tile: 90  # fixed cost per extra streamed-axis block (operand reload)
+      restream_tile_lanes: 8        # array lanes per output dim (ceil(extent/lanes) blocks)
+      restream_per_row_block: 23    # added per block of the OTHER output dim (2-D grid); 0 -> 1-D
 
 There is also an optional **re-stream** term, charged per layer like the config: with a
-stationary operand (SNAX gemmx is B-stationary) each extra block of the streamed output
+stationary operand (SNAX gemmx is B-stationary) each extra block of the *streamed* output
 axis re-streams the other operand, a cost zigzag's idealized (L1-resident) transfer model
-overlaps with compute. It is ``(ceil(last_output_dim / restream_tile_lanes) - 1) *
-restream_cycles_per_tile`` — **zero** for a single block, so single-output-block workloads
-are unchanged. ``restream_cycles_per_tile = 0`` (default) disables it.
+overlaps with compute. The cost of one such re-stream is not constant — it scales with the
+*other* (non-streamed) output dim, because the moving operand is re-streamed across the
+whole output-tile grid. So the term is two-dimensional::
+
+    restream = (n_blocks - 1) * (restream_cycles_per_tile + restream_per_row_block * m_blocks)
+
+with ``n_blocks = ceil(last_output_dim / restream_tile_lanes)`` (the streamed axis) and
+``m_blocks = ceil(other_output_dim / restream_tile_lanes)``. It is **zero** for a single
+streamed-axis block, so single-output-column workloads are unchanged. Setting
+``restream_per_row_block = 0`` recovers the original **1-D** term
+``(n_blocks - 1) * restream_cycles_per_tile`` (the fall-back); ``restream_cycles_per_tile =
+0`` **and** ``restream_per_row_block = 0`` (the defaults) disable re-stream entirely.
 
 Cores **without** a ``setup_cost`` block get :class:`ZeroSetupCostModel` — i.e. the
 framework's standard behaviour of zero setup overhead is preserved for every existing
@@ -132,6 +142,23 @@ def _restream_tile_count(node: Any, lanes: int) -> int:
     return max(1, -(-extent // lanes))  # ceil
 
 
+def _restream_row_blocks(node: Any, lanes: int) -> int:
+    """How many blocks the *other* output dim (the non-streamed, second-to-last axis)
+    splits into: ``ceil(extent / lanes)``.
+
+    Re-streaming the moving operand for each streamed-axis block costs more when there are
+    more blocks on this axis to fill (the per-block re-stream scales with the output-tile
+    *grid*, not just the streamed axis). Returns 1 (e.g. a 1-D output) when unreadable.
+    """
+    if lanes <= 0:
+        return 1
+    try:
+        extent = int(node.outputs[0].shape[-2])
+    except Exception:
+        return 1
+    return max(1, -(-extent // lanes))  # ceil
+
+
 class AccfgSetupCostModel(SetupCostModel):
     """Config-register-count setup model (SNAX-accfg style).
 
@@ -156,6 +183,7 @@ class AccfgSetupCostModel(SetupCostModel):
         per_operation: dict[str, int] | None = None,
         restream_cycles_per_tile: int = 0,
         restream_tile_lanes: int = 0,
+        restream_per_row_block: int = 0,
     ) -> None:
         self.cycles_per_csr = float(cycles_per_csr)
         self._activation_cycles = int(activation_cycles)
@@ -168,6 +196,12 @@ class AccfgSetupCostModel(SetupCostModel):
         # (resident-operand) transfer model overlaps with compute. 0 (default) -> no term.
         self.restream_cycles_per_tile = int(restream_cycles_per_tile)
         self.restream_tile_lanes = int(restream_tile_lanes)
+        # The per-streamed-block re-stream cost grows with the *other* output dim: a fixed
+        # part (``restream_cycles_per_tile``, the stationary-operand reload) plus
+        # ``restream_per_row_block`` per block of that dim (the moving operand re-streamed
+        # across the output-tile grid). 0 (default) keeps the original 1-D, streamed-axis-only
+        # term -- i.e. the fall-back to the pre-2-D model.
+        self.restream_per_row_block = int(restream_per_row_block)
 
     def _operation_csrs(self, op_kind: str) -> int:
         return self.per_operation.get(op_kind, self._default_op_csrs)
@@ -178,9 +212,14 @@ class AccfgSetupCostModel(SetupCostModel):
         n_csr = self.base_csrs + self.csrs_per_operand_streamer * n_streamers + self._operation_csrs(op_kind)
         config = int(round(self.cycles_per_csr * max(n_csr, 0)))
         restream = 0
-        if self.restream_cycles_per_tile:
-            tiles = _restream_tile_count(node, self.restream_tile_lanes)
-            restream = (tiles - 1) * self.restream_cycles_per_tile  # 0 for a single block
+        if self.restream_cycles_per_tile or self.restream_per_row_block:
+            n_blocks = _restream_tile_count(node, self.restream_tile_lanes)
+            m_blocks = _restream_row_blocks(node, self.restream_tile_lanes)
+            # per streamed-axis block: the fixed stationary-operand reload + a part that
+            # scales with the other output dim's blocks (the moving-operand re-stream over
+            # the output-tile grid). restream_per_row_block == 0 -> the original 1-D term.
+            per_block = self.restream_cycles_per_tile + self.restream_per_row_block * m_blocks
+            restream = (n_blocks - 1) * per_block  # 0 for a single streamed-axis block
         return config + restream
 
     @property
@@ -208,6 +247,7 @@ _MODEL_BUILDERS = {
         per_operation=spec.get("per_operation"),
         restream_cycles_per_tile=spec.get("restream_cycles_per_tile", 0),
         restream_tile_lanes=spec.get("restream_tile_lanes", 0),
+        restream_per_row_block=spec.get("restream_per_row_block", 0),
     ),
 }
 

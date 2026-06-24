@@ -113,3 +113,29 @@ def test_restream_disabled_by_default_and_safe_without_shape():
     # Restream configured but output shape unreadable -> falls back to no extra (never raises).
     model = build_setup_cost_model(_RESTREAM)
     assert model.cycles(_node("gemm", 2, 1)) == 0
+
+
+_RESTREAM_2D = {"kind": "accfg", "cycles_per_csr": 0, "restream_cycles_per_tile": 90,
+                "restream_tile_lanes": 8, "restream_per_row_block": 23}
+
+
+def test_restream_2d_scales_with_both_output_dims():
+    """The per-streamed-block cost = restream_cycles_per_tile + restream_per_row_block * m_blocks,
+    so the re-stream grows with the *2-D* output-tile grid (m_blocks x n_blocks), not just N."""
+    model = build_setup_cost_model(_RESTREAM_2D)
+    # (M,N): n_blocks=ceil(N/8), m_blocks=ceil(M/8); restream=(n_blocks-1)*(90+23*m_blocks)
+    assert model.cycles(_node("gemm", 2, 1, out_shape=(16, 16))) == 1 * (90 + 23 * 2)   # 136
+    assert model.cycles(_node("gemm", 2, 1, out_shape=(128, 128))) == 15 * (90 + 23 * 16)  # 6870
+    assert model.cycles(_node("gemm", 2, 1, out_shape=(8, 64))) == 7 * (90 + 23 * 1)    # 791
+    # a single streamed-axis block (N<=lanes) is still free, however large M is
+    assert model.cycles(_node("gemm", 2, 1, out_shape=(64, 8))) == 0
+
+
+def test_restream_2d_falls_back_to_1d_when_per_row_zero():
+    """restream_per_row_block == 0 recovers the original 1-D term exactly (the fall-back)."""
+    fallback = build_setup_cost_model({**_RESTREAM_2D, "restream_cycles_per_tile": 220,
+                                       "restream_per_row_block": 0})
+    one_d = build_setup_cost_model(_RESTREAM)  # the original 1-D model
+    for shape in [(16, 16), (32, 32), (8, 64), (128, 128), (64, 8)]:
+        assert fallback.cycles(_node("gemm", 2, 1, out_shape=shape)) == \
+            one_d.cycles(_node("gemm", 2, 1, out_shape=shape))
