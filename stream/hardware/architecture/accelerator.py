@@ -7,6 +7,18 @@ from stream.cost_model.communication_manager import CommunicationManager
 from stream.hardware.architecture.core import Core
 
 
+def _dma_ir(cl) -> dict:
+    """Serialize a link's DMA-strided fields only when set (so non-DMA links round-trip unchanged)."""
+    out: dict = {}
+    if getattr(cl, "dma", False):
+        out["dma"] = True
+        if getattr(cl, "strided_write_penalty", 1.0) != 1.0:
+            out["strided_write_penalty"] = cl.strided_write_penalty
+        if getattr(cl, "strided_read_penalty", 1.0) != 1.0:
+            out["strided_read_penalty"] = cl.strided_read_penalty
+    return out
+
+
 class CoreGraph(DiGraphWrapper[Core]):
     """Represents the core structure of an accelerator"""
 
@@ -99,6 +111,7 @@ class Accelerator:
                         "cores": sorted(connected_ids),
                         "bandwidth": cl.bandwidth,
                         "unit_energy_cost": cl.unit_energy_cost,
+                        **_dma_ir(cl),
                     }
                 )
             else:
@@ -109,6 +122,7 @@ class Accelerator:
                         "to_core": dst.id,
                         "bandwidth": cl.bandwidth,
                         "unit_energy_cost": cl.unit_energy_cost,
+                        **_dma_ir(cl),
                     }
                 )
 

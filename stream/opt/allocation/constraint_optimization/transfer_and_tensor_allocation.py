@@ -309,12 +309,47 @@ class TransferAndTensorAllocator:
     def _mem_factor(t: Tensor, core: Core) -> int:
         return 1
 
+    @staticmethod
+    def _is_strided_transfer(tr: TransferNode) -> bool:
+        """True if the moved tile is non-contiguous (a strided 2-D DMA) in its parent layout.
+
+        Row-major contiguity: a sub-tile is contiguous iff every dimension *inner* to the outermost
+        is fully spanned, i.e. ``tile.shape[1:] == parent.shape[1:]``. A narrower inner dim (e.g. an
+        output column-block of a wider matrix) -> the rows are not back-to-back -> strided. The whole
+        tensor (tile == parent) is contiguous. Defensive: any uncertainty -> not strided (no penalty)."""
+        try:
+            tensor = tr.inputs[0]
+            tile = tuple(int(d) for d in tensor.shape)
+            parent = tuple(int(d) for d in tensor.subview.source.type.get_shape())
+            if len(tile) != len(parent) or len(tile) < 2:
+                return False
+            return tile[1:] != parent[1:]
+        except Exception:
+            return False
+
     def _transfer_latency_for_path(self, tr: TransferNode, path: MulticastPathPlan) -> int:
-        # A transfer served out of memory the two cores share reads in place: no bytes cross a link,
-        # so it adds no time to the slot, the same reason it spends no DMA channel.
+        """Upstream's per-path transfer latency, plus panko's DMA-link strided penalty.
+
+        A transfer served out of memory the two cores share reads in place (upstream): no
+        bytes cross a link, so it adds no time to the slot. Otherwise the contiguous base
+        comes from ``get_transfer_latency_for_path`` (incl. the multicast chain split); if
+        the chosen path uses a DMA-flagged link and this transfer moves a non-contiguous
+        (strided 2-D) tile, charge the link's strided penalty x that base, by direction
+        (write = compute->mem). Links without `dma` (the default) leave the base unchanged,
+        so every existing accelerator is unaffected."""
         if self._choice_shares_memory(tr, path):
             return 0
-        return get_transfer_latency_for_path(tr, path)
+        base = get_transfer_latency_for_path(tr, path)
+        if not path or not path.links_used:
+            return base
+        dma_links = [link for link in path.links_used if getattr(link, "dma", False)]
+        if dma_links and self._is_strided_transfer(tr):
+            is_write = getattr(tr, "transfer_type", None) == TransferType.COMPUTE_TO_MEM
+            penalty = max(
+                (link.strided_write_penalty if is_write else link.strided_read_penalty) for link in dma_links
+            )
+            base = ceil(base * penalty)
+        return base
 
     def _ensure_same_ssis_for_all_transfers(self) -> None:
         first_ssis = self.ssis[self.transfer_nodes[0]]

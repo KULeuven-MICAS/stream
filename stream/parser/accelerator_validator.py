@@ -108,6 +108,15 @@ class AcceleratorValidator:
                     "bandwidth": {"type": "float", "min": 0, "required": True},
                     # Optional override of the global unit energy cost
                     "unit_energy_cost": {"type": "float", "min": 0, "required": False},
+                    # Mark this connection as a DMA link (e.g. an L1<->L3 DMA engine). When set,
+                    # transfers of *non-contiguous* (strided 2-D) tiles over this link are charged
+                    # `strided_*_penalty` x their contiguous transfer time -- a Stream-level model of
+                    # the per-row descriptor / reduced-effective-bandwidth cost of a strided DMA.
+                    "dma": {"type": "boolean", "default": False},
+                    # Penalty multipliers (>= 1.0) applied to a strided transfer's time over a DMA
+                    # link, split by direction (write = compute->mem, read = mem->compute). 1.0 = none.
+                    "strided_write_penalty": {"type": "float", "min": 1.0, "default": 1.0},
+                    "strided_read_penalty": {"type": "float", "min": 1.0, "default": 1.0},
                 },
             },
         },
