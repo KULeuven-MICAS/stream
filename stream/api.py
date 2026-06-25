@@ -62,7 +62,63 @@ def _as_bool(value: Any) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
-def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
+
+def _load_aie_codegen_stage():
+    from stream.stages.codegen.aie_code_generation import AIECodeGenerationStage  # noqa: PLC0415
+
+    return AIECodeGenerationStage
+
+
+# Modular codegen-backend registry: name -> loader returning the codegen Stage class. Selection is
+# by the `codegen_backend` API flag (not hardwired to one backend); add a backend -- e.g. a
+# snax/schnitzel stage emitting snaxc-lowerable tiled MLIR, a peer of AIE -- by registering it here.
+# `enable_codegen=True` keeps selecting "aie" for backward compatibility.
+CODEGEN_BACKENDS = {
+    "aie": _load_aie_codegen_stage,
+}
+
+
+def _prepend_codegen_stage(stages, ctx, enable_codegen, codegen_backend, npu, mapping):
+    """Prepend the selected codegen stage (modular, registry-driven). Returns the new stage list."""
+    backend_name = codegen_backend or ("aie" if enable_codegen else None)
+    if backend_name is None:
+        return stages
+    try:
+        loader = CODEGEN_BACKENDS[backend_name]
+    except KeyError as exc:
+        raise ValueError(
+            f"unknown codegen_backend {backend_name!r}; known: {sorted(CODEGEN_BACKENDS)}"
+        ) from exc
+    codegen_stage = loader()
+    ctx.set(npu=npu)  # required by codegen stages (e.g. AIE)
+    n_fused_groups = len(open_yaml(mapping)["fused_groups"]) if isinstance(mapping, str) else 1
+    if n_fused_groups > 1:
+        # Multi-group fixed mapping: split the workload at the mapping's fused-group boundaries and
+        # run the allocation + codegen inner pipeline once per group, writing each group's MLIR under
+        # <output_path>/group_i/. Mirrors the generic multi-group pipeline but driven by the
+        # hand-written (fixed) mapping.
+        from stream.stages.generation.fixed_mapping_generation import (  # noqa: PLC0415
+            FixedMappingGenerationStage,
+        )
+
+        return [
+            AcceleratorParserStage,
+            StreamONNXModelParserStage,
+            FixedMappingGenerationStage,  # split workload + build per-group mappings (in-memory)
+            FusionGroupIterationStage,  # outer loop over groups; sets the per-group mapping
+            codegen_stage,  # codegen each group (inner pipeline)
+            # No MappingParserStage: FixedMappingGenerationStage supplies the
+            # per-group Mapping objects in-memory via FusionGroupIterationStage.
+            KernelStateStage,  # the state a kernel carries, before the iteration space is read
+            TilingGenerationStage,
+            CoreCostEstimationStage,
+            ConstraintOptimizationAllocationStage,
+            MemoryAccessesEstimationStage,
+        ]
+    return [codegen_stage] + stages
+
+
+def optimize_allocation_co_with_mapping(  # noqa: PLR0913
     hardware: str,
     workload: str,
     mapping: str,
@@ -71,6 +127,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
     skip_if_exists: bool = False,
     temporal_mapping_type: str = "uneven",
     enable_codegen: bool = False,
+    codegen_backend: str | None = None,
     trace_size: int = 0,
     trace_max_tiles: int = 31,
     trace_tiles: tuple[tuple[int, int], ...] = (),
@@ -138,40 +195,9 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
             constraint_selection=constraint_selection,
             kernels=kernels,  # optional caller-supplied kernel factory overrides
         )
-        # optionally add code generation stage
-        if enable_codegen:
-            from stream.stages.codegen.aie_code_generation import AIECodeGenerationStage  # noqa: PLC0415
-
-            n_fused_groups = len(open_yaml(mapping)["fused_groups"]) if isinstance(mapping, str) else 1
-            if n_fused_groups > 1:
-                # Multi-group fixed mapping: split the workload at the mapping's
-                # fused-group boundaries and run the allocation + codegen inner
-                # pipeline once per group, writing each group's MLIR under
-                # <output_path>/group_i/. Mirrors the generic multi-group pipeline
-                # but driven by the hand-written (fixed) mapping.
-                from stream.stages.generation.fixed_mapping_generation import (  # noqa: PLC0415
-                    FixedMappingGenerationStage,
-                )
-
-                stages = [
-                    AcceleratorParserStage,
-                    StreamONNXModelParserStage,
-                    FixedMappingGenerationStage,  # split workload + build per-group mappings (in-memory)
-                    FusionGroupIterationStage,  # outer loop over groups; sets the per-group mapping
-                    AIECodeGenerationStage,  # codegen each group (inner pipeline)
-                    # No MappingParserStage: FixedMappingGenerationStage supplies the
-                    # per-group Mapping objects in-memory via FusionGroupIterationStage.
-                    KernelStateStage,  # the state a kernel carries, before the iteration space is read
-                    TilingGenerationStage,
-                    CoreCostEstimationStage,
-                    ConstraintOptimizationAllocationStage,
-                    MemoryAccessesEstimationStage,
-                ]
-            else:
-                stages = [AIECodeGenerationStage] + stages
-            ctx.set(
-                npu=npu,  # required by AIECodeGenerationStage
-            )
+        # optionally add a code-generation stage (modular: selected by `codegen_backend`, or
+        # `enable_codegen=True` -> "aie" for back-compat; registered in CODEGEN_BACKENDS).
+        stages = _prepend_codegen_stage(stages, ctx, enable_codegen, codegen_backend, npu, mapping)
 
         observers = build_instrumentation("optimize_allocation_co_with_mapping", instrumentation)
         stages = instrument(stages, observers)
@@ -401,6 +427,7 @@ def optimize_mapping(  # noqa: PLR0913
     skip_if_exists: bool = False,
     temporal_mapping_type: str = "uneven",
     enable_codegen: bool = False,
+    codegen_backend: str | None = None,
     trace_size: int = 0,
     trace_max_tiles: int = 31,
     trace_tiles: tuple[tuple[int, int], ...] = (),
@@ -484,14 +511,9 @@ def optimize_mapping(  # noqa: PLR0913
             backend=_backend_enum.value,
             constraint_selection=constraint_selection,
         )
-        # optionally add code generation stage
-        if enable_codegen:
-            from stream.stages.codegen.aie_code_generation import AIECodeGenerationStage  # noqa: PLC0415
-
-            stages = [AIECodeGenerationStage] + stages
-            ctx.set(
-                npu=npu,  # required by AIECodeGenerationStage
-            )
+        # optionally add a code-generation stage (modular: selected by `codegen_backend`, or
+        # `enable_codegen=True` -> "aie" for back-compat; registered in CODEGEN_BACKENDS).
+        stages = _prepend_codegen_stage(stages, ctx, enable_codegen, codegen_backend, npu, None)
         if nb_workers > 1:
             ctx.set(
                 max_workers=nb_workers,
