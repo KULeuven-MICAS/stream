@@ -125,38 +125,32 @@ def _operation_kind(node: Any) -> str:
     return str(t).strip().lower() if t is not None else "default"
 
 
-def _restream_tile_count(node: Any, lanes: int) -> int:
-    """How many tiles the re-stream axis (the node's last output dim) splits into.
+def _axis_blocks(node: Any, axes: "tuple[int, ...]", lanes: int) -> int:
+    """Product of ``ceil(extent / lanes)`` over the given output-tensor ``axes``.
 
-    For a stationary-operand dataflow (e.g. SNAX gemmx is B-stationary), each block of
-    the streamed output axis re-streams the other operand. The number of blocks is
-    ``ceil(extent / lanes)`` of the last output dimension. Returns 1 (no extra re-stream)
-    when the extent cannot be read.
+    ``axes`` index ``node.outputs[0].shape`` (negative allowed). The result is how many
+    spatial *blocks* those axes tile into -- i.e. how many times the accelerator walks the
+    corresponding temporal loop(s). Returns 1 if the shape/axes cannot be read, so an
+    unreadable node contributes no re-stream.
+
+    This is the dataflow-agnostic primitive behind the re-stream term: a caller names the
+    axes of the output-tile grid that a given operand must be re-streamed over, and gets the
+    block count for that operand's re-stream loop -- no GEMM-specific axis assumption baked in.
     """
-    if lanes <= 0:
+    if lanes <= 0 or not axes:
         return 1
     try:
-        extent = int(node.outputs[0].shape[-1])
+        shape = node.outputs[0].shape
     except Exception:
         return 1
-    return max(1, -(-extent // lanes))  # ceil
-
-
-def _restream_row_blocks(node: Any, lanes: int) -> int:
-    """How many blocks the *other* output dim (the non-streamed, second-to-last axis)
-    splits into: ``ceil(extent / lanes)``.
-
-    Re-streaming the moving operand for each streamed-axis block costs more when there are
-    more blocks on this axis to fill (the per-block re-stream scales with the output-tile
-    *grid*, not just the streamed axis). Returns 1 (e.g. a 1-D output) when unreadable.
-    """
-    if lanes <= 0:
-        return 1
-    try:
-        extent = int(node.outputs[0].shape[-2])
-    except Exception:
-        return 1
-    return max(1, -(-extent // lanes))  # ceil
+    prod = 1
+    for a in axes:
+        try:
+            extent = int(shape[a])
+        except Exception:
+            return 1
+        prod *= max(1, -(-extent // lanes))  # ceil
+    return prod
 
 
 class AccfgSetupCostModel(SetupCostModel):
@@ -184,6 +178,8 @@ class AccfgSetupCostModel(SetupCostModel):
         restream_cycles_per_tile: int = 0,
         restream_tile_lanes: int = 0,
         restream_per_row_block: int = 0,
+        restream_axes: "tuple[int, ...]" = (-1,),
+        refill_axes: "tuple[int, ...]" = (-2,),
     ) -> None:
         self.cycles_per_csr = float(cycles_per_csr)
         self._activation_cycles = int(activation_cycles)
@@ -191,17 +187,31 @@ class AccfgSetupCostModel(SetupCostModel):
         self.csrs_per_operand_streamer = int(csrs_per_operand_streamer)
         self.per_operation = {str(k).strip().lower(): int(v) for k, v in (per_operation or {}).items()}
         self._default_op_csrs = self.per_operation.get("default", 0)
-        # Per-output-tile re-stream: with a stationary operand, each extra block of the
-        # streamed output axis re-streams the other operand -- a cost zigzag's idealized
-        # (resident-operand) transfer model overlaps with compute. 0 (default) -> no term.
+        # Moving-operand re-stream / pipeline-refill term. A fixed-dataflow accelerator pays a
+        # fixed, *reduction-independent* refill bubble at every iteration of the temporal
+        # loop(s) that lie OUTSIDE the re-streamed (moving) operand's reuse footprint: at each
+        # such boundary the streamer restarts that operand's access pattern from the top and the
+        # spatial array's input FIFO underruns / the systolic pipeline re-fills. The idealized
+        # roofline (double-buffered, "enough ports", pipeline filled once) hides all reloads, so
+        # it charges zero for these -- they are the residual this term restores. It is an INPUT-
+        # feed cost, *not* an output drain (doubling the output buffer removes none of it) and
+        # *not* a bandwidth stall (it is K-independent: the re-streamed data volume is unchanged).
+        #
+        # ``restream_axes`` / ``refill_axes`` name which output-tile-grid axes (indices into the
+        # output shape) play each role, so the term is not hard-coded to a GEMM's N/M layout:
+        #   n_refills  = prod(ceil(dim/lanes) for axis in restream_axes) - 1   # outer re-stream loops
+        #   inner_fill = prod(ceil(dim/lanes) for axis in refill_axes)         # extent re-traversed per refill
+        #   restream   = n_refills * (restream_cycles_per_tile + restream_per_row_block*inner_fill)
+        # Defaults (-1,)/(-2,) reproduce the SNAX-gemmx (B-stationary) case exactly: A is
+        # re-streamed once per output-N block, each refill re-fills M row-blocks. A different
+        # accelerator (weight-stationary, output-stationary, conv) names different axes; 0 cost
+        # constants (the default) disable the term entirely.
         self.restream_cycles_per_tile = int(restream_cycles_per_tile)
         self.restream_tile_lanes = int(restream_tile_lanes)
-        # The per-streamed-block re-stream cost grows with the *other* output dim: a fixed
-        # part (``restream_cycles_per_tile``, the stationary-operand reload) plus
-        # ``restream_per_row_block`` per block of that dim (the moving operand re-streamed
-        # across the output-tile grid). 0 (default) keeps the original 1-D, streamed-axis-only
-        # term -- i.e. the fall-back to the pre-2-D model.
+        # restream_per_row_block == 0 -> the original 1-D term (no per-refill inner-fill scaling).
         self.restream_per_row_block = int(restream_per_row_block)
+        self.restream_axes = tuple(int(a) for a in restream_axes)
+        self.refill_axes = tuple(int(a) for a in refill_axes)
 
     def _operation_csrs(self, op_kind: str) -> int:
         return self.per_operation.get(op_kind, self._default_op_csrs)
@@ -213,13 +223,14 @@ class AccfgSetupCostModel(SetupCostModel):
         config = int(round(self.cycles_per_csr * max(n_csr, 0)))
         restream = 0
         if self.restream_cycles_per_tile or self.restream_per_row_block:
-            n_blocks = _restream_tile_count(node, self.restream_tile_lanes)
-            m_blocks = _restream_row_blocks(node, self.restream_tile_lanes)
-            # per streamed-axis block: the fixed stationary-operand reload + a part that
-            # scales with the other output dim's blocks (the moving-operand re-stream over
-            # the output-tile grid). restream_per_row_block == 0 -> the original 1-D term.
-            per_block = self.restream_cycles_per_tile + self.restream_per_row_block * m_blocks
-            restream = (n_blocks - 1) * per_block  # 0 for a single streamed-axis block
+            # # times the moving operand is re-streamed = iterations of the outer (restream)
+            # loop(s) beyond the first; each pays a fixed refill + a part scaling with the
+            # inner extent (refill_axes) re-traversed per refill. Axes are configurable so this
+            # is dataflow-agnostic; defaults reproduce the gemmx B-stationary (N-outer) case.
+            n_refills = _axis_blocks(node, self.restream_axes, self.restream_tile_lanes) - 1
+            inner_fill = _axis_blocks(node, self.refill_axes, self.restream_tile_lanes)
+            per_refill = self.restream_cycles_per_tile + self.restream_per_row_block * inner_fill
+            restream = max(n_refills, 0) * per_refill  # 0 for a single re-stream block
         return config + restream
 
     @property
@@ -248,6 +259,8 @@ _MODEL_BUILDERS = {
         restream_cycles_per_tile=spec.get("restream_cycles_per_tile", 0),
         restream_tile_lanes=spec.get("restream_tile_lanes", 0),
         restream_per_row_block=spec.get("restream_per_row_block", 0),
+        restream_axes=tuple(spec.get("restream_axes", (-1,))),
+        refill_axes=tuple(spec.get("refill_axes", (-2,))),
     ),
 }
 

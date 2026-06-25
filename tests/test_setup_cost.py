@@ -139,3 +139,43 @@ def test_restream_2d_falls_back_to_1d_when_per_row_zero():
     for shape in [(16, 16), (32, 32), (8, 64), (128, 128), (64, 8)]:
         assert fallback.cycles(_node("gemm", 2, 1, out_shape=shape)) == \
             one_d.cycles(_node("gemm", 2, 1, out_shape=shape))
+
+
+# --- generalization: the re-stream axes are configurable, so the term is dataflow-agnostic ---
+# (the moving-operand re-stream / pipeline-refill bubble is paid per iteration of the temporal
+# loop(s) OUTSIDE that operand's reuse footprint; which output-grid axes those are is a
+# per-accelerator dataflow property, not hard-coded to a GEMM's N/M layout.)
+
+def test_restream_axes_default_to_gemmx_n_over_m():
+    """Omitting restream_axes/refill_axes reproduces the gemmx (N-outer, M-inner) case exactly."""
+    default = build_setup_cost_model(_RESTREAM_2D)
+    explicit = build_setup_cost_model({**_RESTREAM_2D, "restream_axes": [-1], "refill_axes": [-2]})
+    for shape in [(16, 16), (128, 128), (8, 64), (64, 8), (96, 96)]:
+        assert default.cycles(_node("gemm", 2, 1, out_shape=shape)) == \
+            explicit.cycles(_node("gemm", 2, 1, out_shape=shape))
+
+
+def test_restream_axis_choice_selects_the_dataflow():
+    """A different stationary operand re-streams over a different axis: swapping which output
+    dim is the re-stream axis transposes the cost. This is the generalization -- the same model
+    serves e.g. a weight-stationary accelerator that re-streams over M instead of N."""
+    n_outer = build_setup_cost_model(_RESTREAM_2D)  # gemmx default: re-stream over N (last axis)
+    m_outer = build_setup_cost_model({**_RESTREAM_2D, "restream_axes": [-2], "refill_axes": [-1]})
+    tall = (64, 8)  # M=64, N=8
+    # gemmx (N-outer): N<=lanes -> free. The m-outer dataflow: M=64 -> 8 blocks -> 7 refills.
+    assert n_outer.cycles(_node("gemm", 2, 1, out_shape=tall)) == 0
+    assert m_outer.cycles(_node("gemm", 2, 1, out_shape=tall)) == 7 * (90 + 23 * 1)  # 791
+    # the m-outer cost of a shape equals the n-outer cost of its transpose: axis choice is all that differs.
+    assert m_outer.cycles(_node("gemm", 2, 1, out_shape=(64, 8))) == \
+        n_outer.cycles(_node("gemm", 2, 1, out_shape=(8, 64)))
+
+
+def test_restream_multiple_axes_multiply_block_counts():
+    """A dataflow whose moving operand re-streams over >1 output axis (e.g. a conv output Y x X
+    grid) multiplies the block counts: n_refills = prod(ceil(dim/lanes)) - 1."""
+    spec = {"kind": "accfg", "cycles_per_csr": 0, "restream_cycles_per_tile": 100,
+            "restream_tile_lanes": 8, "restream_per_row_block": 0,
+            "restream_axes": [-2, -1], "refill_axes": []}
+    model = build_setup_cost_model(spec)
+    assert model.cycles(_node("conv", 2, 1, out_shape=(16, 16))) == 3 * 100   # 2*2=4 blocks -> 3 refills
+    assert model.cycles(_node("conv", 2, 1, out_shape=(8, 8))) == 0           # 1 block -> free
