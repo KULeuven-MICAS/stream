@@ -91,7 +91,8 @@ def _link_label(link: CommunicationLink) -> str:
     bw = getattr(link, "bandwidth", "?")
     sender_id = getattr(link.sender, "id", "?")
     receiver_id = getattr(link.receiver, "id", "?")
-    return f"Link {sender_id}→{receiver_id} (bw={bw})"
+    dma = " DMA" if getattr(link, "dma", False) else ""
+    return f"Link{dma} {sender_id}→{receiver_id} (bw={bw})"
 
 
 def _path_label(path: MulticastPathPlan) -> str:

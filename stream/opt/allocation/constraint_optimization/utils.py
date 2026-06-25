@@ -7,7 +7,7 @@ from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
-from stream.workload.node import Node, TransferNode
+from stream.workload.node import Node, TransferNode, TransferType
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.steady_state.iteration_space import LoopEffect, SteadyStateIterationSpace
 from stream.workload.workload import ComputationNode
@@ -305,20 +305,52 @@ def get_partitioned_nodes(
     return partitioned_nodes
 
 
+def is_strided_transfer(tr: TransferNode) -> bool:
+    """True if the moved tile is non-contiguous (a strided 2-D DMA) in its parent layout.
+
+    Row-major contiguity: a sub-tile is contiguous iff every dimension *inner* to the outermost
+    is fully spanned (``tile.shape[1:] == parent.shape[1:]``). A narrower inner dim (an output
+    column-block of a wider matrix) -> rows aren't back-to-back -> strided. Whole-tensor transfers
+    are contiguous. Defensive: any uncertainty -> not strided (no penalty)."""
+    try:
+        tensor = tr.inputs[0]
+        tile = tuple(int(d) for d in tensor.shape)
+        parent = tuple(int(d) for d in tensor.subview.source.type.get_shape())
+        if len(tile) != len(parent) or len(tile) < 2:
+            return False
+        return tile[1:] != parent[1:]
+    except Exception:
+        return False
+
+
 def get_transfer_latency_for_path(tr: TransferNode, path: MulticastPathPlan) -> int:
     """Cycles one firing of this transfer costs on this path.
 
     The bytes over the narrowest link, spread over the chains that carry them: sources and
     targets that pair up one to one take a slice each over disjoint chains and move at once,
     where a transfer that fans out of or into a single core shares that core's link.
+
+    Single source of truth for a transfer's link cycle cost -- consumed by the MILP latency, the
+    perfetto/steady-state trace and the utilisation views, so panko's strided-DMA penalty shows up
+    consistently everywhere: the contiguous cost x the DMA link's strided_{write,read}_penalty when
+    a DMA-flagged link is on the path and the moved tile is non-contiguous. Links without `dma`
+    (the default) are unaffected.
     """
-    if not path or not path.links_used:
+    if not path or not getattr(path, "links_used", None):
         return 0
     min_bw = min(link.bandwidth for link in path.links_used)
     assert len(tr.inputs) == 1, "Only single-input transfers are supported for latency calculation."
     tensor = tr.inputs[0]
     chains = len(path.targets) if 1 < len(path.sources) == len(path.targets) else 1
-    return ceil(tensor.size_bits() / (min_bw * chains))
+    base = ceil(tensor.size_bits() / (min_bw * chains))
+    dma_links = [link for link in path.links_used if getattr(link, "dma", False)]
+    if dma_links and is_strided_transfer(tr):
+        is_write = getattr(tr, "transfer_type", None) == TransferType.COMPUTE_TO_MEM
+        penalty = max(
+            (link.strided_write_penalty if is_write else link.strided_read_penalty) for link in dma_links
+        )
+        base = ceil(base * penalty)
+    return base
 
 
 def get_active_transfer_latency_for_path(tr: TransferNode, choice: MulticastPathPlan, reuse_factor, ssis) -> int:

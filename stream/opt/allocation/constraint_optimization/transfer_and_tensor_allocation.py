@@ -43,6 +43,7 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
 from stream.opt.allocation.constraint_optimization.utils import (
     get_active_latency,
     get_transfer_latency_for_path,
+    is_strided_transfer,
 )
 from stream.opt.solver import (
     ConstraintSelection,
@@ -309,47 +310,22 @@ class TransferAndTensorAllocator:
     def _mem_factor(t: Tensor, core: Core) -> int:
         return 1
 
-    @staticmethod
-    def _is_strided_transfer(tr: TransferNode) -> bool:
-        """True if the moved tile is non-contiguous (a strided 2-D DMA) in its parent layout.
-
-        Row-major contiguity: a sub-tile is contiguous iff every dimension *inner* to the outermost
-        is fully spanned, i.e. ``tile.shape[1:] == parent.shape[1:]``. A narrower inner dim (e.g. an
-        output column-block of a wider matrix) -> the rows are not back-to-back -> strided. The whole
-        tensor (tile == parent) is contiguous. Defensive: any uncertainty -> not strided (no penalty)."""
-        try:
-            tensor = tr.inputs[0]
-            tile = tuple(int(d) for d in tensor.shape)
-            parent = tuple(int(d) for d in tensor.subview.source.type.get_shape())
-            if len(tile) != len(parent) or len(tile) < 2:
-                return False
-            return tile[1:] != parent[1:]
-        except Exception:
-            return False
+    # Strided-transfer detection + the DMA-link penalty live in constraint_optimization.utils (the
+    # single source of truth, also used by the perfetto/steady-state trace + utilisation views, so
+    # the penalty shows up consistently in the MILP latency AND the saved outputs). These are thin
+    # delegators kept on the allocator for its call sites.
+    _is_strided_transfer = staticmethod(is_strided_transfer)
 
     def _transfer_latency_for_path(self, tr: TransferNode, path: MulticastPathPlan) -> int:
-        """Upstream's per-path transfer latency, plus panko's DMA-link strided penalty.
+        """Cycles this transfer costs on this path.
 
         A transfer served out of memory the two cores share reads in place (upstream): no
-        bytes cross a link, so it adds no time to the slot. Otherwise the contiguous base
-        comes from ``get_transfer_latency_for_path`` (incl. the multicast chain split); if
-        the chosen path uses a DMA-flagged link and this transfer moves a non-contiguous
-        (strided 2-D) tile, charge the link's strided penalty x that base, by direction
-        (write = compute->mem). Links without `dma` (the default) leave the base unchanged,
-        so every existing accelerator is unaffected."""
+        bytes cross a link, so it adds no time to the slot. Everything else defers to
+        ``get_transfer_latency_for_path``, which is the single place the DMA-link strided
+        penalty is applied, so the MILP latency and the saved traces agree."""
         if self._choice_shares_memory(tr, path):
             return 0
-        base = get_transfer_latency_for_path(tr, path)
-        if not path or not path.links_used:
-            return base
-        dma_links = [link for link in path.links_used if getattr(link, "dma", False)]
-        if dma_links and self._is_strided_transfer(tr):
-            is_write = getattr(tr, "transfer_type", None) == TransferType.COMPUTE_TO_MEM
-            penalty = max(
-                (link.strided_write_penalty if is_write else link.strided_read_penalty) for link in dma_links
-            )
-            base = ceil(base * penalty)
-        return base
+        return get_transfer_latency_for_path(tr, path)
 
     def _ensure_same_ssis_for_all_transfers(self) -> None:
         first_ssis = self.ssis[self.transfer_nodes[0]]

@@ -129,3 +129,18 @@ def test_existing_hardware_links_default_to_non_dma():
     links = [d["cl"] for _, _, d in acc.cores.edges(data=True) if d.get("cl") is not None]
     assert links and all(not l.dma and l.strided_write_penalty == 1.0 and l.strided_read_penalty == 1.0
                          for l in links)
+
+
+# ----- the trace/utilisation path shares the SAME penalty as the MILP --------------------------
+def test_trace_function_shares_the_penalty():
+    """utils.get_transfer_latency_for_path is the single source of truth: the perfetto/steady-state
+    trace + utilisation views call it, so the DMA link's saved utilisation reflects the strided
+    penalty exactly as the MILP latency does."""
+    from stream.opt.allocation.constraint_optimization.utils import (
+        get_transfer_latency_for_path, is_strided_transfer,
+    )
+    dma = CommunicationLink("A", "B", 512, 0, dma=True, strided_write_penalty=3.0)
+    base = ceil(8 * 8 * 8 / 512)
+    assert is_strided_transfer(_tr((8, 8), (8, 64))) is True
+    assert get_transfer_latency_for_path(_tr((8, 8), (8, 64), TransferType.COMPUTE_TO_MEM), _path(dma)) == ceil(base * 3.0)
+    assert get_transfer_latency_for_path(_tr((8, 8), (64, 8)), _path(dma)) == base  # contiguous -> no penalty
