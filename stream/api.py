@@ -5,7 +5,7 @@ from typing import Any
 import yaml
 from onnx import ModelProto
 from zigzag.mapping.temporal_mapping import TemporalMappingType
-from zigzag.utils import pickle_load
+from zigzag.utils import open_yaml, pickle_load
 
 from stream.opt.solver import ConstraintSelection, GurobiBackend, SolverBackend
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
@@ -111,7 +111,32 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913
         if enable_codegen:
             from stream.stages.codegen.aie_code_generation import AIECodeGenerationStage  # noqa: PLC0415
 
-            stages = [AIECodeGenerationStage] + stages
+            n_fused_groups = len(open_yaml(mapping)["fused_groups"]) if isinstance(mapping, str) else 1
+            if n_fused_groups > 1:
+                # Multi-group fixed mapping: split the workload at the mapping's
+                # fused-group boundaries and run the allocation + codegen inner
+                # pipeline once per group, writing each group's MLIR under
+                # <output_path>/group_i/. Mirrors the generic multi-group pipeline
+                # but driven by the hand-written (fixed) mapping.
+                from stream.stages.generation.fixed_mapping_generation import (  # noqa: PLC0415
+                    FixedMappingGenerationStage,
+                )
+
+                stages = [
+                    AcceleratorParserStage,
+                    StreamONNXModelParserStage,
+                    FixedMappingGenerationStage,  # split workload + build per-group mappings (in-memory)
+                    FusionGroupIterationStage,  # outer loop over groups; sets the per-group mapping
+                    AIECodeGenerationStage,  # codegen each group (inner pipeline)
+                    # No MappingParserStage: FixedMappingGenerationStage supplies the
+                    # per-group Mapping objects in-memory via FusionGroupIterationStage.
+                    TilingGenerationStage,
+                    CoreCostEstimationStage,
+                    ConstraintOptimizationAllocationStage,
+                    MemoryAccessesEstimationStage,
+                ]
+            else:
+                stages = [AIECodeGenerationStage] + stages
             ctx.set(
                 npu=npu,  # required by AIECodeGenerationStage
             )
