@@ -4,13 +4,27 @@ import os
 import yaml
 
 
-def make_swiglu_mapping(
-    seq_len, embedding_dim, hidden_dim, last_gemm_down, seq_len_tile_size, embedding_tile_size, hidden_tile_size
+def make_swiglu_mapping(  # noqa: PLR0915
+    seq_len,
+    embedding_dim,
+    hidden_dim,
+    last_gemm_down,
+    seq_len_tile_size,
+    embedding_tile_size,
+    hidden_tile_size,
+    split_groups=False,
 ):  # noqa: N803
     """
     This mapping assumes that m rows are computed for each Gemm in a pipelined fashion.
     Each layer is partitioned across four rows of compute tiles with inter_core_tiling in the m dimension
-    It also assumes that line_size columns are computed in a pipelined fashion."""
+    It also assumes that line_size columns are computed in a pipelined fashion.
+
+    When ``split_groups`` is set (requires ``last_gemm_down``), the down-projection
+    Gemm is placed in its own fused group, so the design splits into two fusion
+    groups -- the gate/up/SiLU/mul front end (producing the hidden state) and the
+    down-projection back end -- instead of one fully-fused group. The split is
+    carried purely by the mapping's ``fused_groups``; ``FixedMappingGenerationStage``
+    derives the matching workload cut from it."""
     name = f"swiglu_{seq_len}_{embedding_dim}_{hidden_dim}"
     output_file = os.path.join(os.path.dirname(__file__), f"{name}_v2.yaml")
 
@@ -146,21 +160,48 @@ def make_swiglu_mapping(
             "output": {},
         }
 
-    # Fused groups; Only one group of all operators with Gemm_Left.D0 dimension
-    fused_groups = {
-        "name": "Fused_Group_1",
-        "layers": [layer["name"] for layer in layers],
-        "intra_core_tiling": [
-            {"dim": "Gemm_Left.D1", "tile": INPUT_CHANNEL_TILE_SIZE},
-            {"dim": "Gemm_Left.D2", "tile": OUTPUT_CHANNEL_TILE_SIZE},
-            {"dim": "Gemm_Left.D0", "tile": SEQ_LEN_TILE_SIZE},
-        ],
-    }
-    if last_gemm_down:
-        fused_groups["intra_core_tiling"].insert(1, {"dim": "Gemm_Down.D2", "tile": INPUT_CHANNEL_TILE_SIZE})
+    if split_groups:
+        assert last_gemm_down, "split_groups requires last_gemm_down (nothing to split off otherwise)"
+        # Two fused groups: the gate/up/SiLU/mul front end producing the hidden
+        # state, and the down-projection Gemm consuming it. The front end's
+        # intra-core tiling is expressed on Gemm_Left; the back end's on Gemm_Down
+        # (D1=hidden/contraction, D2=embedding/output, D0=seq).
+        front_group = {
+            "name": "Fused_Group_1",
+            "layers": [gemm_left["name"], gemm_right["name"], silu["name"], mul["name"]],
+            "intra_core_tiling": [
+                {"dim": "Gemm_Left.D1", "tile": INPUT_CHANNEL_TILE_SIZE},
+                {"dim": "Gemm_Left.D2", "tile": OUTPUT_CHANNEL_TILE_SIZE},
+                {"dim": "Gemm_Left.D0", "tile": SEQ_LEN_TILE_SIZE},
+            ],
+        }
+        down_group = {
+            "name": "Fused_Group_2",
+            "layers": [gemm_down["name"]],
+            "intra_core_tiling": [
+                {"dim": "Gemm_Down.D1", "tile": OUTPUT_CHANNEL_TILE_SIZE},
+                {"dim": "Gemm_Down.D2", "tile": INPUT_CHANNEL_TILE_SIZE},
+                {"dim": "Gemm_Down.D0", "tile": SEQ_LEN_TILE_SIZE},
+            ],
+        }
+        fused_groups_list = [front_group, down_group]
+    else:
+        # Fused groups; Only one group of all operators with Gemm_Left.D0 dimension
+        fused_groups = {
+            "name": "Fused_Group_1",
+            "layers": [layer["name"] for layer in layers],
+            "intra_core_tiling": [
+                {"dim": "Gemm_Left.D1", "tile": INPUT_CHANNEL_TILE_SIZE},
+                {"dim": "Gemm_Left.D2", "tile": OUTPUT_CHANNEL_TILE_SIZE},
+                {"dim": "Gemm_Left.D0", "tile": SEQ_LEN_TILE_SIZE},
+            ],
+        }
+        if last_gemm_down:
+            fused_groups["intra_core_tiling"].insert(1, {"dim": "Gemm_Down.D2", "tile": INPUT_CHANNEL_TILE_SIZE})
+        fused_groups_list = [fused_groups]
     mapping = {
         "layers": layers,
-        "fused_groups": [fused_groups],
+        "fused_groups": fused_groups_list,
         "runtime_args": runtime_args,
     }
 
