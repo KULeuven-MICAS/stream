@@ -4,7 +4,7 @@ from enum import Flag
 
 from xdsl.ir.affine import AffineMap
 
-from stream.datatypes import LayerDim
+from stream.workload.node_key import node_key
 from stream.workload.tensor import Tensor
 
 
@@ -79,10 +79,6 @@ class HasIterationSpace(HasInputs, HasOutputs):
             return self.operand_mapping[idx]
         raise RuntimeError(f"Tensor {tensor.name} not found in node {self.name}")
 
-    def get_dimension_size(self, layer_dim: LayerDim) -> int:
-        dim_index = layer_dim.get_idx()
-        return self.outputs[-1].shape[dim_index]  # TODO: Probably not always of output tensor
-
     @property
     def tensors(self) -> tuple[Tensor, ...]:
         return self.inputs + self.outputs
@@ -98,18 +94,8 @@ class ComputationNode(HasIterationSpace):
     type: str  # e.g., "Conv", "Gemm", etc.
 
     def has_same_performance(self, other: "ComputationNode") -> bool:
-        """Check if this computation node has the same performance characteristics as another node.
-        This is a simple check based on operand data types and shapes.
-        More sophisticated checks may be needed in the future."""
-        if len(self.inputs) != len(other.inputs):
-            return False
-        for inp_self, inp_other in zip(self.inputs, other.inputs, strict=True):
-            if inp_self.operand_type != inp_other.operand_type:
-                return False
-            if inp_self.shape != inp_other.shape:
-                return False
-        if self.outputs[0].operand_type != other.outputs[0].operand_type:
-            return False
-        if self.outputs[0].shape != other.outputs[0].shape:
-            return False
-        return True
+        """Whether two nodes cost the same: identical op type, operand precisions/shapes, and affine
+        maps. Delegates to the canonical :func:`~stream.workload.node_key.node_key` so that op type
+        and the operand maps are part of the identity (a Conv and a Gemm with matching tensor shapes
+        are no longer treated as equal)."""
+        return node_key(self) == node_key(other)
