@@ -20,6 +20,7 @@ import yaml
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.parser.mapping_validator import MappingValidator
+from stream.workload.iterator_type import sequential_dims
 from stream.workload.node import ComputationNode
 from stream.workload.workload import Workload
 
@@ -240,9 +241,14 @@ class GenericMappingGenerator:
         if not dims:
             return []
 
+        # SEQUENTIAL (recurrence) dimensions carry a total order and must never be spatially
+        # unrolled across cores -- exclude them from the inter-core split (no-op for non-recurrent
+        # nodes, whose sequential set is empty).
+        sequential = sequential_dims(cn)
+
         # (index, size) per dimension, largest first.
         dim_sizes = sorted(
-            ((idx, sub_workload.get_dimension_size(dim)) for idx, dim in enumerate(dims)),
+            ((idx, sub_workload.get_dimension_size(dim)) for idx, dim in enumerate(dims) if idx not in sequential),
             key=lambda pair: pair[1],
             reverse=True,
         )

@@ -126,30 +126,36 @@ class ZigZagCostEstimator:
                     dim = base_dims[expr.position]
                     operand_dims.append(dim)
                 elif isinstance(expr, AffineBinaryOpExpr):
-                    dim = ZigZagLayerDim(f"D{len(base_dims) + len(extra_dims)}")
-                    extra_dims.append(dim)
-                    operand_dims.append(dim)
-                    # Create dimension relation
                     dims_in_expr, coefficients, constant = self._affine_binary_op_expr_to_dims_and_coefficients(expr)
-                    assert len(dims_in_expr) == len(coefficients) == self.supported_pr_length, (
-                        "Mismatch in dims and coefficients length."
-                    )
-                    dimension_relations.append(
-                        ZigZagLayerDimRelation(
-                            dim_1=dim,
-                            coef_2=coefficients[0],
-                            dim_2=dims_in_expr[0],
-                            coef_3=coefficients[1],
-                            dim_3=dims_in_expr[1],
+                    if len(dims_in_expr) == 1 and coefficients[0] == 1:
+                        # Single-dimension self-offset (recurrence state read, e.g. h[t-1]). The
+                        # cross-iteration carry is handled in scheduling, not costing, so treat it
+                        # as a plain access to that dimension (drop the offset). No pr relation.
+                        operand_dims.append(dims_in_expr[0])
+                    else:
+                        # Genuine projection-relevant (pr) expression, e.g. conv ix = s*ox + d*fx.
+                        dim = ZigZagLayerDim(f"D{len(base_dims) + len(extra_dims)}")
+                        extra_dims.append(dim)
+                        operand_dims.append(dim)
+                        assert len(dims_in_expr) == len(coefficients) == self.supported_pr_length, (
+                            "Mismatch in dims and coefficients length."
                         )
-                    )
-                    # Set padding
-                    if constant != 0:
-                        assert constant < 0, "Padding should be negative in equation."
-                        constant = -constant
-                    padding[dim] = (constant, constant)
-                    # Set pr dim sizes
-                    pr_sizes[dim] = tensor_shape[i]  # logical size of the tensor (without padding)
+                        dimension_relations.append(
+                            ZigZagLayerDimRelation(
+                                dim_1=dim,
+                                coef_2=coefficients[0],
+                                dim_2=dims_in_expr[0],
+                                coef_3=coefficients[1],
+                                dim_3=dims_in_expr[1],
+                            )
+                        )
+                        # Set padding
+                        if constant != 0:
+                            assert constant < 0, "Padding should be negative in equation."
+                            constant = -constant
+                        padding[dim] = (constant, constant)
+                        # Set pr dim sizes
+                        pr_sizes[dim] = tensor_shape[i]  # logical size of the tensor (without padding)
                 else:
                     raise NotImplementedError(f"Unsupported affine expr type {type(expr)} in mapping.")
             # Create equation string part for this operand

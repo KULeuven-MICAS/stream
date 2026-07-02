@@ -5,6 +5,7 @@ import sympy as sp
 from xdsl.ir.affine import AffineConstantExpr, AffineDimExpr, AffineExpr
 
 from stream.datatypes import InterCoreTiling, LayerDim
+from stream.workload.iterator_type import check_spatial_unroll_legal, sequential_dims
 from stream.workload.node import ComputationNode, Node, TransferNode
 from stream.workload.steady_state.iteration_space import (
     IterationVariable,
@@ -201,12 +202,25 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
     return iteration_variables
 
 
+def _reject_sequential_spatial_unroll(
+    workload: "Workload", node: "HasIterationSpace", unrollings: InterCoreTiling
+) -> None:
+    """Raise if a mapping spatially unrolls (inter-core splits) a SEQUENTIAL dimension of ``node``."""
+    if not sequential_dims(node):
+        return
+    node_dims = workload.get_dims(node)
+    spatial_positions = [node_dims.index(dim) for dim, factor in unrollings if factor > 1 and dim in node_dims]
+    check_spatial_unroll_legal(node, spatial_positions)
+
+
 def collect_spatial_unrollings(workload: "Workload", mapping: "Mapping"):
     spatial_unrollings: dict[ComputationNode, InterCoreTiling] = {}
     for node in workload.get_iteration_space_nodes():
         node_mapping = mapping.get(node)
         assert node_mapping is not None, f"No mapping found for node {node.name}"
-        spatial_unrollings[node] = workload.get_unique_dims_inter_core_tiling(node, mapping)
+        unrollings = workload.get_unique_dims_inter_core_tiling(node, mapping)
+        _reject_sequential_spatial_unroll(workload, node, unrollings)
+        spatial_unrollings[node] = unrollings
 
     unique_spatial_unrollings: list[tuple[LayerDim, int]] = []
     for unrollings in spatial_unrollings.values():
