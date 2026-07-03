@@ -1,5 +1,6 @@
 import logging as _logging
 import os
+import tempfile
 from typing import Any
 
 import yaml
@@ -7,6 +8,7 @@ from onnx import ModelProto
 from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.utils import open_yaml, pickle_load
 
+from stream.ir.graph_view import WorkloadGraphView
 from stream.opt.solver import ConstraintSelection, GurobiBackend, SolverBackend
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
 from stream.stages.context import StageContext
@@ -413,3 +415,24 @@ def parse_workload_ir(
     with open(arch_ir_path, "w") as f:
         yaml.dump(arch_ir, f, sort_keys=False)
     return arch_ir_path
+
+
+def workload_graph_view(workload_path: str, output_path: str | None = None) -> dict:
+    """Parse a workload (ONNX) and return the unified :class:`~stream.ir.graph_view.WorkloadGraphView`
+    as a JSON-able dict.
+
+    The one smart graph view a consumer renders: a proper node/edge graph plus repeated-block collapse
+    (draw one representative, mark the rest ``×N``), fusable regions (zoom), and the derived affine
+    metadata per node. Works for any parsed workload; the same view serializes a tiled/steady-state
+    graph identically.
+
+    The parser stage writes a debug ``workload_graph.png`` into ``output_path``; default it to a temp
+    dir so this read-only view never litters the workload's own directory.
+    """
+    base_output_path = output_path or tempfile.mkdtemp(prefix="stream_graph_view_")
+    os.makedirs(base_output_path, exist_ok=True)
+    ctx = StageContext.from_kwargs(workload_path=workload_path, output_path=base_output_path)
+    ctxs = MainStage([StreamONNXModelParserStage, LeafStage], ctx).run()
+    assert len(ctxs) == 1, "Expected a single result from the workload parsing"
+    workload = ctxs[0].get("workload")
+    return WorkloadGraphView.from_workload(workload).model_dump()

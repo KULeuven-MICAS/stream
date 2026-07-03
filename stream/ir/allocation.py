@@ -24,6 +24,23 @@ class LatencyInfo(BaseModel):
     )
 
 
+class CostModelsIR(BaseModel):
+    """Which cost models produced this result -- surfaced so the end user knows exactly what was
+    modelled, not just the final number."""
+
+    intra_core: str = Field(description="Per-core compute/energy cost model (the intra-core estimator)")
+    scheduler: str = Field(description="Inter-core latency/schedule model")
+    solver: str = Field(description="MILP solver backend used for tensor/transfer allocation")
+
+    @classmethod
+    def for_backend(cls, backend: str) -> CostModelsIR:
+        return cls(
+            intra_core="ZigZag analytical (per-node latency & energy, MAC-array spatial utilization)",
+            scheduler="SteadyStateScheduler (steady-state pipeline latency, compute vs transfer bottleneck)",
+            solver=backend,
+        )
+
+
 class ConstraintSelectionIR(BaseModel):
     """IR representation of the ConstraintSelection configuration used during the solve."""
 
@@ -187,6 +204,9 @@ class AllocationIR(BaseModel):
     schema_version: Literal["1.0"] = "1.0"
     latency: LatencyInfo = Field(description="Latency metrics from the solved scheduler")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
+    cost_models: CostModelsIR | None = Field(
+        default=None, description="Which cost models produced this result (transparency); always set by from_internal"
+    )
     constraint_selection: ConstraintSelectionIR | None = Field(
         description="Constraint groups active during solve, or None if no selection was specified"
     )
@@ -250,6 +270,7 @@ class AllocationIR(BaseModel):
         return cls(
             latency=LatencyInfo(**raw["latency"]),
             backend=raw["backend"],
+            cost_models=CostModelsIR.for_backend(raw["backend"]),
             constraint_selection=constraint_selection,
             fusion_splits=raw["fusion_splits"],
             mapping_nodes=mapping_nodes,
