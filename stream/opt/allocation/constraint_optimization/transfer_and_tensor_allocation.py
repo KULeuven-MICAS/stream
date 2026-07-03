@@ -1,6 +1,7 @@
 import logging
 import math
 import os
+import re
 from collections import defaultdict
 from math import ceil, prod
 from typing import Any, TypeAlias
@@ -20,6 +21,12 @@ from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
+from stream.ir.infeasibility import (
+    ImplicatedResourceIR,
+    InfeasibilityReportIR,
+    InfeasibleAllocationError,
+    ResourceRefIR,
+)
 from stream.mapping.mapping import Mapping, Resource
 from stream.opt.allocation.constraint_optimization.context import (
     TransferAndTensorContext,
@@ -140,6 +147,10 @@ class TransferAndTensorAllocator:
         self.model: SolverModel = create_solver(SolverBackend[self.backend_str], "transfer_tensor_alloc")
         self.model.set_param(SolverParams.VERBOSITY, gurobi_verbosity)
         self.model.set_param(SolverParams.LOG_TO_CONSOLE, 0)
+
+        # constraint-name -> (constraint-family, physical resource) for every constraint that binds a
+        # hardware resource, so an infeasibility IIS can be mapped back to the offending core/link.
+        self._constraint_resources: dict[str, tuple[str, Resource]] = {}
 
         # primary decision vars
         self.x_tensor_choice: dict[tuple[Tensor, TensorPlacementChoice], SolverVar] = {}
@@ -770,7 +781,9 @@ class TransferAndTensorAllocator:
 
         for c, expr in self.core_load.items():
             cap = c.get_memory_capacity()
-            self.model.add_constr(expr <= cap, name=f"mem_cap_{_resource_key(c)}")
+            self._add_resource_constr(
+                expr <= cap, name=f"mem_cap_{_resource_key(c)}", kind="memory_capacity", resource=c
+            )
 
     def _object_fifo_depth_constraints(self):
         self.object_fifo_depth: dict[Core, Any] = defaultdict(int)
@@ -1004,8 +1017,15 @@ class TransferAndTensorAllocator:
             lu = self.model.add_var(vtype=SolverVarType.BINARY, name=f"linkUsed_{_resource_key(link)}")
             self.link_used[link] = lu
             sum_active = self.model.quicksum(active_s.values())
-            self.model.add_constr(sum_active >= lu, name=f"link_used_def_{_resource_key(link)}")
-            self.model.add_constr(sum_active <= big_m * lu, name=f"link_used_def2_{_resource_key(link)}")
+            self._add_resource_constr(
+                sum_active >= lu, name=f"link_used_def_{_resource_key(link)}", kind="link_contention", resource=link
+            )
+            self._add_resource_constr(
+                sum_active <= big_m * lu,
+                name=f"link_used_def2_{_resource_key(link)}",
+                kind="link_contention",
+                resource=link,
+            )
 
             prefix = [
                 self.model.add_var(vtype=SolverVarType.INTEGER, name=f"pre_{_resource_key(link)}_{s}")
@@ -1236,6 +1256,136 @@ class TransferAndTensorAllocator:
         )
 
     # ------------------------------------------------------------------ #
+    # infeasibility diagnosis                                            #
+    # ------------------------------------------------------------------ #
+    # Constraint family -> human reason. New resource-bound families add one line here.
+    _KIND_REASON: dict[str, str] = {
+        "memory_capacity": "on-chip memory capacity exceeded",
+        "link_contention": "communication link over-subscribed",
+        "object_fifo_depth": "object-FIFO depth exceeded",
+        "buffer_descriptors": "buffer-descriptor count exceeded",
+        "dma_channels": "DMA channel limit exceeded",
+    }
+    # Untagged IIS constraint name-prefix -> resource-limit family. Only these contribute a *reason*;
+    # placement/indicator constraints (u_, z_, one-hot selectors) merely attribute to the resource.
+    _LIMIT_PREFIXES: tuple[tuple[str, str], ...] = (
+        ("mem_cap", "memory_capacity"),
+        ("memload", "memory_capacity"),
+        ("link_used", "link_contention"),
+        ("fifo", "object_fifo_depth"),
+        ("bd", "buffer_descriptors"),
+        ("dma", "dma_channels"),
+    )
+
+    def _limit_kind_from_name(self, name: str) -> str | None:
+        """Map an untagged IIS constraint name to a resource-limit family (or None if it is a
+        placement/indicator constraint that pins a resource but is not itself a hardware limit)."""
+        return next((kind for prefix, kind in self._LIMIT_PREFIXES if name.startswith(prefix)), None)
+
+    def _resolve_iis_constraint(self, name: str) -> tuple[ResourceRefIR | None, str | None]:
+        """Resolve one IIS constraint name to (physical-resource ref, resource-limit family). A tagged
+        constraint yields a precise, detailed ref; otherwise a core id is recovered from the name
+        (``Core 3`` / sanitized ``Core_3``). Returns ``(None, None)`` for a structural constraint."""
+        tag = self._constraint_resources.get(name)
+        if tag is not None:
+            kind, resource = tag
+            return self._resource_ref_ir(resource), kind
+        match = re.search(r"Core[ _](\d+)", name)
+        if match:
+            cid = match.group(1)
+            return ResourceRefIR(kind="core", id=cid, label=f"Core {cid}"), self._limit_kind_from_name(name)
+        return None, None
+
+    def _add_resource_constr(self, expr: Any, *, name: str, kind: str, resource: Resource) -> None:
+        """Add a constraint that binds a physical hardware resource, recording ``name -> (kind,
+        resource)`` so that if the model is infeasible its IIS maps back to the offending core/link.
+        Any new resource-bound constraint calls this instead of ``self.model.add_constr`` -- that is
+        the whole modular linkage between a (possibly future) constraint and the hardware it limits."""
+        self.model.add_constr(expr, name=name)
+        self._constraint_resources[name] = (kind, resource)
+
+    def _resource_ref_ir(self, resource: Resource) -> ResourceRefIR:
+        """Serialize a physical resource to the IR the architecture view highlights. Extend with new
+        ``isinstance`` arms as new resource kinds get bound to constraints."""
+        if isinstance(resource, Core):
+            detail: dict[str, str] = {"core_type": str(resource.core_type)}
+            try:
+                detail["memory_capacity_bits"] = str(resource.get_memory_capacity())
+            except Exception:  # noqa: BLE001 -- a missing capacity must not break the diagnosis
+                pass
+            return ResourceRefIR(kind="core", id=str(resource.id), label=f"Core {resource.id}", detail=detail)
+        return ResourceRefIR(kind="link", id=_resource_key(resource), label=_resource_key(resource))
+
+    def _build_infeasibility_report(self, status: str, group: str | None = None) -> InfeasibilityReportIR:
+        """Turn an infeasible solve into a per-resource diagnosis. Uses the solver's IIS (Gurobi) to
+        get the minimal conflicting constraint set, maps each back to its physical resource via the
+        registry (falling back to a ``Core N`` name match for any untagged per-core constraint), and
+        groups the result so a consumer can highlight the offending cores/links with a reason."""
+        stats = self.model.solve_stats()
+        iis_available = self.model.supports_iis
+        iis_names: list[str] = []
+        if iis_available:
+            try:
+                self.model.compute_iis()
+                iis_names = self.model.iis_constraints()
+            except Exception as exc:  # noqa: BLE001 -- IIS is best-effort diagnostics
+                _logger.warning(f"IIS computation failed: {exc}")
+                iis_available = False
+
+        grouped: dict[str, dict[str, Any]] = {}
+        unbound: list[str] = []
+        for name in iis_names:
+            ref, kind = self._resolve_iis_constraint(name)
+            if ref is None:
+                unbound.append(name)
+                continue
+            entry = grouped.setdefault(f"{ref.kind}:{ref.id}", {"ref": ref, "kinds": set(), "constraints": []})
+            if ref.detail and not entry["ref"].detail:
+                entry["ref"] = ref  # prefer the detailed (tagged) ref so the tooltip has capacity facts
+            if kind:
+                entry["kinds"].add(kind)
+            entry["constraints"].append(name)
+
+        resources: list[ImplicatedResourceIR] = []
+        for entry in grouped.values():
+            kinds = sorted(entry["kinds"])
+            reason = (
+                "; ".join(self._KIND_REASON.get(k, k.replace("_", " ")) for k in kinds)
+                if kinds
+                else "conflicting allocation constraints"
+            )
+            resources.append(
+                ImplicatedResourceIR(
+                    resource=entry["ref"], constraint_kinds=kinds, reason=reason, constraints=entry["constraints"]
+                )
+            )
+
+        if resources:
+            cores = ", ".join(r.resource.label for r in resources if r.resource.kind == "core")
+            summary = f"Infeasible mapping: {resources[0].reason}" + (f" on {cores}" if cores else "")
+        elif not iis_available:
+            summary = (
+                f"Infeasible mapping ({status}); the {stats.backend} backend cannot compute an IIS -- "
+                "re-run with the Gurobi backend for a per-resource diagnosis."
+            )
+        else:
+            summary = (
+                f"Infeasible mapping ({status}); {len(iis_names)} conflicting constraints, "
+                "none pinned to a single resource."
+            )
+
+        return InfeasibilityReportIR(
+            status=status,
+            backend=stats.backend,
+            solver=stats.solver,
+            group=group,
+            iis_available=iis_available,
+            resources=resources,
+            unbound_constraints=unbound,
+            summary=summary,
+        )
+
+    # ------------------------------------------------------------------ #
     # public solve()                                                     #
     # ------------------------------------------------------------------ #
     def solve(
@@ -1244,11 +1394,15 @@ class TransferAndTensorAllocator:
         self.model.set_param(SolverParams.VERBOSITY, 1 if tee else 0)
         self.model.optimize(self._mip_progress_callback)
         if self.model.get_status() != "OPTIMAL":
-            self.model.compute_iis()
-
-            ilp_path = os.path.join(self.output_path, "model.ilp")
-            self.model.write(ilp_path)
-            raise RuntimeError(f"Gurobi did not find an optimal solution. IIS written to {ilp_path}")
+            # Produce a structured, per-resource diagnosis (this computes the IIS on backends that
+            # support it) instead of a bare failure, so a launch with an invalid mapping still yields
+            # an inspectable result. The .ilp (Gurobi's IIS) is still written for offline debugging.
+            report = self._build_infeasibility_report(self.model.get_status())
+            try:
+                self.model.write(os.path.join(self.output_path, "model.ilp"))
+            except Exception:  # noqa: BLE001 -- .ilp export is best-effort (Gurobi-only)
+                pass
+            raise InfeasibleAllocationError(report)
 
         tensor_alloc = self.get_tensor_allocations()
         routing = self.get_transfer_routing()

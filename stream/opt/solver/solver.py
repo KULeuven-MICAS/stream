@@ -392,6 +392,17 @@ class SolverModel(ABC):
     def compute_iis(self) -> None:
         """Compute an Irreducible Infeasible Subsystem (IIS)."""
 
+    @property
+    def supports_iis(self) -> bool:
+        """Whether the backend can compute an IIS (minimal conflicting constraint set) for an
+        infeasible model. Default False; a backend that can (Gurobi) overrides it."""
+        return False
+
+    def iis_constraints(self) -> list[str]:
+        """Names of the constraints in the IIS -- call after :meth:`compute_iis`. Empty by default
+        (a backend without IIS support returns nothing, so callers degrade gracefully)."""
+        return []
+
     @abstractmethod
     def write(self, path: str) -> None:
         """Write the model to a file (e.g. .lp, .mps, .ilp)."""
@@ -718,6 +729,26 @@ class GurobiBackend(SolverModel):
 
     def compute_iis(self) -> None:
         self._model.computeIIS()
+
+    @property
+    def supports_iis(self) -> bool:
+        return True
+
+    def iis_constraints(self) -> list[str]:
+        """Names of the constraints Gurobi flagged as part of the IIS (``IISConstr``/``IISGenConstr``).
+        Call after :meth:`compute_iis`. Covers linear constraints (where the resource-bound ones live)
+        and general (non-linear) constraints, skipping any without the flag set."""
+        names: list[str] = []
+        for c in self._model.getConstrs():
+            if getattr(c, "IISConstr", 0):
+                names.append(c.ConstrName)
+        for gc in self._model.getGenConstrs():
+            try:
+                if getattr(gc, "IISGenConstr", 0):
+                    names.append(gc.GenConstrName)
+            except (AttributeError, gp.GurobiError):
+                continue
+        return names
 
     def write(self, path: str) -> None:
         self._model.write(path)
