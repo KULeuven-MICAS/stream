@@ -89,6 +89,24 @@ class Workload(DiGraphWrapper[Node]):
             [AffineDimExpr(i) for i in self.global_idxs[node]], [], self.num_dims, 0
         )
 
+    def _is_identity_relation(self, relation: AffineExpr) -> bool:
+        """Whether a dimension relation merges two dims that are the *same* iteration axis.
+
+        A relation is kept for the global dedup only when it has the clean form ``d_a - d_b (+ const)``
+        -- exactly two dim terms with coefficients ``+1`` and ``-1`` (a constant padding offset is
+        allowed). That is a genuine identity: the producer axis and the consumer axis are one and the
+        same, so they collapse to a single ``LayerDim``.
+
+        Windowed / strided couplings -- a conv or pool input index ``2*ox + fx``, which yields a
+        coefficient other than ``+/-1`` or more than two dim terms -- are cross-node *dependencies*,
+        not identities. Folding them into the global equality system is what forced output-spatial
+        dims to become compound (untileable) expressions. They are excluded here so every node keeps
+        pure, tileable iteration dims; the exact producer region a consumer tile needs (the halo) is
+        derived on demand from the affine maps via ``compose_dependency``, not baked into this basis.
+        """
+        row = AffineTransform.from_affine_map(AffineMap(self.num_dims, 0, (relation,))).A[0]
+        return sorted(int(c) for c in row if c != 0) == [-1, 1]
+
     def dimension_relations(self) -> Sequence[AffineExpr]:
         result = []
         # Relations between shared intermediate tensors:
@@ -101,8 +119,10 @@ class Workload(DiGraphWrapper[Node]):
                 mapping_out = self.global_mapping(src, src.get_mapping(output))
                 mapping_in = self.global_mapping(dst, dst.get_mapping(output))
                 for expr_out, expr_in in zip(mapping_out.results, mapping_in.results, strict=True):
-                    # expr_out == expr_in <=> expr_out - expr_in == 0
-                    result.append(expr_out - expr_in)
+                    # expr_out == expr_in <=> expr_out - expr_in == 0; keep only identity merges.
+                    relation = expr_out - expr_in
+                    if self._is_identity_relation(relation):
+                        result.append(relation)
         # Relations between shared inputs:
         for node in self.nodes:
             if isinstance(node, InEdge):
@@ -113,7 +133,9 @@ class Workload(DiGraphWrapper[Node]):
                     mapping_a = self.global_mapping(a, a.get_mapping(output))
                     mapping_b = self.global_mapping(b, b.get_mapping(output))
                     for expr_a, expr_b in zip(mapping_a.results, mapping_b.results, strict=True):
-                        result.append(expr_a - expr_b)
+                        relation = expr_a - expr_b
+                        if self._is_identity_relation(relation):
+                            result.append(relation)
         return result
 
     def get_computation_nodes(self) -> tuple[ComputationNode, ...]:

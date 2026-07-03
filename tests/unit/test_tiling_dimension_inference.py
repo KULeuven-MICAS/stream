@@ -24,7 +24,17 @@ def test_resnet18_unique_dimension_inference():
     unique_dims, _ = workload.unique_dimensions()
     sizes = workload.get_dimension_sizes()
 
-    assert len(unique_dims) == 47, f"Expected 47 unique loop dimensions, got {len(unique_dims)}"
+    # Every node dim resolves to a pure, tileable LayerDim: strided conv/pool axes are their own free
+    # variable (not folded into an untileable compound), so the basis is wider than a naive identity
+    # merge but every dimension is addressable.
+    from stream.datatypes import LayerDim
+
+    assert len(unique_dims) == 87, f"Expected 87 unique loop dimensions, got {len(unique_dims)}"
+    assert all(
+        isinstance(workload.get_dims(n)[i], LayerDim)
+        for n in workload.get_computation_nodes()
+        for i in range(len(workload.get_dims(n)))
+    ), "Every node iteration dim must be a pure LayerDim (no compound expressions)"
     assert all(s > 0 for s in sizes), "Every inferred dimension size must be positive"
 
     distinct = set(sizes)
