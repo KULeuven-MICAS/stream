@@ -41,15 +41,18 @@ class OutEdge(HasInputs): ...
 
 @dataclass(frozen=True, repr=False)
 class FusionEdge(HasInputs, HasOutputs):
-    """A graph boundary node for shape-only ops (Flatten, Reshape).
+    """A graph boundary node for layout-only ops (Flatten, Reshape, Transpose, Squeeze, Unsqueeze):
+    pure re-indexing with no compute, which splits the fusion group (see
+    ``Workload.split_fusion_groups``).
 
-    FusionEdge marks a fusion group boundary in the workload graph.
-    It is NOT HasIterationSpace -- it has no affine iteration space
-    or operand_mapping. Its tensors pass through unchanged during
-    dimension resizing.
+    A FusionEdge is NOT ``HasIterationSpace`` -- it has no ``operand_mapping``. It is the escape hatch
+    the affine IR reserves for operators that cannot be expressed as one affine node: rather than
+    force a lossy affine map, the operator becomes an explicit fusion boundary, its tensors passing
+    through unchanged during dimension resizing. (Normalizations like Softmax are NOT FusionEdges --
+    they parse to schedulable ``NormalizationNode``s that decompose for fusion analysis.)
     """
 
-    op_type: str  # original ONNX op type, e.g. "Flatten"
+    op_type: str  # original ONNX op type, e.g. "Transpose" or "Reshape"
 
 
 class TransferType(Flag):
@@ -99,3 +102,27 @@ class ComputationNode(HasIterationSpace):
         and the operand maps are part of the identity (a Conv and a Gemm with matching tensor shapes
         are no longer treated as equal)."""
         return node_key(self) == node_key(other)
+
+
+@dataclass(frozen=True, repr=False)
+class NormalizationNode(ComputationNode):
+    """A normalization (Softmax, LpNormalization, LayerNormalization, …): one *schedulable* node
+    handled by a single native kernel, but internally a reduce-then-broadcast over ``reduction_axes``.
+
+    A normalization is not one affine access relation -- its output at index ``j`` along the
+    normalized axis depends on the *whole* slice over that axis (a reduction, then a broadcast). So a
+    single ``operand_mapping`` cannot express it faithfully. We resolve the tension with two views:
+
+    - **scheduling view (this node):** identity ``operand_mapping`` over the full shape, i.e. a shaped
+      element-wise op that a fused softmax/norm kernel evaluates natively. It costs, dedups and
+      schedules as one node.
+    - **fusion-analysis view (derived):** :func:`stream.workload.normalization.decompose_normalization`
+      expands it into its affine sub-operators (e.g. max → exp → sum → div), which makes explicit that
+      the block's *other* axes are PARALLEL (freely fusible with the producer/consumer, as in flash
+      attention) and only ``reduction_axes`` carry the intra-op reduction (kept resident, or streamed).
+
+    ``reduction_axes`` are the positions (into the node's iteration space) that the normalization
+    reduces over -- the one axis a single affine map cannot capture, hence stored, not derived.
+    """
+
+    reduction_axes: tuple[int, ...] = ()

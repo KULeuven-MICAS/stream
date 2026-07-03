@@ -253,6 +253,8 @@ class Workload(DiGraphWrapper[Node]):
             in_edge = InEdge(name=f"{node.name}_cut_in", outputs=(out_tensor,))
             group_nodes[succ_group].insert(0, in_edge)
 
+        self._bridge_cross_group_edges(node_to_group, group_nodes)
+
         # Build sub-workloads
         sub_workloads = []
         for nodes in group_nodes:
@@ -260,6 +262,29 @@ class Workload(DiGraphWrapper[Node]):
                 sub_workloads.append(Workload(nodes))
 
         return sub_workloads
+
+    def _bridge_cross_group_edges(self, node_to_group: dict[Node, int], group_nodes: list[list[Node]]) -> None:
+        """Add OutEdge/InEdge boundaries for any data edge crossing a group boundary without passing
+        through a FusionEdge or cut-point (e.g. attention's V, which skips the softmax barrier to feed
+        the context epilogue). Without this the consumer group would have an input with no producer."""
+
+        def has_inedge(nodes: list[Node], tensor: Tensor) -> bool:
+            return any(isinstance(n, InEdge) and tensor in n.outputs for n in nodes)
+
+        def has_outedge(nodes: list[Node], tensor: Tensor) -> bool:
+            return any(isinstance(n, OutEdge) and tensor in n.inputs for n in nodes)
+
+        for producer, group in node_to_group.items():
+            for consumer in self.successors(producer):
+                if consumer not in node_to_group or node_to_group[consumer] == group:
+                    continue
+                consumer_group = node_to_group[consumer]
+                for tensor in set(producer.outputs) & set(consumer.inputs):  # type: ignore[attr-defined]
+                    if not has_outedge(group_nodes[group], tensor):
+                        group_nodes[group].append(OutEdge(name=f"{tensor.name}_bridge_out", inputs=(tensor,)))
+                    if not has_inedge(group_nodes[consumer_group], tensor):
+                        bridge_in = InEdge(name=f"{tensor.name}_bridge_in", outputs=(tensor,))
+                        group_nodes[consumer_group].insert(0, bridge_in)
 
     def get_dimension_sizes(self) -> tuple[int, ...]:
         result_to_shape: list[tuple[AffineExpr, int]] = []
