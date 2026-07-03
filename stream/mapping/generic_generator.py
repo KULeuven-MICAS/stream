@@ -17,6 +17,7 @@ from typing import Any
 
 import yaml
 
+from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.parser.mapping_validator import MappingValidator
@@ -265,6 +266,26 @@ class GenericMappingGenerator:
                 remaining //= factor
         return split_factors
 
+    def _inter_core_unrolling(
+        self, sub_workload: Workload, cns: tuple[ComputationNode, ...]
+    ) -> dict[LayerDim, int]:
+        """Per global loop dimension, the largest inter-core split factor applied to it across the
+        group. This is exactly the "spatial unrolling" ``determine_fusion_splits`` divides by (it reads
+        it back from each layer's inter-core tiling), so the default intra-core tile must divide it out
+        to stay a no-op. A dimension shared across nodes (e.g. self-attention's query==key==seq collapse
+        to one symbol) takes the max, matching the fused-split accounting."""
+        unroll: dict[LayerDim, int] = {}
+        for cn in cns:
+            cores = self._select_cores_for_node(cn)
+            if len(cores) <= 1:
+                continue
+            node_dims = sub_workload.get_dims(cn)
+            for dim_idx, factor in self._factor_split_across_dims(sub_workload, cn, len(cores)):
+                if dim_idx < len(node_dims):
+                    dim = node_dims[dim_idx]
+                    unroll[dim] = max(unroll.get(dim, 1), factor)
+        return unroll
+
     def _build_intra_core_tiling(
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...]
     ) -> list[dict[str, Any]]:
@@ -273,18 +294,23 @@ class GenericMappingGenerator:
         When the caller supplied ``intra_core_tiling`` (layer-fusion tiling), use the entries that
         reference nodes present in this group -- this costs one steady-state tile rather than the
         full layer. Otherwise (or when no supplied entry matches this group) fall back to the trivial
-        default: tile the first computation node's first dimension at full size (nb_splits=1, a valid
-        no-op). Returns an empty list only if no computation node has dimensions.
-        """
+        default: tile the first computation node's first dimension so it is a single steady-state tile
+        (nb_splits=1). The tile is ``dim_size // inter_core_unrolling`` -- full size when the dimension
+        is not inter-core split (the common case, unchanged), but divided down when it is, so
+        ``tile x unrolling == dim_size`` and ``determine_fusion_splits`` does not overflow. Returns an
+        empty list only if no computation node has dimensions."""
         if self.intra_core_tiling:
             group_node_names = {cn.name for cn in cns}
             selected = [e for e in self.intra_core_tiling if str(e["dim"]).split(".")[0] in group_node_names]
             if selected:
                 return [dict(e) for e in selected]
 
+        unroll = self._inter_core_unrolling(sub_workload, cns)
         for ref_cn in cns:
             dims = sub_workload.get_dims(ref_cn)
             if dims:
                 dim_size = sub_workload.get_dimension_size(dims[0])
-                return [{"dim": f"{ref_cn.name}.D0", "tile": dim_size}]
+                factor = unroll.get(dims[0], 1)
+                tile = dim_size // factor if factor > 1 and dim_size % factor == 0 else dim_size
+                return [{"dim": f"{ref_cn.name}.D0", "tile": tile}]
         return []
