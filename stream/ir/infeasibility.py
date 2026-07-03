@@ -28,14 +28,50 @@ class ResourceRefIR(BaseModel):
     detail: dict[str, str] = Field(default_factory=dict, description="Tooltip facts, e.g. capacity vs. required")
 
 
+class ConstraintTermIR(BaseModel):
+    """One additive contributor to a resource's demand -- e.g. a tensor that must be resident -- with
+    the value it adds, so a designer sees exactly what is filling the resource up."""
+
+    label: str = Field(description="What the term is, e.g. a tensor name")
+    value: float = Field(description="Its contribution in the unmet-constraint's unit")
+    detail: str = Field(default="", description="Extra context, e.g. 'min 1 tile'")
+
+
+class UnmetConstraintIR(BaseModel):
+    """The derived hardware constraint that cannot be met, stated as an intuitive inequality with real
+    numbers and traced to the *inputs* that set each side -- so a designer knows what to change.
+
+    Reads: ``<demand_label> = <demand_value> <unit> <operator> <bound_value> <unit> = <bound_label>`` is
+    violated (short by ``gap``). ``demand`` comes from the workload/mapping, ``bound`` from the
+    hardware; ``levers`` list the concrete input edits that would make it fit.
+    """
+
+    family: str = Field(description="Constraint family, e.g. 'memory_capacity'")
+    statement: str = Field(description="One-line intuitive inequality with numbers")
+    demand_label: str = Field(description="What is demanded, e.g. 'tensors resident on Core 3'")
+    demand_value: float
+    demand_input: str = Field(description="Input(s) that set the demand, e.g. 'workload tensor sizes x mapping tiling'")
+    bound_label: str = Field(description="The hardware limit, e.g. 'Core 3 on-chip memory'")
+    bound_value: float
+    bound_input: str = Field(description="Input that sets the bound, e.g. 'hardware: Core 3 memory size'")
+    operator: str = Field(default="<=", description="The relation the demand must satisfy")
+    gap: float = Field(description="demand - bound in the unit; > 0 is the amount by which it overflows")
+    unit: str = Field(description="Unit of the values, e.g. 'bytes'")
+    terms: list[ConstraintTermIR] = Field(default_factory=list, description="Breakdown of the demand")
+    levers: list[str] = Field(default_factory=list, description="Concrete input changes that would satisfy it")
+
+
 class ImplicatedResourceIR(BaseModel):
-    """One physical resource the infeasibility is pinned to, with the human reason and the raw IIS
-    constraint names that bound it."""
+    """One physical resource the infeasibility is pinned to, with the human reason, the raw IIS
+    constraint names that bound it, and -- when quantifiable -- the unmet inequality in designer terms."""
 
     resource: ResourceRefIR
     constraint_kinds: list[str] = Field(description="Constraint families over-constraining this resource")
     reason: str = Field(description="Human-readable cause, e.g. 'on-chip memory capacity exceeded'")
     constraints: list[str] = Field(description="IIS constraint names bound to this resource")
+    unmet: UnmetConstraintIR | None = Field(
+        default=None, description="The quantitative unmet constraint (bound vs demand + levers), when derivable"
+    )
 
 
 class InfeasibilityReportIR(BaseModel):

@@ -22,10 +22,12 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
 from stream.ir.infeasibility import (
+    ConstraintTermIR,
     ImplicatedResourceIR,
     InfeasibilityReportIR,
     InfeasibleAllocationError,
     ResourceRefIR,
+    UnmetConstraintIR,
 )
 from stream.mapping.mapping import Mapping, Resource
 from stream.opt.allocation.constraint_optimization.context import (
@@ -151,6 +153,10 @@ class TransferAndTensorAllocator:
         # constraint-name -> (constraint-family, physical resource) for every constraint that binds a
         # hardware resource, so an infeasibility IIS can be mapped back to the offending core/link.
         self._constraint_resources: dict[str, tuple[str, Resource]] = {}
+        # Quantitative memory bookkeeping for the designer-facing diagnosis: per core id, the hardware
+        # capacity and the minimal resident bits each output tensor contributes.
+        self._memory_capacity_bits: dict[int, int] = {}
+        self._memory_demand_bits: dict[int, dict[str, int]] = {}
 
         # primary decision vars
         self.x_tensor_choice: dict[tuple[Tensor, TensorPlacementChoice], SolverVar] = {}
@@ -761,6 +767,7 @@ class TransferAndTensorAllocator:
     # ...................... memory capacity .................... #
     def _memory_capacity_constraints(self):
         self.core_load: dict[Core, Any] = defaultdict(int)
+        self._memory_demand_bits = defaultdict(dict)
         # Transfer output tensors on their chosen compute/memory cores
         for node in self.workload.get_iteration_space_nodes():
             for t in node.outputs:
@@ -769,18 +776,23 @@ class TransferAndTensorAllocator:
                 for c in candidate_cores:
                     assert isinstance(c, Core)
                     u = self._tensor_uses_core_var(t, c)
+                    min_req: int | None = None
                     for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                         size_factor = self.tiles_needed_levels[(t, stop)]
                         req_size = ceil(size_factor * tensor_size)
+                        min_req = req_size if min_req is None else min(min_req, req_size)
                         uz = self._add_binary_product(
                             a=u,
                             b=self.z_stop[(t, stop)],
                             base_name=f"memload_{t.name}_{_resource_key(c)}_L{stop}",
                         )
                         self.core_load[c] = self.core_load[c] + req_size * uz._raw
+                    if min_req is not None:  # the floor this tensor adds if resident on c (one tile)
+                        self._memory_demand_bits[c.id][t.name] = min_req
 
         for c, expr in self.core_load.items():
             cap = c.get_memory_capacity()
+            self._memory_capacity_bits[c.id] = cap
             self._add_resource_constr(
                 expr <= cap, name=f"mem_cap_{_resource_key(c)}", kind="memory_capacity", resource=c
             )
@@ -1282,6 +1294,69 @@ class TransferAndTensorAllocator:
         placement/indicator constraint that pins a resource but is not itself a hardware limit)."""
         return next((kind for prefix, kind in self._LIMIT_PREFIXES if name.startswith(prefix)), None)
 
+    @staticmethod
+    def _fmt_bytes(n: float) -> str:
+        """Human-readable byte size for the diagnosis."""
+        if abs(n) >= 1 << 20:
+            return f"{n / (1 << 20):.2f} MB"
+        if abs(n) >= 1 << 10:
+            return f"{n / (1 << 10):.1f} KB"
+        return f"{n:.0f} B"
+
+    def _memory_unmet(self, core_id: int, constraint_names: list[str]) -> UnmetConstraintIR | None:
+        """The quantitative memory constraint the designer must satisfy: the tensors forced resident on
+        this core (identified as the IIS witness -- their names appear in its constraints) must fit the
+        core's on-chip memory. Both sides carry their input provenance and the value that overflows."""
+        cap_bits = self._memory_capacity_bits.get(core_id)
+        demand = self._memory_demand_bits.get(core_id)
+        if cap_bits is None or not demand:
+            return None
+        # The forced-resident tensors are the exact subjects of the IIS's memload_/u_eq_ constraints
+        # for this core -- extract the subject rather than substring-matching (a base name is a prefix
+        # of its partitions, which would double-count).
+        forced: dict[str, int] = {}
+        markers = (f"_Core_{core_id}", f"_Core {core_id}")
+        for cn in constraint_names:
+            prefix = next((p for p in ("memload_", "u_eq_") if cn.startswith(p)), None)
+            if prefix is None:
+                continue
+            rest = cn[len(prefix) :]
+            cut = min((rest.index(m) for m in markers if m in rest), default=-1)
+            subject = rest[:cut] if cut >= 0 else rest
+            if subject in demand:
+                forced[subject] = demand[subject]
+        if not forced:
+            return None
+        demand_bytes = sum(forced.values()) / 8
+        cap_bytes = cap_bits / 8
+        gap = demand_bytes - cap_bytes
+        terms = [
+            ConstraintTermIR(label=t, value=bits / 8, detail="min resident (1 tile)")
+            for t, bits in sorted(forced.items(), key=lambda kv: -kv[1])
+        ]
+        return UnmetConstraintIR(
+            family="memory_capacity",
+            statement=(
+                f"tensors resident on Core {core_id} need {self._fmt_bytes(demand_bytes)}, "
+                f"but the core has {self._fmt_bytes(cap_bytes)} (short by {self._fmt_bytes(gap)})"
+            ),
+            demand_label=f"tensors that must be resident on Core {core_id}",
+            demand_value=demand_bytes,
+            demand_input="workload tensor sizes × mapping intra-core tiling",
+            bound_label=f"Core {core_id} on-chip memory",
+            bound_value=cap_bytes,
+            bound_input=f"hardware spec: Core {core_id} memory size",
+            operator="<=",
+            gap=gap,
+            unit="bytes",
+            terms=terms,
+            levers=[
+                f"Increase Core {core_id} on-chip memory to ≥ {self._fmt_bytes(demand_bytes)} (hardware spec)",
+                "Tile the fused group finer so fewer / smaller tiles are resident (mapping intra_core_tiling)",
+                "Reduce the workload's tensor sizes (fewer channels, smaller spatial, shorter sequence)",
+            ],
+        )
+
     def _resolve_iis_constraint(self, name: str) -> tuple[ResourceRefIR | None, str | None]:
         """Resolve one IIS constraint name to (physical-resource ref, resource-limit family). A tagged
         constraint yields a precise, detailed ref; otherwise a core id is recovered from the name
@@ -1354,13 +1429,24 @@ class TransferAndTensorAllocator:
                 if kinds
                 else "conflicting allocation constraints"
             )
+            ref = entry["ref"]
+            unmet: UnmetConstraintIR | None = None
+            if "memory_capacity" in kinds and ref.kind == "core" and ref.id.isdigit():
+                unmet = self._memory_unmet(int(ref.id), entry["constraints"])
             resources.append(
                 ImplicatedResourceIR(
-                    resource=entry["ref"], constraint_kinds=kinds, reason=reason, constraints=entry["constraints"]
+                    resource=ref,
+                    constraint_kinds=kinds,
+                    reason=reason,
+                    constraints=entry["constraints"],
+                    unmet=unmet,
                 )
             )
 
-        if resources:
+        quantified = next((r for r in resources if r.unmet is not None), None)
+        if quantified is not None:
+            summary = f"Infeasible mapping — {quantified.resource.label}: {quantified.unmet.statement}"
+        elif resources:
             cores = ", ".join(r.resource.label for r in resources if r.resource.kind == "core")
             summary = f"Infeasible mapping: {resources[0].reason}" + (f" on {cores}" if cores else "")
         elif not iis_available:
