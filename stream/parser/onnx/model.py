@@ -5,17 +5,17 @@ import onnx
 from onnx import NodeProto, TensorProto
 from zigzag.parser.onnx.utils import parse_onnx_model_from_path
 
-from stream.parser.onnx.add import AddParser
 from stream.parser.onnx.batch_norm import BatchNormParser
 from stream.parser.onnx.conv import ConvParser
+from stream.parser.onnx.elementwise import ElementwiseParser
 from stream.parser.onnx.fusion_edge import FusionEdgeParser
 from stream.parser.onnx.gemm import GemmParser
 from stream.parser.onnx.global_average_pool import GlobalAveragePoolParser
+from stream.parser.onnx.matmul import MatMulParser
 from stream.parser.onnx.max_pool import MaxPoolParser
-from stream.parser.onnx.mul import MulParser
+from stream.parser.onnx.normalization import NormalizationParser
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
-from stream.parser.onnx.relu import ReluParser
-from stream.parser.onnx.simd import SimdParser
+from stream.parser.onnx.slice_gather import GatherParser, SliceParser
 from stream.parser.onnx.utils import onnx_tensor_to_tensor
 from stream.workload.workload import InEdge, Node, OutEdge, Tensor, Workload
 
@@ -25,45 +25,45 @@ logger = logging.getLogger(__name__)
 class ONNXModelParser:
     """Parse the ONNX model into a workload."""
 
-    # Op types dispatched to FusionEdgeParser (shape-only boundary ops)
-    FUSION_EDGE_OPS: set[str] = {"Flatten", "Reshape"}
+    # Layout-only ops dispatched to FusionEdgeParser: pure re-indexing (no compute), a fusion-graph
+    # boundary rather than an affine ComputationNode. Normalizations (Softmax/LayerNorm/...) are NOT
+    # here -- they are schedulable NormalizationNodes that decompose for fusion analysis instead of
+    # splitting the graph (see stream.workload.normalization).
+    FUSION_EDGE_OPS: set[str] = {
+        "Flatten",
+        "Reshape",
+        "Transpose",
+        "Squeeze",
+        "Unsqueeze",
+    }
 
-    # Map the node's op_type to the corresponding Parser class
+    # Map the node's op_type to its affine-ComputationNode parser. Elementwise ops share one parser
+    # (identity maps + broadcast); MatMul/Gemm/Conv carry their own contraction maps.
     OP_TYPE_TO_PARSER: dict[str, type[OnnxOperatorParser]] = {
-        # General
-        # "QLinearConv": ConvParser,
         "Conv": ConvParser,
-        # "MatMul": MatMulParser,
         "Gemm": GemmParser,
-        # "Einsum": EinsumParser,
+        "MatMul": MatMulParser,
         "MaxPool": MaxPoolParser,
-        # "AveragePool": PoolingParser,
-        # "GlobalMaxPool": PoolingParser,
         "GlobalAveragePool": GlobalAveragePoolParser,
-        "Add": AddParser,
-        "Mul": MulParser,
-        # Special operators
-        # "SSM": SSMParser,
-        # "Softmax": SoftmaxParser,
-        # Single-input element-wise
-        # "Exp": ExpParser,
-        # "ReduceMean": Reduce1DParser,
-        "Relu": ReluParser,
-        # "Gelu": GeluParser,
-        "Silu": SimdParser,
-        # "Sigmoid": SigmoidParser,
-        # "Sqrt": SqrtParser,
-        # "Div": SimdParser,
-        # "Pow": SimdParser,
-        # "Reciprocal": ReciprocalParser,  # Div with 1 as numerator
-        # # Dependency propagation
-        # "LpNormalization": LpNormalizationParser,
-        # "Gather": GatherParser,
-        # "Transpose": TransposeParser,
-        # "Concat": ConcatParser,
-        # "Split": SplitParser,
-        # "Slice": SliceParser,
         "BatchNormalization": BatchNormParser,
+        # Normalizations (reduce-then-broadcast) -> a single schedulable NormalizationNode
+        "Softmax": NormalizationParser,
+        "LpNormalization": NormalizationParser,
+        "LayerNormalization": NormalizationParser,
+        # Data-movement / indexing (KV cache) -> access ComputationNodes carrying the moved region
+        "Slice": SliceParser,
+        "Gather": GatherParser,
+        # Elementwise (unary and binary, NumPy broadcast) -> ElementwiseParser
+        "Add": ElementwiseParser,
+        "Sub": ElementwiseParser,
+        "Mul": ElementwiseParser,
+        "Div": ElementwiseParser,
+        "Pow": ElementwiseParser,
+        "Relu": ElementwiseParser,
+        "Silu": ElementwiseParser,
+        "Gelu": ElementwiseParser,
+        "Sigmoid": ElementwiseParser,
+        "Tanh": ElementwiseParser,
     }
 
     def __init__(self, onnx_model_path: str) -> None:
