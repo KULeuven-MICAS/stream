@@ -153,10 +153,13 @@ class TransferAndTensorAllocator:
         # constraint-name -> (constraint-family, physical resource) for every constraint that binds a
         # hardware resource, so an infeasibility IIS can be mapped back to the offending core/link.
         self._constraint_resources: dict[str, tuple[str, Resource]] = {}
-        # Quantitative memory bookkeeping for the designer-facing diagnosis: per core id, the hardware
-        # capacity and the minimal resident bits each output tensor contributes.
-        self._memory_capacity_bits: dict[int, int] = {}
-        self._memory_demand_bits: dict[int, dict[str, int]] = {}
+        # Quantitative bookkeeping for the designer-facing diagnosis, general across resource families:
+        #   (family, core id) -> hardware bound value (in the family's unit)
+        #   (family, core id) -> {contributor label -> its demand value}
+        # so any resource-capacity constraint (memory, object-FIFO, buffer descriptors, DMA) can be
+        # reported as an intuitive "demand vs bound" inequality with per-contributor terms.
+        self._resource_bounds: dict[tuple[str, int], float] = {}
+        self._resource_terms: dict[tuple[str, int], dict[str, float]] = defaultdict(dict)
 
         # primary decision vars
         self.x_tensor_choice: dict[tuple[Tensor, TensorPlacementChoice], SolverVar] = {}
@@ -767,7 +770,6 @@ class TransferAndTensorAllocator:
     # ...................... memory capacity .................... #
     def _memory_capacity_constraints(self):
         self.core_load: dict[Core, Any] = defaultdict(int)
-        self._memory_demand_bits = defaultdict(dict)
         # Transfer output tensors on their chosen compute/memory cores
         for node in self.workload.get_iteration_space_nodes():
             for t in node.outputs:
@@ -787,12 +789,12 @@ class TransferAndTensorAllocator:
                             base_name=f"memload_{t.name}_{_resource_key(c)}_L{stop}",
                         )
                         self.core_load[c] = self.core_load[c] + req_size * uz._raw
-                    if min_req is not None:  # the floor this tensor adds if resident on c (one tile)
-                        self._memory_demand_bits[c.id][t.name] = min_req
+                    if min_req is not None:  # bytes this tensor adds if resident on c (one tile)
+                        self._resource_terms[("memory_capacity", c.id)][t.name] = min_req / 8
 
         for c, expr in self.core_load.items():
             cap = c.get_memory_capacity()
-            self._memory_capacity_bits[c.id] = cap
+            self._resource_bounds[("memory_capacity", c.id)] = cap / 8  # bytes
             self._add_resource_constr(
                 expr <= cap, name=f"mem_cap_{_resource_key(c)}", kind="memory_capacity", resource=c
             )
@@ -808,16 +810,20 @@ class TransferAndTensorAllocator:
                         continue
                     assert isinstance(c, Core)
                     u = self._tensor_uses_core_var(t, c)
+                    min_tiles: int | None = None
                     for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                         tiles_needed = self.tiles_needed_levels[(t, stop)]
-
+                        min_tiles = tiles_needed if min_tiles is None else min(min_tiles, tiles_needed)
                         uz = self._add_binary_product(
                             a=u,
                             b=self.z_stop[(t, stop)],
                             base_name=f"objfifo_{t.name}_{_resource_key(c)}_L{stop}",
                         )
                         self.object_fifo_depth[c] = self.object_fifo_depth[c] + tiles_needed * uz._raw
+                    if min_tiles is not None:
+                        self._resource_terms[("object_fifo_depth", c.id)][t.name] = min_tiles
         self.context.add_object_fifo_constraints(self.model, self.object_fifo_depth)
+        self._record_capacity_bounds("object_fifo_depth", self.object_fifo_depth, "aie2_obj_fifo_depth")
 
     def _buffer_descriptor_constraints(self):
         """
@@ -833,9 +839,11 @@ class TransferAndTensorAllocator:
                         continue
                     u = self._tensor_uses_core_var(t, c)
                     assert isinstance(c, Core)
+                    min_bd: int | None = None
                     if c.type == "compute":
                         for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                             bds_needed = self.tiles_needed_levels[(t, stop)]
+                            min_bd = bds_needed if min_bd is None else min(min_bd, bds_needed)
                             uz = self._add_binary_product(
                                 a=u,
                                 b=self.z_stop[(t, stop)],
@@ -877,8 +885,12 @@ class TransferAndTensorAllocator:
                                 base_name=f"bddepth_active_{t.name}_{_resource_key(c)}_L{stop}",
                             )
                             bds_needed = self.bds_needed_levels[(t, stop)]
+                            min_bd = bds_needed if min_bd is None else min(min_bd, bds_needed)
                             self.bd_depth[c] = self.bd_depth[c] + bds_needed * uzgate._raw
+                    if min_bd is not None:
+                        self._resource_terms[("buffer_descriptors", c.id)][t.name] = min_bd
         self.context.add_buffer_descriptor_constraints(self.model, self.bd_depth)
+        self._record_capacity_bounds("buffer_descriptors", self.bd_depth, "aie2_bd_depth")
 
     def _ensure_memory_and_compute_reuse_compatibility(self):
         """
@@ -1283,11 +1295,61 @@ class TransferAndTensorAllocator:
     _LIMIT_PREFIXES: tuple[tuple[str, str], ...] = (
         ("mem_cap", "memory_capacity"),
         ("memload", "memory_capacity"),
+        ("aie2_obj_fifo", "object_fifo_depth"),
+        ("objfifo", "object_fifo_depth"),
+        ("aie2_bd", "buffer_descriptors"),
+        ("bddepth", "buffer_descriptors"),
         ("link_used", "link_contention"),
-        ("fifo", "object_fifo_depth"),
-        ("bd", "buffer_descriptors"),
         ("dma", "dma_channels"),
     )
+
+    # Per resource-capacity family: how to phrase and quantify its unmet inequality. `term_prefixes`
+    # are the IIS constraint-name prefixes whose subject is a demand contributor for this family. A new
+    # capacity family becomes quantifiable by adding one entry here + recording its bound/terms.
+    _FAMILY_META: dict[str, dict[str, Any]] = {
+        "memory_capacity": {
+            "unit": "bytes",
+            "demand_label": "tensors resident on",
+            "bound_label": "on-chip memory of",
+            "demand_input": "workload tensor sizes × mapping intra-core tiling",
+            "bound_input": "hardware spec: core memory size",
+            "term_prefixes": ("memload_", "u_eq_"),
+            "term_detail": "min resident (1 tile)",
+            "levers": (
+                "Increase {core} on-chip memory (hardware spec)",
+                "Tile the fused group finer so fewer / smaller tiles are resident (mapping intra_core_tiling)",
+                "Reduce the workload's tensor sizes (fewer channels, smaller spatial, shorter sequence)",
+            ),
+        },
+        "object_fifo_depth": {
+            "unit": "FIFO slots",
+            "demand_label": "concurrently buffered tiles on",
+            "bound_label": "object-FIFO depth of",
+            "demand_input": "mapping reuse levels × fused tiles",
+            "bound_input": "hardware spec: tile object-FIFO depth",
+            "term_prefixes": ("objfifo_", "u_eq_"),
+            "term_detail": "min buffered tiles",
+            "levers": (
+                "Increase {core}'s object-FIFO depth (hardware spec)",
+                "Lower buffering: reduce reuse / double-buffering (mapping)",
+                "Route fewer tensors through {core} (mapping)",
+            ),
+        },
+        "buffer_descriptors": {
+            "unit": "descriptors",
+            "demand_label": "buffer descriptors on",
+            "bound_label": "buffer-descriptor budget of",
+            "demand_input": "mapping tiling × transfers through the tile",
+            "bound_input": "hardware spec: tile buffer-descriptor count",
+            "term_prefixes": ("bddepth_", "u_eq_"),
+            "term_detail": "min descriptors",
+            "levers": (
+                "Increase {core}'s buffer-descriptor budget (hardware spec)",
+                "Reduce distinct transfers / reuse levels through {core} (mapping)",
+                "Fuse fewer tensors through {core} (mapping)",
+            ),
+        },
+    }
 
     def _limit_kind_from_name(self, name: str) -> str | None:
         """Map an untagged IIS constraint name to a resource-limit family (or None if it is a
@@ -1303,58 +1365,71 @@ class TransferAndTensorAllocator:
             return f"{n / (1 << 10):.1f} KB"
         return f"{n:.0f} B"
 
-    def _memory_unmet(self, core_id: int, constraint_names: list[str]) -> UnmetConstraintIR | None:
-        """The quantitative memory constraint the designer must satisfy: the tensors forced resident on
-        this core (identified as the IIS witness -- their names appear in its constraints) must fit the
-        core's on-chip memory. Both sides carry their input provenance and the value that overflows."""
-        cap_bits = self._memory_capacity_bits.get(core_id)
-        demand = self._memory_demand_bits.get(core_id)
-        if cap_bits is None or not demand:
-            return None
-        # The forced-resident tensors are the exact subjects of the IIS's memload_/u_eq_ constraints
-        # for this core -- extract the subject rather than substring-matching (a base name is a prefix
-        # of its partitions, which would double-count).
-        forced: dict[str, int] = {}
+    @staticmethod
+    def _fmt_qty(value: float, unit: str) -> str:
+        """Human-readable quantity for the diagnosis: bytes scale to KB/MB, counts stay integral."""
+        if unit == "bytes":
+            return TransferAndTensorAllocator._fmt_bytes(value)
+        rounded = int(round(value))
+        return f"{rounded} {unit}"
+
+    def _forced_terms(self, terms: dict[str, float], core_id: int, prefixes: tuple[str, ...], names: list[str]) -> dict:
+        """The demand contributors the IIS actually forces onto this core: the exact subjects of its
+        constraints whose prefix marks this family. Extracts the subject (up to the ``_Core_<id>``
+        marker) rather than substring-matching, so a base tensor name is not double-counted with its
+        partitions."""
         markers = (f"_Core_{core_id}", f"_Core {core_id}")
-        for cn in constraint_names:
-            prefix = next((p for p in ("memload_", "u_eq_") if cn.startswith(p)), None)
+        forced: dict[str, float] = {}
+        for cn in names:
+            prefix = next((p for p in prefixes if cn.startswith(p)), None)
             if prefix is None:
                 continue
             rest = cn[len(prefix) :]
             cut = min((rest.index(m) for m in markers if m in rest), default=-1)
             subject = rest[:cut] if cut >= 0 else rest
-            if subject in demand:
-                forced[subject] = demand[subject]
+            if subject in terms:
+                forced[subject] = terms[subject]
+        return forced
+
+    def _build_unmet(self, family: str, core_id: int, constraint_names: list[str]) -> UnmetConstraintIR | None:
+        """The quantitative constraint the designer must satisfy for this resource family, as an
+        intuitive ``demand <= bound`` inequality with per-contributor terms, input provenance, and the
+        levers that would make it fit. Family-agnostic: driven by the recorded bound/terms + the family
+        descriptor, so every recorded resource-capacity family (memory, object-FIFO, buffer descriptors)
+        is quantified the same way."""
+        meta = self._FAMILY_META.get(family)
+        bound = self._resource_bounds.get((family, core_id))
+        terms_all = self._resource_terms.get((family, core_id))
+        if meta is None or bound is None or not terms_all:
+            return None
+        forced = self._forced_terms(terms_all, core_id, meta["term_prefixes"], constraint_names)
         if not forced:
             return None
-        demand_bytes = sum(forced.values()) / 8
-        cap_bytes = cap_bits / 8
-        gap = demand_bytes - cap_bytes
+        unit = meta["unit"]
+        demand = sum(forced.values())
+        gap = demand - bound
+        core = f"Core {core_id}"
         terms = [
-            ConstraintTermIR(label=t, value=bits / 8, detail="min resident (1 tile)")
-            for t, bits in sorted(forced.items(), key=lambda kv: -kv[1])
+            ConstraintTermIR(label=t, value=v, detail=meta["term_detail"])
+            for t, v in sorted(forced.items(), key=lambda kv: -kv[1])
         ]
         return UnmetConstraintIR(
-            family="memory_capacity",
+            family=family,
             statement=(
-                f"tensors resident on Core {core_id} need {self._fmt_bytes(demand_bytes)}, "
-                f"but the core has {self._fmt_bytes(cap_bytes)} (short by {self._fmt_bytes(gap)})"
+                f"{meta['demand_label']} {core} need {self._fmt_qty(demand, unit)}, but the "
+                f"{meta['bound_label']} {core} is {self._fmt_qty(bound, unit)} (short by {self._fmt_qty(gap, unit)})"
             ),
-            demand_label=f"tensors that must be resident on Core {core_id}",
-            demand_value=demand_bytes,
-            demand_input="workload tensor sizes × mapping intra-core tiling",
-            bound_label=f"Core {core_id} on-chip memory",
-            bound_value=cap_bytes,
-            bound_input=f"hardware spec: Core {core_id} memory size",
+            demand_label=f"{meta['demand_label']} {core}",
+            demand_value=demand,
+            demand_input=meta["demand_input"],
+            bound_label=f"{meta['bound_label']} {core}",
+            bound_value=bound,
+            bound_input=meta["bound_input"],
             operator="<=",
             gap=gap,
-            unit="bytes",
+            unit=unit,
             terms=terms,
-            levers=[
-                f"Increase Core {core_id} on-chip memory to ≥ {self._fmt_bytes(demand_bytes)} (hardware spec)",
-                "Tile the fused group finer so fewer / smaller tiles are resident (mapping intra_core_tiling)",
-                "Reduce the workload's tensor sizes (fewer channels, smaller spatial, shorter sequence)",
-            ],
+            levers=[lever.format(core=core) for lever in meta["levers"]],
         )
 
     def _resolve_iis_constraint(self, name: str) -> tuple[ResourceRefIR | None, str | None]:
@@ -1379,6 +1454,19 @@ class TransferAndTensorAllocator:
         self.model.add_constr(expr, name=name)
         self._constraint_resources[name] = (kind, resource)
 
+    def _record_capacity_bounds(self, family: str, demand_dict: dict[Core, Any], name_prefix: str) -> None:
+        """For a per-core capacity family whose bound constraint the *namespace* context adds (object
+        FIFO / buffer descriptors), record the hardware bound and register the context's deterministic
+        constraint name ``{name_prefix}_Core_{id}`` so the IIS maps back to the family + core. The
+        bound is the AIE tile's ``max_object_fifo_depth``; only tiles that expose it (where the context
+        actually adds the constraint) are recorded."""
+        for c in demand_dict:
+            bound = getattr(c, "max_object_fifo_depth", None)
+            if bound is None:
+                continue
+            self._resource_bounds[(family, c.id)] = float(bound)
+            self._constraint_resources[f"{name_prefix}_Core_{c.id}"] = (family, c)
+
     def _resource_ref_ir(self, resource: Resource) -> ResourceRefIR:
         """Serialize a physical resource to the IR the architecture view highlights. Extend with new
         ``isinstance`` arms as new resource kinds get bound to constraints."""
@@ -1390,6 +1478,27 @@ class TransferAndTensorAllocator:
                 pass
             return ResourceRefIR(kind="core", id=str(resource.id), label=f"Core {resource.id}", detail=detail)
         return ResourceRefIR(kind="link", id=_resource_key(resource), label=_resource_key(resource))
+
+    def _implicated_resource(self, entry: dict[str, Any]) -> ImplicatedResourceIR:
+        """Build the diagnosis for one implicated resource: its reason and -- when a recorded capacity
+        family (memory / object-FIFO / buffer descriptors) is among its conflicts -- the quantitative
+        unmet inequality."""
+        kinds = sorted(entry["kinds"])
+        reason = (
+            "; ".join(self._KIND_REASON.get(k, k.replace("_", " ")) for k in kinds)
+            if kinds
+            else "conflicting allocation constraints"
+        )
+        ref = entry["ref"]
+        unmet: UnmetConstraintIR | None = None
+        if ref.kind == "core" and ref.id.isdigit():
+            for fam in kinds:  # quantify the first family with recorded bound + demand
+                unmet = self._build_unmet(fam, int(ref.id), entry["constraints"])
+                if unmet is not None:
+                    break
+        return ImplicatedResourceIR(
+            resource=ref, constraint_kinds=kinds, reason=reason, constraints=entry["constraints"], unmet=unmet
+        )
 
     def _build_infeasibility_report(self, status: str, group: str | None = None) -> InfeasibilityReportIR:
         """Turn an infeasible solve into a per-resource diagnosis. Uses the solver's IIS (Gurobi) to
@@ -1421,27 +1530,7 @@ class TransferAndTensorAllocator:
                 entry["kinds"].add(kind)
             entry["constraints"].append(name)
 
-        resources: list[ImplicatedResourceIR] = []
-        for entry in grouped.values():
-            kinds = sorted(entry["kinds"])
-            reason = (
-                "; ".join(self._KIND_REASON.get(k, k.replace("_", " ")) for k in kinds)
-                if kinds
-                else "conflicting allocation constraints"
-            )
-            ref = entry["ref"]
-            unmet: UnmetConstraintIR | None = None
-            if "memory_capacity" in kinds and ref.kind == "core" and ref.id.isdigit():
-                unmet = self._memory_unmet(int(ref.id), entry["constraints"])
-            resources.append(
-                ImplicatedResourceIR(
-                    resource=ref,
-                    constraint_kinds=kinds,
-                    reason=reason,
-                    constraints=entry["constraints"],
-                    unmet=unmet,
-                )
-            )
+        resources = [self._implicated_resource(entry) for entry in grouped.values()]
 
         quantified = next((r for r in resources if r.unmet is not None), None)
         if quantified is not None:
