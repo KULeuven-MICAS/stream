@@ -278,10 +278,10 @@ class ZigZagCostEstimator:
         return ZigZagMemoryOperandLinks(memory_operand_links)
 
     def get_mapping_attributes(self, node: ComputationNode, core: Core) -> ZigZagMappingAttributes:
-        if core.dataflows:
-            spatial_mapping = core.dataflows
-        else:
-            spatial_mapping = ZigZagSpatialMapping.empty()
+        # A core is costed through the ZigZag backend even when it is not itself ZigZag-backed (e.g. an
+        # AIE tile): such a core exposes no `dataflows`, so fall back to an empty spatial mapping.
+        dataflows = getattr(core, "dataflows", None)
+        spatial_mapping = dataflows if dataflows else ZigZagSpatialMapping.empty()
         spatial_mapping_hint = ZigZagSpatialMappingHint.empty()
         memory_operand_links = self.get_memory_operand_links(node, core)
         temporal_ordering = ZigZagLayerTemporalOrdering.empty()
@@ -303,8 +303,8 @@ class ZigZagCostEstimator:
         )
 
     def estimate(self, node: ComputationNode, core: Core) -> CoreCostEntry:
-        layer_node = self.get_layer_node(node, core)
         try:
+            layer_node = self.get_layer_node(node, core)
             cme = self.run_zigzag(layer_node, core)
             cme = self.increase_cc_per_op(cme, node.type)
             return CoreCostEntry(
@@ -318,15 +318,16 @@ class ZigZagCostEstimator:
                 layer=node,
             )
         except Exception:
-            # Bug 3 fallback: ZigZag estimation failed (e.g. spatial mapping generation crash
-            # for certain Conv configurations). Fall back to ideal_cycle-based estimate.
+            # Fallback: this core is not costable by ZigZag -- either it has no ZigZag backend (e.g. an
+            # AIE tile, whose `dataflows`/`mem_hierarchy_dict` do not exist) or spatial-mapping generation
+            # crashed for certain Conv configs. Use an ideal-cycle estimate from the (core-independent)
+            # layer dimension sizes so a mappable node still gets a cost instead of failing the run.
             logger.warning(
                 f"ZigZag estimation failed for {node.name} on core {core.id}. Falling back to ideal-cycle estimate."
             )
-            # Compute ideal cycle from product of all layer dimension sizes
             from functools import reduce  # noqa: PLC0415
 
-            dim_sizes = layer_node.layer_dim_sizes
+            dim_sizes = self.get_layer_node_attributes(node).layer_dim_sizes
             ideal_cycle = float(reduce(lambda a, b: a * b, dim_sizes.data.values(), 1))
             return CoreCostEntry(
                 energy_total=0.0,

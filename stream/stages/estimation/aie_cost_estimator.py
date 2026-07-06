@@ -21,8 +21,10 @@ class AIECostEstimator:
         total_inter_core_tiling = self._get_total_inter_core_tiling_factor(node)
         macs = prod(dim_sizes) // total_inter_core_tiling
         kernel = self.mapping.get(node).kernel
-        assert kernel is not None, "Kernel must be defined in mapping for AIE cost estimation."
-        utilization = kernel.utilization
+        # No kernel model (e.g. a generically auto-mapped node) -> assume ideal (100%) utilisation so the
+        # run completes with an ideal-cycle estimate instead of failing; a hand-written AIE mapping
+        # supplies a real kernel with its measured utilisation.
+        utilization = kernel.utilization if kernel is not None else 100.0
         ideal_ops_per_cycle = self.ops_per_cycle(node, core)
         ideal_cycles = ceil(macs / ideal_ops_per_cycle)
         ops_per_cycle = ideal_ops_per_cycle * (utilization / 100.0)
@@ -41,11 +43,12 @@ class AIECostEstimator:
         )
 
     def _get_total_inter_core_tiling_factor(self, node):
-        assert len(self.mapping.get(node).inter_core_tiling) == 1, (
-            "TODO: Make this work with more than one inter_core_tiling"
-        )
-        total_inter_core_tiling = prod(factor for _, factor in self.mapping.get(node).inter_core_tiling[0])
-        return total_inter_core_tiling
+        # The first (typically only) allocation slot's split factors. Robust to an empty tiling so a
+        # generically auto-mapped node does not crash cost estimation.
+        slots = self.mapping.get(node).inter_core_tiling
+        if not slots:
+            return 1
+        return prod(factor for _, factor in slots[0]) or 1
 
     def ops_per_cycle(self, node: ComputationNode, core: Core) -> int:
         """Depending on the node inputs and output data type and core type,
