@@ -19,11 +19,19 @@ from dataclasses import dataclass
 
 from xdsl.ir.affine import AffineDimExpr
 
+from stream.workload.access_relation import access_for
 from stream.workload.affine_access import compose_dependency, footprint, map_dim_positions
-from stream.workload.node import HasIterationSpace
+from stream.workload.node import HasIterationSpace, NormalizationNode
 from stream.workload.tensor import Tensor
 
-__all__ = ["FusionWindow", "pairwise_fusion", "shared_tensor"]
+__all__ = [
+    "FusionWindow",
+    "pairwise_fusion",
+    "shared_tensor",
+    "EdgeFusion",
+    "edge_fusions",
+    "workload_fusion_edges",
+]
 
 
 @dataclass(frozen=True)
@@ -117,3 +125,68 @@ def _region_elements(ranges) -> int:
     for r in ranges:
         total *= max(1, len(r))
     return total
+
+
+# --------------------------------------------------------------------------- #
+#  AccessRelation-aware edge classification (data-dependent / reduction barriers) #
+# --------------------------------------------------------------------------- #
+@dataclass(frozen=True)
+class EdgeFusion:
+    """Fusibility of one producer->consumer edge, classified from the consumer's AccessRelation on the
+    shared tensor (the axis-level window/buffer is :func:`pairwise_fusion`; this is the barrier view).
+
+    - ``data_dependent`` -- the consumer reads the shared tensor with a data-dependent index (gather /
+      MoE dispatch or combine): a **hard barrier**, the producer cannot be fused in at all until a
+      rewrite lifts the indexing. ``fusible`` is then False.
+    - ``reduction_axes`` -- consumer axes that are a **full reduction** of the shared tensor (a
+      normalization's reduced axis): fusible along the *other* (parallel) axes, a barrier along these.
+    """
+
+    producer: str
+    consumer: str
+    tensor: str
+    data_dependent: bool
+    reduction_axes: tuple[int, ...]
+
+    @property
+    def fusible(self) -> bool:
+        """Fusible along at least the parallel axes. False only for a data-dependent (hard) barrier."""
+        return not self.data_dependent
+
+
+def _shared_tensors(producer: HasIterationSpace, consumer: HasIterationSpace) -> list[Tensor]:
+    return [t for t in producer.outputs if t in consumer.inputs]
+
+
+def edge_fusions(producer: HasIterationSpace, consumer: HasIterationSpace) -> list[EdgeFusion]:
+    """Classify every shared tensor on a producer->consumer edge (usually one).
+
+    A data-dependent consumer read is a hard barrier (``access_for`` reports a non-static access); a
+    normalization consumer contributes its ``reduction_axes`` as barrier axes. Neither uses op-specific
+    code beyond the AccessRelation -- new data-dependent ops register via ``register_data_dependent_op``.
+    """
+    results: list[EdgeFusion] = []
+    reduction = consumer.reduction_axes if isinstance(consumer, NormalizationNode) else ()
+    for tensor in _shared_tensors(producer, consumer):
+        data_dependent = not access_for(consumer, tensor).is_static
+        results.append(
+            EdgeFusion(
+                producer=producer.name,
+                consumer=consumer.name,
+                tensor=tensor.name,
+                data_dependent=data_dependent,
+                reduction_axes=tuple(reduction),
+            )
+        )
+    return results
+
+
+def workload_fusion_edges(workload) -> list[EdgeFusion]:
+    """Classify every compute-to-compute edge of ``workload`` (skips InEdge/OutEdge/FusionEdge
+    boundaries). The result is an annotative fusion map -- which producer->consumer edges are
+    streamable, which are data-dependent hard barriers, and which carry a reduction axis."""
+    edges: list[EdgeFusion] = []
+    for producer, consumer in workload.edges:
+        if isinstance(producer, HasIterationSpace) and isinstance(consumer, HasIterationSpace):
+            edges.extend(edge_fusions(producer, consumer))
+    return edges

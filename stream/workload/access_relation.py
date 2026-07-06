@@ -37,6 +37,8 @@ __all__ = [
     "PiecewiseAffineAccess",
     "DataDependentAccess",
     "access_for",
+    "register_data_dependent_op",
+    "is_data_dependent_op",
 ]
 
 Tile = Mapping[int | AffineDimExpr, range]
@@ -164,11 +166,39 @@ class DataDependentAccess(AccessRelation):
         return self.bounding.footprint(tile)
 
 
+# Op types whose *data* input is read with a runtime-dependent index (gather/scatter, MoE routing).
+# Their affine map is a conservative bounding access (the whole indexed axis); the true selection is
+# data-dependent. A private overlay adds its own routing ops via ``register_data_dependent_op`` rather
+# than editing this set -- the plugin boundary for the DataDependent bucket.
+_DATA_DEPENDENT_OPS: set[str] = {"Gather", "Scatter", "MoEDispatch", "MoECombine"}
+
+
+def register_data_dependent_op(op_type: str) -> None:
+    """Declare an op type whose first input is a data-dependent (gather-like) read, so
+    :func:`access_for` returns a :class:`DataDependentAccess` for it."""
+    _DATA_DEPENDENT_OPS.add(op_type)
+
+
+def is_data_dependent_op(op_type: str) -> bool:
+    """Whether ``op_type`` reads its data input with a runtime-dependent index."""
+    return op_type in _DATA_DEPENDENT_OPS
+
+
 def access_for(node: HasIterationSpace, operand: Tensor) -> AccessRelation:
     """The access relation of ``operand`` on ``node``.
 
-    Returns an :class:`AffineAccess` for every node built today -- the default derivation is affine, so
-    behavior is bit-identical. Frontends or a private overlay construct
-    :class:`PiecewiseAffineAccess` / :class:`DataDependentAccess` where the affine box is dishonest.
+    Affine by default -- the derivation is bit-identical for the whole affine family (Conv/Gemm/MatMul/
+    Slice/Scan/elementwise/normalization) and every node built before this taxonomy existed. The one
+    upgrade: the *data* input (``inputs[0]``) of a data-dependent op (:func:`is_data_dependent_op` --
+    Gather, MoE dispatch/combine, …) becomes a :class:`DataDependentAccess` whose bounding access is the
+    conservative affine map and whose ``index_tensor`` is the routing/index operand (if any). Footprint
+    and relevancy are unchanged (they fall back to the bounding map); only ``is_static`` flips, which is
+    exactly what fusion analysis must see. Frontends / a private overlay can also build
+    :class:`PiecewiseAffineAccess` (masked/windowed regions) explicitly.
     """
-    return AffineAccess(node.get_mapping(operand))
+    affine = AffineAccess(node.get_mapping(operand))
+    op_type = getattr(node, "type", None)
+    if op_type is not None and op_type in _DATA_DEPENDENT_OPS and node.inputs and operand == node.inputs[0]:
+        index_tensor = node.inputs[-1].name if len(node.inputs) > 1 else ""
+        return DataDependentAccess(bounding=affine, index_tensor=index_tensor)
+    return affine

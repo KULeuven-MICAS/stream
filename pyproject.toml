@@ -66,6 +66,15 @@ dev = ["bumpver", "pip-tools", "build", "twine", "pre-commit", "pytest", "pytest
 [project.scripts]
 stream-setup-aie = "stream.aie_setup:main"
 
+# Plugin boundaries (Phase 2 moat seam): an out-of-tree private overlay registers its own workload
+# frontends and reference blocks through these entry-point groups -- no fork of the public repo. The
+# public package ships only the framework, interfaces, taxonomy, and toy/reference implementations.
+[project.entry-points."stream.frontends"]
+onnx = "stream.frontends.onnx:OnnxFrontend"
+
+[project.entry-points."stream.workload_blocks"]
+# Built-in blocks register in-tree (stream.workload.blocks); overlays add their own entries here.
+
 [project.urls]
 Homepage = "https://github.com/KULeuven-MICAS/stream"
 
