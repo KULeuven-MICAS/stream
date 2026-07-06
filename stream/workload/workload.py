@@ -939,14 +939,20 @@ class Workload(DiGraphWrapper[Node]):
         unique_dims, dim_values = self.unique_dimensions()
         dim_sizes = self.get_dimension_sizes()
 
-        # Build unique dimensions info
-        unique_dims_info = {
-            str(dim): {
+        # Build unique dimensions info. `dim_sizes` is indexed by *global loop slot* (0..num_dims-1),
+        # while `unique_dims` are the free variables z0..zk -- a unique dim z_i does NOT live at global
+        # slot i. Its size is the size of the loop slot that *is* that free variable, i.e. the slot j
+        # where dim_values[j] == z_i (that slot always exists: it is the free variable's own column).
+        # This keeps unique_dimensions consistent with each node's per-dimension sizes.
+        value_strs = [str(dv) for dv in dim_values]
+        unique_dims_info = {}
+        for i, dim in enumerate(unique_dims):
+            key = str(dim)
+            slot = value_strs.index(key) if key in value_strs else None
+            unique_dims_info[key] = {
                 "index": i,
-                "size": dim_sizes[i] if i < len(dim_sizes) else None,
+                "size": dim_sizes[slot] if slot is not None and slot < len(dim_sizes) else None,
             }
-            for i, dim in enumerate(unique_dims)
-        }
 
         # Build nodes info
         nodes_info = []
