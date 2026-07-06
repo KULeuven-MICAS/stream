@@ -81,13 +81,12 @@ def _load_plugins() -> None:
     for ep in eps:
         try:
             obj = ep.load()
-            register_frontend(obj() if callable(obj) and not _is_frontend(obj) else obj)
+            # An entry point resolves to the frontend class (instantiate it) or an instance (use it).
+            # Note: a class also passes isinstance() against a runtime_checkable Protocol, so key on
+            # type() -- checking the Protocol would wrongly register the class itself.
+            register_frontend(obj() if isinstance(obj, type) else obj)
         except Exception as exc:  # pragma: no cover - a broken plugin must not break ingestion
             logger.warning("skipping frontend plugin %r: %s", ep.name, exc)
-
-
-def _is_frontend(obj: Any) -> bool:
-    return isinstance(obj, WorkloadFrontend)
 
 
 def available_frontends() -> tuple[WorkloadFrontend, ...]:
