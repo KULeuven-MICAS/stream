@@ -28,13 +28,27 @@ class ResourceRefIR(BaseModel):
     detail: dict[str, str] = Field(default_factory=dict, description="Tooltip facts, e.g. capacity vs. required")
 
 
+class TileDimIR(BaseModel):
+    """One dimension of a tensor tile: its loop-dim label (the affine symbol also shown in the graph
+    view) and the tile size along it -- so the per-dimension sizes that make up a tensor's tile are
+    visible, not just the total."""
+
+    label: str = Field(description="Loop-dim symbol, e.g. 'z32'")
+    size: int = Field(description="Tile size along this dimension")
+
+
 class ConstraintTermIR(BaseModel):
     """One additive contributor to a resource's demand -- e.g. a tensor that must be resident -- with
-    the value it adds, so a designer sees exactly what is filling the resource up."""
+    the value it adds and, for a tensor, its per-dimension tile shape + dtype, so a designer sees
+    exactly which tile (and why it is large) fills the resource up."""
 
     label: str = Field(description="What the term is, e.g. a tensor name")
     value: float = Field(description="Its contribution in the unmet-constraint's unit")
     detail: str = Field(default="", description="Extra context, e.g. 'min 1 tile'")
+    dtype: str = Field(default="", description="Element type of a tensor term, e.g. 'bf16'")
+    dims: list[TileDimIR] = Field(
+        default_factory=list, description="Per-dimension tile sizes whose product (× dtype) makes up the value"
+    )
 
 
 class UnmetConstraintIR(BaseModel):

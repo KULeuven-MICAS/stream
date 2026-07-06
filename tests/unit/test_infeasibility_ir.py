@@ -98,3 +98,21 @@ def test_unmet_forced_terms_avoid_partition_double_count():
     assert unmet is not None
     assert {t.label for t in unmet.terms} == {"conv_out_1"}
     assert unmet.demand_value == 1_600_000
+
+
+def test_unmet_memory_term_carries_tile_shape():
+    """A memory term recorded as a {value, dims, dtype} record surfaces the per-dimension tile sizes and
+    dtype, and the value still drives the demand -- so the designer sees which tile (and why) fills the
+    core, not just the total."""
+    alloc = _bare_allocator()
+    alloc._resource_bounds[("memory_capacity", 3)] = 2_000_000.0
+    alloc._resource_terms[("memory_capacity", 3)] = {
+        "conv_out": {"value": 1_600_000, "dims": [("z32", 64), ("z3", 112), ("z4", 112)], "dtype": "f32"}
+    }
+    iis = ["mem_cap_Core 3", "memload_conv_out_Core_3_L-1__lb"]
+    unmet = alloc._build_unmet("memory_capacity", 3, iis)
+    assert unmet is not None
+    (term,) = unmet.terms
+    assert term.value == 1_600_000 and unmet.demand_value == 1_600_000
+    assert term.dtype == "f32"
+    assert [(d.label, d.size) for d in term.dims] == [("z32", 64), ("z3", 112), ("z4", 112)]

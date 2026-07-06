@@ -8,6 +8,7 @@ from typing import Any, TypeAlias
 
 import matplotlib.pyplot as plt
 import yaml
+from xdsl.ir.affine import AffineDimExpr
 
 # GRB.Callback constants — used only by _mip_progress_callback (Gurobi-specific, per D-04).
 # gurobipy is optional (Gurobi backend only); GRB is touched solely on the Gurobi solve path.
@@ -27,6 +28,7 @@ from stream.ir.infeasibility import (
     InfeasibilityReportIR,
     InfeasibleAllocationError,
     ResourceRefIR,
+    TileDimIR,
     UnmetConstraintIR,
 )
 from stream.mapping.mapping import Mapping, Resource
@@ -212,7 +214,17 @@ class TransferAndTensorAllocator:
                 if tensor in self.possible_tensor_allocations:
                     continue
                 raw_alloc = self._retrieve_core_allocation(node)
-                normalized = self._normalize_tensor_choices(raw_alloc)
+                try:
+                    normalized = self._normalize_tensor_choices(raw_alloc)
+                except ValueError as exc:
+                    # The (auto-generated) mapping left this node with no core it can run on -> the mapping
+                    # is structurally infeasible. Surface a clean, inspectable diagnosis instead of a bare
+                    # error (e.g. auto-mapping onto AIE tiles, which need a hand-written kernel mapping).
+                    raise InfeasibleAllocationError(
+                        self._structural_infeasibility(
+                            f"node '{getattr(node, 'name', node)}' has no core it can be placed on"
+                        )
+                    ) from exc
                 self.possible_tensor_allocations[tensor] = normalized
                 self.tensors.append(tensor)
                 if len(normalized) == 1:
@@ -773,7 +785,9 @@ class TransferAndTensorAllocator:
         # Transfer output tensors on their chosen compute/memory cores
         for node in self.workload.get_iteration_space_nodes():
             for t in node.outputs:
-                tensor_size = self.workload.get_tensor_single_core(t, node, self.mapping).size_bits()
+                tile = self.workload.get_tensor_single_core(t, node, self.mapping)
+                tensor_size = tile.size_bits()
+                tile_dims, tile_dtype = self._tile_shape(node, t, tile)
                 candidate_cores = self._candidate_cores_for_tensor(t)
                 for c in candidate_cores:
                     assert isinstance(c, Core)
@@ -789,8 +803,12 @@ class TransferAndTensorAllocator:
                             base_name=f"memload_{t.name}_{_resource_key(c)}_L{stop}",
                         )
                         self.core_load[c] = self.core_load[c] + req_size * uz._raw
-                    if min_req is not None:  # bytes this tensor adds if resident on c (one tile)
-                        self._resource_terms[("memory_capacity", c.id)][t.name] = min_req / 8
+                    if min_req is not None:  # bytes this tensor's tile adds if resident on c
+                        self._resource_terms[("memory_capacity", c.id)][t.name] = {
+                            "value": min_req / 8,
+                            "dims": tile_dims,
+                            "dtype": tile_dtype,
+                        }
 
         for c, expr in self.core_load.items():
             cap = c.get_memory_capacity()
@@ -1373,6 +1391,40 @@ class TransferAndTensorAllocator:
         rounded = int(round(value))
         return f"{rounded} {unit}"
 
+    @staticmethod
+    def _term_value(info: Any) -> float:
+        """A demand term is either a bare value or a ``{value, dims, dtype}`` record."""
+        return float(info["value"]) if isinstance(info, dict) else float(info)
+
+    @staticmethod
+    def _term_meta(info: Any) -> tuple[list[tuple[str, int]], str]:
+        """The tile shape (per-dim label+size) and dtype of a tensor demand term, if it carries them."""
+        if isinstance(info, dict):
+            return info.get("dims", []), info.get("dtype", "")
+        return [], ""
+
+    def _tile_shape(self, node: Any, tensor: Any, tile: Any) -> tuple[list[tuple[str, int]], str]:
+        """The per-dimension tile sizes of ``tensor`` on one core, each labelled by its loop-dim symbol
+        (the same symbols the affine graph view shows), plus the dtype -- so a memory term shows *why* a
+        tile is large, not just its total. Best-effort: falls back to bare axis sizes."""
+        dtype = str(getattr(tile, "operand_type", "")) if tile is not None else ""
+        shape = tuple(getattr(tile, "shape", ()) or ())
+        try:
+            results = node.get_mapping(tensor).results
+            node_dims = self.workload.get_dims(node)
+            dims: list[tuple[str, int]] = []
+            for i, r in enumerate(results):
+                if i >= len(shape):
+                    break
+                if isinstance(r, AffineDimExpr) and r.position < len(node_dims):
+                    label = str(node_dims[r.position])
+                else:
+                    label = f"axis{i}"
+                dims.append((label, int(shape[i])))
+            return dims, dtype
+        except Exception:  # noqa: BLE001 -- shape labelling is best-effort diagnostics
+            return [(f"axis{i}", int(s)) for i, s in enumerate(shape)], dtype
+
     def _forced_terms(self, terms: dict[str, float], core_id: int, prefixes: tuple[str, ...], names: list[str]) -> dict:
         """The demand contributors the IIS actually forces onto this core: the exact subjects of its
         constraints whose prefix marks this family. Extracts the subject (up to the ``_Core_<id>``
@@ -1396,23 +1448,37 @@ class TransferAndTensorAllocator:
         intuitive ``demand <= bound`` inequality with per-contributor terms, input provenance, and the
         levers that would make it fit. Family-agnostic: driven by the recorded bound/terms + the family
         descriptor, so every recorded resource-capacity family (memory, object-FIFO, buffer descriptors)
-        is quantified the same way."""
+        is quantified the same way. Uses only the terms the IIS forces onto this core."""
         meta = self._FAMILY_META.get(family)
-        bound = self._resource_bounds.get((family, core_id))
         terms_all = self._resource_terms.get((family, core_id))
-        if meta is None or bound is None or not terms_all:
+        if meta is None or not terms_all:
             return None
         forced = self._forced_terms(terms_all, core_id, meta["term_prefixes"], constraint_names)
-        if not forced:
+        return self._unmet_from_terms(family, core_id, forced)
+
+    def _unmet_from_terms(self, family: str, core_id: int, forced: dict[str, Any]) -> UnmetConstraintIR | None:
+        """Build the ``demand <= bound`` inequality for a family+core from an already-selected set of
+        demand terms (used both by the IIS path and by the backend-agnostic capacity fallback)."""
+        meta = self._FAMILY_META.get(family)
+        bound = self._resource_bounds.get((family, core_id))
+        if meta is None or bound is None or not forced:
             return None
         unit = meta["unit"]
-        demand = sum(forced.values())
+        demand = sum(self._term_value(v) for v in forced.values())
         gap = demand - bound
         core = f"Core {core_id}"
-        terms = [
-            ConstraintTermIR(label=t, value=v, detail=meta["term_detail"])
-            for t, v in sorted(forced.items(), key=lambda kv: -kv[1])
-        ]
+        terms = []
+        for label, info in sorted(forced.items(), key=lambda kv: -self._term_value(kv[1])):
+            dims, dtype = self._term_meta(info)
+            terms.append(
+                ConstraintTermIR(
+                    label=label,
+                    value=self._term_value(info),
+                    detail=meta["term_detail"],
+                    dtype=dtype,
+                    dims=[TileDimIR(label=lbl, size=sz) for lbl, sz in dims],
+                )
+            )
         return UnmetConstraintIR(
             family=family,
             statement=(
@@ -1430,6 +1496,75 @@ class TransferAndTensorAllocator:
             unit=unit,
             terms=terms,
             levers=[lever.format(core=core) for lever in meta["levers"]],
+        )
+
+    def _build_unmet_direct(self, family: str, core_id: int) -> UnmetConstraintIR | None:
+        """The unmet inequality from *all* recorded demand terms for a family+core, with no IIS
+        filtering -- how the backend-agnostic fallback quantifies an over-budget resource."""
+        terms_all = self._resource_terms.get((family, core_id))
+        if not terms_all:
+            return None
+        return self._unmet_from_terms(family, core_id, dict(terms_all))
+
+    def _direct_capacity_overflows(self) -> list[ImplicatedResourceIR]:
+        """Backend-agnostic infeasibility diagnosis: when the solver reports no IIS (e.g. OR-Tools), a
+        per-core capacity is still over its budget in the recorded demand vs bound. Report each family
+        whose recorded demand exceeds its *non-zero* hardware bound, most over-budget first, as the same
+        quantitative unmet inequality the IIS path produces. A zero bound is a hardware concept that does
+        not apply to this core (e.g. AIE object-FIFOs on a TPU-like core), so it is skipped -- the
+        diagnosis highlights only real, actionable limits instead of every incidental constraint."""
+        cores_by_id: dict[int, Core] = {
+            res.id: res for _k, res in self._constraint_resources.values() if isinstance(res, Core)
+        }
+        overflows: list[tuple[float, str, int]] = []
+        for (family, core_id), terms in self._resource_terms.items():
+            bound = self._resource_bounds.get((family, core_id))
+            if not bound or bound <= 0:
+                continue
+            demand = sum(self._term_value(v) for v in terms.values())
+            if demand > bound:
+                overflows.append((demand - bound, family, core_id))
+        overflows.sort(reverse=True)  # biggest overshoot first, so the worst offender leads the report
+        resources: list[ImplicatedResourceIR] = []
+        for _gap, family, core_id in overflows:
+            core = cores_by_id.get(core_id)
+            ref = (
+                self._resource_ref_ir(core)
+                if core is not None
+                else ResourceRefIR(kind="core", id=str(core_id), label=f"Core {core_id}")
+            )
+            resources.append(
+                ImplicatedResourceIR(
+                    resource=ref,
+                    constraint_kinds=[family],
+                    reason=self._KIND_REASON.get(family, family.replace("_", " ")),
+                    constraints=[],
+                    unmet=self._build_unmet_direct(family, core_id),
+                )
+            )
+        return resources
+
+    def _structural_infeasibility(self, reason: str) -> InfeasibilityReportIR:
+        """A minimal infeasibility report for a structural problem in the mapping itself (a node with no
+        valid core), raised during model construction -- so an unbuildable model fails with an
+        inspectable diagnosis rather than a bare exception."""
+        try:
+            stats = self.model.solve_stats()
+            backend, solver = stats.backend, stats.solver
+        except Exception:  # noqa: BLE001 -- solve stats may be unavailable before the first solve
+            backend = solver = "n/a"
+        return InfeasibilityReportIR(
+            status="INFEASIBLE",
+            backend=backend,
+            solver=solver,
+            group=None,
+            iis_available=False,
+            resources=[],
+            unbound_constraints=[reason],
+            summary=(
+                f"Infeasible mapping: {reason}. The auto-generated mapping could not place every tensor on "
+                "this hardware -- it likely needs a hand-written mapping."
+            ),
         )
 
     def _resolve_iis_constraint(self, name: str) -> tuple[ResourceRefIR | None, str | None]:
@@ -1531,6 +1666,11 @@ class TransferAndTensorAllocator:
             entry["constraints"].append(name)
 
         resources = [self._implicated_resource(entry) for entry in grouped.values()]
+        # Backend-agnostic fallback: if the IIS pinned nothing to a resource (or is unavailable, e.g. on
+        # OR-Tools), diagnose directly from the recorded per-core demand vs bound so an OR-Tools solve
+        # still yields the same actionable per-resource diagnosis instead of a bare "infeasible".
+        if not resources:
+            resources = self._direct_capacity_overflows()
 
         quantified = next((r for r in resources if r.unmet is not None), None)
         if quantified is not None:
@@ -1540,8 +1680,9 @@ class TransferAndTensorAllocator:
             summary = f"Infeasible mapping: {resources[0].reason}" + (f" on {cores}" if cores else "")
         elif not iis_available:
             summary = (
-                f"Infeasible mapping ({status}); the {stats.backend} backend cannot compute an IIS -- "
-                "re-run with the Gurobi backend for a per-resource diagnosis."
+                f"Infeasible mapping ({status}); no single per-core capacity is over its recorded budget, "
+                f"so the conflict is structural (e.g. transfer routing). The {stats.backend} backend cannot "
+                "compute an IIS -- re-run with the Gurobi backend for the minimal conflict set."
             )
         else:
             summary = (
