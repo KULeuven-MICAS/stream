@@ -21,6 +21,44 @@ from stream.workload.workload import InEdge, Node, OutEdge, Tensor, Workload
 
 logger = logging.getLogger(__name__)
 
+# Op types registered out-of-tree (a private overlay's proprietary parsers for higher-level ops --
+# fused/masked attention, and future op families). Kept separate from the built-in table so an overlay
+# adds or *overrides* a parser via the ``stream.onnx_parsers`` entry-point group, no fork.
+_REGISTERED_PARSERS: dict[str, type[OnnxOperatorParser]] = {}
+_PARSER_PLUGINS_LOADED = {"done": False}
+
+
+def register_onnx_parser(op_type: str, parser_class: type[OnnxOperatorParser]) -> None:
+    """Register (or override) the ONNX parser for ``op_type`` -- the seam for proprietary higher-level
+    operator parsers, without editing this module."""
+    _REGISTERED_PARSERS[op_type] = parser_class
+
+
+def _load_parser_plugins() -> None:
+    """Discover out-of-tree parsers declared under the ``stream.onnx_parsers`` entry-point group. Each
+    entry-point name is the ONNX ``op_type`` and its object is the parser class."""
+    if _PARSER_PLUGINS_LOADED["done"]:
+        return
+    _PARSER_PLUGINS_LOADED["done"] = True
+    try:
+        from importlib.metadata import entry_points  # noqa: PLC0415
+
+        eps = entry_points(group="stream.onnx_parsers")
+    except Exception as exc:  # pragma: no cover - importlib.metadata edge cases
+        logger.debug("onnx-parser entry-point discovery failed: %s", exc)
+        return
+    for ep in eps:
+        try:
+            register_onnx_parser(ep.name, ep.load())
+        except Exception as exc:  # pragma: no cover - a broken plugin must not break ingestion
+            logger.warning("skipping onnx-parser plugin %r: %s", ep.name, exc)
+
+
+def onnx_parser_for(op_type: str) -> type[OnnxOperatorParser] | None:
+    """The parser for ``op_type``: an overlay registration takes precedence over the built-in table."""
+    _load_parser_plugins()
+    return _REGISTERED_PARSERS.get(op_type) or ONNXModelParser.OP_TYPE_TO_PARSER.get(op_type)
+
 
 class ONNXModelParser:
     """Parse the ONNX model into a workload."""
@@ -82,7 +120,7 @@ class ONNXModelParser:
     def get_parser_class(self, node: NodeProto):
         if node.op_type in ONNXModelParser.FUSION_EDGE_OPS:
             return FusionEdgeParser
-        parser_class = ONNXModelParser.OP_TYPE_TO_PARSER.get(node.op_type)
+        parser_class = onnx_parser_for(node.op_type)
         if not parser_class:
             raise NotImplementedError(f"No parser registered for ONNX op type '{node.op_type}'.")
         return parser_class

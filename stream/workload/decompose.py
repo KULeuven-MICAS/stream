@@ -48,6 +48,26 @@ def _ensure_builtins() -> None:
     for op_type in NORMALIZATION_OPS:
         register_decomposition(op_type, decompose_normalization)
     register_decomposition("AttentionBlock", decompose_attention_block)
+    _load_plugins()
+
+
+def _load_plugins() -> None:
+    """Discover out-of-tree decomposers under the ``stream.decompositions`` entry-point group, so a
+    private overlay registers a decomposition (masked-attention block, future ops) without a fork. Each
+    entry-point name is the op ``type`` and its object is the ``node -> Workload`` decomposer."""
+    import logging  # noqa: PLC0415
+    from importlib.metadata import entry_points  # noqa: PLC0415
+
+    try:
+        eps = entry_points(group="stream.decompositions")
+    except Exception as exc:  # pragma: no cover - importlib.metadata edge cases
+        logging.getLogger(__name__).debug("decomposition entry-point discovery failed: %s", exc)
+        return
+    for ep in eps:
+        try:
+            register_decomposition(ep.name, ep.load())
+        except Exception as exc:  # pragma: no cover - a broken plugin must not break the registry
+            logging.getLogger(__name__).warning("skipping decomposition plugin %r: %s", ep.name, exc)
 
 
 def has_decomposition(node: ComputationNode) -> bool:

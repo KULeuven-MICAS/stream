@@ -79,6 +79,16 @@ torch_export = "stream.frontends.torch_export:TorchExportFrontend"
 [project.entry-points."stream.workload_blocks"]
 # Built-in blocks register in-tree (stream.workload.blocks); overlays add their own entries here.
 
+# Proprietary parsers for higher-level ONNX ops (fused/masked attention, ...): the entry-point name is
+# the ONNX op_type, its object the parser class. An overlay's parser overrides the built-in table.
+[project.entry-points."stream.onnx_parsers"]
+# e.g. MaskedAttention = "stream_overlay.parsers:MaskedAttentionParser"  (declared by the overlay)
+
+# Affine sub-operator decomposers: the entry-point name is the op type, its object the node->Workload
+# decomposer. An overlay adds a decomposition (masked-attention block, ...) without a fork.
+[project.entry-points."stream.decompositions"]
+# e.g. MaskedAttentionBlock = "stream_overlay.decompose:decompose_masked_attention_block"
+
 [project.urls]
 Homepage = "https://github.com/KULeuven-MICAS/stream"
 
