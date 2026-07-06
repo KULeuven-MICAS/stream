@@ -26,6 +26,7 @@ import networkx as nx
 from pydantic import BaseModel, ConfigDict, Field
 
 from stream.workload.affine_access import footprint, map_dim_positions
+from stream.workload.fusion.proposer import propose_fusion_regions
 from stream.workload.iterator_type import derive_iterator_types, sequential_dims
 from stream.workload.node import (
     ComputationNode,
@@ -110,7 +111,8 @@ class GraphNodeIR(BaseModel):
     dims: list[GraphDimIR] = Field(default_factory=list)
     is_recurrence: bool = False
     block_class: int | None = Field(default=None, description="Repeated-block class id (None = unique)")
-    region: int | None = Field(default=None, description="Fusable-region id")
+    region: int | None = Field(default=None, description="Fusable-region id (barrier-cut)")
+    proposed_region: int | None = Field(default=None, description="Auto-proposed fusion-region id")
     reuse: list[OperandReuseIR] = Field(default_factory=list)
     reduction_axes: list[AxisRefIR] | None = None
     parallel_axes: list[AxisRefIR] | None = None
@@ -137,6 +139,17 @@ class RegionIR(BaseModel):
     nodes: list[str] = Field(description="Computation-node names in this fusable region")
 
 
+class ProposedRegionIR(BaseModel):
+    """A region the auto-proposer suggests fusing: greedy dataflow chain growth under a near-memory
+    capacity, from the same affine analysis. Legal by construction (no data-dependent read inside)."""
+
+    id: int
+    nodes: list[str] = Field(description="Computation-node names fused into this region (topological)")
+    buffer_elements: int = Field(description="Peak inter-node buffer the fusion holds (elements)")
+    is_recurrence: bool = Field(description="Contains a recurrence state carry -- streams with O(1) state")
+    boundary_reason: str = Field(description="Why it stops: 'data_dependent' | 'capacity' | 'sink'")
+
+
 class WorkloadGraphView(BaseModel):
     """Uniform graph view of a workload: proper nodes+edges, repeated-block collapse, fusable regions.
 
@@ -153,16 +166,27 @@ class WorkloadGraphView(BaseModel):
     edges: list[GraphEdgeIR]
     block_classes: list[BlockClassIR] = Field(description="Repeated-block classes, most-repeated first")
     regions: list[RegionIR] = Field(description="Fusable regions the barriers cut the graph into")
+    proposed_regions: list[ProposedRegionIR] = Field(
+        default_factory=list, description="Auto-proposed fusion regions (empty unless a capacity is given)"
+    )
 
     @classmethod
-    def from_workload(cls, workload: Workload) -> WorkloadGraphView:
+    def from_workload(cls, workload: Workload, fusion_capacity: int | None = None) -> WorkloadGraphView:
         block_of, block_classes = _block_structure(workload)
         region_of, regions = _region_structure(workload)
+        proposed_of, proposed_regions = _proposed_structure(workload, fusion_capacity)
         order = _topo_names(workload)
         by_name = {n.name: n for n in workload.nodes}
-        nodes = [_node_ir(workload, by_name[name], block_of, region_of) for name in order]
+        nodes = [_node_ir(workload, by_name[name], block_of, region_of, proposed_of) for name in order]
         edges = [GraphEdgeIR(source=s.name, target=t.name, shared_tensors=_shared(s, t)) for s, t in workload.edges]
-        return cls(tiled=_is_tiled(workload), nodes=nodes, edges=edges, block_classes=block_classes, regions=regions)
+        return cls(
+            tiled=_is_tiled(workload),
+            nodes=nodes,
+            edges=edges,
+            block_classes=block_classes,
+            regions=regions,
+            proposed_regions=proposed_regions,
+        )
 
 
 # --------------------------------------------------------------------------- structure
@@ -216,6 +240,28 @@ def _region_structure(workload: Workload) -> tuple[dict[str, int], list[RegionIR
     return region_of, regions
 
 
+def _proposed_structure(workload: Workload, capacity: int | None) -> tuple[dict[str, int], list[ProposedRegionIR]]:
+    """Auto-proposed fusion regions at the given near-memory ``capacity`` (in elements). Empty when no
+    capacity is requested, so existing callers are unchanged."""
+    if capacity is None:
+        return {}, []
+    proposed_of: dict[str, int] = {}
+    regions: list[ProposedRegionIR] = []
+    for region_id, region in enumerate(propose_fusion_regions(workload, capacity)):
+        for name in region.nodes:
+            proposed_of[name] = region_id
+        regions.append(
+            ProposedRegionIR(
+                id=region_id,
+                nodes=list(region.nodes),
+                buffer_elements=region.buffer_elements,
+                is_recurrence=region.is_recurrence,
+                boundary_reason=region.boundary_reason,
+            )
+        )
+    return proposed_of, regions
+
+
 # --------------------------------------------------------------------------- per-node
 
 
@@ -246,13 +292,16 @@ def _op(node) -> str:
     return type(node).__name__
 
 
-def _node_ir(workload: Workload, node, block_of: dict[str, int], region_of: dict[str, int]) -> GraphNodeIR:
+def _node_ir(
+    workload: Workload, node, block_of: dict[str, int], region_of: dict[str, int], proposed_of: dict[str, int]
+) -> GraphNodeIR:
     ir = GraphNodeIR(
         name=node.name,
         op=_op(node),
         kind=_kind(node),
         block_class=block_of.get(node.name),
         region=region_of.get(node.name),
+        proposed_region=proposed_of.get(node.name),
     )
     if not isinstance(node, HasIterationSpace):
         return ir
@@ -307,9 +356,7 @@ def _subop_dims(sub_node: ComputationNode, parent_dims: list[GraphDimIR], reduce
     iterator_types = derive_iterator_types(sub_node)
     rank = len(iterator_types)
     positions = (
-        list(range(rank))
-        if rank == len(parent_dims)
-        else [p for p in range(len(parent_dims)) if p not in set(reduced)]
+        list(range(rank)) if rank == len(parent_dims) else [p for p in range(len(parent_dims)) if p not in set(reduced)]
     )
     dims: list[GraphDimIR] = []
     for i, parent_pos in enumerate(positions):

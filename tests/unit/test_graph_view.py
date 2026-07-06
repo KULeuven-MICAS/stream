@@ -9,12 +9,43 @@ from __future__ import annotations
 from stream.inputs.testing.workload.make_scan import make_scan_workload
 from stream.ir import WorkloadGraphView
 from stream.parser.onnx.model import ONNXModelParser
+from stream.workload.blocks import build_block
 from stream.workload.models import build_attention_block, build_gqa_block, build_kv_cache_decode_step
 from stream.workload.rewrites import RewriteParams, get_rewrite
+
+UNBOUNDED = 2**60
 
 
 def _view(wl) -> WorkloadGraphView:
     return WorkloadGraphView.from_workload(wl)
+
+
+def test_proposed_regions_are_empty_without_a_capacity():
+    """Backward compatible: no fusion capacity -> no proposed regions, no per-node proposed_region."""
+    view = _view(build_attention_block())
+    assert view.proposed_regions == []
+    assert all(n.proposed_region is None for n in view.nodes)
+
+
+def test_proposed_regions_fuse_attention_and_split_moe_at_the_data_dependent_combine():
+    attention = WorkloadGraphView.from_workload(build_block("attention"), fusion_capacity=UNBOUNDED)
+    assert len(attention.proposed_regions) == 1  # the whole flash-shaped block is one region
+
+    moe = WorkloadGraphView.from_workload(
+        build_block("moe", tokens=8, experts=2, capacity=4), fusion_capacity=UNBOUNDED
+    )
+    region_of = {n.name: n.proposed_region for n in moe.nodes}
+    assert region_of["expert_out"] != region_of["combine"]  # legal split at the data-dependent scatter
+    combine_region = next(r for r in moe.proposed_regions if "combine" in r.nodes)
+    assert combine_region.boundary_reason in ("data_dependent", "sink")
+
+
+def test_proposed_regions_flag_the_recurrence_chain():
+    view = WorkloadGraphView.from_workload(
+        build_block("chunked_ssm", seq=64, hidden=16, chunk_size=16), fusion_capacity=UNBOUNDED
+    )
+    assert len(view.proposed_regions) == 1
+    assert view.proposed_regions[0].buffer_elements == 1  # O(1) recurrence carry
 
 
 def test_repeated_blocks_collapse_into_one_class():
