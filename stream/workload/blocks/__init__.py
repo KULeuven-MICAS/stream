@@ -22,10 +22,12 @@ from typing import Any
 
 from stream.workload.blocks.library import (
     ChunkedSSMConfig,
+    FlashAttentionConfig,
     MoEConfig,
     RMSNormConfig,
     SwiGLUConfig,
     build_chunked_ssm_block,
+    build_flash_attention_block,
     build_moe_block,
     build_rmsnorm_block,
     build_swiglu_block,
@@ -123,6 +125,14 @@ register_block(
         "Chunked SSM",
         "SEQUENTIAL scan decomposed into a per-chunk reduction chain; chunk size is a DSE lever.",
         _cfg_builder(build_chunked_ssm_block, ChunkedSSMConfig),
+    )
+)
+register_block(
+    BlockSpec(
+        "flash_attention",
+        "Flash Attention (online softmax)",
+        "Attention decomposed into an online-softmax scan over key blocks; block size is a DSE lever.",
+        _cfg_builder(build_flash_attention_block, FlashAttentionConfig),
     )
 )
 

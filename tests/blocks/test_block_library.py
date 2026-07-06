@@ -23,6 +23,7 @@ EXPECTED_KEYS = {
     "rmsnorm",
     "moe",
     "chunked_ssm",
+    "flash_attention",
 }
 
 
@@ -102,6 +103,18 @@ def test_sparse_attention_key_access_is_piecewise_affine():
     assert access.is_static  # structured sparsity is static, not data-dependent
     # query i=8, band offset w in [0,4): local band 8-4+[0,3]=[4,7]; dilated 8-2*[0,3]=[2,8]; hull [2,8]
     assert access.footprint({0: range(8, 9), 1: range(0, 4)}) == (range(2, 9),)
+
+
+def test_flash_attention_block_is_a_dense_per_block_reduction_scan():
+    """Flash attention decomposes into AttentionBlock nodes, each a dense reduction over its key block
+    (query/head PARALLEL, block-key REDUCTION) -- the online-softmax scan."""
+    from stream.workload.iterator_type import IteratorType, derive_iterator_types
+
+    wl = build_block("flash_attention", seq_q=8, seq_k=32, d_head=16, block_size=8)  # 4 key blocks
+    blocks = [n for n in wl.get_computation_nodes() if n.type == "AttentionBlock"]
+    assert len(blocks) == 4
+    roles = set(derive_iterator_types(blocks[0]).values())
+    assert IteratorType.REDUCTION in roles and IteratorType.PARALLEL in roles
 
 
 def test_get_block_unknown_key_raises():

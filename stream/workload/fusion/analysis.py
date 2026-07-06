@@ -21,6 +21,7 @@ from xdsl.ir.affine import AffineDimExpr
 
 from stream.workload.access_relation import access_for
 from stream.workload.affine_access import compose_dependency, footprint, map_dim_positions
+from stream.workload.iterator_type import IteratorType, derive_iterator_types
 from stream.workload.node import HasIterationSpace, NormalizationNode
 from stream.workload.tensor import Tensor
 
@@ -31,6 +32,7 @@ __all__ = [
     "EdgeFusion",
     "edge_fusions",
     "workload_fusion_edges",
+    "consumer_reduction_axes",
 ]
 
 
@@ -147,6 +149,7 @@ class EdgeFusion:
     tensor: str
     data_dependent: bool
     reduction_axes: tuple[int, ...]
+    nonlinear_reduction: bool = False
 
     @property
     def fusible(self) -> bool:
@@ -158,24 +161,46 @@ def _shared_tensors(producer: HasIterationSpace, consumer: HasIterationSpace) ->
     return [t for t in producer.outputs if t in consumer.inputs]
 
 
+def consumer_reduction_axes(consumer: HasIterationSpace, tensor: Tensor) -> tuple[int, ...]:
+    """Consumer iteration dimensions that both **reduce** and **index** ``tensor`` -- the axes along
+    which fusing a producer through ``tensor`` needs the whole reduced slice (a per-axis barrier),
+    while every other (parallel) axis fuses freely.
+
+    Covers affine contractions (a MatMul's ``k``, a pool's window) via the derived ``REDUCTION``
+    iterator type, **and** a normalization's ``reduction_axes`` (which its identity map hides from the
+    derived types). This is what makes the attention key axis show up on *both* ``scores->softmax`` and
+    ``softmax->context`` -- the single streaming axis flash attention rides.
+    """
+    indexed = map_dim_positions(consumer.get_mapping(tensor))
+    reducing = {pos for pos, it in derive_iterator_types(consumer).items() if it == IteratorType.REDUCTION}
+    if isinstance(consumer, NormalizationNode):
+        reducing.update(consumer.reduction_axes)
+    return tuple(sorted(reducing & indexed))
+
+
 def edge_fusions(producer: HasIterationSpace, consumer: HasIterationSpace) -> list[EdgeFusion]:
     """Classify every shared tensor on a producer->consumer edge (usually one).
 
-    A data-dependent consumer read is a hard barrier (``access_for`` reports a non-static access); a
-    normalization consumer contributes its ``reduction_axes`` as barrier axes. Neither uses op-specific
-    code beyond the AccessRelation -- new data-dependent ops register via ``register_data_dependent_op``.
+    A data-dependent consumer read is a hard barrier (``access_for`` reports a non-static access). Every
+    reduction axis the consumer contracts over the shared tensor is a per-axis barrier
+    (:func:`consumer_reduction_axes`); a **nonlinear** reduction (a normalization -- softmax) is flagged
+    because streaming it needs the online-softmax rewrite, whereas a linear contraction streams with a
+    plain accumulator. None of this uses op-specific code beyond the AccessRelation and the derived
+    iterator types.
     """
     results: list[EdgeFusion] = []
-    reduction = consumer.reduction_axes if isinstance(consumer, NormalizationNode) else ()
+    nonlinear = isinstance(consumer, NormalizationNode)
     for tensor in _shared_tensors(producer, consumer):
         data_dependent = not access_for(consumer, tensor).is_static
+        reduction_axes = consumer_reduction_axes(consumer, tensor)
         results.append(
             EdgeFusion(
                 producer=producer.name,
                 consumer=consumer.name,
                 tensor=tensor.name,
                 data_dependent=data_dependent,
-                reduction_axes=tuple(reduction),
+                reduction_axes=reduction_axes,
+                nonlinear_reduction=nonlinear and bool(reduction_axes),
             )
         )
     return results

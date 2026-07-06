@@ -10,6 +10,7 @@ from __future__ import annotations
 from stream.workload.node import ComputationNode
 from stream.workload.rewrites.base import Rewrite, RewriteParams, build_chunk_chain
 from stream.workload.rewrites.chunked_scan import ChunkedScanRewrite
+from stream.workload.rewrites.flash_attention import FlashAttentionRewrite
 from stream.workload.rewrites.gated_deltanet import GatedDeltaNetRewrite
 from stream.workload.rewrites.ssd import SSDRewrite
 from stream.workload.workload import Workload
@@ -49,5 +50,5 @@ def apply_rewrites(node: ComputationNode, params: RewriteParams) -> Workload | N
     return None
 
 
-for _rewrite in (ChunkedScanRewrite(), SSDRewrite(), GatedDeltaNetRewrite()):
+for _rewrite in (ChunkedScanRewrite(), SSDRewrite(), GatedDeltaNetRewrite(), FlashAttentionRewrite()):
     register_rewrite(_rewrite)

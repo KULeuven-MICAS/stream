@@ -18,9 +18,11 @@ from stream.workload.rewrites.reference import (
     chunked_deltanet,
     chunked_diagonal_scan,
     chunked_ssd,
+    direct_attention,
     direct_deltanet,
     direct_diagonal_scan,
     direct_ssd,
+    online_softmax_attention,
 )
 from stream.workload.tensor import Tensor
 
@@ -107,8 +109,51 @@ def test_chunk_size_sweep_scales_chain_length():
     assert counts == sorted(counts, reverse=True)  # larger chunks -> fewer (monotone) chunk nodes
 
 
+# --------------------------------------------------------------------------- #
+#  Flash attention: online softmax == full softmax; chain scan over key blocks #
+# --------------------------------------------------------------------------- #
+@given(
+    seq_q=st.integers(min_value=1, max_value=12),
+    seq_k=st.integers(min_value=1, max_value=20),
+    d_head=st.integers(min_value=1, max_value=6),
+    block=st.integers(min_value=1, max_value=20),
+)
+def test_online_softmax_attention_matches_direct(seq_q: int, seq_k: int, d_head: int, block: int):
+    q = _RNG.standard_normal((seq_q, d_head))
+    k = _RNG.standard_normal((seq_k, d_head))
+    v = _RNG.standard_normal((seq_k, d_head))
+    np.testing.assert_allclose(online_softmax_attention(q, k, v, block), direct_attention(q, k, v), atol=1e-9)
+
+
+def _attention_op(seq_q: int, seq_k: int, d_head: int) -> ComputationNode:
+    q = Tensor.create("Q", bf16, (seq_q, d_head))
+    k = Tensor.create("K", bf16, (seq_k, d_head))
+    v = Tensor.create("V", bf16, (seq_k, d_head))
+    o = Tensor.create("O", bf16, (seq_q, d_head))
+    m = (
+        AffineMap.from_callable(lambda i, j, d: (i, d)),
+        AffineMap.from_callable(lambda i, j, d: (j, d)),
+        AffineMap.from_callable(lambda i, j, d: (j, d)),
+        AffineMap.from_callable(lambda i, j, d: (i, d)),
+    )
+    return ComputationNode(type="Attention", name="attn", inputs=(q, k, v), outputs=(o,), operand_mapping=m)
+
+
+def test_flash_attention_rewrite_is_a_key_block_scan():
+    seq_q, seq_k, d_head, block = 8, 20, 4, 6  # ceil(20/6) = 4 key blocks
+    workload = get_rewrite("flash_attention").apply(
+        _attention_op(seq_q, seq_k, d_head), RewriteParams(chunk_size=block)
+    )
+    blocks = sorted(workload.get_computation_nodes(), key=lambda n: n.name)
+    assert len(blocks) == ceil(seq_k / block)
+    assert _compute_chain_edges(workload) == ceil(seq_k / block) - 1  # O(1)-state sequential chain
+    assert all(b.type == "AttentionBlock" for b in blocks)
+    for i, b in enumerate(blocks):
+        assert b.inputs[1].shape[0] == min(block, seq_k - i * block)  # key block reduces its local extent
+
+
 def test_registry_and_dispatch():
-    assert registered_rewrites() == ["chunked_scan", "gated_deltanet", "ssd"]
+    assert registered_rewrites() == ["chunked_scan", "flash_attention", "gated_deltanet", "ssd"]
     scan = _source("Scan", 8, 4)
     assert apply_rewrites(scan, RewriteParams(chunk_size=4)) is not None
     assert apply_rewrites(_source("Conv", 8, 4), RewriteParams(chunk_size=4)) is None

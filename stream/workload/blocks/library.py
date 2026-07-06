@@ -34,10 +34,12 @@ __all__ = [
     "RMSNormConfig",
     "MoEConfig",
     "ChunkedSSMConfig",
+    "FlashAttentionConfig",
     "build_swiglu_block",
     "build_rmsnorm_block",
     "build_moe_block",
     "build_chunked_ssm_block",
+    "build_flash_attention_block",
     "sparse_attention_key_access",
 ]
 
@@ -238,6 +240,39 @@ def build_chunked_ssm_block(config: ChunkedSSMConfig | None = None) -> Workload:
     )
     scan = ComputationNode(type="Scan", name="ssm_scan", inputs=(x, h_prev), outputs=(h,), operand_mapping=scan_maps)
     return get_rewrite("chunked_scan").apply(scan, RewriteParams(chunk_size=c.chunk_size))
+
+
+@dataclass(frozen=True)
+class FlashAttentionConfig:
+    seq_q: int = 64
+    seq_k: int = 64
+    d_head: int = 32
+    block_size: int = 16  # key-block size -- the DSE lever (chain length = ceil(seq_k / block_size))
+    dtype: FixedBitwidthType = bf16
+
+
+def build_flash_attention_block(config: FlashAttentionConfig | None = None) -> Workload:
+    """Flash attention as an online-softmax scan over key blocks (reuses the M04 ``flash_attention``
+    rewrite). Softmax's full-key reduction -- normally a fusion barrier -- is lifted into a SEQUENTIAL
+    chain of dense per-block reductions carrying O(1) running state per query. ``block_size`` is the DSE
+    lever. The un-decomposed ``Attention`` op (query ``i``, head ``d`` PARALLEL; key ``j`` REDUCTION) is
+    what the rewrite consumes."""
+    c = config or FlashAttentionConfig()
+    dt = c.dtype
+    q = Tensor.create("Q", dt, (c.seq_q, c.d_head))
+    k = Tensor.create("K", dt, (c.seq_k, c.d_head))
+    v = Tensor.create("V", dt, (c.seq_k, c.d_head))
+    out = Tensor.create("O", dt, (c.seq_q, c.d_head))
+    attn_maps = (
+        AffineMap.from_callable(lambda i, j, d: (i, d)),  # Q[i,d]
+        AffineMap.from_callable(lambda i, j, d: (j, d)),  # K[j,d]
+        AffineMap.from_callable(lambda i, j, d: (j, d)),  # V[j,d]
+        AffineMap.from_callable(lambda i, j, d: (i, d)),  # O[i,d]  (j = key is the REDUCTION)
+    )
+    attention = ComputationNode(
+        type="Attention", name="attention", inputs=(q, k, v), outputs=(out,), operand_mapping=attn_maps
+    )
+    return get_rewrite("flash_attention").apply(attention, RewriteParams(chunk_size=c.block_size))
 
 
 def sparse_attention_key_access(window: int, dilation: int) -> PiecewiseAffineAccess:

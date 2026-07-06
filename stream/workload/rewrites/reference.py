@@ -109,3 +109,40 @@ def chunked_deltanet(
             state = alpha[t] * (identity - beta[t] * np.outer(k[t], k[t])) @ state + beta[t] * np.outer(k[t], v[t])
             y[t] = state.T @ q[t]
     return y
+
+
+# --------------------------------------------------------------------------- #
+#  Attention: full softmax  <->  online (flash) softmax over key blocks       #
+# --------------------------------------------------------------------------- #
+def direct_attention(q: np.ndarray, k: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Softmax attention: ``O = softmax(Q Kᵀ) V``. q/k (Sq/Sk, d), v (Sk, dv); returns O (Sq, dv)."""
+    scores = q @ k.T
+    scores = scores - scores.max(axis=-1, keepdims=True)
+    probs = np.exp(scores)
+    probs = probs / probs.sum(axis=-1, keepdims=True)
+    return probs @ v
+
+
+def online_softmax_attention(q: np.ndarray, k: np.ndarray, v: np.ndarray, block_size: int) -> np.ndarray:
+    """Flash attention: the same result, streamed over key blocks with O(1) running state per query.
+
+    Maintains a running max ``m``, denominator ``l`` and output accumulator ``o`` (size independent of
+    the key length ``Sk`` -- the flash property), rescaling on each block by ``exp(m_old - m_new)``.
+    This is exactly the SEQUENTIAL scan over key blocks the ``flash_attention`` rewrite mirrors.
+    """
+    seq_q = q.shape[0]
+    dv = v.shape[1]
+    running_max = np.full(seq_q, -np.inf)
+    denom = np.zeros(seq_q)
+    out = np.zeros((seq_q, dv))
+    for start in range(0, k.shape[0], block_size):
+        k_block, v_block = k[start : start + block_size], v[start : start + block_size]
+        scores = q @ k_block.T  # [Sq, Cb] -- the dense intra-block MACs
+        block_max = scores.max(axis=-1)
+        new_max = np.maximum(running_max, block_max)
+        correction = np.exp(running_max - new_max)  # rescale the running state to the new max
+        probs = np.exp(scores - new_max[:, None])
+        denom = denom * correction + probs.sum(axis=-1)
+        out = out * correction[:, None] + probs @ v_block
+        running_max = new_max
+    return out / denom[:, None]
