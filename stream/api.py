@@ -45,6 +45,16 @@ def _sanity_check_gurobi_license():
     GurobiBackend.check_license()
 
 
+def _as_bool(value: Any) -> bool:
+    """Coerce a possibly-stringy flag to a real bool -- JSON callers pass "false"/"true" as strings, and
+    a non-empty "false" is otherwise truthy."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 def optimize_allocation_co_with_mapping(  # noqa: PLR0913
     hardware: str,
     workload: str,
@@ -61,6 +71,10 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913
     constraint_selection: ConstraintSelection | None = None,
     kernels: dict[str, Any] | None = None,
 ) -> StageContext:
+    # Callers (e.g. the web runner) may pass JSON-sourced strings for the booleans; coerce them so a
+    # literal "false" cannot read as True and silently pull in the optional AIE code-gen path (snaxc).
+    enable_codegen = _as_bool(enable_codegen)
+    skip_if_exists = _as_bool(skip_if_exists)
     _sanity_check_inputs(hardware, workload, mapping, output_path)
     _backend_enum = SolverBackend[backend.upper()]
     if _backend_enum in (SolverBackend.GUROBI, SolverBackend.ORTOOLS_GUROBI):
