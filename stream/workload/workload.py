@@ -926,6 +926,28 @@ class Workload(DiGraphWrapper[Node]):
             timeslots[node] = slot
         return timeslots
 
+    def _node_ir(self, node: Node) -> dict:
+        """Serialize one node: identity plus whatever operand / iteration / type facets it has."""
+        node_data: dict = {"name": node.name, "type": type(node).__name__}
+        if isinstance(node, HasIterationSpace):
+            node_data["dimensions"] = {str(dim): self.get_dimension_size(dim) for dim in self.get_dims(node)}
+            node_data["global_dim_indices"] = list(self.global_idxs[node])
+        if isinstance(node, HasInputs):
+            node_data["inputs"] = [
+                {"name": t.name, "shape": list(t.shape), "operand_type": str(t.operand_type)} for t in node.inputs
+            ]
+        if isinstance(node, HasOutputs):
+            node_data["outputs"] = [
+                {"name": t.name, "shape": list(t.shape), "operand_type": str(t.operand_type)} for t in node.outputs
+            ]
+        if isinstance(node, ComputationNode):
+            node_data["computation_type"] = str(node.type)
+        if isinstance(node, TransferNode):
+            node_data["transfer_type"] = str(node.transfer_type)
+        if isinstance(node, FusionEdge):
+            node_data["fusion_op_type"] = node.op_type
+        return node_data
+
     def get_ir(self) -> dict:
         """Return a dictionary representation of the workload for serialization/inspection.
 
@@ -955,48 +977,7 @@ class Workload(DiGraphWrapper[Node]):
             }
 
         # Build nodes info
-        nodes_info = []
-        for node in nx.lexicographical_topological_sort(self, key=lambda n: n.name):
-            node_data: dict = {
-                "name": node.name,
-                "type": type(node).__name__,
-            }
-
-            if isinstance(node, HasIterationSpace):
-                node_dims = self.get_dims(node)
-                node_data["dimensions"] = {str(dim): self.get_dimension_size(dim) for dim in node_dims}
-                node_data["global_dim_indices"] = list(self.global_idxs[node])
-
-            if isinstance(node, HasInputs):
-                node_data["inputs"] = [
-                    {
-                        "name": t.name,
-                        "shape": list(t.shape),
-                        "operand_type": str(t.operand_type),
-                    }
-                    for t in node.inputs
-                ]
-
-            if isinstance(node, HasOutputs):
-                node_data["outputs"] = [
-                    {
-                        "name": t.name,
-                        "shape": list(t.shape),
-                        "operand_type": str(t.operand_type),
-                    }
-                    for t in node.outputs
-                ]
-
-            if isinstance(node, ComputationNode):
-                node_data["computation_type"] = str(node.type)
-
-            if isinstance(node, TransferNode):
-                node_data["transfer_type"] = str(node.transfer_type)
-
-            if isinstance(node, FusionEdge):
-                node_data["fusion_op_type"] = node.op_type
-
-            nodes_info.append(node_data)
+        nodes_info = [self._node_ir(node) for node in nx.lexicographical_topological_sort(self, key=lambda n: n.name)]
 
         # Build edges info
         edges_info = []

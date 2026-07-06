@@ -804,9 +804,7 @@ class SteadyStateScheduler:
             # produces/consumes it and a memory/offchip core that stages it. Resolve to the type the
             # transfer must actually serve (compute when any allocation is compute; the PE is where the
             # data originates or is needed) instead of asserting the allocations are homogeneous.
-            dst_type = self._effective_allocation_type(
-                [alloc for dst_alloc in dst_allocations for alloc in dst_alloc]
-            )
+            dst_type = self._effective_allocation_type([alloc for dst_alloc in dst_allocations for alloc in dst_alloc])
         if src_type == "compute" and dst_type == "compute":
             return TransferType.COMPUTE_TO_COMPUTE
         elif src_type == "compute" and dst_type in ("memory", "shim", "offchip"):

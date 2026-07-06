@@ -266,9 +266,7 @@ class GenericMappingGenerator:
                 remaining //= factor
         return split_factors
 
-    def _inter_core_unrolling(
-        self, sub_workload: Workload, cns: tuple[ComputationNode, ...]
-    ) -> dict[LayerDim, int]:
+    def _inter_core_unrolling(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> dict[LayerDim, int]:
         """Per global loop dimension, the largest inter-core split factor applied to it across the
         group. This is exactly the "spatial unrolling" ``determine_fusion_splits`` divides by (it reads
         it back from each layer's inter-core tiling), so the default intra-core tile must divide it out
