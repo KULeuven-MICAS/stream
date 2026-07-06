@@ -26,8 +26,9 @@ import networkx as nx
 from pydantic import BaseModel, ConfigDict, Field
 
 from stream.workload.affine_access import footprint, map_dim_positions
-from stream.workload.fusion.proposer import propose_fusion_regions
-from stream.workload.iterator_type import derive_iterator_types, sequential_dims
+from stream.workload.decompose import decompose, has_decomposition
+from stream.workload.fusion.proposer import iteration_extents, propose_fusion_regions
+from stream.workload.iterator_type import IteratorType, derive_iterator_types, sequential_dims
 from stream.workload.node import (
     ComputationNode,
     FusionEdge,
@@ -39,7 +40,7 @@ from stream.workload.node import (
     OutEdge,
     TransferNode,
 )
-from stream.workload.normalization import decompose_normalization, parallel_axes
+from stream.workload.normalization import parallel_axes
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.structure import find_repeated_blocks
 
@@ -316,9 +317,18 @@ def _node_ir(
     ir.reuse = _reuse(node, ir.dims)
 
     if isinstance(node, NormalizationNode):
-        _annotate_normalization(ir, node)
+        _annotate_normalization_axes(ir, node)
     if isinstance(node, ComputationNode) and node.type in _MOVEMENT_TYPES:
         ir.movement = _movement(node)
+    # Any op with a registered affine decomposition (softmax, flash-attention block, future ops)
+    # expands into its sub-operators uniformly -- one path, no per-type code.
+    if has_decomposition(node):
+        try:
+            sub_workload = decompose(node)
+        except NotImplementedError:
+            sub_workload = None
+        if sub_workload is not None:
+            ir.decomposition = _decomposition_ir(sub_workload)
     return ir
 
 
@@ -348,53 +358,49 @@ def _reuse(node: ComputationNode, dims: list[GraphDimIR]) -> list[OperandReuseIR
     return reuse
 
 
-def _subop_dims(sub_node: ComputationNode, parent_dims: list[GraphDimIR], reduced: tuple[int, ...]) -> list[GraphDimIR]:
-    """Map a decomposition sub-op's iteration axes back onto the parent normalization's named dims, so
-    each sub-op shows which axes it iterates and whether each is REDUCTION (contracted here) or PARALLEL
-    (broadcast). A full-rank sub-op (max/exp/sum/div) aligns 1:1 with the parent; a reduced-rank sub-op
-    (e.g. LpNorm's Sqrt over the statistic) iterates only the kept, non-reduced axes."""
-    iterator_types = derive_iterator_types(sub_node)
-    rank = len(iterator_types)
-    positions = (
-        list(range(rank)) if rank == len(parent_dims) else [p for p in range(len(parent_dims)) if p not in set(reduced)]
-    )
-    dims: list[GraphDimIR] = []
-    for i, parent_pos in enumerate(positions):
-        if i >= rank or parent_pos >= len(parent_dims):
-            continue
-        pd = parent_dims[parent_pos]
-        dims.append(GraphDimIR(name=pd.name, size=pd.size, iterator_type=iterator_types[i].name))
-    return dims
-
-
-def _annotate_normalization(ir: GraphNodeIR, node: NormalizationNode) -> None:
+def _annotate_normalization_axes(ir: GraphNodeIR, node: NormalizationNode) -> None:
+    """Mark the reduced axes on the parent node (its identity map hides them) and list the reduction /
+    parallel axes. The sub-operator decomposition itself is built generically from the registry."""
     reduced = set(node.reduction_axes)
     for pos, dim in enumerate(ir.dims):
         if pos in reduced:
             dim.iterator_type = "REDUCTION"
     ir.reduction_axes = [AxisRefIR(pos=p, size=ir.dims[p].size) for p in node.reduction_axes if p < len(ir.dims)]
     ir.parallel_axes = [AxisRefIR(pos=p, size=ir.dims[p].size) for p in parallel_axes(node) if p < len(ir.dims)]
-    if node.reduction_axes:
-        try:
-            dec = decompose_normalization(node)
-        except NotImplementedError:
-            return
-        sub = dec.get_computation_nodes()
-        sub_set = set(sub)
-        ir.decomposition = DecompositionIR(
-            nodes=[
-                SubOpIR(
-                    name=n.name,
-                    op=n.type,
-                    reduces=n.type.startswith("Reduce"),
-                    dims=_subop_dims(n, ir.dims, node.reduction_axes),
-                )
-                for n in sub
-            ],
-            edges=[{"source": s.name, "target": t.name} for s, t in dec.edges if s in sub_set and t in sub_set],
-            entry=[t.name for s, t in dec.edges if isinstance(s, InEdge) and t in sub_set],
-            exit=[s.name for s, t in dec.edges if isinstance(t, OutEdge) and s in sub_set],
+
+
+def _sub_dim_names(dec: Workload, node: ComputationNode) -> list[str]:
+    try:
+        return [str(d) for d in dec.get_dims(node)]
+    except Exception:  # noqa: BLE001 -- positional names if the sub-workload can't name dims
+        return [f"d{p}" for p in range(node.num_dims)]
+
+
+def _decomposition_ir(dec: Workload) -> DecompositionIR:
+    """Build the DecompositionIR from *any* decomposition Workload -- each sub-op reports its own affine
+    dims (typed REDUCTION where it contracts, PARALLEL where it broadcasts), so the internal dataflow and
+    its array-vs-vector structure is inspectable. Generic over the op: a softmax, a flash-attention block
+    and any future decomposable op all serialize the same way, from :func:`stream.workload.decompose.decompose`."""
+    subs = dec.get_computation_nodes()
+    sub_set = set(subs)
+    sub_ir: list[SubOpIR] = []
+    for node in subs:
+        types = derive_iterator_types(node)
+        extents = iteration_extents(node)
+        names = _sub_dim_names(dec, node)
+        dims = [
+            GraphDimIR(name=names[p] if p < len(names) else f"d{p}", size=extents.get(p), iterator_type=types[p].name)
+            for p in range(node.num_dims)
+        ]
+        sub_ir.append(
+            SubOpIR(name=node.name, op=node.type, reduces=IteratorType.REDUCTION in types.values(), dims=dims)
         )
+    return DecompositionIR(
+        nodes=sub_ir,
+        edges=[{"source": s.name, "target": t.name} for s, t in dec.edges if s in sub_set and t in sub_set],
+        entry=[t.name for s, t in dec.edges if isinstance(s, InEdge) and t in sub_set],
+        exit=[s.name for s, t in dec.edges if isinstance(t, OutEdge) and s in sub_set],
+    )
 
 
 def _movement(node: ComputationNode) -> MovementIR:

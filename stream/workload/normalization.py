@@ -28,6 +28,7 @@ __all__ = [
     "parallel_axes",
     "decompose_normalization",
     "softmax_reference",
+    "NORMALIZATION_OPS",
 ]
 
 
@@ -106,6 +107,9 @@ _SUBGRAPHS = {
     "Softmax": _softmax_subgraph,
     "LpNormalization": _lpnorm_subgraph,
 }
+
+# Op types with a registered affine decomposition -- the decomposition registry registers these.
+NORMALIZATION_OPS = tuple(_SUBGRAPHS)
 
 
 def decompose_normalization(node: NormalizationNode) -> Workload:
