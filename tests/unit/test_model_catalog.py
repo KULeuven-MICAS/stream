@@ -1,6 +1,6 @@
 """Tests for the canonical architecture builders (stream.workload.models).
 
-These pin the *internal representation* the Sequence Lab showcases: attention is affine MatMuls with
+These pin the *internal representation* the framework showcases: attention is affine MatMuls with
 a single Softmax barrier; Mamba is a SEQUENTIAL recurrence that chunks. They are representation
 tests, not numerical ones (the chunked-scan math is verified in tests/rewrites).
 """

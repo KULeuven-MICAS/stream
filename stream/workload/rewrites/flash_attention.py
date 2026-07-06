@@ -3,7 +3,7 @@
 The full-softmax attention barrier (softmax spans the whole key axis, so it cannot fuse along that
 axis) is *lifted* by the online-softmax algorithm: process the keys in blocks, carrying a running max
 ``m``, denominator ``l`` and output accumulator ``o`` per query -- O(1) state, independent of the key
-length. That is a sequential scan over key blocks, so this rewrite mirrors the M04 chunked pattern
+length. That is a sequential scan over key blocks, so this rewrite mirrors the chunked pattern
 (dense per-block reductions + an inter-block state carry). ``reference.online_softmax_attention`` is
 the NumPy golden.
 
@@ -17,9 +17,8 @@ Two granularities live here, both exact:
   affine (array) vs non-affine (vector) structure -- the opaque block cannot, because ``scores``
   contracts the head dim while ``context`` contracts the key dim.
 
-Public **reference** decomposition (toy: no causal mask, no batching folded in). A private overlay
-registers production flash-attention (masks, tuned block sizes, calibrated kernels) through the same
-rewrite/decomposition interface -- no fork.
+Reference decomposition (no causal mask, no batching folded in). Additional flash-attention variants
+(masks, tuned block sizes) register through the same rewrite/decomposition interface -- no fork.
 """
 
 from __future__ import annotations

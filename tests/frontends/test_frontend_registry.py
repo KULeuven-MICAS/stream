@@ -1,4 +1,4 @@
-"""Tests for the pluggable frontend boundary (plan/08).
+"""Tests for the pluggable frontend boundary.
 
 - OnnxFrontend is bit-identical to the existing ONNXModelParser (the wrap doesn't diverge).
 - The registry dispatches by ``can_load`` and raises for an unknown source.
@@ -62,7 +62,7 @@ def test_frontend_for_raises_on_unknown_source():
 
 
 def test_no_engine_imports_a_concrete_frontend():
-    """Import contract (plan/08, plan/10): engines depend on the protocol/registry, never on a concrete
+    """Import contract: engines depend on the protocol/registry, never on a concrete
     frontend module. A concrete frontend is imported only inside stream/frontends and the parsing stage."""
     root = pathlib.Path("stream")
     engine_dirs = [root / "opt", root / "cost_model", root / "stages" / "estimation", root / "stages" / "allocation"]

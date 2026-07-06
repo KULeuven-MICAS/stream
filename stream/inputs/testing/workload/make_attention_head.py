@@ -1,4 +1,4 @@
-"""Build the single-head attention workload used across the tests and the vortex seed.
+"""Build the single-head attention workload used across the tests.
 
 A faithful scaled-dot-product attention head -- one head of a small-transformer block: Q/K/V
 projections, scores = Q·Kᵀ, a row-wise Softmax over the key axis, then context = attn·V. The weights

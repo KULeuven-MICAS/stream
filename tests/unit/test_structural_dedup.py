@@ -1,4 +1,4 @@
-"""M05 Level-2: WL repeated-block detection and the StructuralDedupStage annotation."""
+"""WL repeated-block detection and the StructuralDedupStage annotation."""
 
 from __future__ import annotations
 

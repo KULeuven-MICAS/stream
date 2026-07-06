@@ -1,10 +1,10 @@
-"""torch.export frontend (plan/08 spike -> tier-1) -- a moat-clean, optional plugin.
+"""torch.export frontend -- an optional, pluggable ingestion path.
 
-``torch.export`` preserves op provenance (unlike ONNX's flattening), which is what M04's rewrite
-matching and M05's block detection want. This frontend converts an ``ExportedProgram``'s ATen graph
-into the internal affine :class:`~stream.workload.workload.Workload`.
+``torch.export`` preserves op provenance (unlike ONNX's flattening), which is what rewrite matching
+and block detection want. This frontend converts an ``ExportedProgram``'s ATen graph into the internal
+affine :class:`~stream.workload.workload.Workload`.
 
-Design for soundness + the moat boundary:
+Design for soundness and extensibility:
 
 - **torch is optional.** Importing this module never imports torch; only :meth:`TorchExportFrontend.load`
   does. Without torch the frontend registers but declines every source (``can_load`` is False), exactly
@@ -13,9 +13,9 @@ Design for soundness + the moat boundary:
   list of :class:`AtenCall` (a tiny torch-independent op record); :func:`convert_aten_calls` maps those
   to affine nodes via the declarative :data:`ATEN_OP_TABLE`. So the whole mapping is unit-tested with
   hand-built calls, no torch required.
-- **The op table is the extension point.** A private overlay adds SOTA ATen coverage (or production
-  block converters) via :func:`register_aten_op` -- no fork. The public table is a starter subset; ops
-  with no builder are reported in an :class:`UnsupportedOpReport`, never crashed on (plan/08).
+- **The op table is the extension point.** An out-of-tree package adds ATen coverage (or block
+  converters) via :func:`register_aten_op` -- no fork. The built-in table is a starter subset; ops with
+  no builder are reported in an :class:`UnsupportedOpReport`, never crashed on.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ ATEN_OP_TABLE: dict[str, AtenNodeBuilder] = {}
 
 
 def register_aten_op(target: str, builder: AtenNodeBuilder) -> None:
-    """Register (or override) the affine-node builder for an ATen ``target`` -- the overlay's seam."""
+    """Register (or override) the affine-node builder for an ATen ``target`` -- the extension seam."""
     ATEN_OP_TABLE[target] = builder
 
 
@@ -146,7 +146,7 @@ def _softmax(inputs: tuple[Tensor, ...], output: Tensor, call: AtenCall) -> Comp
     )
 
 
-# Starter subset -- the public reference coverage. The overlay extends it via register_aten_op.
+# Starter subset -- the built-in coverage. Extend it out-of-tree via register_aten_op.
 for _target in (
     "aten::mul",
     "aten::add",

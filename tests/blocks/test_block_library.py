@@ -1,4 +1,4 @@
-"""Tests for the registry-driven block library (plan Phase 2).
+"""Tests for the registry-driven block library.
 
 Every block builds; the catalog is reused (not duplicated); and the modern blocks carry the right
 AccessRelation types -- MoE dispatch/combine are DataDependent, RMSNorm reduces, chunked SSM chunks.

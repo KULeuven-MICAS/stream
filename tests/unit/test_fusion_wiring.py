@@ -1,4 +1,4 @@
-"""Tests for AccessRelation-aware fusion wiring (plan/06 + plan/11).
+"""Tests for AccessRelation-aware fusion wiring.
 
 Data-dependent reads (MoE dispatch/combine) are hard fusion barriers; a normalization's reduced axis
 is a per-axis barrier that still fuses along the parallel axes. The FusionAnalysisStage annotates the

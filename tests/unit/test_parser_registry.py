@@ -1,4 +1,4 @@
-"""The ONNX parser registration seam -- how a private overlay adds proprietary higher-level-op parsers
+"""The ONNX parser registration seam -- how an out-of-tree package adds higher-level-op parsers
 without forking (the same way it adds decompositions and blocks)."""
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ def test_builtin_parsers_are_looked_up():
     assert onnx_parser_for("NoSuchOp") is None
 
 
-def test_overlay_registers_a_proprietary_parser_and_it_dispatches():
+def test_registers_a_higher_level_parser_and_it_dispatches():
     register_onnx_parser("MaskedAttention", _DummyParser)
     try:
         assert onnx_parser_for("MaskedAttention") is _DummyParser

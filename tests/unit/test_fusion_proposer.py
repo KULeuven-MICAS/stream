@@ -1,4 +1,4 @@
-"""Auto-checks for the fusion-region proposer (plan Phase 3).
+"""Auto-checks for the fusion-region proposer.
 
 The mandated checks: every proposed region is legal by the affine analysis (no data-dependent edge
 sits inside a region), buffer predictions match hand-derived values on conv/attention/scan fixtures,

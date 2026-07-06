@@ -1,4 +1,4 @@
-"""Typed operand access relation (plan/11).
+"""Typed operand access relation.
 
 ``AccessRelation = AffineAccess | PiecewiseAffineAccess | DataDependentAccess`` -- a value object over
 *one operand's* access, derived from the node's existing xDSL operand map. It does not replace
@@ -168,8 +168,8 @@ class DataDependentAccess(AccessRelation):
 
 # Op types whose *data* input is read with a runtime-dependent index (gather/scatter, MoE routing).
 # Their affine map is a conservative bounding access (the whole indexed axis); the true selection is
-# data-dependent. A private overlay adds its own routing ops via ``register_data_dependent_op`` rather
-# than editing this set -- the plugin boundary for the DataDependent bucket.
+# data-dependent. Additional routing ops register via ``register_data_dependent_op`` rather than
+# editing this set -- the extension point for the DataDependent bucket.
 _DATA_DEPENDENT_OPS: set[str] = {"Gather", "Scatter", "MoEDispatch", "MoECombine"}
 
 
@@ -193,7 +193,7 @@ def access_for(node: HasIterationSpace, operand: Tensor) -> AccessRelation:
     Gather, MoE dispatch/combine, …) becomes a :class:`DataDependentAccess` whose bounding access is the
     conservative affine map and whose ``index_tensor`` is the routing/index operand (if any). Footprint
     and relevancy are unchanged (they fall back to the bounding map); only ``is_static`` flips, which is
-    exactly what fusion analysis must see. Frontends / a private overlay can also build
+    exactly what fusion analysis must see. Frontends can also build
     :class:`PiecewiseAffineAccess` (masked/windowed regions) explicitly.
     """
     affine = AffineAccess(node.get_mapping(operand))

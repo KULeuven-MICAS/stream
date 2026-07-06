@@ -1,4 +1,4 @@
-"""M04 rewrite library: golden numerics (chunked == direct) and subgraph structure vs chunk size."""
+"""Rewrite library: golden numerics (chunked == direct) and subgraph structure vs chunk size."""
 
 from __future__ import annotations
 

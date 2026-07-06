@@ -1,4 +1,4 @@
-"""Auto-propose fusion regions by greedy chain growth under a near-memory budget (plan Phase 3).
+"""Auto-propose fusion regions by greedy chain growth under a near-memory budget.
 
 Given a workload and a near-memory capacity (in elements), this proposes which computation nodes to
 fuse into one depth-first region. It is built entirely on the Phase 2 affine analysis, so it is *sound*
@@ -14,8 +14,8 @@ by construction:
   capacity is the only thing that cuts, so an O(1)-state carry always fits -- a recurrence chain stays
   fused even under a tiny capacity where a large materialized tensor would be cut.
 
-This is the framework; a private overlay can supply a calibrated buffer/capacity model through the same
-interface. Nothing here imports a frontend or a concrete cost backend.
+This is the framework; an out-of-tree package can supply a calibrated buffer/capacity model through the
+same interface. Nothing here imports a frontend or a concrete cost backend.
 """
 
 from __future__ import annotations

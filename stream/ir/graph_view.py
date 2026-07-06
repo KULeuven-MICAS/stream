@@ -1,9 +1,9 @@
 """WorkloadGraphView -- one uniform, smart graph view of any workload (tiled or untiled).
 
-A single Stream API that Vortex (and any other consumer) renders directly: a proper node/edge graph
+A single Stream API that any consumer renders directly: a proper node/edge graph
 plus the two structural lenses that make a large workload legible --
 
-- **Repeated-block collapse** (M05): :func:`~stream.workload.structure.find_repeated_blocks` groups
+- **Repeated-block collapse**: :func:`~stream.workload.structure.find_repeated_blocks` groups
   computation nodes that are the same computation in the same structural position. Each such node
   carries a ``block_class`` id and the view lists the classes (representative + multiplicity +
   members), so a consumer can draw one representative and mark the rest ``×N`` -- clearly duplicated,

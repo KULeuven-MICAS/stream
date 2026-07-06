@@ -1,4 +1,4 @@
-"""Annotate the workload with AccessRelation-aware fusion edges (plan/06).
+"""Annotate the workload with AccessRelation-aware fusion edges.
 
 A passthrough stage: it classifies every compute-to-compute edge with
 :func:`~stream.workload.fusion.analysis.workload_fusion_edges` and records the result under

@@ -32,7 +32,7 @@ _LOAD_STATE: dict[str, bool] = {"builtins": False}
 
 def register_decomposition(op_type: str, decomposer: Decomposer) -> None:
     """Register (or override) the affine sub-operator decomposition for op ``op_type`` -- the seam a new
-    operator (or a private overlay) extends without touching any consumer."""
+    operator extends without touching any consumer."""
     _REGISTRY[op_type] = decomposer
 
 
@@ -52,9 +52,9 @@ def _ensure_builtins() -> None:
 
 
 def _load_plugins() -> None:
-    """Discover out-of-tree decomposers under the ``stream.decompositions`` entry-point group, so a
-    private overlay registers a decomposition (masked-attention block, future ops) without a fork. Each
-    entry-point name is the op ``type`` and its object is the ``node -> Workload`` decomposer."""
+    """Discover out-of-tree decomposers under the ``stream.decompositions`` entry-point group, so an
+    out-of-tree package registers a decomposition without a fork. Each entry-point name is the op
+    ``type`` and its object is the ``node -> Workload`` decomposer."""
     import logging  # noqa: PLC0415
     from importlib.metadata import entry_points  # noqa: PLC0415
 

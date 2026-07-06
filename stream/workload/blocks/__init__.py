@@ -1,4 +1,4 @@
-"""Registry-driven library of parameterized reference blocks (plan Phase 2).
+"""Registry-driven library of parameterized reference blocks.
 
 The building blocks of modern models -- attention (and GQA), Mamba / linear-attention recurrences,
 KV-cache decode, SwiGLU/MLP, RMSNorm, MoE, chunked SSM -- as introspectable affine workload graphs a
@@ -7,9 +7,8 @@ DSE can sweep. Two goals:
 - **One registry.** The existing catalog (:data:`stream.workload.models.MODEL_CATALOG`) is *reused*
   here, not duplicated; the modern blocks (:mod:`stream.workload.blocks.library`) are registered
   alongside it. :func:`build_block` builds any block by key with per-block parameters.
-- **A plugin boundary (the moat seam).** Built-ins register in-tree via :func:`register_block`; an
-  out-of-tree private overlay registers its own blocks (production flash-attention, tuned SSM kernels)
-  through the ``stream.workload_blocks`` entry-point group -- no fork required.
+- **A plugin boundary.** Built-ins register in-tree via :func:`register_block`; an out-of-tree package
+  registers its own blocks through the ``stream.workload_blocks`` entry-point group -- no fork required.
 """
 
 from __future__ import annotations

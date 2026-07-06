@@ -3,8 +3,8 @@
 The recurrence is a prefix sum ``h[t] = h[t-1] + x[t]`` over the sequence dimension ``t`` (element-
 wise over the hidden dimension ``d``). The state operand ``h_prev`` is read at ``t-1`` and the
 output ``h`` is written at ``t``, so ``t`` is a SEQUENTIAL iteration dimension (see
-``stream.workload.iterator_type``). The op kind is deliberately simple; M04 supplies the real
-Mamba/SSD/DeltaNet math. ``scan_reference`` is the NumPy golden.
+``stream.workload.iterator_type``). The op kind is deliberately simple; the rewrite library supplies
+the real Mamba/SSD/DeltaNet math. ``scan_reference`` is the NumPy golden.
 """
 
 from __future__ import annotations

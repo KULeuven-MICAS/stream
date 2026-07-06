@@ -1,4 +1,4 @@
-"""Tests for stream.workload.access_relation (plan/11).
+"""Tests for stream.workload.access_relation.
 
 Equivalence gate (permission to proceed): the default :class:`AffineAccess` reproduces
 ``affine_access.{relevancy, footprint, map_dim_positions}`` for every operand on the swiglu + scan

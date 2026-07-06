@@ -2,7 +2,7 @@
 
 ``OnnxFrontend.load`` produces exactly the workload :class:`~stream.parser.onnx.model.ONNXModelParser`
 already produces -- it is the sanctioned ingestion seam, not a reimplementation. ONNX stays the default,
-most-validated path; the frontend protocol just makes it one plugin among future ones (plan/08).
+most-validated path; the frontend protocol just makes it one plugin among future ones.
 """
 
 from __future__ import annotations

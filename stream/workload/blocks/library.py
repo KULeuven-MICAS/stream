@@ -1,4 +1,4 @@
-"""Modern reference blocks that exercise every ``AccessRelation`` bucket (plan/11, plan/02).
+"""Modern reference blocks that exercise every ``AccessRelation`` bucket.
 
 These complement the attention/Mamba catalog (:mod:`stream.workload.models`) with the other core
 components of a modern model, chosen so each demonstrates a different access kind:
@@ -9,7 +9,7 @@ components of a modern model, chosen so each demonstrates a different access kin
 - **MoE** -- dense per-expert ``[C, d]`` GEMMs (A) with **data-dependent** dispatch/combine
   permutations (C, ``DataDependentAccess``): capacity ``C`` and the load-balance coefficient are DSE
   sweep / calibration knobs. This is the headline data-dependent component.
-- **Chunked SSM** -- reuses the M04 ``chunked_scan`` rewrite: a SEQUENTIAL recurrence decomposed into a
+- **Chunked SSM** -- reuses the ``chunked_scan`` rewrite: a SEQUENTIAL recurrence decomposed into a
   per-chunk reduction chain, chunk size a DSE lever.
 
 All graphs are built on the affine IR exactly as the ONNX parsers produce, so the whole framework
@@ -226,7 +226,7 @@ class ChunkedSSMConfig:
 
 def build_chunked_ssm_block(config: ChunkedSSMConfig | None = None) -> Workload:
     """A chunked state-space block: a SEQUENTIAL selective scan decomposed into a per-chunk reduction
-    chain by the M04 ``chunked_scan`` rewrite. ``chunk_size`` sets the chain length -- the DSE lever
+    chain by the ``chunked_scan`` rewrite. ``chunk_size`` sets the chain length -- the DSE lever
     that trades intra-chunk parallelism against inter-chunk serialization and state buffering."""
     c = config or ChunkedSSMConfig()
     s, hid, dt = c.seq, c.hidden, c.dtype
@@ -252,7 +252,7 @@ class FlashAttentionConfig:
 
 
 def build_flash_attention_block(config: FlashAttentionConfig | None = None) -> Workload:
-    """Flash attention as an online-softmax scan over key blocks (reuses the M04 ``flash_attention``
+    """Flash attention as an online-softmax scan over key blocks (reuses the ``flash_attention``
     rewrite). Softmax's full-key reduction -- normally a fusion barrier -- is lifted into a SEQUENTIAL
     chain of dense per-block reductions carrying O(1) running state per query. ``block_size`` is the DSE
     lever. The un-decomposed ``Attention`` op (query ``i``, head ``d`` PARALLEL; key ``j`` REDUCTION) is
@@ -283,7 +283,7 @@ def sparse_attention_key_access(window: int, dilation: int) -> PiecewiseAffineAc
     band is affine, so the access is a :class:`~stream.workload.access_relation.PiecewiseAffineAccess`
     -- the natural modern producer of the piecewise bucket. Iteration dims are ``(i, w)`` (query
     position, within-band offset); ``footprint`` returns the hull of the two bands. This is the seam a
-    frontend / overlay uses to model structured sparsity; ``access_for`` returns the conservative affine
+    frontend uses to model structured sparsity; ``access_for`` returns the conservative affine
     bound by default."""
     i, w = AffineExpr.dimension(0), AffineExpr.dimension(1)
     local = AffineMap(2, 0, (i - window + w,))  # K[i - window + w]  (contiguous local band)

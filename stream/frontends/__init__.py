@@ -1,4 +1,4 @@
-"""Pluggable workload ingestion (plan/08).
+"""Pluggable workload ingestion.
 
 Every way of turning a model into a :class:`~stream.workload.workload.Workload` -- ONNX today,
 ``torch.export`` / StableHLO tomorrow -- is a :class:`WorkloadFrontend`. Engines depend on this
@@ -6,8 +6,8 @@ protocol and the registry, **never on a concrete frontend module** (an import-co
 this), so formats can be added or retired without touching the cost / solver / codegen engines.
 
 The registry is a **plugin boundary**: built-ins register in-tree via :func:`register_frontend`, and an
-out-of-tree private overlay registers its own frontends through the ``stream.frontends`` entry-point
-group -- no fork required. :func:`load_workload` picks the first frontend whose :meth:`can_load`
+out-of-tree package registers its own frontends through the ``stream.frontends`` entry-point group --
+no fork required. :func:`load_workload` picks the first frontend whose :meth:`can_load`
 accepts the source.
 """
 

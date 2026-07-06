@@ -2,7 +2,7 @@
 
 These builders assemble the blocks that modern inference workloads are made of -- multi-head
 attention and a Mamba-style state-space recurrence -- directly on the affine IR, using exactly the
-representation the ONNX parsers produce. They exist so the framework (and the Sequence Lab) can show
+representation the ONNX parsers produce. They exist so the framework can show
 *how an architecture is represented internally*: which operators are affine ``ComputationNode``s
 (with a REDUCTION contraction), which are ``FusionEdge`` barriers, and where a SEQUENTIAL state
 carry forces a chunked schedule.
@@ -402,7 +402,7 @@ def build_kv_cache_decode_step(config: KVCacheConfig | None = None) -> Workload:
 
 @dataclass(frozen=True)
 class ModelSpec:
-    """A named architecture the Sequence Lab can introspect."""
+    """A named architecture the model catalog can introspect."""
 
     key: str
     label: str

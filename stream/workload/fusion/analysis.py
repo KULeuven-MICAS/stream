@@ -1,9 +1,9 @@
-"""Affine fusion analysis: fusibility + streaming buffer size from map composition (plan/06).
+"""Affine fusion analysis: fusibility + streaming buffer size from map composition.
 
 For a producer P (output map on a shared tensor) and consumer Q (input map on the same tensor),
 tiling a *fusion dimension* of Q depth-first lets P stream into Q if the producer region a consumer
 tile needs is a **bounded window that advances monotonically** as the tile sweeps the fusion dim.
-Everything is derived from the xDSL affine maps via M02's :func:`compose_dependency` / :func:`footprint`
+Everything is derived from the xDSL affine maps via :func:`compose_dependency` / :func:`footprint`
 -- no op-specific heuristics, so it generalises to new operators and recurrences.
 
 Two proof points fall out with no special-casing:

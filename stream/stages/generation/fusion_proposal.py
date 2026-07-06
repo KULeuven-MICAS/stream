@@ -1,4 +1,4 @@
-"""Annotate the workload with auto-proposed fusion regions (plan Phase 3).
+"""Annotate the workload with auto-proposed fusion regions.
 
 A passthrough stage: it runs the greedy, capacity-bounded fusion proposer
 (:func:`~stream.workload.fusion.proposer.propose_fusion_regions`) and records the result under

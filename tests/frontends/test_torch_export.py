@@ -1,4 +1,4 @@
-"""Tests for the torch.export frontend (plan/08, plan Phase 3).
+"""Tests for the torch.export frontend.
 
 The conversion is torch-free and tested with hand-built ATen calls (structural equivalence to the
 IR twin); torch itself is optional, so ``can_load`` declines without it and an e2e export test is
@@ -64,8 +64,8 @@ def test_unsupported_op_is_reported_not_fatal():
     assert workload.number_of_nodes() > 0  # did not crash
 
 
-def test_overlay_can_extend_the_op_table():
-    """The moat seam: a plugin registers coverage for an op the public table lacks."""
+def test_out_of_tree_package_can_extend_the_op_table():
+    """A plugin registers coverage for an op the built-in table lacks."""
 
     def build_custom(inputs, output, call):
         rank = len(output.shape)

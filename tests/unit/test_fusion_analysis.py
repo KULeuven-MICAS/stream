@@ -1,6 +1,6 @@
-"""Tests for the affine fusion analysis (M06): fusibility + streaming buffer from map composition.
+"""Tests for the affine fusion analysis: fusibility + streaming buffer from map composition.
 
-The proof points (plan/06): a recurrence streams along its sequence axis with an O(1) buffer, a
+The proof points: a recurrence streams along its sequence axis with an O(1) buffer, a
 conv-style window grows a line buffer + halo, and a full-reduction (softmax) must hold the whole
 reduced axis — reported, never silently assumed streamable.
 """
