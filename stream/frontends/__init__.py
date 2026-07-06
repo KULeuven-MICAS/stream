@@ -113,11 +113,16 @@ def load_workload(source: Any, config: FrontendConfig | None = None) -> Workload
 
 def _ensure_builtins() -> None:
     """Register the in-tree frontends. Imported lazily so importing the package is cheap and so this
-    registry module never imports a concrete frontend at module load (import-contract)."""
+    registry module never imports a concrete frontend at module load (import-contract). The torch
+    frontend imports without torch -- torch is only touched when it actually loads a program."""
     if "onnx" not in _REGISTRY:
         from stream.frontends.onnx import OnnxFrontend  # noqa: PLC0415
 
         register_frontend(OnnxFrontend())
+    if "torch_export" not in _REGISTRY:
+        from stream.frontends.torch_export import TorchExportFrontend  # noqa: PLC0415
+
+        register_frontend(TorchExportFrontend())
 
 
 def _reset_for_tests() -> None:

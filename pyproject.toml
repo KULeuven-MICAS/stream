@@ -57,6 +57,9 @@ gurobi = ["gurobipy"]
 # affine_access derives relevancy/footprint/dependencies without it; islpy only tightens
 # non-permutation dependency regions the affine box cannot represent.
 exact = ["islpy"]
+# torch.export frontend (stream/frontends/torch_export.py). Optional: the conversion is torch-free and
+# unit-tested without it; torch is only needed to lower a real ExportedProgram. Heavy, so opt-in.
+torch = ["torch>=2.4"]
 dev = ["bumpver", "pip-tools", "build", "twine", "pre-commit", "pytest", "pytest-timeout", "hypothesis"]
 # The optional AIE codegen toolchain (mlir_aie/llvm_aie wheels, xdsl-aie, snax-mlir,
 # aie-python-extras) cannot be an extra: those are direct-reference (git/URL) installs that
@@ -71,6 +74,7 @@ stream-setup-aie = "stream.aie_setup:main"
 # public package ships only the framework, interfaces, taxonomy, and toy/reference implementations.
 [project.entry-points."stream.frontends"]
 onnx = "stream.frontends.onnx:OnnxFrontend"
+torch_export = "stream.frontends.torch_export:TorchExportFrontend"
 
 [project.entry-points."stream.workload_blocks"]
 # Built-in blocks register in-tree (stream.workload.blocks); overlays add their own entries here.

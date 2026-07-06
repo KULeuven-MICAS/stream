@@ -80,14 +80,18 @@ def pairwise_fusion(
     consumer: HasIterationSpace,
     fusion_dim: int,
     extents: dict[int, int],
+    tensor: Tensor | None = None,
 ) -> FusionWindow:
     """Analyse streaming ``producer -> consumer`` fusion along one consumer ``fusion_dim``.
 
     ``extents`` maps each consumer iteration-dimension position to its size. The window/step come from
     composing the consumer's read at two consecutive fusion positions back onto the producer's
-    iteration space; ``buffer_elements`` is the shared-tensor footprint of that window.
+    iteration space; ``buffer_elements`` is the shared-tensor footprint of that window. Pass ``tensor``
+    to analyse a specific shared tensor when producer/consumer share more than one (e.g. a flash block
+    carrying both the output and the softmax denominator); it defaults to the unique shared tensor.
     """
-    tensor = shared_tensor(producer, consumer)
+    if tensor is None:
+        tensor = shared_tensor(producer, consumer)
     p_out = producer.get_mapping(tensor)
     c_in = consumer.get_mapping(tensor)
 
