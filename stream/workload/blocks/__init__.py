@@ -1,14 +1,6 @@
-"""Registry-driven library of parameterized reference blocks.
+"""Registry of parameterized reference blocks, buildable by key via :func:`build_block`.
 
-The building blocks of modern models -- attention (and GQA), Mamba / linear-attention recurrences,
-KV-cache decode, SwiGLU/MLP, RMSNorm, MoE, chunked SSM -- as introspectable affine workload graphs a
-DSE can sweep. Two goals:
-
-- **One registry.** The existing catalog (:data:`stream.workload.models.MODEL_CATALOG`) is *reused*
-  here, not duplicated; the modern blocks (:mod:`stream.workload.blocks.library`) are registered
-  alongside it. :func:`build_block` builds any block by key with per-block parameters.
-- **A plugin boundary.** Built-ins register in-tree via :func:`register_block`; an out-of-tree package
-  registers its own blocks through the ``stream.workload_blocks`` entry-point group -- no fork required.
+Out-of-tree blocks register through the ``stream.workload_blocks`` entry-point group.
 """
 
 from __future__ import annotations
@@ -56,8 +48,7 @@ ENTRY_POINT_GROUP = "stream.workload_blocks"
 
 @dataclass(frozen=True)
 class BlockSpec:
-    """A named, parameterized block. ``build(**params)`` returns a fresh
-    :class:`~stream.workload.workload.Workload`; unknown params raise (strict, so typos surface)."""
+    """A named, parameterized block; ``build(**params)`` returns a fresh ``Workload`` (unknown params raise)."""
 
     key: str
     label: str
@@ -80,7 +71,7 @@ def _cfg_builder(build_fn: Callable[[Any], Workload], cfg_cls: type) -> Callable
     return lambda **params: build_fn(cfg_cls(**params))
 
 
-# --- built-ins: the existing catalog (reused) + the modern library blocks ------------------------- #
+# built-ins: catalog configs + the modern library blocks
 _CATALOG_CONFIGS: dict[str, type] = {
     "attention": AttentionConfig,
     "gqa": GQAConfig,

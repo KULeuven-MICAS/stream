@@ -1,29 +1,4 @@
-"""Canonical model-architecture builders, as introspectable affine workload graphs.
-
-These builders assemble the blocks that modern inference workloads are made of -- multi-head
-attention and a Mamba-style state-space recurrence -- directly on the affine IR, using exactly the
-representation the ONNX parsers produce. They exist so the framework can show
-*how an architecture is represented internally*: which operators are affine ``ComputationNode``s
-(with a REDUCTION contraction), which are ``FusionEdge`` barriers, and where a SEQUENTIAL state
-carry forces a chunked schedule.
-
-Design choices that keep the graphs faithful and small:
-
-- **Attention scores are one affine node, not MatMul+Transpose.** ``Q@K^T`` is the Einsum
-  ``bhid,bhjd->bhij`` -- a single affine contraction over the head dimension ``d``. The ONNX
-  ``Transpose`` that a 2-operand MatMul needs is an artifact of ONNX, not of the affine IR, so the
-  builder omits it.
-- **Softmax is a schedulable ``NormalizationNode``, not a barrier.** It reduces over the key axis but
-  is PARALLEL over batch/head/query, so it fuses with its neighbours along those axes (flash
-  attention); ``stream.workload.normalization.decompose_normalization`` expands it to max/exp/sum/div
-  for fusion analysis.
-- **Heads are a batch dimension** (``b, h``): every attention node is PARALLEL over ``b, h, i`` and
-  reduces the appropriate contraction dim. GQA/MQA differ only in how the head axis broadcasts.
-- **The head split/merge folds into the projections' affine maps** (``bsk,khe->bhse``), so no
-  Reshape barrier is needed -- attention's only barrier is the Softmax normalization.
-- **Mamba's scan is a SEQUENTIAL recurrence** (state read at ``t-1``, written at ``t``); the chunked
-  rewrites in :mod:`stream.workload.rewrites` turn it into a per-chunk reduction chain.
-"""
+"""Canonical model-architecture builders as introspectable affine workload graphs."""
 
 from __future__ import annotations
 
@@ -54,9 +29,8 @@ __all__ = [
 
 
 def _matmul_maps(rank_batch: int) -> tuple[AffineMap, AffineMap, AffineMap]:
-    """Affine maps for a batched projection ``out[b.., m, n] = sum_k A[b.., m, k] W[k, n]`` with
-    ``rank_batch`` leading batch axes on the activation (the weight has none). Iteration dims:
-    ``batch.., m, n, k``."""
+    """Affine maps for a batched projection ``out[b.., m, n] = sum_k A[b.., m, k] W[k, n]``
+    (``rank_batch`` leading batch axes on the activation)."""
     b = rank_batch
     dim = AffineExpr.dimension
     batch = tuple(dim(i) for i in range(b))
@@ -82,16 +56,8 @@ class AttentionConfig:
 
 
 def build_attention_block(config: AttentionConfig | None = None) -> Workload:
-    """A full multi-head self-attention block on the affine IR.
-
-    Every projection folds its head-split into an affine contraction (``bsk,khe->bhse``), and Softmax
-    is a schedulable ``NormalizationNode`` (not a barrier) that reduces over the key axis but is
-    PARALLEL over b,h,i -- so the whole block is one fusible region. Flow: Q/K/V projections ->
-    scores (``bhie,bhje->bhij``, contract the head dim ``e``) -> Softmax (reduce over ``j``) ->
-    context (``bhij,bhje->bhie``, contract the key position ``j``) -> output projection
-    (``bhie,heo->bso``, contract heads ``h`` and ``e``). ``decompose_normalization`` expands the
-    softmax into max/exp/sum/div for fusion analysis.
-    """
+    """A full multi-head self-attention block on the affine IR: Q/K/V projections, scores,
+    schedulable-Softmax, context, output projection."""
     c = config or AttentionConfig()
     b, h, s, dh, dm, dt = c.batch, c.heads, c.seq, c.d_head, c.d_model, c.dtype
     nodes: list = []
@@ -99,7 +65,7 @@ def build_attention_block(config: AttentionConfig | None = None) -> Workload:
     x = Tensor.create("x", dt, (b, s, dm))
     nodes.append(InEdge(name="x", outputs=(x,)))
 
-    # --- Q/K/V projections, head-split folded in: heads[b,h,s,e] = sum_k X[b,s,k] W[k,h,e] ---
+    # Q/K/V projections, head-split folded in: heads[b,h,s,e] = sum_k X[b,s,k] W[k,h,e]
     proj_maps = (
         AffineMap.from_callable(lambda b_, h_, s_, e, k: (b_, s_, k)),  # X[b,s,k]
         AffineMap.from_callable(lambda b_, h_, s_, e, k: (k, h_, e)),  # W[k,h,e]
@@ -117,7 +83,7 @@ def build_attention_block(config: AttentionConfig | None = None) -> Workload:
         )
         heads[name] = proj
 
-    # --- scores: S[b,h,i,j] = sum_e Q[b,h,i,e] K[b,h,j,e]  (contract the head dim e = REDUCTION) ---
+    # scores: S[b,h,i,j] = sum_e Q[b,h,i,e] K[b,h,j,e]  (contract the head dim e = REDUCTION)
     scores = Tensor.create("scores", dt, (b, h, s, s))
     score_maps = (
         AffineMap.from_callable(lambda b_, h_, i, j, e: (b_, h_, i, e)),  # Q
@@ -130,9 +96,7 @@ def build_attention_block(config: AttentionConfig | None = None) -> Workload:
         )
     )
 
-    # --- softmax over the key axis j (position 3): one schedulable NormalizationNode. It reduces
-    # over j but is PARALLEL over b,h,i, so it fuses with the scores producer and context consumer
-    # along those axes (flash-attention); decompose_normalization expands its max/exp/sum/div. ---
+    # softmax over the key axis j (position 3): a schedulable NormalizationNode, not a barrier
     probs = Tensor.create("probs", dt, (b, h, s, s))
     identity4d = AffineMap.identity(4)
     nodes.append(
@@ -146,7 +110,7 @@ def build_attention_block(config: AttentionConfig | None = None) -> Workload:
         )
     )
 
-    # --- context: O[b,h,i,e] = sum_j P[b,h,i,j] V[b,h,j,e]  (contract key position j = REDUCTION) ---
+    # context: O[b,h,i,e] = sum_j P[b,h,i,j] V[b,h,j,e]  (contract key position j = REDUCTION)
     ctx = Tensor.create("context", dt, (b, h, s, dh))
     ctx_maps = (
         AffineMap.from_callable(lambda b_, h_, i, e, j: (b_, h_, i, j)),  # P
@@ -159,7 +123,7 @@ def build_attention_block(config: AttentionConfig | None = None) -> Workload:
         )
     )
 
-    # --- output projection, head-merge folded in: Y[b,s,o] = sum_{h,e} O[b,h,s,e] Wo[h,e,o] ---
+    # output projection, head-merge folded in: Y[b,s,o] = sum_{h,e} O[b,h,s,e] Wo[h,e,o]
     wo = Tensor.create("Wo", dt, (h, dh, dm))
     y = Tensor.create("y", dt, (b, s, dm))
     out_maps = (
@@ -185,10 +149,8 @@ class MambaConfig:
 
 
 def build_mamba_block(config: MambaConfig | None = None) -> Workload:
-    """A Mamba-style block: input projection (``MatMul``) -> selective scan (SEQUENTIAL recurrence)
-    -> output projection (``MatMul``). The scan reads its state at ``t-1`` and writes it at ``t``, so
-    ``t`` is SEQUENTIAL and the chunked rewrites decompose it into a per-chunk reduction chain. It is
-    modelled per-sequence (2D, no batch axis) so the chunked-scan rewrite applies directly."""
+    """A Mamba-style block: input projection -> selective scan (SEQUENTIAL recurrence,
+    chunked-rewritten) -> output projection."""
     c = config or MambaConfig()
     s, dm, hid, dt = c.seq, c.d_model, c.hidden, c.dtype
     nodes: list = []
@@ -237,13 +199,8 @@ class GQAConfig:
 
 
 def build_gqa_block(config: GQAConfig | None = None) -> Workload:
-    """Grouped-Query Attention core, with the head axis factored into (group ``g``, rep ``r``).
-
-    K and V are indexed by ``g`` only -- they do NOT index the rep axis ``r`` -- so ``r`` is INVARIANT
-    for them: every query head in a group reuses the same K/V. That affine reuse *is* GQA's data
-    saving (MQA = ``groups=1``: one K/V for all heads; MHA = ``groups=heads``). Flow: scores
-    ``bgrie,bgje->bgrij`` (reduce head dim ``e``) → Softmax(reduce ``j``) → context
-    ``bgrij,bgje->bgrie`` (reduce key position ``j``)."""
+    """Grouped-Query Attention core: the head axis is factored into (group ``g``, rep ``r``);
+    K/V index ``g`` only, so ``r`` is INVARIANT for them (the KV reuse)."""
     c = config or GQAConfig()
     b, g, r, s, e, dt = c.batch, c.groups, c.reps, c.seq, c.d_head, c.dtype
     q = Tensor.create("q", dt, (b, g, r, s, e))
@@ -292,12 +249,8 @@ class LinearAttentionConfig:
 
 
 def build_linear_attention_block(config: LinearAttentionConfig | None = None) -> Workload:
-    """Linear attention in its recurrent (matrix-state) form -- the linear-attn ↔ SSM duality.
-
-    ``S_t = S_{t-1} + k_t ⊗ v_t`` (a rank-1 outer-product accumulation into a [d_k, d_v] state),
-    ``y_t = q_t · S_t``. The state read ``S[t-1]`` makes the sequence axis ``t`` SEQUENTIAL (a state
-    carry): it cannot be spatially unrolled, only chunked -- exactly like Mamba, and why linear
-    attention has an O(1)-state streaming decode. The output contracts ``d_k`` (REDUCTION)."""
+    """Linear attention in recurrent matrix-state form: ``S_t = S_{t-1} + k_t ⊗ v_t``,
+    ``y_t = q_t · S_t``; the ``S[t-1]`` read makes ``t`` SEQUENTIAL."""
     c = config or LinearAttentionConfig()
     s, dk, dv, dt = c.seq, c.d_k, c.d_v, c.dtype
     k = Tensor.create("k", dt, (s, dk))
@@ -345,14 +298,8 @@ class KVCacheConfig:
 
 
 def build_kv_cache_decode_step(config: KVCacheConfig | None = None) -> Workload:
-    """One autoregressive decode step against a KV cache.
-
-    The cache buffers are allocated at ``cache_capacity`` but only ``valid_len`` positions hold real
-    keys/values, so the step first ``Slice``s the valid prefix ``cache[0:valid_len]`` (the exact data
-    movement the hardware must perform), then the single new query attends over that prefix:
-    ``scores[1,j] = q·K[j]`` (reduce head dim), Softmax over the ``valid_len`` keys, then
-    ``context[1,e] = P·V``. The cache-position axis ``j`` is the reduction -- the new token depends on
-    every valid cached key/value."""
+    """One autoregressive decode step: ``Slice`` the valid cache prefix ``cache[0:valid_len]``,
+    then the new query attends over it (cache position ``j`` is the reduction)."""
     c = config or KVCacheConfig()
     cap, t, e, dt = c.cache_capacity, c.valid_len, c.d_head, c.dtype
     k_cache = Tensor.create("K_cache", dt, (cap, e))
@@ -415,10 +362,9 @@ MODEL_CATALOG: tuple[ModelSpec, ...] = (
         key="attention",
         label="Multi-Head Attention",
         description=(
-            "Q@Kᵀ scores and the P@V context are single affine contractions (the head dim and the "
-            "key position are REDUCTION). Softmax reduces over the key axis but is parallel over "
-            "batch/head/query — so it fuses along those axes (flash attention) and decomposes under "
-            "the hood into max→exp→sum→div, while scheduling as one native kernel."
+            "Q@Kᵀ scores and the P@V context are single affine contractions (REDUCTION), and Softmax "
+            "reduces over the key axis but is parallel over batch/head/query, so it fuses along those "
+            "axes (flash attention)."
         ),
         build=build_attention_block,
     ),
@@ -426,10 +372,9 @@ MODEL_CATALOG: tuple[ModelSpec, ...] = (
         key="gqa",
         label="Grouped-Query Attention",
         description=(
-            "The same attention, but the head axis is factored into (group, rep). K and V index the "
-            "group only — they are INVARIANT over the rep axis — so every query head in a group reuses "
-            "the same K/V. That reuse (marked ‘reused ×reps’) is exactly GQA/MQA's KV saving; less data "
-            "moves off-chip. MQA is one group; MHA is one rep per group."
+            "The same attention, but the head axis is factored into (group, rep) and K/V index the "
+            "group only (INVARIANT over rep), so every query head in a group reuses the same K/V — "
+            "GQA/MQA's KV saving."
         ),
         build=build_gqa_block,
     ),
@@ -437,10 +382,8 @@ MODEL_CATALOG: tuple[ModelSpec, ...] = (
         key="linear_attention",
         label="Linear Attention (recurrent)",
         description=(
-            "Attention with no softmax, written as a recurrence: a [d_k, d_v] matrix state updated by "
-            "kₜ⊗vₜ, read out by qₜ. The state read at t−1 makes the sequence axis SEQUENTIAL — it can't "
-            "be spatially unrolled, only chunked, exactly like Mamba (the linear-attention ↔ SSM "
-            "duality). This is what gives linear attention its O(1)-state streaming decode."
+            "Softmax-free attention as a recurrence over a [d_k, d_v] matrix state; the state read at "
+            "t−1 makes the sequence axis SEQUENTIAL (the linear-attention ↔ SSM duality)."
         ),
         build=build_linear_attention_block,
     ),
@@ -449,8 +392,7 @@ MODEL_CATALOG: tuple[ModelSpec, ...] = (
         label="Mamba (SSM recurrence)",
         description=(
             "The selective scan reads its state at t−1 and writes it at t, so the sequence axis is "
-            "SEQUENTIAL: it cannot be spatially unrolled, only chunked. The chunked rewrite turns it "
-            "into a chain of dense per-chunk reductions."
+            "SEQUENTIAL and the chunked rewrite turns it into a chain of dense per-chunk reductions."
         ),
         build=build_mamba_block,
     ),
@@ -458,10 +400,8 @@ MODEL_CATALOG: tuple[ModelSpec, ...] = (
         key="kv_cache",
         label="KV-Cache Decode Step",
         description=(
-            "One autoregressive decode step. The cache buffer is allocated large but only part is "
-            "valid, so a Slice reads exactly the valid prefix cache[0:t] (the precise data movement — "
-            "the unwritten tail is never touched); the single new query then attends over it, reducing "
-            "over the cache positions. Paged/sparse gathers are modelled conservatively (whole axis)."
+            "One autoregressive decode step: a Slice reads exactly the valid prefix cache[0:t], then "
+            "the single new query attends over it, reducing over the cache positions."
         ),
         build=build_kv_cache_decode_step,
     ),

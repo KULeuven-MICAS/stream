@@ -1,13 +1,5 @@
-"""Infeasibility diagnosis IR -- why a mapping did not fit, as an inspectable result rather than a crash.
-
-When the tensor/transfer allocation MILP has no solution, a solver that supports an IIS (Irreducible
-Inconsistent Subsystem -- Gurobi today) yields the *minimal* set of mutually-conflicting constraints.
-Each resource-bound constraint the allocator adds is tagged with the physical resource it binds (a
-core's memory, a link, ...), so the IIS maps straight back to the hardware: the report says which
-cores/links are over-constrained and why. This drives a "highlight the offending resources on the
-architecture view" visualization, and it is deliberately backend-agnostic and resource-kind-agnostic
-so new solvers or new hardware constraints extend it without touching consumers.
-"""
+"""Infeasibility diagnosis IR: why a mapping did not fit, as an inspectable result (the solver IIS
+mapped back to the physical cores/links it over-constrains) rather than a crash."""
 
 from __future__ import annotations
 
@@ -17,10 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ResourceRefIR(BaseModel):
-    """A physical hardware resource a constraint binds -- the thing to highlight on the architecture
-    view. ``kind`` is open (``core``/``link``/future memory-bank/DMA-engine) so new resource types
-    need no schema change; ``id`` matches the accelerator IR so a consumer can find the rendered node.
-    """
+    """A physical hardware resource a constraint binds -- the thing to highlight on the architecture view."""
 
     kind: str = Field(description="Physical resource kind, e.g. 'core' or 'link'")
     id: str = Field(description="Stable id matching the accelerator IR (e.g. a core id as a string)")
@@ -29,18 +18,15 @@ class ResourceRefIR(BaseModel):
 
 
 class TileDimIR(BaseModel):
-    """One dimension of a tensor tile: its loop-dim label (the affine symbol also shown in the graph
-    view) and the tile size along it -- so the per-dimension sizes that make up a tensor's tile are
-    visible, not just the total."""
+    """One dimension of a tensor tile: its loop-dim label and the tile size along it."""
 
     label: str = Field(description="Loop-dim symbol, e.g. 'z32'")
     size: int = Field(description="Tile size along this dimension")
 
 
 class ConstraintTermIR(BaseModel):
-    """One additive contributor to a resource's demand -- e.g. a tensor that must be resident -- with
-    the value it adds and, for a tensor, its per-dimension tile shape + dtype, so a designer sees
-    exactly which tile (and why it is large) fills the resource up."""
+    """One additive contributor to a resource's demand (e.g. a resident tensor), with its value and,
+    for a tensor, its per-dimension tile shape and dtype."""
 
     label: str = Field(description="What the term is, e.g. a tensor name")
     value: float = Field(description="Its contribution in the unmet-constraint's unit")
@@ -52,13 +38,8 @@ class ConstraintTermIR(BaseModel):
 
 
 class UnmetConstraintIR(BaseModel):
-    """The derived hardware constraint that cannot be met, stated as an intuitive inequality with real
-    numbers and traced to the *inputs* that set each side -- so a designer knows what to change.
-
-    Reads: ``<demand_label> = <demand_value> <unit> <operator> <bound_value> <unit> = <bound_label>`` is
-    violated (short by ``gap``). ``demand`` comes from the workload/mapping, ``bound`` from the
-    hardware; ``levers`` list the concrete input edits that would make it fit.
-    """
+    """The derived hardware constraint that cannot be met, as an intuitive inequality traced to the
+    workload/mapping demand and the hardware bound, with ``levers`` that would make it fit."""
 
     family: str = Field(description="Constraint family, e.g. 'memory_capacity'")
     statement: str = Field(description="One-line intuitive inequality with numbers")
@@ -76,8 +57,8 @@ class UnmetConstraintIR(BaseModel):
 
 
 class ImplicatedResourceIR(BaseModel):
-    """One physical resource the infeasibility is pinned to, with the human reason, the raw IIS
-    constraint names that bound it, and -- when quantifiable -- the unmet inequality in designer terms."""
+    """One physical resource the infeasibility is pinned to, with the reason, IIS constraint names,
+    and the unmet inequality when quantifiable."""
 
     resource: ResourceRefIR
     constraint_kinds: list[str] = Field(description="Constraint families over-constraining this resource")
@@ -89,11 +70,8 @@ class ImplicatedResourceIR(BaseModel):
 
 
 class InfeasibilityReportIR(BaseModel):
-    """The minimal conflict (IIS) mapped back to physical resources -- produced instead of crashing so
-    a launch with an infeasible mapping still yields an inspectable result. ``resources`` drives the
-    architecture-view highlight; ``unbound_constraints`` are IIS members with no single physical
-    resource (structural couplings), reported textually.
-    """
+    """The minimal conflict (IIS) mapped back to physical resources -- an inspectable result produced
+    instead of crashing on an infeasible mapping."""
 
     model_config = ConfigDict(
         json_schema_extra={"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "stream/infeasibility/v1"}
@@ -114,8 +92,7 @@ class InfeasibilityReportIR(BaseModel):
 
 
 class InfeasibleAllocationError(RuntimeError):
-    """Raised by the allocator when the MILP has no solution. Carries the structured
-    :class:`InfeasibilityReportIR` so a caller can surface a diagnosis instead of a bare failure."""
+    """Raised when the MILP has no solution; carries the structured :class:`InfeasibilityReportIR`."""
 
     def __init__(self, report: InfeasibilityReportIR) -> None:
         self.report = report

@@ -5,24 +5,19 @@ from stream.workload.workload import ComputationNode, Tensor
 
 
 class MatMulParser(OnnxOperatorParser):
-    """Parses an ONNX MatMul operator into an affine ``ComputationNode``.
+    """Parses an ONNX MatMul into an affine ``ComputationNode``.
 
-    MatMul is the workhorse of attention (Q@K^T scores, P@V context) and of the linear
-    projections in every transformer/MLP block. Its access relation is fully affine, so it is
-    represented directly with ``operand_mapping`` -- no FusionEdge needed.
-
-    Semantics follow ``numpy.matmul``: the last two axes are the matrix axes ``(m, k) @ (k, n)``
-    and any leading axes are batch axes that broadcast between the two inputs (numpy rules,
-    right-aligned). The iteration space is ``(batch..., m, n, k)`` with ``k`` the single
-    contraction (REDUCTION) dimension. A batch axis that an operand broadcasts over (size 1 or
-    absent) indexes that operand at constant 0, which keeps the map affine.
+    Semantics follow ``numpy.matmul``: the last two axes are the matrix axes ``(m, k) @ (k, n)`` and
+    leading axes are numpy-broadcast batch axes (right-aligned). Iteration space ``(batch..., m, n, k)``
+    with ``k`` the single contraction (REDUCTION); a broadcast batch axis (size 1 or absent) indexes
+    that operand at constant 0, keeping the map affine.
     """
 
     EXPECTED_NB_OF_INPUTS = 2  # A and B
 
     def _batch_exprs(self, operand_batch: tuple[int, ...], out_batch: tuple[int, ...]) -> list[AffineExpr]:
-        """Index expressions for an operand's batch axes: the iteration dim when the axis matches
-        the (broadcast) output extent, constant 0 when the operand broadcasts over it."""
+        """Batch-axis index expressions: the iteration dim when the axis matches the output extent,
+        constant 0 when the operand broadcasts over it."""
         num_batch = len(out_batch)
         offset = num_batch - len(operand_batch)  # right-align operand batch axes to the output's
         exprs: list[AffineExpr] = []

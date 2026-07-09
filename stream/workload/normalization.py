@@ -1,17 +1,5 @@
-"""Normalization ops (Softmax, LpNormalization, …) as a reduce-then-broadcast decomposition.
-
-A normalization is scheduled as a single :class:`~stream.workload.node.NormalizationNode` (one native
-kernel), but for *fusion analysis* it is expanded here into its affine sub-operators. The
-decomposition makes the dataflow explicit: the sub-ops reduce over ``reduction_axes`` (a REDUCTION,
-kept resident or streamed) and are element-wise/broadcast over every other axis (PARALLEL, freely
-fusible with the producer and consumer -- this is exactly what lets flash-attention fuse softmax
-along the query/head/batch axes while the key axis stays the reduction).
-
-The sub-ops are ordinary affine ``ComputationNode``s (identity maps + an axis-dropping projection for
-the reduced statistic), so all the derived machinery -- iterator types, footprints, dependency
-composition -- works on them unchanged. Stream does not execute; ``softmax_reference`` is the NumPy
-golden the decomposition mirrors.
-"""
+"""Normalization ops (Softmax, LpNormalization, …) decomposed into affine sub-ops that reduce over
+``reduction_axes`` and are element-wise (freely fusible) over the parallel axes."""
 
 from __future__ import annotations
 
@@ -48,8 +36,7 @@ def _identity(rank: int) -> AffineMap:
 
 
 def _drop(rank: int, axes: tuple[int, ...]) -> AffineMap:
-    """Projection from the full ``rank``-dim iteration space onto the tensor with ``axes`` removed --
-    the access map of a reduced statistic (as a reduce node's output, or a broadcast input)."""
+    """Access map of a reduced statistic: the ``rank``-dim iteration space with ``axes`` dropped."""
     kept = [i for i in range(rank) if i not in axes]
     return AffineMap(rank, 0, tuple(AffineExpr.dimension(i) for i in kept))
 
@@ -108,16 +95,12 @@ _SUBGRAPHS = {
     "LpNormalization": _lpnorm_subgraph,
 }
 
-# Op types with a registered affine decomposition -- the decomposition registry registers these.
 NORMALIZATION_OPS = tuple(_SUBGRAPHS)
 
 
 def decompose_normalization(node: NormalizationNode) -> Workload:
-    """Expand a normalization into its affine sub-operator subgraph for fusion analysis.
-
-    The sub-ops reduce over ``node.reduction_axes`` and are element-wise over the rest, so the
-    expanded graph shows which axes fuse (PARALLEL) and which carry the reduction. Raises
-    ``NotImplementedError`` for a normalization whose sub-op math is not registered yet."""
+    """Expand a normalization into its affine sub-operator subgraph; raises ``NotImplementedError``
+    if the op's sub-op math is not registered."""
     builder = _SUBGRAPHS.get(node.type)
     if builder is None:
         raise NotImplementedError(f"no affine decomposition registered for normalization {node.type!r}")

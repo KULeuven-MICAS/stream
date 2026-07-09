@@ -1,13 +1,5 @@
-"""Optional islpy-backed exact integer-set path for affine access queries.
-
-Import-guarded: :mod:`stream.workload.affine_access` works fully without ``islpy``; this
-module is only imported when the exact path is explicitly requested (install the optional
-extra ``stream[exact]``). It tightens results the affine box cannot -- exact per-dimension
-bounds for producer/consumer dependency regions, including cases the box path rejects.
-
-The affine *footprint* (forward image over a box) is already exact in the box path;
-:func:`exact_footprint` exists as an independent oracle to cross-check that.
-"""
+"""Optional islpy-backed exact integer-set path for affine access queries, imported lazily so islpy stays optional and
+:mod:`stream.workload.affine_access` works without it."""
 
 from __future__ import annotations
 
@@ -94,13 +86,9 @@ def exact_compose_dependency(
     consumer_tile: Mapping[int | AffineDimExpr, range],
     producer_domain: Mapping[int | AffineDimExpr, range] | None = None,
 ) -> dict[int, range]:
-    """Exact per-dimension producer iteration region a consumer tile depends on.
-
-    Unlike the box path, this handles composite (non-permutation) producer output maps.
-    Producer dimensions whose bounds remain infinite (unconstrained by the shared tensor and
-    by ``producer_domain``) are omitted. Pass ``producer_domain`` to bound dimensions that a
-    composite output leaves coupled.
-    """
+    """Exact per-dimension producer iteration region a consumer tile depends on; handles composite producer output maps
+    the box path rejects, omits dims left unbounded, and accepts ``producer_domain`` to bound dims a composite output
+    leaves coupled."""
     _require()
     consumer_box = _box(consumer_tile)
     missing = set(map_dim_positions(consumer_in)) - consumer_box.keys()

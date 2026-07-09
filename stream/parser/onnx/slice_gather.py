@@ -7,8 +7,8 @@ from stream.workload.workload import Tensor
 
 
 class _IndexReadingParser(OnnxOperatorParser):
-    """Shared helper: read the int64 index tensors (starts/ends/axes/indices) that ONNX passes as
-    initializers -- the model parser skips those (they are int), so they are read here directly."""
+    """Reads the int64 index tensors (starts/ends/axes/indices) ONNX passes as initializers, which the
+    model parser skips."""
 
     def _read_ints(self, tensor_name: str) -> list[int] | None:
         for init in self.onnx_model.graph.initializer:
@@ -22,7 +22,7 @@ class SliceParser(_IndexReadingParser):
 
     Slice indexes each sliced axis as ``start + step*p`` -- an affine offset -- so the derived
     dependency recovers the precise source region moved. starts/ends/axes/steps arrive as int64
-    initializer inputs; negatives and out-of-range ends are clamped to the data shape."""
+    initializer inputs; negative starts are clamped to the data shape."""
 
     # ONNX Slice input positions: data, starts, ends, axes(opt), steps(opt).
     _STARTS, _ENDS, _AXES, _STEPS = 1, 2, 3, 4
@@ -61,10 +61,9 @@ class SliceParser(_IndexReadingParser):
 class GatherParser(_IndexReadingParser):
     """Parses an ONNX Gather into a conservative data-movement ``ComputationNode``.
 
-    The indices are data-dependent, so the source ``axis`` is modelled as read in full (a safe
-    over-approximation for paged/sparse KV-cache gathers). ONNX Gather with a scalar index removes the
-    axis; with a 1-D index it keeps it at the index length -- either way ``gather_access_maps`` reads
-    the whole source axis."""
+    Indices are data-dependent, so the source ``axis`` is modelled as read in full (a safe
+    over-approximation for paged/sparse KV-cache gathers). Only the 1-D-index case, which keeps the
+    gathered axis, is supported."""
 
     def generate_node(self, name_to_tensor_dict: dict[str, Tensor]) -> ComputationNode:
         data = name_to_tensor_dict[self.node.input[0]]

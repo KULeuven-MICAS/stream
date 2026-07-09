@@ -1,22 +1,5 @@
-"""WorkloadGraphView -- one uniform, smart graph view of any workload (tiled or untiled).
-
-A single Stream API that any consumer renders directly: a proper node/edge graph
-plus the two structural lenses that make a large workload legible --
-
-- **Repeated-block collapse**: :func:`~stream.workload.structure.find_repeated_blocks` groups
-  computation nodes that are the same computation in the same structural position. Each such node
-  carries a ``block_class`` id and the view lists the classes (representative + multiplicity +
-  members), so a consumer can draw one representative and mark the rest ``×N`` -- clearly duplicated,
-  cleanly skippable -- while the edges stay intact.
-- **Fusable regions** (zoom): :meth:`~stream.workload.workload.Workload.split_fusion_groups` cuts the
-  graph at layout barriers; each node carries its ``region`` id so a consumer can zoom into one
-  fusible region at a time.
-
-Every node also carries its *derived* affine metadata (iterator roles, data reuse, data movement,
-normalization decomposition, recurrence) so the same view drives the affine lens uniformly. Nothing
-here is workload-type specific -- it reads a ``Workload``, so a raw graph, a chunked decomposition, or
-a tiled steady-state graph all serialize the same way.
-"""
+"""One uniform node/edge graph view of any workload (tiled or untiled): repeated-block collapse,
+fusable regions, and per-node derived affine metadata, all read from a ``Workload``."""
 
 from __future__ import annotations
 
@@ -91,9 +74,7 @@ class SubOpIR(BaseModel):
 
 
 class DecompositionIR(BaseModel):
-    """The affine sub-operator graph a normalization expands into (max→exp→sum→div, …), with each
-    sub-op's dimension roles, so a consumer can render the internal dataflow and inspect the axis
-    propagation (which axis is reduced where, which is broadcast back)."""
+    """The affine sub-operator graph a normalization expands into, with each sub-op's dimension roles."""
 
     nodes: list[SubOpIR]
     edges: list[dict[str, str]]
@@ -141,8 +122,7 @@ class RegionIR(BaseModel):
 
 
 class ProposedRegionIR(BaseModel):
-    """A region the auto-proposer suggests fusing: greedy dataflow chain growth under a near-memory
-    capacity, from the same affine analysis. Legal by construction (no data-dependent read inside)."""
+    """A region the auto-proposer suggests fusing, legal by construction (no data-dependent read inside)."""
 
     id: int
     nodes: list[str] = Field(description="Computation-node names fused into this region (topological)")
@@ -152,10 +132,7 @@ class ProposedRegionIR(BaseModel):
 
 
 class WorkloadGraphView(BaseModel):
-    """Uniform graph view of a workload: proper nodes+edges, repeated-block collapse, fusable regions.
-
-    Construction is always via :meth:`from_workload`.
-    """
+    """Uniform graph view of a workload; construct via :meth:`from_workload`."""
 
     model_config = ConfigDict(
         json_schema_extra={"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "stream/workload_graph/v1"}
@@ -242,8 +219,7 @@ def _region_structure(workload: Workload) -> tuple[dict[str, int], list[RegionIR
 
 
 def _proposed_structure(workload: Workload, capacity: int | None) -> tuple[dict[str, int], list[ProposedRegionIR]]:
-    """Auto-proposed fusion regions at the given near-memory ``capacity`` (in elements). Empty when no
-    capacity is requested, so existing callers are unchanged."""
+    """Auto-proposed fusion regions at the given near-memory ``capacity`` (elements); empty when None."""
     if capacity is None:
         return {}, []
     proposed_of: dict[str, int] = {}
@@ -320,8 +296,7 @@ def _node_ir(
         _annotate_normalization_axes(ir, node)
     if isinstance(node, ComputationNode) and node.type in _MOVEMENT_TYPES:
         ir.movement = _movement(node)
-    # Any op with a registered affine decomposition (softmax, flash-attention block, future ops)
-    # expands into its sub-operators uniformly -- one path, no per-type code.
+    # Any op with a registered affine decomposition expands into its sub-operators.
     if has_decomposition(node):
         try:
             sub_workload = decompose(node)
@@ -340,8 +315,7 @@ def _size(workload: Workload, dim) -> int | None:
 
 
 def _reuse(node: ComputationNode, dims: list[GraphDimIR]) -> list[OperandReuseIR]:
-    """Inputs held INVARIANT across a high-extent output axis -- the affine data-reuse statement
-    (GQA's K/V reused across query heads; any matmul's weight reused across rows)."""
+    """Inputs held INVARIANT across a high-extent output axis (the affine data-reuse statement)."""
     if not node.outputs:
         return []
     out_positions = map_dim_positions(node.get_mapping(node.outputs[-1]))
@@ -359,8 +333,7 @@ def _reuse(node: ComputationNode, dims: list[GraphDimIR]) -> list[OperandReuseIR
 
 
 def _annotate_normalization_axes(ir: GraphNodeIR, node: NormalizationNode) -> None:
-    """Mark the reduced axes on the parent node (its identity map hides them) and list the reduction /
-    parallel axes. The sub-operator decomposition itself is built generically from the registry."""
+    """Mark the reduced axes on the parent node and list its reduction / parallel axes."""
     reduced = set(node.reduction_axes)
     for pos, dim in enumerate(ir.dims):
         if pos in reduced:
@@ -377,10 +350,8 @@ def _sub_dim_names(dec: Workload, node: ComputationNode) -> list[str]:
 
 
 def _decomposition_ir(dec: Workload) -> DecompositionIR:
-    """Build the DecompositionIR from *any* decomposition Workload -- each sub-op reports its own affine
-    dims (typed REDUCTION where it contracts, PARALLEL where it broadcasts), so the internal dataflow and
-    its array-vs-vector structure is inspectable. Generic over the op: a softmax, a flash-attention block
-    and any future decomposable op all serialize the same way, from :func:`stream.workload.decompose.decompose`."""
+    """Build the DecompositionIR from any decomposition Workload; each sub-op reports its own affine
+    dims (REDUCTION where it contracts, PARALLEL where it broadcasts)."""
     subs = dec.get_computation_nodes()
     sub_set = set(subs)
     sub_ir: list[SubOpIR] = []

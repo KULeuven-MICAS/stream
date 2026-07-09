@@ -1,12 +1,5 @@
-"""Annotate the workload with auto-proposed fusion regions.
-
-A passthrough stage: it runs the greedy, capacity-bounded fusion proposer
-(:func:`~stream.workload.fusion.proposer.propose_fusion_regions`) and records the result under
-``proposed_fusion_regions`` in the context. It proposes regions from the affine analysis alone and
-changes no allocation behaviour on its own, so it is safe to insert anywhere after the workload exists.
-The near-memory capacity is read from ``fusion_capacity_elements`` (default: unbounded, i.e. every
-legal fusion is proposed as one region).
-"""
+"""Passthrough stage: record ``propose_fusion_regions(workload, capacity)`` under ``proposed_fusion_regions`` (capacity
+from ``fusion_capacity_elements``, default unbounded)."""
 
 from __future__ import annotations
 

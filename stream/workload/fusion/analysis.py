@@ -1,17 +1,4 @@
-"""Affine fusion analysis: fusibility + streaming buffer size from map composition.
-
-For a producer P (output map on a shared tensor) and consumer Q (input map on the same tensor),
-tiling a *fusion dimension* of Q depth-first lets P stream into Q if the producer region a consumer
-tile needs is a **bounded window that advances monotonically** as the tile sweeps the fusion dim.
-Everything is derived from the xDSL affine maps via :func:`compose_dependency` / :func:`footprint`
--- no op-specific heuristics, so it generalises to new operators and recurrences.
-
-Two proof points fall out with no special-casing:
-- a SEQUENTIAL recurrence streams along its sequence axis with an O(1) state window (the state is read
-  at ``t-1`` only), and
-- softmax / any full-reduction consumer is *not* fusible along the reduced axis (the window spans the
-  whole axis), which must be reported, never silently assumed.
-"""
+"""Affine fusion analysis: fusibility and streaming buffer size from producer/consumer map composition."""
 
 from __future__ import annotations
 
@@ -48,8 +35,7 @@ class FusionWindow:
 
     @property
     def fusible(self) -> bool:
-        """Streamable along this dim iff the window is a strict, forward-advancing sub-range of the
-        full producer extent (a bounded line buffer), not the whole axis."""
+        """Streamable iff the window is a strict, forward-advancing sub-range of the full extent."""
         return self.step > 0 and self.window < self.full
 
     @property
@@ -67,8 +53,7 @@ def shared_tensor(producer: HasIterationSpace, consumer: HasIterationSpace) -> T
 
 
 def _consumer_tile(consumer: HasIterationSpace, tensor: Tensor, fusion_dim: int, at: int, extents: dict[int, int]):
-    """A unit consumer tile: the fusion dim pinned to ``[at, at+1)``, every other dim that indexes the
-    shared tensor at its full extent (the consumer reads all of those per fusion step)."""
+    """A unit consumer tile: fusion dim pinned to ``[at, at+1)``, all other shared-tensor dims at full extent."""
     indexed = map_dim_positions(consumer.get_mapping(tensor))
     tile = {d: range(0, extents[d]) for d in indexed if d != fusion_dim}
     tile[fusion_dim] = range(at, at + 1)
@@ -82,14 +67,8 @@ def pairwise_fusion(
     extents: dict[int, int],
     tensor: Tensor | None = None,
 ) -> FusionWindow:
-    """Analyse streaming ``producer -> consumer`` fusion along one consumer ``fusion_dim``.
-
-    ``extents`` maps each consumer iteration-dimension position to its size. The window/step come from
-    composing the consumer's read at two consecutive fusion positions back onto the producer's
-    iteration space; ``buffer_elements`` is the shared-tensor footprint of that window. Pass ``tensor``
-    to analyse a specific shared tensor when producer/consumer share more than one (e.g. a flash block
-    carrying both the output and the softmax denominator); it defaults to the unique shared tensor.
-    """
+    """Analyse streaming ``producer -> consumer`` fusion along one consumer ``fusion_dim``; ``tensor`` selects the
+    shared tensor when several are shared (defaults to the unique one)."""
     if tensor is None:
         tensor = shared_tensor(producer, consumer)
     p_out = producer.get_mapping(tensor)
@@ -106,8 +85,7 @@ def pairwise_fusion(
         step = region1[d].start - region0[d].start
         full = _producer_extent(p_out, d, tensor)
     else:
-        # The consumer's read doesn't advance with the fusion dim (e.g. a full reduction): the whole
-        # producer output is needed for every tile -> window == full, not streamable.
+        # Consumer read doesn't advance with the fusion dim (e.g. full reduction): window == full, not streamable.
         d = next(iter(region0), fusion_dim)
         window = len(region0.get(d, range(0)))
         step = 0
@@ -133,19 +111,12 @@ def _region_elements(ranges) -> int:
     return total
 
 
-# --------------------------------------------------------------------------- #
-#  AccessRelation-aware edge classification (data-dependent / reduction barriers) #
-# --------------------------------------------------------------------------- #
+# AccessRelation-aware edge classification (data-dependent / reduction barriers).
 @dataclass(frozen=True)
 class EdgeFusion:
-    """Fusibility of one producer->consumer edge, classified from the consumer's AccessRelation on the
-    shared tensor (the axis-level window/buffer is :func:`pairwise_fusion`; this is the barrier view).
+    """Fusibility of one producer->consumer edge from the consumer's AccessRelation on the shared tensor.
 
-    - ``data_dependent`` -- the consumer reads the shared tensor with a data-dependent index (gather /
-      MoE dispatch or combine): a **hard barrier**, the producer cannot be fused in at all until a
-      rewrite lifts the indexing. ``fusible`` is then False.
-    - ``reduction_axes`` -- consumer axes that are a **full reduction** of the shared tensor (a
-      normalization's reduced axis): fusible along the *other* (parallel) axes, a barrier along these.
+    A data-dependent read is a hard barrier; a normalization's reduced axis is a per-axis barrier.
     """
 
     producer: str
@@ -157,7 +128,7 @@ class EdgeFusion:
 
     @property
     def fusible(self) -> bool:
-        """Fusible along at least the parallel axes. False only for a data-dependent (hard) barrier."""
+        """False only for a data-dependent (hard) barrier."""
         return not self.data_dependent
 
 
@@ -166,15 +137,8 @@ def _shared_tensors(producer: HasIterationSpace, consumer: HasIterationSpace) ->
 
 
 def consumer_reduction_axes(consumer: HasIterationSpace, tensor: Tensor) -> tuple[int, ...]:
-    """Consumer iteration dimensions that both **reduce** and **index** ``tensor`` -- the axes along
-    which fusing a producer through ``tensor`` needs the whole reduced slice (a per-axis barrier),
-    while every other (parallel) axis fuses freely.
-
-    Covers affine contractions (a MatMul's ``k``, a pool's window) via the derived ``REDUCTION``
-    iterator type, **and** a normalization's ``reduction_axes`` (which its identity map hides from the
-    derived types). This is what makes the attention key axis show up on *both* ``scores->softmax`` and
-    ``softmax->context`` -- the single streaming axis flash attention rides.
-    """
+    """Consumer dimensions that both reduce and index ``tensor`` -- the per-axis fusion barriers (other axes fuse
+    freely)."""
     indexed = map_dim_positions(consumer.get_mapping(tensor))
     reducing = {pos for pos, it in derive_iterator_types(consumer).items() if it == IteratorType.REDUCTION}
     if isinstance(consumer, NormalizationNode):
@@ -183,15 +147,8 @@ def consumer_reduction_axes(consumer: HasIterationSpace, tensor: Tensor) -> tupl
 
 
 def edge_fusions(producer: HasIterationSpace, consumer: HasIterationSpace) -> list[EdgeFusion]:
-    """Classify every shared tensor on a producer->consumer edge (usually one).
-
-    A data-dependent consumer read is a hard barrier (``access_for`` reports a non-static access). Every
-    reduction axis the consumer contracts over the shared tensor is a per-axis barrier
-    (:func:`consumer_reduction_axes`); a **nonlinear** reduction (a normalization -- softmax) is flagged
-    because streaming it needs the online-softmax rewrite, whereas a linear contraction streams with a
-    plain accumulator. None of this uses op-specific code beyond the AccessRelation and the derived
-    iterator types.
-    """
+    """Classify every shared tensor on a producer->consumer edge; a nonlinear (normalization) reduction is flagged
+    because streaming it needs the online-softmax rewrite."""
     results: list[EdgeFusion] = []
     nonlinear = isinstance(consumer, NormalizationNode)
     for tensor in _shared_tensors(producer, consumer):
@@ -211,9 +168,7 @@ def edge_fusions(producer: HasIterationSpace, consumer: HasIterationSpace) -> li
 
 
 def workload_fusion_edges(workload) -> list[EdgeFusion]:
-    """Classify every compute-to-compute edge of ``workload`` (skips InEdge/OutEdge/FusionEdge
-    boundaries). The result is an annotative fusion map -- which producer->consumer edges are
-    streamable, which are data-dependent hard barriers, and which carry a reduction axis."""
+    """Classify every compute-to-compute edge of ``workload`` (skips InEdge/OutEdge/FusionEdge boundaries)."""
     edges: list[EdgeFusion] = []
     for producer, consumer in workload.edges:
         if isinstance(producer, HasIterationSpace) and isinstance(consumer, HasIterationSpace):

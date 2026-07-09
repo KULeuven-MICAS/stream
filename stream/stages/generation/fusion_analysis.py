@@ -1,12 +1,4 @@
-"""Annotate the workload with AccessRelation-aware fusion edges.
-
-A passthrough stage: it classifies every compute-to-compute edge with
-:func:`~stream.workload.fusion.analysis.workload_fusion_edges` and records the result under
-``fusion_edges`` in the context. Data-dependent reads (gather / MoE dispatch-combine) are hard fusion
-barriers; a normalization's reduced axis is a per-axis barrier. On its own this stage changes no
-allocation behaviour -- it exposes the fusion structure for a downstream cut-point provider or a
-visualization -- so it is safe to insert anywhere after the workload exists.
-"""
+"""Passthrough stage: record ``workload_fusion_edges(workload)`` under ``fusion_edges`` in the context."""
 
 from __future__ import annotations
 

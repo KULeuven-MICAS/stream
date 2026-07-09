@@ -1,25 +1,4 @@
-"""Attention -> online-softmax (flash) attention as a SEQUENTIAL scan over key blocks.
-
-The full-softmax attention barrier (softmax spans the whole key axis, so it cannot fuse along that
-axis) is *lifted* by the online-softmax algorithm: process the keys in blocks, carrying a running max
-``m``, denominator ``l`` and output accumulator ``o`` per query -- O(1) state, independent of the key
-length. That is a sequential scan over key blocks, so this rewrite mirrors the chunked pattern
-(dense per-block reductions + an inter-block state carry). ``reference.online_softmax_attention`` is
-the NumPy golden.
-
-Two granularities live here, both exact:
-
-- **Per-key-block** -- the ``AttentionBlock`` node: one fused flash kernel updating the (m, l, o) state
-  from one KV tile. This is how a fused-softmax accelerator sees it.
-- **Per-sub-operator** -- :func:`decompose_attention_block`: the affine sub-ops a block expands into
-  (two matmuls with *distinct* contractions + the online-softmax stats + the rescale/accumulate). This
-  is how a matmul-array + vector-unit accelerator sees it, and it is what lets Stream reason about the
-  affine (array) vs non-affine (vector) structure -- the opaque block cannot, because ``scores``
-  contracts the head dim while ``context`` contracts the key dim.
-
-Reference decomposition (no causal mask, no batching folded in). Additional flash-attention variants
-(masks, tuned block sizes) register through the same rewrite/decomposition interface -- no fork.
-"""
+"""Attention -> online-softmax (flash) attention as a SEQUENTIAL scan over key blocks."""
 
 from __future__ import annotations
 
@@ -38,15 +17,8 @@ _ATTENTION_BLOCK = "AttentionBlock"
 
 
 def build_attention_chain(base: str, seq_q: int, seq_k: int, d_head: int, block: int, dtype) -> Workload:
-    """The online-softmax chain: ``ceil(seq_k / block)`` per-key-block attention updates.
-
-    Each block node has iteration dims ``(i, d, c)``: query ``i`` and head/value ``d`` are PARALLEL, the
-    block-local key ``c`` is the REDUCTION (the dense intra-block MACs). It reads the query, its key/
-    value block and the incoming running state ``(o, l, m)``, and writes the outgoing state. Consecutive
-    blocks share the state tensors, so the graph carries the inter-block sequential dependency with an
-    O(1)-per-query footprint -- the flash property. The block is the coarse (fused-kernel) view;
-    :func:`decompose_attention_block` expands it into its affine sub-operators.
-    """
+    """Online-softmax chain of ``ceil(seq_k / block)`` per-key-block attention updates; consecutive
+    blocks share the ``(o, l, m)`` running state."""
     n_blocks = ceil(seq_k / block)
     dim = AffineExpr.dimension
     q_map = AffineMap(3, 0, (dim(0), dim(1)))  # Q[i, d]
@@ -89,24 +61,8 @@ def build_attention_chain(base: str, seq_q: int, seq_k: int, d_head: int, block:
 
 
 def decompose_attention_block(node: ComputationNode) -> Workload:
-    """Expand one ``AttentionBlock`` into its affine sub-operators (its dataflow inside).
-
-    The block ``(q, k, v, o_prev, l_prev, m_prev) -> (m, l, o)`` decomposes into:
-
-    - ``scores``  -- MatMul ``S[i,c] = sum_d Q[i,d] K[c,d]``  (contracts the **head** dim ``d``)
-    - ``max``     -- ReduceMax over the block key ``c``
-    - ``m``       -- running max ``max(m_prev, block_max)``  (the new state)
-    - ``probs``   -- ``exp(S - m)``  (non-affine compute, affine access)
-    - ``sum``     -- ReduceSum over ``c``  (this block's denominator contribution)
-    - ``context`` -- MatMul ``O_b[i,d] = sum_c P[i,c] V[c,d]``  (contracts the **key** dim ``c``)
-    - ``rescale`` -- ``exp(m_prev - m)``  (the online correction factor)
-    - ``l`` / ``o`` -- ``state * rescale + contribution``  (the accumulate)
-
-    So the two matmuls (the MAC-array work) contract *different* axes -- ``d`` is REDUCTION in ``scores``
-    but PARALLEL in ``context`` -- which a single affine node cannot express; and the softmax stats + the
-    rescale (the vector-unit work) are explicit. The intermediate/output tensors are reused from the
-    block, so the decomposition is a drop-in refinement of the coarse node.
-    """
+    """Expand one ``AttentionBlock`` into its affine sub-operators; the two matmuls contract different
+    axes (``d`` REDUCTION in ``scores``, PARALLEL in ``context``), which a single affine node cannot express."""
     q, k, v, o_prev, l_prev, m_prev = node.inputs
     m_out, l_out, o_out = node.outputs
     dt = q.operand_type

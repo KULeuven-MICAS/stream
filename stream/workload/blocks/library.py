@@ -1,20 +1,4 @@
-"""Modern reference blocks that exercise every ``AccessRelation`` bucket.
-
-These complement the attention/Mamba catalog (:mod:`stream.workload.models`) with the other core
-components of a modern model, chosen so each demonstrates a different access kind:
-
-- **SwiGLU / MLP** -- affine (A) MatMuls + elementwise (B) Silu/Mul: the gated feed-forward.
-- **RMSNorm** -- a reduce-then-broadcast ``NormalizationNode``: the reduced axis is a fusion barrier
-  (C, static), parallel over the token axis (the flash-norm view).
-- **MoE** -- dense per-expert ``[C, d]`` GEMMs (A) with **data-dependent** dispatch/combine
-  permutations (C, ``DataDependentAccess``): capacity ``C`` and the load-balance coefficient are DSE
-  sweep / calibration knobs. This is the headline data-dependent component.
-- **Chunked SSM** -- reuses the ``chunked_scan`` rewrite: a SEQUENTIAL recurrence decomposed into a
-  per-chunk reduction chain, chunk size a DSE lever.
-
-All graphs are built on the affine IR exactly as the ONNX parsers produce, so the whole framework
-(tiling, cost, fusion, dedup) consumes them unchanged.
-"""
+"""Modern reference blocks (SwiGLU, RMSNorm, MoE, chunked SSM, flash attention) built on the affine IR."""
 
 from __future__ import annotations
 
@@ -60,10 +44,7 @@ class SwiGLUConfig:
 
 
 def build_swiglu_block(config: SwiGLUConfig | None = None) -> Workload:
-    """SwiGLU feed-forward: ``y = (silu(x @ W_gate) * (x @ W_up)) @ W_down``.
-
-    Two affine gate/up projections, an elementwise Silu + Mul (bucket-B compute-cost tags with affine
-    identity access), and the affine down projection -- the canonical gated MLP block."""
+    """SwiGLU feed-forward: ``y = (silu(x @ W_gate) * (x @ W_up)) @ W_down``."""
     c = config or SwiGLUConfig()
     t, d, f, dt = c.tokens, c.d_model, c.d_ff, c.dtype
     x = Tensor.create("x", dt, (t, d))
@@ -101,10 +82,8 @@ class RMSNormConfig:
 
 
 def build_rmsnorm_block(config: RMSNormConfig | None = None) -> Workload:
-    """RMSNorm as a reduce-then-broadcast + learned scale: ``y = (x / rms(x)) * gamma``.
-
-    The normalization is a ``NormalizationNode`` reducing over the model axis (a fusion barrier along
-    that axis, PARALLEL over the token axis); the ``gamma`` scale is an elementwise Mul (bucket B)."""
+    """RMSNorm as reduce-then-broadcast + learned scale: ``y = (x / rms(x)) * gamma``
+    (the reduction is a NormalizationNode over the model axis)."""
     c = config or RMSNormConfig()
     t, d, dt = c.tokens, c.d_model, c.dtype
     x = Tensor.create("x", dt, (t, d))
@@ -144,15 +123,8 @@ class MoEConfig:
 
 
 def build_moe_block(config: MoEConfig | None = None) -> Workload:
-    """A capacity-``C`` Mixture-of-Experts block with data-dependent dispatch/combine.
-
-    Flow: router (affine ``x @ W_r`` -> per-token expert logits) -> **dispatch** (route each token to
-    an expert slot: ``MoEDispatch``, a data-dependent permutation reading ``x``) -> per-expert dense
-    GEMMs over the ``[E, C, d]`` batch (affine) -> **combine** (scatter expert outputs back to tokens:
-    ``MoECombine``, data-dependent). ``access_for`` reports the dispatch/combine data reads as
-    :class:`~stream.workload.access_relation.DataDependentAccess` -- their bounding access is the whole
-    token/expert axis (worst case), the true routing lifted into the ``capacity`` (sweep) and
-    ``load_balance`` (calibration) parameters, never a blocker."""
+    """A capacity-``C`` Mixture-of-Experts block: router -> data-dependent dispatch ->
+    per-expert dense GEMMs -> data-dependent combine."""
     c = config or MoEConfig()
     t, d, f, e, cap, dt = c.tokens, c.d_model, c.d_ff, c.experts, c.capacity, c.dtype
     x = Tensor.create("x", dt, (t, d))
@@ -225,9 +197,8 @@ class ChunkedSSMConfig:
 
 
 def build_chunked_ssm_block(config: ChunkedSSMConfig | None = None) -> Workload:
-    """A chunked state-space block: a SEQUENTIAL selective scan decomposed into a per-chunk reduction
-    chain by the ``chunked_scan`` rewrite. ``chunk_size`` sets the chain length -- the DSE lever
-    that trades intra-chunk parallelism against inter-chunk serialization and state buffering."""
+    """A chunked state-space block: a SEQUENTIAL selective scan decomposed by the ``chunked_scan``
+    rewrite into a per-chunk reduction chain (``chunk_size`` sets the chain length)."""
     c = config or ChunkedSSMConfig()
     s, hid, dt = c.seq, c.hidden, c.dtype
     x = Tensor.create("x", dt, (s, hid))
@@ -252,11 +223,8 @@ class FlashAttentionConfig:
 
 
 def build_flash_attention_block(config: FlashAttentionConfig | None = None) -> Workload:
-    """Flash attention as an online-softmax scan over key blocks (reuses the ``flash_attention``
-    rewrite). Softmax's full-key reduction -- normally a fusion barrier -- is lifted into a SEQUENTIAL
-    chain of dense per-block reductions carrying O(1) running state per query. ``block_size`` is the DSE
-    lever. The un-decomposed ``Attention`` op (query ``i``, head ``d`` PARALLEL; key ``j`` REDUCTION) is
-    what the rewrite consumes."""
+    """Flash attention as an online-softmax scan over key blocks via the ``flash_attention``
+    rewrite (``block_size`` is the DSE lever)."""
     c = config or FlashAttentionConfig()
     dt = c.dtype
     q = Tensor.create("Q", dt, (c.seq_q, c.d_head))
@@ -276,15 +244,8 @@ def build_flash_attention_block(config: FlashAttentionConfig | None = None) -> W
 
 
 def sparse_attention_key_access(window: int, dilation: int) -> PiecewiseAffineAccess:
-    """The key access of a sparse (local + dilated) attention, as a union of two affine bands.
-
-    A query at position ``i`` attends to a contiguous local band **and** a dilated band of keys (the
-    Longformer/BigBird sparse-attention pattern). That receptive field is not one affine map, but each
-    band is affine, so the access is a :class:`~stream.workload.access_relation.PiecewiseAffineAccess`
-    -- the natural modern producer of the piecewise bucket. Iteration dims are ``(i, w)`` (query
-    position, within-band offset); ``footprint`` returns the hull of the two bands. This is the seam a
-    frontend uses to model structured sparsity; ``access_for`` returns the conservative affine
-    bound by default."""
+    """The key access of a sparse (local + dilated) attention, as a union of two affine bands
+    (a ``PiecewiseAffineAccess`` over iteration dims ``(i, w)``)."""
     i, w = AffineExpr.dimension(0), AffineExpr.dimension(1)
     local = AffineMap(2, 0, (i - window + w,))  # K[i - window + w]  (contiguous local band)
     dilated = AffineMap(2, 0, (i - dilation * w,))  # K[i - dilation*w]  (dilated band)

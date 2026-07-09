@@ -1,17 +1,8 @@
-"""Algorithmic iterator types, derived from the affine operand maps.
+"""Algorithmic iterator types derived from a node's affine operand maps.
 
-A node's iteration dimensions carry an *algorithmic* role, orthogonal to the mapping-placement
-`IterationVariableType` (KERNEL/SPATIAL/TEMPORAL/...):
-
-- ``PARALLEL``   -- indexes the output; freely tileable and spatially unrollable.
-- ``REDUCTION``  -- an accumulation dim (indexes some input but not the output).
-- ``SEQUENTIAL`` -- carries a cross-iteration state dependence (read at ``t-k``, written at ``t``);
-                    a total order is required, so it must not be spatially unrolled.
-
-Every classification is *derived* from the operand `AffineMap`s (derive, don't declare): a
-recurrence is recognised by a state operand read with a constant self-offset on a dimension that the
-output writes without offset. Conv/gemm padding (``oy + fy - 1``, two dims) is not a self-offset and
-is never mistaken for a recurrence, so existing workloads classify exactly as PARALLEL/REDUCTION.
+PARALLEL indexes the output (freely tileable and spatially unrollable); REDUCTION is an
+accumulation dim (indexes an input but not the output); SEQUENTIAL carries a cross-iteration
+state dependence (read at ``t-k``, written at ``t``) and must not be spatially unrolled.
 """
 
 from __future__ import annotations
@@ -74,8 +65,8 @@ def _self_offsets(affine_map: AffineMap) -> dict[int, int]:
 
 
 def is_state_operand(node: HasIterationSpace, operand: Tensor) -> bool:
-    """True when ``operand`` is a recurrence state input: read with a self-offset on a dimension the
-    output writes without offset (so the cross-iteration dependence distance is O(1))."""
+    """True when ``operand`` is a recurrence state input: read with a self-offset on a dimension the output writes
+    without offset."""
     if operand not in node.inputs:
         return False
     offset_dims = set(_self_offsets(node.get_mapping(operand)))
@@ -101,11 +92,7 @@ def sequential_dims(node: HasIterationSpace) -> frozenset[int]:
 
 
 def derive_iterator_types(node: HasIterationSpace) -> dict[int, IteratorType]:
-    """Algorithmic type of every iteration dimension, keyed by position.
-
-    SEQUENTIAL if it carries a state carry; else PARALLEL if it indexes the output (last output
-    operand); else REDUCTION (accumulation dimension).
-    """
+    """Algorithmic type of every iteration dimension, keyed by position."""
     sequential = sequential_dims(node)
     output_dims = map_dim_positions(node.get_mapping(node.outputs[-1])) if node.outputs else frozenset()
     types: dict[int, IteratorType] = {}
@@ -120,11 +107,7 @@ def derive_iterator_types(node: HasIterationSpace) -> dict[int, IteratorType]:
 
 
 def check_spatial_unroll_legal(node: HasIterationSpace, spatial_positions: Iterable[int]) -> None:
-    """Raise :class:`SequentialUnrollError` if any spatially-unrolled dimension is SEQUENTIAL.
-
-    A recurrence's sequential dimension must keep a total order, so it can only be tiled temporally
-    (chunked), never unrolled across space. No-op for nodes without a state carry.
-    """
+    """Raise :class:`SequentialUnrollError` if any spatially-unrolled dimension is SEQUENTIAL."""
     illegal = sequential_dims(node) & set(spatial_positions)
     if illegal:
         raise SequentialUnrollError(

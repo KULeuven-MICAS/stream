@@ -6,14 +6,8 @@ from stream.workload.workload import Tensor
 
 
 class NormalizationParser(OnnxOperatorParser):
-    """Parses a normalization (Softmax, LpNormalization, LayerNormalization) into a NormalizationNode.
-
-    The node is a single schedulable op (identity iteration space = the fused-kernel view); the axis
-    (or axes) it normalizes over is read from the ONNX ``axis`` attribute and stored as
-    ``reduction_axes`` -- the reduce-then-broadcast structure a single affine map cannot express, and
-    what :func:`stream.workload.normalization.decompose_normalization` expands for fusion analysis.
-    Only the primary data input participates (LayerNorm's scale/bias are per-channel params).
-    """
+    """Parse a normalization (Softmax, LpNormalization, LayerNormalization) into a NormalizationNode,
+    storing the normalized axis/axes from the ONNX ``axis`` attribute as ``reduction_axes``."""
 
     # Softmax/LpNormalization reduce one axis; LayerNormalization reduces axis..rank-1.
     SPANS_TO_END = {"LayerNormalization"}

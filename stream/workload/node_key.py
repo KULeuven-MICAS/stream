@@ -1,13 +1,7 @@
-"""Canonical, content-addressed identity for a computation node.
-
-The key is a blake2 digest over the node's *mapping-relevant identity*: op type, and per operand its
-precision, shape, and affine map (with iteration dimensions relabelled by first-use order, so a node
-is invariant under a consistent renaming of its loop dimensions). It is deliberately sensitive to op
-type and the affine maps -- the previous shapes-and-precision-only equality collided a Conv and a
-Gemm with matching tensor shapes (AUDIT.md §4). Being a content hash of a canonical byte encoding,
-it is stable across processes and machines, so it can key an on-disk or shared cost cache.
-
-This module imports no other ``stream.workload`` module, so ``node.py`` can depend on it.
+"""Canonical, content-addressed identity for a computation node: a blake2 digest over op type and
+per-operand precision/shape/affine map, with iteration dims relabelled by first-use order; stable
+across processes so it can key a shared cost cache. Imports no other ``stream.workload`` module so
+``node.py`` can depend on it.
 """
 
 from __future__ import annotations

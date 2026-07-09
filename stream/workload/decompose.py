@@ -1,18 +1,5 @@
-"""One registry for operator decompositions -- the reuse seam for coarse-vs-fine granularity.
-
-Some operators are *schedulable as one kernel* yet are *internally a subgraph of affine sub-operators*:
-a softmax (max -> exp -> sum -> div), a flash-attention block (two matmuls + the online-softmax stats),
-and whatever comes next. Different hardware processes them at different granularities -- a fused-softmax
-unit takes the whole kernel; a matmul-array + vector-unit accelerator wants the sub-operators, because
-each sub-op's *affine access relation* is what maps to the array (a contraction) or the vector unit (a
-reduction / elementwise).
-
-So the framework needs a single, extensible way to ask "what is this op, one level down, as affine
-nodes?". A decomposer is just ``node -> Workload`` of affine sub-ops (the ordinary IR -- no new node
-types), registered by op ``type``. Every consumer (the graph view, fusion analysis, a future cost pass)
-calls :func:`decompose` uniformly; adding a new operator is one :func:`register_decomposition` call plus
-its small builder, never a new special-case in the consumers.
-"""
+"""Registry mapping an op type to a node->Workload decomposer of affine sub-operators; overlays add entries via
+``register_decomposition``."""
 
 from __future__ import annotations
 
@@ -23,7 +10,6 @@ if TYPE_CHECKING:
     from stream.workload.node import ComputationNode
     from stream.workload.workload import Workload
 
-# A decomposer expands one node into a Workload of its affine sub-operators (its dataflow, one level down).
 Decomposer = Callable[["ComputationNode"], "Workload"]
 
 _REGISTRY: dict[str, Decomposer] = {}
@@ -31,14 +17,12 @@ _LOAD_STATE: dict[str, bool] = {"builtins": False}
 
 
 def register_decomposition(op_type: str, decomposer: Decomposer) -> None:
-    """Register (or override) the affine sub-operator decomposition for op ``op_type`` -- the seam a new
-    operator extends without touching any consumer."""
+    """Register (or override) the affine sub-operator decomposition for op ``op_type``."""
     _REGISTRY[op_type] = decomposer
 
 
 def _ensure_builtins() -> None:
-    """Register the in-tree decomposers. Done lazily + here (not in the decomposer modules) so those
-    modules never import this one -- no import cycle, and the registry stays the single source of truth."""
+    """Register the in-tree decomposers lazily here (not in the decomposer modules) to avoid an import cycle."""
     if _LOAD_STATE["builtins"]:
         return
     _LOAD_STATE["builtins"] = True
@@ -52,9 +36,8 @@ def _ensure_builtins() -> None:
 
 
 def _load_plugins() -> None:
-    """Discover out-of-tree decomposers under the ``stream.decompositions`` entry-point group, so an
-    out-of-tree package registers a decomposition without a fork. Each entry-point name is the op
-    ``type`` and its object is the ``node -> Workload`` decomposer."""
+    """Register out-of-tree decomposers from the ``stream.decompositions`` entry-point group (name = op type, object =
+    decomposer)."""
     import logging  # noqa: PLC0415
     from importlib.metadata import entry_points  # noqa: PLC0415
 

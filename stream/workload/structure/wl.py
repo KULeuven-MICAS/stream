@@ -1,11 +1,4 @@
-"""Weisfeiler-Leman colour refinement over the workload DAG.
-
-Each node starts from its :func:`~stream.workload.node_key.node_key` (compute nodes) or a role tag
-(edges/transfers); each round replaces a node's colour with a hash of its own colour and the sorted
-multiset of its predecessors' and successors' colours (edge direction kept). After ``rounds`` rounds,
-nodes with equal colours have identical local structure up to that radius -- so a change deep inside
-one repeated block propagates outward and splits the affected neighbourhood's colours.
-"""
+"""Weisfeiler-Leman colour refinement over the workload DAG."""
 
 from __future__ import annotations
 

@@ -1,11 +1,5 @@
-"""Annotate the workload with structural block classes (repeated-subgraph detection).
-
-A passthrough stage: it computes computation-node equivalence classes (see
-:func:`~stream.workload.structure.block_detect.find_repeated_blocks`) and records a
-``block_classes`` map ``{node_name: class_id}`` in the context. Downstream allocation/fusion may
-reuse a class representative's decisions across its occurrences; on its own this stage changes no
-behaviour, so it is safe to insert early in any pipeline.
-"""
+"""Passthrough stage: record ``find_repeated_blocks(workload)`` as a ``{node_name: class_id}`` ``block_classes`` map in
+the context."""
 
 from __future__ import annotations
 

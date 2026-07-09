@@ -5,15 +5,12 @@ from stream.workload.workload import ComputationNode, Tensor
 
 
 class ElementwiseParser(OnnxOperatorParser):
-    """Parses any elementwise ONNX op (Add, Sub, Mul, Div, Relu, Silu, Gelu, Sigmoid, Tanh, ...)
-    into an affine ``ComputationNode``.
+    """Parses any elementwise ONNX op (Add, Sub, Mul, Div, Relu, Silu, Gelu, Sigmoid, Tanh, ...) into
+    an affine ``ComputationNode``.
 
-    Every operand shares one identity iteration space at the output's rank: each output index is
-    read from the same index of every input. NumPy-style broadcasting is affine -- an input axis of
-    size 1 (or a missing leading axis) indexes that operand at constant 0. This single parser
-    replaces the former per-op Add/Mul/Relu/Simd parsers, which were byte-for-byte identity maps
-    differing only in hard-coded rank. Rank is inferred from the output tensor, so the same class
-    serves 2D (SwiGLU) and 4D (ResNet) tensors and the scalar/vector broadcasts of attention.
+    Every operand shares one identity iteration space at the output's rank; NumPy broadcasting is
+    affine -- an input axis of size 1 (or a missing leading axis) indexes that operand at constant 0.
+    Rank is inferred from the output tensor.
     """
 
     def _operand_map(self, in_shape: tuple[int, ...], out_shape: tuple[int, ...]) -> AffineMap:

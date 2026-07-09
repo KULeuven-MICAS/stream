@@ -1,22 +1,4 @@
-"""Auto-propose fusion regions by greedy chain growth under a near-memory budget.
-
-Given a workload and a near-memory capacity (in elements), this proposes which computation nodes to
-fuse into one depth-first region. It is built entirely on the Phase 2 affine analysis, so it is *sound*
-by construction:
-
-- **Legality** comes from :func:`~stream.workload.fusion.analysis.edge_fusions`: a data-dependent read
-  (MoE dispatch/combine, gather) is a hard barrier that can never sit inside a region.
-- **Buffer** per edge is the streaming footprint from :func:`~stream.workload.fusion.analysis.pairwise_fusion`
-  (the line-buffer/halo for a conv, the full row for a softmax reduction, O(1) for a recurrence state
-  carry). A region's peak buffer is the max over its internal edges (only adjacent buffers are live in a
-  streamed pipeline).
-- **Recurrence chains are prioritized** without any op-specific code: chains grow in dataflow order and
-  capacity is the only thing that cuts, so an O(1)-state carry always fits -- a recurrence chain stays
-  fused even under a tiny capacity where a large materialized tensor would be cut.
-
-This is the framework; an out-of-tree package can supply a calibrated buffer/capacity model through the
-same interface. Nothing here imports a frontend or a concrete cost backend.
-"""
+"""Auto-propose fusion regions by greedy chain growth under a near-memory (element) capacity budget."""
 
 from __future__ import annotations
 
@@ -54,8 +36,7 @@ def iteration_extents(node: HasIterationSpace) -> dict[int, int]:
 
 
 def _candidate_fusion_dims(consumer: HasIterationSpace, tensor: Tensor) -> list[int]:
-    """Consumer PARALLEL dimensions that index ``tensor`` and are not one of its reduction axes -- the
-    axes a depth-first schedule could stream along."""
+    """Consumer PARALLEL dimensions that index ``tensor`` and are not reduction axes (the streamable axes)."""
     types = derive_iterator_types(consumer)
     reductions = set(consumer_reduction_axes(consumer, tensor))
     # Use map_dim_positions so a dim inside a compound access (a conv's stride*oy+fy) still counts.
@@ -64,11 +45,8 @@ def _candidate_fusion_dims(consumer: HasIterationSpace, tensor: Tensor) -> list[
 
 
 def edge_stream_buffer(producer: HasIterationSpace, consumer: HasIterationSpace, tensor: Tensor) -> int:
-    """Smallest streaming buffer over the candidate fusion dimensions (the best depth-first fusion).
-
-    Falls back to the whole shared-tensor size when no dimension streams cleanly (or the affine box
-    cannot represent the access) -- a sound upper bound.
-    """
+    """Smallest streaming buffer over the candidate fusion dims; falls back to the whole shared-tensor size when none
+    streams cleanly (a sound upper bound)."""
     full = 1
     for size in tensor.shape:
         full *= size
@@ -86,11 +64,8 @@ def edge_stream_buffer(producer: HasIterationSpace, consumer: HasIterationSpace,
 
 
 def _collect_edges(workload, order: dict[str, int]) -> tuple[list[tuple[int, str, str]], set[tuple[str, str]]]:
-    """Fusible compute-to-compute edges (buffer, producer, consumer) and the data-dependent barrier pairs.
-
-    An edge may share more than one tensor (e.g. a flash-attention block carries both the output and the
-    softmax-denominator state): the edge is a hard barrier if *any* shared read is data-dependent, else
-    its buffer is the sum over the shared tensors (all are held live)."""
+    """Fusible ``(buffer, producer, consumer)`` edges plus data-dependent barrier pairs; an edge is a hard barrier if
+    any shared read is data-dependent, else its buffer sums over the shared tensors."""
     edges: list[tuple[int, str, str]] = []
     barrier_between: set[tuple[str, str]] = set()
     for producer, consumer in workload.edges:
@@ -117,11 +92,8 @@ def _boundary_reason(members: set[str], barriers: set[tuple[str, str]], has_buff
 
 
 def propose_fusion_regions(workload, capacity_elements: int) -> list[FusionRegion]:
-    """Greedy chain growth: grow depth-first regions in dataflow order while the region peak buffer stays
-    within ``capacity_elements``; data-dependent edges are hard region boundaries.
-
-    Returns one :class:`FusionRegion` per connected fused component, in topological order.
-    """
+    """Grow depth-first regions in dataflow order while peak buffer stays within ``capacity_elements`` (data-dependent
+    edges are hard boundaries); one :class:`FusionRegion` per fused component, topological order."""
     compute = list(workload.get_computation_nodes())
     order = {n.name: i for i, n in enumerate(compute)}
     edges, barrier_between = _collect_edges(workload, order)
@@ -137,16 +109,13 @@ def propose_fusion_regions(workload, capacity_elements: int) -> list[FusionRegio
         return x
 
     def merge_would_trap_a_barrier(root_a: str, root_b: str) -> bool:
-        """Merging must not put both ends of a data-dependent edge in one region (that edge would then
-        sit *inside* a fused region -- illegal). Catches e.g. MoE ``combine`` reachable from ``router``
-        via a fusible edge while ``expert_out->combine`` is a hard barrier."""
+        """True if merging would put both ends of a data-dependent edge inside one region (illegal)."""
         for prod, cons in barrier_between:
             if {find(prod), find(cons)} == {root_a, root_b}:
                 return True
         return False
 
-    # Grow chains in dataflow (topological-by-consumer) order; capacity is the only thing that cuts,
-    # so an O(1)-state recurrence carry always fits (prioritized) while a large materialized tensor cuts.
+    # Grow chains in dataflow (topological-by-consumer) order; capacity is the only thing that cuts.
     for buffer, prod, cons in sorted(edges, key=lambda e: (order[e[2]], order[e[1]])):
         ra, rb = find(prod), find(cons)
         if ra == rb:

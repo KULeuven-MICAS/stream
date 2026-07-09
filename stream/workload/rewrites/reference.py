@@ -1,11 +1,6 @@
-"""NumPy reference implementations for the chunked decompositions.
+"""NumPy reference implementations validating each chunked decomposition equals the direct recurrence.
 
-Stream does not execute workloads; these references validate that each *chunked* decomposition (the
-algorithm the rewritten subgraph mirrors) is numerically equal to the *direct* recurrence. The tests
-in ``tests/rewrites`` assert ``chunked(...) ≈ direct(...)`` for random shapes and chunk sizes.
-
-All arrays are float64. Decays are expected in ``(0, 1]``; the chunked scan divides by a cumulative
-decay product, so very small decays with long chunks lose precision (as in any parallel-scan form).
+Arrays are float64; decays are expected in ``(0, 1]`` (small decays with long chunks lose precision).
 """
 
 from __future__ import annotations
@@ -13,9 +8,6 @@ from __future__ import annotations
 import numpy as np
 
 
-# --------------------------------------------------------------------------- #
-#  Mamba1-style diagonal selective scan                                       #
-# --------------------------------------------------------------------------- #
 def direct_diagonal_scan(x: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
     """h[t] = a[t] * h[t-1] + b[t] * x[t], h[-1] = 0. All inputs shape (L, D); returns H (L, D)."""
     length, dim = x.shape
@@ -44,14 +36,8 @@ def chunked_diagonal_scan(x: np.ndarray, a: np.ndarray, b: np.ndarray, chunk_siz
     return h
 
 
-# --------------------------------------------------------------------------- #
-#  Mamba2 SSD (scalar decay) -- quadratic <-> chunked-linear duality          #
-# --------------------------------------------------------------------------- #
 def direct_ssd(x: np.ndarray, a: np.ndarray, b_mat: np.ndarray, c_mat: np.ndarray) -> np.ndarray:
-    """Quadratic SSD: y[t] = sum_{s<=t} decay(t,s) * (C[t] . B[s]) * x[s].
-
-    x (L,), a (L,) scalar decay per step, B/C (L, N). Returns y (L,).
-    """
+    """Quadratic SSD: y[t] = sum_{s<=t} decay(t,s) * (C[t] . B[s]) * x[s]."""
     length, _ = b_mat.shape
     log_decay = np.zeros(length)
     for t in range(1, length):
@@ -75,14 +61,8 @@ def chunked_ssd(x: np.ndarray, a: np.ndarray, b_mat: np.ndarray, c_mat: np.ndarr
     return np.sum(c_mat * h, axis=1)
 
 
-# --------------------------------------------------------------------------- #
-#  Gated DeltaNet (matrix state)                                              #
-# --------------------------------------------------------------------------- #
 def direct_deltanet(q: np.ndarray, k: np.ndarray, v: np.ndarray, alpha: np.ndarray, beta: np.ndarray) -> np.ndarray:
-    """S_t = alpha_t (I - beta_t k_t k_t^T) S_{t-1} + beta_t k_t v_t^T ; y_t = S_t^T q_t.
-
-    q/k (L, dk), v (L, dv), alpha/beta (L,). Returns y (L, dv).
-    """
+    """S_t = alpha_t (I - beta_t k_t k_t^T) S_{t-1} + beta_t k_t v_t^T ; y_t = S_t^T q_t."""
     length, dk = k.shape
     dv = v.shape[1]
     state = np.zeros((dk, dv))
@@ -111,11 +91,8 @@ def chunked_deltanet(
     return y
 
 
-# --------------------------------------------------------------------------- #
-#  Attention: full softmax  <->  online (flash) softmax over key blocks       #
-# --------------------------------------------------------------------------- #
 def direct_attention(q: np.ndarray, k: np.ndarray, v: np.ndarray) -> np.ndarray:
-    """Softmax attention: ``O = softmax(Q Kᵀ) V``. q/k (Sq/Sk, d), v (Sk, dv); returns O (Sq, dv)."""
+    """Softmax attention: ``O = softmax(Q Kᵀ) V``."""
     scores = q @ k.T
     scores = scores - scores.max(axis=-1, keepdims=True)
     probs = np.exp(scores)
@@ -124,12 +101,8 @@ def direct_attention(q: np.ndarray, k: np.ndarray, v: np.ndarray) -> np.ndarray:
 
 
 def online_softmax_attention(q: np.ndarray, k: np.ndarray, v: np.ndarray, block_size: int) -> np.ndarray:
-    """Flash attention: the same result, streamed over key blocks with O(1) running state per query.
-
-    Maintains a running max ``m``, denominator ``l`` and output accumulator ``o`` (size independent of
-    the key length ``Sk`` -- the flash property), rescaling on each block by ``exp(m_old - m_new)``.
-    This is exactly the SEQUENTIAL scan over key blocks the ``flash_attention`` rewrite mirrors.
-    """
+    """Flash attention: same result as :func:`direct_attention`, streamed over key blocks with O(1)
+    running state per query."""
     seq_q = q.shape[0]
     dv = v.shape[1]
     running_max = np.full(seq_q, -np.inf)
@@ -137,10 +110,10 @@ def online_softmax_attention(q: np.ndarray, k: np.ndarray, v: np.ndarray, block_
     out = np.zeros((seq_q, dv))
     for start in range(0, k.shape[0], block_size):
         k_block, v_block = k[start : start + block_size], v[start : start + block_size]
-        scores = q @ k_block.T  # [Sq, Cb] -- the dense intra-block MACs
+        scores = q @ k_block.T
         block_max = scores.max(axis=-1)
         new_max = np.maximum(running_max, block_max)
-        correction = np.exp(running_max - new_max)  # rescale the running state to the new max
+        correction = np.exp(running_max - new_max)
         probs = np.exp(scores - new_max[:, None])
         denom = denom * correction + probs.sum(axis=-1)
         out = out * correction[:, None] + probs @ v_block

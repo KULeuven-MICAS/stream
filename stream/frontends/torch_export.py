@@ -1,21 +1,6 @@
-"""torch.export frontend -- an optional, pluggable ingestion path.
+"""torch.export frontend: convert an ``ExportedProgram``'s ATen graph into the internal affine Workload.
 
-``torch.export`` preserves op provenance (unlike ONNX's flattening), which is what rewrite matching
-and block detection want. This frontend converts an ``ExportedProgram``'s ATen graph into the internal
-affine :class:`~stream.workload.workload.Workload`.
-
-Design for soundness and extensibility:
-
-- **torch is optional.** Importing this module never imports torch; only :meth:`TorchExportFrontend.load`
-  does. Without torch the frontend registers but declines every source (``can_load`` is False), exactly
-  like the islpy exact path.
-- **The conversion is torch-free and testable.** The torch glue only lowers an ``ExportedProgram`` to a
-  list of :class:`AtenCall` (a tiny torch-independent op record); :func:`convert_aten_calls` maps those
-  to affine nodes via the declarative :data:`ATEN_OP_TABLE`. So the whole mapping is unit-tested with
-  hand-built calls, no torch required.
-- **The op table is the extension point.** An out-of-tree package adds ATen coverage (or block
-  converters) via :func:`register_aten_op` -- no fork. The built-in table is a starter subset; ops with
-  no builder are reported in an :class:`UnsupportedOpReport`, never crashed on.
+torch is an optional, lazily-imported extra; :func:`register_aten_op` extends the op table out-of-tree.
 """
 
 from __future__ import annotations
@@ -46,7 +31,7 @@ __all__ = [
 
 @dataclass(frozen=True)
 class AtenTensor:
-    """A tensor in the exported graph -- torch-independent, so conversion is testable without torch."""
+    """A tensor in the exported graph (torch-independent)."""
 
     name: str
     shape: tuple[int, ...]
@@ -65,7 +50,7 @@ class AtenCall:
 
 @dataclass
 class UnsupportedOpReport:
-    """ATen targets with no registered builder, as counts -- the per-release coverage frontier."""
+    """ATen targets with no registered builder, as counts."""
 
     counts: Counter[str] = field(default_factory=Counter)
 
@@ -117,8 +102,7 @@ def _matmul_2d(inputs: tuple[Tensor, ...], output: Tensor, call: AtenCall) -> Co
 
 
 def _linear(inputs: tuple[Tensor, ...], output: Tensor, call: AtenCall) -> ComputationNode:
-    """``aten::linear``: ``y[m,n] = sum_k x[m,k] W[n,k]`` (weight is transposed; bias is a cost-negligible
-    add, omitted from the structural spike). Contracts k = REDUCTION."""
+    """``aten::linear``: ``y[m,n] = sum_k x[m,k] W[n,k]`` (weight transposed; bias omitted)."""
     dim = AffineExpr.dimension
     x_map = AffineMap(3, 0, (dim(0), dim(2)))
     w_map = AffineMap(3, 0, (dim(1), dim(2)))
@@ -168,9 +152,8 @@ register_aten_op("aten::softmax", _softmax)
 def convert_aten_calls(
     graph_inputs: list[AtenTensor], calls: list[AtenCall], output_name: str | None = None
 ) -> tuple[Workload, UnsupportedOpReport]:
-    """Build a :class:`~stream.workload.workload.Workload` from graph inputs + ATen calls, plus a coverage
-    report. Unmapped ops are recorded and skipped (their outputs become graph inputs downstream), never
-    crashed on. Pure -- no torch."""
+    """Build a Workload from graph inputs + ATen calls, plus a coverage report; unmapped ops are recorded and skipped,
+    never crashed on."""
     tensors: dict[str, Tensor] = {}
     nodes: list[Node] = []
     report = UnsupportedOpReport()
@@ -199,8 +182,7 @@ def convert_aten_calls(
 
 
 class TorchExportFrontend:
-    """Loads a torch ``ExportedProgram`` into a workload. torch is optional; without it, this frontend
-    declines every source, so the public package never depends on torch."""
+    """Loads a torch ``ExportedProgram`` into a workload; without torch it declines every source."""
 
     name = "torch_export"
 
@@ -220,8 +202,7 @@ class TorchExportFrontend:
 
 
 def _lower_exported_program(exported_program: Any) -> tuple[list[AtenTensor], list[AtenCall], str | None]:
-    """Torch glue (guarded): lower an ``ExportedProgram`` to torch-free AtenCalls. Raises if torch is
-    absent. Kept thin so the conversion (:func:`convert_aten_calls`) stays testable without torch."""
+    """Torch glue: lower an ``ExportedProgram`` to torch-free AtenCalls; raises if torch is absent."""
     try:
         import torch  # type: ignore[import]  # noqa: F401, PLC0415
     except ImportError as exc:  # pragma: no cover - exercised only in the torch-absent job
