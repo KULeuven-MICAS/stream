@@ -1,21 +1,5 @@
-"""Typed operand access relation.
-
-``AccessRelation = AffineAccess | PiecewiseAffineAccess | DataDependentAccess`` -- a value object over
-*one operand's* access, derived from the node's existing xDSL operand map. It does not replace
-:attr:`~stream.workload.node.HasIterationSpace.operand_mapping` (still ``tuple[AffineMap, ...]``) and
-adds no node field: :func:`access_for` returns an :class:`AffineAccess` for every node built today, so
-the default derivation is affine and all current behavior is bit-identical.
-
-The point of the sum type is that the parts of a modern workload the affine box cannot express become a
-*parameter*, never a blocker:
-
-- :class:`AffineAccess` -- the default; derived relevancy + exact footprint (delegates to
-  :mod:`stream.workload.affine_access`).
-- :class:`PiecewiseAffineAccess` -- a union of affine pieces (mask/padding/guarded regions); footprint
-  is the per-result hull, with the optional islpy path for the exact union.
-- :class:`DataDependentAccess` -- a static bounding access plus a descriptor whose runtime-unknown part
-  (gather indices, dispatch table) is lifted into a swept-or-calibrated ``reuse`` parameter.
-"""
+"""Typed operand access relation over one operand: ``AffineAccess | PiecewiseAffineAccess |
+DataDependentAccess``, derived from the node's xDSL operand map (affine by default, so behavior is unchanged)."""
 
 from __future__ import annotations
 
@@ -53,8 +37,7 @@ class AccessRelation(ABC):
     @property
     @abstractmethod
     def is_static(self) -> bool:
-        """False only for :class:`DataDependentAccess` -- the one kind fusion must treat as a barrier
-        unless a rewrite lifts it. Affine and piecewise-affine access are static."""
+        """False only for :class:`DataDependentAccess` (a fusion barrier); affine and piecewise are static."""
 
     @abstractmethod
     def indexed_dims(self) -> frozenset[int]:
@@ -65,9 +48,8 @@ class AccessRelation(ABC):
         """Per-result index footprint of an iteration ``tile`` for this operand."""
 
     def relevancy(self, dim: int | AffineDimExpr, num_dims: int) -> LoopEffect:
-        """VARYING if ``dim`` indexes the operand, INVARIANT if it is a node dimension that does not,
-        ABSENT if it is outside the node's ``num_dims`` -- identical to
-        :func:`stream.workload.affine_access.relevancy`."""
+        """VARYING if ``dim`` indexes the operand, INVARIANT if a node dim that does not index it,
+        ABSENT if ``dim`` is outside the node's ``num_dims``."""
         pos = _position(dim)
         if pos < 0 or pos >= num_dims:
             return LoopEffect.ABSENT
@@ -76,11 +58,7 @@ class AccessRelation(ABC):
 
 @dataclass(frozen=True)
 class AffineAccess(AccessRelation):
-    """An operand indexed by a single affine map -- the default and the only kind any node builds today.
-
-    Every query delegates to :mod:`stream.workload.affine_access`, so an ``AffineAccess`` wrapping
-    ``node.get_mapping(operand)`` is bit-identical to the derived-access API.
-    """
+    """An operand indexed by a single affine map; queries delegate to :mod:`stream.workload.affine_access`."""
 
     map: AffineMap
 
@@ -97,12 +75,8 @@ class AffineAccess(AccessRelation):
 
 @dataclass(frozen=True)
 class PiecewiseAffineAccess(AccessRelation):
-    """A union of affine pieces -- e.g. a masked, padded, or otherwise guarded region that is a union
-    of affine sub-accesses of one operand of the same rank.
-
-    ``footprint`` is the per-result **hull** (bounding box) of the pieces' footprints; the exact union
-    is the optional islpy path. Still static: the pieces are known ahead of time.
-    """
+    """A union of affine pieces (masked/padded/guarded regions of one operand, same rank). ``footprint``
+    is the per-result hull of the pieces; still static."""
 
     pieces: tuple[AffineAccess, ...]
 
@@ -133,14 +107,9 @@ class PiecewiseAffineAccess(AccessRelation):
 class DataDependentAccess(AccessRelation):
     """An operand whose index set depends on runtime data (gather/scatter, MoE dispatch, masks).
 
-    The runtime-unknown is lifted into parameters, never a blocker:
-
-    - ``bounding`` -- the conservative static access (the "bounding shape"); ``footprint`` and
-      ``indexed_dims`` fall back to it, so the op costs at worst-case unless calibrated. This is what
-      :class:`~stream.parser.onnx.slice_gather.GatherParser` already does implicitly (full-axis read).
-    - ``index_tensor`` -- the runtime index/descriptor tensor name.
-    - ``reuse`` -- a calibration parameter (a reuse/locality fraction a consumer applies to the bounding
-      cost) or the centre of a swept DSE bracket; ``None`` means pure worst-case.
+    ``bounding`` is the conservative static access that ``footprint``/``indexed_dims`` fall back to;
+    ``index_tensor`` names the runtime index tensor; ``reuse`` is an optional locality/DSE fraction
+    (``None`` = worst case).
     """
 
     bounding: AffineAccess
@@ -164,17 +133,9 @@ _DATA_DEPENDENT_OPS: set[str] = {"Gather", "Scatter", "MoEDispatch", "MoECombine
 
 
 def access_for(node: HasIterationSpace, operand: Tensor) -> AccessRelation:
-    """The access relation of ``operand`` on ``node``.
-
-    Affine by default -- the derivation is bit-identical for the whole affine family (Conv/Gemm/MatMul/
-    Slice/Scan/elementwise/normalization) and every node built before this taxonomy existed. The one
-    upgrade: the *data* input (``inputs[0]``) of a data-dependent op (Gather, MoE dispatch/combine, …)
-    becomes a :class:`DataDependentAccess` whose bounding access is the
-    conservative affine map and whose ``index_tensor`` is the routing/index operand (if any). Footprint
-    and relevancy are unchanged (they fall back to the bounding map); only ``is_static`` flips, which is
-    exactly what fusion analysis must see. Frontends can also build
-    :class:`PiecewiseAffineAccess` (masked/windowed regions) explicitly.
-    """
+    """Access relation of ``operand`` on ``node``: affine by default (bit-identical), except the data
+    input of a data-dependent op (Gather, MoE dispatch/combine) becomes a :class:`DataDependentAccess`
+    -- same footprint/relevancy, only ``is_static`` flips (what fusion analysis reads)."""
     affine = AffineAccess(node.get_mapping(operand))
     op_type = getattr(node, "type", None)
     if op_type is not None and op_type in _DATA_DEPENDENT_OPS and node.inputs and operand == node.inputs[0]:
