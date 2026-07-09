@@ -37,8 +37,6 @@ __all__ = [
     "PiecewiseAffineAccess",
     "DataDependentAccess",
     "access_for",
-    "register_data_dependent_op",
-    "is_data_dependent_op",
 ]
 
 Tile = Mapping[int | AffineDimExpr, range]
@@ -95,12 +93,6 @@ class AffineAccess(AccessRelation):
 
     def footprint(self, tile: Tile) -> tuple[range, ...]:
         return _affine_footprint(self.map, tile)
-
-    def exact_footprint(self, tile: Tile) -> tuple[range, ...]:
-        """The islpy-exact footprint. Imported lazily so ``islpy`` stays an optional extra."""
-        from stream.workload.affine_exact import exact_footprint  # noqa: PLC0415
-
-        return exact_footprint(self.map, tile)
 
 
 @dataclass(frozen=True)
@@ -166,22 +158,9 @@ class DataDependentAccess(AccessRelation):
         return self.bounding.footprint(tile)
 
 
-# Op types whose *data* input is read with a runtime-dependent index (gather/scatter, MoE routing).
-# Their affine map is a conservative bounding access (the whole indexed axis); the true selection is
-# data-dependent. Additional routing ops register via ``register_data_dependent_op`` rather than
-# editing this set -- the extension point for the DataDependent bucket.
+# Op types whose data input is read with a runtime-dependent index (gather/scatter, MoE routing); their
+# affine map is a conservative bounding access (the whole indexed axis).
 _DATA_DEPENDENT_OPS: set[str] = {"Gather", "Scatter", "MoEDispatch", "MoECombine"}
-
-
-def register_data_dependent_op(op_type: str) -> None:
-    """Declare an op type whose first input is a data-dependent (gather-like) read, so
-    :func:`access_for` returns a :class:`DataDependentAccess` for it."""
-    _DATA_DEPENDENT_OPS.add(op_type)
-
-
-def is_data_dependent_op(op_type: str) -> bool:
-    """Whether ``op_type`` reads its data input with a runtime-dependent index."""
-    return op_type in _DATA_DEPENDENT_OPS
 
 
 def access_for(node: HasIterationSpace, operand: Tensor) -> AccessRelation:
@@ -189,8 +168,8 @@ def access_for(node: HasIterationSpace, operand: Tensor) -> AccessRelation:
 
     Affine by default -- the derivation is bit-identical for the whole affine family (Conv/Gemm/MatMul/
     Slice/Scan/elementwise/normalization) and every node built before this taxonomy existed. The one
-    upgrade: the *data* input (``inputs[0]``) of a data-dependent op (:func:`is_data_dependent_op` --
-    Gather, MoE dispatch/combine, …) becomes a :class:`DataDependentAccess` whose bounding access is the
+    upgrade: the *data* input (``inputs[0]``) of a data-dependent op (Gather, MoE dispatch/combine, …)
+    becomes a :class:`DataDependentAccess` whose bounding access is the
     conservative affine map and whose ``index_tensor`` is the routing/index operand (if any). Footprint
     and relevancy are unchanged (they fall back to the bounding map); only ``is_static`` flips, which is
     exactly what fusion analysis must see. Frontends can also build

@@ -122,9 +122,3 @@ def _ensure_builtins() -> None:
         from stream.frontends.torch_export import TorchExportFrontend  # noqa: PLC0415
 
         register_frontend(TorchExportFrontend())
-
-
-def _reset_for_tests() -> None:
-    """Clear the registry + plugin-load flag (test isolation only)."""
-    _REGISTRY.clear()
-    _LOAD_STATE["plugins"] = False
