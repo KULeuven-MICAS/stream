@@ -1,4 +1,4 @@
-"""Tests for the piecewise division linearization (D-09, D-10)."""
+"""Tests for the piecewise division linearization."""
 
 import pytest
 

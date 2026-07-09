@@ -567,7 +567,7 @@ class ComputeAllocator:
             )
 
         # idle_min = min(idle_sum[c] for c in cores)
-        # Use big-M binary selector pattern (research Pattern 4):
+        # Use big-M binary selector pattern:
         #   idle_min <= idle_sum[c] for all c  (upper-bound from below)
         #   idle_min >= idle_sum[c] - M*(1-b_c) for all c, with sum(b_c)==1
         big_m_min = len(self.node_ids) * max(1, len(self.slots))  # safe upper bound on any idle_sum

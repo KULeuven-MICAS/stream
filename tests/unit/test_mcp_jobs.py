@@ -8,7 +8,7 @@ from stream.mcp.jobs import ServerState, make_experiment_id
 
 
 class TestMakeExperimentId:
-    """Tests for content-addressed experiment ID generation (MCP-03)."""
+    """Tests for content-addressed experiment ID generation."""
 
     def _write_files(self, tmp_path):
         """Helper: create three small files with known content."""

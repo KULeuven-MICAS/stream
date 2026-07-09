@@ -636,7 +636,7 @@ class Workload(DiGraphWrapper[Node]):
                     operand_mapping=node.operand_mapping,
                 )
             elif isinstance(node, FusionEdge):
-                # FusionEdge has no iteration space; pass tensors through unchanged (D-08)
+                # FusionEdge has no iteration space; pass tensors through unchanged
                 new_inputs = tuple(cast(Tensor, tensor_map.get(inp.name, inp)) for inp in node.inputs)
                 new_outputs = tuple(cast(Tensor, tensor_map.get(out.name, out)) for out in node.outputs)
                 new_node = FusionEdge(
@@ -1029,11 +1029,11 @@ class Workload(DiGraphWrapper[Node]):
 def determine_fusion_cut_points(workload: Workload) -> list[str]:
     """Identify node names at which to split the workload into bounded fusion groups.
 
-    Heuristic (per D-01 / D-02):
-    - **MaxPool front-end boundary (D-02):** Each ``MaxPool`` node ends the
+    Heuristic:
+    - **MaxPool front-end boundary:** Each ``MaxPool`` node ends the
       front-end group (Conv -> Relu -> MaxPool).  Splitting after it keeps the
       pooling-core allocation separate from the main residual backbone.
-    - **Add+Relu residual boundary (D-01):** An ``Add`` node followed by
+    - **Add+Relu residual boundary:** An ``Add`` node followed by
       exactly one ``Relu`` successor (among ComputationNodes) marks the end of
       a residual block.  The *Relu* is the cut point so that both Add and Relu
       remain in the preceding group and the next Conv starts a new group.
@@ -1060,12 +1060,12 @@ def determine_fusion_cut_points(workload: Workload) -> list[str]:
         if not isinstance(node, ComputationNode):
             continue
 
-        # D-02: MaxPool ends the front-end group
+        # MaxPool ends the front-end group
         if node.type == "MaxPool":
             cut_points.append(node.name)
             continue
 
-        # D-01: Add followed by a single Relu successor -> split after Relu
+        # Add followed by a single Relu successor -> split after Relu
         if node.type == "Add":
             comp_succs = [s for s in workload.successors(node) if isinstance(s, ComputationNode)]
             if len(comp_succs) == 1 and comp_succs[0].type == "Relu":

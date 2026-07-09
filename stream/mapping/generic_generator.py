@@ -31,16 +31,16 @@ logger = logging.getLogger(__name__)
 class GenericMappingGenerator:
     """Auto-generate a MappingValidator-compliant mapping dict for any Workload + Accelerator pair.
 
-    Core selection follows the operator_types convention (D-06):
+    Core selection follows the operator_types convention:
     - Cores without operator_types (None) accept all operator types.
     - Cores with operator_types only accept nodes whose type is in the list.
     - Offchip and shim cores are never used for computation.
 
-    Inter-core tiling (D-09/D-10):
+    Inter-core tiling:
     - Specialized cores (pooling, simd) receive the node alone on a single core.
     - Generic compute cores receive the node split across all matching cores.
 
-    Intra-core tiling (D-08):
+    Intra-core tiling:
     - Uses the first dimension of the first computation node at full tile size
       (no temporal splitting), which is always valid per MappingValidator rules.
     """
@@ -179,10 +179,10 @@ class GenericMappingGenerator:
 
         Excludes offchip and shim cores unconditionally.  Selection priority:
         1. Specialized cores (operator_types is not None and node.type in list).
-           Per D-09: if any specialized cores match, use them exclusively.
+           If any specialized cores match, use them exclusively.
         2. Generic cores (operator_types is None — accepts all ops).
-           Per D-10: use all matching generic cores together.
-        3. D-06 fallback: if nothing matches, use all cores with kind 'compute'.
+           Use all matching generic cores together.
+        3. Fallback: if nothing matches, use all cores with kind 'compute'.
 
         This ensures MaxPool goes to the pooling core, Add to the simd core, and
         Conv/Gemm go to all 4 generic compute cores.
@@ -205,14 +205,14 @@ class GenericMappingGenerator:
                 generic_cores.append(core)
 
         if specialized_cores:
-            # D-09: prefer specialized core(s) over generic compute cores
+            # prefer specialized core(s) over generic compute cores
             return specialized_cores
 
         if generic_cores:
-            # D-10: use all generic compute cores together
+            # use all generic compute cores together
             return generic_cores
 
-        # D-06 fallback: no match — use all cores with kind 'compute'
+        # fallback: no match — use all cores with kind 'compute'
         fallback = [c for c in self.accelerator.core_list if c.type == "compute"]
         logger.warning("No core found for operator '%s'; falling back to all compute cores.", node_op)
         return fallback

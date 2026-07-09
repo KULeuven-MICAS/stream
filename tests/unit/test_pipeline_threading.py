@@ -1,6 +1,6 @@
 """Unit tests for pipeline threading of constraint_selection parameter.
 
-Covers Phase 6 Plan 01 requirements (PIPE-01, UI-01):
+Covers:
   - optimize_allocation_co and optimize_mapping accept constraint_selection kwarg
   - ConstraintOptimizationAllocationStage reads constraint_selection from context
   - ConstraintOptimizationAllocationStage defaults to ConstraintSelection() when absent
@@ -8,7 +8,7 @@ Covers Phase 6 Plan 01 requirements (PIPE-01, UI-01):
   - SteadyStateScheduler defaults constraint_selection to None when omitted
   - CLI conversion pattern: list of disabled names -> ConstraintSelection instance
 
-Covers Phase 6 Plan 02 requirements (UI-02):
+Also covers:
   - --disable-constraints CLI flag parsing
   - Conversion of disabled list to ConstraintSelection instance
 """
@@ -168,7 +168,7 @@ def test_cli_disable_constraints_parsing():
 
 
 # ---------------------------------------------------------------------------
-# CLI --disable-constraints parsing (UI-02)
+# CLI --disable-constraints parsing
 # ---------------------------------------------------------------------------
 
 

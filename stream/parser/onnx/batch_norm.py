@@ -7,7 +7,7 @@ from stream.workload.workload import ComputationNode, Tensor
 class BatchNormParser(OnnxOperatorParser):
     """Parses an ONNX BatchNormalization operator into a ComputationNode.
 
-    Per D-13: all 5 operands modeled -- input activation (4D), scale (1D),
+    All 5 operands are modeled -- input activation (4D), scale (1D),
     bias (1D), mean (1D), variance (1D), plus output (4D). 6 AffineMaps total.
 
     The iteration space is (b, c, h, w). The 1D per-channel operands

@@ -60,7 +60,7 @@ jobs:
           path: metrics_current.json
           retention-days: 7
 
-  # Advisory only — must NOT be added as a branch-protection required check (D-09 / CI-02).
+  # Advisory only — must NOT be added as a branch-protection required check.
   # Do NOT add "Metrics regression comment (advisory)" to branch-protection required checks.
   metrics-comment:
     name: Metrics regression comment (advisory)

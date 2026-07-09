@@ -1,11 +1,11 @@
 """Integration tests for ResNet18 sub-graph patterns through the CO pipeline.
 
-Tests RNET-01 (basic residual), RNET-02 (stride-2 downsample), RNET-03 (front-end + pooling core).
+Tests basic residual, stride-2 downsample, and front-end + pooling core patterns.
 Also tests dual-residual multi-group split via identity Reshape FusionEdge.
 Full ResNet18 E2E test with fixed spatial tiling across 11 fusion groups.
 
-Per D-05: dedicated test file separate from test_generic_mapping.py.
-Per D-06: assertions check positive latency, correct group count, and core type allocation.
+Dedicated test file separate from test_generic_mapping.py.
+Assertions check positive latency, correct group count, and core type allocation.
 """
 
 import os
@@ -46,7 +46,7 @@ pytestmark = pytest.mark.slow
 
 @pytest.mark.timeout(120)
 def test_basic_residual():
-    """RNET-01: Basic residual block (Conv->Relu->Conv->Add with skip fan-out)
+    """Basic residual block (Conv->Relu->Conv->Add with skip fan-out)
     completes CO allocation with positive latency and 1 group."""
     config = ResNetSubgraphConfig(pattern=ResNetPattern.BASIC_RESIDUAL)
     onnx_path = make_resnet_subgraph(config)
@@ -71,7 +71,7 @@ def test_basic_residual():
 
 @pytest.mark.timeout(120)
 def test_stride2_downsample():
-    """RNET-02: Stride-2 residual with 1x1 downsample runs through full CO
+    """Stride-2 residual with 1x1 downsample runs through full CO
     pipeline with positive latency and 1 group."""
     config = ResNetSubgraphConfig(pattern=ResNetPattern.STRIDE2_DOWNSAMPLE)
     onnx_path = make_resnet_subgraph(config)
@@ -96,7 +96,7 @@ def test_stride2_downsample():
 
 @pytest.mark.timeout(120)
 def test_frontend_path():
-    """RNET-03: Front-end path (Conv(7x7,s=2)->Relu->MaxPool(s=2)) completes CO
+    """Front-end path (Conv(7x7,s=2)->Relu->MaxPool(s=2)) completes CO
     with MaxPool allocated to pooling core (core 4)."""
     config = ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND)
     onnx_path = make_resnet_subgraph(config)
@@ -119,7 +119,7 @@ def test_frontend_path():
             f"All group latencies must be positive, got {group_latencies}"
         )
 
-        # RNET-03 core type assertion: MaxPool must be on pooling core (core 4)
+        # Core type assertion: MaxPool must be on pooling core (core 4)
         # Read the group mapping YAML from the output directory (still available inside `with`)
         experiment_dir = os.path.join(tmpdir, "test-frontend-path")
         group_dir = os.path.join(experiment_dir, "group_0")
@@ -173,7 +173,7 @@ def test_dual_residual():
 
 @pytest.mark.timeout(60)
 def test_fusion_cut_points_heuristic():
-    """RNET-04: determine_fusion_cut_points() returns correct cut-point names for ResNet18.
+    """determine_fusion_cut_points() returns correct cut-point names for ResNet18.
 
     Expected: 1 MaxPool + 8 Add+Relu = 9 cut points total.
     """
@@ -199,7 +199,7 @@ def test_fusion_cut_points_heuristic():
 
 @pytest.mark.timeout(60)
 def test_resnet18_split_with_cut_points():
-    """RNET-04: split_fusion_groups(cut_points=...) produces 11 groups for ResNet18.
+    """split_fusion_groups(cut_points=...) produces 11 groups for ResNet18.
 
     9 cut points + 1 FusionEdge (Flatten) = 10 boundaries -> 11 groups.
     """
@@ -233,7 +233,7 @@ def test_resnet18_split_with_cut_points():
 
 @pytest.mark.timeout(120)
 def test_resnet18_cut_point_groups():
-    """RNET-05: Per-group mappings for ResNet18 (11 groups) all pass MappingValidator."""
+    """Per-group mappings for ResNet18 (11 groups) all pass MappingValidator."""
     from zigzag.utils import open_yaml
 
     from stream.mapping.generic_generator import GenericMappingGenerator

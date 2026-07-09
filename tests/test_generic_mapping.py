@@ -1,7 +1,7 @@
-"""Tests for GenericMappingGenerator and the generic CO pipeline (MAP-01 through MAP-04, FMT-05).
+"""Tests for GenericMappingGenerator and the generic CO pipeline.
 
 The two-conv workload is used as a fast single-group proxy (< 60s).
-The Conv-Relu-Flatten-Gemm workload tests multi-group pipeline mechanics (RES-01/RES-02).
+The Conv-Relu-Flatten-Gemm workload tests multi-group pipeline mechanics.
 """
 
 import tempfile
@@ -53,7 +53,7 @@ def _parse_workload_and_accelerator(workload_path: str | None = None):
 
 
 def test_generator_produces_all_fields():
-    """MAP-01: GenericMappingGenerator produces mapping with core_allocation,
+    """GenericMappingGenerator produces mapping with core_allocation,
     inter_core_tiling, fused_groups, and intra_core_tiling populated."""
     accelerator, workload = _parse_workload_and_accelerator()
 
@@ -80,7 +80,7 @@ def test_generator_produces_all_fields():
 
 
 def test_single_fused_group():
-    """MAP-02: Generated mapping contains exactly one FusedGroup with valid intra_core_tiling."""
+    """Generated mapping contains exactly one FusedGroup with valid intra_core_tiling."""
     accelerator, workload = _parse_workload_and_accelerator()
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -99,7 +99,7 @@ def test_single_fused_group():
 
 
 def test_mapping_validates():
-    """MAP-03: Generated mapping passes MappingValidator validation."""
+    """Generated mapping passes MappingValidator validation."""
     accelerator, workload = _parse_workload_and_accelerator()
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -115,10 +115,10 @@ def test_mapping_validates():
 
 
 def test_pipeline_end_to_end():
-    """MAP-04: optimize_allocation_co_generic completes end-to-end for two-conv TPU workload.
+    """optimize_allocation_co_generic completes end-to-end for two-conv TPU workload.
 
     Two-conv is used as a fast single-group proxy (< 60s) for quick iteration.
-    test_pipeline_multi_group covers multi-group pipeline mechanics (RES-01/RES-02).
+    test_pipeline_multi_group covers multi-group pipeline mechanics.
     """
     workload_path = make_2_conv_workload(_WORKLOAD_CONFIG)
 
@@ -151,7 +151,7 @@ def test_pipeline_end_to_end():
 @pytest.mark.slow  # multi-group MILP run; too slow / near-timeout on CI runners
 @pytest.mark.timeout(120)
 def test_pipeline_multi_group():
-    """RES-01/RES-02: optimize_allocation_co_generic completes for a multi-group workload.
+    """optimize_allocation_co_generic completes for a multi-group workload.
 
     Uses a synthetic Conv->Relu->Flatten->Gemm workload that splits into 2 fusion groups
     via FusionEdge parsing. Tests the same multi-group pipeline mechanics as ResNet18
@@ -178,7 +178,7 @@ def test_pipeline_multi_group():
     assert total_latency is not None, "total_latency not set in context"
     assert total_latency > 0, f"Expected positive total_latency, got {total_latency}"
 
-    # Verify per-group latencies (RES-01: positive latency; RES-02: multi-group handling)
+    # Verify per-group latencies (positive latency; multi-group handling)
     group_latencies = ctx.get("group_latencies")
     assert group_latencies is not None, "group_latencies not set in context"
     assert len(group_latencies) == 2, f"Expected 2 groups (Conv+Relu and Gemm), got {len(group_latencies)}"
@@ -192,7 +192,7 @@ def test_pipeline_multi_group():
 
 
 def test_tpu_yaml_validates():
-    """FMT-05: Existing TPU mapping YAML validates against MappingValidator schema."""
+    """Existing TPU mapping YAML validates against MappingValidator schema."""
     tpu_mapping_path = "stream/inputs/examples/mapping/tpu_like_quad_core.yaml"
     with open(tpu_mapping_path) as f:
         data = yaml.safe_load(f)

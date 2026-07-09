@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import yaml
 from xdsl.ir.affine import AffineDimExpr
 
-# GRB.Callback constants — used only by _mip_progress_callback (Gurobi-specific, per D-04).
+# GRB.Callback constants — used only by _mip_progress_callback (Gurobi-specific).
 # gurobipy is optional (Gurobi backend only); GRB is touched solely on the Gurobi solve path.
 try:
     from gurobipy import GRB

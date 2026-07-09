@@ -1,10 +1,10 @@
 """stream.mcp.server — FastMCP server with lifespan, 6 tool stubs, and async job pattern.
 
 This module boots the stream MCP server. It is intentionally minimal at module level
-to keep cold-start import time under budget (MCP-01). Heavy imports (stream.api, solver
-backends) are NOT imported here — they belong in Phase 18 tool handlers only.
+to keep cold-start import time low. Heavy imports (stream.api, solver backends) are NOT
+imported here — they belong in the tool handlers only.
 
-No stdout writes — stdout is owned by JSON-RPC (see Phase 15 stdout cleanup).
+No stdout writes — stdout is owned by JSON-RPC.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from fastmcp import Context, FastMCP
 from stream.mcp.jobs import ServerState, make_experiment_id
 
 # ---------------------------------------------------------------------------
-# Lifespan — creates ServerState once per server lifetime (Pattern 1)
+# Lifespan — creates ServerState once per server lifetime
 # ---------------------------------------------------------------------------
 
 
@@ -37,7 +37,7 @@ mcp = FastMCP("stream", lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------
-# State accessor helper (centralizes lifespan context access — Pitfall 3)
+# State accessor helper (centralizes lifespan context access)
 # ---------------------------------------------------------------------------
 
 
@@ -51,7 +51,7 @@ def _get_state(mcp_ctx: Context) -> ServerState:
 
 
 # ---------------------------------------------------------------------------
-# Background solve helper (D-04: lazy imports, async job pattern)
+# Background solve helper (lazy imports, async job pattern)
 # ---------------------------------------------------------------------------
 
 
@@ -68,7 +68,7 @@ async def _run_solve_background(
     """Run optimize_allocation_co in a background thread and update job state.
 
     Uses asyncio.to_thread to avoid blocking the event loop during the MILP solve.
-    Heavy imports (stream.api, ConstraintSelection) are lazy per D-04.
+    Heavy imports (stream.api, ConstraintSelection) are lazy.
     """
     state.jobs[job_id]["status"] = "running"
     try:
@@ -113,7 +113,7 @@ async def run_optimization(  # noqa: PLR0913
 ) -> dict[str, Any]:
     """Submit a TETRA constraint-optimization job. Returns a job_id immediately.
 
-    The solve runs in the background (Phase 18 will wire in asyncio.to_thread()).
+    The solve runs in the background (via asyncio.to_thread()).
     Poll with poll_optimization(job_id) to retrieve status and results.
     Do not call get_allocation_ir or get_solve_stats until status is 'complete'.
 
@@ -146,7 +146,7 @@ async def run_optimization(  # noqa: PLR0913
         return {"status": "error", "error_type": "invalid_input", "message": str(e)}
     state = _get_state(mcp_ctx)
 
-    # Cache hit: same experiment already completed — return without re-solving (D-08)
+    # Cache hit: same experiment already completed — return without re-solving
     if job_id in state.jobs and state.jobs[job_id]["status"] == "complete":
         return {"job_id": job_id, "status": "complete", "cache_hit": True}
 
@@ -207,7 +207,7 @@ async def get_workload_ir(  # noqa: PLR0911
     """Return the workload DAG as structured JSON matching the WorkloadIR schema.
 
     Accepts either a direct ONNX file path or an experiment_id from a completed
-    optimization job (D-01 dual-parameter pattern). If both are provided,
+    optimization job (dual-parameter pattern). If both are provided,
     experiment_id takes precedence (reuses parsed data from the completed job).
 
     Args:
@@ -217,7 +217,7 @@ async def get_workload_ir(  # noqa: PLR0911
 
     Returns:
         Dict with WorkloadIR fields (schema_version, num_nodes, nodes, …) on success,
-        or a structured error dict per D-03:
+        or a structured error dict:
           {'status': 'error', 'error_type': <type>, 'message': <text>}
         where error_type is one of: 'invalid_input', 'not_found', 'not_ready'.
     """
@@ -294,7 +294,7 @@ async def get_accelerator_ir(  # noqa: PLR0911
     """Return the hardware accelerator model as structured JSON matching the AcceleratorIR schema.
 
     Accepts either a direct hardware YAML file path or an experiment_id from a completed
-    optimization job (D-01 dual-parameter pattern). If both are provided,
+    optimization job (dual-parameter pattern). If both are provided,
     experiment_id takes precedence (reuses parsed data from the completed job).
 
     The returned structure includes cores, memory hierarchy, DMA channels, and
@@ -307,7 +307,7 @@ async def get_accelerator_ir(  # noqa: PLR0911
 
     Returns:
         Dict with AcceleratorIR fields (schema_version, name, num_cores, cores, …) on success,
-        or a structured error dict per D-03:
+        or a structured error dict:
           {'status': 'error', 'error_type': <type>, 'message': <text>}
         where error_type is one of: 'invalid_input', 'not_found', 'not_ready'.
     """
@@ -394,7 +394,7 @@ async def get_allocation_ir(
 
     Returns:
         Dict with AllocationIR fields for completed experiments, or a structured
-        error dict with 'status', 'error_type', and 'message' fields per D-03.
+        error dict with 'status', 'error_type', and 'message' fields.
     """
     state = _get_state(mcp_ctx)
     job = state.jobs.get(job_id)
@@ -442,7 +442,7 @@ async def get_solve_stats(
 
     Returns:
         Dict with SolveStats fields for completed experiments, or a structured
-        error dict with 'status', 'error_type', and 'message' fields per D-03.
+        error dict with 'status', 'error_type', and 'message' fields.
     """
     state = _get_state(mcp_ctx)
     job = state.jobs.get(job_id)

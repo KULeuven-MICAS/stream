@@ -88,7 +88,6 @@ class FusionGroupIterationStage(Stage):
             logger.info(f"Group {i} wall time: {group_wall_times[i]:.2f}s")
             final_ctx = ctx
 
-        # Per D-05: Store aggregated result
         assert final_ctx is not None, "No groups processed"
         final_ctx.set(
             total_latency=total_latency,

@@ -1,4 +1,4 @@
-"""Validation tests for the Phase 39 metrics-capture hook (CAP-01/02/03).
+"""Validation tests for the metrics-capture hook.
 
 Three tests:
 - test_conditional_write_skips_on_empty_store  (fast, default suite)
@@ -25,7 +25,7 @@ conftest_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(conftest_module)  # type: ignore[union-attr]
 
 # ---------------------------------------------------------------------------
-# Fast unit tests: conditional-write contract (CAP-01 / CAP-02)
+# Fast unit tests: conditional-write contract
 # ---------------------------------------------------------------------------
 # These tests drive pytest_terminal_summary directly (no subprocess, no solver).
 # They monkeypatch _metrics_store and conftest_module.__file__ to redirect the
@@ -35,7 +35,7 @@ _spec.loader.exec_module(conftest_module)  # type: ignore[union-attr]
 
 
 def test_conditional_write_skips_on_empty_store(tmp_path, monkeypatch):
-    """D-01 / CAP-01: empty store -> no file written, no clobber."""
+    """Empty store -> no file written, no clobber."""
     # Redirect the writer's output to tmp_path.
     # conftest.py: out = Path(__file__).parent.parent / "metrics_current.json"
     # So we make __file__ = tmp_path / "pkg" / "conftest.py"
@@ -52,7 +52,7 @@ def test_conditional_write_skips_on_empty_store(tmp_path, monkeypatch):
 
 
 def test_conditional_write_on_populated_store(tmp_path, monkeypatch):
-    """D-01/D-02/D-03/D-04 / CAP-01/CAP-02: populated store -> sorted node-ID-keyed file with 5 fields."""
+    """Populated store -> sorted node-ID-keyed file with 5 fields."""
     fake_conftest = tmp_path / "pkg" / "conftest.py"
     fake_conftest.parent.mkdir(parents=True)
     monkeypatch.setattr(conftest_module, "__file__", str(fake_conftest))
@@ -81,23 +81,23 @@ def test_conditional_write_on_populated_store(tmp_path, monkeypatch):
     expected_fields = {"total_latency", "group_latencies_max", "objective", "mip_gap", "solve_time_s"}
     assert set(entry.keys()) == expected_fields, f"field mismatch: {set(entry.keys())}"
 
-    # D-02: sort_keys=True -> inner keys must be alphabetically ordered
+    # sort_keys=True keeps inner keys alphabetically ordered
     assert list(entry.keys()) == sorted(entry.keys()), f"inner keys not alphabetically sorted: {list(entry.keys())}"
 
 
 # ---------------------------------------------------------------------------
-# Slow subprocess integration test: real matrix-cell capture (CAP-01/02/03)
+# Slow subprocess integration test: real matrix-cell capture
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.slow
 def test_capture_emits_file_and_fields(tmp_path):
-    """CAP-01/02/03: a real subprocess matrix-cell run emits metrics_current.json.
+    """A real subprocess matrix-cell run emits metrics_current.json.
 
     Runs one matrix cell out-of-process so the real pytest_terminal_summary path
-    (including absolute __file__ resolution and the D-02 fixed path) is exercised.
+    (including absolute __file__ resolution and the fixed path) is exercised.
 
-    The exact node-ID key assertion also covers CAP-03 '-x survival key format':
+    The exact node-ID key assertion also covers the '-x survival key format':
     a single completed cell yields a partial file with a valid full node-ID key --
     the same shape a -x abort would leave after the first cell completes.
     """
@@ -140,7 +140,7 @@ def test_capture_emits_file_and_fields(tmp_path):
         "objective",
         "mip_gap",
         "solve_time_s",
-    }, f"D-04 field mismatch: {set(entry)}"
+    }, f"field mismatch: {set(entry)}"
 
     assert isinstance(entry["total_latency"], int | float) and entry["total_latency"] > 0, (
         f"total_latency must be a positive float, got {entry['total_latency']!r}"

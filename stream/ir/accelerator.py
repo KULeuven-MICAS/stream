@@ -21,7 +21,7 @@ class CoreIR(BaseModel):
 
     Common fields cover all core types. Type-specific fields (e.g. memory capacity for aie2,
     operational_array for zigzag) are captured in extra_fields as a dict. This avoids requiring
-    a discriminated union over all possible core schemas at Phase 16 scope.
+    a discriminated union over all possible core schemas.
     """
 
     id: int = Field(description="Core unique identifier (integer index)")

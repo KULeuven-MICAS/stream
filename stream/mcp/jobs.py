@@ -27,7 +27,7 @@ def make_experiment_id(
     backend: str,
     constraint_dict: dict[str, bool],
 ) -> str:
-    """Content-addressed experiment ID per D-07.
+    """Content-addressed experiment ID.
 
     SHA-256 of file CONTENTS (not paths) + backend string + sorted JSON of constraint_dict,
     truncated to 12 lowercase hex characters.

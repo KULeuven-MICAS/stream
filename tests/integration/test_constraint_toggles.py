@@ -1,8 +1,8 @@
-"""Integration tests for constraint toggle feature (Phase 7).
+"""Integration tests for constraint toggle feature.
 
-TEST-01: Infeasibility-flip tests — each constraint group's guard is structurally
+Infeasibility-flip tests — each constraint group's guard is structurally
 effective (tight limit + enabled = RuntimeError, tight limit + disabled = success).
-TEST-02: Cross-backend parity — Gurobi and OR-Tools agree within tolerance with
+Cross-backend parity — Gurobi and OR-Tools agree within tolerance with
 selective constraints active.
 """
 
@@ -97,7 +97,7 @@ def _build_transfer_context_tight_dma(*args, **kwargs):
 
 
 # ---------------------------------------------------------------------------
-# TEST-01: Infeasibility-flip tests — one per constraint group
+# Infeasibility-flip tests — one per constraint group
 # ---------------------------------------------------------------------------
 
 
@@ -105,7 +105,7 @@ def _build_transfer_context_tight_dma(*args, **kwargs):
 def test_memory_capacity_flip():
     """memory_capacity guard: tight limit (1 bit) causes infeasibility; disabling restores feasibility.
 
-    D-01: The guard in _create_constraints() is structurally wired. Proof:
+    The guard in _create_constraints() is structurally wired. Proof:
     - tight limit + memory_capacity=True  -> RuntimeError (solver infeasible)
     - tight limit + memory_capacity=False -> success (constraint skipped)
     """
@@ -141,7 +141,7 @@ def test_memory_capacity_flip():
 def test_object_fifo_depth_flip():
     """object_fifo_depth guard: tight FIFO limit causes infeasibility; disabling restores feasibility.
 
-    D-01: The guard in _create_constraints() is structurally wired. Proof:
+    The guard in _create_constraints() is structurally wired. Proof:
     - tight max_object_fifo_depth=1 + object_fifo_depth=True  -> RuntimeError
     - tight max_object_fifo_depth=1 + object_fifo_depth=False -> success
 
@@ -188,11 +188,11 @@ def test_object_fifo_depth_flip():
 def test_buffer_descriptor_flip():
     """buffer_descriptors guard: tight BD limit causes infeasibility; disabling restores feasibility.
 
-    D-01: The guard in _create_constraints() is structurally wired. Proof:
+    The guard in _create_constraints() is structurally wired. Proof:
     - tight max_object_fifo_depth=1 + buffer_descriptors=True  -> RuntimeError
     - tight max_object_fifo_depth=1 + buffer_descriptors=False -> success
 
-    Note: BD constraints share max_object_fifo_depth as the RHS (per research pitfall 6).
+    Note: BD constraints share max_object_fifo_depth as the RHS.
     The toggle is still isolated by the ConstraintSelection.buffer_descriptors field.
     We disable object_fifo_depth in both arms to isolate the BD constraint.
     """
@@ -235,7 +235,7 @@ def test_buffer_descriptor_flip():
 def test_dma_channels_flip():
     """dma_channels guard: tight DMA limit causes infeasibility; disabling restores feasibility.
 
-    D-01: The guard in _overlap_and_objective() is structurally wired. Proof:
+    The guard in _overlap_and_objective() is structurally wired. Proof:
     - DMA channels=1 (all tiles) + dma_channels=True  -> RuntimeError
     - DMA channels=1 (all tiles) + dma_channels=False -> success
 
@@ -271,14 +271,14 @@ def test_dma_channels_flip():
 
 
 # ---------------------------------------------------------------------------
-# TEST-02: Cross-backend parity with selective constraints (Gurobi vs OR-Tools)
+# Cross-backend parity with selective constraints (Gurobi vs OR-Tools)
 # ---------------------------------------------------------------------------
 
 _PARITY_CASES = [
     pytest.param(
         ConstraintSelection(memory_capacity=False, object_fifo_depth=False),
         id="memory_off",
-        # NOTE: Disables both memory_capacity AND object_fifo_depth per SEL-05
+        # NOTE: Disables both memory_capacity AND object_fifo_depth per the
         # nonsensical-combination rule. Memory capacity constraints use FIFO depth
         # as RHS, so disabling memory alone (with FIFO still active) would leave
         # a misleading constraint configuration. This is intentional -- "memory off"
@@ -318,8 +318,8 @@ _PARITY_CASES = [
 def test_cross_backend_parity(cs: ConstraintSelection):
     """Gurobi and OR-Tools agree within REL_TOL for constraint selection *cs*.
 
-    Per D-03: 7 combinations tested (4 individual toggles + 3 multi-toggle combos).
-    Per research Pitfall 3: dynamic Gurobi reference (not hardcoded baseline) because
+    7 combinations tested (4 individual toggles + 3 multi-toggle combos).
+    Dynamic Gurobi reference (not hardcoded baseline) because
     disabling DMA changes the objective formulation (no DMA penalty terms).
     """
     # 1. Run Gurobi (unpatched) as dynamic reference

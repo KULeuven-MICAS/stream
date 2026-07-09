@@ -1,8 +1,8 @@
 """Unit tests for WorkloadIR, AcceleratorIR, and AllocationIR Pydantic models.
 
-Covers IR-01 and IR-02 from Phase 16 requirements:
-  - IR-01: Pydantic BaseModel IR classes exist with schema_version field and produce valid JSON Schema
-  - IR-02: Per-persona IR views available (algorithmic, hardware, compiler)
+Covers:
+  - Pydantic BaseModel IR classes exist with schema_version field and produce valid JSON Schema
+  - Per-persona IR views available (algorithmic, hardware, compiler)
 
 Tests use synthetic dicts matching get_ir() shapes — no real Workload/Accelerator/Scheduler objects required.
 Mock objects provide .get_ir() -> dict for from_internal() tests.

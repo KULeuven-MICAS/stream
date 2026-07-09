@@ -7,7 +7,7 @@ from stream.workload.workload import ComputationNode, Tensor
 class MaxPoolParser(OnnxOperatorParser):
     """Parses an ONNX MaxPool operator into a ComputationNode.
 
-    Uses 2 AffineMaps (input activation + output) per D-16 -- no fake weight operand.
+    Uses 2 AffineMaps (input activation + output) -- no fake weight operand.
     """
 
     EXPECTED_NB_OF_INPUTS = 1
@@ -33,7 +33,7 @@ class MaxPoolParser(OnnxOperatorParser):
             raise NotImplementedError("Asymmetric padding not supported for MaxPool.")
         p = pads[0]
 
-        # 2 AffineMaps: input activation + output (D-16)
+        # 2 AffineMaps: input activation + output
         mappings = (
             AffineMap.from_callable(lambda b, k, oy, ox, fy, fx: (b, k, sy * oy + fy - p, sx * ox + fx - p)),
             AffineMap.from_callable(lambda b, k, oy, ox, fy, fx: (b, k, oy, ox)),

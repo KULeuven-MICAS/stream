@@ -1,4 +1,4 @@
-"""Tests for ONNX parser completions (PARSE-01 through PARSE-05)."""
+"""Tests for ONNX parser completions."""
 
 import onnx
 
@@ -9,7 +9,7 @@ _RESNET18_PATH = "stream/inputs/examples/workload/resnet18.onnx"
 
 
 def test_resnet18_full_parse():
-    """PARSE-05: All 49 ResNet18 ONNX nodes parse into valid ComputationNode or FusionEdge.
+    """All 49 ResNet18 ONNX nodes parse into valid ComputationNode or FusionEdge.
 
     Verifies:
     - No exceptions during parsing
@@ -66,7 +66,7 @@ def test_resnet18_full_parse():
 
 
 def test_resnet18_shape_inference():
-    """PARSE-02: Shape inference runs and intermediate tensor shapes are available."""
+    """Shape inference runs and intermediate tensor shapes are available."""
     model = onnx.load(_RESNET18_PATH, load_external_data=False)
     inferred = onnx.shape_inference.infer_shapes(model)
     # After inference, value_info should contain intermediate tensor shapes

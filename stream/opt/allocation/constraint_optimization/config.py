@@ -61,7 +61,7 @@ class CoreConstraintProfile:
 
 @dataclass(frozen=True)
 class TransferMilpConfig:
-    # Currently unused in Phase 1; defaults mirror existing behavior.
+    # Currently unused; defaults mirror existing behavior.
     nb_cols_to_use: int = 4
     force_io_via_cache: bool = True
     mem_dma_channels: int = 6
