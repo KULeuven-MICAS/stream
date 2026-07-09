@@ -1,18 +1,10 @@
-"""Canonical decomposition (rewrite) library.
-
-Each rewrite matches a monolithic sequence-mixing op (by ``type``) and rewrites it into a chunked
-subgraph via :func:`build_chunk_chain`, with chunk size as a DSE parameter. Adding a new rewrite is
-a one-file change plus its reference math -- register it here.
-"""
+"""Registry of chunked-decomposition rewrites for sequence-mixing ops."""
 
 from __future__ import annotations
 
 from stream.workload.node import ComputationNode
-from stream.workload.rewrites.base import Rewrite, RewriteParams, build_chunk_chain
-from stream.workload.rewrites.chunked_scan import ChunkedScanRewrite
+from stream.workload.rewrites.base import ChunkRewrite, Rewrite, RewriteParams, build_chunk_chain
 from stream.workload.rewrites.flash_attention import FlashAttentionRewrite
-from stream.workload.rewrites.gated_deltanet import GatedDeltaNetRewrite
-from stream.workload.rewrites.ssd import SSDRewrite
 from stream.workload.workload import Workload
 
 __all__ = [
@@ -50,5 +42,11 @@ def apply_rewrites(node: ComputationNode, params: RewriteParams) -> Workload | N
     return None
 
 
-for _rewrite in (ChunkedScanRewrite(), SSDRewrite(), GatedDeltaNetRewrite(), FlashAttentionRewrite()):
+# Chunked recurrences: identical graph shape, differing only in matched op and emitted chunk type.
+_CHUNK_REWRITES = (
+    ChunkRewrite("chunked_scan", "Scan", "ScanChunk"),
+    ChunkRewrite("ssd", "SSD", "SSDChunk"),
+    ChunkRewrite("gated_deltanet", "GatedDeltaNet", "DeltaNetChunk"),
+)
+for _rewrite in (*_CHUNK_REWRITES, FlashAttentionRewrite()):
     register_rewrite(_rewrite)

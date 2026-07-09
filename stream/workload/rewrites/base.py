@@ -1,12 +1,4 @@
-"""Rewrite protocol and the shared chunk-chain builder.
-
-A chunked decomposition replaces one monolithic sequence-mixing op with a chain of dense per-chunk
-reduction nodes: each chunk contracts its chunk-local sequence (a REDUCTION dimension) into an
-outgoing state vector, reading the incoming state from the previous chunk. The chain of state
-tensors is the inter-chunk recurrence; its length is ``ceil(seq_len / chunk_size) - 1``. The
-intra-chunk math differs per operator (see :mod:`stream.workload.rewrites.reference`), but the graph
-shape is shared, so all rewrites delegate to :func:`build_chunk_chain`.
-"""
+"""Rewrite protocol and the shared chunk-chain builder."""
 
 from __future__ import annotations
 
@@ -45,13 +37,8 @@ class Rewrite(Protocol):
 def build_chunk_chain(
     base_name: str, seq_len: int, hidden: int, chunk_size: int, dtype: FixedBitwidthType, chunk_type: str
 ) -> Workload:
-    """Build the chain of ``ceil(seq_len/chunk_size)`` dense per-chunk reduction nodes.
-
-    Each chunk node has iteration dimensions ``(c, d)``: ``c`` (chunk-local sequence) is REDUCTION,
-    ``d`` (hidden) is PARALLEL. It reads ``x_chunk[c, d]`` and the incoming state ``h_prev[d]`` and
-    writes the outgoing state ``h_out[d]``. Consecutive chunks share the state tensor, so the
-    workload graph carries the inter-chunk dependency chain.
-    """
+    """Chain of ``ceil(seq_len/chunk_size)`` per-chunk reduction nodes: ``c`` (chunk-local seq) is
+    REDUCTION, ``d`` (hidden) is PARALLEL; consecutive chunks share the state tensor."""
     n_chunks = ceil(seq_len / chunk_size)
     x_map = AffineMap.from_callable(lambda c, d: (c, d))
     state_map = AffineMap.from_callable(lambda c, d: (d,))
@@ -79,3 +66,23 @@ def build_chunk_chain(
 
     nodes.append(OutEdge(name=f"{base_name}_out", inputs=(prev_state,)))
     return Workload(nodes)
+
+
+@dataclass(frozen=True)
+class ChunkRewrite:
+    """A sequence-mixing op decomposed into a chunk chain. All chunked recurrences share the graph
+    shape :func:`build_chunk_chain` builds; only ``source_type`` (matched op) and the emitted
+    ``chunk_type`` differ -- the intra-chunk math lives in the cost model."""
+
+    name: str
+    source_type: str
+    chunk_type: str
+
+    def matches(self, node: ComputationNode) -> bool:
+        return node.type == self.source_type
+
+    def apply(self, node: ComputationNode, params: RewriteParams) -> Workload:
+        seq_len, hidden = node.inputs[0].shape
+        return build_chunk_chain(
+            node.name, seq_len, hidden, params.chunk_size, node.inputs[0].operand_type, self.chunk_type
+        )
