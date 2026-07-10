@@ -1,4 +1,4 @@
-"""Unit tests for render_metrics_comment.py (BASE-01..03, DIFF-01, DIFF-02).
+"""Unit tests for render_metrics_comment.py.
 
 All tests use synthetic JSON dicts — no solver, no matrix run.
 """
@@ -148,7 +148,7 @@ def test_marker_present():
 
 
 def test_exit_zero_on_diff(tmp_path):
-    """Script exits 0 even when cells are flagged (advisory-only, D-11)."""
+    """Script exits 0 even when cells are flagged (advisory-only)."""
     base_file = tmp_path / "base.json"
     cur_file = tmp_path / "cur.json"
     out_file = tmp_path / "out.md"

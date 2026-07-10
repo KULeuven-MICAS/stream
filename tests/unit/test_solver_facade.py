@@ -1,11 +1,11 @@
 """Unit tests for the solver abstraction facade.
 
-Covers ABS-01 through ABS-05 from the Phase 1 requirements:
-  - ABS-01: SolverModel ABC cannot be instantiated directly
-  - ABS-02: Backend implements SolverModel correctly
-  - ABS-03: SolverVar exposes .X and delegates arithmetic operators
-  - ABS-04: LinExpr supports += and + operations and defaultdict patterns
-  - ABS-05: Factory dispatches to the correct backend or raises
+Covers:
+  - SolverModel ABC cannot be instantiated directly
+  - Backend implements SolverModel correctly
+  - SolverVar exposes .X and delegates arithmetic operators
+  - LinExpr supports += and + operations and defaultdict patterns
+  - Factory dispatches to the correct backend or raises
 
 All tests use OR-Tools (license-free) so they run on any CI runner.
 """
@@ -40,7 +40,7 @@ def _trivial_model() -> tuple[SolverModel, SolverVar]:
 
 
 # ---------------------------------------------------------------------------
-# ABS-01: SolverModel ABC contract
+# SolverModel ABC contract
 # ---------------------------------------------------------------------------
 
 
@@ -73,7 +73,7 @@ def test_abc_interface():
 
 
 # ---------------------------------------------------------------------------
-# ABS-02: Backend implements SolverModel
+# Backend implements SolverModel
 # ---------------------------------------------------------------------------
 
 
@@ -107,7 +107,7 @@ def test_backend_trivial_lp_with_constraint():
 
 
 # ---------------------------------------------------------------------------
-# ABS-03: SolverVar interface
+# SolverVar interface
 # ---------------------------------------------------------------------------
 
 
@@ -157,7 +157,7 @@ def test_solver_var_arithmetic_operators():
 
 
 # ---------------------------------------------------------------------------
-# ABS-04: LinExpr interface
+# LinExpr interface
 # ---------------------------------------------------------------------------
 
 
@@ -190,7 +190,7 @@ def test_linexpr_defaultdict():
 
 
 # ---------------------------------------------------------------------------
-# ABS-05: Factory function
+# Factory function
 # ---------------------------------------------------------------------------
 
 

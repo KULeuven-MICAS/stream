@@ -8,11 +8,16 @@ from typing import TYPE_CHECKING, Any
 
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
+from stream.workload.node_key import node_key
 
 if TYPE_CHECKING:
     from stream.workload.workload import ComputationNode
 
 logger = logging.getLogger(__name__)
+
+# Bumped whenever a ZigZag/cost-model change alters the numbers a cached entry holds; on-disk caches
+# tagged with a different version are ignored (a delta-pin update travels with this bump). See plan 10.
+COST_MODEL_VERSION = 1
 
 
 def _to_yaml_scalar(v: Any) -> Any:
@@ -35,6 +40,8 @@ class CoreCostLUT:
 
     def __init__(self, cache_path: str | None = None, load: bool = True):
         self.lut: dict[ComputationNode, dict[Core, CoreCostEntry]] = {}
+        # node_key -> a representative node in the LUT, for O(1) equality-aware lookup.
+        self._index: dict[str, ComputationNode] = {}
         self.cache_path = cache_path
         if load and self.cache_path:
             self._maybe_load()
@@ -45,6 +52,7 @@ class CoreCostLUT:
         if node not in self.lut:
             self.lut[node] = {}
         self.lut[node][core] = cost
+        self._index[node_key(node)] = node
 
     def has_cost(self, node: ComputationNode, core: Core) -> bool:
         return self.get_equal_node(node) is not None and node in self.lut and core in self.lut[node]
@@ -61,9 +69,7 @@ class CoreCostLUT:
         return list(self.lut.get(node, {}).keys())
 
     def get_equal_node(self, node: ComputationNode) -> ComputationNode | None:
-        if any(n.has_same_performance(node) for n in self.lut):
-            return next(n for n in self.lut if n.has_same_performance(node))
-        return None
+        return self._index.get(node_key(node))
 
     def get_equal_core(self, node: ComputationNode | None, core: Core) -> Core | None:
         if node is None:
@@ -74,10 +80,14 @@ class CoreCostLUT:
             return None
 
     def replace_node(self, old_node: ComputationNode, new_node: ComputationNode):
-        equal_node = self.get_equal_node(old_node)
-        if equal_node is None:
+        # Replace the exact node when present (multiple nodes can share a key, so the key index must
+        # not decide which one to pop); fall back to an equal representative only if it is not.
+        target = old_node if old_node in self.lut else self.get_equal_node(old_node)
+        if target is None:
             raise ValueError(f"Node {old_node} not found in LUT.")
-        self.lut[new_node] = self.lut.pop(equal_node)
+        self.lut[new_node] = self.lut.pop(target)
+        self._index.pop(node_key(target), None)
+        self._index[node_key(new_node)] = new_node
 
     def remove_cores_with_same_id(self, node: ComputationNode, core: Core):
         if node not in self.lut:
@@ -89,12 +99,15 @@ class CoreCostLUT:
     def remove_node(self, node: ComputationNode):
         if node in self.lut:
             self.lut.pop(node)
+        key = node_key(node)
+        if self._index.get(key) is node:
+            self._index.pop(key, None)
 
     def save(self):
         if not self.cache_path:
             raise ValueError("No cache_path provided.")
         with open(self.cache_path, "wb") as fp:
-            pickle.dump(self.lut, fp)
+            pickle.dump({"version": COST_MODEL_VERSION, "lut": self.lut}, fp)
         self._save_yaml_summary()
 
     def _save_yaml_summary(self) -> None:
@@ -148,7 +161,10 @@ class CoreCostLUT:
             return
         try:
             with open(self.cache_path, "rb") as fp:
-                self.lut = pickle.load(fp)
+                data = pickle.load(fp)
+            if not isinstance(data, dict) or data.get("version") != COST_MODEL_VERSION:
+                raise ValueError(f"cost_model_version mismatch (need {COST_MODEL_VERSION})")
+            self.lut = data["lut"]
         except Exception as e:
             logger.warning(
                 "Could not load CoreCostLUT from %s (%s). Starting from empty LUT.",
@@ -160,3 +176,4 @@ class CoreCostLUT:
                 os.remove(self.cache_path)
             except OSError:
                 logger.debug("Failed to remove corrupted LUT cache at %s", self.cache_path)
+        self._index = {node_key(n): n for n in self.lut}

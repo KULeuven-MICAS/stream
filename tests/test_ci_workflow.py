@@ -1,4 +1,4 @@
-"""Structural assertions for `.github/workflows/ci.yml` (Phase 41, CI-01..CI-04).
+"""Structural assertions for `.github/workflows/ci.yml`.
 
 These 10 fast tests verify that the CI workflow is wired correctly for the v1.10
 metrics-regression guard.  They are purely structural — they parse YAML and grep
@@ -24,46 +24,46 @@ def _load():
 
 
 # ---------------------------------------------------------------------------
-# 1. Fork-guard present (CI-03)
+# 1. Fork-guard present
 # ---------------------------------------------------------------------------
 
 
 def test_fork_guard_present():
-    """metrics-comment job if: condition must include the fork-guard expression (CI-03)."""
+    """metrics-comment job if: condition must include the fork-guard expression."""
     _, raw = _load()
     assert "github.event.pull_request.head.repo.full_name == github.repository" in raw, (
-        "Fork-guard expression not found in ci.yml — CI-03 violated"
+        "Fork-guard expression not found in ci.yml"
     )
 
 
 # ---------------------------------------------------------------------------
-# 2. Upload step has if: always() (D-02)
+# 2. Upload step has if: always()
 # ---------------------------------------------------------------------------
 
 
 def test_upload_if_always():
-    """The upload-artifact step in the tests job must carry 'if: always()' (D-02)."""
+    """The upload-artifact step in the tests job must carry 'if: always()'."""
     _, raw = _load()
     # The raw text must contain both the upload-artifact action and an if: always() nearby.
     # We check both markers are present in the file (Task 1 places them adjacent).
     assert "upload-artifact@v4" in raw, "upload-artifact@v4 step not found in ci.yml"
-    assert "if: always()" in raw, "'if: always()' not found in ci.yml (D-02 violated)"
+    assert "if: always()" in raw, "'if: always()' not found in ci.yml"
 
 
 # ---------------------------------------------------------------------------
-# 3. Upload step has continue-on-error: true (D-02)
+# 3. Upload step has continue-on-error: true
 # ---------------------------------------------------------------------------
 
 
 def test_upload_continue_on_error():
-    """The upload-artifact step must carry continue-on-error: true (D-02)."""
+    """The upload-artifact step must carry continue-on-error: true."""
     parsed, _ = _load()
     tests_steps = parsed["jobs"]["tests"]["steps"]
     upload_steps = [s for s in tests_steps if isinstance(s.get("uses"), str) and "upload-artifact" in s["uses"]]
     assert upload_steps, "No upload-artifact step found in tests job"
     upload_step = upload_steps[0]
     assert upload_step.get("continue-on-error") is True, (
-        f"upload-artifact step missing continue-on-error: true (D-02); got: {upload_step.get('continue-on-error')!r}"
+        f"upload-artifact step missing continue-on-error: true; got: {upload_step.get('continue-on-error')!r}"
     )
 
 
@@ -85,12 +85,12 @@ def test_top_level_permissions_read_only():
 
 
 # ---------------------------------------------------------------------------
-# 5. metrics-comment job permissions include pull-requests: write (D-03)
+# 5. metrics-comment job permissions include pull-requests: write
 # ---------------------------------------------------------------------------
 
 
 def test_comment_job_has_pr_write():
-    """metrics-comment job permissions must include pull-requests: write (D-03)."""
+    """metrics-comment job permissions must include pull-requests: write."""
     parsed, _ = _load()
     job_perms = parsed["jobs"]["metrics-comment"]["permissions"]
     assert job_perms.get("pull-requests") == "write", (
@@ -99,12 +99,12 @@ def test_comment_job_has_pr_write():
 
 
 # ---------------------------------------------------------------------------
-# 6. metrics-comment job permissions include contents: read (D-03 — per-job perms fully replace)
+# 6. metrics-comment job permissions include contents: read (per-job perms fully replace)
 # ---------------------------------------------------------------------------
 
 
 def test_comment_job_has_contents_read():
-    """metrics-comment job must explicitly declare contents: read (per-job perms fully replace top-level, D-03)."""
+    """metrics-comment job must explicitly declare contents: read (per-job perms fully replace top-level)."""
     parsed, _ = _load()
     job_perms = parsed["jobs"]["metrics-comment"]["permissions"]
     assert job_perms.get("contents") == "read", (
@@ -113,53 +113,51 @@ def test_comment_job_has_contents_read():
 
 
 # ---------------------------------------------------------------------------
-# 7. Concurrency group keyed by PR number (D-07)
+# 7. Concurrency group keyed by PR number
 # ---------------------------------------------------------------------------
 
 
 def test_concurrency_group_keyed_by_pr():
-    """metrics-comment job concurrency group must contain github.event.pull_request.number (D-07)."""
+    """metrics-comment job concurrency group must contain github.event.pull_request.number."""
     parsed, _ = _load()
     concurrency = parsed["jobs"]["metrics-comment"].get("concurrency", {})
     group = concurrency.get("group", "")
-    assert "github.event.pull_request.number" in group, (
-        f"Concurrency group must be keyed by PR number (D-07); got: {group!r}"
-    )
+    assert "github.event.pull_request.number" in group, f"Concurrency group must be keyed by PR number; got: {group!r}"
 
 
 # ---------------------------------------------------------------------------
-# 8. find-comment body-includes contains the sticky-comment marker (CI-01)
+# 8. find-comment body-includes contains the sticky-comment marker
 # ---------------------------------------------------------------------------
 
 
 def test_find_comment_marker():
-    """find-comment body-includes must contain stream-aie-metrics-regression-guard-v1 (CI-01 / Pitfall 6)."""
+    """find-comment body-includes must contain stream-aie-metrics-regression-guard-v1."""
     _, raw = _load()
     assert "stream-aie-metrics-regression-guard-v1" in raw, (
         "Sticky-comment marker 'stream-aie-metrics-regression-guard-v1' not found in ci.yml — "
-        "find-comment will fail to locate existing comments (duplicate-comment bug, CI-01)"
+        "find-comment will fail to locate existing comments (duplicate-comment bug)"
     )
 
 
 # ---------------------------------------------------------------------------
-# 9. Exactly one pytest invocation in ci.yml (CI-04 — matrix runs once)
+# 9. Exactly one pytest invocation in ci.yml (matrix runs once)
 # ---------------------------------------------------------------------------
 
 
 def test_single_pytest_invocation():
-    """ci.yml must contain exactly one 'pytest' substring — the matrix runs exactly once (CI-04)."""
+    """ci.yml must contain exactly one 'pytest' substring — the matrix runs exactly once."""
     _, raw = _load()
     count = raw.count("pytest")
-    assert count == 1, f"Expected exactly 1 'pytest' invocation in ci.yml (CI-04 matrix-once), found {count}"
+    assert count == 1, f"Expected exactly 1 'pytest' invocation in ci.yml (matrix-once), found {count}"
 
 
 # ---------------------------------------------------------------------------
-# 10. metrics-comment job needs: [tests] (D-03)
+# 10. metrics-comment job needs: [tests]
 # ---------------------------------------------------------------------------
 
 
 def test_comment_job_needs_tests():
-    """metrics-comment job must declare needs: [tests] so it runs after the tests job (D-03)."""
+    """metrics-comment job must declare needs: [tests] so it runs after the tests job."""
     parsed, _ = _load()
     needs = parsed["jobs"]["metrics-comment"].get("needs", [])
     # needs may be a list or a string — normalise

@@ -89,6 +89,24 @@ class Workload(DiGraphWrapper[Node]):
             [AffineDimExpr(i) for i in self.global_idxs[node]], [], self.num_dims, 0
         )
 
+    def _is_identity_relation(self, relation: AffineExpr) -> bool:
+        """Whether a dimension relation merges two dims that are the *same* iteration axis.
+
+        A relation is kept for the global dedup only when it has the clean form ``d_a - d_b (+ const)``
+        -- exactly two dim terms with coefficients ``+1`` and ``-1`` (a constant padding offset is
+        allowed). That is a genuine identity: the producer axis and the consumer axis are one and the
+        same, so they collapse to a single ``LayerDim``.
+
+        Windowed / strided couplings -- a conv or pool input index ``2*ox + fx``, which yields a
+        coefficient other than ``+/-1`` or more than two dim terms -- are cross-node *dependencies*,
+        not identities. Folding them into the global equality system is what forced output-spatial
+        dims to become compound (untileable) expressions. They are excluded here so every node keeps
+        pure, tileable iteration dims; the exact producer region a consumer tile needs (the halo) is
+        derived on demand from the affine maps via ``compose_dependency``, not baked into this basis.
+        """
+        row = AffineTransform.from_affine_map(AffineMap(self.num_dims, 0, (relation,))).A[0]
+        return sorted(int(c) for c in row if c != 0) == [-1, 1]
+
     def dimension_relations(self) -> Sequence[AffineExpr]:
         result = []
         # Relations between shared intermediate tensors:
@@ -101,8 +119,10 @@ class Workload(DiGraphWrapper[Node]):
                 mapping_out = self.global_mapping(src, src.get_mapping(output))
                 mapping_in = self.global_mapping(dst, dst.get_mapping(output))
                 for expr_out, expr_in in zip(mapping_out.results, mapping_in.results, strict=True):
-                    # expr_out == expr_in <=> expr_out - expr_in == 0
-                    result.append(expr_out - expr_in)
+                    # expr_out == expr_in <=> expr_out - expr_in == 0; keep only identity merges.
+                    relation = expr_out - expr_in
+                    if self._is_identity_relation(relation):
+                        result.append(relation)
         # Relations between shared inputs:
         for node in self.nodes:
             if isinstance(node, InEdge):
@@ -113,7 +133,9 @@ class Workload(DiGraphWrapper[Node]):
                     mapping_a = self.global_mapping(a, a.get_mapping(output))
                     mapping_b = self.global_mapping(b, b.get_mapping(output))
                     for expr_a, expr_b in zip(mapping_a.results, mapping_b.results, strict=True):
-                        result.append(expr_a - expr_b)
+                        relation = expr_a - expr_b
+                        if self._is_identity_relation(relation):
+                            result.append(relation)
         return result
 
     def get_computation_nodes(self) -> tuple[ComputationNode, ...]:
@@ -253,6 +275,8 @@ class Workload(DiGraphWrapper[Node]):
             in_edge = InEdge(name=f"{node.name}_cut_in", outputs=(out_tensor,))
             group_nodes[succ_group].insert(0, in_edge)
 
+        self._bridge_cross_group_edges(node_to_group, group_nodes)
+
         # Build sub-workloads
         sub_workloads = []
         for nodes in group_nodes:
@@ -260,6 +284,29 @@ class Workload(DiGraphWrapper[Node]):
                 sub_workloads.append(Workload(nodes))
 
         return sub_workloads
+
+    def _bridge_cross_group_edges(self, node_to_group: dict[Node, int], group_nodes: list[list[Node]]) -> None:
+        """Add OutEdge/InEdge boundaries for any data edge crossing a group boundary without passing
+        through a FusionEdge or cut-point (e.g. attention's V, which skips the softmax barrier to feed
+        the context epilogue). Without this the consumer group would have an input with no producer."""
+
+        def has_inedge(nodes: list[Node], tensor: Tensor) -> bool:
+            return any(isinstance(n, InEdge) and tensor in n.outputs for n in nodes)
+
+        def has_outedge(nodes: list[Node], tensor: Tensor) -> bool:
+            return any(isinstance(n, OutEdge) and tensor in n.inputs for n in nodes)
+
+        for producer, group in node_to_group.items():
+            for consumer in self.successors(producer):
+                if consumer not in node_to_group or node_to_group[consumer] == group:
+                    continue
+                consumer_group = node_to_group[consumer]
+                for tensor in set(producer.outputs) & set(consumer.inputs):  # type: ignore[attr-defined]
+                    if not has_outedge(group_nodes[group], tensor):
+                        group_nodes[group].append(OutEdge(name=f"{tensor.name}_bridge_out", inputs=(tensor,)))
+                    if not has_inedge(group_nodes[consumer_group], tensor):
+                        bridge_in = InEdge(name=f"{tensor.name}_bridge_in", outputs=(tensor,))
+                        group_nodes[consumer_group].insert(0, bridge_in)
 
     def get_dimension_sizes(self) -> tuple[int, ...]:
         result_to_shape: list[tuple[AffineExpr, int]] = []
@@ -589,7 +636,7 @@ class Workload(DiGraphWrapper[Node]):
                     operand_mapping=node.operand_mapping,
                 )
             elif isinstance(node, FusionEdge):
-                # FusionEdge has no iteration space; pass tensors through unchanged (D-08)
+                # FusionEdge has no iteration space; pass tensors through unchanged
                 new_inputs = tuple(cast(Tensor, tensor_map.get(inp.name, inp)) for inp in node.inputs)
                 new_outputs = tuple(cast(Tensor, tensor_map.get(out.name, out)) for out in node.outputs)
                 new_node = FusionEdge(
@@ -879,6 +926,28 @@ class Workload(DiGraphWrapper[Node]):
             timeslots[node] = slot
         return timeslots
 
+    def _node_ir(self, node: Node) -> dict:
+        """Serialize one node: identity plus whatever operand / iteration / type facets it has."""
+        node_data: dict = {"name": node.name, "type": type(node).__name__}
+        if isinstance(node, HasIterationSpace):
+            node_data["dimensions"] = {str(dim): self.get_dimension_size(dim) for dim in self.get_dims(node)}
+            node_data["global_dim_indices"] = list(self.global_idxs[node])
+        if isinstance(node, HasInputs):
+            node_data["inputs"] = [
+                {"name": t.name, "shape": list(t.shape), "operand_type": str(t.operand_type)} for t in node.inputs
+            ]
+        if isinstance(node, HasOutputs):
+            node_data["outputs"] = [
+                {"name": t.name, "shape": list(t.shape), "operand_type": str(t.operand_type)} for t in node.outputs
+            ]
+        if isinstance(node, ComputationNode):
+            node_data["computation_type"] = str(node.type)
+        if isinstance(node, TransferNode):
+            node_data["transfer_type"] = str(node.transfer_type)
+        if isinstance(node, FusionEdge):
+            node_data["fusion_op_type"] = node.op_type
+        return node_data
+
     def get_ir(self) -> dict:
         """Return a dictionary representation of the workload for serialization/inspection.
 
@@ -892,58 +961,23 @@ class Workload(DiGraphWrapper[Node]):
         unique_dims, dim_values = self.unique_dimensions()
         dim_sizes = self.get_dimension_sizes()
 
-        # Build unique dimensions info
-        unique_dims_info = {
-            str(dim): {
+        # Build unique dimensions info. `dim_sizes` is indexed by *global loop slot* (0..num_dims-1),
+        # while `unique_dims` are the free variables z0..zk -- a unique dim z_i does NOT live at global
+        # slot i. Its size is the size of the loop slot that *is* that free variable, i.e. the slot j
+        # where dim_values[j] == z_i (that slot always exists: it is the free variable's own column).
+        # This keeps unique_dimensions consistent with each node's per-dimension sizes.
+        value_strs = [str(dv) for dv in dim_values]
+        unique_dims_info = {}
+        for i, dim in enumerate(unique_dims):
+            key = str(dim)
+            slot = value_strs.index(key) if key in value_strs else None
+            unique_dims_info[key] = {
                 "index": i,
-                "size": dim_sizes[i] if i < len(dim_sizes) else None,
+                "size": dim_sizes[slot] if slot is not None and slot < len(dim_sizes) else None,
             }
-            for i, dim in enumerate(unique_dims)
-        }
 
         # Build nodes info
-        nodes_info = []
-        for node in nx.lexicographical_topological_sort(self, key=lambda n: n.name):
-            node_data: dict = {
-                "name": node.name,
-                "type": type(node).__name__,
-            }
-
-            if isinstance(node, HasIterationSpace):
-                node_dims = self.get_dims(node)
-                node_data["dimensions"] = {str(dim): self.get_dimension_size(dim) for dim in node_dims}
-                node_data["global_dim_indices"] = list(self.global_idxs[node])
-
-            if isinstance(node, HasInputs):
-                node_data["inputs"] = [
-                    {
-                        "name": t.name,
-                        "shape": list(t.shape),
-                        "operand_type": str(t.operand_type),
-                    }
-                    for t in node.inputs
-                ]
-
-            if isinstance(node, HasOutputs):
-                node_data["outputs"] = [
-                    {
-                        "name": t.name,
-                        "shape": list(t.shape),
-                        "operand_type": str(t.operand_type),
-                    }
-                    for t in node.outputs
-                ]
-
-            if isinstance(node, ComputationNode):
-                node_data["computation_type"] = str(node.type)
-
-            if isinstance(node, TransferNode):
-                node_data["transfer_type"] = str(node.transfer_type)
-
-            if isinstance(node, FusionEdge):
-                node_data["fusion_op_type"] = node.op_type
-
-            nodes_info.append(node_data)
+        nodes_info = [self._node_ir(node) for node in nx.lexicographical_topological_sort(self, key=lambda n: n.name)]
 
         # Build edges info
         edges_info = []
@@ -995,11 +1029,11 @@ class Workload(DiGraphWrapper[Node]):
 def determine_fusion_cut_points(workload: Workload) -> list[str]:
     """Identify node names at which to split the workload into bounded fusion groups.
 
-    Heuristic (per D-01 / D-02):
-    - **MaxPool front-end boundary (D-02):** Each ``MaxPool`` node ends the
+    Heuristic:
+    - **MaxPool front-end boundary:** Each ``MaxPool`` node ends the
       front-end group (Conv -> Relu -> MaxPool).  Splitting after it keeps the
       pooling-core allocation separate from the main residual backbone.
-    - **Add+Relu residual boundary (D-01):** An ``Add`` node followed by
+    - **Add+Relu residual boundary:** An ``Add`` node followed by
       exactly one ``Relu`` successor (among ComputationNodes) marks the end of
       a residual block.  The *Relu* is the cut point so that both Add and Relu
       remain in the preceding group and the next Conv starts a new group.
@@ -1026,12 +1060,12 @@ def determine_fusion_cut_points(workload: Workload) -> list[str]:
         if not isinstance(node, ComputationNode):
             continue
 
-        # D-02: MaxPool ends the front-end group
+        # MaxPool ends the front-end group
         if node.type == "MaxPool":
             cut_points.append(node.name)
             continue
 
-        # D-01: Add followed by a single Relu successor -> split after Relu
+        # Add followed by a single Relu successor -> split after Relu
         if node.type == "Add":
             comp_succs = [s for s in workload.successors(node) if isinstance(s, ComputationNode)]
             if len(comp_succs) == 1 and comp_succs[0].type == "Relu":

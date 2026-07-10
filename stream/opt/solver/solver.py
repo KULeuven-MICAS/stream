@@ -1,15 +1,4 @@
-"""Solver abstraction layer for TETRA constraint optimization.
-
-Provides a backend-agnostic API over MILP solvers. Currently supports
-GurobiBackend (wrapping gurobipy 13.0.0) and ORToolsBackend (wrapping
-OR-Tools MathOpt API, Phase 2).
-
-Design decisions:
-- D-01: Core ops only — ABC wraps addVar, addConstr, setObjective, optimize, and solution extraction.
-- D-05: quicksum as a method on SolverModel.
-- D-06: Lives in stream/opt/solver/ (new package under opt/).
-- D-07: Single module layout: solver.py contains ABC, GurobiBackend, SolverVar, LinExpr, enums, factory.
-"""
+"""Solver facade: the SolverModel ABC and its Gurobi and OR-Tools backends."""
 
 from __future__ import annotations
 
@@ -175,7 +164,7 @@ class SolverVar(ABC):
     Exposes .X for solution extraction and ._raw for building backend-
     specific constraint expressions.
 
-    Per D-01 and ABS-03: all CO code that builds constraint expressions
+    All CO code that builds constraint expressions
     should use var._raw (for GurobiBackend this is a gp.Var). Arithmetic
     operator delegation is also provided so SolverVar objects can be used
     directly in expressions — they delegate to ._raw.
@@ -246,7 +235,7 @@ class LinExpr(ABC):
     Supports += and + accumulation patterns, including use as a
     defaultdict(model.lin_expr) value factory.
 
-    Per D-01 and ABS-04: GurobiBackend wraps gp.LinExpr.
+    GurobiBackend wraps gp.LinExpr.
     """
 
     @property
@@ -296,7 +285,7 @@ class LinExpr(ABC):
 class SolverModel(ABC):
     """Abstract base class for MILP solver backends.
 
-    Per D-01 and ABS-01: defines the interface for variable creation,
+    Defines the interface for variable creation,
     constraint addition, objective setting, and solving. Does NOT wrap
     tupledict, addVars, addConstrs, multidict, max_, min_.
 
@@ -354,7 +343,7 @@ class SolverModel(ABC):
         """Run the optimizer.
 
         Args:
-            callback: Optional backend-specific callback (D-04).
+            callback: Optional backend-specific callback.
                       GurobiBackend passes this to model.optimize(callback).
                       Non-Gurobi backends may ignore it.
         """
@@ -392,6 +381,17 @@ class SolverModel(ABC):
     def compute_iis(self) -> None:
         """Compute an Irreducible Infeasible Subsystem (IIS)."""
 
+    @property
+    def supports_iis(self) -> bool:
+        """Whether the backend can compute an IIS (minimal conflicting constraint set) for an
+        infeasible model. Default False; a backend that can (Gurobi) overrides it."""
+        return False
+
+    def iis_constraints(self) -> list[str]:
+        """Names of the constraints in the IIS -- call after :meth:`compute_iis`. Empty by default
+        (a backend without IIS support returns nothing, so callers degrade gracefully)."""
+        return []
+
     @abstractmethod
     def write(self, path: str) -> None:
         """Write the model to a file (e.g. .lp, .mps, .ilp)."""
@@ -400,7 +400,7 @@ class SolverModel(ABC):
     def quicksum(self, iterable: Any) -> LinExpr:
         """Compute the sum of an iterable of backend expressions.
 
-        Per D-05: GurobiBackend delegates to gurobipy.quicksum.
+        GurobiBackend delegates to gurobipy.quicksum.
         OR-Tools backend will use Python sum().
         """
 
@@ -616,7 +616,7 @@ _PARAM_MAP: dict[SolverParams, str] = {
 class GurobiBackend(SolverModel):
     """Gurobipy-backed SolverModel implementation.
 
-    Per ABS-02: delegates all operations to gurobipy with zero behavioral
+    Delegates all operations to gurobipy with zero behavioral
     change relative to the pre-abstraction code.
     """
 
@@ -719,6 +719,26 @@ class GurobiBackend(SolverModel):
     def compute_iis(self) -> None:
         self._model.computeIIS()
 
+    @property
+    def supports_iis(self) -> bool:
+        return True
+
+    def iis_constraints(self) -> list[str]:
+        """Names of the constraints Gurobi flagged as part of the IIS (``IISConstr``/``IISGenConstr``).
+        Call after :meth:`compute_iis`. Covers linear constraints (where the resource-bound ones live)
+        and general (non-linear) constraints, skipping any without the flag set."""
+        names: list[str] = []
+        for c in self._model.getConstrs():
+            if getattr(c, "IISConstr", 0):
+                names.append(c.ConstrName)
+        for gc in self._model.getGenConstrs():
+            try:
+                if getattr(gc, "IISGenConstr", 0):
+                    names.append(gc.GenConstrName)
+            except (AttributeError, gp.GurobiError):
+                continue
+        return names
+
     def write(self, path: str) -> None:
         self._model.write(path)
 
@@ -751,7 +771,7 @@ class GurobiBackend(SolverModel):
 
 
 # ---------------------------------------------------------------------------
-# OR-Tools MathOpt imports (Phase 2)
+# OR-Tools MathOpt imports
 # ---------------------------------------------------------------------------
 
 from ortools.math_opt.io.python import mps_converter  # noqa: E402
@@ -931,7 +951,7 @@ _ORT_PARAM_MAP: dict[SolverParams, tuple[str, Any]] = {
 
 
 class ORToolsBackend(SolverModel):
-    """OR-Tools MathOpt-backed SolverModel implementation (Phase 2).
+    """OR-Tools MathOpt-backed SolverModel implementation.
 
     Uses MathOpt API for backend-agnostic MILP solving. Supports binary,
     integer, and continuous variables; linear constraints; objective

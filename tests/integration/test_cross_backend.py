@@ -1,10 +1,10 @@
-"""Cross-backend integration tests for TETRA (Phase 2).
+"""Cross-backend integration tests for TETRA.
 
 Compares ORToolsBackend (GSCIP, HiGHS) against GurobiBackend on real TETRA
 instances to verify objective quality and measure solve time.
 
-Per D-09: Tests cover both performance (resulting objective value) and time.
-Per D-10: Tests cover both main_gemm.py and main_swiglu.py configurations.
+Tests cover both performance (resulting objective value) and time.
+Tests cover both main_gemm.py and main_swiglu.py configurations.
 
 Backend injection strategy:
   TransferAndTensorAllocator creates its solver via
@@ -113,7 +113,7 @@ def _run_swiglu_pipeline(output_path: str):
     Returns:
         ctx: Stage context with ``scheduler`` accessible via ``ctx.get``.
     """
-    # Parameters from launch.json (known working, Phase 1 Plan 04 verified)
+    # Parameters from launch.json (known working, verified)
     seq_len, embedding_dim, hidden_dim = 256, 512, 2048
     in_dtype, out_dtype = "bf16", "bf16"
     rows, cols = 4, 8
@@ -195,7 +195,7 @@ def test_gemm_gurobi_baseline():
     """GurobiBackend produces OPTIMAL on TETRA gemm instance.
 
     This test establishes the baseline. It uses the full unpatched pipeline
-    and verifies the known objective value from Phase 1 Plan 04.
+    and verifies the known objective value.
     """
     results = []
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -218,7 +218,7 @@ def test_gemm_gurobi_baseline():
 def test_gemm_cross_backend():
     """ORToolsBackend (GSCIP) produces OPTIMAL on TETRA gemm instance, matching Gurobi within 1%.
 
-    Covers D-09 (objective quality) and D-10 (gemm workload).
+    Covers objective quality on the gemm workload.
     The pipeline's ``create_solver`` calls are patched in both allocator modules
     so the ORToolsBackend is used transparently in place of GurobiBackend.
     """
@@ -251,7 +251,7 @@ def test_gemm_highs():
     """HiGHS solver via ORToolsBackend produces a feasible solution on TETRA gemm instance.
 
     HiGHS is a pure LP/MIP solver (bundled in OR-Tools).  For TETRA's MILP it
-    should find OPTIMAL.  Covers the HiGHS row in D-09.
+    should find OPTIMAL.
     """
     results = []
     highs_factory = _make_ortools_factory(mathopt.SolverType.HIGHS)
@@ -310,7 +310,7 @@ def test_swiglu_gurobi_baseline():
 def test_swiglu_cross_backend():
     """ORToolsBackend (GSCIP) produces OPTIMAL on TETRA swiglu instance, matching Gurobi within 1%.
 
-    Covers D-09 (objective quality) and D-10 (swiglu workload).
+    Covers objective quality on the swiglu workload.
     """
     results = []
     ort_factory = _make_ortools_factory(mathopt.SolverType.GSCIP)

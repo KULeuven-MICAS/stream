@@ -7,7 +7,7 @@ class FusionEdgeParser(OnnxOperatorParser):
     """Parses shape-only ONNX ops (Flatten, Reshape) into FusionEdge nodes.
 
     FusionEdge is not a ComputationNode -- it has no iteration space or
-    operand_mapping. Output shapes come from ONNX shape inference (D-06).
+    operand_mapping. Output shapes come from ONNX shape inference.
     """
 
     def generate_node(self, name_to_tensor_dict: dict[str, Tensor]) -> FusionEdge:

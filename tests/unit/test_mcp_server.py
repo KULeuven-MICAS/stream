@@ -62,7 +62,7 @@ def test_tool_discovery() -> None:
 
 
 def test_import_time() -> None:
-    """stream.mcp.server adds negligible import overhead on top of FastMCP (MCP-01 cold start).
+    """stream.mcp.server adds negligible import overhead on top of FastMCP (cold start).
 
     FastMCP itself is the dominant import cost (~1.5s). This test verifies that server.py
     does NOT import heavy modules (stream.api, solver backends) at module level by measuring

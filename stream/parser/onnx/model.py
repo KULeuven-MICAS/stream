@@ -5,76 +5,105 @@ import onnx
 from onnx import NodeProto, TensorProto
 from zigzag.parser.onnx.utils import parse_onnx_model_from_path
 
-from stream.parser.onnx.add import AddParser
 from stream.parser.onnx.batch_norm import BatchNormParser
 from stream.parser.onnx.conv import ConvParser
+from stream.parser.onnx.elementwise import ElementwiseParser
 from stream.parser.onnx.fusion_edge import FusionEdgeParser
 from stream.parser.onnx.gemm import GemmParser
 from stream.parser.onnx.global_average_pool import GlobalAveragePoolParser
+from stream.parser.onnx.matmul import MatMulParser
 from stream.parser.onnx.max_pool import MaxPoolParser
-from stream.parser.onnx.mul import MulParser
+from stream.parser.onnx.normalization import NormalizationParser
 from stream.parser.onnx.operator_parser import OnnxOperatorParser
-from stream.parser.onnx.relu import ReluParser
-from stream.parser.onnx.simd import SimdParser
+from stream.parser.onnx.slice_gather import GatherParser, SliceParser
 from stream.parser.onnx.utils import onnx_tensor_to_tensor
 from stream.workload.workload import InEdge, Node, OutEdge, Tensor, Workload
 
 logger = logging.getLogger(__name__)
 
+# Out-of-tree parsers, added or overridden via the ``stream.onnx_parsers`` entry-point group; kept
+# separate from the built-in table.
+_REGISTERED_PARSERS: dict[str, type[OnnxOperatorParser]] = {}
+_PARSER_PLUGINS_LOADED = {"done": False}
+
+
+def register_onnx_parser(op_type: str, parser_class: type[OnnxOperatorParser]) -> None:
+    """Register (or override) the ONNX parser for ``op_type`` -- the seam for out-of-tree parsers."""
+    _REGISTERED_PARSERS[op_type] = parser_class
+
+
+def _load_parser_plugins() -> None:
+    """Discover out-of-tree parsers under the ``stream.onnx_parsers`` entry-point group (name = op_type,
+    object = parser class)."""
+    if _PARSER_PLUGINS_LOADED["done"]:
+        return
+    _PARSER_PLUGINS_LOADED["done"] = True
+    try:
+        from importlib.metadata import entry_points  # noqa: PLC0415
+
+        eps = entry_points(group="stream.onnx_parsers")
+    except Exception as exc:  # pragma: no cover - importlib.metadata edge cases
+        logger.debug("onnx-parser entry-point discovery failed: %s", exc)
+        return
+    for ep in eps:
+        try:
+            register_onnx_parser(ep.name, ep.load())
+        except Exception as exc:  # pragma: no cover - a broken plugin must not break ingestion
+            logger.warning("skipping onnx-parser plugin %r: %s", ep.name, exc)
+
+
+def onnx_parser_for(op_type: str) -> type[OnnxOperatorParser] | None:
+    """The parser for ``op_type``: a registered parser takes precedence over the built-in table."""
+    _load_parser_plugins()
+    return _REGISTERED_PARSERS.get(op_type) or ONNXModelParser.OP_TYPE_TO_PARSER.get(op_type)
+
 
 class ONNXModelParser:
     """Parse the ONNX model into a workload."""
 
-    # Op types dispatched to FusionEdgeParser (shape-only boundary ops)
-    FUSION_EDGE_OPS: set[str] = {"Flatten", "Reshape"}
+    # Layout-only ops (pure re-indexing, no compute) -> FusionEdgeParser: a fusion-graph boundary, not
+    # an affine ComputationNode. (Normalizations are schedulable NormalizationNodes, not here.)
+    FUSION_EDGE_OPS: set[str] = {
+        "Flatten",
+        "Reshape",
+        "Transpose",
+        "Squeeze",
+        "Unsqueeze",
+    }
 
-    # Map the node's op_type to the corresponding Parser class
+    # op_type -> affine-ComputationNode parser (elementwise ops share one; MatMul/Gemm/Conv carry their own).
     OP_TYPE_TO_PARSER: dict[str, type[OnnxOperatorParser]] = {
-        # General
-        # "QLinearConv": ConvParser,
         "Conv": ConvParser,
-        # "MatMul": MatMulParser,
         "Gemm": GemmParser,
-        # "Einsum": EinsumParser,
+        "MatMul": MatMulParser,
         "MaxPool": MaxPoolParser,
-        # "AveragePool": PoolingParser,
-        # "GlobalMaxPool": PoolingParser,
         "GlobalAveragePool": GlobalAveragePoolParser,
-        "Add": AddParser,
-        "Mul": MulParser,
-        # Special operators
-        # "SSM": SSMParser,
-        # "Softmax": SoftmaxParser,
-        # Single-input element-wise
-        # "Exp": ExpParser,
-        # "ReduceMean": Reduce1DParser,
-        "Relu": ReluParser,
-        # "Gelu": GeluParser,
-        "Silu": SimdParser,
-        # "Sigmoid": SigmoidParser,
-        # "Sqrt": SqrtParser,
-        # "Div": SimdParser,
-        # "Pow": SimdParser,
-        # "Reciprocal": ReciprocalParser,  # Div with 1 as numerator
-        # # Dependency propagation
-        # "LpNormalization": LpNormalizationParser,
-        # "Gather": GatherParser,
-        # "Transpose": TransposeParser,
-        # "Concat": ConcatParser,
-        # "Split": SplitParser,
-        # "Slice": SliceParser,
         "BatchNormalization": BatchNormParser,
+        # Normalizations (reduce-then-broadcast) -> a single schedulable NormalizationNode
+        "Softmax": NormalizationParser,
+        "LpNormalization": NormalizationParser,
+        "LayerNormalization": NormalizationParser,
+        # Data-movement / indexing (KV cache) -> access ComputationNodes carrying the moved region
+        "Slice": SliceParser,
+        "Gather": GatherParser,
+        # Elementwise (unary and binary, NumPy broadcast) -> ElementwiseParser
+        "Add": ElementwiseParser,
+        "Sub": ElementwiseParser,
+        "Mul": ElementwiseParser,
+        "Div": ElementwiseParser,
+        "Pow": ElementwiseParser,
+        "Relu": ElementwiseParser,
+        "Silu": ElementwiseParser,
+        "Gelu": ElementwiseParser,
+        "Sigmoid": ElementwiseParser,
+        "Tanh": ElementwiseParser,
     }
 
     def __init__(self, onnx_model_path: str) -> None:
         self.onnx_model_path = onnx_model_path
 
     def run(self):
-        """Run the parser:
-        - parse the onnx_model_path into an onnx model
-        - parse the mapping_path into a mapping dict
-        - iterate through the onnx model and generate the workload consisting of LayerNodes and DummyNodes
-        """
+        """Parse the ONNX model at ``onnx_model_path`` into a ``Workload``."""
         self.onnx_model = parse_onnx_model_from_path(self.onnx_model_path)
         self.onnx_model = onnx.shape_inference.infer_shapes(self.onnx_model)
         self.workload = self.parse_workload()
@@ -82,37 +111,18 @@ class ONNXModelParser:
     def get_parser_class(self, node: NodeProto):
         if node.op_type in ONNXModelParser.FUSION_EDGE_OPS:
             return FusionEdgeParser
-        parser_class = ONNXModelParser.OP_TYPE_TO_PARSER.get(node.op_type)
+        parser_class = onnx_parser_for(node.op_type)
         if not parser_class:
             raise NotImplementedError(f"No parser registered for ONNX op type '{node.op_type}'.")
         return parser_class
 
     def parse_workload(self):
-        """
-        Converts an onnx model into a workload object.
-        We scan the model for all convolutional layers, and setup a Layer object for each of those using the mapping.
-        Then we combine the layers into a workload graph.
-
-        If the model isn't in the format with external data, it will be slow to manipulate it, so better to work with
-        raw models with external data # The line below accomplishes this.
-        onnx.save_model(model, 'model_external.onnx', save_as_external_data=True, all_tensors_to_one_file=True,
-        location='model_external_raw_data', size_threshold=1024, convert_attribute=False)
-
-        In the future, assume we will have a model saved with external data, then we have to execute the code below
-        if the model isn't inferred yet
-        This approach is faster for large models because the raw model is used (w/o the external data)
-        if model is not inferred:
-          onnx.shape_inference.infer_shapes_path('path/to/the/model.onnx')  # This will save the inferred model to the
-        same file
-          model = onnx.load('path/to/the/model.onnx')  # reload the inferred model
-        """
+        """Convert the ONNX model into a ``Workload`` graph."""
         assert self.onnx_model is not None
 
-        # Saves for each node_id the inputs and outputs tensor names
         nodes_outputs: dict[int, Any] = {}
 
         unnamed_id = 0
-        # Workload Graph
         name_to_tensor_dict: dict[str, Tensor] = {}
         workload_nodes: list[Node] = []
 
@@ -135,8 +145,7 @@ class ONNXModelParser:
                 raise NotImplementedError()
 
             if not node.name:
-                # If the node has no name, we generate a unique name based on the node id.
-                # This is useful for debugging and visualization purposes.
+                # Generate a unique name for an unnamed node.
                 node.name = f"Op{unnamed_id}"
                 unnamed_id += 1
 

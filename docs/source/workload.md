@@ -1,41 +1,51 @@
 # Workload
 
-A workload is the neural-network computation you want to map. Stream takes workloads as **ONNX models**. The ONNX parser walks the graph and turns recognised operators into the internal computation nodes that the rest of the pipeline schedules and allocates.
+A workload is the neural-network computation you want to map. Stream ingests workloads through **pluggable frontends**; **ONNX** is the default and most-validated one. A frontend walks the model graph and turns recognised operators into the internal, affine computation nodes that the rest of the pipeline tiles, costs, schedules and allocates.
 
-The parser lives in `stream/parser/onnx/` (`stream/parser/onnx/model.py` is the dispatch table). What follows reflects exactly what that code parses today.
+The ONNX frontend lives in `stream/parser/onnx/` (`stream/parser/onnx/model.py` is the dispatch table). What follows reflects exactly what that code parses today.
 
 ---
 
-## ONNX in, computation graph out
+## ONNX in, affine computation graph out
 
 Stream loads an ONNX model, runs **shape inference** on it, and converts each node:
 
-- A **supported operator** becomes a `ComputationNode` - it has a real cost and is placed on a core.
-- A **fusion-boundary operator** (`Flatten`, `Reshape`) becomes a shape-only `DummyNode` - no compute, it only marks where one fusion group ends and the next begins.
-- An **unrecognised operator** raises `NotImplementedError`. Stream does *not* silently drop unknown ops; you either add a parser for it or remove it from the model.
+- A **supported operator** becomes a `ComputationNode` — it has a real cost and is placed on a core.
+- A **layout-only operator** (`Reshape`, `Transpose`, …) becomes a `FusionEdge` — no compute, it only marks a boundary between fusion groups.
+- An **unrecognised operator** raises `NotImplementedError`. Stream does *not* silently drop unknown ops; you either register a parser for it or remove it from the model.
 
 ### Supported operators
 
-The current dispatch table (`ONNXModelParser.OP_TYPE_TO_PARSER`) recognises:
+The dispatch table (`ONNXModelParser.OP_TYPE_TO_PARSER`) recognises:
 
 | ONNX op | Becomes | Notes |
 |---------|---------|-------|
 | `Conv` | ComputationNode | Convolution. |
-| `Gemm` | ComputationNode | General matrix multiply (also used for matrix-vector). |
+| `Gemm` | ComputationNode | General matrix multiply (also matrix-vector). |
+| `MatMul` | ComputationNode | Batched matrix multiply. |
 | `MaxPool` | ComputationNode | Max pooling. |
 | `GlobalAveragePool` | ComputationNode | Global average pooling. |
-| `Add` | ComputationNode | Element-wise add (e.g. residual). |
-| `Mul` | ComputationNode | Element-wise multiply. |
-| `Relu` | ComputationNode | ReLU activation. |
-| `Silu` | ComputationNode | SiLU activation (routed through the SIMD parser). |
 | `BatchNormalization` | ComputationNode | Batch normalisation. |
-| `Flatten`, `Reshape` | DummyNode | Shape-only fusion boundary. |
+| `Softmax`, `LayerNormalization`, `LpNormalization` | NormalizationNode | Reduce-then-broadcast; the reduced axis is a fusion barrier, the other axes stay parallel. |
+| `Slice`, `Gather` | ComputationNode | Data movement / indexing (e.g. a KV cache), carrying the moved region. |
+| `Add`, `Sub`, `Mul`, `Div`, `Pow`, `Relu`, `Silu`, `Gelu`, `Sigmoid`, `Tanh` | ComputationNode | Element-wise (unary and binary, NumPy broadcast). |
+| `Flatten`, `Reshape`, `Transpose`, `Squeeze`, `Unsqueeze` | FusionEdge | Layout-only fusion boundary. |
 
-Other op types are intentionally unregistered (several are present but commented out in `model.py`). To support a new operator, add a parser under `stream/parser/onnx/` and register it in the dispatch table.
+To support a new operator, register a parser (see [Extending ingestion](#extending-ingestion)).
+
+### The affine representation
+
+Every `ComputationNode` carries an **`operand_mapping`**: one affine map (`AffineMap`) per operand, from the node's iteration space to that operand's indices. A MatMul `ik,kj->ij`, for example, maps its three operands with `(i,k)`, `(k,j)` and `(i,j)`. Everything the pipeline needs is *derived* from these maps rather than hard-coded per op:
+
+- **Loop dimensions and sizes** come from the maps and the operand shapes.
+- **Reduction dimensions** are the iteration dimensions that index an input but not the output (a contraction, like `k` above); the rest are parallel.
+- **Operand access relations** classify how each operand is read — a plain affine access, a piecewise-affine access (masked / windowed regions), or a data-dependent access (gather / routing) — which is what fusion analysis reasons over.
+
+Because the representation is uniform, adding an operator is a matter of giving its affine maps; the tiling, cost, fusion and dedup passes consume it unchanged.
 
 ### Shape inference is required
 
-Stream needs the shape of every intermediate tensor to derive each layer's loop dimensions. The parser calls `onnx.shape_inference.infer_shapes` for you, but the model must carry enough type/shape information for inference to succeed. If you build a model by hand, infer shapes before saving:
+Stream needs the shape of every intermediate tensor to derive each node's loop dimensions. The frontend calls `onnx.shape_inference.infer_shapes` for you, but the model must carry enough type/shape information for inference to succeed. If you build a model by hand, infer shapes before saving:
 
 ```python
 import onnx
@@ -45,7 +55,7 @@ model = onnx.load("my_model.onnx")
 onnx.save(shape_inference.infer_shapes(model), "my_model_inferred.onnx")
 ```
 
-### Weights are not needed - clear them
+### Weights are not needed — clear them
 
 Stream only uses tensor **shapes and dtypes** for cost modelling; it never reads weight *values*. Keep your committed ONNX small by clearing the initializer data. Note that the data may live in any of several fields depending on dtype (bf16 weights, for instance, pack into `int32_data`, **not** `float_data`), so clear them all:
 
@@ -55,7 +65,7 @@ for field in ("float_data", "double_data", "int32_data",
     tensor.ClearField(field)
 ```
 
-This is exactly what the bundled workload builders do - the committed example ONNX are only a few hundred bytes because their weights are cleared.
+This is exactly what the bundled workload builders do — the committed example ONNX are only a few hundred bytes because their weights are cleared.
 
 For very large models you can alternatively keep weights in an external file (`onnx.save_model(..., save_as_external_data=True)`) and load with `load_external_data=False`; Stream works fine without the external data present.
 
@@ -65,9 +75,9 @@ For very large models you can alternatively keep weights in an external file (`o
 
 The repo ships small workloads as ready-to-use ONNX fixtures under `stream/inputs/testing/workload/`, generated by Python builders in the same directory. `just gen-workloads` regenerates them.
 
-**`make_2_conv.py`** - two chained `Conv` layers. The committed fixture `2conv_1_8_32_32_16_32_3.onnx` is `[1,8,32,32] → Conv(16) → Conv(32) → [1,32,32,32]`.
+**`make_2_conv.py`** — two chained `Conv` layers. The committed fixture `2conv_1_8_32_32_16_32_3.onnx` is `[1,8,32,32] → Conv(16) → Conv(32) → [1,32,32,32]`.
 
-**`make_swiglu.py`** - a 5-node SwiGLU block: two parallel `Gemm`s, a `Silu` activation, an element-wise `Mul`, and a down-projection `Gemm`. The committed fixture is `swiglu_1_16_32.onnx`.
+**`make_swiglu.py`** — a 5-node SwiGLU block: two parallel `Gemm`s, a `Silu` activation, an element-wise `Mul`, and a down-projection `Gemm`. The committed fixture is `swiglu_1_16_32.onnx`.
 
 A minimal builder looks like this:
 
@@ -100,5 +110,18 @@ python scripts/main_stream_co.py \
   --hardware stream/inputs/examples/hardware/tpu_like_quad_core.yaml \
   --workload one_conv.onnx
 ```
+
+Stream also ships parameterized reference blocks for the building blocks of modern models — attention, GQA, a Mamba-style recurrence, SwiGLU/MLP, RMSNorm, MoE — as affine workload graphs you can build directly (`stream.workload.blocks.build_block`) for experiments that do not start from an ONNX file.
+
+---
+
+## Extending ingestion
+
+Stream is extended through registries, so you can add coverage from your own package without editing (or forking) the tree. Each has an entry-point group of the same name, so an installed package is discovered automatically.
+
+- **A new operator** — add a parser (a subclass of `OnnxOperatorParser`) and register it with `stream.parser.onnx.model.register_onnx_parser("MyOp", MyParser)`, or declare it under the `stream.onnx_parsers` entry-point group. A registered parser overrides the built-in table, so higher-level ops (for example a fused attention op) can lower into several affine nodes at once.
+- **A new ingestion format** — implement the `WorkloadFrontend` protocol (`stream.frontends`) and register it under `stream.frontends`. `stream.frontends.load_workload` then picks the first frontend that accepts the source. ONNX and an optional `torch.export` frontend ship in-tree.
+- **Reference blocks** — register block builders under `stream.workload_blocks`.
+- **Operator decompositions** — register a `node → Workload` decomposer under `stream.decompositions` to expose an operator's affine sub-operators (the granularity fusion analysis and a matmul-array + vector-unit cost view want).
 
 See [Getting Started](getting-started.md) for the full run flow and [Mapping](mapping.md) for how the operators in your workload get matched to cores.

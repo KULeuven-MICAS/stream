@@ -1,7 +1,7 @@
 """Parametrized CO pipeline tests across non-AIE example hardware.
 
 Matrix: 8 non-AIE hardware x {2-conv, swiglu} = 16 CO-pipeline combinations — all green.
-Parse check: test_hardware_parses covers all 8 architectures (HWFIX-05).
+Parse check: test_hardware_parses covers all 8 architectures.
 The 2-conv arm is a small workload with generic auto-tiling. The swiglu arm is a realistically-sized,
 layer-fused FFN block (seq_len=256, embedding_dim=2048, hidden_dim=8192) driven with the justfile's
 fused intra-core tiling (seq=16/embedding=128/hidden=32), so the solver costs one steady-state tile
@@ -10,7 +10,7 @@ No xfail/skip and no slow marks: every combination runs in the default fast suit
 
 Fast suite (default pytest): 24 tests from this file (16 CO + 8 parse), none deselected.
 
-Background (Phase 32): example accelerators referenced cores by bare filename; core resolution
+Background: example accelerators referenced cores by bare filename; core resolution
 used an ambiguous input-tree search that loaded testing core files (lacking operator_types) instead
 of examples ones. Fix: accelerator-local core resolution + correct elementwise operator_types on
 simd. Later work brought stale YAML definitions current (simba, fusemax, meta_prototype + simd
@@ -79,7 +79,7 @@ _HARDWARE = [
 
 # All 8 architecture paths as plain strings (NO pytest marks). Separate from _HARDWARE so that simba's
 # `slow` mark is NOT inherited — parsing is cheap (<1s), only simba's 36-core MILP is slow, so all
-# 8 parse-checks must run in the fast suite (HWFIX-05).
+# 8 parse-checks must run in the fast suite.
 _ALL_HARDWARE_PATHS = [
     "stream/inputs/examples/hardware/eyeriss_like_single_core.yaml",
     "stream/inputs/examples/hardware/eyeriss_like_dual_core.yaml",
@@ -140,18 +140,18 @@ _SWIGLU_HPARAMS = (
 )
 
 # ---------------------------------------------------------------------------
-# Shared assertion helper — reused by Phase 36 swiglu arm
+# Shared assertion helper — reused by the swiglu arm
 # ---------------------------------------------------------------------------
 
 
 def _assert_co_result(ctx, accelerator: Accelerator, expected_node_count: int) -> None:
     """Assert structural CO result properties.
 
-    Reused by the Phase 36 swiglu arm. Checks:
+    Reused by the swiglu arm. Checks:
     - Positive scheduler metrics (latency_total, latency_per_iteration, iterations)
     - Exactly expected_node_count ComputationNodes
     - Each node has non-empty resource_allocation
-    - No ComputationNode allocated to the offchip core (HWTEST-03)
+    - No ComputationNode allocated to the offchip core
     """
     scheduler: SteadyStateScheduler = ctx.get("scheduler")
     assert scheduler.latency_total > 0, "Expected positive latency_total"
@@ -185,7 +185,7 @@ def _assert_co_result(ctx, accelerator: Accelerator, expected_node_count: int) -
 
 
 def _record_co_metrics(record_metric, ctx, workload_hparams: str | None = None) -> None:
-    """Capture advisory CO metrics from the solved context (read-only side-effect, Phase 39).
+    """Capture advisory CO metrics from the solved context (read-only side-effect).
 
     Beyond the gated total_latency, records observability metrics derived from the solved
     schedule's performance summary so the CI comment can explain outliers:
@@ -234,7 +234,7 @@ def test_hardware_two_conv(hardware: str, record_metric) -> None:
         )
     accelerator = ctx.get("accelerator")
     _assert_co_result(ctx, accelerator, expected_node_count=2)
-    # metrics capture — read-only advisory side-effect (Phase 39 CAP-01/CAP-02)
+    # metrics capture — read-only advisory side-effect
     _record_co_metrics(record_metric, ctx, _TWO_CONV_HPARAMS)
 
 
@@ -246,7 +246,7 @@ def test_hardware_swiglu(hardware: str, record_metric) -> None:
     Uses the justfile `just swiglu` dims (seq_len=256, embedding_dim=2048, hidden_dim=8192) and the
     fused intra-core tiling (seq=16/embedding=128/hidden=32) so the whole 5-node block is processed
     layer-fused: the solver costs ONE steady-state tile and multiplies by the iteration count.
-    Exercises HWFIX-04: Silu and Mul ops dispatch (to the simd core where available, or a
+    Exercises Silu and Mul ops dispatch (to the simd core where available, or a
     generic compute core) rather than failing at the parser or mapper stage.
     """
     # 5-node count confirmed by running: Gemm_Left, Gemm_Right, Silu, Elt_Mul, Gemm_Down
@@ -266,13 +266,13 @@ def test_hardware_swiglu(hardware: str, record_metric) -> None:
         )
     accelerator = ctx.get("accelerator")
     _assert_co_result(ctx, accelerator, expected_node_count=5)
-    # metrics capture — read-only advisory side-effect (Phase 39 CAP-01/CAP-02)
+    # metrics capture — read-only advisory side-effect
     _record_co_metrics(record_metric, ctx, _SWIGLU_HPARAMS)
 
 
 @pytest.mark.parametrize("path", _ALL_HARDWARE_PATHS)
 def test_hardware_parses(path: str) -> None:
-    """All 8 non-AIE hardware definitions parse, validate, and load without error (HWFIX-05).
+    """All 8 non-AIE hardware definitions parse, validate, and load without error.
 
     Uses the validator + factory load chain directly (open_yaml -> validate -> create) rather than
     the pipeline parser stage, which requires a pre-populated StageContext. Simba is included

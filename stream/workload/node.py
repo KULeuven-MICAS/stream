@@ -4,7 +4,7 @@ from enum import Flag
 
 from xdsl.ir.affine import AffineMap
 
-from stream.datatypes import LayerDim
+from stream.workload.node_key import node_key
 from stream.workload.tensor import Tensor
 
 
@@ -41,15 +41,18 @@ class OutEdge(HasInputs): ...
 
 @dataclass(frozen=True, repr=False)
 class FusionEdge(HasInputs, HasOutputs):
-    """A graph boundary node for shape-only ops (Flatten, Reshape).
+    """A graph boundary node for layout-only ops (Flatten, Reshape, Transpose, Squeeze, Unsqueeze):
+    pure re-indexing with no compute, which splits the fusion group (see
+    ``Workload.split_fusion_groups``).
 
-    FusionEdge marks a fusion group boundary in the workload graph.
-    It is NOT HasIterationSpace -- it has no affine iteration space
-    or operand_mapping. Its tensors pass through unchanged during
-    dimension resizing.
+    A FusionEdge is NOT ``HasIterationSpace`` -- it has no ``operand_mapping``. It is the escape hatch
+    the affine IR reserves for operators that cannot be expressed as one affine node: rather than
+    force a lossy affine map, the operator becomes an explicit fusion boundary, its tensors passing
+    through unchanged during dimension resizing. (Normalizations like Softmax are NOT FusionEdges --
+    they parse to schedulable ``NormalizationNode``s that decompose for fusion analysis.)
     """
 
-    op_type: str  # original ONNX op type, e.g. "Flatten"
+    op_type: str  # original ONNX op type, e.g. "Transpose" or "Reshape"
 
 
 class TransferType(Flag):
@@ -79,10 +82,6 @@ class HasIterationSpace(HasInputs, HasOutputs):
             return self.operand_mapping[idx]
         raise RuntimeError(f"Tensor {tensor.name} not found in node {self.name}")
 
-    def get_dimension_size(self, layer_dim: LayerDim) -> int:
-        dim_index = layer_dim.get_idx()
-        return self.outputs[-1].shape[dim_index]  # TODO: Probably not always of output tensor
-
     @property
     def tensors(self) -> tuple[Tensor, ...]:
         return self.inputs + self.outputs
@@ -98,18 +97,32 @@ class ComputationNode(HasIterationSpace):
     type: str  # e.g., "Conv", "Gemm", etc.
 
     def has_same_performance(self, other: "ComputationNode") -> bool:
-        """Check if this computation node has the same performance characteristics as another node.
-        This is a simple check based on operand data types and shapes.
-        More sophisticated checks may be needed in the future."""
-        if len(self.inputs) != len(other.inputs):
-            return False
-        for inp_self, inp_other in zip(self.inputs, other.inputs, strict=True):
-            if inp_self.operand_type != inp_other.operand_type:
-                return False
-            if inp_self.shape != inp_other.shape:
-                return False
-        if self.outputs[0].operand_type != other.outputs[0].operand_type:
-            return False
-        if self.outputs[0].shape != other.outputs[0].shape:
-            return False
-        return True
+        """Whether two nodes cost the same: identical op type, operand precisions/shapes, and affine
+        maps. Delegates to the canonical :func:`~stream.workload.node_key.node_key` so that op type
+        and the operand maps are part of the identity (a Conv and a Gemm with matching tensor shapes
+        are no longer treated as equal)."""
+        return node_key(self) == node_key(other)
+
+
+@dataclass(frozen=True, repr=False)
+class NormalizationNode(ComputationNode):
+    """A normalization (Softmax, LpNormalization, LayerNormalization, …): one *schedulable* node
+    handled by a single native kernel, but internally a reduce-then-broadcast over ``reduction_axes``.
+
+    A normalization is not one affine access relation -- its output at index ``j`` along the
+    normalized axis depends on the *whole* slice over that axis (a reduction, then a broadcast). So a
+    single ``operand_mapping`` cannot express it faithfully. We resolve the tension with two views:
+
+    - **scheduling view (this node):** identity ``operand_mapping`` over the full shape, i.e. a shaped
+      element-wise op that a fused softmax/norm kernel evaluates natively. It costs, dedups and
+      schedules as one node.
+    - **fusion-analysis view (derived):** :func:`stream.workload.normalization.decompose_normalization`
+      expands it into its affine sub-operators (e.g. max → exp → sum → div), which makes explicit that
+      the block's *other* axes are PARALLEL (freely fusible with the producer/consumer, as in flash
+      attention) and only ``reduction_axes`` carry the intra-op reduction (kept resident, or streamed).
+
+    ``reduction_axes`` are the positions (into the node's iteration space) that the normalization
+    reduces over -- the one axis a single affine map cannot capture, hence stored, not derived.
+    """
+
+    reduction_axes: tuple[int, ...] = ()

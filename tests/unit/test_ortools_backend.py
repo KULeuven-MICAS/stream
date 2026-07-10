@@ -1,6 +1,6 @@
-"""Unit tests for ORToolsBackend (Phase 2).
+"""Unit tests for ORToolsBackend.
 
-Covers ORT-01 (all linear MILP operations) and ORT-03 (infeasibility + MPS export).
+Covers all linear MILP operations and infeasibility + MPS export.
 """
 
 import os
@@ -47,7 +47,7 @@ def _ortools_infeasible_model() -> tuple[SolverModel, SolverVar]:
 
 
 # ---------------------------------------------------------------------------
-# ORT-01: Variable creation
+# Variable creation
 # ---------------------------------------------------------------------------
 
 
@@ -77,7 +77,7 @@ def test_ortools_add_integer_var():
 
 
 # ---------------------------------------------------------------------------
-# ORT-01: Constraints and solve
+# Constraints and solve
 # ---------------------------------------------------------------------------
 
 
@@ -131,7 +131,7 @@ def test_ortools_binary_milp():
 
 
 # ---------------------------------------------------------------------------
-# ORT-01: Expression building
+# Expression building
 # ---------------------------------------------------------------------------
 
 
@@ -201,7 +201,7 @@ def test_ortools_linexpr_defaultdict():
 
 
 # ---------------------------------------------------------------------------
-# ORT-01: Solution extraction
+# Solution extraction
 # ---------------------------------------------------------------------------
 
 
@@ -223,7 +223,7 @@ def test_ortools_var_x_before_solve():
 
 
 # ---------------------------------------------------------------------------
-# ORT-01: Parameters
+# Parameters
 # ---------------------------------------------------------------------------
 
 
@@ -236,7 +236,7 @@ def test_ortools_set_param():
 
 
 # ---------------------------------------------------------------------------
-# ORT-01: Factory
+# Factory
 # ---------------------------------------------------------------------------
 
 
@@ -260,7 +260,7 @@ def test_factory_ortools_gurobi():
 
 
 # ---------------------------------------------------------------------------
-# ORT-01: Status
+# Status
 # ---------------------------------------------------------------------------
 
 
@@ -279,7 +279,7 @@ def test_ortools_get_sol_count():
 
 
 # ---------------------------------------------------------------------------
-# ORT-03: Infeasibility
+# Infeasibility
 # ---------------------------------------------------------------------------
 
 

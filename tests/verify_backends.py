@@ -4,7 +4,7 @@ Runs both OR-Tools and Gurobi backends on the same workload instance,
 compares their objective values within a configurable tolerance, and
 prints a comparison table.
 
-Per D-06, D-07: standalone runnable script (not a pytest test).
+Standalone runnable script (not a pytest test).
 Exit code: 0 if PASS (within tolerance), 1 if FAIL.
 
 Usage:
@@ -38,7 +38,7 @@ ACCELERATOR = os.path.join(
     "../stream/inputs/aie/hardware/whole_array_strix.yaml",
 )
 
-# Known Gurobi baseline objectives (verified in Phase 1 Plan 04)
+# Known Gurobi baseline objectives (reference values for single-backend comparison)
 GEMM_GUROBI_OBJ = 48_730_630.0
 SWIGLU_GUROBI_OBJ = 9_396_485.0
 
@@ -160,7 +160,7 @@ def _print_comparison_table(
     tolerance: float,
     passed: bool,
 ) -> None:
-    """Print a formatted comparison table to stdout (per D-07)."""
+    """Print a formatted comparison table to stdout."""
     print()
     print("=== Cross-Backend Verification ===")
     print(f"Workload: {workload} ({workload_desc})")
@@ -193,7 +193,7 @@ def _write_yaml(
     rel_diff: float | None,
     passed: bool,
 ) -> None:
-    """Write YAML stats file (per D-07)."""
+    """Write YAML stats file."""
     try:
         import yaml  # noqa: PLC0415
     except ImportError:

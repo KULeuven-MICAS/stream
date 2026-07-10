@@ -157,10 +157,10 @@ stream/inputs/aie/mapping/*.yml
 
 # planning artifacts
 .planning/
-# Claude tooling is local-only: CLAUDE.md and .claude/skills/ live in a separate
-# private repo (stream-claude-skills) and are symlinked in, so they are not tracked here.
+# Local-only tooling and notes, not part of the published package.
 /CLAUDE.md
 /.claude/skills
+/plan
 # .claude/ personal files
 .claude/settings.local.json
 .claude/worktrees/

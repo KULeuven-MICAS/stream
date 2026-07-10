@@ -797,12 +797,14 @@ class SteadyStateScheduler:
         if src_type is None:
             src_allocation = self._retrieve_core_allocation(src)
             assert len(src_allocation) == 1, "TODO: Handle multiple source allocations for transfer type determination."
-            src_type = self._determine_allocation_type(src_allocation[0])
+            src_type = self._effective_allocation_type(src_allocation[0])
         if dst_type is None:
             dst_allocations = [self._retrieve_core_allocation(dst)[0] for dst in dsts]
-            dst_type = self._determine_allocation_type(
-                [alloc for dst_alloc in dst_allocations for alloc in dst_alloc]
-            )  # flatten the list of dst allocations
+            # A constant input/output may be spread across a mix of allocations -- a compute core that
+            # produces/consumes it and a memory/offchip core that stages it. Resolve to the type the
+            # transfer must actually serve (compute when any allocation is compute; the PE is where the
+            # data originates or is needed) instead of asserting the allocations are homogeneous.
+            dst_type = self._effective_allocation_type([alloc for dst_alloc in dst_allocations for alloc in dst_alloc])
         if src_type == "compute" and dst_type == "compute":
             return TransferType.COMPUTE_TO_COMPUTE
         elif src_type == "compute" and dst_type in ("memory", "shim", "offchip"):
@@ -813,10 +815,25 @@ class SteadyStateScheduler:
             return TransferType.MEM_TO_MEM
         raise ValueError(f"Unsupported transfer type from {src_type} to {dst_type}")
 
-    def _determine_allocation_type(self, allocs: list[Core]) -> str:
+    def _effective_allocation_type(self, allocs: list[Core]) -> str:
+        """The transfer type a set of (possibly mixed) allocations must serve.
+
+        Homogeneous allocations return their single type. Mixed allocations -- a constant that is on a
+        compute core *and* staged in memory/offchip -- resolve to ``compute`` when any allocation is
+        compute (that is where the data originates or is needed), else to the memory-family type. This
+        keeps the transfer graph well-defined for the valid allocations the MILP can produce, instead
+        of asserting homogeneity.
+        """
         alloc_types = set(alloc.type for alloc in allocs)
-        if len(alloc_types) != 1:
-            raise ValueError(f"Expected all allocations to be of the same type, found {alloc_types}")
+        if not alloc_types:
+            raise ValueError("no allocations to determine transfer type")
+        if len(alloc_types) == 1:
+            return alloc_types.pop()
+        if "compute" in alloc_types:
+            return "compute"
+        for preferred in ("offchip", "shim", "memory"):
+            if preferred in alloc_types:
+                return preferred
         return alloc_types.pop()
 
     def _get_accelerator_memory_cores(self) -> set[Core]:

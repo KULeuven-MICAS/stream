@@ -17,9 +17,11 @@ from typing import Any
 
 import yaml
 
+from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.parser.mapping_validator import MappingValidator
+from stream.workload.iterator_type import sequential_dims
 from stream.workload.node import ComputationNode
 from stream.workload.workload import Workload
 
@@ -29,16 +31,16 @@ logger = logging.getLogger(__name__)
 class GenericMappingGenerator:
     """Auto-generate a MappingValidator-compliant mapping dict for any Workload + Accelerator pair.
 
-    Core selection follows the operator_types convention (D-06):
+    Core selection follows the operator_types convention:
     - Cores without operator_types (None) accept all operator types.
     - Cores with operator_types only accept nodes whose type is in the list.
     - Offchip and shim cores are never used for computation.
 
-    Inter-core tiling (D-09/D-10):
+    Inter-core tiling:
     - Specialized cores (pooling, simd) receive the node alone on a single core.
     - Generic compute cores receive the node split across all matching cores.
 
-    Intra-core tiling (D-08):
+    Intra-core tiling:
     - Uses the first dimension of the first computation node at full tile size
       (no temporal splitting), which is always valid per MappingValidator rules.
     """
@@ -177,10 +179,10 @@ class GenericMappingGenerator:
 
         Excludes offchip and shim cores unconditionally.  Selection priority:
         1. Specialized cores (operator_types is not None and node.type in list).
-           Per D-09: if any specialized cores match, use them exclusively.
+           If any specialized cores match, use them exclusively.
         2. Generic cores (operator_types is None — accepts all ops).
-           Per D-10: use all matching generic cores together.
-        3. D-06 fallback: if nothing matches, use all cores with kind 'compute'.
+           Use all matching generic cores together.
+        3. Fallback: if nothing matches, use all cores with kind 'compute'.
 
         This ensures MaxPool goes to the pooling core, Add to the simd core, and
         Conv/Gemm go to all 4 generic compute cores.
@@ -203,14 +205,14 @@ class GenericMappingGenerator:
                 generic_cores.append(core)
 
         if specialized_cores:
-            # D-09: prefer specialized core(s) over generic compute cores
+            # prefer specialized core(s) over generic compute cores
             return specialized_cores
 
         if generic_cores:
-            # D-10: use all generic compute cores together
+            # use all generic compute cores together
             return generic_cores
 
-        # D-06 fallback: no match — use all cores with kind 'compute'
+        # fallback: no match — use all cores with kind 'compute'
         fallback = [c for c in self.accelerator.core_list if c.type == "compute"]
         logger.warning("No core found for operator '%s'; falling back to all compute cores.", node_op)
         return fallback
@@ -240,9 +242,14 @@ class GenericMappingGenerator:
         if not dims:
             return []
 
+        # SEQUENTIAL (recurrence) dimensions carry a total order and must never be spatially
+        # unrolled across cores -- exclude them from the inter-core split (no-op for non-recurrent
+        # nodes, whose sequential set is empty).
+        sequential = sequential_dims(cn)
+
         # (index, size) per dimension, largest first.
         dim_sizes = sorted(
-            ((idx, sub_workload.get_dimension_size(dim)) for idx, dim in enumerate(dims)),
+            ((idx, sub_workload.get_dimension_size(dim)) for idx, dim in enumerate(dims) if idx not in sequential),
             key=lambda pair: pair[1],
             reverse=True,
         )
@@ -259,6 +266,24 @@ class GenericMappingGenerator:
                 remaining //= factor
         return split_factors
 
+    def _inter_core_unrolling(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> dict[LayerDim, int]:
+        """Per global loop dimension, the largest inter-core split factor applied to it across the
+        group. This is exactly the "spatial unrolling" ``determine_fusion_splits`` divides by (it reads
+        it back from each layer's inter-core tiling), so the default intra-core tile must divide it out
+        to stay a no-op. A dimension shared across nodes (e.g. self-attention's query==key==seq collapse
+        to one symbol) takes the max, matching the fused-split accounting."""
+        unroll: dict[LayerDim, int] = {}
+        for cn in cns:
+            cores = self._select_cores_for_node(cn)
+            if len(cores) <= 1:
+                continue
+            node_dims = sub_workload.get_dims(cn)
+            for dim_idx, factor in self._factor_split_across_dims(sub_workload, cn, len(cores)):
+                if dim_idx < len(node_dims):
+                    dim = node_dims[dim_idx]
+                    unroll[dim] = max(unroll.get(dim, 1), factor)
+        return unroll
+
     def _build_intra_core_tiling(
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...]
     ) -> list[dict[str, Any]]:
@@ -267,18 +292,23 @@ class GenericMappingGenerator:
         When the caller supplied ``intra_core_tiling`` (layer-fusion tiling), use the entries that
         reference nodes present in this group -- this costs one steady-state tile rather than the
         full layer. Otherwise (or when no supplied entry matches this group) fall back to the trivial
-        default: tile the first computation node's first dimension at full size (nb_splits=1, a valid
-        no-op). Returns an empty list only if no computation node has dimensions.
-        """
+        default: tile the first computation node's first dimension so it is a single steady-state tile
+        (nb_splits=1). The tile is ``dim_size // inter_core_unrolling`` -- full size when the dimension
+        is not inter-core split (the common case, unchanged), but divided down when it is, so
+        ``tile x unrolling == dim_size`` and ``determine_fusion_splits`` does not overflow. Returns an
+        empty list only if no computation node has dimensions."""
         if self.intra_core_tiling:
             group_node_names = {cn.name for cn in cns}
             selected = [e for e in self.intra_core_tiling if str(e["dim"]).split(".")[0] in group_node_names]
             if selected:
                 return [dict(e) for e in selected]
 
+        unroll = self._inter_core_unrolling(sub_workload, cns)
         for ref_cn in cns:
             dims = sub_workload.get_dims(ref_cn)
             if dims:
                 dim_size = sub_workload.get_dimension_size(dims[0])
-                return [{"dim": f"{ref_cn.name}.D0", "tile": dim_size}]
+                factor = unroll.get(dims[0], 1)
+                tile = dim_size // factor if factor > 1 and dim_size % factor == 0 else dim_size
+                return [{"dim": f"{ref_cn.name}.D0", "tile": tile}]
         return []

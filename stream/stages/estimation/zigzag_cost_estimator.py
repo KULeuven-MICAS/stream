@@ -126,30 +126,36 @@ class ZigZagCostEstimator:
                     dim = base_dims[expr.position]
                     operand_dims.append(dim)
                 elif isinstance(expr, AffineBinaryOpExpr):
-                    dim = ZigZagLayerDim(f"D{len(base_dims) + len(extra_dims)}")
-                    extra_dims.append(dim)
-                    operand_dims.append(dim)
-                    # Create dimension relation
                     dims_in_expr, coefficients, constant = self._affine_binary_op_expr_to_dims_and_coefficients(expr)
-                    assert len(dims_in_expr) == len(coefficients) == self.supported_pr_length, (
-                        "Mismatch in dims and coefficients length."
-                    )
-                    dimension_relations.append(
-                        ZigZagLayerDimRelation(
-                            dim_1=dim,
-                            coef_2=coefficients[0],
-                            dim_2=dims_in_expr[0],
-                            coef_3=coefficients[1],
-                            dim_3=dims_in_expr[1],
+                    if len(dims_in_expr) == 1 and coefficients[0] == 1:
+                        # Single-dimension self-offset (recurrence state read, e.g. h[t-1]). The
+                        # cross-iteration carry is handled in scheduling, not costing, so treat it
+                        # as a plain access to that dimension (drop the offset). No pr relation.
+                        operand_dims.append(dims_in_expr[0])
+                    else:
+                        # Genuine projection-relevant (pr) expression, e.g. conv ix = s*ox + d*fx.
+                        dim = ZigZagLayerDim(f"D{len(base_dims) + len(extra_dims)}")
+                        extra_dims.append(dim)
+                        operand_dims.append(dim)
+                        assert len(dims_in_expr) == len(coefficients) == self.supported_pr_length, (
+                            "Mismatch in dims and coefficients length."
                         )
-                    )
-                    # Set padding
-                    if constant != 0:
-                        assert constant < 0, "Padding should be negative in equation."
-                        constant = -constant
-                    padding[dim] = (constant, constant)
-                    # Set pr dim sizes
-                    pr_sizes[dim] = tensor_shape[i]  # logical size of the tensor (without padding)
+                        dimension_relations.append(
+                            ZigZagLayerDimRelation(
+                                dim_1=dim,
+                                coef_2=coefficients[0],
+                                dim_2=dims_in_expr[0],
+                                coef_3=coefficients[1],
+                                dim_3=dims_in_expr[1],
+                            )
+                        )
+                        # Set padding
+                        if constant != 0:
+                            assert constant < 0, "Padding should be negative in equation."
+                            constant = -constant
+                        padding[dim] = (constant, constant)
+                        # Set pr dim sizes
+                        pr_sizes[dim] = tensor_shape[i]  # logical size of the tensor (without padding)
                 else:
                     raise NotImplementedError(f"Unsupported affine expr type {type(expr)} in mapping.")
             # Create equation string part for this operand
@@ -272,10 +278,10 @@ class ZigZagCostEstimator:
         return ZigZagMemoryOperandLinks(memory_operand_links)
 
     def get_mapping_attributes(self, node: ComputationNode, core: Core) -> ZigZagMappingAttributes:
-        if core.dataflows:
-            spatial_mapping = core.dataflows
-        else:
-            spatial_mapping = ZigZagSpatialMapping.empty()
+        # A core is costed through the ZigZag backend even when it is not itself ZigZag-backed (e.g. an
+        # AIE tile): such a core exposes no `dataflows`, so fall back to an empty spatial mapping.
+        dataflows = getattr(core, "dataflows", None)
+        spatial_mapping = dataflows if dataflows else ZigZagSpatialMapping.empty()
         spatial_mapping_hint = ZigZagSpatialMappingHint.empty()
         memory_operand_links = self.get_memory_operand_links(node, core)
         temporal_ordering = ZigZagLayerTemporalOrdering.empty()
@@ -297,8 +303,8 @@ class ZigZagCostEstimator:
         )
 
     def estimate(self, node: ComputationNode, core: Core) -> CoreCostEntry:
-        layer_node = self.get_layer_node(node, core)
         try:
+            layer_node = self.get_layer_node(node, core)
             cme = self.run_zigzag(layer_node, core)
             cme = self.increase_cc_per_op(cme, node.type)
             return CoreCostEntry(
@@ -312,15 +318,16 @@ class ZigZagCostEstimator:
                 layer=node,
             )
         except Exception:
-            # Bug 3 fallback: ZigZag estimation failed (e.g. spatial mapping generation crash
-            # for certain Conv configurations). Fall back to ideal_cycle-based estimate.
+            # Fallback: this core is not costable by ZigZag -- either it has no ZigZag backend (e.g. an
+            # AIE tile, whose `dataflows`/`mem_hierarchy_dict` do not exist) or spatial-mapping generation
+            # crashed for certain Conv configs. Use an ideal-cycle estimate from the (core-independent)
+            # layer dimension sizes so a mappable node still gets a cost instead of failing the run.
             logger.warning(
                 f"ZigZag estimation failed for {node.name} on core {core.id}. Falling back to ideal-cycle estimate."
             )
-            # Compute ideal cycle from product of all layer dimension sizes
             from functools import reduce  # noqa: PLC0415
 
-            dim_sizes = layer_node.layer_dim_sizes
+            dim_sizes = self.get_layer_node_attributes(node).layer_dim_sizes
             ideal_cycle = float(reduce(lambda a, b: a * b, dim_sizes.data.values(), 1))
             return CoreCostEntry(
                 energy_total=0.0,

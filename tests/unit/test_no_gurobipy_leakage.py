@@ -1,8 +1,8 @@
 """Verify no gurobipy imports leaked outside the solver backend.
 
-After Phase 1 refactoring, the only permitted gurobipy imports are:
+The only permitted gurobipy imports are:
 1. stream/opt/solver/solver.py (the backend implementation)
-2. transfer_and_tensor_allocation.py: `from gurobipy import GRB` (callback constants, per D-04)
+2. transfer_and_tensor_allocation.py: `from gurobipy import GRB` (callback constants)
 """
 
 import ast
@@ -62,5 +62,5 @@ def test_tta_only_imports_grb_constants():
     for imp in imports:
         assert imp == "from gurobipy import GRB", (
             f"Unexpected gurobipy import in TTA: {imp!r}. "
-            f"Only 'from gurobipy import GRB' is permitted (for callback constants, per D-04)."
+            f"Only 'from gurobipy import GRB' is permitted (for callback constants)."
         )

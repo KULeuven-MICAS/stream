@@ -1,6 +1,6 @@
 """Unit tests for ConstraintSelection frozen dataclass.
 
-Covers all behavior from Phase 5 Plan 01 requirements:
+Covers all behavior:
   - Defaults all fields to True
   - Partial override works correctly
   - Immutability (FrozenInstanceError on mutation)
@@ -99,7 +99,7 @@ def test_importable():
 
 
 # ---------------------------------------------------------------------------
-# Guard verification tests (Phase 5 Plan 02)
+# Guard verification tests
 # ---------------------------------------------------------------------------
 
 from unittest.mock import MagicMock  # noqa: E402

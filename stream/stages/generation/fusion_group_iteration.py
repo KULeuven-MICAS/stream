@@ -2,6 +2,7 @@ import logging
 import os
 import time
 
+from stream.ir.allocation import AllocationIR
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 
@@ -39,6 +40,7 @@ class FusionGroupIterationStage(Stage):
         total_latency = 0.0
         group_latencies: dict[int, float] = {}
         group_wall_times: dict[int, float] = {}
+        group_allocations: dict[int, dict | None] = {}
         final_ctx = None
 
         if self.sub_mappings is not None:
@@ -74,13 +76,25 @@ class FusionGroupIterationStage(Stage):
             group_latency = scheduler.latency_total
             total_latency += group_latency
             group_latencies[i] = group_latency
+            # Capture the full allocation IR (latency + solver backend + intra-core performance:
+            # per-node MAC utilization, compute efficiency, compute-vs-transfer bottleneck) per group,
+            # so the exploration result can surface cost-model transparency and intra-core-cost viz.
+            try:
+                group_allocations[i] = AllocationIR.from_internal(scheduler).model_dump()
+            except Exception as exc:  # noqa: BLE001 -- a missing perf summary must not fail the solve
+                logger.warning(f"Group {i}: could not build AllocationIR: {exc}")
+                group_allocations[i] = None
             logger.info(f"Group {i} latency: {group_latency}")
             logger.info(f"Group {i} wall time: {group_wall_times[i]:.2f}s")
             final_ctx = ctx
 
-        # Per D-05: Store aggregated result
         assert final_ctx is not None, "No groups processed"
-        final_ctx.set(total_latency=total_latency, group_latencies=group_latencies, group_wall_times=group_wall_times)
+        final_ctx.set(
+            total_latency=total_latency,
+            group_latencies=group_latencies,
+            group_wall_times=group_wall_times,
+            group_allocations=group_allocations,
+        )
         logger.info(f"Total latency across all groups: {total_latency}")
         logger.info(f"Per-group latencies: {group_latencies}")
         yield final_ctx

@@ -16,24 +16,24 @@ def pytest_addoption(parser):
     )
 
 
-# --- Metrics Capture (Phase 39: CAP-01, CAP-02, CAP-03) ---
+# --- Metrics Capture ---
 # Bridge: module-level dict <- record_metric fixture <- CO test bodies
 #         module-level dict -> pytest_terminal_summary -> metrics_current.json
 # Note: incompatible with pytest-xdist worker isolation. If -n N is ever added to CI,
-# each worker would have its own copy of _metrics_store and controller metrics would be lost
-# (39-RESEARCH.md Pitfall 7). Acceptable for v1 (CI is single-process). KeyboardInterrupt
-# (Ctrl-C) is not guaranteed to flush the file; D-06 only requires -x survival.
+# each worker would have its own copy of _metrics_store and controller metrics would be lost.
+# Acceptable for v1 (CI is single-process). KeyboardInterrupt
+# (Ctrl-C) is not guaranteed to flush the file; only -x survival is required.
 
 _metrics_store: dict[str, dict] = {}
 
 
 @pytest.fixture
 def record_metric(request):
-    """Stash a D-04 CO metric for the Phase 39 regression guard.
+    """Stash a CO metric for the regression guard.
 
     Injected into CO test signatures; call once per field after _assert_co_result.
     Each call is: record_metric("field_name", value_or_None). Keyed by the full
-    pytest node ID (D-03) so parametrized cells stay distinct.
+    pytest node ID so parametrized cells stay distinct.
     """
     node_id = request.node.nodeid
 
@@ -46,10 +46,10 @@ def record_metric(request):
 def pytest_terminal_summary(terminalreporter, exitstatus, config):  # noqa: ARG001
     """Conditionally write CO metrics to metrics_current.json at session end.
 
-    Fires for all exit codes (pass, -x abort, failure). D-01: writes ONLY when >=1
+    Fires for all exit codes (pass, -x abort, failure). Writes ONLY when >=1
     metric was captured (non-empty store) -> runs with no CO tests never create or
-    clobber the file. D-02: fixed absolute path at the repo root, derived from this
-    conftest location (CWD-robust). D-03: outer keys are full pytest node IDs, sorted.
+    clobber the file. Uses a fixed absolute path at the repo root, derived from this
+    conftest location (CWD-robust). Outer keys are full pytest node IDs, sorted.
     """
     if not _metrics_store:
         return
