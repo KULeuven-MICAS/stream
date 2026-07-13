@@ -361,7 +361,9 @@ class GenericMappingGenerator:
                     non_parallel.add(dim)
         return all_dims - non_parallel
 
-    def _auto_fusion_tiling(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> list[dict[str, Any]]:
+    def _auto_fusion_tiling(  # noqa: PLR0911 -- a sequence of early-out guards, each a distinct "no tiling" case
+        self, sub_workload: Workload, cns: tuple[ComputationNode, ...]
+    ) -> list[dict[str, Any]]:
         """Automatically fuse a multi-node group along a parallel axis, tiled so the largest resident
         intermediate fits on-chip.
 
@@ -392,6 +394,14 @@ class GenericMappingGenerator:
         fusion_dim = max(candidates, key=sub_workload.get_dimension_size)
 
         full = sub_workload.get_dimension_size(fusion_dim)
+        # Only the intermediates the fusion dim indexes shrink with the tile; the others (e.g. attention's
+        # K/V, indexed by the key axis, not the query) are separate resident tensors the memory model
+        # handles -- they are not the streamed fusion buffer and must not drive the fusion tile size.
+        streamed = [
+            t for t in intermediates if sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, full)]) != t.shape
+        ]
+        if not streamed:
+            return []
         unroll = self._inter_core_unrolling(sub_workload, cns).get(fusion_dim, 1)
         per_core = full // unroll if unroll > 1 and full % unroll == 0 else full
         capacity_bits = min(
@@ -403,8 +413,7 @@ class GenericMappingGenerator:
         def resident_bits(tile: int) -> int:
             factor = full // tile
             return max(
-                _tensor_bits(sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)]), t)
-                for t in intermediates
+                _tensor_bits(sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)]), t) for t in streamed
             )
 
         # Only tile when the whole per-core slice does NOT fit -- otherwise keep the trivial whole-layer

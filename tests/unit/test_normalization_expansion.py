@@ -111,16 +111,13 @@ def test_expand_collapse_round_trip(workload):
     assert restored.num_dims == original.num_dims
 
 
-def test_stage_is_opt_in():
-    """ExpandNormalizationStage only expands when the flag is set (default: monolithic softmax)."""
-    workload = build_attention_block()
-
-    def run(expand: bool):
-        ctx = StageContext.from_kwargs(workload=workload, expand_normalizations=expand)
-        return list(MainStage([ExpandNormalizationStage, LeafStage], ctx).run())[0].get("workload")
-
-    assert any(isinstance(n, NormalizationNode) for n in run(False).get_computation_nodes())
-    assert not any(isinstance(n, NormalizationNode) for n in run(True).get_computation_nodes())
+def test_stage_expands_the_softmax():
+    """ExpandNormalizationStage rewrites the softmax into its sub-ops (the generic pipeline always runs
+    it, so the cost/fusion/MILP stages see the two reduction passes)."""
+    ctx = StageContext.from_kwargs(workload=build_attention_block())
+    expanded = list(MainStage([ExpandNormalizationStage, LeafStage], ctx).run())[0].get("workload")
+    assert not any(isinstance(n, NormalizationNode) for n in expanded.get_computation_nodes())
+    assert {"ReduceMax", "Exp", "ReduceSum", "Div"} <= {n.type for n in expanded.get_computation_nodes()}
 
 
 def test_subops_mirror_the_numpy_softmax_reference():

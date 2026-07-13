@@ -24,6 +24,7 @@ from stream.workload.iterator_type import (
     nonlinear_reduction_dims,
 )
 from stream.workload.models import AttentionConfig, build_attention_block
+from stream.workload.normalization import expand_normalizations
 from stream.workload.workload import determine_fusion_cut_points
 
 _ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
@@ -148,3 +149,27 @@ def test_small_attention_keeps_the_whole_region_resident():
     )
     sub = workload.split_fusion_groups(cut_points=determine_fusion_cut_points(workload))[0]
     assert gen._auto_fusion_tiling(sub, tuple(sub.get_computation_nodes())) == []
+
+
+def test_expanded_attention_fuses_and_tiles_the_query_axis():
+    """The generic pipeline decomposes the softmax first, so verify the *expanded* attention behaves:
+    it still fuses into one region (only data-dependent reads cut), and the auto layer-fusion tiling is
+    along the query axis -- the key axis is now an ordinary affine reduction (ReduceMax/ReduceSum) that
+    is kept resident, not tiled."""
+    workload = expand_normalizations(build_attention_block(AttentionConfig(batch=1, heads=4, seq=1024, d_head=64)))
+    assert {"ReduceMax", "Exp", "ReduceSum", "Div"} <= {n.type for n in workload.get_computation_nodes()}
+    assert determine_fusion_cut_points(workload) == []
+
+    accelerator = _parse_accelerator()
+    gen = GenericMappingGenerator(
+        accelerator=accelerator, workload=workload, output_dir=tempfile.mkdtemp(), intra_core_tiling=None
+    )
+    sub = workload.split_fusion_groups(cut_points=determine_fusion_cut_points(workload))[0]
+    cns = tuple(sub.get_computation_nodes())
+    tiling = gen._build_intra_core_tiling(sub, cns)
+    node_name, pos = tiling[0]["dim"].split(".D")
+    fusion_dim = sub.get_dims(next(n for n in cns if n.name == node_name))[int(pos)]
+    scores = next(n for n in cns if n.name == "scores")
+    query, key = sub.get_dims(scores)[2], sub.get_dims(scores)[3]
+    assert fusion_dim == query and fusion_dim != key
+    assert tiling[0]["tile"] < sub.get_dimension_size(query)

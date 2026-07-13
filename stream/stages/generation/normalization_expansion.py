@@ -1,11 +1,11 @@
-"""Opt-in parse stage: expand every normalization (Softmax/LpNorm) into its affine sub-operators.
+"""Parse stage: expand every normalization (Softmax/LpNorm) into its affine sub-operators.
 
-Off by default (the monolithic ``NormalizationNode`` is what the current pipeline and the AIE codegen
-schedule). When ``expand_normalizations`` is set in the context, the workload the downstream cost and
-fusion stages see carries explicit ReduceMax/Exp/ReduceSum/Div sub-ops, so a safe softmax's two
-reduction passes are counted (not under-counted as one element-wise pass) and its reduction shows up as
-an ordinary affine reduction. The sub-ops stay tagged with their origin kernel so a codegen backend can
-re-collapse them into one native softmax later (see ``collapse_fused_kernels``).
+Runs right after parsing in the generic CO pipeline, so the workload the cost, fusion and MILP stages
+see carries explicit ReduceMax/Exp/ReduceSum/Div sub-ops. A safe softmax's two reduction passes are then
+counted (not under-counted as one element-wise pass), and its reduction is an ordinary affine reduction
+the fusion/tiling analysis reads directly. The sub-ops stay tagged with their origin kernel, so a codegen
+backend can re-collapse them into one native softmax later (``collapse_fused_kernels``). Dispatch goes
+through the shared ``stream.workload.decompose`` registry.
 """
 
 from __future__ import annotations
@@ -22,9 +22,8 @@ class ExpandNormalizationStage(Stage):
     REQUIRED_FIELDS = ("workload",)
 
     def run(self) -> Generator[StageContext]:
-        if self.ctx.get("expand_normalizations", False):
-            workload: Workload = self.ctx.require_value("workload", self.__class__.__name__)
-            self.ctx.set(workload=expand_normalizations(workload))
+        workload: Workload = self.ctx.require_value("workload", self.__class__.__name__)
+        self.ctx.set(workload=expand_normalizations(workload))
 
         sub_stage: Stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
