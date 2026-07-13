@@ -522,6 +522,23 @@ class TestAllocationIR:
         assert "MatMul" in ir.mapping_nodes
         assert len(ir.fused_groups) == 1
 
+    def test_from_internal_coerces_non_string_runtime_args(self):
+        """runtime_args values are stringified: some workloads carry AffineMap objects there, which
+        must not break the JSON-serializable IR (regression for the demo allocation.json path)."""
+
+        class _FakeAffineMap:
+            def __str__(self) -> str:
+                return "(d0, d1) -> (d0, d1)"
+
+        raw = {**ALLOCATION_RAW, "mapping": {**ALLOCATION_RAW["mapping"], "runtime_args": {"input": _FakeAffineMap()}}}
+        mock_scheduler = MagicMock()
+        mock_scheduler.latency_total = 2000
+        mock_scheduler.get_ir.return_value = raw
+
+        ir = AllocationIR.from_internal(mock_scheduler)
+        assert ir.runtime_args == {"input": "(d0, d1) -> (d0, d1)"}
+        ir.model_dump_json()  # must stay JSON-serializable
+
     def test_from_internal_pre_solve_raises(self):
         """AllocationIR.from_internal() raises ValueError when latency_total == -1 (pre-solve sentinel)."""
         mock_scheduler = MagicMock()

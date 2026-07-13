@@ -275,7 +275,7 @@ class AllocationIR(BaseModel):
             fusion_splits=raw["fusion_splits"],
             mapping_nodes=mapping_nodes,
             fused_groups=fused_groups,
-            runtime_args=mapping["runtime_args"],
+            runtime_args={k: str(v) for k, v in mapping["runtime_args"].items()},
             performance=performance,
         )
 

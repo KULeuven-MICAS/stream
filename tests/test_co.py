@@ -11,6 +11,7 @@ from stream.inputs.testing.workload.make_2_conv import (
     TwoConvWorkloadConfig,
     make_2_conv_workload,
 )
+from stream.ir.allocation import AllocationIR
 from stream.workload.node import ComputationNode
 
 _ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
@@ -91,6 +92,13 @@ def test_co_tpu_two_conv(output_dir: Path):
     assert scheduler.latency_total > 0, "Expected positive latency_total"
     assert scheduler.latency_per_iteration > 0, "Expected positive latency_per_iteration"
     assert scheduler.iterations > 0, "Expected positive iterations"
+
+    # The solved scheduler must yield a JSON-serializable AllocationIR: this is the mapping-canvas
+    # contract the demo runner serializes to allocation.json (runtime_args here carry AffineMaps).
+    allocation = AllocationIR.from_internal(scheduler)
+    allocation.model_dump_json()
+    assert allocation.latency.total == scheduler.latency_total
+    assert allocation.mapping_nodes
 
     mapping = ctx.get("mapping")
     workload = ctx.get("workload")
