@@ -343,6 +343,105 @@ class GenericMappingGenerator:
                 return [{"dim": f"{ref_cn.name}.D0", "tile": tile}]
         return []
 
+    def fusion_tiling_plan(self, cut_points: list[str] | None = None) -> list[dict[str, Any]]:
+        """A serialisable description of what fuses and how it is tiled, per fused group.
+
+        For each group: its member nodes (with the fused-kernel tag so a softmax's sub-ops can be
+        collapsed for display), the STREAMED parallel axis the fusion tiles (e.g. attention's query),
+        the tile size (== the axis size ⇒ the whole axis stays resident, no streaming needed), the
+        RESIDENT reduction axes kept on-chip while that axis streams (e.g. the key axis of a softmax),
+        and the on-chip buffer (elements) of the largest streamed intermediate at that tile. This is the
+        cost/fusion view the platform renders; it reuses the generic mapper's own fusion + tiling logic
+        so what is shown is exactly what the pipeline would map."""
+        groups: list[dict[str, Any]] = []
+        for sub in self.workload.split_fusion_groups(cut_points=cut_points):
+            cns = sub.get_computation_nodes()
+            nodes = [{"name": cn.name, "type": cn.type, "fused_kernel": cn.fused_kernel} for cn in cns]
+
+            intermediates = [t for cn in cns for t in cn.outputs if any(t in c.inputs for c in cns)]
+            indexed: dict[LayerDim, set] = {}
+            for tensor in intermediates:
+                producer = next(cn for cn in cns if tensor in cn.outputs)
+                dims = sub.get_dims(producer)
+                for pos in map_dim_positions(producer.get_mapping(tensor)):
+                    if pos < len(dims):
+                        indexed.setdefault(dims[pos], set()).add(tensor)
+            streamable = [
+                d for d in self._fusible_parallel_dims(sub, tuple(cns)) & set(indexed) if sub.get_dimension_size(d) > 1
+            ]
+
+            streamed_axis = None
+            tile = None
+            buffer_elements = 0
+            if streamable:
+                fusion_dim = max(streamable, key=sub.get_dimension_size)
+                size = sub.get_dimension_size(fusion_dim)
+                tiling = self._auto_fusion_tiling(sub, tuple(cns))
+                tile = self._tile_of(sub, tuple(cns), fusion_dim, tiling) or size
+                streamed_axis = {"name": str(fusion_dim), "size": size}
+                factor = size // tile if tile else 1
+                buffer_elements = max(
+                    (
+                        math.prod(sub.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)]))
+                        for t in indexed[fusion_dim]
+                    ),
+                    default=0,
+                )
+
+            resident_axes = self._resident_axes(sub, tuple(cns))
+            groups.append(
+                {
+                    "nodes": nodes,
+                    "streamed_axis": streamed_axis,
+                    "tile": tile,
+                    "resident_axes": resident_axes,
+                    "buffer_elements": int(buffer_elements),
+                }
+            )
+        return groups
+
+    def _tile_of(
+        self,
+        sub_workload: Workload,
+        cns: tuple[ComputationNode, ...],
+        fusion_dim: LayerDim,
+        tiling: list[dict[str, Any]],
+    ) -> int | None:
+        """The tile size the auto tiling assigns to ``fusion_dim`` (None when it tiles a different dim or
+        does not tile -- i.e. the whole axis stays resident)."""
+        for entry in tiling:
+            node_name, _, pos = str(entry["dim"]).partition(".D")
+            node = next((n for n in cns if n.name == node_name), None)
+            if node is not None and pos.isdigit():
+                dims = sub_workload.get_dims(node)
+                if int(pos) < len(dims) and dims[int(pos)] == fusion_dim:
+                    return int(entry["tile"])
+        return None
+
+    def _resident_axes(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> list[dict[str, Any]]:
+        """Reduction axes kept resident while the streamed axis flows, largest first. ``softmax`` marks the
+        axis a softmax reduces -- whether the block is monolithic (a NormalizationNode's nonlinear axis) or
+        already decomposed (a ReduceMax/ReduceSum sub-op tagged with its fused kernel); the rest are linear
+        matmul contractions."""
+        axes: dict[LayerDim, bool] = {}
+        for cn in cns:
+            node_dims = sub_workload.get_dims(cn)
+            types = derive_iterator_types(cn)
+            nonlinear = nonlinear_reduction_dims(cn)
+            for pos, dim in enumerate(node_dims):
+                is_reduction = types.get(pos) == IteratorType.REDUCTION or pos in nonlinear
+                if is_reduction:
+                    from_softmax = pos in nonlinear or (
+                        cn.fused_kernel is not None and types.get(pos) == IteratorType.REDUCTION
+                    )
+                    axes[dim] = axes.get(dim, False) or from_softmax
+        return [
+            {"name": str(dim), "size": sub_workload.get_dimension_size(dim), "softmax": softmax}
+            for dim, softmax in sorted(
+                axes.items(), key=lambda kv: sub_workload.get_dimension_size(kv[0]), reverse=True
+            )
+        ]
+
     def _fusible_parallel_dims(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> set[LayerDim]:
         """Global dims that are a PARALLEL output axis for *every* node that indexes them.
 

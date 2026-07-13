@@ -173,3 +173,22 @@ def test_expanded_attention_fuses_and_tiles_the_query_axis():
     query, key = sub.get_dims(scores)[2], sub.get_dims(scores)[3]
     assert fusion_dim == query and fusion_dim != key
     assert tiling[0]["tile"] < sub.get_dimension_size(query)
+
+
+def test_fusion_tiling_plan_describes_query_streaming_softmax_resident():
+    """The fusion_tiling_plan API (what the platform renders) says attention streams the query axis in
+    blocks while the softmax key axis stays resident on-chip, and reports the decomposed softmax."""
+    workload = expand_normalizations(build_attention_block(AttentionConfig(batch=1, heads=4, seq=1024, d_head=64)))
+    gen = GenericMappingGenerator(
+        accelerator=_parse_accelerator(), workload=workload, output_dir=tempfile.mkdtemp(), intra_core_tiling=None
+    )
+    plan = gen.fusion_tiling_plan(cut_points=determine_fusion_cut_points(workload))
+    assert len(plan) == 1
+    group = plan[0]
+    assert group["streamed_axis"] is not None
+    assert group["tile"] < group["streamed_axis"]["size"], "the query is actually streamed in blocks"
+    softmax_axes = [a for a in group["resident_axes"] if a["softmax"]]
+    assert softmax_axes, "the softmax reduction axis must be reported as resident"
+    assert softmax_axes[0]["size"] == group["streamed_axis"]["size"], "self-attention key seq == query seq"
+    assert any(n["fused_kernel"] for n in group["nodes"]), "the softmax is decomposed into tagged sub-ops"
+    assert group["buffer_elements"] > 0
