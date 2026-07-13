@@ -17,8 +17,10 @@ from stream.api import optimize_allocation_co_generic_workload
 from stream.workload.models import (
     AttentionConfig,
     LinearAttentionConfig,
+    MambaConfig,
     build_attention_block,
     build_linear_attention_block,
+    build_mamba_block,
 )
 
 _ACCELERATOR = "stream/inputs/testing/hardware/tpu_like_quad_core.yaml"
@@ -75,3 +77,18 @@ def test_linear_attention_recurrence_is_a_single_group(tmp_path: Path):
         f"the SEQUENTIAL recurrence must stay one group, got {group_latencies}"
     )
     assert ctx.get("total_latency") > 0
+
+
+@pytest.mark.slow
+@pytest.mark.timeout(600)
+def test_mamba_state_update_fuses_and_allocates(tmp_path: Path):
+    """The full selective-scan state-update block (discretization + SEQUENTIAL scan + readout + skip)
+    fuses into one region and allocates end to end through the generic CO pipeline."""
+    ctx = _run(build_mamba_block(MambaConfig(seq=16, d_inner=16, d_state=4)), tmp_path)
+
+    group_latencies = ctx.get("group_latencies")
+    assert group_latencies is not None and len(group_latencies) == 1, (
+        f"the state-update block must fuse into one region, got {group_latencies}"
+    )
+    assert all(lat > 0 for lat in group_latencies.values())
+    assert ctx.get("total_latency") == pytest.approx(sum(group_latencies.values()))
