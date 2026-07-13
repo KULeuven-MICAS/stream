@@ -1111,22 +1111,26 @@ def determine_fusion_cut_points(workload: Workload) -> list[str]:
             topo_comp_names.append(node.name)
     last_comp_name = topo_comp_names[-1] if topo_comp_names else None
 
-    cut_points: list[str] = []
+    from stream.workload.fusion.analysis import barrier_cut_points  # noqa: PLC0415 -- avoid import cycle
+
+    wanted: set[str] = set(barrier_cut_points(workload))
     for node in workload.dataflow_sort():
         if not isinstance(node, ComputationNode):
             continue
 
         # MaxPool ends the front-end group
         if node.type == "MaxPool":
-            cut_points.append(node.name)
+            wanted.add(node.name)
             continue
 
         # Add followed by a single Relu successor -> split after Relu
         if node.type == "Add":
             comp_succs = [s for s in workload.successors(node) if isinstance(s, ComputationNode)]
             if len(comp_succs) == 1 and comp_succs[0].type == "Relu":
-                relu = comp_succs[0]
-                cut_points.append(relu.name)
+                wanted.add(comp_succs[0].name)
+
+    # Emit the wanted cuts in topological order (dedupes barrier + heuristic overlaps).
+    cut_points = [name for name in topo_comp_names if name in wanted]
 
     # Guard: do not split after the last ComputationNode in the workload — that
     # would create an empty trailing group with no ComputationNodes.

@@ -150,3 +150,12 @@ def test_api_entry_point_parses_and_views():
     assert view["schema_version"] == "1.0"
     assert view["nodes"] and view["edges"]
     assert any(c["op"] == "MatMul" for c in view["block_classes"])
+    assert view["proposed_regions"] == []  # no capacity -> no proposals
+
+
+def test_api_entry_point_surfaces_proposed_regions_under_a_capacity():
+    from stream.api import workload_graph_view
+
+    view = workload_graph_view("stream/inputs/testing/workload/attention_head.onnx", fusion_capacity=UNBOUNDED)
+    assert view["proposed_regions"]
+    assert any(n["proposed_region"] is not None for n in view["nodes"])

@@ -23,6 +23,7 @@ from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.mapping_parser import MappingParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
 from stream.stages.stage import LeafStage, MainStage, StageCallable
+from stream.workload.workload import Workload
 
 _logging_level = _logging.INFO
 _logging_format = "%(asctime)s - %(funcName)s +%(lineno)s - %(levelname)s - %(message)s"
@@ -169,11 +170,13 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913
 optimize_allocation_co = optimize_allocation_co_with_mapping
 
 
-def optimize_allocation_co_generic(  # noqa: PLR0913
+def _run_generic_co(  # noqa: PLR0913
     hardware: str,
-    workload: str,
     experiment_id: str,
     output_path: str,
+    *,
+    workload_path: str | ModelProto | None = None,
+    workload_obj: Workload | None = None,
     skip_if_exists: bool = False,
     temporal_mapping_type: str = "uneven",
     nb_cols_to_use: int = 4,
@@ -181,24 +184,14 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
     constraint_selection: ConstraintSelection | None = None,
     intra_core_tiling: list[dict] | None = None,
 ) -> StageContext:
-    """Run the CO pipeline with auto-generated mapping from workload+hardware.
-
-    Unlike optimize_allocation_co, this does not require a hand-written mapping YAML.
-    GenericMappingGenerationStage infers the mapping, then FusionGroupIterationStage
-    runs the inner pipeline once per fusion group.
-
-    Args:
-        intra_core_tiling: Optional fused-group intra-core (layer-fusion) tiling, e.g.
-            ``[{"dim": "Gemm_Left.D0", "tile": 16}, ...]``. When given, it overrides the generic
-            mapper's trivial no-op tiling, so the solver costs one steady-state tile instead of the
-            full layer (enabling layer-fused processing of large workloads). Entries are filtered per
-            fusion group to the nodes that group contains; a group with no matching entry keeps the
-            trivial default. When None, every group uses the trivial default (current behaviour).
-
-    Returns the final StageContext with total_latency aggregated across all groups.
-    """
+    """Shared generic CO pipeline. Feeds either an ONNX ``workload_path`` (parsed by the ONNX stage)
+    or a prebuilt in-memory ``workload_obj`` (the ONNX stage is skipped)."""
     assert os.path.exists(hardware), f"Hardware file {hardware} does not exist"
-    assert isinstance(workload, ModelProto) or os.path.exists(workload), f"Workload file {workload} does not exist"
+    assert (workload_path is None) != (workload_obj is None), "Provide exactly one of workload_path / workload_obj"
+    if workload_path is not None:
+        assert isinstance(workload_path, ModelProto) or os.path.exists(workload_path), (
+            f"Workload file {workload_path} does not exist"
+        )
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
@@ -227,9 +220,12 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
         ctx = pickle_load(ctx_path)
         logger.info(f"Loaded context from {ctx_path}")
     else:
+        # The ONNX parser stage is only needed when a file/proto workload is given; an in-memory
+        # Workload is injected directly and the generic mapper consumes it unchanged.
+        parse_stages: list[StageCallable] = [StreamONNXModelParserStage] if workload_path is not None else []
         stages: list[StageCallable] = [
             AcceleratorParserStage,  # Parses the accelerator
-            StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
+            *parse_stages,
             GenericMappingGenerationStage,  # generates per-group YAMLs + sub_workloads
             FusionGroupIterationStage,  # outer loop over groups (reads sub_workloads from ctx)
             MappingParserStage,  # inner pipeline starts here
@@ -238,9 +234,10 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
             ConstraintOptimizationAllocationStage,
             MemoryAccessesEstimationStage,
         ]
+        workload_kwargs = {"workload_path": workload_path} if workload_path is not None else {"workload": workload_obj}
         ctx = StageContext.from_kwargs(
             accelerator=hardware,  # required by AcceleratorParserStage
-            workload_path=workload,  # required by ModelParserStage
+            **workload_kwargs,  # workload_path (ONNX) or workload (in-memory), required downstream
             loma_lpf_limit=6,  # required by LomaEngine
             output_path=output_path,
             temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
@@ -255,6 +252,82 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
         assert len(answers) == 1, "Expected a single result from the optimization."
         ctx = answers[0]
     return ctx
+
+
+def optimize_allocation_co_generic(  # noqa: PLR0913
+    hardware: str,
+    workload: str,
+    experiment_id: str,
+    output_path: str,
+    skip_if_exists: bool = False,
+    temporal_mapping_type: str = "uneven",
+    nb_cols_to_use: int = 4,
+    backend: str = "ortools_gscip",
+    constraint_selection: ConstraintSelection | None = None,
+    intra_core_tiling: list[dict] | None = None,
+) -> StageContext:
+    """Run the CO pipeline with auto-generated mapping from workload+hardware.
+
+    Unlike optimize_allocation_co, this does not require a hand-written mapping YAML.
+    GenericMappingGenerationStage infers the mapping, then FusionGroupIterationStage
+    runs the inner pipeline once per fusion group.
+
+    Args:
+        intra_core_tiling: Optional fused-group intra-core (layer-fusion) tiling, e.g.
+            ``[{"dim": "Gemm_Left.D0", "tile": 16}, ...]``. When given, it overrides the generic
+            mapper's trivial no-op tiling, so the solver costs one steady-state tile instead of the
+            full layer (enabling layer-fused processing of large workloads). Entries are filtered per
+            fusion group to the nodes that group contains; a group with no matching entry keeps the
+            trivial default. When None, every group uses the trivial default (current behaviour).
+
+    Returns the final StageContext with total_latency aggregated across all groups.
+    """
+    return _run_generic_co(
+        hardware,
+        experiment_id,
+        output_path,
+        workload_path=workload,
+        skip_if_exists=skip_if_exists,
+        temporal_mapping_type=temporal_mapping_type,
+        nb_cols_to_use=nb_cols_to_use,
+        backend=backend,
+        constraint_selection=constraint_selection,
+        intra_core_tiling=intra_core_tiling,
+    )
+
+
+def optimize_allocation_co_generic_workload(  # noqa: PLR0913
+    hardware: str,
+    workload: Workload,
+    experiment_id: str,
+    output_path: str,
+    skip_if_exists: bool = False,
+    temporal_mapping_type: str = "uneven",
+    nb_cols_to_use: int = 4,
+    backend: str = "ortools_gscip",
+    constraint_selection: ConstraintSelection | None = None,
+    intra_core_tiling: list[dict] | None = None,
+) -> StageContext:
+    """Run the generic CO pipeline on an in-memory ``Workload`` (e.g. a ``stream.workload.models``
+    catalog block), skipping ONNX parsing. This is the end-to-end entry point for the affine-IR
+    model blocks (MHA / GQA / linear-attention / Mamba) whose Scan/StateUpdate/Softmax node types
+    have no ONNX round-trip. Fusion barriers (softmax reduction, data-dependent reads) are derived
+    from the affine access analysis and drive the per-group split.
+
+    Returns the final StageContext with total_latency aggregated across all groups.
+    """
+    return _run_generic_co(
+        hardware,
+        experiment_id,
+        output_path,
+        workload_obj=workload,
+        skip_if_exists=skip_if_exists,
+        temporal_mapping_type=temporal_mapping_type,
+        nb_cols_to_use=nb_cols_to_use,
+        backend=backend,
+        constraint_selection=constraint_selection,
+        intra_core_tiling=intra_core_tiling,
+    )
 
 
 def optimize_mapping(  # noqa: PLR0913
@@ -431,7 +504,7 @@ def parse_workload_ir(
     return arch_ir_path
 
 
-def workload_graph_view(workload_path: str, output_path: str | None = None) -> dict:
+def workload_graph_view(workload_path: str, output_path: str | None = None, fusion_capacity: int | None = None) -> dict:
     """Parse a workload (ONNX) and return the unified :class:`~stream.ir.graph_view.WorkloadGraphView`
     as a JSON-able dict.
 
@@ -439,6 +512,11 @@ def workload_graph_view(workload_path: str, output_path: str | None = None) -> d
     (draw one representative, mark the rest ``×N``), fusable regions (zoom), and the derived affine
     metadata per node. Works for any parsed workload; the same view serializes a tiled/steady-state
     graph identically.
+
+    When ``fusion_capacity`` (a near-memory budget in elements) is given, the view also carries the
+    auto-proposed fusion regions -- the greedy dataflow chains that fit that budget, each legal by
+    construction. Left ``None`` (default) the ``proposed_regions`` list is empty, preserving the
+    read-only, capacity-free view.
 
     The parser stage writes a debug ``workload_graph.png`` into ``output_path``; default it to a temp
     dir so this read-only view never litters the workload's own directory.
@@ -449,4 +527,4 @@ def workload_graph_view(workload_path: str, output_path: str | None = None) -> d
     ctxs = MainStage([StreamONNXModelParserStage, LeafStage], ctx).run()
     assert len(ctxs) == 1, "Expected a single result from the workload parsing"
     workload = ctxs[0].get("workload")
-    return WorkloadGraphView.from_workload(workload).model_dump()
+    return WorkloadGraphView.from_workload(workload, fusion_capacity=fusion_capacity).model_dump()
