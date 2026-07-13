@@ -18,6 +18,7 @@ from stream.stages.generation.fusion_group_iteration import FusionGroupIteration
 from stream.stages.generation.generic_mapping_generation import GenericMappingGenerationStage
 from stream.stages.generation.mapping_generation import MappingGenerationStage
 from stream.stages.generation.mapping_generation_multi import MappingGenerationMultiThreadedStage
+from stream.stages.generation.normalization_expansion import ExpandNormalizationStage
 from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.mapping_parser import MappingParserStage
@@ -183,6 +184,7 @@ def _run_generic_co(  # noqa: PLR0913
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
     intra_core_tiling: list[dict] | None = None,
+    expand_normalizations: bool = False,
 ) -> StageContext:
     """Shared generic CO pipeline. Feeds either an ONNX ``workload_path`` (parsed by the ONNX stage)
     or a prebuilt in-memory ``workload_obj`` (the ONNX stage is skipped)."""
@@ -226,6 +228,7 @@ def _run_generic_co(  # noqa: PLR0913
         stages: list[StageCallable] = [
             AcceleratorParserStage,  # Parses the accelerator
             *parse_stages,
+            ExpandNormalizationStage,  # opt-in: expand softmax/norm into affine sub-ops (two-pass cost)
             GenericMappingGenerationStage,  # generates per-group YAMLs + sub_workloads
             FusionGroupIterationStage,  # outer loop over groups (reads sub_workloads from ctx)
             MappingParserStage,  # inner pipeline starts here
@@ -245,6 +248,7 @@ def _run_generic_co(  # noqa: PLR0913
             backend=_backend_enum.value,
             constraint_selection=constraint_selection,
             intra_core_tiling=intra_core_tiling,  # optional layer-fusion tiling for GenericMappingGenerationStage
+            expand_normalizations=expand_normalizations,  # opt-in softmax sub-op decomposition
         )
 
         mainstage = MainStage(stages, ctx)
@@ -265,6 +269,7 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
     intra_core_tiling: list[dict] | None = None,
+    expand_normalizations: bool = False,
 ) -> StageContext:
     """Run the CO pipeline with auto-generated mapping from workload+hardware.
 
@@ -279,6 +284,8 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
             full layer (enabling layer-fused processing of large workloads). Entries are filtered per
             fusion group to the nodes that group contains; a group with no matching entry keeps the
             trivial default. When None, every group uses the trivial default (current behaviour).
+        expand_normalizations: When True, expand every Softmax/normalization into its affine sub-ops
+            (max/exp/sum/div) before mapping, so the two reduction passes are cost-modelled explicitly.
 
     Returns the final StageContext with total_latency aggregated across all groups.
     """
@@ -293,6 +300,7 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
         backend=backend,
         constraint_selection=constraint_selection,
         intra_core_tiling=intra_core_tiling,
+        expand_normalizations=expand_normalizations,
     )
 
 
@@ -307,12 +315,14 @@ def optimize_allocation_co_generic_workload(  # noqa: PLR0913
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
     intra_core_tiling: list[dict] | None = None,
+    expand_normalizations: bool = False,
 ) -> StageContext:
     """Run the generic CO pipeline on an in-memory ``Workload`` (e.g. a ``stream.workload.models``
     catalog block), skipping ONNX parsing. This is the end-to-end entry point for the affine-IR
     model blocks (MHA / GQA / linear-attention / Mamba) whose Scan/StateUpdate/Softmax node types
-    have no ONNX round-trip. Fusion barriers (softmax reduction, data-dependent reads) are derived
-    from the affine access analysis and drive the per-group split.
+    have no ONNX round-trip. Only a data-dependent read cuts a fusion group; a reduction (including the
+    softmax) is kept resident, never a barrier. ``expand_normalizations`` decomposes each softmax into
+    its affine sub-ops so its two reduction passes are cost-modelled explicitly.
 
     Returns the final StageContext with total_latency aggregated across all groups.
     """
@@ -327,6 +337,7 @@ def optimize_allocation_co_generic_workload(  # noqa: PLR0913
         backend=backend,
         constraint_selection=constraint_selection,
         intra_core_tiling=intra_core_tiling,
+        expand_normalizations=expand_normalizations,
     )
 
 

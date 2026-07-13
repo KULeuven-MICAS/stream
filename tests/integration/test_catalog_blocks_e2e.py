@@ -49,6 +49,25 @@ def test_attention_block_fuses_into_one_region(tmp_path: Path):
 
 @pytest.mark.slow
 @pytest.mark.timeout(600)
+def test_expanded_softmax_flows_through_the_pipeline(tmp_path: Path):
+    """With expand_normalizations, the MHA softmax is decomposed into ReduceMax/Exp/ReduceSum/Div and
+    the whole block still solves feasibly -- so the two reduction passes are cost-modelled end to end."""
+    ctx = optimize_allocation_co_generic_workload(
+        hardware=_ACCELERATOR,
+        workload=build_attention_block(AttentionConfig(batch=1, heads=1, seq=8, d_head=8)),
+        experiment_id="expanded_softmax",
+        output_path=str(tmp_path),
+        backend="ORTOOLS_GSCIP",
+        expand_normalizations=True,
+    )
+    assert ctx.get("total_latency") and ctx.get("total_latency") > 0
+    node_types = {n.type for n in ctx.get("workload").get_computation_nodes()}
+    assert {"ReduceMax", "Exp", "ReduceSum", "Div"} <= node_types
+    assert "Softmax" not in node_types
+
+
+@pytest.mark.slow
+@pytest.mark.timeout(600)
 def test_linear_attention_recurrence_is_a_single_group(tmp_path: Path):
     ctx = _run(build_linear_attention_block(LinearAttentionConfig(seq=8, d_k=8, d_v=8)), tmp_path)
 

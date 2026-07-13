@@ -699,6 +699,7 @@ class Workload(DiGraphWrapper[Node]):
                     inputs=new_inputs,
                     outputs=(new_output,),
                     operand_mapping=node.operand_mapping,
+                    fused_kernel=node.fused_kernel,
                 )
             elif isinstance(node, TransferNode):
                 new_inputs = tuple(cast(Tensor, tensor_map[inp.name]) for inp in node.inputs)
