@@ -1,0 +1,117 @@
+"""The attention head's tiling must respect the softmax's reduction axis.
+
+A softmax reduces the key axis *nonlinearly*: unlike a matmul contraction (a linear reduction that can
+be split across cores as partial sums), the softmax needs every element of the key axis before it emits
+any output, so the key axis must stay resident -- never spatially unrolled or fusion-split -- in the
+conservative (non-flash) model. These tests pin that: the reduced axis is derived as a REDUCTION, the
+spatial-unroll guard rejects it, and the generic mapper never splits it while still parallelising the
+attention block over its parallel axes (heads/batch) and linear contractions.
+"""
+
+from __future__ import annotations
+
+import tempfile
+
+from stream.mapping.generic_generator import GenericMappingGenerator
+from stream.stages.context import StageContext
+from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
+from stream.stages.stage import LeafStage, MainStage
+from stream.workload.iterator_type import (
+    IteratorType,
+    NonlinearReductionUnrollError,
+    check_spatial_unroll_legal,
+    derive_iterator_types,
+    nonlinear_reduction_dims,
+)
+from stream.workload.models import AttentionConfig, build_attention_block
+from stream.workload.workload import determine_fusion_cut_points
+
+_ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
+
+
+def _softmax(workload):
+    return next(n for n in workload.get_computation_nodes() if n.type == "Softmax")
+
+
+def _parse_accelerator():
+    ctx = StageContext.from_kwargs(accelerator=_ACCELERATOR, output_path=tempfile.mkdtemp())
+    return MainStage([AcceleratorParserStage, LeafStage], ctx).run()[0].get("accelerator")
+
+
+def test_softmax_reduced_axis_is_tracked_as_a_nonlinear_reduction():
+    """The node keeps its fused-kernel identity view (every axis reads PARALLEL), but the declared
+    reduction_axes are surfaced by nonlinear_reduction_dims -- the ground truth the tiling guards read."""
+    sm = _softmax(build_attention_block())
+    assert nonlinear_reduction_dims(sm) == frozenset(sm.reduction_axes)
+    assert sm.reduction_axes  # the softmax really does reduce an axis
+    # the fused-kernel node view is unchanged: identity, so no axis reads REDUCTION on the node alone
+    assert all(t == IteratorType.PARALLEL for t in derive_iterator_types(sm).values())
+
+
+def test_spatial_unroll_guard_rejects_the_softmax_reduction_axis():
+    """A nonlinear reduction cannot be spatially unrolled; a parallel axis can."""
+    sm = _softmax(build_attention_block())
+    key_axis = sm.reduction_axes[0]
+    try:
+        check_spatial_unroll_legal(sm, [key_axis])
+        raise AssertionError("expected the softmax reduction axis to be rejected for spatial unroll")
+    except NonlinearReductionUnrollError:
+        pass
+    parallel_axis = next(p for p in range(sm.num_dims) if p not in sm.reduction_axes)
+    check_spatial_unroll_legal(sm, [parallel_axis])  # must not raise
+
+
+def test_generic_mapper_never_splits_the_softmax_reduction_axis():
+    """End-to-end tiling: across every fused group of the attention head, the softmax's reduced global
+    dimension is protected and never inter-core split -- while the block is still split on other axes."""
+    workload = build_attention_block(AttentionConfig(batch=1, heads=2, seq=8, d_head=8))
+    accelerator = _parse_accelerator()
+    gen = GenericMappingGenerator(
+        accelerator=accelerator, workload=workload, output_dir=tempfile.mkdtemp(), intra_core_tiling=None
+    )
+    subs = workload.split_fusion_groups(cut_points=determine_fusion_cut_points(workload))
+
+    split_something = False
+    for sub in subs:
+        cns = tuple(sub.get_computation_nodes())
+        protected = gen._protected_dims(sub, cns)
+        unroll = gen._inter_core_unrolling(sub, cns)
+        for sm in (n for n in cns if n.type == "Softmax"):
+            reduced = {sub.get_dims(sm)[p] for p in sm.reduction_axes}
+            assert reduced <= protected, f"softmax reduced axis must be protected, got {protected}"
+            assert reduced.isdisjoint(unroll), f"softmax reduced axis was inter-core split: {unroll}"
+        split_something = split_something or bool(unroll)
+    assert split_something, "the mapper must still parallelise the attention block over its other axes"
+
+
+def test_fusion_split_protects_the_softmax_reduction_axis():
+    """'Tiling after fusion' respects the reduction too: the softmax's reduced axis is in the set
+    determine_fusion_splits refuses to block-tile (blocking it is online-softmax / flash)."""
+    from stream.workload.utils import _nonlinear_reduction_group_dims
+
+    workload = build_attention_block(AttentionConfig(batch=1, heads=2, seq=8, d_head=8))
+    group = next(
+        sub
+        for sub in workload.split_fusion_groups(cut_points=determine_fusion_cut_points(workload))
+        if any(n.type == "Softmax" for n in sub.get_computation_nodes())
+    )
+    sm = _softmax(group)
+    reduced = {group.get_dims(sm)[p] for p in sm.reduction_axes}
+    assert reduced <= _nonlinear_reduction_group_dims(group)
+
+
+def test_linear_contraction_axis_stays_splittable():
+    """The fix must not over-block: a matmul's *linear* contraction is still spatially splittable (it is
+    not in the protected set), so cross-core partial-sum reduction remains available."""
+    workload = build_attention_block(AttentionConfig(batch=1, heads=2, seq=8, d_head=8))
+    accelerator = _parse_accelerator()
+    gen = GenericMappingGenerator(
+        accelerator=accelerator, workload=workload, output_dir=tempfile.mkdtemp(), intra_core_tiling=None
+    )
+    sub = workload.split_fusion_groups(cut_points=determine_fusion_cut_points(workload))[0]
+    scores = next(n for n in sub.get_computation_nodes() if n.name == "scores")
+    types = derive_iterator_types(scores)
+    protected = gen._protected_dims(sub, tuple(sub.get_computation_nodes()))
+    linear_reduction_dims = {sub.get_dims(scores)[p] for p, t in types.items() if t == IteratorType.REDUCTION}
+    assert linear_reduction_dims, "scores must have a linear contraction dim"
+    assert linear_reduction_dims.isdisjoint(protected), "a linear contraction must remain splittable"

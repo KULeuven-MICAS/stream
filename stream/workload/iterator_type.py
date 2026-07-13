@@ -26,8 +26,10 @@ from stream.workload.tensor import Tensor
 __all__ = [
     "IteratorType",
     "SequentialUnrollError",
+    "NonlinearReductionUnrollError",
     "derive_iterator_types",
     "sequential_dims",
+    "nonlinear_reduction_dims",
     "is_state_operand",
     "check_spatial_unroll_legal",
 ]
@@ -41,6 +43,14 @@ class IteratorType(Enum):
 
 class SequentialUnrollError(ValueError):
     """Raised when a SEQUENTIAL iteration dimension is assigned to spatial unrolling."""
+
+
+class NonlinearReductionUnrollError(ValueError):
+    """Raised when a nonlinear-reduction (softmax/layernorm) axis is assigned to spatial unrolling.
+
+    A linear contraction can be split across cores as cross-core partial sums, but a nonlinear
+    reduction needs every element of the reduced axis before it produces any output, so splitting it
+    is only valid via the online-softmax (flash) rewrite -- never in the conservative model."""
 
 
 def _as_dim_plus_const(expr: AffineExpr) -> tuple[int, int] | None:
@@ -91,8 +101,22 @@ def sequential_dims(node: HasIterationSpace) -> frozenset[int]:
     return frozenset(sequential)
 
 
+def nonlinear_reduction_dims(node: HasIterationSpace) -> frozenset[int]:
+    """Positions of a normalization's reduced axes -- a NONLINEAR reduction (softmax/layernorm).
+
+    These index the output (the identity map keeps them), so ``derive_iterator_types`` alone would call
+    them PARALLEL; the declared ``reduction_axes`` are the ground truth that they are reduced, not
+    freely tileable. They cannot be spatially unrolled or fusion-split without the online-softmax
+    rewrite. Empty for every non-normalization node."""
+    return frozenset(getattr(node, "reduction_axes", ()) or ())
+
+
 def derive_iterator_types(node: HasIterationSpace) -> dict[int, IteratorType]:
-    """Algorithmic type of every iteration dimension, keyed by position."""
+    """Algorithmic type of every iteration dimension, keyed by position.
+
+    This is the node's own (fused-kernel) view: a normalization keeps its identity maps here, so its
+    reduced axis reads PARALLEL -- that reduction is exposed by ``decompose_normalization`` and by
+    ``nonlinear_reduction_dims`` (the tiling guards), not folded in here."""
     sequential = sequential_dims(node)
     output_dims = map_dim_positions(node.get_mapping(node.outputs[-1])) if node.outputs else frozenset()
     types: dict[int, IteratorType] = {}
@@ -107,10 +131,19 @@ def derive_iterator_types(node: HasIterationSpace) -> dict[int, IteratorType]:
 
 
 def check_spatial_unroll_legal(node: HasIterationSpace, spatial_positions: Iterable[int]) -> None:
-    """Raise :class:`SequentialUnrollError` if any spatially-unrolled dimension is SEQUENTIAL."""
-    illegal = sequential_dims(node) & set(spatial_positions)
-    if illegal:
+    """Raise if any spatially-unrolled dimension carries a recurrent state (SEQUENTIAL) or is a
+    nonlinear (normalization) reduction -- neither can be split across cores in the conservative model."""
+    positions = set(spatial_positions)
+    illegal_sequential = sequential_dims(node) & positions
+    if illegal_sequential:
         raise SequentialUnrollError(
-            f"Node {node.name!r} dimension(s) {sorted(illegal)} carry a recurrent state (SEQUENTIAL) "
-            f"and cannot be spatially unrolled; tile them temporally (chunk) instead."
+            f"Node {node.name!r} dimension(s) {sorted(illegal_sequential)} carry a recurrent state "
+            f"(SEQUENTIAL) and cannot be spatially unrolled; tile them temporally (chunk) instead."
+        )
+    illegal_nonlinear = nonlinear_reduction_dims(node) & positions
+    if illegal_nonlinear:
+        raise NonlinearReductionUnrollError(
+            f"Node {node.name!r} dimension(s) {sorted(illegal_nonlinear)} are a nonlinear reduction "
+            f"(softmax/layernorm) and cannot be spatially unrolled; fuse via the online-softmax rewrite "
+            f"or keep the reduced axis resident."
         )

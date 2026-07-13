@@ -21,7 +21,7 @@ from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.parser.mapping_validator import MappingValidator
-from stream.workload.iterator_type import sequential_dims
+from stream.workload.iterator_type import nonlinear_reduction_dims, sequential_dims
 from stream.workload.node import ComputationNode
 from stream.workload.workload import Workload
 
@@ -123,6 +123,7 @@ class GenericMappingGenerator:
         the MappingValidator schema.
         """
         cns = sub_workload.get_computation_nodes()
+        protected = self._protected_dims(sub_workload, tuple(cns))
 
         layers: list[dict[str, Any]] = []
         # Cores already given to earlier layers of this fused group. Used to place each layer on a
@@ -137,7 +138,7 @@ class GenericMappingGenerator:
             core_allocation: list[list[int]] = [[c.id for c in cores]]
 
             if n_cores > 1:
-                split_factors = self._factor_split_across_dims(sub_workload, cn, n_cores)
+                split_factors = self._factor_split_across_dims(sub_workload, cn, n_cores, protected)
                 if split_factors:
                     inter_core_tiling: list[list[dict[str, Any]]] = [
                         [{"dim": f"D{dim_idx}", "split": factor} for dim_idx, factor in split_factors]
@@ -218,7 +219,7 @@ class GenericMappingGenerator:
         return fallback
 
     def _factor_split_across_dims(
-        self, sub_workload: Workload, cn: ComputationNode, n_cores: int
+        self, sub_workload: Workload, cn: ComputationNode, n_cores: int, protected: set[LayerDim]
     ) -> list[tuple[int, int]]:
         """Distribute an inter-core split of *n_cores* across the node's dimensions.
 
@@ -235,6 +236,9 @@ class GenericMappingGenerator:
         available dimensions, the largest achievable subset is returned (product of
         factors < ``n_cores``) rather than forcing an indivisible split.
 
+        ``protected`` are global dimensions that must never be inter-core split (a SEQUENTIAL
+        recurrence carry, or a nonlinear normalization reduction) for any node in the fused group.
+
         Returns a list of ``(dim_index, factor)`` pairs, empty when the node has no
         splittable dimensions.
         """
@@ -242,14 +246,9 @@ class GenericMappingGenerator:
         if not dims:
             return []
 
-        # SEQUENTIAL (recurrence) dimensions carry a total order and must never be spatially
-        # unrolled across cores -- exclude them from the inter-core split (no-op for non-recurrent
-        # nodes, whose sequential set is empty).
-        sequential = sequential_dims(cn)
-
-        # (index, size) per dimension, largest first.
+        # (index, size) per splittable dimension, largest first (protected dims excluded).
         dim_sizes = sorted(
-            ((idx, sub_workload.get_dimension_size(dim)) for idx, dim in enumerate(dims) if idx not in sequential),
+            ((idx, sub_workload.get_dimension_size(dim)) for idx, dim in enumerate(dims) if dim not in protected),
             key=lambda pair: pair[1],
             reverse=True,
         )
@@ -266,19 +265,34 @@ class GenericMappingGenerator:
                 remaining //= factor
         return split_factors
 
+    def _protected_dims(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> set[LayerDim]:
+        """Global dimensions the whole fused group must not inter-core split: a dim that is a SEQUENTIAL
+        recurrence carry or a nonlinear (softmax/layernorm) reduction for ANY node. The group shares one
+        spatial unrolling, so a dim illegal for one fused node is illegal for all -- e.g. the attention
+        key axis is a parallel output of the scores matmul but the softmax's nonlinear reduction, so it
+        stays resident, never split across cores (that would need the online-softmax rewrite)."""
+        protected: set[LayerDim] = set()
+        for cn in cns:
+            node_dims = sub_workload.get_dims(cn)
+            for pos in sequential_dims(cn) | nonlinear_reduction_dims(cn):
+                if pos < len(node_dims):
+                    protected.add(node_dims[pos])
+        return protected
+
     def _inter_core_unrolling(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> dict[LayerDim, int]:
         """Per global loop dimension, the largest inter-core split factor applied to it across the
         group. This is exactly the "spatial unrolling" ``determine_fusion_splits`` divides by (it reads
         it back from each layer's inter-core tiling), so the default intra-core tile must divide it out
         to stay a no-op. A dimension shared across nodes (e.g. self-attention's query==key==seq collapse
         to one symbol) takes the max, matching the fused-split accounting."""
+        protected = self._protected_dims(sub_workload, cns)
         unroll: dict[LayerDim, int] = {}
         for cn in cns:
             cores = self._select_cores_for_node(cn)
             if len(cores) <= 1:
                 continue
             node_dims = sub_workload.get_dims(cn)
-            for dim_idx, factor in self._factor_split_across_dims(sub_workload, cn, len(cores)):
+            for dim_idx, factor in self._factor_split_across_dims(sub_workload, cn, len(cores), protected):
                 if dim_idx < len(node_dims):
                     dim = node_dims[dim_idx]
                     unroll[dim] = max(unroll.get(dim, 1), factor)
