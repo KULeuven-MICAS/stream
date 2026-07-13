@@ -21,11 +21,23 @@ from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.parser.mapping_validator import MappingValidator
-from stream.workload.iterator_type import nonlinear_reduction_dims, sequential_dims
+from stream.workload.affine_access import map_dim_positions
+from stream.workload.iterator_type import (
+    IteratorType,
+    derive_iterator_types,
+    nonlinear_reduction_dims,
+    sequential_dims,
+)
 from stream.workload.node import ComputationNode
+from stream.workload.tensor import Tensor
 from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
+
+
+def _tensor_bits(shape: tuple[int, ...], tensor: Tensor) -> int:
+    """Storage (bits) of a tensor tile of the given ``shape``."""
+    return math.prod(shape) * tensor.operand_type.bitwidth
 
 
 class GenericMappingGenerator:
@@ -317,6 +329,10 @@ class GenericMappingGenerator:
             if selected:
                 return [dict(e) for e in selected]
 
+        auto = self._auto_fusion_tiling(sub_workload, cns)
+        if auto:
+            return auto
+
         unroll = self._inter_core_unrolling(sub_workload, cns)
         for ref_cn in cns:
             dims = sub_workload.get_dims(ref_cn)
@@ -325,4 +341,84 @@ class GenericMappingGenerator:
                 factor = unroll.get(dims[0], 1)
                 tile = dim_size // factor if factor > 1 and dim_size % factor == 0 else dim_size
                 return [{"dim": f"{ref_cn.name}.D0", "tile": tile}]
+        return []
+
+    def _fusible_parallel_dims(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> set[LayerDim]:
+        """Global dims that are a PARALLEL output axis for *every* node that indexes them.
+
+        These are the only axes a fused group can tile so each tile produces complete outputs and every
+        reduction (linear contraction or nonlinear softmax) stays resident -- e.g. attention's query
+        axis, not the key axis (softmax reduction) nor the head axis (the output projection reduces it)."""
+        non_parallel: set[LayerDim] = set()
+        all_dims: set[LayerDim] = set()
+        for cn in cns:
+            node_dims = sub_workload.get_dims(cn)
+            types = derive_iterator_types(cn)
+            nonlinear = nonlinear_reduction_dims(cn)
+            for pos, dim in enumerate(node_dims):
+                all_dims.add(dim)
+                if types.get(pos) != IteratorType.PARALLEL or pos in nonlinear:
+                    non_parallel.add(dim)
+        return all_dims - non_parallel
+
+    def _auto_fusion_tiling(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> list[dict[str, Any]]:
+        """Automatically fuse a multi-node group along a parallel axis, tiled so the largest resident
+        intermediate fits on-chip.
+
+        Picks the largest dimension that is PARALLEL for every node and flows through an intermediate
+        (a tensor produced and consumed inside the group), then the largest tile of it (per core) whose
+        resident intermediate fits a fraction of the core's memory. The reduction axes are kept resident
+        (never tiled), so this is the SOTA non-flash fused-attention shape: stream query blocks, keep the
+        keys resident. Returns [] to fall back to the trivial whole-layer tiling."""
+        if len(cns) <= 1:
+            return []
+        intermediates = [t for cn in cns for t in cn.outputs if any(t in c.inputs for c in cns)]
+        if not intermediates:
+            return []
+        indexed_by_intermediate: set[LayerDim] = set()
+        for tensor in intermediates:
+            producer = next(cn for cn in cns if tensor in cn.outputs)
+            dims = sub_workload.get_dims(producer)
+            for pos in map_dim_positions(producer.get_mapping(tensor)):
+                if pos < len(dims):
+                    indexed_by_intermediate.add(dims[pos])
+        candidates = [
+            d
+            for d in self._fusible_parallel_dims(sub_workload, cns) & indexed_by_intermediate
+            if sub_workload.get_dimension_size(d) > 1
+        ]
+        if not candidates:
+            return []
+        fusion_dim = max(candidates, key=sub_workload.get_dimension_size)
+
+        full = sub_workload.get_dimension_size(fusion_dim)
+        unroll = self._inter_core_unrolling(sub_workload, cns).get(fusion_dim, 1)
+        per_core = full // unroll if unroll > 1 and full % unroll == 0 else full
+        capacity_bits = min(
+            (cores[0].get_memory_capacity() for cn in cns if (cores := self._select_cores_for_node(cn))),
+            default=0,
+        )
+        budget = capacity_bits // 2  # the fusion intermediate shares L1 with weights + activations
+
+        def resident_bits(tile: int) -> int:
+            factor = full // tile
+            return max(
+                _tensor_bits(sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)]), t)
+                for t in intermediates
+            )
+
+        # Only tile when the whole per-core slice does NOT fit -- otherwise keep the trivial whole-layer
+        # tiling (so CNNs and small blocks that fit are unaffected). This is the layer-fusion trigger.
+        if budget <= 0 or resident_bits(per_core) <= budget:
+            return []
+        divisors = sorted((t for t in range(1, per_core + 1) if per_core % t == 0), reverse=True)
+        tile = 1  # best effort: most tiling if even one block does not fit
+        for candidate_tile in divisors:
+            if resident_bits(candidate_tile) <= budget:
+                tile = candidate_tile
+                break
+        for cn in cns:
+            dims = sub_workload.get_dims(cn)
+            if fusion_dim in dims:
+                return [{"dim": f"{cn.name}.D{dims.index(fusion_dim)}", "tile": tile}]
         return []

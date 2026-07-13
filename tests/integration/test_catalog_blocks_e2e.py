@@ -1,10 +1,10 @@
 """End-to-end allocation of the affine-IR model-catalog blocks (MHA / linear attention).
 
 Runs the whole constraint-optimization pipeline on an *in-memory* ``Workload`` (no ONNX round-trip)
-via ``optimize_allocation_co_generic_workload``, and checks that the non-affine structure drives the
-fusion split: the softmax nonlinear reduction cuts MHA into two schedulable groups, while a SEQUENTIAL
-recurrence (linear attention) stays a single group. Slow (the MILP solve takes a while), so excluded
-from the default ``-m 'not slow'`` run.
+via ``optimize_allocation_co_generic_workload``. The softmax is a nonlinear reduction, not a hard
+barrier, so the whole attention chain fuses into ONE region (its reduction axis kept resident, never
+spilled); a SEQUENTIAL recurrence (linear attention) likewise stays a single group. Slow (the MILP
+solve takes a while), so excluded from the default ``-m 'not slow'`` run.
 """
 
 from __future__ import annotations
@@ -36,14 +36,14 @@ def _run(workload, tmp_path: Path):
 
 @pytest.mark.slow
 @pytest.mark.timeout(600)
-def test_attention_block_splits_at_softmax_barrier(tmp_path: Path):
+def test_attention_block_fuses_into_one_region(tmp_path: Path):
     ctx = _run(build_attention_block(AttentionConfig(batch=1, heads=1, seq=8, d_head=8)), tmp_path)
 
     group_latencies = ctx.get("group_latencies")
-    assert group_latencies is not None and len(group_latencies) == 2, (
-        f"softmax must split MHA into two fusion groups, got {group_latencies}"
+    assert group_latencies is not None and len(group_latencies) == 1, (
+        f"the softmax is not a hard barrier -- attention must fuse into one region, got {group_latencies}"
     )
-    assert all(lat > 0 for lat in group_latencies.values()), f"every group must schedule: {group_latencies}"
+    assert all(lat > 0 for lat in group_latencies.values()), f"the fused region must schedule: {group_latencies}"
     assert ctx.get("total_latency") == pytest.approx(sum(group_latencies.values()))
 
 

@@ -115,3 +115,36 @@ def test_linear_contraction_axis_stays_splittable():
     linear_reduction_dims = {sub.get_dims(scores)[p] for p, t in types.items() if t == IteratorType.REDUCTION}
     assert linear_reduction_dims, "scores must have a linear contraction dim"
     assert linear_reduction_dims.isdisjoint(protected), "a linear contraction must remain splittable"
+
+
+def test_auto_fusion_tiles_the_query_axis_when_intermediates_overflow():
+    """A large attention head whose score matrix overflows on-chip auto-fuses along the QUERY axis (a
+    parallel axis that flows through the intermediates), keeping the key axis (the softmax reduction)
+    resident -- the SOTA non-flash fused-attention shape (stream query blocks, keys stay put)."""
+    workload = build_attention_block(AttentionConfig(batch=1, heads=4, seq=1024, d_head=64))
+    accelerator = _parse_accelerator()
+    gen = GenericMappingGenerator(
+        accelerator=accelerator, workload=workload, output_dir=tempfile.mkdtemp(), intra_core_tiling=None
+    )
+    sub = workload.split_fusion_groups(cut_points=determine_fusion_cut_points(workload))[0]
+    cns = tuple(sub.get_computation_nodes())
+    tiling = gen._build_intra_core_tiling(sub, cns)
+    assert len(tiling) == 1
+    node_name, pos = tiling[0]["dim"].split(".D")
+    fusion_dim = sub.get_dims(next(n for n in cns if n.name == node_name))[int(pos)]
+    scores = next(n for n in cns if n.name == "scores")
+    query, key = sub.get_dims(scores)[2], sub.get_dims(scores)[3]
+    assert fusion_dim == query, "the fusion axis must be the query (parallel), not the key"
+    assert fusion_dim != key
+    assert tiling[0]["tile"] < sub.get_dimension_size(query), "the query is actually blocked (tile < full)"
+
+
+def test_small_attention_keeps_the_whole_region_resident():
+    """When the whole score matrix fits on-chip, no fusion tiling is emitted (keep it resident)."""
+    workload = build_attention_block(AttentionConfig(batch=1, heads=1, seq=8, d_head=8))
+    accelerator = _parse_accelerator()
+    gen = GenericMappingGenerator(
+        accelerator=accelerator, workload=workload, output_dir=tempfile.mkdtemp(), intra_core_tiling=None
+    )
+    sub = workload.split_fusion_groups(cut_points=determine_fusion_cut_points(workload))[0]
+    assert gen._auto_fusion_tiling(sub, tuple(sub.get_computation_nodes())) == []
