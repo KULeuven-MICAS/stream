@@ -74,6 +74,34 @@ class FusedGroupIR(BaseModel):
     )
 
 
+class SteadyStateOperatorIR(BaseModel):
+    """One original (un-tiled) operator of a fused group and the sizes of its tensors."""
+
+    name: str = Field(description="Operator name")
+    op: str = Field(description="Operator type, e.g. 'MatMul', 'SelectiveScan', 'Softmax'")
+    tensors: list[dict[str, Any]] = Field(description="Its operand tensors as [{'name', 'shape': [..]}, ...]")
+
+
+class SteadyStateLoopIR(BaseModel):
+    """One loop of the steady-state iteration space: a for-loop the fused schedule iterates."""
+
+    dim: str = Field(description="The tiled loop dimension")
+    size: int = Field(description="Trip count within a single steady-state slice")
+    type: str = Field(description="Loop kind: 'temporal' (a for-loop), 'spatial' (unrolled across cores), 'kernel'")
+
+
+class SteadyStateIR(BaseModel):
+    """The tiled / steady-state view of a fused group: the original operators with their tensor sizes, the
+    for-loop nest over the steady-state iteration space, and the tiled workload graph with the transfer
+    nodes (the tensor copies kept on-chip between cores). Best-effort inspection view; None if unavailable."""
+
+    operators: list[SteadyStateOperatorIR] = Field(description="Original operators + tensor sizes")
+    loops: list[SteadyStateLoopIR] = Field(description="The steady-state iteration-space for-loop nest")
+    tiled_graph: dict[str, Any] = Field(
+        description="The tiled workload with transfers: {'nodes': [{name,kind,...}], 'edges': [{source,target}]}"
+    )
+
+
 class AllocationAlgorithmicView(BaseModel):
     """Algorithmic-persona projection of AllocationIR.
 
@@ -220,6 +248,10 @@ class AllocationIR(BaseModel):
         default=None,
         description="Read-only utilization/bottleneck summary; None if stats were unavailable for this solve",
     )
+    steady_state: SteadyStateIR | None = Field(
+        default=None,
+        description="Tiled/steady-state inspection view (operators+tensor sizes, loop nest, transfer graph)",
+    )
 
     @classmethod
     def from_internal(cls, scheduler: SteadyStateScheduler) -> AllocationIR:
@@ -267,6 +299,9 @@ class AllocationIR(BaseModel):
             else None
         )
 
+        ss_raw = raw.get("steady_state")
+        steady_state = SteadyStateIR(**ss_raw) if ss_raw else None
+
         return cls(
             latency=LatencyInfo(**raw["latency"]),
             backend=raw["backend"],
@@ -277,6 +312,7 @@ class AllocationIR(BaseModel):
             fused_groups=fused_groups,
             runtime_args={k: str(v) for k, v in mapping["runtime_args"].items()},
             performance=performance,
+            steady_state=steady_state,
         )
 
     def algorithmic_view(self) -> AllocationAlgorithmicView:
