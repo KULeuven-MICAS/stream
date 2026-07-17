@@ -35,10 +35,10 @@ PIPELINE_STAGES: list[tuple[str, str, str]] = [
     ("parse", "Parse", "Read the ONNX workload + accelerator into the graph IR"),
     ("fuse", "Fuse", "Split the graph into fusion groups at data-dependent cuts"),
     ("tile", "Tile", "Choose the steady-state tiling for each fused group"),
-    ("core_cost", "Core cost", "Estimate each op's single-core latency & energy (ZigZag, per core)"),
+    ("core_cost", "Core cost", "Per-op single-core ZigZag cost: energy & latency broken down by memory level"),
     ("allocate", "Allocate", "Build the transfer/tensor graph, then assign each op to a core (CO solve)"),
     ("schedule", "Schedule", "Order the allocated ops into a steady-state schedule"),
-    ("cost", "Cost", "Cost-model the schedule: latency, MAC utilization, bottleneck"),
+    ("cost", "System cost", "System-level result: schedule latency, bottleneck, utilization, memory accesses"),
 ]
 
 _STATUS_RANK = {"pending": 0, "running": 1, "done": 2}
@@ -120,6 +120,21 @@ class ProgressTracker:
             self._stages[key]["detail"] = self._group_detail(index)
         self.group_done(index)
 
+    def memory_group(self, index: int, cma: Any) -> None:
+        """Attach per-core memory accesses (from MemoryAccessesEstimationStage, which runs after the
+        solve) to the System-cost facet's group entry."""
+        mem = serialize_memory_accesses(cma)
+        if not mem:
+            return
+        art = self._stages["cost"]["artifact"]
+        if not isinstance(art, dict):
+            return
+        for grp in art.get("groups", []):
+            if grp.get("group") == index:
+                grp["memory"] = mem
+                self._write()
+                return
+
     def group_done(self, index: int) -> None:
         """Record that fusion group ``index`` finished its inner pipeline."""
         self.groups_completed = max(self.groups_completed, index + 1)
@@ -188,9 +203,11 @@ class ProgressProbeStage(Stage):
     """
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext,
-                 *, on_enter: Callable[[StageContext], None] | None = None):
+                 *, on_enter: Callable[[StageContext], None] | None = None,
+                 on_exit: Callable[[StageContext], None] | None = None):
         super().__init__(list_of_callables, ctx)
         self._on_enter = on_enter
+        self._on_exit = on_exit
 
     def is_leaf(self) -> bool:
         return False
@@ -203,6 +220,13 @@ class ProgressProbeStage(Stage):
                 logger.warning(f"[progress] probe on_enter failed: {exc}")
         sub = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub.run()
+        # on_exit fires after the sub-pipeline completes — e.g. after the (leaf) MemoryAccesses stage
+        # has run, so ctx now carries its output.
+        if self._on_exit is not None:
+            try:
+                self._on_exit(self.ctx)
+            except Exception as exc:  # noqa: BLE001 -- a probe must never fail the solve
+                logger.warning(f"[progress] probe on_exit failed: {exc}")
 
 
 # --------------------------------------------------------------------------- #
@@ -305,11 +329,42 @@ def _schedule_facet(alloc: dict[str, Any]) -> dict[str, Any]:
 
 def _cost_facet(alloc: dict[str, Any]) -> dict[str, Any]:
     perf = alloc.get("performance") or {}
+    latency = alloc.get("latency") or {}
+    per_iter = latency.get("per_iteration") or 0
+    total = latency.get("total") or 0
     return {
         "latency": alloc.get("latency"),
+        "iterations": (round(total / per_iter) if per_iter else None),
+        "backend": alloc.get("backend"),
         "bottleneck": perf.get("bottleneck"),
         "aggregate": perf.get("aggregate"),
+        # memory accesses are merged in later (post-MemoryAccessesEstimationStage) via the solved probe's on_exit
     }
+
+
+def serialize_memory_accesses(cma: Any) -> dict[str, Any] | None:
+    """Per-core memory-access counts (max-bandwidth-word read/write transfers) from a solved run's
+    CoreMemoryAccesses, sorted by total. Best-effort — None if unavailable/empty."""
+    accesses = getattr(cma, "accesses", None)
+    if not accesses:
+        return None
+    try:
+        per_core = []
+        for core, tensors in accesses.items():
+            reads = sum(getattr(a, "read", 0) for a in tensors.values())
+            writes = sum(getattr(a, "write", 0) for a in tensors.values())
+            per_core.append({
+                "core": getattr(core, "id", None),
+                "reads": reads,
+                "writes": writes,
+                "total": reads + writes,
+                "tensors": len(tensors),
+            })
+        per_core.sort(key=lambda c: -c["total"])
+        return {"per_core": per_core}
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[progress] serialize_memory_accesses failed: {exc}")
+        return None
 
 
 def inner_facets(alloc: dict[str, Any] | None) -> dict[str, Any]:
@@ -326,9 +381,46 @@ def inner_facets(alloc: dict[str, Any] | None) -> dict[str, Any]:
     return facets
 
 
+def _cme_breakdown(cme: Any) -> dict[str, Any] | None:
+    """Build the ZigZag CmeLayerInfo energy/latency breakdown (energy per memory-level × operand ×
+    data-direction, latency per phase) for one CME, reusing zigzag's own array helpers so the frontend
+    can render it with the same EnergyBreakdown/LatencyBreakdown charts ZigZag uses. None if unavailable."""
+    if cme is None:
+        return None
+    try:
+        from zigzag.hardware.architecture.memory_port import DataDirection  # noqa: PLC0415
+        from zigzag.visualization.results.plot_cme import get_energy_array, get_latency_array  # noqa: PLC0415
+
+        mem_hierarchy = cme.accelerator.memory_hierarchy
+        all_mems = sorted((ml.memory_instance for ml in mem_hierarchy.mem_level_list), key=lambda m: m.size)
+        all_ops = list(cme.layer.layer_operands)
+        bars = ["MAC"] + [m.name for m in all_mems]
+        sections = [op.name for op in all_ops]
+        subs = [str(d) for d in DataDirection]
+        energy = get_energy_array([cme], all_ops, all_mems)[0]  # [bar, section(op), sub(direction)]
+        latency = get_latency_array([cme])[0]  # [ideal, spatial, temporal, data_loading, data_offloading]
+        mem: dict[str, Any] = {}
+        for i in range(1, len(bars)):  # skip the MAC bar (kept separately as energies.mac)
+            mem[bars[i]] = {
+                sections[j]: {subs[k]: float(energy[i, j, k]) for k in range(len(subs))}
+                for j in range(len(sections))
+            }
+        return {
+            "latencies": {
+                "ideal": float(latency[0]), "spatial": float(latency[1]), "temporal": float(latency[2]),
+                "data_loading": float(latency[3]), "data_offloading": float(latency[4]),
+            },
+            "energies": {"mac": float(cme.mac_energy), "mem": mem},
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"[progress] cme breakdown failed: {exc}")
+        return None
+
+
 def core_cost_artifact(cost_lut: Any) -> list[dict[str, Any]]:
-    """Per-node single-core cost from the CoreCostLUT: the ZigZag latency & energy of each op on the
-    best (min-latency) core it can run on. Best-effort — any failure yields an empty list."""
+    """Per-op single-core ZigZag cost from the CoreCostLUT, on the best (min-latency) core. Each row is
+    a ZigZag CmeLayerInfo (name/short_name/energy/latency + energies/latencies breakdown) plus the op,
+    core and MAC utilization, so the frontend reuses ZigZag's breakdown charts. Best-effort."""
     rows: list[dict[str, Any]] = []
     if cost_lut is None:
         return rows
@@ -346,18 +438,26 @@ def core_cost_artifact(cost_lut: Any) -> list[dict[str, Any]]:
             if best is None:
                 continue
             core, _lat, entry = best
+            cme = getattr(entry, "cme", None)
             ideal = getattr(entry, "ideal_cycle", None)
             lat = getattr(entry, "latency_total", None)
-            rows.append({
-                "node": getattr(node, "name", str(node)),
-                "op": getattr(node, "type", None),
+            name = getattr(node, "name", str(node))
+            op = getattr(node, "type", None)
+            row = {
+                "name": name,
+                "short_name": f"{op}: {name}" if op else name,
+                "op": op,
                 "core": getattr(core, "id", None),
-                "latency": lat,
+                "latency": float(lat) if lat is not None else None,
                 "energy": getattr(entry, "energy_total", None),
                 "ideal_cycle": ideal,
-                # Compute efficiency: how close the single-core estimate runs to the compute-ideal floor.
                 "efficiency": (ideal / lat) if (ideal and lat) else None,
-            })
+                "mac_utilization": getattr(cme, "mac_utilization2", None) if cme is not None else None,
+            }
+            breakdown = _cme_breakdown(cme)
+            if breakdown:
+                row.update(breakdown)  # -> latencies, energies (the CmeLayerInfo detail)
+            rows.append(row)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[progress] core_cost_artifact failed: {exc}")
     return rows
@@ -434,6 +534,10 @@ def instrument_stages(stages: list[StageCallable], tracker: ProgressTracker) -> 
     def _cb_solved(ctx: StageContext) -> None:
         tracker.solved_group(group_index_from_ctx(ctx), alloc_partial(ctx.get("scheduler")))
 
+    def _cb_memory(ctx: StageContext) -> None:
+        # Fires after the (leaf) MemoryAccessesEstimationStage has run, so ctx carries memory_accesses.
+        tracker.memory_group(group_index_from_ctx(ctx), ctx.get("memory_accesses"))
+
     def _probe(cb: Callable[[StageContext], None]) -> StageCallable:
         import functools  # noqa: PLC0415
 
@@ -463,5 +567,9 @@ def instrument_stages(stages: list[StageCallable], tracker: ProgressTracker) -> 
         if name == _CORE_COST:
             out.append(_probe(_cb_costed))  # single-core cost done -> allocation begins
         if name == _CONSTRAINT_OPT:
-            out.append(_probe(_cb_solved))  # solved -> per-stage partial IR facets
+            # on_enter (after ConstraintOpt): the per-stage partial IR facets.
+            # on_exit (after the downstream MemoryAccessesEstimationStage completes): memory accesses.
+            import functools  # noqa: PLC0415
+
+            out.append(functools.partial(ProgressProbeStage, on_enter=_cb_solved, on_exit=_cb_memory))
     return out
