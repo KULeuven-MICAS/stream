@@ -282,6 +282,8 @@ def fuse_artifact(ctx: StageContext) -> tuple[dict[str, Any] | None, int | None]
                     "name": f"group_{i}",
                     "n_nodes": len(nodes),
                     "ops": dict(sorted(ops.items(), key=lambda kv: -kv[1])),
+                    # member node names, so the UI can highlight this group in the workload graph
+                    "node_names": [getattr(n, "name", str(n)) for n in nodes],
                 })
             return {"n_groups": len(groups), "groups": groups}, len(groups)
         # Single-shot fixed mapping: no fusion split — the whole workload is solved as one group.
@@ -453,6 +455,9 @@ def core_cost_artifact(cost_lut: Any) -> list[dict[str, Any]]:
                 "ideal_cycle": ideal,
                 "efficiency": (ideal / lat) if (ideal and lat) else None,
                 "mac_utilization": getattr(cme, "mac_utilization2", None) if cme is not None else None,
+                # 'zigzag' = full CME breakdown; 'ideal-cycle' = ZigZag couldn't spatially map this op
+                # (e.g. a bandwidth-limited Conv), so only the compute-ideal cycle count is available.
+                "estimator": "zigzag" if cme is not None else "ideal-cycle",
             }
             breakdown = _cme_breakdown(cme)
             if breakdown:
