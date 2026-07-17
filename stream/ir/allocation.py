@@ -74,6 +74,51 @@ class FusedGroupIR(BaseModel):
     )
 
 
+class TileFactorIR(BaseModel):
+    """One tiling decision: a loop dimension split by an integer factor.
+
+    `dim` is the global loop dimension name (e.g. 'z1'); `axis` is the semantic
+    tensor axis it indexes (e.g. 'seq', 'embedding') when the affine IR can
+    resolve it, else None. Typing tiling as `{dim, factor, axis}` replaces the
+    stringly-typed `[dim_str, factor]` pairs that stages 2/3 were read out of.
+    """
+
+    dim: str = Field(description="The loop dimension being tiled")
+    factor: int = Field(description="The integer split/tile factor applied to this dimension")
+    axis: str | None = Field(
+        default=None, description="Semantic tensor axis this dim indexes (when resolvable), else None"
+    )
+
+
+class FusionIR(BaseModel):
+    """Stage-2 (Fuse) typed artifact: which layers share on-chip residency.
+
+    A dedicated typed sub-object for the fusion decision, rather than reading it
+    out of `fused_groups` strings.
+    """
+
+    n_groups: int = Field(description="Number of fused groups the workload was partitioned into")
+    groups: list[FusedGroupIR] = Field(description="The fused groups: their layers and intra-core tiling")
+
+
+class TilingIR(BaseModel):
+    """Stage-3 (Tile) typed artifact: the spatial (inter-core) and temporal (intra-core) tiling.
+
+    A dedicated typed sub-object so the Tile decision is inspectable directly,
+    rather than reconstructed from `fusion_splits`/`inter_core_tiling` strings.
+    """
+
+    fusion_splits: list[TileFactorIR] = Field(
+        description="Per-dimension fusion split factors applied before scheduling"
+    )
+    inter_core: dict[str, list[TileFactorIR]] = Field(
+        description="Per-node spatial split across cores (the first slot's inter-core tiling)"
+    )
+    intra_core: dict[str, list[TileFactorIR]] = Field(
+        description="Per-fused-group temporal tile factors within a single core"
+    )
+
+
 class SteadyStateOperatorIR(BaseModel):
     """One original (un-tiled) operator of a fused group and the sizes of its tensors."""
 
@@ -229,7 +274,8 @@ class AllocationIR(BaseModel):
         }
     )
 
-    schema_version: Literal["1.0"] = "1.0"
+    # 1.1 (additive): typed `fusion` (stage 2) and `tiling` (stage 3) sub-objects.
+    schema_version: Literal["1.1"] = "1.1"
     latency: LatencyInfo = Field(description="Latency metrics from the solved scheduler")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     cost_models: CostModelsIR | None = Field(
@@ -251,6 +297,14 @@ class AllocationIR(BaseModel):
     steady_state: SteadyStateIR | None = Field(
         default=None,
         description="Tiled/steady-state inspection view (operators+tensor sizes, loop nest, transfer graph)",
+    )
+    fusion: FusionIR | None = Field(
+        default=None,
+        description="Stage-2 (Fuse) typed artifact: which layers share on-chip residency",
+    )
+    tiling: TilingIR | None = Field(
+        default=None,
+        description="Stage-3 (Tile) typed artifact: spatial (inter-core) + temporal (intra-core) tiling",
     )
 
     @classmethod
@@ -302,6 +356,28 @@ class AllocationIR(BaseModel):
         ss_raw = raw.get("steady_state")
         steady_state = SteadyStateIR(**ss_raw) if ss_raw else None
 
+        # Stage-2 (Fuse) and stage-3 (Tile) typed artifacts, derived from the
+        # same mapping dict — so the fuse/tile decisions are inspectable as
+        # typed objects rather than reconstructed from strings downstream.
+        def _factors(pairs: list) -> list[TileFactorIR]:
+            out: list[TileFactorIR] = []
+            for pair in pairs or []:
+                if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                    out.append(TileFactorIR(dim=str(pair[0]), factor=int(pair[1])))
+            return out
+
+        fusion = FusionIR(n_groups=len(fused_groups), groups=fused_groups)
+        tiling = TilingIR(
+            fusion_splits=[
+                TileFactorIR(dim=str(d), factor=int(f)) for d, f in raw["fusion_splits"].items()
+            ],
+            inter_core={
+                name: _factors(node["inter_core_tiling"][0] if node["inter_core_tiling"] else [])
+                for name, node in mapping["nodes"].items()
+            },
+            intra_core={fg["name"]: _factors(fg["intra_core_tiling"]) for fg in mapping["fused_groups"]},
+        )
+
         return cls(
             latency=LatencyInfo(**raw["latency"]),
             backend=raw["backend"],
@@ -313,6 +389,8 @@ class AllocationIR(BaseModel):
             runtime_args={k: str(v) for k, v in mapping["runtime_args"].items()},
             performance=performance,
             steady_state=steady_state,
+            fusion=fusion,
+            tiling=tiling,
         )
 
     def algorithmic_view(self) -> AllocationAlgorithmicView:
