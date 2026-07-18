@@ -427,49 +427,56 @@ def _cme_breakdown(cme: Any) -> dict[str, Any] | None:
 
 
 def core_cost_artifact(cost_lut: Any) -> list[dict[str, Any]]:
-    """Per-op single-core ZigZag cost from the CoreCostLUT, on the best (min-latency) core. Each row is
-    a ZigZag CmeLayerInfo (name/short_name/energy/latency + energies/latencies breakdown) plus the op,
-    core and MAC utilization, so the frontend reuses ZigZag's breakdown charts. Best-effort."""
+    """Per-op single-core ZigZag cost from the CoreCostLUT, across EVERY core the op is mapped on. A node
+    tiled across a set of cores yields one row per distinct cost: identical cores collapse into a single
+    row listing all of them (``cores``); cores that differ in latency/energy get their own row (so a
+    non-uniform mapping shows each variant). Each row is a ZigZag CmeLayerInfo (name/short_name/energy/
+    latency + breakdown) plus the op, the core set and MAC utilization. Best-effort."""
     rows: list[dict[str, Any]] = []
     if cost_lut is None:
         return rows
     try:
         for node in cost_lut.get_nodes():
-            best = None
+            name = getattr(node, "name", str(node))
+            op = getattr(node, "type", None)
+            # Group this node's cores by identical (latency, energy) so uniform cores are one row.
+            groups: dict[tuple, dict[str, Any]] = {}
             for core in cost_lut.get_cores(node):
                 try:
                     entry = cost_lut.get_cost(node, core)
                 except Exception:  # noqa: BLE001
                     continue
                 lat = getattr(entry, "latency_total", None)
-                if best is None or (lat is not None and lat < best[1]):
-                    best = (core, lat if lat is not None else float("inf"), entry)
-            if best is None:
-                continue
-            core, _lat, entry = best
-            cme = getattr(entry, "cme", None)
-            ideal = getattr(entry, "ideal_cycle", None)
-            lat = getattr(entry, "latency_total", None)
-            name = getattr(node, "name", str(node))
-            op = getattr(node, "type", None)
-            row = {
-                "name": name,
-                "short_name": f"{op}: {name}" if op else name,
-                "op": op,
-                "core": getattr(core, "id", None),
-                "latency": float(lat) if lat is not None else None,
-                "energy": getattr(entry, "energy_total", None),
-                "ideal_cycle": ideal,
-                "efficiency": (ideal / lat) if (ideal and lat) else None,
-                "mac_utilization": getattr(cme, "mac_utilization2", None) if cme is not None else None,
-                # 'zigzag' = full CME breakdown; 'ideal-cycle' = ZigZag couldn't spatially map this op
-                # (e.g. a bandwidth-limited Conv), so only the compute-ideal cycle count is available.
-                "estimator": "zigzag" if cme is not None else "ideal-cycle",
-            }
-            breakdown = _cme_breakdown(cme)
-            if breakdown:
-                row.update(breakdown)  # -> latencies, energies (the CmeLayerInfo detail)
-            rows.append(row)
+                en = getattr(entry, "energy_total", None)
+                key = (round(lat, 3) if lat is not None else None, round(en, 3) if en is not None else None)
+                grp = groups.setdefault(key, {"cores": [], "entry": entry})
+                cid = getattr(core, "id", None)
+                if cid is not None:
+                    grp["cores"].append(cid)
+            # Emit fastest-first so the primary variant leads.
+            for _key, grp in sorted(groups.items(), key=lambda kv: (kv[0][0] if kv[0][0] is not None else float("inf"))):
+                entry = grp["entry"]
+                cme = getattr(entry, "cme", None)
+                ideal = getattr(entry, "ideal_cycle", None)
+                lat = getattr(entry, "latency_total", None)
+                row = {
+                    "name": name,
+                    "short_name": f"{op}: {name}" if op else name,
+                    "op": op,
+                    "cores": sorted(grp["cores"]),
+                    "latency": float(lat) if lat is not None else None,
+                    "energy": getattr(entry, "energy_total", None),
+                    "ideal_cycle": ideal,
+                    "efficiency": (ideal / lat) if (ideal and lat) else None,
+                    "mac_utilization": getattr(cme, "mac_utilization2", None) if cme is not None else None,
+                    # 'zigzag' = full CME breakdown; 'ideal-cycle' = ZigZag couldn't spatially map this op
+                    # (e.g. a bandwidth-limited Conv), so only the compute-ideal cycle count is available.
+                    "estimator": "zigzag" if cme is not None else "ideal-cycle",
+                }
+                breakdown = _cme_breakdown(cme)
+                if breakdown:
+                    row.update(breakdown)  # -> latencies, energies (the CmeLayerInfo detail)
+                rows.append(row)
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[progress] core_cost_artifact failed: {exc}")
     return rows
