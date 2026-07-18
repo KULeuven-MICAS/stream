@@ -43,6 +43,13 @@ class GraphDimIR(BaseModel):
     iterator_type: str = Field(description="PARALLEL | REDUCTION | SEQUENTIAL")
 
 
+class TensorRefIR(BaseModel):
+    """A tensor as it appears on the graph -- its name and concrete shape (tile-sized in a tiled graph)."""
+
+    name: str
+    shape: list[int] = Field(default_factory=list, description="Dimension sizes, in tensor-axis order")
+
+
 class OperandReuseIR(BaseModel):
     operand: str = Field(description="Input tensor reused across an output axis")
     axes: list[AxisRefIR] = Field(description="Output axes this input is INVARIANT over (reused across)")
@@ -94,6 +101,9 @@ class GraphNodeIR(BaseModel):
     block_class: int | None = Field(default=None, description="Repeated-block class id (None = unique)")
     region: int | None = Field(default=None, description="Fusable-region id (barrier-cut)")
     proposed_region: int | None = Field(default=None, description="Auto-proposed fusion-region id")
+    tensor: TensorRefIR | None = Field(
+        default=None, description="For input/output boundary nodes: the tensor (name + shape) they carry"
+    )
     reuse: list[OperandReuseIR] = Field(default_factory=list)
     reduction_axes: list[AxisRefIR] | None = None
     parallel_axes: list[AxisRefIR] | None = None
@@ -104,7 +114,10 @@ class GraphNodeIR(BaseModel):
 class GraphEdgeIR(BaseModel):
     source: str
     target: str
-    shared_tensors: list[str] = Field(default_factory=list)
+    shared_tensors: list[str] = Field(default_factory=list, description="Shared-tensor names (legacy)")
+    tensors: list[TensorRefIR] = Field(
+        default_factory=list, description="Tensors flowing on this edge, with shapes, in order of appearance"
+    )
 
 
 class BlockClassIR(BaseModel):
@@ -156,7 +169,14 @@ class WorkloadGraphView(BaseModel):
         by_name = {n.name: n for n in workload.nodes}
         dims = _DimResolver(workload)
         nodes = [_node_ir(by_name[name], dims, block_of, region_of, proposed_of) for name in order]
-        edges = [GraphEdgeIR(source=s.name, target=t.name, shared_tensors=_shared(s, t)) for s, t in workload.edges]
+        edges = []
+        for s, t in workload.edges:
+            shared = _shared(s, t)
+            edges.append(
+                GraphEdgeIR(
+                    source=s.name, target=t.name, shared_tensors=[x.name for x in shared], tensors=shared
+                )
+            )
         return cls(
             tiled=_is_tiled(workload),
             nodes=nodes,
@@ -204,9 +224,17 @@ def _topo_names(workload: Workload) -> list[str]:
     return [n.name for n in workload.dataflow_sort()]
 
 
-def _shared(src, dst) -> list[str]:
+def _tensor_ref(t) -> TensorRefIR:
+    try:
+        shape = [int(s) for s in t.shape]
+    except Exception:  # noqa: BLE001 -- a symbolic/unknown shape renders as no dims, not a crash
+        shape = []
+    return TensorRefIR(name=t.name, shape=shape)
+
+
+def _shared(src, dst) -> list[TensorRefIR]:
     if isinstance(src, HasOutputs) and isinstance(dst, HasInputs):
-        return [t.name for t in src.outputs if t in dst.inputs]
+        return [_tensor_ref(t) for t in src.outputs if t in dst.inputs]
     return []
 
 
@@ -310,6 +338,12 @@ def _node_ir(
         region=region_of.get(node.name),
         proposed_region=proposed_of.get(node.name),
     )
+    # Boundary nodes (graph inputs/outputs) are a single tensor -- carry its shape so the view can show
+    # the entry/exit tensor dims alongside the operators' loop dims.
+    if isinstance(node, InEdge) and node.outputs:
+        ir.tensor = _tensor_ref(node.outputs[0])
+    elif isinstance(node, OutEdge) and node.inputs:
+        ir.tensor = _tensor_ref(node.inputs[0])
     if not isinstance(node, HasIterationSpace):
         return ir
 

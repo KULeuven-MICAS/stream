@@ -304,10 +304,15 @@ def fuse_artifact(ctx: StageContext) -> tuple[dict[str, Any] | None, int | None]
 
 def _tile_facet(alloc: dict[str, Any]) -> dict[str, Any]:
     tiling = alloc.get("tiling") or {}
+    steady = alloc.get("steady_state") or {}
     return {
         "fusion_splits": tiling.get("fusion_splits", []),
         "intra_core": tiling.get("intra_core", {}),
         "inter_core": tiling.get("inter_core", {}),
+        # The tiled workload (tile-sized tensors) + its steady-state for-loop nest, so the Tile tab shows
+        # the workload after tiling through the standard viewer and the nested loops it runs under.
+        "graph_view": steady.get("tiled_view") if isinstance(steady, dict) else None,
+        "loops": steady.get("loops") if isinstance(steady, dict) else None,
     }
 
 
@@ -319,10 +324,12 @@ def _allocate_facet(alloc: dict[str, Any]) -> dict[str, Any]:
         cores = sorted({r.get("id") for slot in res for r in slot
                         if isinstance(r, dict) and r.get("type") == "core" and r.get("id") is not None})
         placement[name] = cores
-    # The TETRA transfer/tensor-aware graph the CO solve is built on (compute + injected transfer
-    # nodes). Already in the IR as steady_state.tiled_graph; surface it so Allocate can visualize it.
-    graph = ((alloc.get("steady_state") or {}) or {}).get("tiled_graph") if alloc.get("steady_state") else None
-    return {"placement": placement, "graph": graph}
+    # The TETRA transfer/tensor-aware graph the CO solve is built on (compute + injected transfer nodes),
+    # rendered through the ONE standard workload viewer (WorkloadGraphView), carrying per-node
+    # steady-state reuse for the hover detail.
+    steady = alloc.get("steady_state") or {}
+    graph_view = steady.get("graph_view") if isinstance(steady, dict) else None
+    return {"placement": placement, "graph_view": graph_view}
 
 
 def _schedule_facet(alloc: dict[str, Any]) -> dict[str, Any]:
@@ -468,6 +475,27 @@ def core_cost_artifact(cost_lut: Any) -> list[dict[str, Any]]:
     return rows
 
 
+def _attach_steady_state_reuse(view: dict[str, Any], ssis: Any) -> None:
+    """Attach each node's steady-state loop nest + per-loop reuse (from its SteadyStateIterationSpace)
+    onto the matching graph-view node, keyed by name, so the Allocate tab can show — e.g. on hovering a
+    transfer — which loops the tensor is reused across. Best-effort; a node without an SSIS is left as-is."""
+    if not ssis:
+        return
+    by_name: dict[str, Any] = {}
+    for key, space in ssis.items():
+        name = getattr(key, "name", None)
+        if name is None:
+            continue
+        try:
+            by_name[name] = space.reuse_summary()
+        except Exception:  # noqa: BLE001 -- a node whose reuse can't be summarized just carries none
+            continue
+    for node in view.get("nodes") or []:
+        summary = by_name.get(node.get("name"))
+        if summary is not None:
+            node["steady_state"] = summary
+
+
 def alloc_partial(scheduler: Any) -> dict[str, Any] | None:
     """Build the AllocationIR dict for a solved scheduler (the per-group partial). Best-effort: any
     failure returns None so a caller that hand-drives the pipeline never fails on instrumentation."""
@@ -476,10 +504,36 @@ def alloc_partial(scheduler: Any) -> dict[str, Any] | None:
     try:
         from stream.ir.allocation import AllocationIR  # noqa: PLC0415 -- avoid import cycle at module load
 
-        return AllocationIR.from_internal(scheduler).model_dump()
+        alloc = AllocationIR.from_internal(scheduler).model_dump()
     except Exception as exc:  # noqa: BLE001
         logger.warning(f"[progress] alloc_partial failed: {exc}")
         return None
+    # Render the steady-state graph through the ONE standard workload viewer, so the Tile/Allocate tabs
+    # reuse it instead of a bespoke graph. Two views (both cheap, static for the solved group):
+    #   - tiled_view: the tiled compute workload (pre-transfer, tile-sized tensors) — the Tile tab
+    #   - graph_view: that workload with the injected transfer nodes (TETRA) — the Allocate tab
+    # Each node carries its steady-state loop/reuse summary so the Allocate tab can show reuse on hover.
+    try:
+        from stream.ir.graph_view import WorkloadGraphView  # noqa: PLC0415
+
+        ssis = getattr(scheduler, "ssis", None)
+        steady = alloc.get("steady_state")
+        if not isinstance(steady, dict):
+            steady = {}
+            alloc["steady_state"] = steady
+        tiled_wl = getattr(scheduler, "workload", None)
+        if tiled_wl is not None:
+            tiled_view = WorkloadGraphView.from_workload(tiled_wl).model_dump()
+            _attach_steady_state_reuse(tiled_view, ssis)
+            steady["tiled_view"] = tiled_view
+        ssw = getattr(scheduler, "ssw", None)
+        if ssw is not None:
+            tetra_view = WorkloadGraphView.from_workload(ssw).model_dump()
+            _attach_steady_state_reuse(tetra_view, ssis)
+            steady["graph_view"] = tetra_view
+    except Exception as exc:  # noqa: BLE001 -- the viewer is observability; never fail the solve
+        logger.warning(f"[progress] steady-state graph view failed: {exc}")
+    return alloc
 
 
 def group_index_from_ctx(ctx: StageContext) -> int:
