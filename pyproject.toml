@@ -22,7 +22,7 @@ namespaces = true
 
 [project]
 name = "stream-dse"
-version = "1.13.6"
+version = "1.13.7"
 description = "Stream - Multi-core accelerator design space exploration with layer-fused scheduling"
 readme = "README.md"
 authors = [{ name = "Arne Symons", email = "arne.symons@kuleuven.be" }, { name = "Linyan Mei", email = "linyan.mei@kuleuven.be" }]
@@ -61,10 +61,11 @@ exact = ["islpy"]
 # unit-tested without it; torch is only needed to lower a real ExportedProgram. Heavy, so opt-in.
 torch = ["torch>=2.4"]
 dev = ["bumpver", "pip-tools", "build", "twine", "pre-commit", "pytest", "pytest-timeout", "hypothesis"]
-# The optional AIE codegen toolchain (mlir_aie/llvm_aie wheels, xdsl-aie, snax-mlir,
-# aie-python-extras) cannot be an extra: those are direct-reference (git/URL) installs that
-# PyPI forbids in package metadata. Install it after `pip install stream-dse` with the
-# `stream-setup-aie` console script (see [project.scripts] below). Linux x86_64, CPython 3.12/3.13.
+# The AIE codegen dialects (xdsl-aie, snax-mlir) cannot be an extra: they are direct-reference
+# (git) installs that PyPI forbids in package metadata. Install them after `pip install stream-dse`
+# with the `stream-setup-aie` console script (see [project.scripts] below). It installs only those
+# pure-Python dialects by default; the platform-specific mlir_aie/llvm-aie wheels are opt-in
+# (`stream-setup-aie --with-mlir-aie`) and never overwrite a host that already provides them.
 
 [project.scripts]
 stream-setup-aie = "stream.aie_setup:main"
@@ -93,7 +94,7 @@ torch_export = "stream.frontends.torch_export:TorchExportFrontend"
 Homepage = "https://github.com/KULeuven-MICAS/stream"
 
 [tool.bumpver]
-current_version = "1.13.6"
+current_version = "1.13.7"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "bump version {old_version} -> {new_version}"
 commit = true
