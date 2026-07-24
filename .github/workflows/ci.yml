@@ -14,11 +14,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      # Pin ruff to the pre-commit version. Unpinned, ruff-action floats to the latest
+      # release, which can enforce newly-stabilized rules (e.g. PLR0917 in 0.16) the repo
+      # has not adopted yet.
       - uses: astral-sh/ruff-action@v3
         with:
+          version: "0.15.12"
           args: check
       - uses: astral-sh/ruff-action@v3
         with:
+          version: "0.15.12"
           args: format --check
 
   tests:
