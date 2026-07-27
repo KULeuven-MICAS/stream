@@ -5,7 +5,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
-import networkx as nx
 from pydantic import BaseModel, ConfigDict, Field
 
 from stream.workload.affine_access import footprint, map_dim_positions
@@ -175,7 +174,7 @@ def _is_tiled(workload: Workload) -> bool:
 
 
 def _topo_names(workload: Workload) -> list[str]:
-    return [n.name for n in nx.lexicographical_topological_sort(workload, key=lambda n: n.name)]
+    return [n.name for n in workload.dataflow_sort()]
 
 
 def _shared(src, dst) -> list[str]:
