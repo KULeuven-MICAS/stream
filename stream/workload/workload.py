@@ -34,6 +34,9 @@ if TYPE_CHECKING:
 
 
 class Workload(DiGraphWrapper[Node]):
+    _dataflow_order: list[Node] | None = None
+    _global_dimension_idxs: dict[Node, range] | None = None
+
     def __init__(self, nodes: Sequence[Node] = ()):
         graph = nx.DiGraph()
         graph.add_nodes_from(nodes)
@@ -46,6 +49,26 @@ class Workload(DiGraphWrapper[Node]):
                         raise RuntimeError(f"Input tensor {input.name} for node {node.name} has no producer.") from e
                     graph.add_edge(pred, node)
         super().__init__(graph)
+
+    def _invalidate_order(self) -> None:
+        self._dataflow_order = None
+        self._global_dimension_idxs = None
+
+    def dataflow_sort(self) -> list[Node]:
+        """Nodes in topological order, ties broken by the order they were added.
+
+        The frontend adds nodes in the order the source graph lists them, so ties
+        follow the dataflow rather than the node names. Renaming a tensor must not
+        renumber the dimensions and solver variables derived from this order.
+        """
+        if self._dataflow_order is None or len(self._dataflow_order) != self.number_of_nodes():
+            position = self.node_positions()
+            self._dataflow_order = list(nx.lexicographical_topological_sort(self, key=position.__getitem__))
+            self._global_dimension_idxs = None
+        return self._dataflow_order
+
+    def node_positions(self) -> dict[Node, int]:
+        return {node: i for i, node in enumerate(self.nodes)}
 
     def __repr__(self) -> str:
         return str(self)
@@ -65,13 +88,16 @@ class Workload(DiGraphWrapper[Node]):
         """
         Determine unique global indices for each dimension in this workload
         """
-        global_dimension_idxs: dict[Node, range] = {}
-        idx = 0
-        for node in nx.lexicographical_topological_sort(self, key=lambda node: node.name):
-            if isinstance(node, HasIterationSpace):
-                global_dimension_idxs[node] = range(idx, idx + node.num_dims)
-                idx += node.num_dims
-        return global_dimension_idxs
+        order = self.dataflow_sort()
+        if self._global_dimension_idxs is None:
+            global_dimension_idxs: dict[Node, range] = {}
+            idx = 0
+            for node in order:
+                if isinstance(node, HasIterationSpace):
+                    global_dimension_idxs[node] = range(idx, idx + node.num_dims)
+                    idx += node.num_dims
+            self._global_dimension_idxs = global_dimension_idxs
+        return self._global_dimension_idxs
 
     @property
     def tensors(self) -> tuple[Tensor, ...]:
@@ -195,7 +221,7 @@ class Workload(DiGraphWrapper[Node]):
 
         # Assign each non-FusionEdge, non-InEdge node to a group index.
         # Group boundaries are defined by FusionEdge nodes.
-        topo_order = list(nx.lexicographical_topological_sort(self, key=lambda n: n.name))
+        topo_order = self.dataflow_sort()
 
         # Map each non-InEdge node to its group index
         node_to_group: dict[Node, int] = {}
@@ -221,17 +247,17 @@ class Workload(DiGraphWrapper[Node]):
             if node in node_to_group:
                 group_nodes[node_to_group[node]].append(node)
 
-        # Assign InEdge nodes to the group(s) of their consumers.
-        # If consumed in multiple groups, duplicate the InEdge into each group.
+        # Assign InEdge nodes to the group(s) of their consumers, ahead of the consumers and in
+        # their original order. If consumed in multiple groups, duplicate the InEdge into each.
+        group_in_edges: list[list[Node]] = [[] for _ in range(num_groups)]
         for node in topo_order:
             if not isinstance(node, InEdge):
                 continue
-            consuming_groups: set[int] = set()
-            for _, consumer in self.out_edges(node):
-                if consumer in node_to_group:
-                    consuming_groups.add(node_to_group[consumer])
+            consuming_groups = {node_to_group[c] for _, c in self.out_edges(node) if c in node_to_group}
             for grp in sorted(consuming_groups):
-                group_nodes[grp].insert(0, node)
+                group_in_edges[grp].append(node)
+        for grp, in_edges in enumerate(group_in_edges):
+            group_nodes[grp][:0] = in_edges
 
         # For each FusionEdge, add OutEdge to preceding group and InEdge to following group
         for fe in fusion_edges:
@@ -558,6 +584,7 @@ class Workload(DiGraphWrapper[Node]):
         for succ in self.successors(old_node):
             self.add_edge(new_node, succ)
         self.remove_node(old_node)
+        self._invalidate_order()
 
     def with_modified_dimension_sizes(self, new_sizes: dict[LayerDim, int]) -> "Workload":
         """Create a new workload where the dimension sizes of the given global dimension indices are modified to the new
@@ -598,9 +625,9 @@ class Workload(DiGraphWrapper[Node]):
             )
             tensor_map[tensor_name] = new_output
 
-        # Recreate nodes in topological order so inputs are available when recreating a consumer.
+        # Recreate nodes in place, so the new workload keeps this one's node order.
         new_nodes: list[Node] = []
-        for node in nx.lexicographical_topological_sort(self, key=lambda n: n.name):
+        for node in self.nodes:
             if isinstance(node, InEdge):
                 # InEdge node name may differ from output tensor name (e.g. Flatten1_in vs flatten_out)
                 # Look up by the actual output tensor name first, then fall back to node name
@@ -849,16 +876,18 @@ class Workload(DiGraphWrapper[Node]):
           per slot.
         """
 
+        position = self.node_positions()
+
         def priority(node: Node):
             if isinstance(node, ComputationNode):
-                return (0, node.name)
+                return (0, position[node])
             if isinstance(node, TransferNode):
-                return (1, node.name)
+                return (1, position[node])
             if isinstance(node, FusionEdge):
-                return (2, node.name)
+                return (2, position[node])
             if isinstance(node, InEdge):
-                return (3, node.name)
-            return (4, node.name)  # OutEdge last
+                return (3, position[node])
+            return (4, position[node])  # OutEdge last
 
         def get_options(node: Node) -> list[frozenset] | None:
             """Return candidate resource sets for a node, or None if unknown.
@@ -977,7 +1006,7 @@ class Workload(DiGraphWrapper[Node]):
             }
 
         # Build nodes info
-        nodes_info = [self._node_ir(node) for node in nx.lexicographical_topological_sort(self, key=lambda n: n.name)]
+        nodes_info = [self._node_ir(node) for node in self.dataflow_sort()]
 
         # Build edges info
         edges_info = []
@@ -1050,13 +1079,13 @@ def determine_fusion_cut_points(workload: Workload) -> list[str]:
     """
     # Collect ComputationNode names in topological order for the "last node" guard
     topo_comp_names: list[str] = []
-    for node in nx.lexicographical_topological_sort(workload, key=lambda n: n.name):
+    for node in workload.dataflow_sort():
         if isinstance(node, ComputationNode):
             topo_comp_names.append(node.name)
     last_comp_name = topo_comp_names[-1] if topo_comp_names else None
 
     cut_points: list[str] = []
-    for node in nx.lexicographical_topological_sort(workload, key=lambda n: n.name):
+    for node in workload.dataflow_sort():
         if not isinstance(node, ComputationNode):
             continue
 
