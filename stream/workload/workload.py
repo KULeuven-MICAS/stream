@@ -33,6 +33,25 @@ if TYPE_CHECKING:
     from stream.mapping.mapping import Mapping
 
 
+def _order_inputs_by_use(nodes: list[Node]) -> None:
+    """Put a group's InEdges first, ordered by when the group first reads them.
+
+    A group's InEdges accumulate from several passes, so their order would otherwise
+    depend on which pass added them. The generated design takes its runtime arguments
+    in this order, so it has to follow the group's own reads.
+    """
+    in_edges = [node for node in nodes if isinstance(node, InEdge)]
+    rest = [node for node in nodes if not isinstance(node, InEdge)]
+    read: list[Tensor] = []
+    for node in rest:
+        if isinstance(node, HasInputs):
+            for tensor in node.inputs:
+                if tensor not in read:
+                    read.append(tensor)
+    nodes[:] = sorted(in_edges, key=lambda e: read.index(e.outputs[0]) if e.outputs[0] in read else len(read))
+    nodes.extend(rest)
+
+
 class Workload(DiGraphWrapper[Node]):
     _dataflow_order: list[Node] | None = None
     _global_dimension_idxs: dict[Node, range] | None = None
@@ -247,17 +266,14 @@ class Workload(DiGraphWrapper[Node]):
             if node in node_to_group:
                 group_nodes[node_to_group[node]].append(node)
 
-        # Assign InEdge nodes to the group(s) of their consumers, ahead of the consumers and in
-        # their original order. If consumed in multiple groups, duplicate the InEdge into each.
-        group_in_edges: list[list[Node]] = [[] for _ in range(num_groups)]
+        # Assign InEdge nodes to the group(s) of their consumers. If consumed in multiple
+        # groups, duplicate the InEdge into each. Their order is normalised below.
         for node in topo_order:
             if not isinstance(node, InEdge):
                 continue
             consuming_groups = {node_to_group[c] for _, c in self.out_edges(node) if c in node_to_group}
             for grp in sorted(consuming_groups):
-                group_in_edges[grp].append(node)
-        for grp, in_edges in enumerate(group_in_edges):
-            group_nodes[grp][:0] = in_edges
+                group_nodes[grp].insert(0, node)
 
         # For each FusionEdge, add OutEdge to preceding group and InEdge to following group
         for fe in fusion_edges:
@@ -289,19 +305,10 @@ class Workload(DiGraphWrapper[Node]):
             )
             group_nodes[succ_group].insert(0, in_edge)
 
-        # For each cut-point node, add OutEdge/InEdge boundary pairs
-        for node, grp in node_to_group.items():
-            if not isinstance(node, ComputationNode) or node.name not in cut_point_set:
-                continue
-            assert len(node.outputs) == 1, f"Cut-point node {node.name} must have exactly 1 output"
-            out_tensor = node.outputs[0]
-            succ_group = grp + 1
-            out_edge = OutEdge(name=f"{node.name}_cut_out", inputs=(out_tensor,))
-            group_nodes[grp].append(out_edge)
-            in_edge = InEdge(name=f"{node.name}_cut_in", outputs=(out_tensor,))
-            group_nodes[succ_group].insert(0, in_edge)
-
+        self._add_cut_boundaries(node_to_group, group_nodes, cut_point_set)
         self._bridge_cross_group_edges(node_to_group, group_nodes)
+        for nodes in group_nodes:
+            _order_inputs_by_use(nodes)
 
         # Build sub-workloads
         sub_workloads = []
@@ -310,6 +317,26 @@ class Workload(DiGraphWrapper[Node]):
                 sub_workloads.append(Workload(nodes))
 
         return sub_workloads
+
+    @staticmethod
+    def _add_cut_boundaries(
+        node_to_group: dict[Node, int], group_nodes: list[list[Node]], cut_point_set: set[str]
+    ) -> None:
+        """Add the OutEdge/InEdge pair for each cut point whose output the next group reads.
+
+        A cut point's output is not always consumed by the very next group: where the graph
+        branches, it is read further downstream, and ``_bridge_cross_group_edges`` places
+        that boundary in the group that does read it."""
+        for node, grp in node_to_group.items():
+            if not isinstance(node, ComputationNode) or node.name not in cut_point_set:
+                continue
+            assert len(node.outputs) == 1, f"Cut-point node {node.name} must have exactly 1 output"
+            tensor = node.outputs[0]
+            successor = group_nodes[grp + 1]
+            if not any(isinstance(n, HasInputs) and tensor in n.inputs for n in successor):
+                continue
+            group_nodes[grp].append(OutEdge(name=f"{node.name}_cut_out", inputs=(tensor,)))
+            successor.insert(0, InEdge(name=f"{node.name}_cut_in", outputs=(tensor,)))
 
     def _bridge_cross_group_edges(self, node_to_group: dict[Node, int], group_nodes: list[list[Node]]) -> None:
         """Add OutEdge/InEdge boundaries for any data edge crossing a group boundary without passing
