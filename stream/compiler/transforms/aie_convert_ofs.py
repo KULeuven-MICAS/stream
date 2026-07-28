@@ -100,12 +100,6 @@ class StrideSet:
             result[i * spatial_stride.stride] = type(self)(new_strides)
         return result
 
-    def force_squash(self) -> Self:
-        # Remove all transormations, reduce to 1D transfer
-        total_size = prod(var.size for var in self.strides if var.stride)
-        repeat_size = prod(var.size for var in self.strides if not var.stride)
-        return type(self)((Stride(total_size, 1, 0), Stride(repeat_size, 0, 0)))
-
     def canonicalize(self) -> Self:
         if any(s.spatial for s in self.strides):
             raise RuntimeError("cannot canonicalize strideset with spatial strides")
@@ -947,12 +941,7 @@ class TransferToRuntimeSequence(RewritePattern):
                 if cvar.dim in dim_strides:
                     dim_strides[cvar.dim] *= cvar.size
 
-        stride_dict = StrideSet(tuple(strides)).split()
-        # squash weight transformations:
-        if op.attributes["of"].data in ("of_1_mem", "of_2_mem", "of_3_mem") and False:
-            stride_dict = {x: y.force_squash().legalize() for x, y in stride_dict.items()}
-        else:
-            stride_dict = {x: y.canonicalize().legalize() for x, y in stride_dict.items()}
+        stride_dict = {x: y.canonicalize().legalize() for x, y in StrideSet(tuple(strides)).split().items()}
 
         for i, (spatial_offset, stride_set) in enumerate(stride_dict.items()):
             ofs = op.attributes.get("of")
