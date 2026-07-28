@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from math import prod
 from typing import cast
 
-from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
+from snaxc.ir.tsl import TiledStridedLayout
 from xdsl.dialects.arith import ConstantOp
 from xdsl.dialects.builtin import (
     AnyDenseElement,
@@ -15,12 +15,19 @@ from xdsl.dialects.func import CallOp
 from xdsl.irdl import Operation
 
 from stream.compiler.dialects.stream import ComputationNodeOp
-from stream.compiler.kernels.aie_kernel import AIEKernel
+from stream.compiler.kernels.aie_kernel import (
+    VECTOR_LANES,
+    AIEKernel,
+    elementwise_operand_layout,
+)
 
 
 @dataclass
 class EltwiseMulKernel(AIEKernel):
     element_type: AnyDenseElement
+    m: int
+    n: int
+    layout: str
 
     @property
     def linkwith_name(self) -> str:
@@ -28,25 +35,17 @@ class EltwiseMulKernel(AIEKernel):
 
     @property
     def function_name(self) -> str:
-        return f"eltwise_mul_{self.element_type}_scalar"
+        """The vectorized variant where the tile fills whole vectors, else the scalar one.
+
+        The multiply is position independent and all three operands share a layout, so
+        the only thing vectorizing asks of the tile is that it leaves no remainder: the
+        vectorized kernel steps a whole vector at a time and has no epilogue.
+        """
+        variant = "vector" if self.m * self.n % VECTOR_LANES == 0 else "scalar"
+        return f"eltwise_mul_{self.element_type}_{variant}"
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
-        # Intrinsic dimensions:
-        r = 4  # ~m
-        s = 8  # ~k  # noqa: F841
-        t = 8  # ~n
-        # Tiled kernel dimensions:
-        mt = 32 // r
-        nt = 64 // t
-        return [
-            TiledStridedLayout(
-                [
-                    TiledStride([Stride(r * t * nt, mt), Stride(t, r)]),
-                    TiledStride([Stride(r * t, nt), Stride(1, t)]),
-                ]
-            )
-            for _ in range(3)
-        ]
+        return [elementwise_operand_layout(self.m, self.n, self.layout) for _ in range(3)]
 
     def function_type(self, op: ComputationNodeOp) -> FunctionType:
         assert op.output is not None
