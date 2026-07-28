@@ -1,4 +1,5 @@
 from collections import defaultdict
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 import sympy as sp
@@ -6,7 +7,7 @@ from xdsl.ir.affine import AffineConstantExpr, AffineDimExpr, AffineExpr
 
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.workload.iterator_type import check_spatial_unroll_legal, sequential_dims
-from stream.workload.node import ComputationNode, Node, TransferNode
+from stream.workload.node import ComputationNode, HasInputs, HasIterationSpace, Node, Tensor, TransferNode
 from stream.workload.steady_state.iteration_space import (
     IterationVariable,
     IterationVariableType,
@@ -346,3 +347,24 @@ def affine_bounds(expr: AffineExpr, dim_sizes: list[int]) -> tuple[int, int]:
             maxs += a * lo
 
     return mins, maxs
+
+
+def is_reused_on_chip(workload: "Workload", tensor: Tensor, dsts: Sequence[HasInputs]) -> bool:
+    """Whether a destination reads ``tensor`` more than once.
+
+    A destination that iterates a dimension the tensor does not span reads it once per
+    position of that dimension, so holding it in a memory tile saves that many offchip
+    reads. A destination that spans every dimension of the tensor, as an elementwise
+    node does, reads each element once, and a memory tile would only add a second
+    transfer of the same data.
+    """
+    spanned = set(workload.get_tensor_dimensions(tensor))
+    for dst in dsts:
+        if not isinstance(dst, HasIterationSpace):
+            continue
+        # The caller may hold a rebuilt copy of the node; the iteration space is
+        # keyed by the node this workload knows.
+        known = workload.get_node_by_name(dst.name)
+        if set(workload.get_dims(known)) - spanned:
+            return True
+    return False

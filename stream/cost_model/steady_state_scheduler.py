@@ -47,6 +47,7 @@ from stream.workload.utils import (
     get_compute_predecessors_successors,
     get_equivalent_dimension,
     get_node_with_largest_resource_allocation,
+    is_reused_on_chip,
 )
 from stream.workload.workload import Workload
 
@@ -338,12 +339,12 @@ class SteadyStateScheduler:
         - a second one from the on-chip memory buffer to the destination.
         This is to ensure that the constant tensor is properly allocated in memory and can be reused across iterations.
 
-        If the accelerator has no on-chip memory tiles (e.g. TPU-like hardware), falls back to a single
-        direct transfer from the source to the destinations (MEM_TO_COMPUTE).
+        Falls back to a single direct transfer from the source to the destinations (MEM_TO_COMPUTE)
+        when the accelerator has no on-chip memory tiles (e.g. TPU-like hardware), or when the tensor
+        is read only once and the memory tile would buy nothing.
         """
         assert isinstance(src, InEdge), f"Expected source of constant transfer to be an InEdge, found {type(src)}"
-        # Fall back to a single direct transfer when no memory tiles are available
-        if not self._get_accelerator_memory_cores():
+        if not self._get_accelerator_memory_cores() or not is_reused_on_chip(self.workload, tensor, dsts):
             transfer_type = self.determine_transfer_type(src, dsts)
             out_name = f"{tensor.name}_1"
             transfer_node, updated_tensors = self.generate_transfer_node(dsts, tensor, transfer_type, out_name)
