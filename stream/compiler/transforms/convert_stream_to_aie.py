@@ -317,6 +317,13 @@ class RealizeLayoutCasts(RewritePattern):
                     if isinstance(use.operation, ObjectFIFOSubviewAccessOp):
                         use.operation.output.type = producer_type
 
+        # The transform now lives on the object fifo, and the acquire this cast reads from
+        # carries the cast's layout, so the cast has become an identity. Drop it here: the
+        # types above are rewritten in place, so nothing would revisit it.
+        if op.dest.type == op.source.type:
+            op.dest.replace_by(op.source)
+            rewriter.erase_matched_op()
+
 
 @dataclass
 class OrderCoreOps(RewritePattern):

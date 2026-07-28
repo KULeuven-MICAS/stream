@@ -258,7 +258,30 @@ class ChannelToObjectFifoPass(RewritePattern):
                 ofs.extend(switch_join)
 
             else:
-                raise NotImplementedError()
+                # Unicast: nothing to gather, because the layer holds one core per column
+                # and each writes to the memory tile of its own column.
+                source = next(
+                    p
+                    for p in producers
+                    if p.spatial_index is not None and set(spatial) <= set(p.spatial_index.data.vars)
+                )
+                target = next(
+                    c
+                    for c in consumers
+                    if c.spatial_index is not None and set(spatial) <= set(c.spatial_index.data.vars)
+                )
+                assert isinstance(source_type := source.input.type, StrensorType)
+                object_fifo = ObjectFifoOp.from_referenced_type(
+                    self.get_tile(source),
+                    [self.get_tile(target)],
+                    name_base + f"unicast_{i}",
+                    (2, 2),
+                    source_type.get_element_type(),
+                    source_type.get_kernel_shape(),
+                )
+                source.attributes["of"] = object_fifo.sym_name
+                target.attributes["of"] = object_fifo.sym_name
+                ofs.append(object_fifo)
 
         return ofs
 

@@ -851,6 +851,8 @@ class SteadyStateScheduler:
         return memory_cores
 
     def _get_possible_memory_core_allocations(self, src: HasOutputs, node: Node) -> tuple[tuple[Core, ...], ...]:
+        # An input transfer feeds every unrolled destination separately; an output transfer is
+        # gathered per column, since a column's compute cores share its memory tile.
         MAX_RELEVANT_FACTOR_PER_TRANSFER_TYPE = {
             TransferType.MEM_TO_MEM: 1,  # for input transfers to mem tile
             TransferType.COMPUTE_TO_MEM: 4,  # for output transfers to mem tile
@@ -867,9 +869,27 @@ class SteadyStateScheduler:
             for tiling_dim, size in inter_core_tiling_src:
                 if tiling_dim == dim:
                     total_relevant_unrolling *= size
-        required_nb_memory_cores = ceil(
-            total_relevant_unrolling / MAX_RELEVANT_FACTOR_PER_TRANSFER_TYPE[node.transfer_type]
-        )
+        columns = self._columns_of(src)
+        if node.transfer_type is TransferType.COMPUTE_TO_MEM and columns:
+            # How many memory tiles the gather needs is how many columns the source occupies,
+            # never the array's rows-per-column: a layer placed one core per column has nothing
+            # to gather and needs a memory tile of its own in each.
+            required_nb_memory_cores = min(columns, total_relevant_unrolling)
+        else:
+            required_nb_memory_cores = ceil(
+                total_relevant_unrolling / MAX_RELEVANT_FACTOR_PER_TRANSFER_TYPE[node.transfer_type]
+            )
         all_mem_cores = self._get_accelerator_memory_cores()
         candidates = [tuple(combo) for combo in combinations(all_mem_cores, required_nb_memory_cores)]
         return tuple(candidates)
+
+    def _columns_of(self, src: HasOutputs) -> int:
+        """How many array columns the source's cores sit in, 0 if unknown.
+
+        Accelerator descriptions need not give their cores coordinates; without them the
+        caller falls back to the rows-per-column estimate.
+        """
+        allocations = self.mapping.get(src).resource_allocation
+        cores = allocations[0] if allocations else ()
+        columns = {core.col_id for core in cores if getattr(core, "col_id", None) is not None}
+        return len(columns)
