@@ -920,13 +920,12 @@ class TransferAndTensorAllocator:
         Relate the reuse levels on either side of a transfer between a memory tile and
         a compute tile.
 
-        On the way in, the memory tile only has to hold the tensor for at least as long
-        as the compute tile reads it, so its level bounds the compute level from above
-        rather than matching it. Tying the two made the compute tile's capacity decide
-        how long the memory tile keeps a tensor, which sent the shim back to offchip for
-        data the memory tile was still holding.
+        On the way in the memory tile only has to hold the tensor for at least as long
+        as the compute tile reads it, so its level bounds the compute level from above.
+        Equating them would let the compute tile's capacity decide how long the memory
+        tile keeps a tensor, sending the shim offchip for data already on chip.
 
-        On the way out the levels stay equal: a partial output cannot be sent to a
+        On the way out the levels are equal: a partial output cannot be sent to a
         memory tile and brought back, so the compute tile owns it until it is complete
         and the memory tile inherits exactly that residency.
         """
@@ -1297,12 +1296,10 @@ class TransferAndTensorAllocator:
         else:
             primary_expr = self.total_lat._raw
 
-        # Second objective: minimize what the reuse levels cost offchip. Slot latency
-        # only sees a transfer when it is the longest thing in its slot, so a tensor
-        # whose transfer hides behind compute is free to the primary objective however
-        # often it is fetched. Offchip bandwidth is shared by every slot, so those
-        # fetches are not free on hardware. A tensor read once per steady state slice
-        # costs size_bits; reuse level s divides that by reuse_levels[(t, s)].
+        # Slot latency only sees a transfer when it is the longest thing in its slot,
+        # so a transfer hiding behind compute is free to the primary objective however
+        # often it fires. Offchip bandwidth is shared by every slot, so it is not free
+        # on hardware.
         traffic_expr = self.model.quicksum(
             (t.size_bits() / self.reuse_levels[(t, s)]) * self.z_stop[(t, s)]._raw
             for t in self.tensors_to_optimize_reuse_for

@@ -7,8 +7,7 @@ from stream.compiler.kernels.silu import SiluKernel
 
 AIEKernels = {
     "matvec": lambda utilization: MatVecKernel(utilization, bf16),
-    # m and n are the kernel tile; they default to the shape the elementwise
-    # kernels were previously fixed to, so existing mappings keep their layout.
+    # m and n are the kernel tile a mapping may leave unset.
     "silu": lambda utilization, layout, m=32, n=64, bfp16_mmul=False: SiluKernel(
         utilization, bf16, m, n, layout, bfp16_mmul
     ),

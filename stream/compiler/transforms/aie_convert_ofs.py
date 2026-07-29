@@ -828,10 +828,9 @@ class RealizeLinks(RewritePattern):
 def transfer_endpoints(op: PushOp | PullOp) -> tuple[StrensorType, StrensorType]:
     """The strensor where this transfer first lands and where it finally lands.
 
-    A transfer reaches its compute tile either directly or by way of a memory tile,
-    so follow the chain of pushes and pulls to its end instead of assuming how many
-    hops it takes. Both ends coincide when the transfer is direct, which leaves the
-    descriptor below describing the whole movement in one step.
+    A transfer reaches its compute tile either directly or by way of a memory tile, so
+    the chain of pushes and pulls is walked to its end. Both ends coincide for a direct
+    transfer, and one descriptor then covers the whole movement.
     """
     if isinstance(op, PushOp):
         stops = [next(u.operation for u in op.channel.uses if isinstance(u.operation, PullOp))]
@@ -1246,21 +1245,16 @@ class OrderDMAs(RewritePattern):
 @dataclass
 class SyncDMAs(RewritePattern):
     """
-    This pass will synchronize dma configure taks ops, inserting wait statements where needed.
-    We only allocate one bd per object fifo, and will wait for it to finish every time
-    a new transfer for that object fifo is initiated.
+    Insert the waits a runtime sequence needs.
 
-    Two reasons to wait, and they are not the same:
+    A fifo ping pongs between two buffer descriptors, so a third transfer on that fifo
+    waits for the first. That is about the descriptor rather than the data, so it
+    applies whichever way the fifo moves.
 
-    Reuse of a buffer descriptor. A fifo ping pongs between two of them, so a third
-    transfer on that fifo has to wait for the first. This is about the descriptor, not
-    the data, so it applies to every fifo whichever way it moves.
-
-    Draining the sequence. The host may only read an output once it has landed, so the
-    last transfer of every fifo carrying data out is waited on. Data going in needs no
-    such wait: the cores take it through the fifo's own lock protocol, and an output
-    cannot be produced before the inputs it is computed from were consumed, so waiting
-    on the outputs already implies the inputs are done.
+    The last transfer of every fifo carrying data out is waited on as well, since the
+    host may only read an output once it has landed. Data going in needs no such wait:
+    the cores take it through the fifo's own lock protocol, and an output cannot be
+    produced before its inputs were consumed.
     """
 
     @staticmethod
