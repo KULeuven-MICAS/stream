@@ -16,8 +16,10 @@ from xdsl.irdl import Operation
 
 from stream.compiler.dialects.stream import ComputationNodeOp
 from stream.compiler.kernels.aie_kernel import (
+    MAC_ROWS_BFP16,
     VECTOR_LANES,
     AIEKernel,
+    R,
     elementwise_operand_layout,
 )
 
@@ -28,6 +30,7 @@ class EltwiseMulKernel(AIEKernel):
     m: int
     n: int
     layout: str
+    bfp16_mmul: bool = False
 
     @property
     def linkwith_name(self) -> str:
@@ -45,7 +48,8 @@ class EltwiseMulKernel(AIEKernel):
         return f"eltwise_mul_{self.element_type}_{variant}"
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
-        return [elementwise_operand_layout(self.m, self.n, self.layout) for _ in range(3)]
+        rows = MAC_ROWS_BFP16 if self.bfp16_mmul else R
+        return [elementwise_operand_layout(self.m, self.n, self.layout, rows) for _ in range(3)]
 
     def function_type(self, op: ComputationNodeOp) -> FunctionType:
         assert op.output is not None

@@ -10,7 +10,7 @@ from xdsl.dialects.func import CallOp
 from xdsl.irdl import Operation
 
 from stream.compiler.dialects.stream import ComputationNodeOp
-from stream.compiler.kernels.aie_kernel import AIEKernelWithZeroing
+from stream.compiler.kernels.aie_kernel import MAC_ROWS_BFP16, AIEKernelWithZeroing
 
 
 @dataclass
@@ -20,6 +20,7 @@ class GemmKernel(AIEKernelWithZeroing):
     k: int
     n: int
     layout: str
+    bfp16_mmul: bool = False
 
     @property
     def zero_name(self) -> str:
@@ -37,8 +38,10 @@ class GemmKernel(AIEKernelWithZeroing):
         return f"matmul_{self.element_type}_{self.element_type}_{self.m}_{self.k}_{self.n}"
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
-        # Intrinsic dimensions:
-        r = 4  # ~m
+        # Intrinsic dimensions of the MAC the kernel was built for. mm.cc takes
+        # 8x8x8 when bf16 matmuls are emulated on the bfp16 MACs and 4x8x8 when
+        # they are not, so this has to agree with how the object was compiled.
+        r = MAC_ROWS_BFP16 if self.bfp16_mmul else 4  # ~m
         s = 8  # ~k
         t = 8  # ~n
         # Tiled kernel dimensions:

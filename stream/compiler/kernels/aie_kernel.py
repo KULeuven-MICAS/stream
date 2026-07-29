@@ -16,14 +16,16 @@ from xdsl_aie.dialects.aie import CoreOp, DeviceOp, ObjectFIFOSubviewAccessOp
 from stream.compiler.dialects.stream import ComputationNodeOp
 
 # Intrinsic MAC tile of the AIE2p kernels, and the layouts an operand can take.
+# mm.cc takes 8 rows when bf16 matmuls run on the bfp16 MACs and 4 when they do not.
 R, T = 4, 8
+MAC_ROWS_BFP16 = 8
 MAC_TILED = "default"
 CONTIGUOUS = "contiguous"
 VECTOR_LANES = 16
 """Elements a vectorized elementwise kernel loads per step."""
 
 
-def elementwise_operand_layout(m: int, n: int, layout: str) -> TiledStridedLayout:
+def elementwise_operand_layout(m: int, n: int, layout: str, mac_rows: int = R) -> TiledStridedLayout:
     """Layout of one operand of an elementwise kernel.
 
     An elementwise kernel walks its operands linearly, so it imposes no layout of
@@ -35,11 +37,11 @@ def elementwise_operand_layout(m: int, n: int, layout: str) -> TiledStridedLayou
     """
     if layout == CONTIGUOUS:
         return TiledStridedLayout([TiledStride([Stride(n, m)]), TiledStride([Stride(1, n)])])
-    mt, nt = m // R, n // T
+    mt, nt = m // mac_rows, n // T
     return TiledStridedLayout(
         [
-            TiledStride([Stride(R * T * nt, mt), Stride(T, R)]),
-            TiledStride([Stride(R * T, nt), Stride(1, T)]),
+            TiledStride([Stride(mac_rows * T * nt, mt), Stride(T, mac_rows)]),
+            TiledStride([Stride(mac_rows * T, nt), Stride(1, T)]),
         ]
     )
 
