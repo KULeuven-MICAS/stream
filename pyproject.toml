@@ -22,7 +22,7 @@ namespaces = true
 
 [project]
 name = "stream-dse"
-version = "1.13.10"
+version = "1.13.11"
 description = "Stream - Multi-core accelerator design space exploration with layer-fused scheduling"
 readme = "README.md"
 authors = [{ name = "Arne Symons", email = "arne.symons@kuleuven.be" }, { name = "Linyan Mei", email = "linyan.mei@kuleuven.be" }]
@@ -94,7 +94,7 @@ torch_export = "stream.frontends.torch_export:TorchExportFrontend"
 Homepage = "https://github.com/KULeuven-MICAS/stream"
 
 [tool.bumpver]
-current_version = "1.13.10"
+current_version = "1.13.11"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "bump version {old_version} -> {new_version}"
 commit = true
