@@ -182,20 +182,16 @@ class AIECodeGenerationStage(Stage):
         ss: StrensorSpace,
         reuse_index: int,
     ) -> ComputationNodeOp:
-        # FIXME: recomputes reuse index because constraint optimization seems broken
+        # A partial output cannot go out to a memory tile and come back, so the output
+        # stays on the compute tile across every loop that does not vary it. Raise the
+        # reuse index to the outermost such loop, whatever the allocation chose.
         relevant_dims = {var.dim for var in ss.get_kernel_variables()}
-        print()
-        print(f"SSIS for node {node.name}: {ssis}")
-        print(f"REuse index before for {node.name}: {reuse_index}")
-        # just make sure we are output stationary
         for i, var in enumerate(ss.vars):
             reuse_index = len(ss.vars) - i
             if var.type == StrensorVarType.TEMPORAL and var.dim not in relevant_dims:
                 break
             if var.type == StrensorVarType.KERNEL:
                 break
-        print(f"REuse index after for {node.name}: {reuse_index}")
-        # FIXME: end
 
         # # add spatio-temporal dims to get only inner shape:
         cores = mapping.resource_allocation[0]

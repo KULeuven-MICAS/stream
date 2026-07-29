@@ -204,7 +204,13 @@ def test_dma_objective_no_dma_terms():
     objectives = mock_model.set_lexicographic_objectives.call_args[0][0]
     primary = next(o for o in objectives if o.name == "latency")
     assert primary.expr == "total_lat_raw"
-    assert primary.priority == 2
+    # Latency decides first; offchip traffic breaks its ties, and buffering breaks
+    # traffic's. Only the order matters, so assert that rather than the numbers.
+    assert [o.name for o in sorted(objectives, key=lambda o: -o.priority)] == [
+        "latency",
+        "offchip_traffic",
+        "buffering",
+    ]
 
 
 def test_skip_warnings(caplog):

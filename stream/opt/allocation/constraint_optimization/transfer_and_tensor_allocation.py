@@ -910,10 +910,25 @@ class TransferAndTensorAllocator:
         self.context.add_buffer_descriptor_constraints(self.model, self.bd_depth)
         self._record_capacity_bounds("buffer_descriptors", self.bd_depth, "aie2_bd_depth")
 
+    def _reuse_level_expr(self, t: Tensor):
+        """The chosen reuse level of ``t`` as a linear expression."""
+        applicable = self.ssis[t].get_applicable_temporal_variables()
+        return self.model.quicksum(s * self.z_stop[(t, s)]._raw for s in range(-1, len(applicable)))
+
     def _ensure_memory_and_compute_reuse_compatibility(self):
         """
-        Ensure that for COMPUTE_TO_MEM and MEM_TO_COMPUTE transfers the input and output
-        reuse levels are equal.
+        Relate the reuse levels on either side of a transfer between a memory tile and
+        a compute tile.
+
+        On the way in, the memory tile only has to hold the tensor for at least as long
+        as the compute tile reads it, so its level bounds the compute level from above
+        rather than matching it. Tying the two made the compute tile's capacity decide
+        how long the memory tile keeps a tensor, which sent the shim back to offchip for
+        data the memory tile was still holding.
+
+        On the way out the levels stay equal: a partial output cannot be sent to a
+        memory tile and brought back, so the compute tile owns it until it is complete
+        and the memory tile inherits exactly that residency.
         """
         for tr in self.transfer_nodes:
             inputs = tr.inputs
@@ -1282,8 +1297,20 @@ class TransferAndTensorAllocator:
         else:
             primary_expr = self.total_lat._raw
 
-        # Secondary objective (tiebreaker): minimize total buffering depth
-        secondary_expr = self.model.quicksum(
+        # Second objective: minimize what the reuse levels cost offchip. Slot latency
+        # only sees a transfer when it is the longest thing in its slot, so a tensor
+        # whose transfer hides behind compute is free to the primary objective however
+        # often it is fetched. Offchip bandwidth is shared by every slot, so those
+        # fetches are not free on hardware. A tensor read once per steady state slice
+        # costs size_bits; reuse level s divides that by reuse_levels[(t, s)].
+        traffic_expr = self.model.quicksum(
+            (t.size_bits() / self.reuse_levels[(t, s)]) * self.z_stop[(t, s)]._raw
+            for t in self.tensors_to_optimize_reuse_for
+            for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
+        )
+
+        # Third objective (tiebreaker): minimize total buffering depth
+        buffering_expr = self.model.quicksum(
             self.tiles_needed_levels[(t, s)] * self.z_stop[(t, s)]._raw
             for t in self.tensors_to_optimize_reuse_for
             for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
@@ -1291,8 +1318,9 @@ class TransferAndTensorAllocator:
 
         self.model.set_lexicographic_objectives(
             [
-                ObjectiveLevel(expr=primary_expr, priority=2, name="latency"),
-                ObjectiveLevel(expr=secondary_expr, priority=1, name="buffering"),
+                ObjectiveLevel(expr=primary_expr, priority=3, name="latency"),
+                ObjectiveLevel(expr=traffic_expr, priority=2, name="offchip_traffic"),
+                ObjectiveLevel(expr=buffering_expr, priority=1, name="buffering"),
             ],
             sense="minimize",
         )
