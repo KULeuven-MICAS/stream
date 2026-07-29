@@ -15,7 +15,12 @@ from xdsl.dialects.func import CallOp
 from xdsl.irdl import Operation
 
 from stream.compiler.dialects.stream import ComputationNodeOp
-from stream.compiler.kernels.aie_kernel import AIEKernel, elementwise_operand_layout
+from stream.compiler.kernels.aie_kernel import (
+    MAC_ROWS_BFP16,
+    AIEKernel,
+    R,
+    elementwise_operand_layout,
+)
 
 
 @dataclass
@@ -24,6 +29,7 @@ class SiluKernel(AIEKernel):
     m: int
     n: int
     layout: str
+    bfp16_mmul: bool = False
 
     @property
     def linkwith_name(self) -> str:
@@ -41,7 +47,8 @@ class SiluKernel(AIEKernel):
         )
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
-        return [elementwise_operand_layout(self.m, self.n, self.layout) for _ in range(2)]
+        rows = MAC_ROWS_BFP16 if self.bfp16_mmul else R
+        return [elementwise_operand_layout(self.m, self.n, self.layout, rows) for _ in range(2)]
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         len = prod(cast(MemRefType[AnyDenseElement], op.inputs[0].type).get_shape())
