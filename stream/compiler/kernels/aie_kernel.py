@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 
 from snaxc.dialects.snax import LayoutCast
-from snaxc.ir.tsl import TiledStridedLayout
+from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.dialects.builtin import FunctionType, StringAttr
 from xdsl.dialects.func import CallOp, FuncOp
 from xdsl.dialects.scf import IndexSwitchOp, YieldOp
@@ -14,6 +14,34 @@ from xdsl.traits import SymbolTable
 from xdsl_aie.dialects.aie import CoreOp, DeviceOp, ObjectFIFOSubviewAccessOp
 
 from stream.compiler.dialects.stream import ComputationNodeOp
+
+# Intrinsic MAC tile of the AIE2p kernels, and the layouts an operand can take.
+R, T = 4, 8
+MAC_TILED = "default"
+CONTIGUOUS = "contiguous"
+VECTOR_LANES = 16
+"""Elements a vectorized elementwise kernel loads per step."""
+
+
+def elementwise_operand_layout(m: int, n: int, layout: str) -> TiledStridedLayout:
+    """Layout of one operand of an elementwise kernel.
+
+    An elementwise kernel walks its operands linearly, so it imposes no layout of
+    its own; the layout only has to match what the operands already are.
+    ``default`` is the r x t tiling a GEMM writes its output in, so an elementwise
+    layer fused behind one needs no transformation. ``contiguous`` is plain row
+    major, which is what a layer reading from and writing to memory wants: its
+    transfers then run the length of a row instead of one MAC tile at a time.
+    """
+    if layout == CONTIGUOUS:
+        return TiledStridedLayout([TiledStride([Stride(n, m)]), TiledStride([Stride(1, n)])])
+    mt, nt = m // R, n // T
+    return TiledStridedLayout(
+        [
+            TiledStride([Stride(R * T * nt, mt), Stride(T, R)]),
+            TiledStride([Stride(R * T, nt), Stride(1, T)]),
+        ]
+    )
 
 
 @dataclass

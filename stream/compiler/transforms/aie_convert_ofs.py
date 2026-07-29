@@ -100,12 +100,6 @@ class StrideSet:
             result[i * spatial_stride.stride] = type(self)(new_strides)
         return result
 
-    def force_squash(self) -> Self:
-        # Remove all transormations, reduce to 1D transfer
-        total_size = prod(var.size for var in self.strides if var.stride)
-        repeat_size = prod(var.size for var in self.strides if not var.stride)
-        return type(self)((Stride(total_size, 1, 0), Stride(repeat_size, 0, 0)))
-
     def canonicalize(self) -> Self:
         if any(s.spatial for s in self.strides):
             raise RuntimeError("cannot canonicalize strideset with spatial strides")
@@ -183,9 +177,17 @@ class StrideSet:
             return new
 
 
+NB_COLUMNS = 8
+
+
+def column_of(tile: str) -> int:
+    """The column of a tile named ``tile_<column>_<row>``."""
+    return int(tile.split("_")[1])
+
+
 @dataclass
 class ChannelToObjectFifoPass(RewritePattern):
-    shim_tiles: dict[str, SSAValue]
+    shim_tiles: dict[int, SSAValue]
     of_count: int = 0
     """
     Converts channels to object fifo definitions
@@ -514,15 +516,16 @@ class ChannelToObjectFifoPass(RewritePattern):
             ofs.extend(spat_ofs)
         return ofs
 
-    def get_tile(self, op: PushOp | PullOp, memtile: str = "") -> SSAValue:
+    def get_tile(self, op: PushOp | PullOp, destination: str = "") -> SSAValue:
         parent = op.parent_op()
         while not isinstance(parent, CoreOp | RuntimeSequenceOp):
             assert parent is not None
             parent = parent.parent_op()
         if isinstance(parent, CoreOp):
             return parent.tile
-        else:  # runtime sequence
-            return self.shim_tiles[memtile]
+        # In the runtime sequence the tile is a shim, one per column, so it is the
+        # destination's column that picks it and not the row it happens to sit on.
+        return self.shim_tiles[column_of(destination)]
 
     def shim_to_mem(
         self,
@@ -556,7 +559,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     name_base + f"mem_{i}",
                     (2, 2),
                     target_type.get_element_type(),
-                    target_type.get_local_shape() + target_type.get_kernel_shape(),
+                    self.held_shape(target_type),
                 )
                 distributes.append(object_fifo)
 
@@ -579,7 +582,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 name=name_base + "mem",
                 elemNumber=(2, 2),
                 referenced_type=strensor.get_element_type(),
-                shape=strensor.get_local_shape() + strensor.get_kernel_shape(),
+                shape=self.held_shape(strensor),
             )
             producer.attributes["of"] = object_fifo.sym_name
             for consumer in consumers:
@@ -622,7 +625,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     name_base + f"mem_{j}",
                     (2, 2),
                     source_type.get_element_type(),
-                    source_type.get_local_shape() + source_type.get_kernel_shape(),
+                    self.held_shape(source_type),
                 )
                 switch_join.append(object_fifo)
 
@@ -653,7 +656,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 name=name_base + "mem",
                 elemNumber=(2, 2),
                 referenced_type=strensor.get_element_type(),
-                shape=strensor.get_local_shape() + strensor.get_kernel_shape(),
+                shape=self.held_shape(strensor),
             )
             producer.attributes["of"] = object_fifo.sym_name
             for consumer in consumers:
@@ -661,6 +664,17 @@ class ChannelToObjectFifoPass(RewritePattern):
             ofs.append(object_fifo)
 
         return ofs
+
+    @classmethod
+    def held_shape(cls, strensor: StrensorType) -> tuple[int, ...]:
+        """The shape the tile this strensor lives on holds of it.
+
+        A memory tile stages a whole block and redistributes it kernel tile by kernel
+        tile, so it holds the block; a core holds a single kernel tile.
+        """
+        if cls.is_mem(strensor.core_allocation.data[0].data):
+            return strensor.get_local_shape() + strensor.get_kernel_shape()
+        return strensor.get_kernel_shape()
 
     @staticmethod
     def is_shim(tile: str):
@@ -811,6 +825,28 @@ class RealizeLinks(RewritePattern):
         rewriter.erase_op(pull)
 
 
+def transfer_endpoints(op: PushOp | PullOp) -> tuple[StrensorType, StrensorType]:
+    """The strensor where this transfer first lands and where it finally lands.
+
+    A transfer reaches its compute tile either directly or by way of a memory tile,
+    so follow the chain of pushes and pulls to its end instead of assuming how many
+    hops it takes. Both ends coincide when the transfer is direct, which leaves the
+    descriptor below describing the whole movement in one step.
+    """
+    if isinstance(op, PushOp):
+        stops = [next(u.operation for u in op.channel.uses if isinstance(u.operation, PullOp))]
+        while onward := next((u.operation for u in stops[-1].output.uses if isinstance(u.operation, PushOp)), None):
+            stops.append(next(u.operation for u in onward.channel.uses if isinstance(u.operation, PullOp)))
+        first, last = stops[0].output.type, stops[-1].output.type
+    else:
+        stops = [next(u.operation for u in op.channel.uses if isinstance(u.operation, PushOp))]
+        while isinstance(back := stops[-1].input.owner, PullOp):
+            stops.append(next(u.operation for u in back.channel.uses if isinstance(u.operation, PushOp)))
+        first, last = stops[0].input.type, stops[-1].input.type
+    assert isinstance(first, StrensorType) and isinstance(last, StrensorType)
+    return first, last
+
+
 @dataclass
 class TransferToRuntimeSequence(RewritePattern):
     @op_type_rewrite_pattern
@@ -818,25 +854,7 @@ class TransferToRuntimeSequence(RewritePattern):
         if not isinstance(runtime_sequence := op.parent_op(), RuntimeSequenceOp):
             return
 
-        # find strensor type in memtile and compute tile:
-        if isinstance(op, PushOp):
-            mem_op = next(op.operation for op in op.channel.uses if isinstance(op.operation, PullOp))
-            mem_strensor = mem_op.output.type
-            assert isinstance(mem_strensor, StrensorType)
-            mem_push = next(op.operation for op in mem_op.output.uses)
-            assert isinstance(mem_push, PushOp)
-            compute_op = next(op.operation for op in mem_push.channel.uses if isinstance(op.operation, PullOp))
-            compute_strensor = compute_op.output.type
-            assert isinstance(compute_strensor, StrensorType)
-        else:
-            mem_op = next(op.operation for op in op.channel.uses if isinstance(op.operation, PushOp))
-            mem_strensor = mem_op.input.type
-            assert isinstance(mem_strensor, StrensorType)
-            mem_pull = mem_op.input.owner
-            assert isinstance(mem_pull, PullOp)
-            compute_op = next(op.operation for op in mem_pull.channel.uses if isinstance(op.operation, PushOp))
-            compute_strensor = compute_op.input.type
-            assert isinstance(compute_strensor, StrensorType)
+        mem_strensor, compute_strensor = transfer_endpoints(op)
 
         # iterate the zipped mem and compute strensors in reverse (innermost -> outermost)
         def iter_strensors() -> Iterable[tuple[StrensorVar, StrensorVar]]:
@@ -923,12 +941,7 @@ class TransferToRuntimeSequence(RewritePattern):
                 if cvar.dim in dim_strides:
                     dim_strides[cvar.dim] *= cvar.size
 
-        stride_dict = StrideSet(tuple(strides)).split()
-        # squash weight transformations:
-        if op.attributes["of"].data in ("of_1_mem", "of_2_mem", "of_3_mem") and False:
-            stride_dict = {x: y.force_squash().legalize() for x, y in stride_dict.items()}
-        else:
-            stride_dict = {x: y.canonicalize().legalize() for x, y in stride_dict.items()}
+        stride_dict = {x: y.canonicalize().legalize() for x, y in StrideSet(tuple(strides)).split().items()}
 
         for i, (spatial_offset, stride_set) in enumerate(stride_dict.items()):
             ofs = op.attributes.get("of")
@@ -1300,16 +1313,7 @@ class AIEConvertOfs(ModulePass):
     def apply(self, ctx: Context, op: ModuleOp) -> None:
         # create new shim tile
         device = next(op for op in op.walk() if isinstance(op, DeviceOp))
-        shim_tiles = {
-            "tile_0_1": TileOp(0, 0),
-            "tile_1_1": TileOp(1, 0),
-            "tile_2_1": TileOp(2, 0),
-            "tile_3_1": TileOp(3, 0),
-            "tile_4_1": TileOp(4, 0),
-            "tile_5_1": TileOp(5, 0),
-            "tile_6_1": TileOp(6, 0),
-            "tile_7_1": TileOp(7, 0),
-        }
+        shim_tiles = {column: TileOp(column, 0) for column in range(NB_COLUMNS)}
         PatternRewriteWalker(ChannelToObjectFifoPass({x: y.result for x, y in shim_tiles.items()})).rewrite_module(op)
         Rewriter().insert_op(
             [x for x in shim_tiles.values() if x.result.uses], InsertPoint.at_start(device.region.block)
