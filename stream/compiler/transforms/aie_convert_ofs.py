@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from functools import reduce
 from itertools import product
 from math import isqrt, prod
-from typing import Self
+from typing import Self, cast
 
 from xdsl.context import Context
 from xdsl.dialects import scf
@@ -1249,10 +1249,33 @@ class SyncDMAs(RewritePattern):
     This pass will synchronize dma configure taks ops, inserting wait statements where needed.
     We only allocate one bd per object fifo, and will wait for it to finish every time
     a new transfer for that object fifo is initiated.
+
+    Two reasons to wait, and they are not the same:
+
+    Reuse of a buffer descriptor. A fifo ping pongs between two of them, so a third
+    transfer on that fifo has to wait for the first. This is about the descriptor, not
+    the data, so it applies to every fifo whichever way it moves.
+
+    Draining the sequence. The host may only read an output once it has landed, so the
+    last transfer of every fifo carrying data out is waited on. Data going in needs no
+    such wait: the cores take it through the fifo's own lock protocol, and an output
+    cannot be produced before the inputs it is computed from were consumed, so waiting
+    on the outputs already implies the inputs are done.
     """
+
+    @staticmethod
+    def carries_data_out(device: DeviceOp, alloc: Attribute) -> bool:
+        """Whether the fifo named by ``alloc`` moves data towards the shim."""
+        fifo = SymbolTable.lookup_symbol(device, cast(SymbolRefAttr, alloc))
+        assert isinstance(fifo, ObjectFifoOp)
+        producer = fifo.producerTile.owner
+        assert isinstance(producer, TileOp)
+        return producer.row.value.data != 0
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter):
+        device = op.parent_op()
+        assert isinstance(device, DeviceOp)
         active_tasks: dict[Attribute, list[DmaConfigureTaskForOp]] = {}
 
         # ping ponging between two bds per object fifo, so we can have at most one active task per object fifo at a time
@@ -1274,8 +1297,10 @@ class SyncDMAs(RewritePattern):
                 rewriter.insert_op(DmaAwaitTaskOp(to_sync), InsertPoint.before(dma))
                 active_tasks[dma.alloc].append(dma)
 
-        # at the end, wait for all latest tasks
-        for tasklist in active_tasks.values():
+        # at the end, wait for the last transfer of every fifo carrying data out
+        for alloc, tasklist in active_tasks.items():
+            if not self.carries_data_out(device, alloc):
+                continue
             task = tasklist[-1]
             task.issue_token = IntegerAttr.from_int_and_width(1, 1)
             rewriter.insert_op(DmaAwaitTaskOp(task), InsertPoint.at_end(op.body.block))
