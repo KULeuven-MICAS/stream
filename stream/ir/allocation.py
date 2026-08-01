@@ -74,6 +74,10 @@ class FusedGroupIR(BaseModel):
     )
 
 
+# A tiling pair is [dim, factor]; anything shorter is not a decision we can type.
+_TILE_PAIR_LEN = 2
+
+
 class TileFactorIR(BaseModel):
     """One tiling decision: a loop dimension split by an integer factor.
 
@@ -362,15 +366,13 @@ class AllocationIR(BaseModel):
         def _factors(pairs: list) -> list[TileFactorIR]:
             out: list[TileFactorIR] = []
             for pair in pairs or []:
-                if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                if isinstance(pair, (list, tuple)) and len(pair) >= _TILE_PAIR_LEN:
                     out.append(TileFactorIR(dim=str(pair[0]), factor=int(pair[1])))
             return out
 
         fusion = FusionIR(n_groups=len(fused_groups), groups=fused_groups)
         tiling = TilingIR(
-            fusion_splits=[
-                TileFactorIR(dim=str(d), factor=int(f)) for d, f in raw["fusion_splits"].items()
-            ],
+            fusion_splits=[TileFactorIR(dim=str(d), factor=int(f)) for d, f in raw["fusion_splits"].items()],
             inter_core={
                 name: _factors(node["inter_core_tiling"][0] if node["inter_core_tiling"] else [])
                 for name, node in mapping["nodes"].items()

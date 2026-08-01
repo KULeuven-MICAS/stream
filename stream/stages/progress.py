@@ -59,8 +59,14 @@ class ProgressTracker:
         self.groups_completed = 0
         self.current_group: int | None = None
         self._stages: dict[str, dict[str, Any]] = {
-            key: {"key": key, "label": label, "description": desc,
-                  "status": "pending", "detail": None, "artifact": None}
+            key: {
+                "key": key,
+                "label": label,
+                "description": desc,
+                "status": "pending",
+                "detail": None,
+                "artifact": None,
+            }
             for key, label, desc in PIPELINE_STAGES
         }
         self._order = [key for key, _, _ in PIPELINE_STAGES]
@@ -73,8 +79,7 @@ class ProgressTracker:
         if _STATUS_RANK[status] >= _STATUS_RANK[st["status"]]:
             st["status"] = status
 
-    def mark(self, key: str, status: str = "running", *, detail: str | None = None,
-             artifact: Any = None) -> None:
+    def mark(self, key: str, status: str = "running", *, detail: str | None = None, artifact: Any = None) -> None:
         self._advance(key, status)
         if detail is not None:
             self._stages[key]["detail"] = detail
@@ -202,9 +207,14 @@ class ProgressProbeStage(Stage):
     pipeline's single-result contract.
     """
 
-    def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext,
-                 *, on_enter: Callable[[StageContext], None] | None = None,
-                 on_exit: Callable[[StageContext], None] | None = None):
+    def __init__(
+        self,
+        list_of_callables: list[StageCallable],
+        ctx: StageContext,
+        *,
+        on_enter: Callable[[StageContext], None] | None = None,
+        on_exit: Callable[[StageContext], None] | None = None,
+    ):
         super().__init__(list_of_callables, ctx)
         self._on_enter = on_enter
         self._on_exit = on_exit
@@ -233,6 +243,7 @@ class ProgressProbeStage(Stage):
 # Compact, directly-renderable partial artifacts drawn from the typed IR.      #
 # Every builder is defensive: any failure returns None (partial simply absent).#
 # --------------------------------------------------------------------------- #
+
 
 def _node_op(node: Any) -> str:
     for attr in ("type", "op_type", "op"):
@@ -278,13 +289,15 @@ def fuse_artifact(ctx: StageContext) -> tuple[dict[str, Any] | None, int | None]
             for i, wl in enumerate(sub_workloads):
                 nodes = list(wl.get_computation_nodes())
                 ops = Counter(_node_op(n) for n in nodes)
-                groups.append({
-                    "name": f"group_{i}",
-                    "n_nodes": len(nodes),
-                    "ops": dict(sorted(ops.items(), key=lambda kv: -kv[1])),
-                    # member node names, so the UI can highlight this group in the workload graph
-                    "node_names": [getattr(n, "name", str(n)) for n in nodes],
-                })
+                groups.append(
+                    {
+                        "name": f"group_{i}",
+                        "n_nodes": len(nodes),
+                        "ops": dict(sorted(ops.items(), key=lambda kv: -kv[1])),
+                        # member node names, so the UI can highlight this group in the workload graph
+                        "node_names": [getattr(n, "name", str(n)) for n in nodes],
+                    }
+                )
             return {"n_groups": len(groups), "groups": groups}, len(groups)
         # Single-shot fixed mapping: no fusion split — the whole workload is solved as one group.
         workload = ctx.get("workload")
@@ -292,8 +305,16 @@ def fuse_artifact(ctx: StageContext) -> tuple[dict[str, Any] | None, int | None]
             nodes = list(workload.get_computation_nodes())
             ops = Counter(_node_op(n) for n in nodes)
             return (
-                {"n_groups": 1, "groups": [{"name": "group_0", "n_nodes": len(nodes),
-                                            "ops": dict(sorted(ops.items(), key=lambda kv: -kv[1]))}]},
+                {
+                    "n_groups": 1,
+                    "groups": [
+                        {
+                            "name": "group_0",
+                            "n_nodes": len(nodes),
+                            "ops": dict(sorted(ops.items(), key=lambda kv: -kv[1])),
+                        }
+                    ],
+                },
                 1,
             )
         return None, None
@@ -321,8 +342,14 @@ def _allocate_facet(alloc: dict[str, Any]) -> dict[str, Any]:
     placement = {}
     for name, node in nodes.items():
         res = node.get("resource_allocation") or []
-        cores = sorted({r.get("id") for slot in res for r in slot
-                        if isinstance(r, dict) and r.get("type") == "core" and r.get("id") is not None})
+        cores = sorted(
+            {
+                r.get("id")
+                for slot in res
+                for r in slot
+                if isinstance(r, dict) and r.get("type") == "core" and r.get("id") is not None
+            }
+        )
         placement[name] = cores
     # The TETRA transfer/tensor-aware graph the CO solve is built on (compute + injected transfer nodes),
     # rendered through the ONE standard workload viewer (WorkloadGraphView), carrying per-node
@@ -362,13 +389,15 @@ def serialize_memory_accesses(cma: Any) -> dict[str, Any] | None:
         for core, tensors in accesses.items():
             reads = sum(getattr(a, "read", 0) for a in tensors.values())
             writes = sum(getattr(a, "write", 0) for a in tensors.values())
-            per_core.append({
-                "core": getattr(core, "id", None),
-                "reads": reads,
-                "writes": writes,
-                "total": reads + writes,
-                "tensors": len(tensors),
-            })
+            per_core.append(
+                {
+                    "core": getattr(core, "id", None),
+                    "reads": reads,
+                    "writes": writes,
+                    "total": reads + writes,
+                    "tensors": len(tensors),
+                }
+            )
         per_core.sort(key=lambda c: -c["total"])
         return {"per_core": per_core}
     except Exception as exc:  # noqa: BLE001
@@ -381,8 +410,12 @@ def inner_facets(alloc: dict[str, Any] | None) -> dict[str, Any]:
     if not alloc:
         return {}
     facets: dict[str, Any] = {}
-    for key, fn in (("tile", _tile_facet), ("allocate", _allocate_facet),
-                    ("schedule", _schedule_facet), ("cost", _cost_facet)):
+    for key, fn in (
+        ("tile", _tile_facet),
+        ("allocate", _allocate_facet),
+        ("schedule", _schedule_facet),
+        ("cost", _cost_facet),
+    ):
         try:
             facets[key] = fn(alloc)
         except Exception as exc:  # noqa: BLE001
@@ -411,13 +444,15 @@ def _cme_breakdown(cme: Any) -> dict[str, Any] | None:
         mem: dict[str, Any] = {}
         for i in range(1, len(bars)):  # skip the MAC bar (kept separately as energies.mac)
             mem[bars[i]] = {
-                sections[j]: {subs[k]: float(energy[i, j, k]) for k in range(len(subs))}
-                for j in range(len(sections))
+                sections[j]: {subs[k]: float(energy[i, j, k]) for k in range(len(subs))} for j in range(len(sections))
             }
         return {
             "latencies": {
-                "ideal": float(latency[0]), "spatial": float(latency[1]), "temporal": float(latency[2]),
-                "data_loading": float(latency[3]), "data_offloading": float(latency[4]),
+                "ideal": float(latency[0]),
+                "spatial": float(latency[1]),
+                "temporal": float(latency[2]),
+                "data_loading": float(latency[3]),
+                "data_offloading": float(latency[4]),
             },
             "energies": {"mac": float(cme.mac_energy), "mem": mem},
         }
@@ -453,8 +488,13 @@ def core_cost_artifact(cost_lut: Any) -> list[dict[str, Any]]:
                 cid = getattr(core, "id", None)
                 if cid is not None:
                     grp["cores"].append(cid)
+
             # Emit fastest-first so the primary variant leads.
-            for _key, grp in sorted(groups.items(), key=lambda kv: (kv[0][0] if kv[0][0] is not None else float("inf"))):
+            def _by_latency(item) -> float:
+                latency = item[0][0]
+                return latency if latency is not None else float("inf")
+
+            for _key, grp in sorted(groups.items(), key=_by_latency):
                 entry = grp["entry"]
                 cme = getattr(entry, "cme", None)
                 ideal = getattr(entry, "ideal_cycle", None)
@@ -617,14 +657,11 @@ def instrument_stages(stages: list[StageCallable], tracker: ProgressTracker) -> 
         if name == _TILING:
             out.append(_probe(_cb_begin))  # tile begins
         out.append(stage)
-        if not parse_emitted and (
-            (has_onnx and name == _PARSE_ONNX) or (not has_onnx and name == _PARSE_ACCEL)
-        ):
+        if not parse_emitted and ((has_onnx and name == _PARSE_ONNX) or (not has_onnx and name == _PARSE_ACCEL)):
             out.append(_probe(_cb_parse))  # parse done
             parse_emitted = True
         if not fuse_emitted and (
-            (has_fuse_producer and name in _FUSE_PRODUCERS)
-            or (not has_fuse_producer and name == _MAPPING_PARSER)
+            (has_fuse_producer and name in _FUSE_PRODUCERS) or (not has_fuse_producer and name == _MAPPING_PARSER)
         ):
             out.append(_probe(_cb_fuse))  # fusion groups decided
             fuse_emitted = True

@@ -173,9 +173,7 @@ class WorkloadGraphView(BaseModel):
         for s, t in workload.edges:
             shared = _shared(s, t)
             edges.append(
-                GraphEdgeIR(
-                    source=s.name, target=t.name, shared_tensors=[x.name for x in shared], tensors=shared
-                )
+                GraphEdgeIR(source=s.name, target=t.name, shared_tensors=[x.name for x in shared], tensors=shared)
             )
         return cls(
             tiled=_is_tiled(workload),
@@ -350,8 +348,7 @@ def _node_ir(
     dims = resolver.dims(node)
     iterator_types = derive_iterator_types(node)
     ir.dims = [
-        GraphDimIR(name=str(d), size=resolver.size(d), iterator_type=iterator_types[p].name)
-        for p, d in enumerate(dims)
+        GraphDimIR(name=str(d), size=resolver.size(d), iterator_type=iterator_types[p].name) for p, d in enumerate(dims)
     ]
     ir.is_recurrence = bool(sequential_dims(node))
     ir.reuse = _reuse(node, ir.dims)
