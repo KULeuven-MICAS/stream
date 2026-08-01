@@ -33,9 +33,6 @@ from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.traits import SymbolTable
 from xdsl.utils.hints import isa
 from xdsl_aie.dialects.aie import (
-    BDDimLayout,
-    BDDimLayoutArray,
-    BDDimLayoutArrayAttr,
     CoreOp,
     DeviceOp,
     DMABDOp,
@@ -965,16 +962,15 @@ class TransferToRuntimeSequence(RewritePattern):
                 for x in combined_ranges
             ]
 
-            for r in reduced_ranges:
-                bd_dimensions = BDDimLayoutArrayAttr(
-                    BDDimLayoutArray([BDDimLayout((var.size, var.stride)) for var in hardware_strides[::-1]])
-                )
+            outermost_first = hardware_strides[::-1]
 
+            for r in reduced_ranges:
                 dma_bd = DMABDOp(
                     arg,
                     offset=spatial_offset + r.stride,
                     len=prod(var.size for var in hardware_strides[:3]),
-                    dimensions=bd_dimensions,
+                    sizes=[var.size for var in outermost_first],
+                    strides=[var.stride for var in outermost_first],
                 )
 
                 # configure task
