@@ -29,6 +29,21 @@ def _flatten_cores(allocation) -> list[Core]:
     return out
 
 
+def _memory_tile_cores(allocation) -> list[Core]:
+    """The distinct memory tiles a transfer's memory allocation names.
+
+    Only a memory-kind core is a mem tile. Where the solver left candidates rather than a chosen
+    allocation, the slots list every placement it considered -- on hardware with no mem tiles those
+    are compute cores, and charging each of them a full transfer's traffic is what the removed
+    ``assert len(mem_cores) == 1`` used to hide.
+    """
+    tiles: dict[int, Core] = {}
+    for core in _flatten_cores(allocation):
+        if core.kind == "memory":
+            tiles.setdefault(core.id, core)
+    return list(tiles.values())
+
+
 class MemoryAccessesEstimationStage(Stage):
     """
     Stage that computes the number of memory accesses (reads/writes) for each core and tensor in the workload.
@@ -72,11 +87,13 @@ class MemoryAccessesEstimationStage(Stage):
         logger.info("Start MemoryAccessesEstimationStage.")
         try:
             self.calculate_memory_accesses()
+            accesses = self.core_memory_accesses
         except Exception as exc:  # noqa: BLE001 -- memory-access estimation is observability; never fail the solve
             logger.warning(f"MemoryAccessesEstimationStage: could not estimate memory accesses: {exc}")
+            accesses = None  # None means "estimation failed", distinct from "nothing to count"
         logger.info("Finished MemoryAccessesEstimationStage.")
 
-        self.ctx.set(workload=self.workload, accelerator=self.accelerator, memory_accesses=self.core_memory_accesses)
+        self.ctx.set(workload=self.workload, accelerator=self.accelerator, memory_accesses=accesses)
         yield from (self.ctx,)
 
     def calculate_memory_accesses(self) -> None:
@@ -117,7 +134,7 @@ class MemoryAccessesEstimationStage(Stage):
     def get_mem_core_accesses(self, tn: TransferNode, ssis: SteadyStateIterationSpace):
         # A transfer's tensor may reside on several memory tiles; account the accesses on each rather
         # than assuming a single mem core (the original single-core assumption is why this was disabled).
-        mem_cores = _flatten_cores(self.mapping.get(tn).memory_allocation)
+        mem_cores = _memory_tile_cores(self.mapping.get(tn).memory_allocation)
         if not mem_cores:
             return  # No mem tile involved in this transfer, skip
         nb_temporal_iterations = prod(ssis.get_applicable_temporal_sizes())
