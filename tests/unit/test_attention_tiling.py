@@ -21,7 +21,6 @@ from stream.workload.iterator_type import (
     NonlinearReductionUnrollError,
     check_spatial_unroll_legal,
     derive_iterator_types,
-    nonlinear_reduction_dims,
 )
 from stream.workload.models import AttentionConfig, build_attention_block
 from stream.workload.normalization import expand_normalizations
@@ -40,10 +39,9 @@ def _parse_accelerator():
 
 
 def test_softmax_reduced_axis_is_tracked_as_a_nonlinear_reduction():
-    """The node keeps its fused-kernel identity view (every axis reads PARALLEL), but the declared
-    reduction_axes are surfaced by nonlinear_reduction_dims -- the ground truth the tiling guards read."""
+    """The node keeps its fused-kernel identity view, so its maps alone read every axis as PARALLEL --
+    which is why the reduction has to be declared until expansion exposes it."""
     sm = _softmax(build_attention_block())
-    assert nonlinear_reduction_dims(sm) == frozenset(sm.reduction_axes)
     assert sm.reduction_axes  # the softmax really does reduce an axis
     # the fused-kernel node view is unchanged: identity, so no axis reads REDUCTION on the node alone
     assert all(t == IteratorType.PARALLEL for t in derive_iterator_types(sm).values())

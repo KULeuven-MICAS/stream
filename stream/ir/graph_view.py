@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from stream.datatypes import LayerDim
 from stream.workload.affine_access import footprint, map_dim_positions
 from stream.workload.decompose import decompose, has_decomposition
 from stream.workload.fusion.proposer import iteration_extents, propose_fusion_regions
@@ -25,6 +26,7 @@ from stream.workload.node import (
 from stream.workload.normalization import parallel_axes
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.structure import find_repeated_blocks
+from stream.workload.tensor import Tensor
 
 if TYPE_CHECKING:
     from stream.workload.workload import Workload
@@ -203,11 +205,11 @@ class _DimResolver:
         _, self._expressions = workload.unique_dimensions()
         self._ranges = workload.get_dimension_sizes()
 
-    def dims(self, node) -> list:
+    def dims(self, node: HasIterationSpace) -> list[LayerDim]:
         span = self._global_idxs[node]
         return self._expressions[span.start : span.stop]
 
-    def size(self, dim) -> int | None:
+    def size(self, dim: LayerDim) -> int | None:
         try:
             return self._ranges[self._expressions.index(dim)]
         except Exception:  # noqa: BLE001 -- unknown sizes render blank, exactly as get_dimension_size
@@ -222,7 +224,7 @@ def _topo_names(workload: Workload) -> list[str]:
     return [n.name for n in workload.dataflow_sort()]
 
 
-def _tensor_ref(t) -> TensorRefIR:
+def _tensor_ref(t: Tensor) -> TensorRefIR:
     try:
         shape = [int(s) for s in t.shape]
     except Exception:  # noqa: BLE001 -- a symbolic/unknown shape renders as no dims, not a crash

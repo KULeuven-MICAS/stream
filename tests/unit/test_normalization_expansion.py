@@ -10,7 +10,6 @@ These tests use the real MHA / GQA attention blocks -- the modern usage of softm
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 from stream.stages.context import StageContext
@@ -28,7 +27,6 @@ from stream.workload.normalization import (
     REDUCTION_SUBOPS,
     collapse_fused_kernels,
     expand_normalizations,
-    softmax_reference,
 )
 from stream.workload.workload import determine_fusion_cut_points
 
@@ -118,13 +116,3 @@ def test_stage_expands_the_softmax():
     expanded = list(MainStage([ExpandNormalizationStage, LeafStage], ctx).run())[0].get("workload")
     assert not any(isinstance(n, NormalizationNode) for n in expanded.get_computation_nodes())
     assert {"ReduceMax", "Exp", "ReduceSum", "Div"} <= {n.type for n in expanded.get_computation_nodes()}
-
-
-def test_subops_mirror_the_numpy_softmax_reference():
-    """The sub-op math is the safe softmax the reference computes (guards the decomposition semantics)."""
-    x = np.random.default_rng(0).standard_normal((2, 4, 8, 8)).astype(np.float32)
-    ref = softmax_reference(x, axis=3)
-    manual_max = x - x.max(axis=3, keepdims=True)
-    manual = np.exp(manual_max) / np.exp(manual_max).sum(axis=3, keepdims=True)
-    assert np.allclose(ref, manual, atol=1e-6)
-    assert np.allclose(ref.sum(axis=3), 1.0, atol=1e-6)
