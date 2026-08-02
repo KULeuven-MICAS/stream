@@ -320,11 +320,12 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
 
     Args:
         intra_core_tiling: Optional fused-group intra-core (layer-fusion) tiling, e.g.
-            ``[{"dim": "Gemm_Left.D0", "tile": 16}, ...]``. When given, it overrides the generic
-            mapper's trivial no-op tiling, so the solver costs one steady-state tile instead of the
-            full layer (enabling layer-fused processing of large workloads). Entries are filtered per
-            fusion group to the nodes that group contains; a group with no matching entry keeps the
-            trivial default. When None, every group uses the trivial default (current behaviour).
+            ``[{"dim": "Gemm_Left.D0", "tile": 16}, ...]``, so the solver costs one steady-state tile
+            instead of the full layer. Entries are filtered per fusion group to the nodes that group
+            contains; a group with no matching entry keeps the whole-layer tile. Supplying this
+            disables automatic fusion tiling outright. When None, a group whose streamed intermediate
+            does not fit on-chip is tiled automatically along its streaming axis; the rest keep the
+            whole-layer tile.
 
     Returns the final StageContext with total_latency aggregated across all groups.
     """
