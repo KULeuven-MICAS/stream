@@ -40,10 +40,9 @@ ACCELERATOR = os.path.join(
 )
 
 # Gurobi baseline latency_total values.
-# Updated after switching from weighted-sum objective (total_lat + Σ reuse_factors)
-# to lexicographic optimization (primary: total_lat, secondary: Σ tiles_needed).
-GEMM_GUROBI_OBJ = 32_084_000.0
-SWIGLU_GUROBI_OBJ = 4_514_048.0
+# Re-pinned after the AIE MILP objective improvements (#109); Gurobi, GSCIP and HiGHS agree exactly.
+GEMM_GUROBI_OBJ = 29_491_232.0
+SWIGLU_GUROBI_OBJ = 3_215_616.0
 
 # Relative tolerance for cross-backend comparison (1%)
 REL_TOL = 0.01
