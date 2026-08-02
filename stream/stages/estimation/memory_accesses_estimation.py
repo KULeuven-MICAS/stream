@@ -5,6 +5,7 @@ from math import ceil, prod
 from stream.cost_model.memory_accesses import CoreMemoryAccesses
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
@@ -15,16 +16,16 @@ from stream.workload.workload import Workload
 logger = logging.getLogger(__name__)
 
 
-def _flatten_cores(allocation) -> list:
-    """Flatten a node's resource/memory allocation to a flat list of cores. ``resource_allocation`` is
-    nested ``tuple[tuple[Core, ...], ...]`` (slots of cores) while ``memory_allocation`` can be a flat
-    ``tuple[Core, ...]`` — handle both."""
-    out: list = []
+def _flatten_cores(allocation) -> list[Core]:
+    """Flatten a node's resource/memory allocation to its cores.
+
+    ``resource_allocation`` is nested slots, ``memory_allocation`` can be flat, and a transfer's slots
+    hold ``MulticastPathPlan`` routing choices rather than cores. Only cores are memory targets.
+    """
+    out: list[Core] = []
     for item in allocation or ():
-        if isinstance(item, (list, tuple)):
-            out.extend(item)
-        else:
-            out.append(item)
+        candidates = item if isinstance(item, (list, tuple)) else (item,)
+        out.extend(c for c in candidates if isinstance(c, Core))
     return out
 
 
