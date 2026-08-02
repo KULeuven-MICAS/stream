@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -55,6 +58,13 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -x -q --tb=short -m "not slow"
+
+      # The slow set is every end-to-end pipeline test and the cross-backend objective pins -- the
+      # only checks that exercise a real solve. Too slow for per-PR, so they run nightly and on
+      # demand. Gurobi is excluded: gurobipy is an opt-in extra and needs a licence.
+      - name: Run slow tests
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        run: python -m pytest tests/ -q --tb=short -m "slow" -k "not gurobi"
 
       - name: Upload metrics artifact
         if: always()
