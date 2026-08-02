@@ -8,6 +8,7 @@ from onnx import ModelProto
 from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.utils import open_yaml, pickle_load
 
+from stream.instrumentation import build_instrumentation, fail_instrumentation, finish_instrumentation, instrument
 from stream.ir.graph_view import WorkloadGraphView
 from stream.opt.solver import ConstraintSelection, GurobiBackend, SolverBackend
 from stream.stages.allocation.constraint_optimization_allocation import ConstraintOptimizationAllocationStage
@@ -23,7 +24,6 @@ from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.mapping_parser import MappingParserStage
 from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage as StreamONNXModelParserStage
-from stream.stages.progress import ProgressTracker, instrument_stages
 from stream.stages.stage import LeafStage, MainStage, StageCallable
 from stream.workload.workload import Workload
 
@@ -73,7 +73,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
     kernels: dict[str, Any] | None = None,
-    progress_path: str | None = None,
+    instrumentation: dict[str, Any] | None = None,
 ) -> StageContext:
     # Callers (e.g. the web runner) may pass JSON-sourced strings for the booleans; coerce them so a
     # literal "false" cannot read as True and silently pull in the optional AIE code-gen path (snaxc).
@@ -161,24 +161,18 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
                 npu=npu,  # required by AIECodeGenerationStage
             )
 
-        # Live DSE-step tracker: interleave inert progress probes so the fixed-mapping run emits the
-        # same progress.json (Parse -> Fuse -> Tile -> Allocate -> Schedule -> Cost) the generic path does.
-        progress_tracker = None
-        if progress_path:
-            progress_tracker = ProgressTracker(progress_path, "optimize_allocation_co_with_mapping")
-            stages = instrument_stages(stages, progress_tracker)
+        observers = build_instrumentation("optimize_allocation_co_with_mapping", instrumentation)
+        stages = instrument(stages, observers)
 
         mainstage = MainStage(stages, ctx)
         # Launch the MainStage
         try:
             answers = mainstage.run()
         except BaseException as exc:  # noqa: BLE001 -- record where the solve stopped, then re-raise unchanged
-            if progress_tracker is not None:
-                progress_tracker.fail(str(exc) or exc.__class__.__name__)
+            fail_instrumentation(observers, str(exc) or exc.__class__.__name__)
             raise
         assert len(answers) == 1, "Expected a single result from the optimization."
-        if progress_tracker is not None:
-            progress_tracker.finish()
+        finish_instrumentation(observers)
         ctx = answers[0]
     return ctx
 
@@ -187,13 +181,9 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
 optimize_allocation_co = optimize_allocation_co_with_mapping
 
 
-def _build_generic_co_stages(
-    parse_stages: list[StageCallable], progress_path: str | None
-) -> tuple[list[StageCallable], ProgressTracker | None]:
-    """The generic CO stage list. With ``progress_path`` set, inert progress probes are interleaved at
-    the six inspection-contract boundaries so the run emits live progress.json; without it, the list is
-    exactly the six real stages (unchanged behaviour). Returns (stages, tracker)."""
-    real_stages: list[StageCallable] = [
+def _build_generic_co_stages(parse_stages: list[StageCallable]) -> list[StageCallable]:
+    """The generic CO stage list."""
+    return [
         AcceleratorParserStage,  # Parses the accelerator
         *parse_stages,
         ExpandNormalizationStage,  # expand softmax/norm into affine sub-ops (two reduction passes)
@@ -205,10 +195,6 @@ def _build_generic_co_stages(
         ConstraintOptimizationAllocationStage,
         MemoryAccessesEstimationStage,
     ]
-    if not progress_path:
-        return real_stages, None
-    tracker = ProgressTracker(progress_path, "optimize_allocation_co_generic")
-    return instrument_stages(real_stages, tracker), tracker
 
 
 def _run_generic_co(  # noqa: PLR0913
@@ -224,15 +210,14 @@ def _run_generic_co(  # noqa: PLR0913
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
     intra_core_tiling: list[dict] | None = None,
-    progress_path: str | None = None,
+    instrumentation: dict[str, Any] | None = None,
 ) -> StageContext:
     """Shared generic CO pipeline. Feeds either an ONNX ``workload_path`` (parsed by the ONNX stage)
     or a prebuilt in-memory ``workload_obj`` (the ONNX stage is skipped).
 
-    When ``progress_path`` is given, pass-through probes are interleaved into the stage list so the
-    pipeline writes live per-stage status + partial IR to that file (Parse -> Fuse -> Tile -> Allocate
-    -> Schedule -> Cost) as it runs. The probes are inert wrappers: they never change which real stages
-    run, and any introspection failure is swallowed, so instrumentation can't alter or fail a solve."""
+    ``instrumentation`` names out-of-tree observers to wrap the stage list with ({name: options});
+    see :mod:`stream.instrumentation`. Observers never change which real stages run, and an observer
+    that fails is skipped, so watching a solve cannot alter or fail one."""
     assert os.path.exists(hardware), f"Hardware file {hardware} does not exist"
     assert (workload_path is None) != (workload_obj is None), "Provide exactly one of workload_path / workload_obj"
     if workload_path is not None:
@@ -270,7 +255,9 @@ def _run_generic_co(  # noqa: PLR0913
         # The ONNX parser stage is only needed when a file/proto workload is given; an in-memory
         # Workload is injected directly and the generic mapper consumes it unchanged.
         parse_stages: list[StageCallable] = [StreamONNXModelParserStage] if workload_path is not None else []
-        stages, progress_tracker = _build_generic_co_stages(parse_stages, progress_path)
+        stages = _build_generic_co_stages(parse_stages)
+        observers = build_instrumentation("optimize_allocation_co_generic", instrumentation)
+        stages = instrument(stages, observers)
         workload_kwargs = {"workload_path": workload_path} if workload_path is not None else {"workload": workload_obj}
         ctx = StageContext.from_kwargs(
             accelerator=hardware,  # required by AcceleratorParserStage
@@ -288,12 +275,10 @@ def _run_generic_co(  # noqa: PLR0913
         try:
             answers = mainstage.run()
         except BaseException as exc:  # noqa: BLE001 -- record where the solve stopped, then re-raise unchanged
-            if progress_tracker is not None:
-                progress_tracker.fail(str(exc) or exc.__class__.__name__)
+            fail_instrumentation(observers, str(exc) or exc.__class__.__name__)
             raise
         assert len(answers) == 1, "Expected a single result from the optimization."
-        if progress_tracker is not None:
-            progress_tracker.finish()  # safety net: mark every stage done once the solve returns
+        finish_instrumentation(observers)
         ctx = answers[0]
     return ctx
 
@@ -309,7 +294,7 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
     intra_core_tiling: list[dict] | None = None,
-    progress_path: str | None = None,
+    instrumentation: dict[str, Any] | None = None,
 ) -> StageContext:
     """Run the CO pipeline with auto-generated mapping from workload+hardware.
 
@@ -340,7 +325,7 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
         backend=backend,
         constraint_selection=constraint_selection,
         intra_core_tiling=intra_core_tiling,
-        progress_path=progress_path,
+        instrumentation=instrumentation,
     )
 
 
@@ -355,7 +340,7 @@ def optimize_allocation_co_generic_workload(  # noqa: PLR0913
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
     intra_core_tiling: list[dict] | None = None,
-    progress_path: str | None = None,
+    instrumentation: dict[str, Any] | None = None,
 ) -> StageContext:
     """Run the generic CO pipeline on an in-memory ``Workload`` (e.g. a ``stream.workload.models``
     catalog block), skipping ONNX parsing. This is the end-to-end entry point for the affine-IR
@@ -377,7 +362,7 @@ def optimize_allocation_co_generic_workload(  # noqa: PLR0913
         backend=backend,
         constraint_selection=constraint_selection,
         intra_core_tiling=intra_core_tiling,
-        progress_path=progress_path,
+        instrumentation=instrumentation,
     )
 
 
