@@ -1,5 +1,6 @@
 import logging
 import os
+from dataclasses import replace
 from itertools import combinations
 from math import ceil, prod
 from typing import cast
@@ -134,7 +135,55 @@ class SteadyStateScheduler:
             "fusion_splits": {str(dim): size for dim, size in self.fusion_splits.items()},
             "mapping": self.mapping.get_ir(),
             "performance": self.performance_stats,
+            "steady_state": self._steady_state_ir(),
         }
+
+    def _steady_state_ir(self) -> dict | None:
+        """Serialise the tiled/steady-state view for inspection: the ORIGINAL operators with their tensor
+        sizes, the for-loop nest over the steady-state iteration space, and the tiled workload graph with
+        the transfer nodes (the tensor copies kept on-chip between cores). Best-effort: any failure returns
+        None, so this inspection view never breaks an otherwise-solved run."""
+        try:
+            operators = [
+                {
+                    "name": cn.name,
+                    "op": getattr(cn, "type", "computation"),
+                    "tensors": [{"name": t.name, "shape": [int(s) for s in t.shape]} for t in cn.tensors],
+                }
+                for cn in self.workload.get_computation_nodes()
+            ]
+            # The for-loop nest over the steady-state iteration space (deduped across operands, size > 1).
+            loops: list[dict] = []
+            seen: set = set()
+            for ssis in (self.ssis or {}).values():
+                for iv in ssis.variables:
+                    key = (str(iv.dimension), int(iv.size), iv.type.name)
+                    if int(iv.size) > 1 and key not in seen:
+                        seen.add(key)
+                        loops.append({"dim": str(iv.dimension), "size": int(iv.size), "type": iv.type.name.lower()})
+            # The tiled workload graph WITH transfer nodes -- the tensor copies that reside on-chip.
+            tiled_nodes: list[dict] = []
+            edges: list[dict] = []
+            if self.ssw is not None:
+                for cn in self.ssw.get_computation_nodes():
+                    tiled_nodes.append({"name": cn.name, "kind": "compute", "op": getattr(cn, "type", "computation")})
+                for tn in self.ssw.get_transfer_nodes():
+                    out = tn.outputs[0] if tn.outputs else None
+                    transfer_type = getattr(tn, "transfer_type", None)
+                    tiled_nodes.append(
+                        {
+                            "name": tn.name,
+                            "kind": "transfer",
+                            "transfer_type": getattr(transfer_type, "name", None),
+                            "tensor": out.name if out is not None else None,
+                            "elements": int(prod(out.shape)) if out is not None else 0,
+                        }
+                    )
+                edges = [{"source": s.name, "target": t.name} for s, t in self.ssw.edges()]
+            return {"operators": operators, "loops": loops, "tiled_graph": {"nodes": tiled_nodes, "edges": edges}}
+        except Exception as exc:  # noqa: BLE001 -- inspection view must never break a solved run
+            logger.warning("could not build steady-state IR: %s", exc)
+            return None
 
     def run(self) -> Workload:
         """
@@ -375,13 +424,7 @@ class SteadyStateScheduler:
         input_idx = dst_new.inputs.index(tensor)
         new_inputs = dst_new.inputs[:input_idx] + (updated_tensor,) + dst_new.inputs[input_idx + 1 :]
         if isinstance(dst_new, ComputationNode):
-            new_dst = ComputationNode(
-                type=dst_new.type,
-                name=dst_new.name,
-                inputs=new_inputs,
-                outputs=dst_new.outputs,
-                operand_mapping=dst_new.operand_mapping,
-            )
+            new_dst = replace(dst_new, inputs=new_inputs)
         elif isinstance(dst_new, OutEdge):
             new_dst = OutEdge(
                 name=dst_new.name,
@@ -454,13 +497,7 @@ class SteadyStateScheduler:
     def update_source_tensor(self, tensor, src, new_nodes, new_tensor) -> ComputationNode:
         output_idx = src.outputs.index(tensor)
         new_outputs = src.outputs[:output_idx] + (new_tensor,) + src.outputs[output_idx + 1 :]
-        new_src = ComputationNode(
-            type=src.type,
-            name=src.name,
-            inputs=src.inputs,
-            outputs=new_outputs,
-            operand_mapping=src.operand_mapping,
-        )
+        new_src = replace(src, outputs=new_outputs)
         new_nodes[new_src.name] = new_src
         # Update the mapping entry for this new_src node to be the same as the original src node
         self.mapping.set(new_src, self.mapping.get(src))
@@ -489,13 +526,7 @@ class SteadyStateScheduler:
             input_idx = dst_new.inputs.index(tensor)
             new_inputs = dst_new.inputs[:input_idx] + (updated_tensor,) + dst_new.inputs[input_idx + 1 :]
             if isinstance(dst_new, ComputationNode):
-                new_dst = ComputationNode(
-                    type=dst_new.type,
-                    name=dst_new.name,
-                    inputs=new_inputs,
-                    outputs=dst_new.outputs,
-                    operand_mapping=dst_new.operand_mapping,
-                )
+                new_dst = replace(dst_new, inputs=new_inputs)
             elif isinstance(dst_new, OutEdge):
                 new_dst = OutEdge(
                     name=dst_new.name,
