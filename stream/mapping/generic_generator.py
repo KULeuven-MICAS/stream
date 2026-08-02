@@ -316,8 +316,10 @@ class GenericMappingGenerator:
         keeping the reductions resident. Returns None when nothing is streamable."""
 
         def largest(dims: set[LayerDim]) -> LayerDim | None:
+            # Tie-break by name: `dims` is a set, so equal-sized axes would otherwise be ordered by
+            # iteration order and the same workload could stream a different axis between processes.
             candidates = [d for d in dims if sub_workload.get_dimension_size(d) > 1]
-            return max(candidates, key=sub_workload.get_dimension_size) if candidates else None
+            return max(candidates, key=lambda d: (sub_workload.get_dimension_size(d), str(d))) if candidates else None
 
         return largest(self._recurrence_dims(sub_workload, cns) & indexed) or largest(
             self._fusible_parallel_dims(sub_workload, cns) & indexed

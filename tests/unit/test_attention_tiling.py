@@ -235,3 +235,25 @@ def test_fusion_tiling_plan_describes_query_streaming_softmax_resident():
     assert softmax_axes[0]["size"] == group["streamed_axis"]["size"], "self-attention key seq == query seq"
     assert any(n["fused_kernel"] for n in group["nodes"]), "the softmax is decomposed into tagged sub-ops"
     assert group["buffer_elements"] > 0
+
+
+def test_streaming_axis_breaks_size_ties_deterministically(monkeypatch):
+    """The streaming axis is chosen from a set, so equal-sized candidates would otherwise be ordered
+    by iteration order -- the same workload streamed a different axis between processes, and two
+    identical runs produced different mappings and different latency."""
+    accelerator = _parse_accelerator()
+    workload = expand_normalizations(build_attention_block(AttentionConfig(batch=1, heads=2, seq=8, d_head=8)))
+    gen = GenericMappingGenerator(
+        accelerator=accelerator, workload=workload, output_dir=tempfile.mkdtemp(), intra_core_tiling=None
+    )
+    sub = next(iter(workload.split_fusion_groups(cut_points=determine_fusion_cut_points(workload))))
+    cns = tuple(sub.get_computation_nodes())
+
+    tied = sorted(gen._fusible_parallel_dims(sub, cns), key=str)[:2]
+    assert len(tied) == 2, "need two fusible parallel axes to tie"
+    monkeypatch.setattr(gen, "_fusible_parallel_dims", lambda *_: set(tied))
+    monkeypatch.setattr(gen, "_recurrence_dims", lambda *_: set())
+    monkeypatch.setattr(sub, "get_dimension_size", lambda dim: 64)  # force the tie
+
+    chosen = gen._streaming_axis(sub, cns, set(tied))
+    assert chosen == max(tied, key=str), "a size tie must resolve by name, not by set order"
