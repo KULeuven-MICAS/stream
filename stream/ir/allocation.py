@@ -118,7 +118,11 @@ class TilingIR(BaseModel):
         description="Per-dimension fusion split counts before scheduling; global dim names ('z1')"
     )
     inter_core: dict[str, list[SplitIR]] = Field(
-        description="Per-node spatial split across cores (first slot); dims are node-local ('D0'), not global"
+        description=(
+            "Per-node spatial split across cores (first slot). The dim namespace follows whatever the "
+            "mapping recorded: global ('z0') from the generic mapper, node-local ('D0') from a "
+            "hand-written mapping. Do not join it to the other two by dim without checking."
+        )
     )
     intra_core: dict[str, list[TileIR]] = Field(
         description="Per-fused-group temporal block extents within one core; global dim names ('z1')"
