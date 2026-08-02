@@ -36,21 +36,11 @@ def _ensure_builtins() -> None:
 
 
 def _load_plugins() -> None:
-    """Register out-of-tree decomposers from the ``stream.decompositions`` entry-point group (name = op type, object =
-    decomposer)."""
-    import logging  # noqa: PLC0415
-    from importlib.metadata import entry_points  # noqa: PLC0415
+    """Register out-of-tree decomposers from the ``stream.decompositions`` group (name = op type)."""
+    from stream.plugins import load_group  # noqa: PLC0415
 
-    try:
-        eps = entry_points(group="stream.decompositions")
-    except Exception as exc:  # pragma: no cover - importlib.metadata edge cases
-        logging.getLogger(__name__).debug("decomposition entry-point discovery failed: %s", exc)
-        return
-    for ep in eps:
-        try:
-            register_decomposition(ep.name, ep.load())
-        except Exception as exc:  # pragma: no cover - a broken plugin must not break the registry
-            logging.getLogger(__name__).warning("skipping decomposition plugin %r: %s", ep.name, exc)
+    for plugin in load_group("stream.decompositions"):
+        register_decomposition(plugin.name, plugin.obj)
 
 
 def has_decomposition(node: ComputationNode) -> bool:

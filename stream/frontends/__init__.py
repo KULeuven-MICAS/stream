@@ -7,8 +7,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from importlib.metadata import entry_points
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+from stream.plugins import load_group
 
 if TYPE_CHECKING:
     from stream.workload.workload import Workload
@@ -64,19 +65,11 @@ def _load_plugins() -> None:
     if _LOAD_STATE["plugins"]:
         return
     _LOAD_STATE["plugins"] = True
-    try:
-        eps = entry_points(group=ENTRY_POINT_GROUP)
-    except Exception as exc:  # pragma: no cover - importlib.metadata edge cases
-        logger.debug("frontend entry-point discovery failed: %s", exc)
-        return
-    for ep in eps:
-        try:
-            obj = ep.load()
-            # Instantiate a class, use an instance as-is. Key on type(): a class also passes
-            # isinstance() against a runtime_checkable Protocol, so the Protocol check is wrong here.
-            register_frontend(obj() if isinstance(obj, type) else obj)
-        except Exception as exc:  # pragma: no cover - a broken plugin must not break ingestion
-            logger.warning("skipping frontend plugin %r: %s", ep.name, exc)
+    for plugin in load_group(ENTRY_POINT_GROUP):
+        # Instantiate a class, use an instance as-is. Key on type(): a class also passes
+        # isinstance() against a runtime_checkable Protocol, so the Protocol check is wrong here.
+        obj = plugin.obj
+        register_frontend(obj() if isinstance(obj, type) else obj)
 
 
 def available_frontends() -> tuple[WorkloadFrontend, ...]:

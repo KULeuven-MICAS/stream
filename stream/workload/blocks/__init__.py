@@ -8,9 +8,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
-from importlib.metadata import entry_points
 from typing import Any
 
+from stream.plugins import load_group
 from stream.workload.blocks.library import (
     ChunkedSSMConfig,
     FlashAttentionConfig,
@@ -132,17 +132,9 @@ def _load_plugins() -> None:
     if _LOAD_STATE["plugins"]:
         return
     _LOAD_STATE["plugins"] = True
-    try:
-        eps = entry_points(group=ENTRY_POINT_GROUP)
-    except Exception as exc:  # pragma: no cover - importlib.metadata edge cases
-        logger.debug("block entry-point discovery failed: %s", exc)
-        return
-    for ep in eps:
-        try:
-            obj = ep.load()
-            register_block(obj() if callable(obj) and not isinstance(obj, BlockSpec) else obj)
-        except Exception as exc:  # pragma: no cover - a broken plugin must not break the registry
-            logger.warning("skipping block plugin %r: %s", ep.name, exc)
+    for plugin in load_group(ENTRY_POINT_GROUP):
+        obj = plugin.obj
+        register_block(obj() if callable(obj) and not isinstance(obj, BlockSpec) else obj)
 
 
 def get_block(key: str) -> BlockSpec:

@@ -70,9 +70,17 @@ dev = ["bumpver", "pip-tools", "build", "twine", "pre-commit", "pytest", "pytest
 [project.scripts]
 stream-setup-aie = "stream.aie_setup:main"
 
-# Plugin boundaries (Phase 2 moat seam): an out-of-tree private overlay registers its own workload
-# frontends and reference blocks through these entry-point groups -- no fork of the public repo. The
-# public package ships only the framework, interfaces, taxonomy, and toy/reference implementations.
+# Plugin boundaries: an out-of-tree overlay registers its own workload frontends, blocks, parsers,
+# decompositions and hardware constraints through these entry-point groups -- no fork of the public
+# repo. The public package ships only the framework, interfaces, taxonomy, and reference
+# implementations. `stream.plugins` resolves every group: STREAM_OVERLAYS restricts which
+# distributions a process may load from, and OVERLAY_PRIORITY decides who wins a name collision.
+
+# An overlay declares itself here so it can be allowlisted, prioritised and reported as provenance.
+# The value is the overlay's module; an OVERLAY_PRIORITY int on it orders competing registrations
+# (public entry points are 0, so any overlay outranks a built-in).
+[project.entry-points."stream.overlays"]
+# e.g. stream-overlay = "stream_overlay"   (declared by the overlay)
 [project.entry-points."stream.frontends"]
 onnx = "stream.frontends.onnx:OnnxFrontend"
 torch_export = "stream.frontends.torch_export:TorchExportFrontend"
