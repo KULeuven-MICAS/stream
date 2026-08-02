@@ -85,6 +85,31 @@ def test_generic_mapper_never_splits_the_softmax_reduction_axis():
     assert split_something, "the mapper must still parallelise the attention block over its other axes"
 
 
+def test_expansion_does_not_change_what_the_mapper_protects_or_splits():
+    """The pipeline expands normalizations before mapping, so every guard must read the same answer on
+    the expanded graph as on the fused one. Read the declared reduction_axes only and the guards go
+    silently dead exactly where they matter -- the expanded graph is the one that gets mapped."""
+    raw = build_attention_block(AttentionConfig(batch=1, heads=2, seq=8, d_head=8))
+    accelerator = _parse_accelerator()
+
+    def decisions(workload):
+        gen = GenericMappingGenerator(
+            accelerator=accelerator, workload=workload, output_dir=tempfile.mkdtemp(), intra_core_tiling=None
+        )
+        return [
+            (
+                sorted(str(d) for d in gen._protected_dims(sub, cns)),
+                sorted(str(d) for d in gen._inter_core_unrolling(sub, cns)),
+            )
+            for sub in workload.split_fusion_groups(cut_points=determine_fusion_cut_points(workload))
+            if (cns := tuple(sub.get_computation_nodes()))
+        ]
+
+    protected_raw = decisions(raw)
+    assert any(dims for dims, _ in protected_raw), "the attention block must protect the softmax key axis"
+    assert decisions(expand_normalizations(raw)) == protected_raw
+
+
 def test_fusion_split_protects_the_softmax_reduction_axis():
     """'Tiling after fusion' respects the reduction too: the softmax's reduced axis is in the set
     determine_fusion_splits refuses to block-tile (blocking it is online-softmax / flash)."""
@@ -176,7 +201,7 @@ def test_expanded_attention_fuses_and_tiles_the_query_axis():
 
 
 def test_fusion_tiling_plan_describes_query_streaming_softmax_resident():
-    """The fusion_tiling_plan API (what the platform renders) says attention streams the query axis in
+    """The fusion_tiling_plan API says attention streams the query axis in
     blocks while the softmax key axis stays resident on-chip, and reports the decomposed softmax."""
     workload = expand_normalizations(build_attention_block(AttentionConfig(batch=1, heads=4, seq=1024, d_head=64)))
     gen = GenericMappingGenerator(

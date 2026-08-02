@@ -102,13 +102,16 @@ def sequential_dims(node: HasIterationSpace) -> frozenset[int]:
 
 
 def nonlinear_reduction_dims(node: HasIterationSpace) -> frozenset[int]:
-    """Positions of a normalization's reduced axes -- a NONLINEAR reduction (softmax/layernorm).
-
-    These index the output (the identity map keeps them), so ``derive_iterator_types`` alone would call
-    them PARALLEL; the declared ``reduction_axes`` are the ground truth that they are reduced, not
-    freely tileable. They cannot be spatially unrolled or fusion-split without the online-softmax
-    rewrite. Empty for every non-normalization node."""
-    return frozenset(getattr(node, "reduction_axes", ()) or ())
+    """Positions this node reduces nonlinearly (softmax/layernorm) -- never spatially unrollable or
+    fusion-splittable without the online-softmax rewrite. A NormalizationNode declares them (its
+    identity map hides the reduction); an expanded sub-op carries ``fused_kernel``, so the maps expose
+    it and it is derived. Empty for an ordinary node: its linear contractions split as partial sums."""
+    declared = getattr(node, "reduction_axes", ())
+    if declared:
+        return frozenset(declared)
+    if getattr(node, "fused_kernel", None) is None:
+        return frozenset()
+    return frozenset(pos for pos, kind in derive_iterator_types(node).items() if kind is IteratorType.REDUCTION)
 
 
 def derive_iterator_types(node: HasIterationSpace) -> dict[int, IteratorType]:
