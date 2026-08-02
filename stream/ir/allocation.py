@@ -78,20 +78,20 @@ class FusedGroupIR(BaseModel):
 _TILE_PAIR_LEN = 2
 
 
-class TileFactorIR(BaseModel):
-    """One tiling decision: a loop dimension split by an integer factor.
+class SplitIR(BaseModel):
+    """A loop dimension cut into `factor` parts -- a count, so tile extent is `dim_size // factor`."""
 
-    `dim` is the global loop dimension name (e.g. 'z1'); `axis` is the semantic
-    tensor axis it indexes (e.g. 'seq', 'embedding') when the affine IR can
-    resolve it, else None. Typing tiling as `{dim, factor, axis}` replaces the
-    stringly-typed `[dim_str, factor]` pairs that stages 2/3 were read out of.
-    """
+    dim: str = Field(description="The loop dimension being split")
+    factor: int = Field(description="Number of parts the dimension is cut into")
+
+
+class TileIR(BaseModel):
+    """A loop dimension walked in blocks of `tile` elements -- an extent, so the number of steps is
+    `dim_size // tile`. Distinct from SplitIR because the two are not interchangeable: reading one as
+    the other inverts the quantity."""
 
     dim: str = Field(description="The loop dimension being tiled")
-    factor: int = Field(description="The integer split/tile factor applied to this dimension")
-    axis: str | None = Field(
-        default=None, description="Semantic tensor axis this dim indexes (when resolvable), else None"
-    )
+    tile: int = Field(description="Block extent in elements")
 
 
 class FusionIR(BaseModel):
@@ -112,14 +112,14 @@ class TilingIR(BaseModel):
     rather than reconstructed from `fusion_splits`/`inter_core_tiling` strings.
     """
 
-    fusion_splits: list[TileFactorIR] = Field(
-        description="Per-dimension fusion split factors applied before scheduling"
+    fusion_splits: list[SplitIR] = Field(
+        description="Per-dimension fusion split counts before scheduling; global dim names ('z1')"
     )
-    inter_core: dict[str, list[TileFactorIR]] = Field(
-        description="Per-node spatial split across cores (the first slot's inter-core tiling)"
+    inter_core: dict[str, list[SplitIR]] = Field(
+        description="Per-node spatial split across cores (first slot); dims are node-local ('D0'), not global"
     )
-    intra_core: dict[str, list[TileFactorIR]] = Field(
-        description="Per-fused-group temporal tile factors within a single core"
+    intra_core: dict[str, list[TileIR]] = Field(
+        description="Per-fused-group temporal block extents within one core; global dim names ('z1')"
     )
 
 
@@ -264,7 +264,7 @@ class AllocationPerformanceView(BaseModel):
 class AllocationIR(BaseModel):
     """Typed Pydantic model wrapping SteadyStateScheduler.get_ir() output.
 
-    schema_version '1.0': minor bumps (1.1) for additive fields, major bumps (2.0) for
+    schema_version '1.1': minor bumps for additive fields, major bumps (2.0) for
     removed/renamed fields. Construction is always via from_internal().
 
     Note: from_internal() raises ValueError if called on a pre-solve scheduler
@@ -363,21 +363,25 @@ class AllocationIR(BaseModel):
         # Stage-2 (Fuse) and stage-3 (Tile) typed artifacts, derived from the
         # same mapping dict — so the fuse/tile decisions are inspectable as
         # typed objects rather than reconstructed from strings downstream.
-        def _factors(pairs: list) -> list[TileFactorIR]:
-            out: list[TileFactorIR] = []
-            for pair in pairs or []:
-                if isinstance(pair, (list, tuple)) and len(pair) >= _TILE_PAIR_LEN:
-                    out.append(TileFactorIR(dim=str(pair[0]), factor=int(pair[1])))
-            return out
+        def _pairs(pairs: list) -> list[tuple[str, int]]:
+            return [
+                (str(p[0]), int(p[1])) for p in pairs or [] if isinstance(p, (list, tuple)) and len(p) >= _TILE_PAIR_LEN
+            ]
 
         fusion = FusionIR(n_groups=len(fused_groups), groups=fused_groups)
         tiling = TilingIR(
-            fusion_splits=[TileFactorIR(dim=str(d), factor=int(f)) for d, f in raw["fusion_splits"].items()],
+            fusion_splits=[SplitIR(dim=str(d), factor=int(f)) for d, f in raw["fusion_splits"].items()],
             inter_core={
-                name: _factors(node["inter_core_tiling"][0] if node["inter_core_tiling"] else [])
+                name: [
+                    SplitIR(dim=d, factor=f)
+                    for d, f in _pairs(node["inter_core_tiling"][0] if node["inter_core_tiling"] else [])
+                ]
                 for name, node in mapping["nodes"].items()
             },
-            intra_core={fg["name"]: _factors(fg["intra_core_tiling"]) for fg in mapping["fused_groups"]},
+            intra_core={
+                fg["name"]: [TileIR(dim=d, tile=t) for d, t in _pairs(fg["intra_core_tiling"])]
+                for fg in mapping["fused_groups"]
+            },
         )
 
         return cls(

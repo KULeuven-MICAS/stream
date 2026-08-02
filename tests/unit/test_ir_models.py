@@ -522,6 +522,21 @@ class TestAllocationIR:
         assert "MatMul" in ir.mapping_nodes
         assert len(ir.fused_groups) == 1
 
+    def test_tiling_distinguishes_split_counts_from_block_extents(self):
+        """fusion_splits/inter_core carry a split count, intra_core a block extent in elements. One
+        model for both let a consumer read `dim_size // value` on a value that was already an extent."""
+        mock_scheduler = MagicMock()
+        mock_scheduler.latency_total = 2000
+        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
+
+        tiling = AllocationIR.from_internal(mock_scheduler).tiling
+        assert tiling is not None
+        assert {(s.dim, s.factor) for s in tiling.fusion_splits} == {("K", 4), ("M", 2)}
+        assert [(s.dim, s.factor) for s in tiling.inter_core["MatMul"]] == [("K", 2), ("M", 1)]
+        # ALLOCATION_RAW's group_0 intra_core_tiling is [["K", 4], ["N", 2]] -- extents, not counts.
+        assert [(t.dim, t.tile) for t in tiling.intra_core["group_0"]] == [("K", 4), ("N", 2)]
+        assert not any(hasattr(t, "factor") for t in tiling.intra_core["group_0"])
+
     def test_from_internal_coerces_non_string_runtime_args(self):
         """runtime_args values are stringified: some workloads carry AffineMap objects there, which
         must not break the JSON-serializable IR (regression for the demo allocation.json path)."""

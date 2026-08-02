@@ -147,7 +147,7 @@ def test_api_entry_point_parses_and_views():
     from stream.api import workload_graph_view
 
     view = workload_graph_view("stream/inputs/testing/workload/attention_head.onnx")
-    assert view["schema_version"] == "1.0"
+    assert view["schema_version"] == "1.1"
     assert view["nodes"] and view["edges"]
     assert any(c["op"] == "MatMul" for c in view["block_classes"])
     assert view["proposed_regions"] == []  # no capacity -> no proposals

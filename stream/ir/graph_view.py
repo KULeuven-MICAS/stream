@@ -150,7 +150,7 @@ class WorkloadGraphView(BaseModel):
         json_schema_extra={"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "stream/workload_graph/v1"}
     )
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.1"] = "1.1"
     tiled: bool = Field(description="True if the workload is a tiled/steady-state graph")
     nodes: list[GraphNodeIR]
     edges: list[GraphEdgeIR]
