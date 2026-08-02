@@ -465,11 +465,11 @@ ALLOCATION_RAW: dict = {
 
 class TestAllocationIR:
     def test_json_schema(self):
-        """AllocationIR.model_json_schema() must include schema_version const '1.0'."""
+        """AllocationIR.model_json_schema() must include schema_version const '1.1' (1.1 = +fusion/tiling)."""
         schema = AllocationIR.model_json_schema()
         assert "schema_version" in schema["properties"]
         sv = schema["properties"]["schema_version"]
-        assert sv.get("const") == "1.0", f"Expected const='1.0', got: {sv}"
+        assert sv.get("const") == "1.1", f"Expected const='1.1', got: {sv}"
 
     def test_from_dict(self):
         """AllocationIR constructed from a dict matching scheduler.get_ir() shape validates without error."""
@@ -502,7 +502,7 @@ class TestAllocationIR:
         )
         assert ir.latency.total == 2000
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "1.0"
+        assert ir.schema_version == "1.1"
 
     def test_from_internal_post_solve(self):
         """AllocationIR.from_internal(mock_scheduler) constructs correctly when latency_total > 0."""
@@ -517,10 +517,42 @@ class TestAllocationIR:
         assert ir.latency.per_iteration == 500
         assert ir.latency.overlap_between_iterations == 100
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "1.0"
+        assert ir.schema_version == "1.1"
         assert len(ir.mapping_nodes) == 2
         assert "MatMul" in ir.mapping_nodes
         assert len(ir.fused_groups) == 1
+
+    def test_tiling_distinguishes_split_counts_from_block_extents(self):
+        """fusion_splits/inter_core carry a split count, intra_core a block extent in elements. One
+        model for both let a consumer read `dim_size // value` on a value that was already an extent."""
+        mock_scheduler = MagicMock()
+        mock_scheduler.latency_total = 2000
+        mock_scheduler.get_ir.return_value = ALLOCATION_RAW
+
+        tiling = AllocationIR.from_internal(mock_scheduler).tiling
+        assert tiling is not None
+        assert {(s.dim, s.factor) for s in tiling.fusion_splits} == {("K", 4), ("M", 2)}
+        assert [(s.dim, s.factor) for s in tiling.inter_core["MatMul"]] == [("K", 2), ("M", 1)]
+        # ALLOCATION_RAW's group_0 intra_core_tiling is [["K", 4], ["N", 2]] -- extents, not counts.
+        assert [(t.dim, t.tile) for t in tiling.intra_core["group_0"]] == [("K", 4), ("N", 2)]
+        assert not any(hasattr(t, "factor") for t in tiling.intra_core["group_0"])
+
+    def test_from_internal_coerces_non_string_runtime_args(self):
+        """runtime_args values are stringified: some workloads carry AffineMap objects there, which
+        must not break the JSON-serializable IR (regression for the demo allocation.json path)."""
+
+        class _FakeAffineMap:
+            def __str__(self) -> str:
+                return "(d0, d1) -> (d0, d1)"
+
+        raw = {**ALLOCATION_RAW, "mapping": {**ALLOCATION_RAW["mapping"], "runtime_args": {"input": _FakeAffineMap()}}}
+        mock_scheduler = MagicMock()
+        mock_scheduler.latency_total = 2000
+        mock_scheduler.get_ir.return_value = raw
+
+        ir = AllocationIR.from_internal(mock_scheduler)
+        assert ir.runtime_args == {"input": "(d0, d1) -> (d0, d1)"}
+        ir.model_dump_json()  # must stay JSON-serializable
 
     def test_from_internal_pre_solve_raises(self):
         """AllocationIR.from_internal() raises ValueError when latency_total == -1 (pre-solve sentinel)."""
@@ -615,7 +647,7 @@ class TestAllocationIR:
         json_str = ir.model_dump_json()
         parsed = json.loads(json_str)
 
-        assert parsed["schema_version"] == "1.0"
+        assert parsed["schema_version"] == "1.1"
         assert parsed["backend"] == "ORTOOLS_GSCIP"
         assert parsed["latency"]["total"] == 2000
         assert "MatMul" in parsed["mapping_nodes"]

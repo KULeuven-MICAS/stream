@@ -1,7 +1,7 @@
 """Tests for the unified WorkloadGraphView engine (stream.ir.graph_view).
 
 One smart graph view for any workload: proper nodes+edges, repeated-block collapse, fusable regions,
-and derived affine metadata per node — the single serialization the platform renders.
+and derived affine metadata per node — the single serialization a viewer consumes.
 """
 
 from __future__ import annotations
@@ -147,6 +147,15 @@ def test_api_entry_point_parses_and_views():
     from stream.api import workload_graph_view
 
     view = workload_graph_view("stream/inputs/testing/workload/attention_head.onnx")
-    assert view["schema_version"] == "1.0"
+    assert view["schema_version"] == "1.1"
     assert view["nodes"] and view["edges"]
     assert any(c["op"] == "MatMul" for c in view["block_classes"])
+    assert view["proposed_regions"] == []  # no capacity -> no proposals
+
+
+def test_api_entry_point_surfaces_proposed_regions_under_a_capacity():
+    from stream.api import workload_graph_view
+
+    view = workload_graph_view("stream/inputs/testing/workload/attention_head.onnx", fusion_capacity=UNBOUNDED)
+    assert view["proposed_regions"]
+    assert any(n["proposed_region"] is not None for n in view["nodes"])

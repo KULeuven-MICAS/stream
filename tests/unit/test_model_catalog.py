@@ -11,7 +11,6 @@ from stream.workload.iterator_type import IteratorType, derive_iterator_types, s
 from stream.workload.models import MODEL_CATALOG, build_attention_block, build_mamba_block
 from stream.workload.node import FusionEdge, NormalizationNode
 from stream.workload.normalization import parallel_axes, reduction_axes
-from stream.workload.rewrites import RewriteParams, get_rewrite
 
 
 def test_catalog_builds_every_model():
@@ -49,13 +48,36 @@ def test_attention_is_one_fusible_region():
     assert len(groups[0].get_dimension_sizes()) > 0
 
 
-def test_mamba_scan_is_sequential_and_chunks():
+def test_mamba_state_update_decomposes_to_paper_subops():
+    """The Mamba block is the paper's Fig. 7 state-update, decomposed into atomic affine sub-ops:
+    the discretization (dA, Abar, dB, dBx), the sequential scan, the readout and the skip."""
     wl = build_mamba_block()
-    scan = next(n for n in wl.get_computation_nodes() if n.type == "Scan")
-    assert sequential_dims(scan)  # the sequence axis carries state
-    assert IteratorType.SEQUENTIAL in derive_iterator_types(scan).values()
-    # the chunked rewrite decomposes the scan into a per-chunk reduction chain
-    rewrite = get_rewrite("chunked_scan")
-    assert rewrite.matches(scan)
-    chain = rewrite.apply(scan, RewriteParams(chunk_size=32))
-    assert len(chain.get_computation_nodes()) >= 1
+    by_name = {n.name: n for n in wl.get_computation_nodes()}
+    assert set(by_name) == {"dA", "Abar", "dB", "dBx", "scan", "readout", "skip", "out"}
+    assert by_name["Abar"].type == "Exp"  # the discretized decay exp(dA), a multi-cycle op
+
+
+def test_mamba_scan_is_sequential_over_the_token_axis():
+    """The selective scan h_t = Abar_t·h_{t-1} + dBx_t reads its [D,N] state at t-1, so the token axis
+    is SEQUENTIAL while the channel/state axes are PARALLEL."""
+    scan = next(n for n in build_mamba_block().get_computation_nodes() if n.type == "SelectiveScan")
+    assert sequential_dims(scan) == frozenset({0})  # the token axis carries the state
+    types = derive_iterator_types(scan)
+    assert types[0] == IteratorType.SEQUENTIAL
+    assert types[1] == IteratorType.PARALLEL and types[2] == IteratorType.PARALLEL
+
+
+def test_mamba_readout_reduces_the_state_axis():
+    """y'_t = sum_N C_t · h_t contracts the state dimension N (a linear reduction, not a barrier)."""
+    readout = next(n for n in build_mamba_block().get_computation_nodes() if n.name == "readout")
+    types = derive_iterator_types(readout)
+    assert [p for p, t in types.items() if t == IteratorType.REDUCTION] == [2]  # exactly the state axis N
+
+
+def test_mamba_fuses_into_one_region():
+    """No data-dependent read and no nonlinear reduction: the whole state-update block is one fusible
+    region (the paper's Fuse-All)."""
+    groups = build_mamba_block().split_fusion_groups()
+    assert len(groups) == 1
+    names = {c.name for c in groups[0].get_computation_nodes()}
+    assert {"dA", "Abar", "scan", "readout"} <= names

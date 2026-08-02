@@ -20,6 +20,7 @@ __all__ = [
     "edge_fusions",
     "workload_fusion_edges",
     "consumer_reduction_axes",
+    "barrier_cut_points",
 ]
 
 
@@ -174,3 +175,17 @@ def workload_fusion_edges(workload) -> list[EdgeFusion]:
         if isinstance(producer, HasIterationSpace) and isinstance(consumer, HasIterationSpace):
             edges.extend(edge_fusions(producer, consumer))
     return edges
+
+
+def barrier_cut_points(workload) -> list[str]:
+    """Node names that must end a fusion group because the affine analysis finds a HARD barrier there.
+
+    Only a **data-dependent read** (MoE dispatch/combine, gather) is a hard barrier: its footprint
+    depends on runtime data, so the producer must be fully materialized before the runtime-indexed
+    consumer. A **reduction** -- linear (a MatMul contraction) or nonlinear (Softmax/LayerNorm) -- is
+    *not* a cut: the chain still fuses, the reduction is simply not a legal tiling/streaming axis
+    (kept resident). That per-axis constraint is enforced by the tiling guards
+    (`nonlinear_reduction_dims`, `_protected_dims`), not by cutting the graph -- which is why an
+    attention head fuses into one region instead of spilling its softmax output to memory.
+    """
+    return [edge.producer for edge in workload_fusion_edges(workload) if edge.data_dependent]

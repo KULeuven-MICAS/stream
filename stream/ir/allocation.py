@@ -74,6 +74,83 @@ class FusedGroupIR(BaseModel):
     )
 
 
+# A tiling pair is [dim, factor]; anything shorter is not a decision we can type.
+_TILE_PAIR_LEN = 2
+
+
+class SplitIR(BaseModel):
+    """A loop dimension cut into `factor` parts -- a count, so tile extent is `dim_size // factor`."""
+
+    dim: str = Field(description="The loop dimension being split")
+    factor: int = Field(description="Number of parts the dimension is cut into")
+
+
+class TileIR(BaseModel):
+    """A loop dimension walked in blocks of `tile` elements -- an extent, so the number of steps is
+    `dim_size // tile`. Distinct from SplitIR because the two are not interchangeable: reading one as
+    the other inverts the quantity."""
+
+    dim: str = Field(description="The loop dimension being tiled")
+    tile: int = Field(description="Block extent in elements")
+
+
+class FusionIR(BaseModel):
+    """Stage-2 (Fuse) typed artifact: which layers share on-chip residency.
+
+    A dedicated typed sub-object for the fusion decision, rather than reading it
+    out of `fused_groups` strings.
+    """
+
+    n_groups: int = Field(description="Number of fused groups the workload was partitioned into")
+    groups: list[FusedGroupIR] = Field(description="The fused groups: their layers and intra-core tiling")
+
+
+class TilingIR(BaseModel):
+    """Stage-3 (Tile) typed artifact: the spatial (inter-core) and temporal (intra-core) tiling.
+
+    A dedicated typed sub-object so the Tile decision is inspectable directly,
+    rather than reconstructed from `fusion_splits`/`inter_core_tiling` strings.
+    """
+
+    fusion_splits: list[SplitIR] = Field(
+        description="Per-dimension fusion split counts before scheduling; global dim names ('z1')"
+    )
+    inter_core: dict[str, list[SplitIR]] = Field(
+        description="Per-node spatial split across cores (first slot); dims are node-local ('D0'), not global"
+    )
+    intra_core: dict[str, list[TileIR]] = Field(
+        description="Per-fused-group temporal block extents within one core; global dim names ('z1')"
+    )
+
+
+class SteadyStateOperatorIR(BaseModel):
+    """One original (un-tiled) operator of a fused group and the sizes of its tensors."""
+
+    name: str = Field(description="Operator name")
+    op: str = Field(description="Operator type, e.g. 'MatMul', 'SelectiveScan', 'Softmax'")
+    tensors: list[dict[str, Any]] = Field(description="Its operand tensors as [{'name', 'shape': [..]}, ...]")
+
+
+class SteadyStateLoopIR(BaseModel):
+    """One loop of the steady-state iteration space: a for-loop the fused schedule iterates."""
+
+    dim: str = Field(description="The tiled loop dimension")
+    size: int = Field(description="Trip count within a single steady-state slice")
+    type: str = Field(description="Loop kind: 'temporal' (a for-loop), 'spatial' (unrolled across cores), 'kernel'")
+
+
+class SteadyStateIR(BaseModel):
+    """The tiled / steady-state view of a fused group: the original operators with their tensor sizes, the
+    for-loop nest over the steady-state iteration space, and the tiled workload graph with the transfer
+    nodes (the tensor copies kept on-chip between cores). Best-effort inspection view; None if unavailable."""
+
+    operators: list[SteadyStateOperatorIR] = Field(description="Original operators + tensor sizes")
+    loops: list[SteadyStateLoopIR] = Field(description="The steady-state iteration-space for-loop nest")
+    tiled_graph: dict[str, Any] = Field(
+        description="The tiled workload with transfers: {'nodes': [{name,kind,...}], 'edges': [{source,target}]}"
+    )
+
+
 class AllocationAlgorithmicView(BaseModel):
     """Algorithmic-persona projection of AllocationIR.
 
@@ -187,7 +264,7 @@ class AllocationPerformanceView(BaseModel):
 class AllocationIR(BaseModel):
     """Typed Pydantic model wrapping SteadyStateScheduler.get_ir() output.
 
-    schema_version '1.0': minor bumps (1.1) for additive fields, major bumps (2.0) for
+    schema_version '1.1': minor bumps for additive fields, major bumps (2.0) for
     removed/renamed fields. Construction is always via from_internal().
 
     Note: from_internal() raises ValueError if called on a pre-solve scheduler
@@ -201,7 +278,8 @@ class AllocationIR(BaseModel):
         }
     )
 
-    schema_version: Literal["1.0"] = "1.0"
+    # 1.1 (additive): typed `fusion` (stage 2) and `tiling` (stage 3) sub-objects.
+    schema_version: Literal["1.1"] = "1.1"
     latency: LatencyInfo = Field(description="Latency metrics from the solved scheduler")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     cost_models: CostModelsIR | None = Field(
@@ -219,6 +297,18 @@ class AllocationIR(BaseModel):
     performance: AllocationPerformanceView | None = Field(
         default=None,
         description="Read-only utilization/bottleneck summary; None if stats were unavailable for this solve",
+    )
+    steady_state: SteadyStateIR | None = Field(
+        default=None,
+        description="Tiled/steady-state inspection view (operators+tensor sizes, loop nest, transfer graph)",
+    )
+    fusion: FusionIR | None = Field(
+        default=None,
+        description="Stage-2 (Fuse) typed artifact: which layers share on-chip residency",
+    )
+    tiling: TilingIR | None = Field(
+        default=None,
+        description="Stage-3 (Tile) typed artifact: spatial (inter-core) + temporal (intra-core) tiling",
     )
 
     @classmethod
@@ -267,6 +357,33 @@ class AllocationIR(BaseModel):
             else None
         )
 
+        ss_raw = raw.get("steady_state")
+        steady_state = SteadyStateIR(**ss_raw) if ss_raw else None
+
+        # Stage-2 (Fuse) and stage-3 (Tile) typed artifacts, derived from the
+        # same mapping dict — so the fuse/tile decisions are inspectable as
+        # typed objects rather than reconstructed from strings downstream.
+        def _pairs(pairs: list) -> list[tuple[str, int]]:
+            return [
+                (str(p[0]), int(p[1])) for p in pairs or [] if isinstance(p, (list, tuple)) and len(p) >= _TILE_PAIR_LEN
+            ]
+
+        fusion = FusionIR(n_groups=len(fused_groups), groups=fused_groups)
+        tiling = TilingIR(
+            fusion_splits=[SplitIR(dim=str(d), factor=int(f)) for d, f in raw["fusion_splits"].items()],
+            inter_core={
+                name: [
+                    SplitIR(dim=d, factor=f)
+                    for d, f in _pairs(node["inter_core_tiling"][0] if node["inter_core_tiling"] else [])
+                ]
+                for name, node in mapping["nodes"].items()
+            },
+            intra_core={
+                fg["name"]: [TileIR(dim=d, tile=t) for d, t in _pairs(fg["intra_core_tiling"])]
+                for fg in mapping["fused_groups"]
+            },
+        )
+
         return cls(
             latency=LatencyInfo(**raw["latency"]),
             backend=raw["backend"],
@@ -275,8 +392,11 @@ class AllocationIR(BaseModel):
             fusion_splits=raw["fusion_splits"],
             mapping_nodes=mapping_nodes,
             fused_groups=fused_groups,
-            runtime_args=mapping["runtime_args"],
+            runtime_args={k: str(v) for k, v in mapping["runtime_args"].items()},
             performance=performance,
+            steady_state=steady_state,
+            fusion=fusion,
+            tiling=tiling,
         )
 
     def algorithmic_view(self) -> AllocationAlgorithmicView:
