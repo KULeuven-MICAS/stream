@@ -210,6 +210,7 @@ def _run_generic_co(  # noqa: PLR0913
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
     intra_core_tiling: list[dict] | None = None,
+    fusion_cut_points: list[str] | None = None,
     instrumentation: dict[str, Any] | None = None,
 ) -> StageContext:
     """Shared generic CO pipeline. Feeds either an ONNX ``workload_path`` (parsed by the ONNX stage)
@@ -269,6 +270,7 @@ def _run_generic_co(  # noqa: PLR0913
             backend=_backend_enum.value,
             constraint_selection=constraint_selection,
             intra_core_tiling=intra_core_tiling,  # optional layer-fusion tiling for GenericMappingGenerationStage
+            fusion_cut_points=fusion_cut_points,  # None -> derive from affine barriers
         )
 
         mainstage = MainStage(stages, ctx)
@@ -294,6 +296,7 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
     intra_core_tiling: list[dict] | None = None,
+    fusion_cut_points: list[str] | None = None,
     instrumentation: dict[str, Any] | None = None,
 ) -> StageContext:
     """Run the CO pipeline with auto-generated mapping from workload+hardware.
@@ -325,6 +328,7 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
         backend=backend,
         constraint_selection=constraint_selection,
         intra_core_tiling=intra_core_tiling,
+        fusion_cut_points=fusion_cut_points,
         instrumentation=instrumentation,
     )
 
@@ -340,6 +344,7 @@ def optimize_allocation_co_generic_workload(  # noqa: PLR0913
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
     intra_core_tiling: list[dict] | None = None,
+    fusion_cut_points: list[str] | None = None,
     instrumentation: dict[str, Any] | None = None,
 ) -> StageContext:
     """Run the generic CO pipeline on an in-memory ``Workload`` (e.g. a ``stream.workload.models``
@@ -362,6 +367,7 @@ def optimize_allocation_co_generic_workload(  # noqa: PLR0913
         backend=backend,
         constraint_selection=constraint_selection,
         intra_core_tiling=intra_core_tiling,
+        fusion_cut_points=fusion_cut_points,
         instrumentation=instrumentation,
     )
 

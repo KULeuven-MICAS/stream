@@ -335,7 +335,10 @@ class Workload(DiGraphWrapper[Node]):
         # Build sub-workloads
         sub_workloads = []
         for nodes in group_nodes:
-            if nodes:
+            # A group of only boundary edges -- what a cut naming the last node leaves behind -- has
+            # no iteration space. Emitting it fails much later inside the affine solve with an
+            # unrelated shape error, so drop it here where the reason is still visible.
+            if any(isinstance(node, HasIterationSpace) for node in nodes):
                 sub_workloads.append(Workload(nodes))
 
         return sub_workloads
@@ -608,6 +611,11 @@ class Workload(DiGraphWrapper[Node]):
         pred = list(self.predecessors(transfer))[pred_idx]
         if isinstance(pred, InEdge):
             pred_tiling = tuple()
+        elif isinstance(pred, TransferNode):
+            # A tensor can be staged in more than one hop -- off-chip to a scratchpad, scratchpad to
+            # the array. The upstream transfer already shaped it, so this transfer's own tiling is
+            # what determines the shape here, mirroring get_tensor_of_transfer_to_single_core.
+            pred_tiling = self.get_unique_dims_inter_core_tiling(transfer, mapping)
         else:
             assert isinstance(pred, ComputationNode), f"Expected ComputationNode, got {type(pred)}"
             pred_tiling = self.get_unique_dims_inter_core_tiling(pred, mapping)

@@ -1,0 +1,116 @@
+# TPU7x (Ironwood) TensorCore matrix unit.
+#
+# A 256x256 systolic MXU, the array size Google moved to in v6e and kept for TPU7x (earlier
+# generations were 128x128). Multiplies take bf16 and accumulate in fp32.
+#
+# The dataflow is weight stationary, which is what the memory hierarchy below encodes:
+# parameters are loaded into the array and held there while activations stream through, each
+# partial sum passing to the next multiply-accumulator without a memory round-trip. That is
+# `served_dimensions: []` on the weight register file -- one private weight register per PE --
+# and accumulation along D2 for the output.
+#
+# Bandwidths are bits/cycle at a 1.75 GHz core clock. VMEM is quoted as roughly 22x HBM bandwidth;
+# 262144 bits/cc is ~57 TB/s per TensorCore, a little under that estimate and a clean power of two.
+name: tpu_v7_mxu
+type: zigzag.compute
+
+memories:
+  # Weight registers: one per PE, held stationary for the duration of a tile.
+  # 65536 PEs x 32 bit = 2 Mbit.
+  wreg:
+    size: 2097152
+    r_cost: 0.02
+    w_cost: 0.02
+    area: 0
+    latency: 1
+    auto_cost_extraction: False
+    operands: [I2]
+    ports:
+      - name: r_port_1
+        type: read
+        bandwidth_min: 16
+        bandwidth_max: 16
+        allocation:
+          - I2, tl
+      - name: w_port_1
+        type: write
+        bandwidth_min: 16
+        bandwidth_max: 16
+        allocation:
+          - I2, fh
+    served_dimensions: []
+
+  # fp32 accumulator per array column: partial sums walk down D2.
+  accumulator:
+    size: 32
+    r_cost: 0.01
+    w_cost: 0.01
+    area: 0
+    latency: 1
+    operands: [O]
+    ports:
+      - name: r_port_1
+        type: read
+        bandwidth_min: 32
+        bandwidth_max: 32
+        allocation:
+          - O, tl
+      - name: r_port_2
+        type: read
+        bandwidth_min: 32
+        bandwidth_max: 32
+        allocation:
+          - O, th
+      - name: w_port_1
+        type: write
+        bandwidth_min: 32
+        bandwidth_max: 32
+        allocation:
+          - O, fh
+      - name: w_port_2
+        type: write
+        bandwidth_min: 32
+        bandwidth_max: 32
+        allocation:
+          - O, fl
+    served_dimensions: [D2]
+
+  # VMEM as this unit sees it: 128 MiB, the scratchpad weights and activations are streamed from.
+  # tpu_v7_vmem.yaml models the same memory as a transfer staging point, which is what gives the
+  # allocator somewhere to place a tensor between off-chip and the array.
+  operand_buffer:
+    size: 1073741824
+    r_cost: 120
+    w_cost: 130
+    area: 0
+    latency: 1
+    operands: [I1, I2, O]
+    ports:
+      - name: r_port_1
+        type: read
+        bandwidth_min: 256
+        bandwidth_max: 262144
+        allocation:
+          - I1, tl
+          - I2, tl
+          - O, tl
+          - O, th
+      - name: w_port_1
+        type: write
+        bandwidth_min: 256
+        bandwidth_max: 262144
+        allocation:
+          - I1, fh
+          - I2, fh
+          - O, fh
+          - O, fl
+    served_dimensions: [D1, D2]
+
+operational_array:
+  unit_energy: 0.02 # pJ per bf16 MAC
+  unit_area: 1
+  dimensions: [D1, D2]
+  sizes: [256, 256]
+
+# Matrix ops only. The vector unit is a separate core -- see tpu_v7_vpu.yaml.
+operator_types: [MatMul, Gemm, Conv, Einsum]

@@ -1,0 +1,44 @@
+# SwiGLU on TPU7x, one layer at a time.
+#
+# Every layer is its own fused group, so each one runs to completion and its full output goes back
+# out to memory before the next starts. The three Gemms take the four MXU cores and split their
+# output columns (D2) four ways -- the natural split for a weight-stationary array, since each core
+# then holds a different slice of the weights and never reloads them. SiLU and the gate multiply go
+# to the four vector cores; putting them on the MXU would burn a 256x256 matrix array on
+# elementwise work.
+#
+# This is the baseline the fused mapping is measured against: same hardware, same core assignment,
+# the only difference being that nothing is kept on-chip between layers.
+layers:
+- name: Gemm_Left
+  core_allocation: [[0, 2, 4, 6]]
+  inter_core_tiling: [[{dim: D2, split: 4}]]
+- name: Gemm_Right
+  core_allocation: [[0, 2, 4, 6]]
+  inter_core_tiling: [[{dim: D2, split: 4}]]
+- name: Silu
+  core_allocation: [[1, 3, 5, 7]]
+  inter_core_tiling: [[{dim: D1, split: 4}]]
+- name: Elt_Mul
+  core_allocation: [[1, 3, 5, 7]]
+  inter_core_tiling: [[{dim: D1, split: 4}]]
+- name: Gemm_Down
+  core_allocation: [[0, 2, 4, 6]]
+  inter_core_tiling: [[{dim: D2, split: 4}]]
+
+fused_groups:
+- name: Gate_Proj
+  layers: [Gemm_Left]
+  intra_core_tiling: [{dim: Gemm_Left.D0, tile: 256}]
+- name: Up_Proj
+  layers: [Gemm_Right]
+  intra_core_tiling: [{dim: Gemm_Right.D0, tile: 256}]
+- name: Activation
+  layers: [Silu]
+  intra_core_tiling: [{dim: Silu.D0, tile: 256}]
+- name: Gate_Multiply
+  layers: [Elt_Mul]
+  intra_core_tiling: [{dim: Elt_Mul.D0, tile: 256}]
+- name: Down_Proj
+  layers: [Gemm_Down]
+  intra_core_tiling: [{dim: Gemm_Down.D0, tile: 256}]

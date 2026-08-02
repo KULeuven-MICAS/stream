@@ -1,0 +1,33 @@
+# SwiGLU on TPU7x, fused into one region streamed over the token axis.
+#
+# Same hardware and the same core assignment as the layer-by-layer mapping -- Gemms on the MXU
+# cores, SiLU and the gate multiply on the vector cores. The one change is that all five layers sit
+# in a single fused group tiled along D0 (the 256 tokens) in blocks of 64, so a block of tokens
+# flows gate -> up -> SiLU -> multiply -> down while it is still resident, and only the final
+# result goes back to memory.
+#
+# What that buys: the [256, 2048] intermediates (gate, up, silu, hidden) never have to be
+# materialised in full. At bf16 each is 1 MiB, and there are four of them; tiling the token axis by
+# four cuts the live set to a quarter and turns four HBM round-trips into on-chip hand-offs.
+layers:
+- name: Gemm_Left
+  core_allocation: [[0, 2, 4, 6]]
+  inter_core_tiling: [[{dim: D2, split: 4}]]
+- name: Gemm_Right
+  core_allocation: [[0, 2, 4, 6]]
+  inter_core_tiling: [[{dim: D2, split: 4}]]
+- name: Silu
+  core_allocation: [[1, 3, 5, 7]]
+  inter_core_tiling: [[{dim: D1, split: 4}]]
+- name: Elt_Mul
+  core_allocation: [[1, 3, 5, 7]]
+  inter_core_tiling: [[{dim: D1, split: 4}]]
+- name: Gemm_Down
+  core_allocation: [[0, 2, 4, 6]]
+  inter_core_tiling: [[{dim: D2, split: 4}]]
+
+fused_groups:
+- name: SwiGLU_Fused
+  layers: [Gemm_Left, Gemm_Right, Silu, Elt_Mul, Gemm_Down]
+  intra_core_tiling:
+  - {dim: Gemm_Left.D0, tile: 64}

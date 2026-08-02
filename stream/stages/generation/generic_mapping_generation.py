@@ -26,8 +26,15 @@ class GenericMappingGenerationStage(Stage):
     def run(self):
         from stream.workload.workload import determine_fusion_cut_points  # noqa: PLC0415
 
-        cut_points = determine_fusion_cut_points(self.workload)
-        logger.info(f"Determined {len(cut_points)} fusion cut points: {cut_points}")
+        # Caller-supplied cuts win over the derived ones. Cutting at every node is how a
+        # layer-by-layer mapping is expressed: each layer becomes its own fused group, so nothing
+        # is kept on chip between them -- the baseline a fused mapping is measured against.
+        cut_points = self.ctx.get("fusion_cut_points", None)
+        if cut_points is None:
+            cut_points = determine_fusion_cut_points(self.workload)
+            logger.info(f"Determined {len(cut_points)} fusion cut points: {cut_points}")
+        else:
+            logger.info(f"Using {len(cut_points)} caller-supplied fusion cut points: {cut_points}")
 
         generator = GenericMappingGenerator(
             accelerator=self.accelerator,
