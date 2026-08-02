@@ -98,6 +98,13 @@ torch_export = "stream.frontends.torch_export:TorchExportFrontend"
 [project.entry-points."stream.decompositions"]
 # e.g. MaskedAttentionBlock = "stream_overlay.decompose:decompose_masked_attention_block"
 
+# Namespace-specific MILP constraints: the entry-point name is the core namespace, its object a
+# NamespaceConstraints subclass. Instantiated via from_config whenever the accelerator contains a
+# core of that namespace, so a proprietary hardware namespace ships its own constraints from an
+# overlay. The built-in aie2 strategy registers here too -- the public path is the plugin path.
+[project.entry-points."stream.constraints"]
+aie2 = "stream.opt.allocation.constraint_optimization.context:AIE2Constraints"
+
 [project.urls]
 Homepage = "https://github.com/KULeuven-MICAS/stream"
 
