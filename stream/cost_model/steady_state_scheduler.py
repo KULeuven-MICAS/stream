@@ -1,5 +1,6 @@
 import logging
 import os
+from dataclasses import replace
 from itertools import combinations
 from math import ceil, prod
 from typing import cast
@@ -423,13 +424,7 @@ class SteadyStateScheduler:
         input_idx = dst_new.inputs.index(tensor)
         new_inputs = dst_new.inputs[:input_idx] + (updated_tensor,) + dst_new.inputs[input_idx + 1 :]
         if isinstance(dst_new, ComputationNode):
-            new_dst = ComputationNode(
-                type=dst_new.type,
-                name=dst_new.name,
-                inputs=new_inputs,
-                outputs=dst_new.outputs,
-                operand_mapping=dst_new.operand_mapping,
-            )
+            new_dst = replace(dst_new, inputs=new_inputs)
         elif isinstance(dst_new, OutEdge):
             new_dst = OutEdge(
                 name=dst_new.name,
@@ -502,13 +497,7 @@ class SteadyStateScheduler:
     def update_source_tensor(self, tensor, src, new_nodes, new_tensor) -> ComputationNode:
         output_idx = src.outputs.index(tensor)
         new_outputs = src.outputs[:output_idx] + (new_tensor,) + src.outputs[output_idx + 1 :]
-        new_src = ComputationNode(
-            type=src.type,
-            name=src.name,
-            inputs=src.inputs,
-            outputs=new_outputs,
-            operand_mapping=src.operand_mapping,
-        )
+        new_src = replace(src, outputs=new_outputs)
         new_nodes[new_src.name] = new_src
         # Update the mapping entry for this new_src node to be the same as the original src node
         self.mapping.set(new_src, self.mapping.get(src))
@@ -537,13 +526,7 @@ class SteadyStateScheduler:
             input_idx = dst_new.inputs.index(tensor)
             new_inputs = dst_new.inputs[:input_idx] + (updated_tensor,) + dst_new.inputs[input_idx + 1 :]
             if isinstance(dst_new, ComputationNode):
-                new_dst = ComputationNode(
-                    type=dst_new.type,
-                    name=dst_new.name,
-                    inputs=new_inputs,
-                    outputs=dst_new.outputs,
-                    operand_mapping=dst_new.operand_mapping,
-                )
+                new_dst = replace(dst_new, inputs=new_inputs)
             elif isinstance(dst_new, OutEdge):
                 new_dst = OutEdge(
                     name=dst_new.name,
