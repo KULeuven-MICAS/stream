@@ -42,7 +42,7 @@ _BIG = MambaConfig(seq=256, d_inner=512, d_state=16)
 
 
 def test_fusion_plan_streams_the_token_axis_with_state_resident():
-    """The plan the platform renders: one fused region that streams the SEQUENTIAL token axis L in
+    """The plan: one fused region that streams the SEQUENTIAL token axis L in
     blocks (``recurrence: true``), keeping the [D,N] state resident -- the paper's Fuse-All."""
     gen, workload = _generator(_BIG)
     plan = gen.fusion_tiling_plan()
@@ -74,7 +74,7 @@ def test_tensor_tiles_expose_L_streamed_state_and_A_resident():
         assert tensors[name]["tile"][0] < _BIG.seq
         assert tensors[name]["tile"][1:] == [_BIG.d_inner, _BIG.d_state], "only the token axis is tiled"
 
-    # the carried state is flagged so the frontend can render it as the resident recurrence carry
+    # the carried state is flagged as the resident recurrence carry
     assert tensors["h_prev"]["state"] is True
 
 
@@ -122,8 +122,10 @@ def test_small_ssm_keeps_the_whole_block_resident():
 
 
 def _selective_scan_via_subops(delta, a_mat, b_mat, c_mat, x, d_skip):
-    """Reference that mirrors the block's affine sub-ops exactly (dA, Abar, dB, dBx, sequential scan,
-    readout, skip). Shapes: delta,x [L,D]; A [D,N]; B,C [L,N]; d_skip [D]. Returns y [L,D]."""
+    """The recurrence the block's sub-ops encode, one numpy line per node. Its correspondence to the
+    graph is pinned by ``test_block_wiring_is_the_selective_scan_recurrence``; without that assertion
+    this is just a parallel implementation and proves nothing about the IR. Shapes: delta,x [L,D];
+    A [D,N]; B,C [L,N]; d_skip [D]. Returns y [L,D]."""
     ll, dd = delta.shape
     d_a = delta[:, :, None] * a_mat[None, :, :]  # dA[t,d,n] = delta[t,d] * A[d,n]
     a_bar = np.exp(d_a)  # Abar = exp(dA)
@@ -149,6 +151,24 @@ def _selective_scan_direct(delta, a_mat, b_mat, c_mat, x, d_skip):
         h = a_bar_t * h + b_bar_t * x[t][:, None]
         y[t] = h @ c_mat[t] + d_skip * x[t]
     return y
+
+
+def test_block_wiring_is_the_selective_scan_recurrence():
+    """Every sub-op's operands, in the order ``_selective_scan_via_subops`` consumes them. Rewire any
+    operand -- feed the scan ``delta`` instead of ``x``, read ``h`` instead of ``h_prev`` -- and this
+    fails, which is what ties the numerical reference below to the graph rather than to itself."""
+    wl = build_mamba_block(MambaConfig(seq=12, d_inner=5, d_state=4))
+    wiring = {n.name: (n.type, tuple(t.name for t in n.inputs), n.outputs[0].name) for n in wl.get_computation_nodes()}
+    assert wiring == {
+        "dA": ("Mul", ("delta", "A"), "dA"),
+        "Abar": ("Exp", ("dA",), "Abar"),
+        "dB": ("Mul", ("delta", "B"), "dB"),
+        "dBx": ("Mul", ("dB", "x"), "dBx"),
+        "scan": ("SelectiveScan", ("Abar", "h_prev", "dBx"), "h"),
+        "readout": ("MatMul", ("C", "h"), "y_ssm"),
+        "skip": ("Mul", ("D_skip", "x"), "Dx"),
+        "out": ("Add", ("y_ssm", "Dx"), "y"),
+    }
 
 
 def test_subop_decomposition_matches_direct_selective_scan():

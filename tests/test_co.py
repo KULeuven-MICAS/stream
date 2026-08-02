@@ -93,8 +93,7 @@ def test_co_tpu_two_conv(output_dir: Path):
     assert scheduler.latency_per_iteration > 0, "Expected positive latency_per_iteration"
     assert scheduler.iterations > 0, "Expected positive iterations"
 
-    # The solved scheduler must yield a JSON-serializable AllocationIR: this is the mapping-canvas
-    # contract the demo runner serializes to allocation.json (runtime_args here carry AffineMaps).
+    # The solved scheduler must yield a JSON-serializable AllocationIR (runtime_args carry AffineMaps).
     allocation = AllocationIR.from_internal(scheduler)
     allocation.model_dump_json()
     assert allocation.latency.total == scheduler.latency_total

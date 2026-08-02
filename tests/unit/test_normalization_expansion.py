@@ -1,4 +1,4 @@
-"""Parse-stage decomposition of the softmax into affine sub-operators (M12).
+"""Parse-stage decomposition of the softmax into affine sub-operators.
 
 A safe softmax over the key axis is ``max → exp(·−max) → sum → div``: two reduction passes plus two
 element-wise broadcasts. As one identity-mapped ``NormalizationNode`` those passes are invisible (the

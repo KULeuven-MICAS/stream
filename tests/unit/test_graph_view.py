@@ -1,7 +1,7 @@
 """Tests for the unified WorkloadGraphView engine (stream.ir.graph_view).
 
 One smart graph view for any workload: proper nodes+edges, repeated-block collapse, fusable regions,
-and derived affine metadata per node — the single serialization the platform renders.
+and derived affine metadata per node — the single serialization a viewer consumes.
 """
 
 from __future__ import annotations
