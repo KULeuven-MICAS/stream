@@ -10,6 +10,8 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from stream.plugins import loaded_overlays
+
 if TYPE_CHECKING:
     from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 
@@ -279,7 +281,8 @@ class AllocationIR(BaseModel):
     )
 
     # 1.1 (additive): typed `fusion` (stage 2) and `tiling` (stage 3) sub-objects.
-    schema_version: Literal["1.1"] = "1.1"
+    # 1.2 (additive): `overlays` -- which out-of-tree extensions were loaded for this run.
+    schema_version: Literal["1.2"] = "1.2"
     latency: LatencyInfo = Field(description="Latency metrics from the solved scheduler")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     cost_models: CostModelsIR | None = Field(
@@ -309,6 +312,14 @@ class AllocationIR(BaseModel):
     tiling: TilingIR | None = Field(
         default=None,
         description="Stage-3 (Tile) typed artifact: spatial (inter-core) + temporal (intra-core) tiling",
+    )
+    overlays: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Out-of-tree overlay distributions loaded for this run. Two results are only comparable "
+            "when they were produced with the same set: an overlay can supply operators, hardware "
+            "namespaces or constraints that change the answer."
+        ),
     )
 
     @classmethod
@@ -385,6 +396,7 @@ class AllocationIR(BaseModel):
         )
 
         return cls(
+            overlays=list(loaded_overlays()),
             latency=LatencyInfo(**raw["latency"]),
             backend=raw["backend"],
             cost_models=CostModelsIR.for_backend(raw["backend"]),
