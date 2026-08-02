@@ -507,22 +507,28 @@ class Workload(DiGraphWrapper[Node]):
         unique_dims, dim_values = self.unique_dimensions()
         # The size of each unique dim z0..zN
         z_sizes = [dimension_sizes[z] for z in unique_dims]
-        node = next(iter(n for n in self.get_iteration_space_nodes() if tensor in n.tensors))
-        mapping = node.get_mapping(tensor)
-        global_mapping = self.global_mapping(node, mapping)
         # This is the logical tensor domain we want to clip to.
         # If your Tensor already knows its shape, use it.
         logical_shape = tensor.shape  # type: ignore[attr-defined]
-        out_shape: list[int] = []
-        for axis, idx_expr in enumerate(global_mapping.results):
-            idx_expr_in_z = idx_expr.replace_dims_and_symbols(dim_values, ())
-            amin, amax = affine_bounds(idx_expr_in_z, z_sizes)
-            # Clip to valid tensor index range [0, logical_shape[axis]-1]
-            lo = max(amin, 0)
-            hi = min(amax, logical_shape[axis] - 1)
-            extent = max(0, hi - lo + 1)
-            out_shape.append(int(extent))
-        return tuple(out_shape)
+
+        def extents_for(node: HasIterationSpace) -> list[int]:
+            global_mapping = self.global_mapping(node, node.get_mapping(tensor))
+            out: list[int] = []
+            for axis, idx_expr in enumerate(global_mapping.results):
+                idx_expr_in_z = idx_expr.replace_dims_and_symbols(dim_values, ())
+                amin, amax = affine_bounds(idx_expr_in_z, z_sizes)
+                # Clip to valid tensor index range [0, logical_shape[axis]-1]
+                lo = max(amin, 0)
+                hi = min(amax, logical_shape[axis] - 1)
+                out.append(int(max(0, hi - lo + 1)))
+            return out
+
+        # A tensor several nodes access has one footprint per accessor, and they can differ once the
+        # workload decouples their axes (attention's query vs key sequence). Resolving through an
+        # arbitrary accessor made the answer depend on node insertion order; the resident footprint is
+        # the largest any accessor needs.
+        shapes = [extents_for(n) for n in self.get_iteration_space_nodes() if tensor in n.tensors]
+        return tuple(max(axis_extents) for axis_extents in zip(*shapes, strict=True))
 
     def get_tensor_shape_with_tiling(self, tensor: Tensor, tiling: InterCoreTiling) -> tuple[int, ...]:
         unique_dims, _ = self.unique_dimensions()

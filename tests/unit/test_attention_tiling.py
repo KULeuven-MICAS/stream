@@ -110,6 +110,26 @@ def test_expansion_does_not_change_what_the_mapper_protects_or_splits():
     assert decisions(expand_normalizations(raw)) == protected_raw
 
 
+def test_tensor_tiles_do_not_depend_on_node_insertion_order():
+    """A tensor read by both projections has one footprint per accessor once the query and key axes
+    are decoupled. Resolving through whichever accessor came first made the reported on-chip tile a
+    function of graph construction order rather than of the mapping."""
+    from stream.workload.workload import Workload
+
+    accelerator = _parse_accelerator()
+    base = expand_normalizations(build_attention_block(AttentionConfig(batch=1, heads=4, seq=1024, d_head=64)))
+
+    def tiles(nodes):
+        gen = GenericMappingGenerator(
+            accelerator=accelerator, workload=Workload(nodes), output_dir=tempfile.mkdtemp(), intra_core_tiling=None
+        )
+        return {t["name"]: (tuple(t["tile"]), t["streamed"]) for g in gen.fusion_tiling_plan() for t in g["tensors"]}
+
+    nodes = list(base.nodes)
+    reordered = sorted(nodes, key=lambda n: 0 if getattr(n, "name", "") == "proj_q" else 1)
+    assert tiles(nodes) == tiles(reordered)
+
+
 def test_fusion_split_protects_the_softmax_reduction_axis():
     """'Tiling after fusion' respects the reduction too: the softmax's reduced axis is in the set
     determine_fusion_splits refuses to block-tile (blocking it is online-softmax / flash)."""
