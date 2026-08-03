@@ -57,7 +57,14 @@ logger = logging.getLogger(__name__)
 #: Nest depth of each steady-state loop kind, outermost first. A temporal loop walks the tiles, the
 #: spatial ones unroll a tile across cores, and a kernel loop is what a single core runs inside one
 #: invocation -- so kernel loops are innermost.
-_LOOP_NEST_DEPTH: dict[str, int] = {"temporal": 0, "spatiotemporal": 1, "spatial": 2, "kernel": 3}
+_LOOP_NEST_DEPTH: dict[str, int] = {
+    "temporal": 0,
+    "spatiotemporal": 1,
+    "spatial": 2,
+    "core_temporal": 3,
+    "core_spatial": 4,
+    "kernel": 5,
+}
 
 
 class SteadyStateScheduler:
@@ -143,6 +150,55 @@ class SteadyStateScheduler:
             "steady_state": self._steady_state_ir(),
         }
 
+    def _core_loops(self, cn: ComputationNode) -> list[dict]:
+        """The loop nest *inside* one core, from ZigZag's intra-core mapping.
+
+        The steady-state nest above stops at the core boundary: it says which tile a core gets, not
+        what the core does with it. That inner structure is where the systolic array actually shows
+        up -- the operand dimensions unrolled across the array (256x256 on this TPU) and the temporal
+        loops that walk the tile through it. Reported as ``core`` loops so a reader can tell them from
+        the tile-level ones. Empty when the core has no ZigZag backend (an AIE tile), which keeps its
+        single ``kernel`` entry.
+        """
+        # The mapping is keyed by the steady-state nodes, so an original node may not be in it; the
+        # cost LUT is keyed by the node this cost was computed for. Resolve by name and give up
+        # quietly if neither knows it -- an inspection view must never fail a solved run.
+        try:
+            lut_node = next(n for n in self.cost_lut.get_nodes() if n.name == cn.name)
+            allocation = self.mapping.get(lut_node).resource_allocation
+            cores = [c for slot in (allocation or ()) for c in slot if isinstance(c, Core)]
+            if not cores:
+                return []
+            entry = self.cost_lut.get_cost(lut_node, cores[0])
+        except Exception:  # noqa: BLE001
+            return []
+        mapping = getattr(entry, "mapping", None)
+        if mapping is None:
+            return []
+
+        loops: list[dict] = []
+
+        def add(dim: str, size: int, kind: str) -> None:
+            # No de-duplication here: ZigZag splits one dimension over several levels, so two loops
+            # of the same size on the same dim are two real levels, not a repeat.
+            if int(size) > 1:
+                loops.append({"dim": dim, "size": int(size), "type": kind, "node": cn.name})
+
+        # ZigZag annotates the same nest once per operand (the activation, the weights, the output).
+        # It is one loop nest seen three times, so take a single operand's view -- summing them
+        # multiplies every dimension by three.
+        def one_operand(per_operand: dict) -> list:
+            return next(iter(per_operand.values()), [])
+
+        # Array unrollings first: these run in parallel, so they sit outside the temporal walk.
+        for level in one_operand(getattr(mapping.spatial_mapping, "mapping_dict_origin", {})):
+            for layer_dim, size in level:
+                add(str(layer_dim), size, "core_spatial")
+        for level in one_operand(getattr(mapping.temporal_mapping, "mapping_dic_stationary", {})):
+            for layer_dim, size in level:
+                add(str(layer_dim), size, "core_temporal")
+        return loops
+
     def _steady_state_ir(self) -> dict | None:
         """Serialise the tiled/steady-state view for inspection: the ORIGINAL operators with their tensor
         sizes, the for-loop nest over the steady-state iteration space, and the tiled workload graph with
@@ -176,6 +232,19 @@ class SteadyStateScheduler:
                     if int(iv.size) > 1 and key not in seen:
                         seen.add(key)
                         loops.append({"dim": str(iv.dimension), "size": int(iv.size), "type": iv.type.name.lower()})
+            # Below the tile level, expand each node's intra-core mapping. Nodes on a ZigZag-backed
+            # core contribute the array unrolling and the temporal walk over it; an AIE tile has no
+            # such mapping and keeps its single kernel loop.
+            expanded = False
+            for cn in self.workload.get_computation_nodes():
+                core_loops = self._core_loops(cn)
+                loops.extend(core_loops)
+                expanded = expanded or bool(core_loops)
+            if expanded:
+                # The kernel entry is the un-expanded stand-in for exactly this structure; keeping it
+                # alongside would double-count the intra-core work. An AIE tile has no ZigZag mapping,
+                # so nothing was expanded and its kernel loops stay.
+                loops = [loop for loop in loops if loop["type"] != "kernel"]
             loops.sort(key=lambda loop: _LOOP_NEST_DEPTH.get(loop["type"], len(_LOOP_NEST_DEPTH)))
             # The tiled workload graph WITH transfer nodes -- the tensor copies that reside on-chip.
             tiled_nodes: list[dict] = []
