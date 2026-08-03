@@ -185,6 +185,39 @@ class NoiseFloor:
 
 
 @dataclass(frozen=True)
+class CoreOccupancy:
+    """How full one core's memory is under the SOLVED placement, as the allocator reports it.
+
+    The evidence a capacity *reduction* needs, and the one thing the stall vector cannot supply.
+    ``resident_bits`` is the value of that core's memory-capacity constraint at the solution, so
+    every capacity at or above it holds this mapping and every capacity below it does not — the
+    feasibility frontier is arithmetic here, not something to rediscover by launching solves.
+
+    A core the allocator never constrained does not appear at all. Absent is NOT empty: reading a
+    missing row as "nothing is resident" would license cutting a memory nothing was measured on.
+    """
+
+    core_id: int
+    core_name: str
+    resident_bits: int
+    capacity_bits: int
+    utilization: float | None
+    tensors: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def shrink_factor_ceiling(self) -> float | None:
+        """Largest factor this capacity may be DIVIDED by and still hold the solved placement.
+
+        ``capacity / resident``. None when nothing is resident: a core that holds no tensor in the
+        steady state puts no floor of its own on the capacity, and the honest answer is "this
+        measurement does not constrain the shrink" rather than "shrink without limit".
+        """
+        if self.resident_bits <= 0 or self.capacity_bits <= 0:
+            return None
+        return self.capacity_bits / self.resident_bits
+
+
+@dataclass(frozen=True)
 class UnmetCapacity:
     """One ``memory_capacity`` conflict from the infeasibility diagnosis: the only signal that names
     both a resource and the amount by which its capacity falls short."""
@@ -211,6 +244,8 @@ class RunEvidence:
     transfer_bound_cycles: float | None = None
     binding_resources: tuple[str, ...] = ()
     per_resource_slack: tuple[ResourceSlack, ...] = ()
+    memory_occupancy: tuple[CoreOccupancy, ...] = ()
+    """Per-core solved residency vs capacity — the floor under any capacity reduction."""
     recurrence_bound_cycles: float = 0.0
     compute_cores_used: int | None = None
     compute_cores_available: int | None = None
@@ -270,6 +305,9 @@ class RunEvidence:
 
     def slack_of(self, resource: str) -> float | None:
         return next((s.slack_cycles for s in self.per_resource_slack if s.resource == resource), None)
+
+    def occupancy_of(self, core_id: int) -> CoreOccupancy | None:
+        return next((o for o in self.memory_occupancy if o.core_id == core_id), None)
 
     def binding_links(self) -> list[ResourceSlack]:
         """Binding resources that are links, i.e. the ones a bandwidth growth could ever address."""
@@ -438,6 +476,10 @@ def _parse_allocation(allocation: dict[str, Any] | None) -> dict[str, Any]:
             for s in overlap.get("per_resource_slack") or ()
         ),
         "recurrence_bound_cycles": float(overlap.get("recurrence_bound_cycles") or 0.0),
+        # Over ALL groups, not just the dominant one: each fused group solves separately, and the
+        # memory has to hold whichever of them needs the most. Reading only the slowest group's
+        # residency would authorise a shrink that another group cannot fit.
+        "memory_occupancy": _parse_memory_occupancy(allocations),
         "compute_cores_used": _optional_int(aggregate.get("compute_cores_used")),
         "compute_cores_available": _optional_int(aggregate.get("compute_cores_available")),
         "end_to_end_mac_utilization": _optional_float(aggregate.get("end_to_end_mac_utilization")),
@@ -454,6 +496,38 @@ def _parse_allocation(allocation: dict[str, Any] | None) -> dict[str, Any]:
             for fg in a.get("fused_groups") or ()
         ),
     }
+
+
+def _parse_memory_occupancy(allocations: list[dict[str, Any]]) -> tuple[CoreOccupancy, ...]:
+    """Per-core residency across every fused group, keeping the largest per core.
+
+    The capacity has to satisfy every group, so the binding measurement is the maximum. Taking a
+    mean or the dominant group's figure would name a capacity that one of the other groups does
+    not fit in, and the shrink would only be discovered to be illegal by a failed solve.
+    """
+    worst: dict[int, CoreOccupancy] = {}
+    for allocation in allocations:
+        performance = allocation.get("performance") or {}
+        for row in performance.get("memory_occupancy") or ():
+            core_id = _optional_int(row.get("core_id"))
+            capacity = _optional_int(row.get("capacity_bits"))
+            resident = _optional_int(row.get("resident_bits"))
+            if core_id is None or capacity is None or resident is None:
+                continue
+            entry = CoreOccupancy(
+                core_id=core_id,
+                core_name=str(row.get("core_name", "")),
+                resident_bits=resident,
+                capacity_bits=capacity,
+                utilization=_optional_float(row.get("utilization")),
+                tensors=tuple(
+                    (str(t.get("tensor")), int(t.get("bits") or 0)) for t in row.get("tensors") or () if t.get("tensor")
+                ),
+            )
+            current = worst.get(core_id)
+            if current is None or entry.resident_bits > current.resident_bits:
+                worst[core_id] = entry
+    return tuple(worst[core_id] for core_id in sorted(worst))
 
 
 def _parse_unmet_capacity(infeasibility: dict[str, Any]) -> tuple[UnmetCapacity, ...]:

@@ -72,6 +72,9 @@ from stream.workload.workload import (
 
 _logger = logging.getLogger(__name__)
 
+_OCCUPANCY_TOP_TENSORS = 8
+"""Largest resident tensors reported per core: enough to see what sets the shrink floor, not a dump."""
+
 TensorPlacementChoice: TypeAlias = tuple[Core, ...]
 
 TensorReuseLevels: TypeAlias = dict[Tensor, int]
@@ -164,6 +167,10 @@ class TransferAndTensorAllocator:
         # reported as an intuitive "demand vs bound" inequality with per-contributor terms.
         self._resource_bounds: dict[tuple[str, int], float] = {}
         self._resource_terms: dict[tuple[str, int], dict[str, float]] = defaultdict(dict)
+        # core id -> [(indicator, bits it contributes when the indicator is 1, tensor name)], the term
+        # list of that core's memory-capacity constraint. Kept so `_memory_occupancy()` can report the
+        # residency the solver actually chose, which is the floor a capacity SHRINK must respect.
+        self._memory_load_terms: dict[int, list[tuple[SolverVar, int, str]]] = defaultdict(list)
 
         # primary decision vars
         self.x_tensor_choice: dict[tuple[Tensor, TensorPlacementChoice], SolverVar] = {}
@@ -810,6 +817,11 @@ class TransferAndTensorAllocator:
                             base_name=f"memload_{t.name}_{_resource_key(c)}_L{stop}",
                         )
                         self.core_load[c] = self.core_load[c] + req_size * uz._raw
+                        # Keep the indicator alongside its coefficient so the SOLVED residency can be
+                        # recomputed after the solve. `core_load` is a raw backend expression whose
+                        # value is not portably readable, and the residency is the one number that
+                        # says how far a memory could be SHRUNK without breaking this mapping.
+                        self._memory_load_terms[c.id].append((uz, req_size, t.name))
                     if min_req is not None:  # bytes this tensor's tile adds if resident on c
                         self._resource_terms[("memory_capacity", c.id)][t.name] = {
                             "value": min_req / 8,
@@ -2414,7 +2426,57 @@ class TransferAndTensorAllocator:
             "aggregate": aggregate,
             "overlap": self._overlap_section(),
             "tensor_reuse": self._tensor_reuse_breakdown(),
+            "memory_occupancy": self._memory_occupancy(),
         }
+
+    def _memory_occupancy(self) -> list[dict[str, Any]]:
+        """Per core: how many bits the solved placement actually keeps resident, against capacity.
+
+        This is the term-by-term value of the memory-capacity constraint
+        (``sum(req_size x u x z) <= get_memory_capacity()``) at the solution, so it is the allocator's
+        own residency figure rather than a re-derivation. It answers the question the stall vector
+        cannot: **how much smaller could this memory be and still hold this mapping?**
+
+        Reported only for cores whose constraint was actually built. A core absent from the list has
+        no measurement -- which is not the same as "it holds nothing", and a consumer must treat the
+        two differently, exactly as ``evidence: "none"`` differs from ``stall_cycles == 0``.
+        """
+        rows: list[dict[str, Any]] = []
+        cores = {c.id: c for c in self.accelerator.core_list}
+        for core_id, terms in sorted(self._memory_load_terms.items()):
+            core = cores.get(core_id)
+            if core is None:
+                continue
+            resident = 0
+            per_tensor: dict[str, int] = {}
+            try:
+                for indicator, bits, tensor_name in terms:
+                    # A MILP binary comes back as 0.9999...; anything above the midpoint is a 1.
+                    if float(indicator.X) <= self.VAR_THRESHOLD:
+                        continue
+                    resident += bits
+                    per_tensor[tensor_name] = per_tensor.get(tensor_name, 0) + bits
+            except Exception:  # noqa: BLE001 -- an unreadable solution means no measurement, not zero
+                continue
+            try:
+                capacity = int(core.get_memory_capacity())
+            except Exception:  # noqa: BLE001
+                continue
+            rows.append(
+                {
+                    "core_id": core_id,
+                    "core_name": str(getattr(core, "type", "")) or str(core),
+                    "resident_bits": resident,
+                    "capacity_bits": capacity,
+                    "utilization": (resident / capacity) if capacity else None,
+                    # Largest contributors first: the tensors that set the floor on any shrink.
+                    "tensors": [
+                        {"tensor": name, "bits": bits}
+                        for name, bits in sorted(per_tensor.items(), key=lambda kv: -kv[1])[:_OCCUPANCY_TOP_TENSORS]
+                    ],
+                }
+            )
+        return rows
 
     def _tensor_reuse_breakdown(self) -> list[dict[str, Any]]:
         """Per-tensor on-chip reuse chosen by the solver -- to make the fused execution legible.

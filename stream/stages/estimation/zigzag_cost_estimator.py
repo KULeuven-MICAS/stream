@@ -341,7 +341,12 @@ class ZigZagCostEstimator:
             # Ignoring both -- as this fallback used to -- prices every unit of work at one scalar
             # cycle, which reported an elementwise op on a 1024-lane vector core as a thousand times
             # slower than the hardware can run it.
-            unit_count = max(1, int(getattr(core.operational_array, "total_unit_count", 1) or 1))
+            # A core that describes no array at all -- an aie2 tile -- has no `operational_array` to
+            # ask, and `Core.__getattr__` raises rather than returning None. The default has to be on
+            # THAT lookup, not only on the attribute inside it: reaching for it first turned a core
+            # whose array is simply not modelled into a crash that took the whole run with it.
+            array = getattr(core, "operational_array", None)
+            unit_count = max(1, int(getattr(array, "total_unit_count", 1) or 1))
             ideal_cycle = ceil(total_ops / unit_count) * self.get_cc_per_op(node.type.lower())
             return CoreCostEntry(
                 energy_total=0.0,

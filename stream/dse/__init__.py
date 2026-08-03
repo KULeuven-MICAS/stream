@@ -5,22 +5,32 @@ what is *legal* to change as executable preconditions over measured evidence, so
 no evidence supports is never offered at all — the judgement left to a human or an LLM is
 *which* of the legal moves to take and why, not what the numbers are.
 
-Two modules:
+Four modules:
 
 * :mod:`stream.dse.evidence` — the typed reading of one run: per-(node, level) stalls with an
   explicit "was anything modelled here" flag, per-node compute efficiency, the solver's overlap
-  and binding set, the II decomposition, the optimality gap, and the infeasibility diagnosis.
+  and binding set, the per-core solved memory residency, the II decomposition, the optimality gap,
+  and the infeasibility diagnosis.
+* :mod:`stream.dse.objective` — what "better" means for a run: minimise latency under an area
+  ceiling, minimise area under a latency ceiling, or minimise their product under both. An
+  objective is a filter on the registry, not a post-hoc ranking, so a search is never handed a move
+  that cannot change its score.
 * :mod:`stream.dse.operators` — the registry: each operator declares a precondition over that
   evidence, the concrete edit it makes, the invariants that must move with it, and a predicted
-  cycle saving with its derivation. Hardware edits are priced against a budget *before* any solve.
+  delta with its derivation and its unit. Hardware edits are priced against a budget *before* any
+  solve, and the registry offers reductions as well as growths.
+* :mod:`stream.dse.residual` — predicted against achieved, per applied operator, and the trust
+  factor a persistent over-predictor earns.
 """
 
 from stream.dse.evidence import (
+    CoreOccupancy,
     MemoryLevelEvidence,
     NodeEvidence,
     NoiseFloor,
     RunEvidence,
 )
+from stream.dse.objective import Objective, ObjectiveKind
 from stream.dse.operators import (
     OFFER_TIERS,
     OPERATORS,
@@ -33,24 +43,32 @@ from stream.dse.operators import (
     apply_operator,
     offer_operators,
     post_hoc_check,
+    post_hoc_reduction_check,
     post_hoc_utilization_check,
 )
+from stream.dse.residual import OperatorScorecard, Residual
 
 __all__ = [
     "OFFER_TIERS",
     "OPERATORS",
     "AppliedOperator",
+    "CoreOccupancy",
     "MemoryLevelEvidence",
     "NodeEvidence",
     "NoiseFloor",
+    "Objective",
+    "ObjectiveKind",
     "Offer",
     "Operator",
+    "OperatorScorecard",
     "OperatorTier",
     "PredictedDelta",
+    "Residual",
     "RunEvidence",
     "Veto",
     "apply_operator",
     "offer_operators",
     "post_hoc_check",
+    "post_hoc_reduction_check",
     "post_hoc_utilization_check",
 ]

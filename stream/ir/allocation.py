@@ -351,6 +351,33 @@ class TensorReuseIR(BaseModel):
     loop_nest_out_to_in: list[str] = Field(default_factory=list, description="Its steady-state loop nest")
 
 
+class ResidentTensorIR(BaseModel):
+    """One tensor's contribution to a core's solved on-chip residency."""
+
+    tensor: str
+    bits: int
+
+
+class MemoryOccupancyIR(BaseModel):
+    """How full one core's memory actually is under the solved placement.
+
+    The counterpart to the stall vector, and the only evidence that can justify making a memory
+    SMALLER: ``resident_bits`` is the value of that core's memory-capacity constraint at the solution,
+    so any capacity at or above it holds this mapping and any capacity below it does not. A core the
+    allocator never constrained is absent from the list rather than reported as empty -- an unmeasured
+    core is not a free one.
+    """
+
+    core_id: int
+    core_name: str
+    resident_bits: int = Field(description="Bits the solved placement keeps on this core in the steady state")
+    capacity_bits: int = Field(description="The core's declared top-level memory capacity")
+    utilization: float | None = Field(default=None, description="resident_bits / capacity_bits")
+    tensors: list[ResidentTensorIR] = Field(
+        default_factory=list, description="Largest resident tensors first: what sets the floor on a shrink"
+    )
+
+
 class AllocationPerformanceView(BaseModel):
     """Performance-persona projection of AllocationIR.
 
@@ -372,6 +399,10 @@ class AllocationPerformanceView(BaseModel):
     )
     tensor_reuse: list[TensorReuseIR] = Field(
         default_factory=list, description="Per-tensor on-chip residency the solver chose, largest first"
+    )
+    memory_occupancy: list[MemoryOccupancyIR] = Field(
+        default_factory=list,
+        description="Per-core solved residency vs declared capacity: the floor on any capacity reduction",
     )
 
 
@@ -399,7 +430,9 @@ class AllocationIR(BaseModel):
     # 1.4 (additive + redefinition): `aggregate.mac_capable_cores`; `peak_macs_per_cycle` and hence
     #     `end_to_end_mac_utilization` are now taken over the MAC-capable cores only (was: every
     #     on-chip core), so numerator and denominator finally cover the same operators.
-    schema_version: Literal["1.4"] = "1.4"
+    # 1.5 (additive): the performance view's `memory_occupancy` -- per-core solved residency against
+    #     declared capacity, which is what makes a capacity REDUCTION checkable rather than a guess.
+    schema_version: Literal["1.5"] = "1.5"
     latency: LatencyInfo = Field(description="Latency metrics from the solved scheduler")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(
@@ -486,6 +519,7 @@ class AllocationIR(BaseModel):
                 nodes={name: NodePerformanceIR(**d) for name, d in perf_raw["per_node"].items()},
                 overlap=OverlapIR(**perf_raw["overlap"]) if perf_raw.get("overlap") else None,
                 tensor_reuse=[TensorReuseIR(**d) for d in perf_raw.get("tensor_reuse") or []],
+                memory_occupancy=[MemoryOccupancyIR(**d) for d in perf_raw.get("memory_occupancy") or []],
             )
             if perf_raw
             else None

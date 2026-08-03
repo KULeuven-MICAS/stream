@@ -15,17 +15,24 @@ An operator is a quadruple:
     emits a bare change, it atomically rescales the register file — per level, and only for the
     core-local ones (see :func:`_resize_array`).
 ``predicted_delta``
-    An expected cycle saving *with its derivation and its units*, always an upper bound. This is
-    what makes a proposal falsifiable: the run that follows either recovers it or does not.
+    An expected improvement *with its derivation and its units*, always an upper bound — cycles for
+    a growth, mm² for a reduction. This is what makes a proposal falsifiable: the run that follows
+    either recovers it or does not, and :mod:`stream.dse.residual` scores which.
 
-THE FOUR RULES
---------------
+THE FOUR RULES, AND THE DUAL
+----------------------------
 1. **The veto.** No stall at a memory level ⇒ growing that level's size *or* its bandwidth is
    illegal: absent a stall, neither changes latency there. The stall vector is a bandwidth quantity
    by construction (``real_cycle`` is bandwidth-derived), so it can *select* a bandwidth growth but
    not a capacity one — capacity is selected from the infeasibility report or a saturated
    ``mem_utili_shared``. And ``evidence: "none"`` is never "no stall": a missing CME is a missing
    measurement, and the operator is simply not offered.
+
+   **Rule 1's dual** reads the same measurements the other way: capacity above the solved working
+   set, and port width above the measured occupancy, are silicon this workload never uses, and
+   giving it back is a design result rather than a consolation prize. The guards are the mirror
+   image — an unmeasured memory is never cut, no declared step may cross the measured working set,
+   and a shrink that makes the mapping infeasible is a regression, not a win.
 2. **Ordering.** Core-tier operators are considered before system-tier ones, and only for nodes
    whose CME shows a discrepancy (``compute_efficiency < 1``).
 3. **System tier.** Fusion / intra-core-tile / core-count operators are selected from the solver's
@@ -37,7 +44,10 @@ THE FOUR RULES
 
 Every hardware edit is priced against a :class:`~stream.hardware.cost.HardwareBudget` and rejected
 *before* any solve if it busts it. Without that, "minimise latency" degenerates into "grow
-everything", because the engine's own ``unit_area: 0`` makes growth free.
+everything", because the engine's own ``unit_area: 0`` makes growth free. The
+:class:`~stream.dse.objective.Objective` then filters what is left: a move that cannot improve the
+declared objective is vetoed with that as the stated reason, so a latency search is never offered an
+area saving and an area search is never offered a way to spend silicon.
 """
 
 from __future__ import annotations
@@ -48,9 +58,16 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Literal
 
-from stream.dse.evidence import MemoryLevelEvidence, NodeEvidence, NoiseFloor, RunEvidence
+from stream.dse.evidence import (
+    MemoryLevelEvidence,
+    NodeEvidence,
+    NoiseFloor,
+    RunEvidence,
+)
+from stream.dse.objective import Objective, ObjectiveKind
+from stream.dse.residual import OperatorScorecard
 from stream.hardware.bundle import HardwareBundle
-from stream.hardware.cost import HardwareBudget, check_budget
+from stream.hardware.cost import HardwareBudget, check_budget, evaluate_bundle_cost
 
 # ── Tunables ────────────────────────────────────────────────────────────────────────────────────
 
@@ -60,6 +77,48 @@ DEFAULT_BUDGET_HEADROOM = 0.10
 GROWTH_FACTORS: tuple[int, ...] = (2, 4)
 """Declared range for a single growth step. A step budget, not a free variable: an operator that
 could ask for any factor would simply ask for the largest one that still fits the budget."""
+
+SHRINK_BANKS = 8
+"""Granularity a capacity may be resized at, as a fraction of the memory's declared size.
+
+A large SRAM is built from banks, so its capacity is quantised: a design drops a bank, not an
+arbitrary number of bits. An eighth is a conservative stand-in for one — 16 MiB of a 128 MiB
+scratchpad, 8 KB of a 64 KB tile memory.
+
+The growth operators step by *doublings*, and the same step in reverse would be useless here.
+A fused workload routinely leaves a scratchpad 70-80% full, which is a fifth of a die doing
+nothing and a halving away from legal; a rule that could only offer halvings would report that
+memory as not over-provisioned and give the silicon back to nobody.
+"""
+
+SHRINK_STEPS_OFFERED = 2
+"""How many capacities to offer per memory: the tightest legal one and the next size up.
+
+Not every legal bank count. Seven near-identical offers on one memory would make one decision look
+like seven pieces of evidence, and the interesting choice is only ever "as small as the measurement
+allows" versus "one bank of margin over that".
+"""
+
+SHRINK_HEADROOM = 1.10
+"""Margin a reduced capacity keeps over the measured working set.
+
+The measurement is exact for the placement that produced it -- and that placement is re-derived on
+the smaller memory. Sizing exactly to the old working set therefore spends a whole solve to discover
+that the new one is a few tiles bigger. 10% is under one bank for any memory around half full, so
+the margin usually costs nothing at all and never costs more than one step of the saving.
+"""
+
+NARROW_FACTORS: tuple[int, ...] = (2, 4)
+"""Declared divisors for a port-width reduction. Powers of two, unlike the capacity steps: a port is
+a physical bus width, so halving it is a real design and shaving an eighth off it is not."""
+
+PORT_OCCUPANCY_CEILING = 0.9
+"""Occupancy a port may reach after being narrowed.
+
+Below 1.0 by design: occupancy is measured over ONE node's computation span, and a port driven to
+exactly its measured occupancy has no room for the transfer that another node's span overlaps into
+it. 0.9 is the margin; a port that cannot keep it does not get the offer.
+"""
 
 BANDWIDTH_STEP = 2
 """One doubling per wave, deliberately.
@@ -110,21 +169,45 @@ OFFER_TIERS: tuple[OperatorTier, ...] = (OperatorTier.CORE, OperatorTier.SYSTEM,
 
 @dataclass(frozen=True)
 class PredictedDelta:
-    """An expected saving, always an upper bound, always with its units spelled out."""
+    """An expected improvement, always an upper bound, always with its units spelled out.
 
-    cycles: float
-    scope: Literal["node", "iteration"]
+    Two units, because the registry now offers moves in both directions. A grow buys **cycles**; a
+    shrink buys **mm²** and buys exactly zero cycles. Forcing the second into the first would either
+    fabricate a cycle saving it does not have or report it as "no predicted effect", and neither is
+    what a design that gives back 70% of its die is doing.
+    """
+
+    value: float
+    scope: Literal["node", "iteration", "bundle"]
     """"node": cycles off ONE node's contribution to ONE steady-state iteration. ZigZag's
     ``stall_or_slack`` already carries ``(period_count - 1)``, so this is a whole-node figure and a
     consumer must NOT multiply by an iteration count again. "iteration": cycles off one steady-state
-    iteration of the whole schedule."""
+    iteration of the whole schedule. "bundle": a whole-accelerator figure, e.g. total die area."""
     derivation: str
-    unit: str = "cycles"
+    unit: Literal["cycles", "mm2"] = "cycles"
     bound: Literal["upper"] = "upper"
+
+    @property
+    def cycles(self) -> float:
+        """The predicted cycle saving. 0.0 for a delta measured in another unit.
+
+        0.0 and not ``None``: an area reduction really does buy zero cycles, so every consumer that
+        compares this against the cycle noise floor gets the true answer rather than a placeholder
+        it has to special-case.
+        """
+        return self.value if self.unit == "cycles" else 0.0
+
+    @property
+    def area_mm2(self) -> float:
+        """The predicted area saving in mm². 0.0 for a delta measured in another unit."""
+        return self.value if self.unit == "mm2" else 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
+            # `cycles` is kept alongside `value` so a consumer written against the cycles-only
+            # registry keeps reading a correct number rather than a renamed one.
             "cycles": self.cycles,
+            "value": self.value,
             "unit": self.unit,
             "scope": self.scope,
             "bound": self.bound,
@@ -166,6 +249,24 @@ OPERATORS: dict[str, Operator] = {
             kind="hardware",
             summary="Grow a memory level that is full, so the temporal mapping can keep an operand resident.",
             couples=(ALIAS_COUPLING,),
+        ),
+        Operator(
+            id="core.memory.shrink",
+            tier=OperatorTier.CORE,
+            kind="hardware",
+            summary="Cut the capacity of a memory the solved placement never fills, giving the area back.",
+            couples=(
+                ALIAS_COUPLING,
+                "the floor is the LARGEST residency over the whole alias group and over every fused "
+                "group: the memory has to hold whichever of them needs the most",
+            ),
+        ),
+        Operator(
+            id="core.memory.narrow",
+            tier=OperatorTier.CORE,
+            kind="hardware",
+            summary="Narrow the ports of a memory level with measured slack and spare port occupancy.",
+            couples=(ALIAS_COUPLING, "never below the level's declared bandwidth_min"),
         ),
         Operator(
             id="core.array.resize",
@@ -263,6 +364,8 @@ class OfferResult:
     vetoed: list[Veto]
     noise_floor: NoiseFloor
     budget_label: str | None = None
+    objective: Objective = field(default_factory=Objective)
+    scorecard: OperatorScorecard = field(default_factory=OperatorScorecard)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -271,8 +374,15 @@ class OfferResult:
             # iteration is legal and is still invisible end to end; a ranker has to be able to see
             # that, and the guards deliberately do not decide it.
             "offered": [
-                {**o.as_dict(), "clears_noise_floor": self.noise_floor.clears(o.predicted_delta.cycles)}
-                for o in self.offered
+                {
+                    **offer.as_dict(),
+                    "clears_noise_floor": self._clears_floor(offer),
+                    # E1: every offer says whether it can move THIS objective at all, and E2 says
+                    # how much of its prediction its own history has earned.
+                    "trust": self.scorecard.trust(offer.operator_id),
+                    "discounted_delta": self.scorecard.discounted(offer.operator_id, offer.predicted_delta.value),
+                }
+                for offer in self.offered
             ],
             "vetoed": [v.as_dict() for v in self.vetoed],
             "noise_floor": {
@@ -282,7 +392,22 @@ class OfferResult:
                 "source": self.noise_floor.source,
             },
             "budget": self.budget_label,
+            "objective": self.objective.as_dict(),
+            "scorecard": self.scorecard.as_dict(),
         }
+
+    def _clears_floor(self, offer: Offer) -> bool:
+        """Whether this offer's predicted improvement is distinguishable from noise.
+
+        The noise floor is a *cycle* quantity — it comes from the solver's optimality gap. An area
+        saving is not measured by the solver at all: it is arithmetic over the bundle, exact to the
+        cost model, and a 121 mm² reduction is not "within the solver's tolerance". So an offer
+        denominated in mm² clears by construction, and saying otherwise would report every shrink as
+        invisible.
+        """
+        if offer.predicted_delta.unit != "cycles":
+            return offer.predicted_delta.value > 0
+        return self.noise_floor.clears(offer.predicted_delta.cycles)
 
     def ids(self) -> list[str]:
         return [o.operator_id for o in self.offered]
@@ -307,6 +432,8 @@ def offer_operators(
     bundle: HardwareBundle | None = None,
     budget: HardwareBudget | None = None,
     mapping_params: dict[str, Any] | None = None,
+    objective: Objective | None = None,
+    scorecard: OperatorScorecard | None = None,
 ) -> OfferResult:
     """Every legal move on this evidence, in Rule 2's tier order, plus what was refused and why.
 
@@ -314,19 +441,34 @@ def offer_operators(
     offered at all: its edit could not be priced, and an unpriced edit cannot be certified within
     budget. That is the same discipline as ``evidence: "none"`` — we do not offer what we cannot
     check.
+
+    ``objective`` says what "better" means for this run. It is a *filter*, not a ranking: a move
+    that cannot move the declared objective in the right direction is vetoed with that as the
+    reason, so a latency search is never handed an area saving and an area search is never handed a
+    move that spends silicon. ``scorecard`` carries what earlier applications of each operator
+    actually delivered; it only annotates, so a badly-calibrated operator is deprioritised rather
+    than removed from the action space.
     """
     mapping_params = dict(mapping_params or {})
     if budget is None and bundle is not None:
         budget = HardwareBudget.from_bundle(bundle, DEFAULT_BUDGET_HEADROOM)
+    if objective is None:
+        objective = Objective.from_baseline(
+            ObjectiveKind.LATENCY,
+            baseline_latency_cycles=evidence.latency_total,
+            baseline_area_mm2=_bundle_area(bundle),
+        )
     offers: list[Offer] = []
     vetoes: list[Veto] = []
 
-    for propose in (_core_memory, _core_array, _system, _link):
+    for propose in (_core_memory, _core_shrink, _core_array, _system, _link):
         found, refused = propose(evidence, bundle, budget, mapping_params)
         offers.extend(found)
         vetoes.extend(refused)
 
     offers = _dedupe(offers)
+    offers, refused = _filter_by_objective(offers, objective, feasible=evidence.feasible)
+    vetoes.extend(refused)
     # Rule 2 is an ordering over tiers, not over predicted sizes: a core-level fix that removes a
     # measured stall is considered before a system-level reshuffle even when the latter predicts more.
     offers.sort(key=lambda o: OFFER_TIERS.index(o.tier))
@@ -335,7 +477,65 @@ def offer_operators(
         vetoed=vetoes,
         noise_floor=evidence.noise_floor,
         budget_label=budget.label if budget else None,
+        objective=objective,
+        scorecard=scorecard or OperatorScorecard(),
     )
+
+
+def _filter_by_objective(
+    offers: list[Offer], objective: Objective, *, feasible: bool
+) -> tuple[list[Offer], list[Veto]]:
+    """Drop the moves that cannot improve the declared objective, saying so.
+
+    A latency search offered a 121 mm² area saving, or an area search offered a move that doubles a
+    memory, is being invited to spend a wave on something that cannot change its score. Reporting it
+    as a veto rather than silently ranking it last is what stops the next wave proposing it again.
+
+    The one exception is an INFEASIBLE run. There is no objective value to improve on a design that
+    produced no schedule, so every legal repair stays on the menu whatever the objective is — a
+    search that refused to spend area on feasibility would simply never solve.
+    """
+    if not feasible:
+        return offers, []
+    kept: list[Offer] = []
+    vetoes: list[Veto] = []
+    for offer in offers:
+        saves_cycles = offer.predicted_delta.cycles > 0
+        saves_area = offer.predicted_delta.area_mm2 > 0
+        costs_area = offer.kind == "hardware" and not saves_area
+        admissible = {
+            ObjectiveKind.LATENCY: saves_cycles,
+            ObjectiveKind.AREA: saves_area,
+            ObjectiveKind.EFFICIENCY: saves_cycles or saves_area,
+        }[objective.kind]
+        if admissible:
+            kept.append(offer)
+            continue
+        vetoes.append(
+            Veto(
+                offer.operator_id,
+                offer.target,
+                "objective",
+                f"the declared objective is '{objective.kind}' ({objective.improves_with}), and this move "
+                + (
+                    f"buys {offer.predicted_delta.value:.4g} {offer.predicted_delta.unit}"
+                    if offer.predicted_delta.value > 0
+                    else "buys nothing measurable"
+                )
+                + (", spending silicon rather than saving it" if costs_area else ""),
+            )
+        )
+    return kept, vetoes
+
+
+def _bundle_area(bundle: HardwareBundle | None) -> float | None:
+    """The bundle's modelled die area, or None when it cannot be priced."""
+    if bundle is None:
+        return None
+    try:
+        return evaluate_bundle_cost(bundle).total_area_mm2
+    except ValueError:
+        return None
 
 
 def _dedupe(offers: list[Offer]) -> list[Offer]:
@@ -464,7 +664,7 @@ def _bandwidth_offers(
                 f"multiply every port bandwidth of '{level.name}' on cores {list(node.core_ids)} by {BANDWIDTH_STEP}"
             ),
             couples=OPERATORS["core.memory.bandwidth"].couples,
-            predicted_delta=PredictedDelta(cycles=headroom, scope="node", derivation=derivation),
+            predicted_delta=PredictedDelta(value=headroom, scope="node", derivation=derivation),
             cost=cost,
         )
     ]
@@ -523,7 +723,7 @@ def _capacity_offers(  # noqa: PLR0913 -- one call site; the arguments are the g
                 ),
                 effect=f"multiply the size of '{level.name}' on cores {list(node.core_ids)} by {factor}",
                 couples=OPERATORS["core.memory.capacity"].couples,
-                predicted_delta=PredictedDelta(cycles=level.stall_cycles, scope="node", derivation=derivation),
+                predicted_delta=PredictedDelta(value=level.stall_cycles, scope="node", derivation=derivation),
                 cost=cost,
             )
         )
@@ -600,7 +800,7 @@ def _infeasible_capacity_offers(
                 effect=f"multiply the size of '{memory}' on core {core_id} by {factor}",
                 couples=OPERATORS["core.memory.capacity"].couples,
                 predicted_delta=PredictedDelta(
-                    cycles=0.0,
+                    value=0.0,
                     scope="iteration",
                     derivation=(
                         "an infeasible solve has no latency to improve on; the predicted effect is "
@@ -611,6 +811,428 @@ def _infeasible_capacity_offers(
                 cost=cost,
             )
         )
+    return out
+
+
+# ── Rule 1's dual: shrink what the measurement says is over-provisioned ─────────────────────────
+
+
+@dataclass(frozen=True)
+class _MemoryClass:
+    """One physical memory design, as it appears on every core that owns an instance of it."""
+
+    name: str
+    size_bits: int
+    owner_cores: tuple[int, ...]
+    """Cores that own an instance — the ones a shrink names."""
+    members: tuple[tuple[int, str], ...]
+    """Every ``(core, memory)`` view of those instances, alias closure included."""
+
+    @property
+    def member_cores(self) -> set[int]:
+        return {core_id for core_id, _ in self.members}
+
+
+@dataclass(frozen=True)
+class _WorkingSet:
+    """The measured floor under a capacity, and where the measurement came from."""
+
+    bits: int
+    sources: tuple[str, ...]
+
+    @property
+    def measured(self) -> bool:
+        return bool(self.sources)
+
+
+def _core_shrink(
+    evidence: RunEvidence,
+    bundle: HardwareBundle | None,
+    budget: HardwareBudget | None,
+    mapping_params: dict[str, Any],
+) -> tuple[list[Offer], list[Veto]]:
+    """The dual of Rule 1: a memory the workload demonstrably never fills is over-provisioned.
+
+    Rule 1 says that absent a stall, growing a level cannot make it faster. Read the other way round,
+    the same measurements say that the capacity above the solved working set and the port width above
+    the measured occupancy are silicon this workload never uses — and *that* is a design change worth
+    making on a part already at 98.9% of its own compute roofline, where there is ~1% of latency to
+    win and most of the die is scratchpad.
+
+    The guards are the mirror image of the growth guards, not a relaxation of them:
+
+    * **Unknown is not "safe to cut".** A memory with no occupancy measurement is never offered. Note
+      what counts as a measurement: the ALLOCATOR's solved residency is one, and it exists even for a
+      core whose CME is missing, because it comes from the MILP rather than from ZigZag. So
+      ``evidence: "none"`` blocks the ZigZag half of the signal, not the operator outright.
+    * **Never below the measured working set.** The floor is the largest residency over the whole
+      alias closure and over every fused group, and each declared step is checked against it
+      individually. Crossing it does not make the design smaller, it makes it infeasible.
+    * **A shrink that breaks the mapping is a regression, not a win.** The floor is arithmetic and
+      exact for the placement that was measured, but the temporal mapping is re-derived on the
+      smaller memory and may come back worse. That is what the objective's latency ceiling and the
+      post-hoc check are for; neither is optional.
+    """
+    del mapping_params
+    offers: list[Offer] = []
+    vetoes: list[Veto] = []
+    if bundle is None:
+        return offers, vetoes
+
+    for memory_class in _memory_classes(bundle):
+        target = {
+            "memory": memory_class.name,
+            "cores": list(memory_class.owner_cores),
+            "size_bits": memory_class.size_bits,
+        }
+        working_set = _measured_working_set(evidence, bundle, memory_class)
+        if not working_set.measured:
+            vetoes.append(
+                Veto(
+                    "core.memory.shrink",
+                    target,
+                    "rule-1-dual",
+                    f"nothing measured how full '{memory_class.name}' gets: neither the allocator's solved "
+                    "residency nor a CME capacity utilization covers it. An unmeasured memory is not a safe "
+                    "one to cut — it is one nothing is known about",
+                )
+            )
+            continue
+        if working_set.bits <= 0:
+            vetoes.append(
+                Veto(
+                    "core.memory.shrink",
+                    target,
+                    "rule-1-dual",
+                    f"'{memory_class.name}' holds nothing at all in the solved steady state "
+                    f"({'; '.join(working_set.sources)}). A memory this workload never touches says nothing "
+                    "about how small it could be for the workloads that do",
+                )
+            )
+            continue
+        offers.extend(_shrink_offers(memory_class, working_set, target, bundle, budget, vetoes))
+        offers.extend(_narrow_offers(evidence, memory_class, target, bundle, budget, vetoes))
+    return offers, vetoes
+
+
+def _shrink_offers(  # noqa: PLR0913 -- one call site; each argument is an input to the guard
+    memory_class: _MemoryClass,
+    working_set: _WorkingSet,
+    target: dict[str, Any],
+    bundle: HardwareBundle,
+    budget: HardwareBudget | None,
+    vetoes: list[Veto],
+) -> list[Offer]:
+    """Capacity reduction: size the memory to the measured working set, at bank granularity.
+
+    The floor is arithmetic and exact — the smallest whole number of banks that holds the measured
+    residency with :data:`SHRINK_HEADROOM` of margin. Anything below it does not hold the mapping,
+    which is why nothing below it is ever offered.
+    """
+    occupancy = working_set.bits / memory_class.size_bits
+    bank_bits = memory_class.size_bits // SHRINK_BANKS
+    if bank_bits <= 0:
+        return []  # a memory smaller than its own granularity has no smaller size to name
+    needed = working_set.bits * SHRINK_HEADROOM
+    smallest = math.ceil(needed / bank_bits)
+    if smallest >= SHRINK_BANKS:
+        vetoes.append(
+            Veto(
+                "core.memory.shrink",
+                target,
+                "rule-1-dual",
+                f"'{memory_class.name}' is {occupancy:.1%} occupied ({working_set.bits} of "
+                f"{memory_class.size_bits} bits): with {SHRINK_HEADROOM:.0%} of margin the working set already "
+                f"needs all {SHRINK_BANKS} of its banks, so there is no smaller size that still holds it",
+            )
+        )
+        return []
+
+    baseline_area = _bundle_area(bundle)
+    out: list[Offer] = []
+    for banks in range(smallest, min(smallest + SHRINK_STEPS_OFFERED, SHRINK_BANKS)):
+        new_size = bank_bits * banks
+        args = {"cores": list(memory_class.owner_cores), "memory": memory_class.name, "banks": banks}
+        cost = _price("core.memory.shrink", args, bundle, budget, target, vetoes)
+        if cost is None or baseline_area is None:
+            continue
+        saved = baseline_area - float(cost["area_mm2"])
+        if saved <= 0:
+            continue
+        out.append(
+            Offer(
+                operator_id="core.memory.shrink",
+                tier=OperatorTier.CORE,
+                kind="hardware",
+                target={**target, "banks": banks, "of_banks": SHRINK_BANKS, "to_bits": new_size},
+                args=args,
+                evidence=(
+                    f"'{memory_class.name}' is {memory_class.size_bits} bits on cores "
+                    f"{list(memory_class.owner_cores)} and the solved placement never puts more than "
+                    f"{working_set.bits} bits in it ({occupancy:.1%} occupied). Measured by: "
+                    f"{'; '.join(working_set.sources)}"
+                ),
+                effect=(
+                    f"keep {banks} of {memory_class.name}'s {SHRINK_BANKS} banks on cores "
+                    f"{list(memory_class.owner_cores)} ({memory_class.size_bits} -> {new_size} bits), "
+                    "carrying every aliased view"
+                ),
+                couples=OPERATORS["core.memory.shrink"].couples,
+                predicted_delta=PredictedDelta(
+                    value=saved,
+                    unit="mm2",
+                    scope="bundle",
+                    derivation=(
+                        f"whole-bundle die area falls from {baseline_area:.3f} to {float(cost['area_mm2']):.3f} mm2 "
+                        f"— arithmetic over the cost model, not a solver estimate, so it is exact for the model "
+                        f"rather than a bound on it. It buys ZERO cycles: capacity above the working set does no "
+                        f"work. The risk it carries is the other way round — the placement and the temporal "
+                        f"mapping are re-derived on {new_size} bits and may need more than the "
+                        f"{working_set.bits} bits measured here, which the post-hoc check and the latency ceiling "
+                        "are what catch."
+                    ),
+                ),
+                cost=cost,
+            )
+        )
+    return out
+
+
+def _narrow_offers(  # noqa: PLR0913 -- one call site; each argument is an input to the guard
+    evidence: RunEvidence,
+    memory_class: _MemoryClass,
+    target: dict[str, Any],
+    bundle: HardwareBundle,
+    budget: HardwareBudget | None,
+    vetoes: list[Veto],
+) -> list[Offer]:
+    """Port-width reduction, selected from measured slack AND measured port occupancy.
+
+    Exactly the two halves Rule 1 uses in the other direction. Slack alone is not enough: it says the
+    level kept up, not by how much. Occupancy is the by-how-much, and without it there is no way to
+    say which narrowing still keeps up.
+    """
+    levels = _levels_for(evidence, memory_class)
+    if not levels:
+        return []
+    if any(level.stall_cycles > 0 for level in levels):
+        stalling = next(level for level in levels if level.stall_cycles > 0)
+        vetoes.append(
+            Veto(
+                "core.memory.narrow",
+                target,
+                "rule-1-dual",
+                f"'{memory_class.name}' stalls {stalling.stall_cycles:.0f} cycles: it is not keeping up with "
+                "the port width it already has, so a narrower one can only cost latency",
+            )
+        )
+        return []
+    occupancies = [level.utilization for level in levels if level.utilization is not None]
+    if not occupancies:
+        vetoes.append(
+            Veto(
+                "core.memory.narrow",
+                target,
+                "rule-1-dual",
+                f"'{memory_class.name}' has slack but no measured port occupancy, so nothing says HOW MUCH "
+                "width is spare; slack alone cannot choose a narrowing factor",
+            )
+        )
+        return []
+    occupancy = max(occupancies)
+    baseline_area = _bundle_area(bundle)
+    out: list[Offer] = []
+    for divisor in NARROW_FACTORS:
+        projected = occupancy * divisor
+        if projected > PORT_OCCUPANCY_CEILING:
+            vetoes.append(
+                Veto(
+                    "core.memory.narrow",
+                    {**target, "divisor": divisor},
+                    "rule-1-dual",
+                    f"the busiest port of '{memory_class.name}' is {occupancy:.3g} occupied, so a {divisor}x "
+                    f"narrower one would run at {projected:.3g} against the {PORT_OCCUPANCY_CEILING} ceiling",
+                )
+            )
+            continue
+        args = {"cores": list(memory_class.owner_cores), "memory": memory_class.name, "divisor": divisor}
+        cost = _price("core.memory.narrow", args, bundle, budget, target, vetoes)
+        if cost is None or baseline_area is None:
+            continue
+        saved = baseline_area - float(cost["area_mm2"])
+        if saved <= 0:
+            # Narrowing a flop-based register file changes no column IO, so it saves nothing. An
+            # offer with a zero delta is noise on the menu, not a move.
+            continue
+        out.append(
+            Offer(
+                operator_id="core.memory.narrow",
+                tier=OperatorTier.CORE,
+                kind="hardware",
+                target={**target, "divisor": divisor},
+                args=args,
+                evidence=(
+                    f"'{memory_class.name}' does not stall (slack "
+                    f"{max(level.slack_cycles for level in levels):.0f} cycles) and its busiest port is only "
+                    f"{occupancy:.3g} occupied over the node's computation span"
+                ),
+                effect=(
+                    f"divide every port bandwidth of '{memory_class.name}' on cores "
+                    f"{list(memory_class.owner_cores)} by {divisor}, never below its declared bandwidth_min"
+                ),
+                couples=OPERATORS["core.memory.narrow"].couples,
+                predicted_delta=PredictedDelta(
+                    value=saved,
+                    unit="mm2",
+                    scope="bundle",
+                    derivation=(
+                        f"the column IO stack is replicated per accessed bit per port, so {divisor}x less width "
+                        f"is {divisor}x less of it: {baseline_area:.3f} -> {float(cost['area_mm2']):.3f} mm2. It "
+                        f"buys zero cycles as long as the port stays under {PORT_OCCUPANCY_CEILING} occupied "
+                        f"({occupancy:.3g} -> {projected:.3g})."
+                    ),
+                ),
+                cost=cost,
+            )
+        )
+    return out
+
+
+def _memory_classes(bundle: HardwareBundle) -> list[_MemoryClass]:
+    """Distinct physical memory designs in the bundle, each with the cores that own an instance.
+
+    Two collapses happen here, and both are the difference between a design change and a mutation.
+
+    *Alias closures* collapse to their owner: the MXU's ``operand_buffer``, the VPU's and the VMEM
+    core's ``vmem`` are one 128 MiB scratchpad seen three ways, so they are one entry, not three.
+
+    *Identical instances* collapse across cores: four TensorCores each own one of those scratchpads,
+    and "shrink the VMEM" is a decision about the design of that scratchpad. Shrinking one of the
+    four would produce an asymmetric part nobody asked for, and a saving a quarter the size.
+    """
+    owner_of: dict[tuple[int, str], tuple[int, str]] = {}
+    closure: dict[tuple[int, str], set[tuple[int, str]]] = {}
+    for group in _alias_groups(bundle):
+        refs = sorted(group)
+        owner = refs[0]
+        closure[owner] = set(refs)
+        for ref in refs:
+            owner_of[ref] = owner
+
+    classes: dict[tuple[str, int], _MemoryClass] = {}
+    for core_id, core in sorted(bundle.cores.items()):
+        for name in _declared_memories(core):
+            ref = (int(core_id), name)
+            owner = owner_of.get(ref, ref)
+            if owner != ref:
+                continue  # an aliased view; its owner carries the whole closure
+            size = _memory_size_bits(bundle, owner)
+            if not size:
+                continue
+            key = (owner[1], size)
+            current = classes.get(key)
+            members = tuple(sorted(closure.get(owner, {owner})))
+            classes[key] = _MemoryClass(
+                name=owner[1],
+                size_bits=size,
+                owner_cores=(current.owner_cores if current else ()) + (owner[0],),
+                members=(current.members if current else ()) + members,
+            )
+    return [classes[key] for key in sorted(classes)]
+
+
+def _declared_memories(core: dict[str, Any]) -> list[str]:
+    """Memory names a core declares, in declaration order (innermost first for a ZigZag core).
+
+    An aie2 tile declares a single unnamed ``memory:`` block; ``"memory"`` is the name the cost model
+    already uses for it, so the two agree on what they are pricing and editing.
+    """
+    if "memories" in core:
+        return list((core.get("memories") or {}).keys())
+    return ["memory"] if isinstance(core.get("memory"), dict) else []
+
+
+def _memory_declaration(bundle: HardwareBundle, ref: tuple[int, str]) -> dict[str, Any] | None:
+    core = bundle.cores.get(int(ref[0]))
+    if core is None:
+        return None
+    if "memories" in core:
+        return ((core.get("memories") or {}).get(ref[1])) or None
+    return core.get("memory") if ref[1] == "memory" and isinstance(core.get("memory"), dict) else None
+
+
+def _memory_size_bits(bundle: HardwareBundle, ref: tuple[int, str]) -> int:
+    """Declared capacity in bits. ZigZag calls it ``size``, the aie2 schema calls it ``capacity``."""
+    mem = _memory_declaration(bundle, ref) or {}
+    return int(mem.get("size") or mem.get("capacity") or 0)
+
+
+def _top_capacity_memory(core: dict[str, Any]) -> str | None:
+    """The memory ``Core.get_memory_capacity()`` reports — the one the allocator's residency is
+    measured against.
+
+    ZigZag returns the *top* instance holding the ``I1`` operand, and a hierarchy is declared
+    innermost first, so that is the last declared level serving I1. An aie2 tile has exactly one.
+    """
+    if "memories" not in core:
+        return "memory" if isinstance(core.get("memory"), dict) else None
+    top = None
+    for name, mem in (core.get("memories") or {}).items():
+        if "I1" in {str(operand) for operand in mem.get("operands") or ()}:
+            top = name
+    return top
+
+
+def _measured_working_set(evidence: RunEvidence, bundle: HardwareBundle, memory_class: _MemoryClass) -> _WorkingSet:
+    """The largest occupancy anything measured for this memory, and what measured it.
+
+    Two independent measurements, and the floor is the maximum of them because each is binding in
+    its own right: the allocator's residency is what the fused group places in this memory across
+    cores, and ZigZag's capacity utilization is what one node's intra-core temporal mapping needs.
+    A capacity that clears one and not the other does not hold the design.
+    """
+    bits = 0
+    sources: list[str] = []
+
+    for core_id, name in memory_class.members:
+        core = bundle.cores.get(core_id) or {}
+        if _top_capacity_memory(core) != name:
+            continue  # the allocator constrains a core against its TOP level only
+        occupancy = evidence.occupancy_of(core_id)
+        if occupancy is None:
+            continue
+        sources.append(
+            f"allocator residency on core {core_id}: {occupancy.resident_bits} of {occupancy.capacity_bits} bits"
+        )
+        bits = max(bits, occupancy.resident_bits)
+
+    for level, node in _levels_for(evidence, memory_class, with_nodes=True):
+        utilization = node.capacity_utilization(level)
+        if utilization is None:
+            continue
+        sources.append(f"CME capacity utilization of '{level.name}' on node '{node.name}': {utilization:.3g}")
+        bits = max(bits, int(math.ceil(utilization * memory_class.size_bits)))
+
+    return _WorkingSet(bits=bits, sources=tuple(dict.fromkeys(sources)))
+
+
+def _levels_for(evidence: RunEvidence, memory_class: _MemoryClass, *, with_nodes: bool = False):
+    """The CME memory levels that describe this memory class, optionally paired with their node.
+
+    A level is matched by name on a node that runs on one of the class's cores. ZigZag disambiguates
+    two levels backed by one instance as ``name#index``, so the join strips that suffix rather than
+    missing the second one.
+    """
+    cores = memory_class.member_cores
+    out = []
+    for node in evidence.nodes:
+        if not node.modelled or not (set(node.core_ids) & cores):
+            continue
+        assert node.memory_levels is not None
+        for level in node.memory_levels.values():
+            if level.name.split("#", 1)[0] != memory_class.name:
+                continue
+            out.append((level, node) if with_nodes else level)
     return out
 
 
@@ -739,7 +1361,7 @@ def _array_offers(
                     ),
                     couples=OPERATORS["core.array.resize"].couples,
                     predicted_delta=PredictedDelta(
-                        cycles=node.ideal_cycles * (1.0 - 1.0 / factor),
+                        value=node.ideal_cycles * (1.0 - 1.0 / factor),
                         scope="node",
                         derivation=(
                             f"the array does {factor}x more MACs per cycle, so the compute-ideal floor "
@@ -852,7 +1474,7 @@ def _tiling_offers(
                     effect=f"intra_core_tiling {entry['dim']}: {tile} -> {new_tile}",
                     couples=OPERATORS["system.tiling.intra_core"].couples,
                     predicted_delta=PredictedDelta(
-                        cycles=transfer,
+                        value=transfer,
                         scope="iteration",
                         derivation=(
                             "upper bound = the transfer-bound cycles of one iteration "
@@ -894,7 +1516,7 @@ def _fusion_offers(evidence: RunEvidence, mapping_params: dict[str, Any], vetoes
                 ),
                 effect=f"fusion_cut_points -> ['{cut_after}'] (split the group in two)",
                 delta=PredictedDelta(
-                    cycles=0.0,
+                    value=0.0,
                     scope="iteration",
                     derivation=(
                         "an infeasible solve has no latency to improve on; cutting the group removes "
@@ -938,7 +1560,7 @@ def _fusion_offers(evidence: RunEvidence, mapping_params: dict[str, Any], vetoes
             ),
             effect="fusion_cut_points -> derived from the affine barriers (maximal fusion)",
             delta=PredictedDelta(
-                cycles=transfer,
+                value=transfer,
                 scope="iteration",
                 derivation=(
                     f"upper bound = the transfer-bound cycles of one iteration ({transfer:.0f}); fusing "
@@ -1035,7 +1657,7 @@ def _core_count_offers(
             effect=f"nb_cols_to_use: {current} -> {new_value}",
             couples=OPERATORS["system.alloc.cores"].couples,
             predicted_delta=PredictedDelta(
-                cycles=peak - mean,
+                value=peak - mean,
                 scope="iteration",
                 derivation=(
                     f"busy_i = latency_per_iteration - slack_i; peak {peak:.0f}, mean {mean:.0f}. No "
@@ -1140,7 +1762,7 @@ def _link(
                     effect=f"multiply the bandwidth of every {args['link_bandwidth']} bits/cycle link by {factor}",
                     couples=OPERATORS["link.bandwidth"].couples,
                     predicted_delta=PredictedDelta(
-                        cycles=saving,
+                        value=saving,
                         scope="iteration",
                         derivation=(
                             f"{factor}x bandwidth cuts the link's {exposed:.0f} exposed cycles to "
@@ -1187,6 +1809,10 @@ def apply_operator(
         notes += _scale_memory(edited, args["cores"], args["memory"], bandwidth=int(args["factor"]))
     elif operator_id == "core.memory.capacity":
         notes += _scale_memory(edited, args["cores"], args["memory"], capacity=int(args["factor"]))
+    elif operator_id == "core.memory.shrink":
+        notes += _scale_memory(edited, args["cores"], args["memory"], capacity_banks=int(args["banks"]))
+    elif operator_id == "core.memory.narrow":
+        notes += _scale_memory(edited, args["cores"], args["memory"], bandwidth_divisor=int(args["divisor"]))
     elif operator_id == "core.array.resize":
         notes += _resize_array(edited, args["cores"], {str(d): int(f) for d, f in args["dims"].items()})
     elif operator_id == "link.bandwidth":
@@ -1194,21 +1820,25 @@ def apply_operator(
     return AppliedOperator(operator_id, edited, params, notes)
 
 
-def _scale_memory(
+def _scale_memory(  # noqa: PLR0913 -- four independent knobs on one edit; splitting duplicates the walk
     bundle: HardwareBundle,
     core_ids: list[int],
     memory: str,
     *,
     capacity: int = 1,
     bandwidth: int = 1,
+    capacity_banks: int | None = None,
+    bandwidth_divisor: int = 1,
     follow_aliases: bool = True,
 ) -> list[str]:
-    """Scale one memory level's capacity and/or port widths on the given cores.
+    """Scale one memory level's capacity and/or port widths on the given cores, either way.
 
     Aliased views are carried along by default. The MXU's ``operand_buffer``, the VPU's and the VMEM
     core's ``vmem`` are three views of one 128 MiB scratchpad; widening only the view the stalling
     node happens to sit behind would give the solve a wider port that the cost model never bills and
-    the other views never see -- a mutation that is free precisely because it is incoherent.
+    the other views never see -- a mutation that is free precisely because it is incoherent. A
+    *shrink* has the sharper version of the same problem: leaving one view at 128 MiB would let the
+    solver keep placing tensors the shrunken silicon cannot hold.
     """
     targets = {(int(c), memory) for c in core_ids}
     if follow_aliases:
@@ -1217,20 +1847,50 @@ def _scale_memory(
                 targets |= group
     notes: list[str] = []
     for core_id, mem_name in sorted(targets):
-        core = bundle.cores.get(core_id)
-        mem = ((core or {}).get("memories") or {}).get(mem_name)
+        mem = _memory_declaration(bundle, (core_id, mem_name))
         if mem is None:
             continue
-        if capacity > 1:
-            mem["size"] = int(mem.get("size", 0)) * capacity
-            notes.append(f"core {core_id}: {mem_name}.size x{capacity} -> {mem['size']}")
-        if bandwidth > 1:
-            for port in mem.get("ports") or ():
-                for key in ("bandwidth_min", "bandwidth_max"):
-                    if key in port:
-                        port[key] = int(port[key]) * bandwidth
-            notes.append(f"core {core_id}: {mem_name} port bandwidths x{bandwidth}")
+        # ZigZag declares capacity as `size`, the aie2 schema as `capacity`. Edit whichever is there
+        # rather than introducing the other key, which the validator would reject.
+        size_key = "size" if "size" in mem else ("capacity" if "capacity" in mem else None)
+        if size_key and capacity > 1:
+            mem[size_key] = int(mem.get(size_key, 0)) * capacity
+            notes.append(f"core {core_id}: {mem_name}.{size_key} x{capacity} -> {mem[size_key]}")
+        if size_key and capacity_banks is not None:
+            # Bank granularity, so the same arithmetic runs here as in the offer: `size // BANKS`
+            # first, then multiply. Scaling by the fraction instead would round differently on a
+            # capacity that is not a multiple of the bank size and produce a bundle the offer never
+            # priced.
+            mem[size_key] = int(mem.get(size_key, 0)) // SHRINK_BANKS * capacity_banks
+            notes.append(
+                f"core {core_id}: {mem_name}.{size_key} -> {capacity_banks}/{SHRINK_BANKS} = {mem[size_key]}"
+            )
+        notes += _scale_ports(mem, core_id, mem_name, bandwidth, bandwidth_divisor)
     return notes
+
+
+def _scale_ports(mem: dict[str, Any], core_id: int, mem_name: str, factor: int, divisor: int) -> list[str]:
+    """Widen or narrow every port of one memory declaration.
+
+    A narrowing never drops a port below its declared ``bandwidth_min``: that is the smallest access
+    the memory supports, and a maximum below it would describe hardware that cannot service its own
+    minimum request. An aie2 tile carries the pair on the memory itself rather than on ports.
+    """
+    if factor <= 1 and divisor <= 1:
+        return []
+    ports = mem.get("ports")
+    declarations = list(ports) if ports else [mem]
+    floor = min((int(d["bandwidth_min"]) for d in declarations if "bandwidth_min" in d), default=1)
+    for declaration in declarations:
+        for key in ("bandwidth_min", "bandwidth_max"):
+            if key not in declaration:
+                continue
+            if factor > 1:
+                declaration[key] = int(declaration[key]) * factor
+            if divisor > 1:
+                declaration[key] = max(floor, int(declaration[key]) // divisor)
+    verb = f"x{factor}" if factor > 1 else f"/{divisor}"
+    return [f"core {core_id}: {mem_name} port bandwidths {verb}"]
 
 
 def _alias_groups(bundle: HardwareBundle) -> list[set[tuple[int, str]]]:
@@ -1312,11 +1972,66 @@ def _scale_links(bundle: HardwareBundle, bandwidth: int, factor: int) -> list[st
     return notes
 
 
-# ── The post-hoc guard for D3 ───────────────────────────────────────────────────────────────────
+# ── The post-hoc guards ─────────────────────────────────────────────────────────────────────────
+
+REDUCTION_OPERATORS = frozenset({"core.memory.shrink", "core.memory.narrow"})
+"""Operators that make hardware smaller. They share a post-hoc guard the growths do not need."""
+
+
+def post_hoc_reduction_check(
+    operator_id: str,
+    target: dict[str, Any],
+    after: RunEvidence,
+    *,
+    parent_latency_cycles: float | None = None,
+    objective: Objective | None = None,
+) -> str | None:
+    """Verify after the solve that a reduction did not break what it made smaller. None = accepted.
+
+    The pre-solve guard is arithmetic over the *previous* run's placement, and that placement is
+    re-derived on the smaller hardware: LOMA picks a fresh temporal mapping and the allocator a
+    fresh placement, either of which may need more than the old one did. So the reduction is only
+    banked once the run that followed it says so.
+
+    Two failures, and neither is a smaller design:
+
+    * **infeasible** — the cut crossed the real working set. That is a hard fact about this
+      (hardware, workload) pair and worth caching: no capacity at or below this one holds it.
+    * **slower than the objective allows** — the mapping still fits but pays for it in cycles.
+      Trading latency for area is exactly what the ``area`` objective's latency ceiling exists to
+      bound, so a candidate over that ceiling is rejected rather than reported as an area win.
+    """
+    if operator_id not in REDUCTION_OPERATORS:
+        return None
+    detail = f"'{target.get('memory')}'" + (f" -> {target['to_bits']} bits" if target.get("to_bits") else "")
+    if not after.feasible:
+        return (
+            f"the reduction of {detail} made the mapping INFEASIBLE: the pre-solve floor came from the "
+            "previous placement, and the placement re-derived on the smaller hardware needs more. No "
+            "capacity at or below this one holds this workload"
+        )
+    if after.latency_total is None:
+        return f"the run after reducing {detail} reported no latency, so the reduction cannot be verified"
+    if objective is not None:
+        violations = objective.violations(after.latency_total, None)
+        if violations:
+            return f"the reduction of {detail} is within the working set but {'; '.join(violations)}"
+    if parent_latency_cycles is not None and after.latency_total > parent_latency_cycles:
+        regression = after.latency_total - parent_latency_cycles
+        floor = after.noise_floor
+        if floor.clears(regression):
+            return (
+                f"the reduction of {detail} cost {regression:.0f} cycles "
+                f"({parent_latency_cycles:.0f} -> {after.latency_total:.0f}), above the noise floor of "
+                f"{floor.cycles:.0f} ({floor.source}): the smaller memory forced a worse temporal mapping"
+            )
+    return None
 
 
 def post_hoc_check(operator_id: str, target: dict[str, Any], before: RunEvidence, after: RunEvidence) -> str | None:
-    """Verify after the solve that a coupled resize actually held. None = accepted."""
+    """Verify after the solve that a coupled resize or a reduction actually held. None = accepted."""
+    if operator_id in REDUCTION_OPERATORS:
+        return post_hoc_reduction_check(operator_id, target, after, parent_latency_cycles=before.latency_total)
     if operator_id != "core.array.resize":
         return None
     name = str(target.get("node"))

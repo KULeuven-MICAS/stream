@@ -465,12 +465,12 @@ ALLOCATION_RAW: dict = {
 
 class TestAllocationIR:
     def test_json_schema(self):
-        """AllocationIR.model_json_schema() must include schema_version const '1.4' (1.4 = the MAC
-        roofline counts only MAC-capable cores, + mac_capable_cores)."""
+        """AllocationIR.model_json_schema() must include schema_version const '1.5' (1.5 = the
+        performance view carries per-core solved memory occupancy)."""
         schema = AllocationIR.model_json_schema()
         assert "schema_version" in schema["properties"]
         sv = schema["properties"]["schema_version"]
-        assert sv.get("const") == "1.4", f"Expected const='1.4', got: {sv}"
+        assert sv.get("const") == "1.5", f"Expected const='1.5', got: {sv}"
 
     def test_from_dict(self):
         """AllocationIR constructed from a dict matching scheduler.get_ir() shape validates without error."""
@@ -503,7 +503,7 @@ class TestAllocationIR:
         )
         assert ir.latency.total == 2000
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "1.4"
+        assert ir.schema_version == "1.5"
 
     def test_from_internal_post_solve(self):
         """AllocationIR.from_internal(mock_scheduler) constructs correctly when latency_total > 0."""
@@ -518,7 +518,7 @@ class TestAllocationIR:
         assert ir.latency.per_iteration == 500
         assert ir.latency.overlap_between_iterations == 100
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "1.4"
+        assert ir.schema_version == "1.5"
         assert len(ir.mapping_nodes) == 2
         assert "MatMul" in ir.mapping_nodes
         assert len(ir.fused_groups) == 1
@@ -648,7 +648,7 @@ class TestAllocationIR:
         json_str = ir.model_dump_json()
         parsed = json.loads(json_str)
 
-        assert parsed["schema_version"] == "1.4"
+        assert parsed["schema_version"] == "1.5"
         assert parsed["backend"] == "ORTOOLS_GSCIP"
         assert parsed["latency"]["total"] == 2000
         assert "MatMul" in parsed["mapping_nodes"]
