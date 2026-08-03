@@ -25,6 +25,24 @@ if TYPE_CHECKING:
     from stream.workload.workload import ComputationNode, HasIterationSpace, TransferNode, Workload
 
 
+#: Operator-type substrings that denote multiply-accumulate work. Matched case-insensitively as a
+#: substring so ONNX spellings (``MatMulInteger``, ``ConvTranspose``) and framework aliases
+#: (``Linear``) all classify alike.
+MAC_OPERATOR_TYPES: tuple[str, ...] = ("conv", "gemm", "matmul", "linear")
+
+
+def is_mac_operator_type(op_type: object) -> bool:
+    """Whether ``op_type`` names multiply-accumulate work (the matmul/conv family).
+
+    One predicate for BOTH sides of the MAC roofline: it selects the workload nodes that contribute
+    to ``total_mac_ops`` and the cores whose ``operator_types`` admit those nodes. The two must
+    agree -- dividing matmul-only MAC counts by a peak that includes vector units the mapper may
+    never send a matmul to reports a ceiling the workload cannot reach by construction.
+    """
+    lowered = str(op_type).lower()
+    return any(k in lowered for k in MAC_OPERATOR_TYPES)
+
+
 def determine_fusion_splits(workload: "Workload", mapping: "Mapping") -> dict[LayerDim, int]:
     """
     Determine the best dimension to fuse the layers on.

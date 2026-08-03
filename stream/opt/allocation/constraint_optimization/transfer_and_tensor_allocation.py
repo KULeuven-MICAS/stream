@@ -2457,16 +2457,23 @@ class TransferAndTensorAllocator:
     def _overlap_section(self) -> dict[str, Any]:
         """Overlap summary: the inter-iteration overlap, which resource(s) bind it, the per-resource
         slack it is the minimum of, and the recurrence bound that separately caps it.
-        ``binding_resources`` are those whose slack equals the overlap (a busy-throughout resource has
-        slack 0 and pins the overlap to 0). ``recurrence_bound_cycles`` is modulo scheduling's RecMII:
-        0 for every feed-forward workload, so a non-zero value means a loop-carried state, not a
-        resource, is what the overlap is up against."""
+
+        ``binding_resources`` are those at the MINIMUM slack -- the resource-side cap on the overlap
+        (a busy-throughout resource has slack 0 and pins the overlap to 0). Testing ``slack ==
+        overlap`` instead would be empty whenever the solved overlap sits strictly below that cap,
+        which it routinely does: the primary objective is a *sum* in which total latency trades
+        against DMA balance, so the optimum need not push the overlap onto its bound, and the
+        recurrence bound caps it separately. An empty set reads as "nothing limits the pipelining",
+        which is never true. ``recurrence_bound_cycles`` is modulo scheduling's RecMII: 0 for every
+        feed-forward workload, so a non-zero value means a loop-carried state, not a resource, is
+        what the overlap is up against."""
         slack = self._resource_slack_breakdown()
         try:
             overlap_cycles = int(self.overlap.X) if self.overlap is not None else None
         except Exception:  # noqa: BLE001
             overlap_cycles = None
-        binding = [d["resource"] for d in slack if overlap_cycles is not None and d["slack_cycles"] <= overlap_cycles]
+        min_slack = min((d["slack_cycles"] for d in slack), default=None)
+        binding = [d["resource"] for d in slack if d["slack_cycles"] == min_slack]
         return {
             "overlap_cycles": overlap_cycles,
             "binding_resources": binding,

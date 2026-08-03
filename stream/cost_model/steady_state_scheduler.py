@@ -48,6 +48,7 @@ from stream.workload.utils import (
     get_compute_predecessors_successors,
     get_equivalent_dimension,
     get_node_with_largest_resource_allocation,
+    is_mac_operator_type,
     is_reused_on_chip,
 )
 from stream.workload.workload import Workload
@@ -65,6 +66,10 @@ _LOOP_NEST_DEPTH: dict[str, int] = {
     "core_spatial": 4,
     "kernel": 5,
 }
+
+#: Core kinds that appear in ``core_list`` to model a memory/DMA endpoint rather than a compute
+#: engine. They hold no array a MAC can execute on, so they never belong in a compute roofline.
+_NON_COMPUTE_CORE_TYPES: frozenset[str] = frozenset({"offchip", "shim", "memory"})
 
 
 class SteadyStateScheduler:
@@ -387,33 +392,64 @@ class SteadyStateScheduler:
         self.steady_state_workload = self.ssw
         return self.ssw
 
+    def _mac_roofline_peak(self) -> tuple[int, int]:
+        """``(peak_macs_per_cycle, n_cores)`` over the on-chip cores that may execute MAC work.
+
+        A core declaring ``operator_types`` accepts only those operators -- the convention
+        ``GenericMappingGenerator._select_cores_for_node`` enforces -- so a VPU listing only
+        elementwise ops can never be given a GEMM and its lanes are not part of the MAC roofline.
+        A core declaring none accepts every operator and always counts. Cores with no operational
+        array (a memory/DMA endpoint, or a backend that models no array at all) contribute nothing.
+        """
+        offchip_id = self.accelerator.offchip_core_id
+        peak = 0
+        n_cores = 0
+        for core in self.accelerator.core_list:
+            if core.id == offchip_id or core.type in _NON_COMPUTE_CORE_TYPES:
+                continue
+            op_types = getattr(core, "operator_types", None)
+            if op_types is not None and not any(is_mac_operator_type(t) for t in op_types):
+                continue
+            units = getattr(getattr(core, "operational_array", None), "total_unit_count", 0) or 0
+            if not units:
+                continue
+            peak += units
+            n_cores += 1
+        return peak, n_cores
+
     def _augment_performance_stats_end_to_end(self) -> None:
         """Add end-to-end MAC utilization to performance_stats['aggregate'] in place.
 
-        ``end_to_end_mac_utilization = total_mac_ops / (peak_macs_per_cycle * total_latency)``, where
-        ``peak_macs_per_cycle`` is the summed operational-array size over all on-chip (non-offchip)
-        cores. Unlike ``mac_spatial_utilization`` (per-layer PE-array spatial fill), this folds in
-        temporal stalls, idle cores AND transfer overhead, so it is the true fraction of the chip's
-        compute throughput the inference actually used. Also records the raw ``total_mac_ops`` and
-        ``peak_macs_per_cycle`` for transparency. Per fusion group (so it equals the whole-inference
-        figure for single-group workloads).
+        ``end_to_end_mac_utilization = total_mac_ops / (peak_macs_per_cycle * total_latency)``.
+
+        SEMANTICS: this is the **MAC roofline** -- both terms are restricted to the matmul/conv
+        family. ``total_mac_ops`` counts only ``is_mac_operator_type`` nodes, so
+        ``peak_macs_per_cycle`` sums the operational arrays only of cores whose ``operator_types``
+        admit those same nodes (``_mac_roofline_peak``). Summing every on-chip core instead would
+        divide matmul-only work by a peak that includes vector units the mapper is forbidden from
+        sending a matmul to: an elementwise-heavy workload would then report a low utilization
+        against a ceiling it can never reach, and anything stopping on the metric would keep pushing
+        against a bound it had already hit. 1.0 therefore means "the matrix engines are saturated",
+        not "the whole chip is" -- elementwise work is in neither term.
+
+        Unlike ``mac_spatial_utilization`` (per-layer PE-array spatial fill), this folds in temporal
+        stalls, idle MAC cores AND transfer overhead. The raw ``total_mac_ops``,
+        ``peak_macs_per_cycle`` and ``mac_capable_cores`` are recorded alongside so the roofline can
+        be recomputed by hand. Per fusion group (so it equals the whole-inference figure for
+        single-group workloads).
         """
         if not isinstance(self.performance_stats, dict):
             return
         agg = self.performance_stats.get("aggregate")
         if not isinstance(agg, dict):
             return
-        offchip_id = self.accelerator.offchip_core_id
-        peak = sum(
-            getattr(getattr(c, "operational_array", None), "total_unit_count", 0) or 0
-            for c in self.accelerator.core_list
-            if c.id != offchip_id
-        )
+        peak, mac_cores = self._mac_roofline_peak()
         macs = self.total_mac_ops
         lat = self.latency_total
         util = (macs / (peak * lat)) if (macs and peak and lat and lat > 0) else None
         agg["total_mac_ops"] = macs
         agg["peak_macs_per_cycle"] = peak
+        agg["mac_capable_cores"] = mac_cores
         agg["end_to_end_mac_utilization"] = util
 
     def update_tensor_steady_state_iteration_spaces(self, tensor_reuse_levels: TensorReuseLevels):

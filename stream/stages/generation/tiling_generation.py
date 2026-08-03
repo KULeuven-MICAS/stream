@@ -9,6 +9,7 @@ from stream.stages.stage import Stage, StageCallable
 from stream.workload.steady_state.iteration_space import SteadyStateIterationSpace
 from stream.workload.utils import (
     determine_fusion_splits,
+    is_mac_operator_type,
 )
 from stream.workload.workload import ComputationNode, Workload
 
@@ -25,9 +26,6 @@ class TilingGenerationStage(Stage):
     """
 
     REQUIRED_FIELDS = ("workload", "mapping", "output_path")
-
-    # Operator types whose iteration space counts as multiply-accumulate work (for total_mac_ops).
-    _MAC_OP_TYPES = ("conv", "gemm", "matmul", "linear")
 
     def __init__(
         self,
@@ -64,14 +62,15 @@ class TilingGenerationStage(Stage):
     def _total_mac_ops(self) -> int:
         """Total multiply-accumulate ops in this (untiled) fusion group.
 
-        Product of the full loop-dimension sizes over matmul/conv nodes -- a hardware-independent
-        workload property. Consumed by the scheduler to report end-to-end MAC utilization
-        (useful MACs / (peak MACs/cycle x total latency)). Must be read from ``self.workload``
-        BEFORE tiling shrinks the dimension sizes.
+        Product of the full loop-dimension sizes over the ``is_mac_operator_type`` nodes -- a
+        hardware-independent workload property. Consumed by the scheduler to report end-to-end MAC
+        utilization against the peak of the cores that admit exactly these operators, which is why
+        the same predicate must decide both. Must be read from ``self.workload`` BEFORE tiling
+        shrinks the dimension sizes.
         """
         total = 0
         for node in self.workload.get_computation_nodes():
-            if any(k in str(node.type).lower() for k in self._MAC_OP_TYPES):
+            if is_mac_operator_type(node.type):
                 total += prod(self.workload.get_dimension_size(d) for d in self.workload.get_dims(node))
         return total
 

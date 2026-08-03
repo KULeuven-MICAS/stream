@@ -277,15 +277,26 @@ class PerformanceAggregateIR(BaseModel):
     min_mac_spatial_utilization: float | None = Field(
         default=None, description="Worst per-node MAC spatial utilization"
     )
-    total_mac_ops: float | None = Field(default=None, description="Useful MAC operations in the workload")
+    total_mac_ops: float | None = Field(
+        default=None, description="Useful MAC operations in the workload (matmul/conv family only)"
+    )
     peak_macs_per_cycle: float | None = Field(
-        default=None, description="Summed operational-array size over all on-chip cores"
+        default=None,
+        description=(
+            "Summed operational-array size over the on-chip cores whose operator_types admit the "
+            "matmul/conv work total_mac_ops counts -- a vector core that may never run a GEMM is excluded"
+        ),
+    )
+    mac_capable_cores: int | None = Field(
+        default=None, description="How many on-chip cores contribute to peak_macs_per_cycle"
     )
     end_to_end_mac_utilization: float | None = Field(
         default=None,
         description=(
-            "total_mac_ops / (peak_macs_per_cycle x total_latency): the fraction of the chip's compute "
-            "throughput actually used, folding in spatial fill, stalls, idle cores and transfer overhead"
+            "total_mac_ops / (peak_macs_per_cycle x total_latency): the fraction of the MAC roofline "
+            "actually used, folding in spatial fill, stalls, idle MAC cores and transfer overhead. Both "
+            "terms cover the matmul/conv family only, so 1.0 means the matrix engines are saturated -- "
+            "not that the whole chip is; elementwise work appears in neither term"
         ),
     )
     degenerate: bool = Field(
@@ -305,14 +316,19 @@ class ResourceSlackIR(BaseModel):
 class OverlapIR(BaseModel):
     """Why the inter-iteration overlap is what it is.
 
-    The overlap equals the MINIMUM slack across every resource, so ``binding_resources`` is the
+    The overlap is capped by the MINIMUM slack across every resource, so ``binding_resources`` is the
     solver's own answer to 'what limits the pipelining' -- as opposed to a heuristic read off the
     schedule trace. A separate ``recurrence_bound_cycles`` (modulo scheduling's RecMII) caps it when
     a loop-carried state forbids reordering; it is 0 for every feed-forward workload."""
 
     overlap_cycles: int | None = Field(default=None, description="Solved overlap between consecutive iterations")
     binding_resources: list[str] = Field(
-        default_factory=list, description="Resources whose slack equals the overlap, i.e. those that set it"
+        default_factory=list,
+        description=(
+            "Resources at the minimum slack, i.e. the resource-side cap on the overlap. The solved "
+            "overlap can sit strictly below this cap, so compare it against per_resource_slack rather "
+            "than assuming equality"
+        ),
     )
     per_resource_slack: list[ResourceSlackIR] = Field(
         default_factory=list, description="Per-resource slack, ascending (the binding ones first)"
@@ -380,7 +396,10 @@ class AllocationIR(BaseModel):
     # 1.2 (additive): `overlays` -- which out-of-tree extensions were loaded for this run.
     # 1.3 (additive): `solve` (status + optimality gap) and the performance view's `overlap` /
     #     `tensor_reuse` / aggregate extras, which the solver already computed and the IR dropped.
-    schema_version: Literal["1.3"] = "1.3"
+    # 1.4 (additive + redefinition): `aggregate.mac_capable_cores`; `peak_macs_per_cycle` and hence
+    #     `end_to_end_mac_utilization` are now taken over the MAC-capable cores only (was: every
+    #     on-chip core), so numerator and denominator finally cover the same operators.
+    schema_version: Literal["1.4"] = "1.4"
     latency: LatencyInfo = Field(description="Latency metrics from the solved scheduler")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
     solve: SolveStatsIR | None = Field(
