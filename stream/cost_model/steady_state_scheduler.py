@@ -124,7 +124,22 @@ class SteadyStateScheduler:
         - Backend and constraint configuration used for the solve
         - Fusion splits applied
         - Mapping with node-to-resource allocations
+        - Solve statistics (status, optimality gap, wall time)
         """
+        stats = self.solve_stats
+        solve_ir = (
+            {
+                "status": stats.status,
+                "solver": stats.solver,
+                "mip_gap": stats.mip_gap,
+                "objective": stats.objective,
+                "solve_time_s": stats.solve_time_s,
+                "node_count": stats.node_count,
+                "iteration_count": stats.iteration_count,
+            }
+            if stats is not None
+            else None
+        )
         cs = self.constraint_selection
         constraint_selection_ir = (
             {
@@ -143,6 +158,7 @@ class SteadyStateScheduler:
                 "overlap_between_iterations": self.overlap_between_iterations,
             },
             "backend": self.backend,
+            "solve": solve_ir,
             "constraint_selection": constraint_selection_ir,
             "fusion_splits": {str(dim): size for dim, size in self.fusion_splits.items()},
             "mapping": self.mapping.get_ir(),

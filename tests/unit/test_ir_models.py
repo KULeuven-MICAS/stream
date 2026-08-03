@@ -465,11 +465,12 @@ ALLOCATION_RAW: dict = {
 
 class TestAllocationIR:
     def test_json_schema(self):
-        """AllocationIR.model_json_schema() must include schema_version const '1.2' (1.2 = +overlays)."""
+        """AllocationIR.model_json_schema() must include schema_version const '1.3' (1.3 = +solve stats
+        and the performance view's overlap/tensor-reuse evidence)."""
         schema = AllocationIR.model_json_schema()
         assert "schema_version" in schema["properties"]
         sv = schema["properties"]["schema_version"]
-        assert sv.get("const") == "1.2", f"Expected const='1.2', got: {sv}"
+        assert sv.get("const") == "1.3", f"Expected const='1.3', got: {sv}"
 
     def test_from_dict(self):
         """AllocationIR constructed from a dict matching scheduler.get_ir() shape validates without error."""
@@ -502,7 +503,7 @@ class TestAllocationIR:
         )
         assert ir.latency.total == 2000
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "1.2"
+        assert ir.schema_version == "1.3"
 
     def test_from_internal_post_solve(self):
         """AllocationIR.from_internal(mock_scheduler) constructs correctly when latency_total > 0."""
@@ -517,7 +518,7 @@ class TestAllocationIR:
         assert ir.latency.per_iteration == 500
         assert ir.latency.overlap_between_iterations == 100
         assert ir.backend == "ORTOOLS_GSCIP"
-        assert ir.schema_version == "1.2"
+        assert ir.schema_version == "1.3"
         assert len(ir.mapping_nodes) == 2
         assert "MatMul" in ir.mapping_nodes
         assert len(ir.fused_groups) == 1
@@ -573,7 +574,7 @@ class TestAllocationIR:
         view = ir.algorithmic_view()
 
         assert isinstance(view, AllocationAlgorithmicView)
-        assert view.schema_version == "1.0"
+        assert view.schema_version == "1.1"
         assert view.latency.total == 2000
         assert view.latency.per_iteration == 500
         assert view.latency.overlap_between_iterations == 100
@@ -647,10 +648,129 @@ class TestAllocationIR:
         json_str = ir.model_dump_json()
         parsed = json.loads(json_str)
 
-        assert parsed["schema_version"] == "1.2"
+        assert parsed["schema_version"] == "1.3"
         assert parsed["backend"] == "ORTOOLS_GSCIP"
         assert parsed["latency"]["total"] == 2000
         assert "MatMul" in parsed["mapping_nodes"]
+
+
+# The solver already computes all of this; the IR used to read three of the five performance
+# sub-dicts and drop the rest, so the overlap evidence and the optimality gap never left the engine.
+SOLVER_EVIDENCE_RAW: dict = {
+    **ALLOCATION_RAW,
+    "solve": {
+        "status": "TIME_LIMIT",
+        "solver": "gurobi",
+        "mip_gap": 0.04,
+        "objective": 2000.0,
+        "solve_time_s": 12.5,
+        "node_count": 900,
+        "iteration_count": 4200,
+    },
+    "performance": {
+        "per_node": {
+            "MatMul": {
+                "kind": "compute",
+                "n_cores": 2,
+                "latency_cycles": 400,
+                "ideal_compute_cycles": 380.0,
+                "mac_spatial_utilization": 0.95,
+                "compute_efficiency": 0.95,
+                "fallback": True,
+            }
+        },
+        "bottleneck": {
+            "compute_bound_cycles": 400,
+            "transfer_bound_cycles": 100,
+            "compute_bound_pct": 80.0,
+            "transfer_bound_pct": 20.0,
+        },
+        "aggregate": {
+            "compute_cores_available": 8,
+            "compute_cores_used": 3,
+            "latency_weighted_mac_spatial_utilization": 0.95,
+            "min_mac_spatial_utilization": 0.9,
+            "total_mac_ops": 1.2e9,
+            "peak_macs_per_cycle": 65536,
+            "end_to_end_mac_utilization": 0.31,
+            "degenerate": True,
+            "degenerate_nodes": ["MatMul"],
+        },
+        "overlap": {
+            "overlap_cycles": 100,
+            "binding_resources": ["Core 3"],
+            "per_resource_slack": [
+                {"resource": "Core 3", "kind": "core", "slack_cycles": 100},
+                {"resource": "Link(0,1)", "kind": "link", "slack_cycles": 250},
+            ],
+            "recurrence_bound_cycles": 64,
+        },
+        "tensor_reuse": [
+            {
+                "tensor": "W",
+                "size_bits": 4096,
+                "reuse_factor": 1,
+                "reuse_stop_level": -1,
+                "on_chip_tiles": 2,
+                "loop_nest_out_to_in": ["T z1 8 V"],
+            }
+        ],
+    },
+}
+
+
+class TestAllocationIRSolverEvidence:
+    """A4/A5: the overlap breakdown, the recurrence bound and the optimality gap must survive the IR
+    boundary -- without them a consumer cannot say what limits the pipelining, nor whether a latency
+    delta is above the solver's own noise floor."""
+
+    def _ir(self):
+        scheduler = MagicMock()
+        scheduler.latency_total = 2000
+        scheduler.get_ir.return_value = SOLVER_EVIDENCE_RAW
+        return AllocationIR.from_internal(scheduler)
+
+    def test_binding_resources_and_slack_survive(self):
+        overlap = self._ir().performance.overlap
+
+        assert overlap.binding_resources == ["Core 3"]
+        assert [s.slack_cycles for s in overlap.per_resource_slack] == [100, 250]
+        assert overlap.recurrence_bound_cycles == 64
+
+    def test_optimality_gap_and_status_survive(self):
+        ir = self._ir()
+
+        assert ir.solve.mip_gap == 0.04
+        assert ir.solve.status == "TIME_LIMIT"
+        assert ir.algorithmic_view().solve.mip_gap == 0.04
+
+    def test_aggregate_extras_survive(self):
+        aggregate = self._ir().performance.aggregate
+
+        assert aggregate.end_to_end_mac_utilization == 0.31
+        assert aggregate.total_mac_ops == 1.2e9
+        assert aggregate.degenerate_nodes == ["MatMul"]
+        # An untrustworthy per-node latency must stay flagged as such, not silently look measured.
+        assert self._ir().performance.nodes["MatMul"].fallback is True
+
+    def test_tensor_reuse_survives(self):
+        (row,) = self._ir().performance.tensor_reuse
+
+        assert row.tensor == "W" and row.reuse_factor == 1
+
+    def test_absent_solve_stats_are_none_not_defaulted(self):
+        """A run whose backend reports no stats must not claim a status it does not have."""
+        scheduler = MagicMock()
+        scheduler.latency_total = 2000
+        scheduler.get_ir.return_value = ALLOCATION_RAW
+
+        assert AllocationIR.from_internal(scheduler).solve is None
+
+    def test_json_round_trip(self):
+        parsed = json.loads(self._ir().model_dump_json())
+
+        assert parsed["solve"]["mip_gap"] == 0.04
+        assert parsed["performance"]["overlap"]["binding_resources"] == ["Core 3"]
 
 
 def test_allocation_ir_records_which_overlays_were_loaded(monkeypatch):

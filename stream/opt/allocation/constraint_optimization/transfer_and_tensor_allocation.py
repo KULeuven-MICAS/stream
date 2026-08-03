@@ -187,6 +187,7 @@ class TransferAndTensorAllocator:
         self.slot_latency: dict[int, SolverVar] = {}
         self.overlap: SolverVar | None = None
         self.total_latency: SolverVar | None = None
+        self.recurrence_bound: int = 0
 
         # transfer fire helpers init
         self._ensure_same_ssis_for_all_transfers()
@@ -1216,7 +1217,7 @@ class TransferAndTensorAllocator:
             self.model.add_constr(overlap <= v)
         # Resource idle bounds how much of an iteration is free; a loop-carried state bounds how much
         # of it may be *reordered*. Both cap the overlap, so II ends up max(ResMII, RecMII).
-        rec = self._recurrence_bound()
+        rec = self.recurrence_bound = self._recurrence_bound()
         if rec > 0:
             self.model.add_constr(
                 overlap <= self.model.quicksum(v._raw for v in self.slot_latency.values()) - rec,
@@ -2454,16 +2455,24 @@ class TransferAndTensorAllocator:
         return rows
 
     def _overlap_section(self) -> dict[str, Any]:
-        """Overlap summary: the inter-iteration overlap, which resource(s) bind it, and the
-        per-resource slack it is the minimum of. ``binding_resources`` are those whose slack equals
-        the overlap (a busy-throughout resource has slack 0 and pins the overlap to 0)."""
+        """Overlap summary: the inter-iteration overlap, which resource(s) bind it, the per-resource
+        slack it is the minimum of, and the recurrence bound that separately caps it.
+        ``binding_resources`` are those whose slack equals the overlap (a busy-throughout resource has
+        slack 0 and pins the overlap to 0). ``recurrence_bound_cycles`` is modulo scheduling's RecMII:
+        0 for every feed-forward workload, so a non-zero value means a loop-carried state, not a
+        resource, is what the overlap is up against."""
         slack = self._resource_slack_breakdown()
         try:
             overlap_cycles = int(self.overlap.X) if self.overlap is not None else None
         except Exception:  # noqa: BLE001
             overlap_cycles = None
         binding = [d["resource"] for d in slack if overlap_cycles is not None and d["slack_cycles"] <= overlap_cycles]
-        return {"overlap_cycles": overlap_cycles, "binding_resources": binding, "per_resource_slack": slack}
+        return {
+            "overlap_cycles": overlap_cycles,
+            "binding_resources": binding,
+            "per_resource_slack": slack,
+            "recurrence_bound_cycles": self.recurrence_bound,
+        }
 
     def _resource_slack_breakdown(self) -> list[dict[str, Any]]:
         """Per-resource steady-state slack (boundary idle within one iteration), ascending.

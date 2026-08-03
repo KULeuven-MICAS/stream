@@ -1102,6 +1102,18 @@ class ORToolsBackend(SolverModel):
             return 0
         return 1 if self._result.has_primal_feasible_solution() else 0
 
+    def _mip_gap(self) -> float | None:
+        """Relative optimality gap from MathOpt's primal/dual bounds -- it reports the two bounds
+        rather than the gap itself. This is the noise floor for reading any two results against each
+        other: a latency difference smaller than it is inside the solver's own tolerance."""
+        if self._result is None or not self._result.has_primal_feasible_solution():
+            return None
+        primal = self._result.objective_value()
+        dual = self._result.best_objective_bound()
+        if not (math.isfinite(primal) and math.isfinite(dual)) or primal == 0:
+            return None
+        return abs(primal - dual) / abs(primal)
+
     def solve_stats(self) -> SolveStats:
         has_solution = self._result is not None and self._result.has_primal_feasible_solution()
         objective: float | None = self._result.objective_value() if has_solution else None
@@ -1115,7 +1127,7 @@ class ORToolsBackend(SolverModel):
             status=self.get_status(),
             objective=objective,
             solve_time_s=solve_time_s,
-            mip_gap=None,
+            mip_gap=self._mip_gap(),
             node_count=None,
             iteration_count=None,
         )

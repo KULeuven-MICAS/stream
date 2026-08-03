@@ -43,6 +43,22 @@ class CostModelsIR(BaseModel):
         )
 
 
+class SolveStatsIR(BaseModel):
+    """What the MILP solver reported about the solve itself.
+
+    ``mip_gap`` is the noise floor for any comparison built on this result: a latency delta smaller
+    than the gap is inside the solver's own optimality tolerance and is not evidence of anything.
+    None when the backend does not expose it (OR-Tools)."""
+
+    status: str = Field(description="Solve status, e.g. 'OPTIMAL', 'TIME_LIMIT'")
+    solver: str = Field(description="Underlying solver, e.g. 'gurobi', 'gscip', 'highs'")
+    mip_gap: float | None = Field(default=None, description="Relative MIP gap; None if the backend has none")
+    objective: float | None = Field(default=None, description="Objective value of the best solution found")
+    solve_time_s: float | None = Field(default=None, description="Wall-clock solve time in seconds")
+    node_count: int | None = Field(default=None, description="Branch-and-bound nodes explored")
+    iteration_count: int | None = Field(default=None, description="Simplex iterations")
+
+
 class ConstraintSelectionIR(BaseModel):
     """IR representation of the ConstraintSelection configuration used during the solve."""
 
@@ -164,9 +180,12 @@ class AllocationAlgorithmicView(BaseModel):
     Suitable for algorithmic engineers reasoning about schedule quality and solver behaviour.
     """
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.1"] = "1.1"
     latency: LatencyInfo = Field(description="Latency metrics: total, per-iteration, and overlap cycles")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
+    solve: SolveStatsIR | None = Field(
+        default=None, description="Solver status and optimality gap: the noise floor for any latency comparison"
+    )
     constraint_selection: ConstraintSelectionIR | None = Field(
         description="Constraint groups active during solve, or None if no selection was specified"
     )
@@ -218,6 +237,13 @@ class NodePerformanceIR(BaseModel):
     compute_efficiency: float | None = Field(
         default=None, description="ideal_compute_cycles / latency_cycles; how close to the compute-ideal this node runs"
     )
+    fallback: bool = Field(
+        default=False,
+        description=(
+            "True when a matmul/conv node's ZigZag estimate fell back to the 1-MAC/cycle scalar cost "
+            "(no CME): the spatial array was not modelled, so this node's latency is untrustworthy"
+        ),
+    )
 
 
 class BottleneckIR(BaseModel):
@@ -247,6 +273,62 @@ class PerformanceAggregateIR(BaseModel):
     min_mac_spatial_utilization: float | None = Field(
         default=None, description="Worst per-node MAC spatial utilization"
     )
+    total_mac_ops: float | None = Field(default=None, description="Useful MAC operations in the workload")
+    peak_macs_per_cycle: float | None = Field(
+        default=None, description="Summed operational-array size over all on-chip cores"
+    )
+    end_to_end_mac_utilization: float | None = Field(
+        default=None,
+        description=(
+            "total_mac_ops / (peak_macs_per_cycle x total_latency): the fraction of the chip's compute "
+            "throughput actually used, folding in spatial fill, stalls, idle cores and transfer overhead"
+        ),
+    )
+    degenerate: bool = Field(
+        default=False, description="True iff a matmul/conv node fell back to the scalar cost (latency untrustworthy)"
+    )
+    degenerate_nodes: list[str] = Field(default_factory=list, description="Names of the fallback nodes")
+
+
+class ResourceSlackIR(BaseModel):
+    """One resource's steady-state boundary idle within a single iteration."""
+
+    resource: str = Field(description="Resource key, e.g. a core or link identifier")
+    kind: str = Field(description="'core' or 'link'")
+    slack_cycles: int = Field(description="Reclaimable boundary idle in one iteration")
+
+
+class OverlapIR(BaseModel):
+    """Why the inter-iteration overlap is what it is.
+
+    The overlap equals the MINIMUM slack across every resource, so ``binding_resources`` is the
+    solver's own answer to 'what limits the pipelining' -- as opposed to a heuristic read off the
+    schedule trace. A separate ``recurrence_bound_cycles`` (modulo scheduling's RecMII) caps it when
+    a loop-carried state forbids reordering; it is 0 for every feed-forward workload."""
+
+    overlap_cycles: int | None = Field(default=None, description="Solved overlap between consecutive iterations")
+    binding_resources: list[str] = Field(
+        default_factory=list, description="Resources whose slack equals the overlap, i.e. those that set it"
+    )
+    per_resource_slack: list[ResourceSlackIR] = Field(
+        default_factory=list, description="Per-resource slack, ascending (the binding ones first)"
+    )
+    recurrence_bound_cycles: int = Field(
+        default=0, description="Cycles a loop-carried state forbids overlapping (RecMII); 0 when feed-forward"
+    )
+
+
+class TensorReuseIR(BaseModel):
+    """One tensor's on-chip residency as the solver chose it."""
+
+    tensor: str
+    size_bits: int | None = Field(default=None)
+    reuse_factor: int | None = Field(
+        default=None, description="Steady-state iterations it stays resident; 1 = re-fetched every iteration"
+    )
+    reuse_stop_level: int | None = Field(default=None, description="Loop level reuse stops at; -1 = none")
+    on_chip_tiles: int | None = Field(default=None, description="Tile buffers that residency needs")
+    loop_nest_out_to_in: list[str] = Field(default_factory=list, description="Its steady-state loop nest")
 
 
 class AllocationPerformanceView(BaseModel):
@@ -260,11 +342,17 @@ class AllocationPerformanceView(BaseModel):
     `compute_cores_available`, and per-node `mac_spatial_utilization` / `compute_efficiency`.
     """
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.1"] = "1.1"
     latency: LatencyInfo = Field(description="Latency metrics: total, per-iteration, and overlap cycles")
     bottleneck: BottleneckIR = Field(description="Per-iteration compute-bound vs transfer/DMA-bound cycle split")
     aggregate: PerformanceAggregateIR = Field(description="Accelerator-wide core usage and MAC utilization")
     nodes: dict[str, NodePerformanceIR] = Field(description="Per-node utilization and compute efficiency")
+    overlap: OverlapIR | None = Field(
+        default=None, description="What binds the inter-iteration overlap (the solver's own slack breakdown)"
+    )
+    tensor_reuse: list[TensorReuseIR] = Field(
+        default_factory=list, description="Per-tensor on-chip residency the solver chose, largest first"
+    )
 
 
 class AllocationIR(BaseModel):
@@ -286,9 +374,15 @@ class AllocationIR(BaseModel):
 
     # 1.1 (additive): typed `fusion` (stage 2) and `tiling` (stage 3) sub-objects.
     # 1.2 (additive): `overlays` -- which out-of-tree extensions were loaded for this run.
-    schema_version: Literal["1.2"] = "1.2"
+    # 1.3 (additive): `solve` (status + optimality gap) and the performance view's `overlap` /
+    #     `tensor_reuse` / aggregate extras, which the solver already computed and the IR dropped.
+    schema_version: Literal["1.3"] = "1.3"
     latency: LatencyInfo = Field(description="Latency metrics from the solved scheduler")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
+    solve: SolveStatsIR | None = Field(
+        default=None,
+        description="Solver status and optimality gap; the gap is the noise floor for comparing two results",
+    )
     cost_models: CostModelsIR | None = Field(
         default=None, description="Which cost models produced this result (transparency); always set by from_internal"
     )
@@ -367,10 +461,15 @@ class AllocationIR(BaseModel):
                 bottleneck=BottleneckIR(**perf_raw["bottleneck"]),
                 aggregate=PerformanceAggregateIR(**perf_raw["aggregate"]),
                 nodes={name: NodePerformanceIR(**d) for name, d in perf_raw["per_node"].items()},
+                overlap=OverlapIR(**perf_raw["overlap"]) if perf_raw.get("overlap") else None,
+                tensor_reuse=[TensorReuseIR(**d) for d in perf_raw.get("tensor_reuse") or []],
             )
             if perf_raw
             else None
         )
+
+        solve_raw = raw.get("solve")
+        solve = SolveStatsIR(**solve_raw) if solve_raw else None
 
         ss_raw = raw.get("steady_state")
         steady_state = SteadyStateIR(**ss_raw) if ss_raw else None
@@ -403,6 +502,7 @@ class AllocationIR(BaseModel):
             overlays=list(loaded_overlays()),
             latency=LatencyInfo(**raw["latency"]),
             backend=raw["backend"],
+            solve=solve,
             cost_models=CostModelsIR.for_backend(raw["backend"]),
             constraint_selection=constraint_selection,
             fusion_splits=raw["fusion_splits"],
@@ -420,6 +520,7 @@ class AllocationIR(BaseModel):
         return AllocationAlgorithmicView(
             latency=self.latency,
             backend=self.backend,
+            solve=self.solve,
             constraint_selection=self.constraint_selection,
             fusion_splits=self.fusion_splits,
         )
