@@ -952,7 +952,11 @@ def _shrink_offers(  # noqa: PLR0913 -- one call site; each argument is an input
     out: list[Offer] = []
     for banks in range(smallest, min(smallest + SHRINK_STEPS_OFFERED, SHRINK_BANKS)):
         new_size = bank_bits * banks
-        args = {"cores": list(memory_class.owner_cores), "memory": memory_class.name, "banks": banks}
+        # An ABSOLUTE size, not a ratio. A candidate applies its operator to the run's baseline
+        # bundle, while the offer was computed on the bundle the evidence came from; those are the
+        # same design only in the first wave. "keep 4 of 8 banks" therefore names a different
+        # capacity in each of them, and the edit that ran would not be the edit that was priced.
+        args = {"cores": list(memory_class.owner_cores), "memory": memory_class.name, "to_bits": new_size}
         cost = _price("core.memory.shrink", args, bundle, budget, target, vetoes)
         if cost is None or baseline_area is None:
             continue
@@ -1055,7 +1059,9 @@ def _narrow_offers(  # noqa: PLR0913 -- one call site; each argument is an input
                 )
             )
             continue
-        args = {"cores": list(memory_class.owner_cores), "memory": memory_class.name, "divisor": divisor}
+        # Absolute, for the same reason the capacity reduction is: see `_shrink_offers`.
+        width = max(1, _widest_port(bundle, memory_class) // divisor)
+        args = {"cores": list(memory_class.owner_cores), "memory": memory_class.name, "to_bandwidth": width}
         cost = _price("core.memory.narrow", args, bundle, budget, target, vetoes)
         if cost is None or baseline_area is None:
             continue
@@ -1810,9 +1816,9 @@ def apply_operator(
     elif operator_id == "core.memory.capacity":
         notes += _scale_memory(edited, args["cores"], args["memory"], capacity=int(args["factor"]))
     elif operator_id == "core.memory.shrink":
-        notes += _scale_memory(edited, args["cores"], args["memory"], capacity_banks=int(args["banks"]))
+        notes += _scale_memory(edited, args["cores"], args["memory"], capacity_bits=int(args["to_bits"]))
     elif operator_id == "core.memory.narrow":
-        notes += _scale_memory(edited, args["cores"], args["memory"], bandwidth_divisor=int(args["divisor"]))
+        notes += _scale_memory(edited, args["cores"], args["memory"], bandwidth_bits=int(args["to_bandwidth"]))
     elif operator_id == "core.array.resize":
         notes += _resize_array(edited, args["cores"], {str(d): int(f) for d, f in args["dims"].items()})
     elif operator_id == "link.bandwidth":
@@ -1827,8 +1833,8 @@ def _scale_memory(  # noqa: PLR0913 -- four independent knobs on one edit; split
     *,
     capacity: int = 1,
     bandwidth: int = 1,
-    capacity_banks: int | None = None,
-    bandwidth_divisor: int = 1,
+    capacity_bits: int | None = None,
+    bandwidth_bits: int | None = None,
     follow_aliases: bool = True,
 ) -> list[str]:
     """Scale one memory level's capacity and/or port widths on the given cores, either way.
@@ -1856,27 +1862,25 @@ def _scale_memory(  # noqa: PLR0913 -- four independent knobs on one edit; split
         if size_key and capacity > 1:
             mem[size_key] = int(mem.get(size_key, 0)) * capacity
             notes.append(f"core {core_id}: {mem_name}.{size_key} x{capacity} -> {mem[size_key]}")
-        if size_key and capacity_banks is not None:
-            # Bank granularity, so the same arithmetic runs here as in the offer: `size // BANKS`
-            # first, then multiply. Scaling by the fraction instead would round differently on a
-            # capacity that is not a multiple of the bank size and produce a bundle the offer never
-            # priced.
-            mem[size_key] = int(mem.get(size_key, 0)) // SHRINK_BANKS * capacity_banks
-            notes.append(
-                f"core {core_id}: {mem_name}.{size_key} -> {capacity_banks}/{SHRINK_BANKS} = {mem[size_key]}"
-            )
-        notes += _scale_ports(mem, core_id, mem_name, bandwidth, bandwidth_divisor)
+        if size_key and capacity_bits is not None:
+            # `min`, so a reduction can only ever reduce: applied to a bundle already smaller than
+            # the offer's target this would otherwise be a silent GROWTH, and one that no budget
+            # guard ever priced because the operator declares itself a reduction.
+            mem[size_key] = min(int(mem.get(size_key, 0)) or capacity_bits, capacity_bits)
+            notes.append(f"core {core_id}: {mem_name}.{size_key} -> {mem[size_key]}")
+        notes += _scale_ports(mem, core_id, mem_name, bandwidth, bandwidth_bits)
     return notes
 
 
-def _scale_ports(mem: dict[str, Any], core_id: int, mem_name: str, factor: int, divisor: int) -> list[str]:
-    """Widen or narrow every port of one memory declaration.
+def _scale_ports(mem: dict[str, Any], core_id: int, mem_name: str, factor: int, to_bandwidth: int | None) -> list[str]:
+    """Widen every port of one memory declaration by `factor`, or cap them all at `to_bandwidth`.
 
     A narrowing never drops a port below its declared ``bandwidth_min``: that is the smallest access
     the memory supports, and a maximum below it would describe hardware that cannot service its own
-    minimum request. An aie2 tile carries the pair on the memory itself rather than on ports.
+    minimum request. It is a cap rather than a set, so applying it to a bundle already narrower than
+    the target cannot widen it. An aie2 tile carries the pair on the memory itself, not on ports.
     """
-    if factor <= 1 and divisor <= 1:
+    if factor <= 1 and to_bandwidth is None:
         return []
     ports = mem.get("ports")
     declarations = list(ports) if ports else [mem]
@@ -1887,10 +1891,17 @@ def _scale_ports(mem: dict[str, Any], core_id: int, mem_name: str, factor: int, 
                 continue
             if factor > 1:
                 declaration[key] = int(declaration[key]) * factor
-            if divisor > 1:
-                declaration[key] = max(floor, int(declaration[key]) // divisor)
-    verb = f"x{factor}" if factor > 1 else f"/{divisor}"
+            if to_bandwidth is not None:
+                declaration[key] = max(floor, min(int(declaration[key]), to_bandwidth))
+    verb = f"x{factor}" if factor > 1 else f"<= {to_bandwidth}"
     return [f"core {core_id}: {mem_name} port bandwidths {verb}"]
+
+
+def _widest_port(bundle: HardwareBundle, memory_class: _MemoryClass) -> int:
+    """The widest declared access of this memory, which a narrowing divides."""
+    mem = _memory_declaration(bundle, (memory_class.owner_cores[0], memory_class.name)) or {}
+    ports = mem.get("ports") or [mem]
+    return max((int(p.get("bandwidth_max", 0)) for p in ports), default=0)
 
 
 def _alias_groups(bundle: HardwareBundle) -> list[set[tuple[int, str]]]:

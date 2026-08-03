@@ -154,6 +154,7 @@ class Objective:
         }[self.kind]
 
     def as_dict(self) -> dict[str, Any]:
+        baseline = self.value(self.baseline_latency_cycles, self.baseline_area_mm2)
         return {
             "kind": str(self.kind),
             "unit": self.unit,
@@ -161,7 +162,11 @@ class Objective:
             "max_latency_cycles": self.max_latency_cycles,
             "baseline_area_mm2": self.baseline_area_mm2,
             "baseline_latency_cycles": self.baseline_latency_cycles,
-            "baseline_value": self.value(self.baseline_latency_cycles, self.baseline_area_mm2),
+            # None, never `inf`. JSON has no infinity: Python writes the bare token `Infinity`,
+            # which every strict parser rejects — so a run whose baseline had no measurement would
+            # emit a file the consumer silently dropped, taking the whole action space with it.
+            # "outside the budget / not measured" is exactly what None means here.
+            "baseline_value": baseline if math.isfinite(baseline) else None,
         }
 
     def __str__(self) -> str:

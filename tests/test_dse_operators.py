@@ -879,7 +879,7 @@ def test_a_shrink_carries_every_aliased_view(bundle):
     placing tensors the shrunken silicon cannot hold."""
     applied = apply_operator(
         "core.memory.shrink",
-        {"cores": [0, 2, 4, 6], "memory": "operand_buffer", "banks": 2},
+        {"cores": [0, 2, 4, 6], "memory": "operand_buffer", "to_bits": VMEM_BITS // 4},
         bundle=bundle,
     )
     sizes = {
@@ -939,11 +939,35 @@ def test_a_narrowing_never_drops_below_the_declared_minimum_access(bundle):
     """`bandwidth_min` is the smallest access the memory supports; a maximum below it would describe
     hardware that cannot service its own minimum request."""
     applied = apply_operator(
-        "core.memory.narrow", {"cores": [8, 9, 10, 11], "memory": "vmem", "divisor": 4}, bundle=bundle
+        "core.memory.narrow", {"cores": [8, 9, 10, 11], "memory": "vmem", "to_bandwidth": 262144 // 4}, bundle=bundle
     )
     ports = applied.bundle.cores[8]["memories"]["vmem"]["ports"]
     assert [p["bandwidth_max"] for p in ports] == [262144 // 4] * len(ports)
     assert [p["bandwidth_min"] for p in ports] == [256] * len(ports), "the floor holds"
+
+
+def test_a_reduction_applied_to_an_already_smaller_design_cannot_grow_it(bundle):
+    """A candidate applies its operator to the run's BASELINE bundle, while the offer was computed
+    on the bundle the evidence came from — the same design only in the first wave.
+
+    An absolute target is what makes the edit that runs the edit that was priced. It is also applied
+    as a cap, so a reduction reaching a design already below its target is a no-op rather than a
+    silent growth that no budget guard ever looked at.
+    """
+    smaller = apply_operator(
+        "core.memory.shrink", {"cores": [1, 3, 5, 7], "memory": "vregs", "to_bits": 524288}, bundle=bundle
+    ).bundle
+    again = apply_operator(
+        "core.memory.shrink", {"cores": [1, 3, 5, 7], "memory": "vregs", "to_bits": 1835008}, bundle=smaller
+    ).bundle
+    assert again.cores[1]["memories"]["vregs"]["size"] == 524288
+    narrower = apply_operator(
+        "core.memory.narrow", {"cores": [1, 3, 5, 7], "memory": "vregs", "to_bandwidth": 4096}, bundle=bundle
+    ).bundle
+    widened = apply_operator(
+        "core.memory.narrow", {"cores": [1, 3, 5, 7], "memory": "vregs", "to_bandwidth": 32768}, bundle=narrower
+    ).bundle
+    assert [p["bandwidth_max"] for p in widened.cores[1]["memories"]["vregs"]["ports"]] == [4096, 4096]
 
 
 def test_a_reduction_that_made_the_mapping_infeasible_is_rejected(swiglu_evidence):

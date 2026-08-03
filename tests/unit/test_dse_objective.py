@@ -8,6 +8,7 @@ Two things are pinned here, and both are the kind that fail silently if nobody c
   predicted a 9,088-cycle saving and came back 24,178 cycles slower.
 """
 
+import json
 import math
 
 import pytest
@@ -127,3 +128,11 @@ class TestResidual:
         scorecard.record(Residual("op", predicted=500.0, achieved=None, unit="cycles"))
         assert scorecard.trust("op") == 1.0
         assert scorecard.as_dict()["history"][0]["residual"] is None
+
+    def test_an_unmeasurable_baseline_serializes_as_null_not_infinity(self):
+        """JSON has no infinity. Python writes the bare token `Infinity`, which a strict parser
+        rejects — and one such value makes the WHOLE document unreadable, so the consumer sees a run
+        with no action space instead of an error."""
+        payload = Objective.from_baseline("area", baseline_latency_cycles=None, baseline_area_mm2=None).as_dict()
+        assert payload["baseline_value"] is None
+        assert "Infinity" not in json.dumps(payload)
