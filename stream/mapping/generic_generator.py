@@ -242,9 +242,10 @@ class GenericMappingGenerator:
         (a "dataflow-style" split). Each factor divides its dimension's size, so the
         resulting tiling is always valid.
 
-        Dimensions are consumed largest-first, so parallel output dimensions (OY/OX/K)
-        absorb the split before the small reduction/kernel dimensions, keeping
-        cross-core reduction minimal. If ``n_cores`` cannot be fully factored over the
+        Parallel output dimensions (OY/OX/K) are consumed before reduction ones, each
+        group largest-first, so a contraction only absorbs what the output axes could
+        not: splitting a reduction leaves every core holding a partial sum that has to
+        be reduced across the mesh. If ``n_cores`` cannot be fully factored over the
         available dimensions, the largest achievable subset is returned (product of
         factors < ``n_cores``) rather than forcing an indivisible split.
 
@@ -258,10 +259,12 @@ class GenericMappingGenerator:
         if not dims:
             return []
 
-        # (index, size) per splittable dimension, largest first (protected dims excluded).
+        # (index, size) per splittable dimension, parallel axes before reductions and each
+        # group largest first (protected dims excluded).
+        types = derive_iterator_types(cn)
         dim_sizes = sorted(
             ((idx, sub_workload.get_dimension_size(dim)) for idx, dim in enumerate(dims) if dim not in protected),
-            key=lambda pair: pair[1],
+            key=lambda pair: (types.get(pair[0]) == IteratorType.PARALLEL, pair[1]),
             reverse=True,
         )
 

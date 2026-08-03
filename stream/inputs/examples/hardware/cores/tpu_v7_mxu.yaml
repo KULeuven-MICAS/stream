@@ -3,11 +3,16 @@
 # A 256x256 systolic MXU, the array size Google moved to in v6e and kept for TPU7x (earlier
 # generations were 128x128). Multiplies take bf16 and accumulate in fp32.
 #
-# The dataflow is weight stationary, which is what the memory hierarchy below encodes:
-# parameters are loaded into the array and held there while activations stream through, each
-# partial sum passing to the next multiply-accumulator without a memory round-trip. That is
-# `served_dimensions: []` on the weight register file -- one private weight register per PE --
-# and accumulation along D2 for the output.
+# The silicon is weight stationary: parameters are loaded into the array and held there while
+# activations stream through. The hierarchy below gives that its structure -- `served_dimensions: []`
+# on the weight registers is one private weight register per PE, and the accumulator is shared along
+# D2 so partial sums reduce down an array axis rather than round-tripping through memory.
+#
+# Which axes land on D1/D2 is left to ZigZag's mapping search rather than pinned here, since the
+# right choice is layer-dependent. On the SwiGLU shapes it picks tokens x output-columns, an
+# output-stationary unrolling that reaches ~100% MAC utilization; latency is therefore accurate,
+# but weights are re-fetched per cycle instead of held, so the weight-register energy it reports is
+# an upper bound. Pinning the contraction axis to the array would need a per-layer spatial mapping.
 #
 # Bandwidths are bits/cycle at a 1.75 GHz core clock. VMEM is quoted as roughly 22x HBM bandwidth;
 # 262144 bits/cc is ~57 TB/s per TensorCore, a little under that estimate and a clean power of two.
