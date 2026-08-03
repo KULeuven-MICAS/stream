@@ -54,6 +54,11 @@ from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
 
+#: Nest depth of each steady-state loop kind, outermost first. A temporal loop walks the tiles, the
+#: spatial ones unroll a tile across cores, and a kernel loop is what a single core runs inside one
+#: invocation -- so kernel loops are innermost.
+_LOOP_NEST_DEPTH: dict[str, int] = {"temporal": 0, "spatiotemporal": 1, "spatial": 2, "kernel": 3}
+
 
 class SteadyStateScheduler:
     def __init__(  # noqa: PLR0913
@@ -152,7 +157,10 @@ class SteadyStateScheduler:
                 }
                 for cn in self.workload.get_computation_nodes()
             ]
-            # The for-loop nest over the steady-state iteration space (deduped across operands, size > 1).
+            # The for-loop nest over the steady-state iteration space (deduped across operands, size > 1),
+            # ordered outermost first. Iteration-variable order is per-operand bookkeeping, not nest
+            # depth: emitting it raw put the kernel loops outside the tiling loops, which reads as the
+            # core re-running its whole kernel per tile rather than once inside each.
             loops: list[dict] = []
             seen: set = set()
             for ssis in (self.ssis or {}).values():
@@ -161,6 +169,7 @@ class SteadyStateScheduler:
                     if int(iv.size) > 1 and key not in seen:
                         seen.add(key)
                         loops.append({"dim": str(iv.dimension), "size": int(iv.size), "type": iv.type.name.lower()})
+            loops.sort(key=lambda loop: _LOOP_NEST_DEPTH.get(loop["type"], len(_LOOP_NEST_DEPTH)))
             # The tiled workload graph WITH transfer nodes -- the tensor copies that reside on-chip.
             tiled_nodes: list[dict] = []
             edges: list[dict] = []
