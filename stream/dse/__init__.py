@@ -33,6 +33,7 @@ from stream.dse.operators import (
     apply_operator,
     offer_operators,
     post_hoc_check,
+    post_hoc_utilization_check,
 )
 
 __all__ = [
@@ -51,4 +52,5 @@ __all__ = [
     "apply_operator",
     "offer_operators",
     "post_hoc_check",
+    "post_hoc_utilization_check",
 ]

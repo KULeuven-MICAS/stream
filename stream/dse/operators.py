@@ -76,6 +76,15 @@ ARRAY_SCALE_FACTORS: tuple[int, ...] = (2,)
 MAC_ARRAY_SATURATED = 0.999
 """At/above this the spatial mapping already fills the array, so a bigger array does more per cycle."""
 
+COMPUTE_DOMINATED = 0.9
+"""``compute_efficiency`` above which a node's latency is set by its array rather than by stalls.
+
+A full array is necessary for a resize to help but not sufficient: a node can fill its array
+spatially and still spend most of its cycles waiting on memory (SwiGLU's ``Elt_Mul`` fills the VPU
+and runs at 0.39 efficiency). Enlarging the array there shortens a term that is not the one setting
+the latency; the memory operators are what address it.
+"""
+
 LOAD_IMBALANCE = 1.25
 """Ratio of the busiest resource's occupancy to the mean before a rebalance is worth offering."""
 
@@ -639,6 +648,20 @@ def _core_array(
                     f"node '{node.name}' does not fill the array it already has "
                     f"(mac_spatial_utilization={utilization if utilization is not None else 'unknown'}); "
                     "a larger array would only add unused columns",
+                )
+            )
+            continue
+        # A full array is necessary but not sufficient: the array only sets the latency when the
+        # node is not spending its cycles waiting on memory.
+        if node.compute_efficiency is not None and node.compute_efficiency < COMPUTE_DOMINATED:
+            vetoes.append(
+                Veto(
+                    "core.array.resize",
+                    target,
+                    "rule-1-exception",
+                    f"node '{node.name}' fills its array but runs at compute_efficiency="
+                    f"{node.compute_efficiency:.4g}: its latency is set by memory stalls, not by array "
+                    "size, so a larger array would shorten a term that is not binding",
                 )
             )
             continue
@@ -1293,30 +1316,35 @@ def _scale_links(bundle: HardwareBundle, bandwidth: int, factor: int) -> list[st
 
 
 def post_hoc_check(operator_id: str, target: dict[str, Any], before: RunEvidence, after: RunEvidence) -> str | None:
-    """Verify after the solve that a coupled resize actually held. None = accepted.
-
-    ZigZag's validator checks none of this and degrades silently — ``limit_unrolling_to_mem_bandwidth``
-    merely logs when the unrolling it was asked for does not fit the memory bandwidth. So the only
-    reliable test that the coupling was right is the outcome: if the node's spatial utilization fell,
-    the larger array is not being fed and the mutation must be rejected rather than scored on latency
-    it did not earn.
-    """
+    """Verify after the solve that a coupled resize actually held. None = accepted."""
     if operator_id != "core.array.resize":
         return None
-    name = target.get("node")
-    old, new = before.node(str(name)), after.node(str(name))
+    name = str(target.get("node"))
+    old, new = before.node(name), after.node(name)
     if old is None or new is None:
         return None
-    if old.mac_spatial_utilization is None or new.mac_spatial_utilization is None:
+    return post_hoc_utilization_check(name, old.mac_spatial_utilization, new.mac_spatial_utilization)
+
+
+def post_hoc_utilization_check(node: str, before: float | None, after: float | None) -> str | None:
+    """The scalar form of :func:`post_hoc_check`, for a caller that carries the parent's number
+    rather than the parent's whole evidence. None = accepted.
+
+    ZigZag's validator checks none of the coupling and degrades silently —
+    ``limit_unrolling_to_mem_bandwidth`` merely logs when the unrolling it was asked for does not fit
+    the memory bandwidth. So the only reliable test that the coupling was right is the outcome: if
+    the node's spatial utilization fell, the larger array is not being fed and the mutation must be
+    rejected rather than scored on latency it did not earn.
+    """
+    if before is None or after is None:
         return (
-            f"node '{name}' reports no mac_spatial_utilization after the resize, so the coupling "
-            "cannot be verified; rejecting rather than crediting an unverified change"
+            f"node '{node}' reports no mac_spatial_utilization on both sides of the resize, so the "
+            "coupling cannot be verified; rejecting rather than crediting an unverified change"
         )
-    if new.mac_spatial_utilization < old.mac_spatial_utilization:
+    if after < before:
         return (
-            f"node '{name}' mac_spatial_utilization fell {old.mac_spatial_utilization:.4g} -> "
-            f"{new.mac_spatial_utilization:.4g}: the resized array is not being fed, so the coupled "
-            "memory rescale was wrong for this core"
+            f"node '{node}' mac_spatial_utilization fell {before:.4g} -> {after:.4g}: the resized "
+            "array is not being fed, so the coupled memory rescale was wrong for this core"
         )
     return None
 

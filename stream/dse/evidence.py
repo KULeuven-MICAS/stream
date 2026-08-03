@@ -16,7 +16,7 @@ query that could be mistaken for a measurement returns ``None`` rather than ``0`
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
 # ── Operand namespaces ──────────────────────────────────────────────────────────────────────────
@@ -285,10 +285,19 @@ class RunEvidence:
         allocation: dict[str, Any] | None = None,
         infeasibility: dict[str, Any] | None = None,
     ) -> RunEvidence:
-        """Read the three artifacts a run writes. Any of them may be absent."""
+        """Read the three artifacts a run writes. Any of them may be absent.
+
+        The two node-level sources answer different questions and are merged, not chosen between:
+        ``progress.json`` carries the per-memory-level stalls and the evidence flag, and only
+        ``allocation.json`` carries the *spatial* MAC fill. The tracker's ``mac_utilization`` is
+        ZigZag's ``mac_utilization2``, which is ideal/actual cycles — the same quantity as
+        ``compute_efficiency``, not the array fill. Reading it as the fill would say a node that
+        stalls on memory has an under-used array and invite a resize that cannot help.
+        """
         nodes = _parse_nodes(progress)
-        fields: dict[str, Any] = {"nodes": tuple(nodes)}
+        fields: dict[str, Any] = {}
         fields.update(_parse_allocation(allocation))
+        fields["nodes"] = tuple(_merge_performance(nodes, allocation))
         if infeasibility:
             fields["feasible"] = False
             fields["solver_status"] = infeasibility.get("status") or fields.get("solver_status")
@@ -338,13 +347,59 @@ def _parse_node(row: dict[str, Any]) -> NodeEvidence:
         latency_cycles=_optional_float(row.get("latency")),
         ideal_cycles=_optional_float(row.get("ideal_cycle")),
         compute_efficiency=_optional_float(row.get("efficiency")),
-        mac_spatial_utilization=_optional_float(row.get("mac_utilization")),
+        # Left None here on purpose: the tracker's `mac_utilization` is ZigZag's mac_utilization2
+        # (ideal/actual cycles), not the array fill. `_merge_performance` fills the real one in.
+        mac_spatial_utilization=None,
         fallback=bool(row.get("estimator") == "ideal-cycle"),
         memory_levels=levels,
         capacity_utilization_raw={
             str(op): [float(v) for v in values] for op, values in (utilization.get("shared") or {}).items()
         },
     )
+
+
+def _merge_performance(nodes: list[NodeEvidence], allocation: dict[str, Any] | None) -> list[NodeEvidence]:
+    """Fill in the per-node figures only the AllocationIR has, and add the nodes it alone knows.
+
+    A node the tracker never reported still has a performance row; giving it ``evidence="none"``
+    and no memory levels is the honest description of it — measured latency, unmeasured memory.
+    """
+    performance: dict[str, dict[str, Any]] = {}
+    for group in (allocation or {}).get("groups") or []:
+        for name, row in ((group.get("allocation") or {}).get("performance") or {}).get("nodes", {}).items():
+            performance[str(name)] = row
+
+    merged = []
+    for node in nodes:
+        row = performance.pop(node.name, None)
+        merged.append(
+            node
+            if row is None
+            else replace(
+                node,
+                mac_spatial_utilization=_optional_float(row.get("mac_spatial_utilization")),
+                compute_efficiency=_optional_float(row.get("compute_efficiency")) or node.compute_efficiency,
+                latency_cycles=_optional_float(row.get("latency_cycles")) or node.latency_cycles,
+                ideal_cycles=_optional_float(row.get("ideal_compute_cycles")) or node.ideal_cycles,
+                fallback=bool(row.get("fallback")) or node.fallback,
+            )
+        )
+    merged.extend(
+        NodeEvidence(
+            name=name,
+            op=None,
+            core_ids=(),
+            evidence="none",
+            latency_cycles=_optional_float(row.get("latency_cycles")),
+            ideal_cycles=_optional_float(row.get("ideal_compute_cycles")),
+            compute_efficiency=_optional_float(row.get("compute_efficiency")),
+            mac_spatial_utilization=_optional_float(row.get("mac_spatial_utilization")),
+            fallback=bool(row.get("fallback")),
+            memory_levels=None,
+        )
+        for name, row in performance.items()
+    )
+    return merged
 
 
 def _parse_allocation(allocation: dict[str, Any] | None) -> dict[str, Any]:

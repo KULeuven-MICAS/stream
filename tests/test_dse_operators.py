@@ -120,7 +120,50 @@ def progress_json(nodes):
     return {"stages": [{"key": "core_cost", "artifact": {"groups": [{"group": 0, "nodes": nodes}]}}]}
 
 
-def allocation_json(
+# Per-node performance, as only the AllocationIR reports it. `mac_spatial_utilization` is the array
+# FILL and is 1.0 for both the GEMMs and the elementwise multiply; the tracker's `mac_utilization`
+# (ZigZag's mac_utilization2) is a different quantity — ideal/actual cycles — and reading it as the
+# fill would say Elt_Mul leaves 61% of the VPU idle when in fact it fills it and waits on vregs.
+PERFORMANCE_NODES = {
+    "Gemm_Left": {
+        "latency_cycles": 57390,
+        "ideal_compute_cycles": 57344.0,
+        "mac_spatial_utilization": 1.0,
+        "compute_efficiency": 0.9991984666318174,
+        "fallback": False,
+    },
+    "Gemm_Right": {
+        "latency_cycles": 57390,
+        "ideal_compute_cycles": 57344.0,
+        "mac_spatial_utilization": 1.0,
+        "compute_efficiency": 0.9991984666318174,
+        "fallback": False,
+    },
+    "Gemm_Down": {
+        "latency_cycles": 57360,
+        "ideal_compute_cycles": 57344.0,
+        "mac_spatial_utilization": 1.0,
+        "compute_efficiency": 0.999721059972106,
+        "fallback": False,
+    },
+    "Elt_Mul": {
+        "latency_cycles": 2270,
+        "ideal_compute_cycles": 896.0,
+        "mac_spatial_utilization": 1.0,
+        "compute_efficiency": 0.3947136563876652,
+        "fallback": False,
+    },
+    "Silu": {
+        "latency_cycles": 3584,
+        "ideal_compute_cycles": 3584.0,
+        "mac_spatial_utilization": None,
+        "compute_efficiency": 1.0,
+        "fallback": False,
+    },
+}
+
+
+def allocation_json(  # noqa: PLR0913 -- a fixture builder; each argument is one knob a test varies
     *,
     binding=("Core(0, zigzag.compute)",),
     slack=((("Core(0, zigzag.compute)", "core"), 14942),),
@@ -130,6 +173,7 @@ def allocation_json(
     mip_gap=None,
     layers=("Gemm_Left", "Silu", "Gemm_Right", "Elt_Mul", "Gemm_Down"),
     n_groups=1,
+    nodes=None,
 ):
     groups = [
         {"name": f"group_{i}", "layers": list(chunk), "intra_core_tiling": [["z2", 256]]}
@@ -159,6 +203,10 @@ def allocation_json(
                             "compute_cores_available": 12,
                             "compute_cores_used": 8,
                             "end_to_end_mac_utilization": 0.9885511727882947,
+                        },
+                        "nodes": {
+                            name: {"kind": "compute", "n_cores": 4, **row}
+                            for name, row in (PERFORMANCE_NODES if nodes is None else nodes).items()
                         },
                         "overlap": {
                             "overlap_cycles": 14923,
@@ -393,20 +441,49 @@ def test_a_resize_never_touches_a_shared_scratchpad(bundle):
     assert applied.bundle.cores[8]["memories"]["vmem"]["size"] == bundle.cores[8]["memories"]["vmem"]["size"]
 
 
-def test_a_resize_is_not_offered_when_the_array_is_not_even_full(bundle, swiglu_evidence):
-    """Elt_Mul uses 39% of the VPU array it already has; more columns would sit idle."""
+def test_a_resize_is_not_offered_for_a_node_that_is_waiting_on_memory(bundle, swiglu_evidence):
+    """Elt_Mul FILLS the VPU array (spatial utilization 1.0) and still runs at 0.39 efficiency: its
+    cycles go to vregs stalls, not to array size. A bigger array shortens the term that is not
+    binding — the bandwidth operator is what addresses this node."""
     result = offer_operators(swiglu_evidence, bundle=bundle, mapping_params=MAPPING)
     assert _offer(result, "core.array.resize", node="Elt_Mul") is None
     veto = _veto(result, "core.array.resize", node="Elt_Mul")
     assert veto is not None and veto.rule == "rule-1-exception"
+    assert "set by memory stalls" in veto.reason
+    # ...and the operator that DOES address it is offered on the same node.
+    assert _offer(result, "core.memory.bandwidth", node="Elt_Mul") is not None
+
+
+def test_a_resize_is_offered_for_a_full_array_on_a_compute_bound_node(bundle, swiglu_evidence):
+    """The MXU GEMMs fill their array and run at 0.9992 efficiency, so the 57,344-cycle compute
+    ideal IS the latency. Doubling one array axis halves it."""
+    generous = HardwareBudget.from_bundle(bundle, headroom=3.0)
+    result = offer_operators(swiglu_evidence, bundle=bundle, budget=generous, mapping_params=MAPPING)
+    offer = _offer(result, "core.array.resize", node="Gemm_Left", dim="D2")
+    assert offer is not None
+    assert offer.target["from"] == 256 and offer.target["to"] == 512
+    assert offer.predicted_delta.cycles == pytest.approx(57344.0 * 0.5)
+    # The coupling has to be stated on the offer, not only performed on application.
+    assert any("served_dimensions" in c for c in offer.couples)
+    assert any("memory_aliases" in c for c in offer.couples)
+
+
+def test_the_tracker_mac_utilization_is_not_mistaken_for_the_array_fill(swiglu_evidence):
+    """progress.json's `mac_utilization` is ZigZag's mac_utilization2 — ideal/actual cycles, the
+    same number as compute_efficiency. Only the AllocationIR reports the spatial fill, and reading
+    the wrong one would say Elt_Mul leaves 61% of its array idle."""
+    node = swiglu_evidence.node("Elt_Mul")
+    assert node.mac_spatial_utilization == 1.0
+    assert node.compute_efficiency == pytest.approx(0.3947136563876652)
 
 
 def test_the_post_hoc_guard_rejects_a_resize_whose_utilization_fell(swiglu_evidence):
     """ZigZag's validator checks none of the coupling and degrades silently, so the only reliable
     test is the outcome. A resized array that is not being fed must be rejected, not scored."""
+    starved = {**PERFORMANCE_NODES["Gemm_Left"], "mac_spatial_utilization": 0.5}
     worse = RunEvidence.from_artifacts(
-        progress=progress_json([{**_mxu_node("Gemm_Left"), "mac_utilization": 0.5}]),
-        allocation=allocation_json(binding=CORE_BINDING, slack=CORE_SLACK),
+        progress=progress_json([_mxu_node("Gemm_Left")]),
+        allocation=allocation_json(binding=CORE_BINDING, slack=CORE_SLACK, nodes={"Gemm_Left": starved}),
     )
     reason = post_hoc_check("core.array.resize", {"node": "Gemm_Left"}, swiglu_evidence, worse)
     assert reason is not None and "mac_spatial_utilization fell" in reason
