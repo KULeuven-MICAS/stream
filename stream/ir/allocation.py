@@ -48,11 +48,15 @@ class SolveStatsIR(BaseModel):
 
     ``mip_gap`` is the noise floor for any comparison built on this result: a latency delta smaller
     than the gap is inside the solver's own optimality tolerance and is not evidence of anything.
-    None when the backend does not expose it (OR-Tools)."""
+    None means the floor is UNKNOWN, not zero -- Gurobi defines no single gap for a multi-objective
+    (lexicographic) model, so a consumer must withhold attribution there rather than assume the
+    result is exact."""
 
     status: str = Field(description="Solve status, e.g. 'OPTIMAL', 'TIME_LIMIT'")
     solver: str = Field(description="Underlying solver, e.g. 'gurobi', 'gscip', 'highs'")
-    mip_gap: float | None = Field(default=None, description="Relative MIP gap; None if the backend has none")
+    mip_gap: float | None = Field(
+        default=None, description="Relative optimality gap; None = the backend defines none, i.e. floor unknown"
+    )
     objective: float | None = Field(default=None, description="Objective value of the best solution found")
     solve_time_s: float | None = Field(default=None, description="Wall-clock solve time in seconds")
     node_count: int | None = Field(default=None, description="Branch-and-bound nodes explored")
