@@ -18,7 +18,7 @@ memories:
   # Weight registers: one per PE, held stationary for the duration of a tile.
   # 65536 PEs x 32 bit = 2 Mbit.
   wreg:
-    size: 2097152
+    size: 32
     r_cost: 0.02
     w_cost: 0.02
     area: 0
@@ -42,7 +42,7 @@ memories:
 
   # fp32 accumulator per array column: partial sums walk down D2.
   accumulator:
-    size: 32
+    size: 8192
     r_cost: 0.01
     w_cost: 0.01
     area: 0
@@ -51,26 +51,26 @@ memories:
     ports:
       - name: r_port_1
         type: read
-        bandwidth_min: 32
-        bandwidth_max: 32
+        bandwidth_min: 8192
+        bandwidth_max: 8192
         allocation:
           - O, tl
       - name: r_port_2
         type: read
-        bandwidth_min: 32
-        bandwidth_max: 32
+        bandwidth_min: 8192
+        bandwidth_max: 8192
         allocation:
           - O, th
       - name: w_port_1
         type: write
-        bandwidth_min: 32
-        bandwidth_max: 32
+        bandwidth_min: 8192
+        bandwidth_max: 8192
         allocation:
           - O, fh
       - name: w_port_2
         type: write
-        bandwidth_min: 32
-        bandwidth_max: 32
+        bandwidth_min: 8192
+        bandwidth_max: 8192
         allocation:
           - O, fl
     served_dimensions: [D2]

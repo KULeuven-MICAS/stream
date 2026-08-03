@@ -165,7 +165,14 @@ class SteadyStateScheduler:
             seen: set = set()
             for ssis in (self.ssis or {}).values():
                 for iv in ssis.variables:
-                    key = (str(iv.dimension), int(iv.size), iv.type.name)
+                    # An ABSENT variable means this node does not have that dimension at all: the
+                    # unrolling replicates the node rather than iterating it. Emitting it alongside
+                    # the SPATIAL variable that the nodes which *do* have the dimension contribute
+                    # counted one physical unrolling twice, so the nest no longer multiplied out to
+                    # the dimension size.
+                    if iv.effect is LoopEffect.ABSENT:
+                        continue
+                    key = (str(iv.dimension), int(iv.size))
                     if int(iv.size) > 1 and key not in seen:
                         seen.add(key)
                         loops.append({"dim": str(iv.dimension), "size": int(iv.size), "type": iv.type.name.lower()})
