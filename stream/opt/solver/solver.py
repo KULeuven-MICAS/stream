@@ -719,23 +719,37 @@ class GurobiBackend(SolverModel):
     def get_sol_count(self) -> int:
         return self._model.SolCount
 
+    def _mip_gap(self) -> float | None:
+        """Relative optimality gap -- the noise floor below which a latency difference between two
+        results is inside the solver's own tolerance rather than evidence of anything.
+
+        ``MIPGap`` is only set on a model Gurobi actually treated as a MIP; one finished in presolve
+        or solved as a continuous relaxation has none, so fall back to the primal/dual bounds, which
+        mean the same thing."""
+        if self._model.SolCount <= 0:
+            return None
+        try:
+            return float(self._model.MIPGap)
+        except Exception:  # noqa: BLE001 -- attribute absent for this model class
+            pass
+        try:
+            primal, dual = float(self._model.ObjVal), float(self._model.ObjBound)
+        except Exception:  # noqa: BLE001
+            return None
+        if not (math.isfinite(primal) and math.isfinite(dual)) or primal == 0:
+            return None
+        return abs(primal - dual) / abs(primal)
+
     def solve_stats(self) -> SolveStats:
         has_solution = self._model.SolCount > 0
         objective: float | None = self._model.ObjVal if has_solution else None
-        if has_solution:
-            try:
-                mip_gap: float | None = self._model.MIPGap
-            except Exception:
-                mip_gap = None
-        else:
-            mip_gap = None
         return SolveStats(
             backend="GUROBI",
             solver="gurobi",
             status=self.get_status(),
             objective=objective,
             solve_time_s=self._model.Runtime,
-            mip_gap=mip_gap,
+            mip_gap=self._mip_gap(),
             node_count=int(self._model.NodeCount),
             iteration_count=int(self._model.IterCount),
         )
