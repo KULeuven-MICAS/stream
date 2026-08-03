@@ -392,7 +392,14 @@ def optimize_mapping(  # noqa: PLR0913
     nb_workers: int = 1,
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
+    instrumentation: dict[str, Any] | None = None,
 ) -> StageContext:
+    """Search generated mappings for the lowest-latency one and return the winning variant's context.
+
+    ``instrumentation`` names out-of-tree observers to wrap the stage list with ({name: options});
+    see :mod:`stream.instrumentation`. The inner pipeline runs once per variant, so an observer sees
+    every variant it evaluates, not just the winner.
+    """
     _backend_enum = SolverBackend[backend.upper()]
     if _backend_enum in (SolverBackend.GUROBI, SolverBackend.ORTOOLS_GUROBI):
         _sanity_check_gurobi_license()
@@ -463,10 +470,18 @@ def optimize_mapping(  # noqa: PLR0913
                 max_workers=nb_workers,
             )
 
+        observers = build_instrumentation("optimize_mapping", instrumentation)
+        stages = instrument(stages, observers)
+
         mainstage = MainStage(stages, ctx)
         # Launch the MainStage
-        answers = mainstage.run()
+        try:
+            answers = mainstage.run()
+        except BaseException as exc:  # noqa: BLE001 -- record where the search stopped, then re-raise unchanged
+            fail_instrumentation(observers, str(exc) or exc.__class__.__name__)
+            raise
         assert len(answers) == 1, "Expected a single result from the optimization."
+        finish_instrumentation(observers)
         ctx = answers[0]
     return ctx
 
