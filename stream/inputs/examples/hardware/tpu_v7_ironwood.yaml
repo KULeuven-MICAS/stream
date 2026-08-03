@@ -53,6 +53,21 @@ core_coordinates:
 offchip_core_id: 12
 unit_energy_cost: 0
 
+# ── Physical cost ──
+# `area: 0` in the core files does not mean this hardware is free: area and access energy are
+# computed from the declared capacities, widths, port counts and array dimensions by
+# `stream.hardware.cost`, so they follow a mutation instead of going stale.
+technology_node: n3
+
+# The paired VMEM core's `vmem` and the MXU's and VPU's `operand_buffer` are three views of one
+# physical scratchpad -- the modelling split described above. Without this the cost model would bill
+# the same 128 MiB three times over. The first entry of a group is the one billed.
+memory_aliases:
+  - [8.vmem, 0.operand_buffer, 1.operand_buffer]
+  - [9.vmem, 2.operand_buffer, 3.operand_buffer]
+  - [10.vmem, 4.operand_buffer, 5.operand_buffer]
+  - [11.vmem, 6.operand_buffer, 7.operand_buffer]
+
 core_connectivity:
   # ── Inside a TensorCore: MXU and VPU share VMEM, so this link is wide. ──
   - type: link

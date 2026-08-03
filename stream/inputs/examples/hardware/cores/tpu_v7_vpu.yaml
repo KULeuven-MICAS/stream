@@ -76,6 +76,12 @@ operational_array:
   dimensions: [D1, D2]
   sizes: [8, 128]
 
+# The VPU works in fp32. The cost model prices a lane as a full fp32 multiply-accumulate, which is
+# an upper bound for the adds and activations that dominate a SwiGLU.
+operand_precision:
+  input: fp32
+  accumulator: fp32
+
 # Elementwise and activation ops only. Core selection matches on the node's op type, so listing a
 # superset is harmless -- only the types actually present in a workload can match.
 operator_types: [Add, Sub, Mul, Div, Exp, Pow, Silu, Sigmoid, Gelu, Tanh, Relu, Softmax, ReduceMax, ReduceSum]

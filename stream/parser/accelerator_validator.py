@@ -1,3 +1,4 @@
+import copy
 import logging
 import os
 from functools import reduce
@@ -11,16 +12,64 @@ from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, Core
 
 logger = logging.getLogger(__name__)
 
+INPUT_DIR_LOCATION = "stream/inputs/"
+
+FILENAME_REGEX = (
+    r"^(?:\.\/)?"  # optional "./"
+    r"(?:[A-Za-z0-9_\-]+\/)*"  # zero or more directories
+    r"[A-Za-z0-9_\-]+"  # file name
+    r"(?:\.ya?ml)?$"  # optional ".yaml" or ".yml"
+)
+
+
+def resolve_core_path(core_file_name: str, accelerator_dirname: str) -> str | None:
+    """Resolve a ``cores:`` reference to a path on disk, or None when nothing matches.
+
+    Resolution order:
+    1. An explicit relative (``./foo.yaml``) or path-qualified (``a/b/foo.yaml``) reference is
+       taken as given.
+    2. A bare filename (``foo.yaml``) is resolved *relative to this accelerator's own directory* —
+       first ``<accelerator_dir>/cores/foo.yaml``, then ``<accelerator_dir>/foo.yaml``. Core files
+       live next to the accelerator that uses them, so this is unambiguous.
+    3. As a last resort the whole input tree is searched. This is ambiguous when the same filename
+       exists under several ``hardware`` dirs (e.g. examples/ vs testing/) — so it warns. Keeping
+       core files in the accelerator's own ``cores/`` dir avoids silently loading the wrong file.
+    """
+    if "./" in core_file_name:
+        return os.path.normpath(os.path.join(accelerator_dirname, core_file_name))
+    if "/" in core_file_name:
+        return core_file_name
+
+    # Bare filename: prefer the accelerator-local cores (deterministic).
+    for candidate in (
+        os.path.join(accelerator_dirname, "cores", core_file_name),
+        os.path.join(accelerator_dirname, core_file_name),
+    ):
+        if os.path.isfile(candidate):
+            return candidate
+
+    # Fallback: search the input tree (legacy, ambiguous across hardware dirs).
+    for dir_root_name, _, files_this_dir in os.walk(INPUT_DIR_LOCATION):
+        if "hardware" in dir_root_name and core_file_name in files_this_dir:
+            core_file_path = os.path.join(dir_root_name, core_file_name)
+            logger.warning(
+                "Core '%s' was not found next to its accelerator ('%s'); resolved via input-tree "
+                "search to '%s'. Place core files in the accelerator's 'cores/' dir to avoid loading "
+                "the wrong file when the name is reused elsewhere.",
+                core_file_name,
+                accelerator_dirname,
+                core_file_path,
+            )
+            return core_file_path
+    return None
+
 
 class AcceleratorValidator:
-    INPUT_DIR_LOCATION = "stream/inputs/"
-    FILENAME_REGEX = (
-        r"^(?:\.\/)?"  # optional "./"
-        r"(?:[A-Za-z0-9_\-]+\/)*"  # zero or more directories
-        r"[A-Za-z0-9_\-]+"  # file name
-        r"(?:\.ya?ml)?$"  # optional ".yaml" or ".yml"
-    )
+    INPUT_DIR_LOCATION = INPUT_DIR_LOCATION
+    FILENAME_REGEX = FILENAME_REGEX
     CORE_IDS_REGEX = r"^\d+(?:\s*,\s*\d+){1,}$"
+    # "<core id>.<memory instance name>", e.g. "8.vmem"
+    MEMORY_REF_REGEX = r"^\d+\.[A-Za-z0-9_\-]+$"
     COORDINATES_LEN = 2
 
     SCHEMA: dict[str, Any] = {
@@ -31,10 +80,18 @@ class AcceleratorValidator:
         # ------------------------------------------------------------------ #
         # Core catalogue (file names relative to the inputs folder)          #
         # ------------------------------------------------------------------ #
+        # A value is either a file reference (several ids may share one file) or a fully inlined
+        # core description. The inline form is what a de-aliased `HardwareBundle` emits, so that a
+        # mutation can target a single core id without the shared file dragging its siblings along.
         "cores": {
             "type": "dict",
             "required": True,
-            "valuesrules": {"type": "string", "regex": FILENAME_REGEX},
+            "valuesrules": {
+                "anyof": [
+                    {"type": "string", "regex": FILENAME_REGEX},
+                    {"type": "dict"},
+                ]
+            },
         },
         # Id of the core that acts as the off-chip memory controller
         "offchip_core_id": {"type": "integer", "min": 0, "required": True},
@@ -93,6 +150,26 @@ class AcceleratorValidator:
             "default": {},
             "valuesrules": {"type": "list", "minlength": 2, "maxlength": 2, "schema": {"type": "integer"}},
         },
+        # ------------------------------------------------------------------ #
+        # Physical-cost annotations (see stream.hardware.cost)                #
+        # ------------------------------------------------------------------ #
+        # Process node the numbers below are meant to describe, e.g. "n3". Only the area/energy
+        # model reads it; scheduling is unaffected.
+        "technology_node": {"type": "string", "required": False},
+        # Groups of "<core id>.<memory name>" references that are *views of one physical memory*.
+        # Stream models a shared scratchpad as a separate memory per core that sees it, so without
+        # this the cost model would bill the same silicon once per view. Costing-only: it changes
+        # no scheduling behaviour.
+        "memory_aliases": {
+            "type": "list",
+            "required": False,
+            "default": [],
+            "schema": {
+                "type": "list",
+                "minlength": 2,
+                "schema": {"type": "string", "regex": MEMORY_REF_REGEX},
+            },
+        },
     }
 
     def __init__(self, data: Any, accelerator_path: str):
@@ -127,6 +204,7 @@ class AcceleratorValidator:
 
         self.validate_core_connectivity()
         self.validate_core_mem_sharing()
+        self.validate_memory_aliases()
 
         if not self.is_valid and self.errors:
             logger.critical("Accelerator validation failed with %d issue(s).", len(self.errors))
@@ -143,14 +221,18 @@ class AcceleratorValidator:
             self.invalidate("offchip_core_id does not correspond to any entry in `cores`.")
 
     def validate_all_cores(self) -> None:
-        """For all given core file paths:
-        - parse core data
+        """For every core entry:
+        - parse core data (a file reference is opened; an inline description is taken as given)
         - normalize core data (replace with defaults)
         - validate core data
-        - replace core file path with core data
+        - replace the entry with the normalized core data
         """
-        for core_id, core_file_name in self.data["cores"].items():
-            normalized_core_data = self.validate_single_core(core_file_name)
+        for core_id, core_entry in self.data["cores"].items():
+            if isinstance(core_entry, dict):
+                # Inline description: copy first, validation pops the Stream extension fields.
+                normalized_core_data = self.validate_core_data(copy.deepcopy(core_entry), f"core {core_id}")
+            else:
+                normalized_core_data = self.validate_single_core(core_entry)
             if normalized_core_data:
                 self.data["cores"][core_id] = normalized_core_data
 
@@ -231,14 +313,17 @@ class AcceleratorValidator:
 
     # Stream-level extension fields that are not known to namespace validators
     # (e.g. ZigZag) and must be stripped before validation then re-injected.
-    _STREAM_EXTENSION_FIELDS: tuple[str, ...] = ("operator_types",)
+    _STREAM_EXTENSION_FIELDS: tuple[str, ...] = ("operator_types", "operand_precision")
 
     def validate_single_core(self, core_file_name: str) -> None | dict[str, Any]:
         core_data = self.open_core(core_file_name)
         # Stop validation if invalid core name is found
         if core_data is None:
             return
+        return self.validate_core_data(core_data, core_file_name)
 
+    def validate_core_data(self, core_data: dict[str, Any], label: str) -> None | dict[str, Any]:
+        """Validate and normalize one core description. ``label`` only names it in error messages."""
         # Extract Stream-level extension fields before namespace validation strips them.
         extension_fields = {k: core_data.pop(k) for k in self._STREAM_EXTENSION_FIELDS if k in core_data}
 
@@ -253,14 +338,14 @@ class AcceleratorValidator:
         if validator_cls is None:
             supported_types = ", ".join(CoreValidatorRegistry.supported_types())
             self.invalidate(
-                f"Core '{core_file_name}' has unsupported type '{normalized_type}'. Supported types: {supported_types}"
+                f"Core '{label}' has unsupported type '{normalized_type}'. Supported types: {supported_types}"
             )
             return
 
         core_validator = validator_cls(core_data)
         validate_success = core_validator.validate()
         if not validate_success:
-            self.invalidate(f"User-given core {core_file_name} cannot be validated.")
+            self.invalidate(f"User-given core {label} cannot be validated.")
             self.errors.extend(core_validator.errors)
 
         # Fill in default values and re-inject Stream-level extension fields.
@@ -269,51 +354,15 @@ class AcceleratorValidator:
         return normalized_core_data
 
     def open_core(self, core_file_name: str) -> dict[str, Any] | None:
-        """Resolve a core reference to its YAML data.
-
-        Resolution order:
-        1. An explicit relative (``./foo.yaml``) or path-qualified (``a/b/foo.yaml``) reference is
-           opened as given.
-        2. A bare filename (``foo.yaml``) is resolved *relative to this accelerator's own directory* —
-           first ``<accelerator_dir>/cores/foo.yaml``, then ``<accelerator_dir>/foo.yaml``. Core files
-           live next to the accelerator that uses them, so this is unambiguous.
-        3. As a last resort the whole input tree is searched. This is ambiguous when the same filename
-           exists under several ``hardware`` dirs (e.g. examples/ vs testing/) — so it warns. Keeping
-           core files in the accelerator's own ``cores/`` dir avoids silently loading the wrong file.
-        """
-        if "./" in core_file_name:
-            return self._read_core_yaml(os.path.normpath(os.path.join(self.accelerator_dirname, core_file_name)))
-        if "/" in core_file_name:
-            return self._read_core_yaml(core_file_name)
-
-        # Bare filename: prefer the accelerator-local cores (deterministic).
-        for candidate in (
-            os.path.join(self.accelerator_dirname, "cores", core_file_name),
-            os.path.join(self.accelerator_dirname, core_file_name),
-        ):
-            if os.path.isfile(candidate):
-                return self._read_core_yaml(candidate)
-
-        # Fallback: search the input tree (legacy, ambiguous across hardware dirs).
-        input_location = AcceleratorValidator.INPUT_DIR_LOCATION
-        for dir_root_name, _, files_this_dir in os.walk(input_location):
-            if "hardware" in dir_root_name and core_file_name in files_this_dir:
-                core_file_path = os.path.join(dir_root_name, core_file_name)
-                logger.warning(
-                    "Core '%s' was not found next to its accelerator ('%s'); resolved via input-tree "
-                    "search to '%s'. Place core files in the accelerator's 'cores/' dir to avoid loading "
-                    "the wrong file when the name is reused elsewhere.",
-                    core_file_name,
-                    self.accelerator_dirname,
-                    core_file_path,
-                )
-                return self._read_core_yaml(core_file_path)
-
-        self.invalidate(
-            f"Core with filename `{core_file_name}` not found. Looked in "
-            f"`{os.path.join(self.accelerator_dirname, 'cores')}` and under `{input_location}`."
-        )
-        return None
+        """Resolve a core reference to its YAML data. See :func:`resolve_core_path`."""
+        core_file_path = resolve_core_path(core_file_name, self.accelerator_dirname)
+        if core_file_path is None:
+            self.invalidate(
+                f"Core with filename `{core_file_name}` not found. Looked in "
+                f"`{os.path.join(self.accelerator_dirname, 'cores')}` and under `{INPUT_DIR_LOCATION}`."
+            )
+            return None
+        return self._read_core_yaml(core_file_path)
 
     @staticmethod
     def _read_core_yaml(core_file_path: str) -> dict[str, Any]:
@@ -372,6 +421,31 @@ class AcceleratorValidator:
                 if any({id_a, id_b}.issubset(group) for group in connectivity_groups):
                     self.invalidate(
                         "Cores that share memory should must not be explicitly connected in `core_connectivity`"
+                    )
+
+    def validate_memory_aliases(self):
+        """Every ``<core id>.<memory name>`` in `memory_aliases` must name a memory that exists.
+
+        A typo here would silently *stop* deduplicating that memory and inflate the modelled area,
+        which is exactly the kind of quiet cost error the budget guard exists to prevent.
+        """
+        for group in self.data.get("memory_aliases", []):
+            for ref in group:
+                core_id_str, _, mem_name = ref.partition(".")
+                core_id = int(core_id_str)
+                core_data = self.data["cores"].get(core_id)
+                if core_data is None:
+                    self.invalidate(f"`memory_aliases` entry '{ref}' names unknown core id {core_id}.")
+                    continue
+                if not isinstance(core_data, dict):
+                    continue  # core failed to load; error already recorded
+                known = set(core_data.get("memories", {}) or {})
+                if "memory" in core_data:
+                    known.add("memory")  # aie2 cores declare a single unnamed memory
+                if mem_name not in known:
+                    self.invalidate(
+                        f"`memory_aliases` entry '{ref}' names memory '{mem_name}', which core "
+                        f"{core_id} does not declare. Known: {sorted(known)}."
                     )
 
     @property

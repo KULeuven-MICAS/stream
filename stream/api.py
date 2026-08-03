@@ -1,3 +1,4 @@
+import json
 import logging as _logging
 import os
 import tempfile
@@ -8,6 +9,8 @@ from onnx import ModelProto
 from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.utils import open_yaml, pickle_load
 
+from stream.hardware.bundle import HardwareBundle
+from stream.hardware.cost import HardwareBudget, assert_within_budget, evaluate_bundle_cost
 from stream.instrumentation import build_instrumentation, fail_instrumentation, finish_instrumentation, instrument
 from stream.ir.graph_view import WorkloadGraphView
 from stream.opt.solver import ConstraintSelection, GurobiBackend, SolverBackend
@@ -212,14 +215,20 @@ def _run_generic_co(  # noqa: PLR0913
     intra_core_tiling: list[dict] | None = None,
     fusion_cut_points: list[str] | None = None,
     instrumentation: dict[str, Any] | None = None,
+    hardware_budget: HardwareBudget | None = None,
 ) -> StageContext:
     """Shared generic CO pipeline. Feeds either an ONNX ``workload_path`` (parsed by the ONNX stage)
     or a prebuilt in-memory ``workload_obj`` (the ONNX stage is skipped).
 
     ``instrumentation`` names out-of-tree observers to wrap the stage list with ({name: options});
     see :mod:`stream.instrumentation`. Observers never change which real stages run, and an observer
-    that fails is skipped, so watching a solve cannot alter or fail one."""
+    that fails is skipped, so watching a solve cannot alter or fail one.
+
+    ``hardware_budget`` rejects an over-budget hardware variant *before* the solve. A search that
+    can grow memories for free will, so the ceiling has to bind before the cost of finding out."""
     assert os.path.exists(hardware), f"Hardware file {hardware} does not exist"
+    if hardware_budget is not None:
+        assert_within_budget(HardwareBundle.from_yaml(hardware), hardware_budget)
     assert (workload_path is None) != (workload_obj is None), "Provide exactly one of workload_path / workload_obj"
     if workload_path is not None:
         assert isinstance(workload_path, ModelProto) or os.path.exists(workload_path), (
@@ -298,6 +307,7 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
     intra_core_tiling: list[dict] | None = None,
     fusion_cut_points: list[str] | None = None,
     instrumentation: dict[str, Any] | None = None,
+    hardware_budget: HardwareBudget | None = None,
 ) -> StageContext:
     """Run the CO pipeline with auto-generated mapping from workload+hardware.
 
@@ -330,6 +340,7 @@ def optimize_allocation_co_generic(  # noqa: PLR0913
         intra_core_tiling=intra_core_tiling,
         fusion_cut_points=fusion_cut_points,
         instrumentation=instrumentation,
+        hardware_budget=hardware_budget,
     )
 
 
@@ -346,6 +357,7 @@ def optimize_allocation_co_generic_workload(  # noqa: PLR0913
     intra_core_tiling: list[dict] | None = None,
     fusion_cut_points: list[str] | None = None,
     instrumentation: dict[str, Any] | None = None,
+    hardware_budget: HardwareBudget | None = None,
 ) -> StageContext:
     """Run the generic CO pipeline on an in-memory ``Workload`` (e.g. a ``stream.workload.models``
     catalog block), skipping ONNX parsing. This is the end-to-end entry point for the affine-IR
@@ -369,6 +381,7 @@ def optimize_allocation_co_generic_workload(  # noqa: PLR0913
         intra_core_tiling=intra_core_tiling,
         fusion_cut_points=fusion_cut_points,
         instrumentation=instrumentation,
+        hardware_budget=hardware_budget,
     )
 
 
@@ -522,6 +535,21 @@ def parse_accelerator_ir(
     with open(arch_ir_path, "w") as f:
         yaml.dump(arch_ir, f, sort_keys=False)
     return arch_ir_path
+
+
+def hardware_cost_report(hardware: str, output_path: str | None = None) -> dict[str, Any]:
+    """Price a hardware YAML: area in mm², peak access energy in pJ/cycle, plus the breakdown.
+
+    Everything is derived from the declared capacities, widths, port counts and array dimensions,
+    so a mutated variant reports a different cost. See :mod:`stream.hardware.cost` for the model and
+    the technology assumptions. Optionally written to *output_path* as JSON.
+    """
+    report = evaluate_bundle_cost(HardwareBundle.from_yaml(hardware)).to_dict()
+    if output_path:
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        with open(output_path, "w") as f:
+            json.dump(report, f, indent=2)
+    return report
 
 
 def parse_workload_ir(

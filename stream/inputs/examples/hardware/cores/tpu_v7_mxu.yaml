@@ -117,5 +117,11 @@ operational_array:
   dimensions: [D1, D2]
   sizes: [256, 256]
 
+# Multiplies take bf16, accumulation is fp32. `stream.hardware.cost` prices the array from this and
+# `sizes` -- a static `unit_area` cannot survive a resize or a precision change.
+operand_precision:
+  input: bf16
+  accumulator: fp32
+
 # Matrix ops only. The vector unit is a separate core -- see tpu_v7_vpu.yaml.
 operator_types: [MatMul, Gemm, Conv, Einsum]
