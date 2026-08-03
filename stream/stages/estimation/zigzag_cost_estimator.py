@@ -173,29 +173,6 @@ class ZigZagCostEstimator:
             ZigZagLayerDimSizes(pr_sizes),
         )
 
-    def _intra_core_tiles(self, node: ComputationNode) -> dict[str, int]:
-        """Layer-fusion tile extent per workload dimension for *node* (keyed by ``str(dim)``).
-
-        A fused group's ``intra_core_tiling`` says how much of a dimension one steady-state iteration
-        processes. That tile is what a core actually holds and computes; the rest of the dimension is
-        more iterations of the same nest, which the steady-state scheduler accounts for separately.
-        Costing the full dimension instead asks ZigZag to fit the entire layer's operands in local
-        memory at once, which for a large FFN has no valid loop ordering at all -- the layer then
-        silently falls back to an ideal-cycle estimate.
-        """
-        tiles: dict[str, int] = {}
-        try:
-            group_layers = {
-                str(dim): int(tile) for fg in self.mapping.fused_groups for dim, tile in fg.intra_core_tiling
-            }
-        except Exception:  # noqa: BLE001 -- no mapping, or none carrying fused groups
-            return {}
-        node_dims = {str(dim) for dim in self.workload.get_dims(node)}
-        for dim, tile in group_layers.items():
-            if dim in node_dims and tile > 0:
-                tiles[dim] = tile
-        return tiles
-
     def _inter_core_factors(self, node: ComputationNode) -> dict[str, int]:
         """Total inter-core split factor per workload dimension for *node* (keyed by ``str(dim)``).
 
@@ -221,13 +198,13 @@ class ZigZagCostEstimator:
     def create_layer_dim_sizes(self, node: ComputationNode) -> ZigZagLayerDimSizes:
         dims = self.workload.get_dims(node)
         factors = self._inter_core_factors(node)
-        tiles = self._intra_core_tiles(node)
         data: dict[ZigZagLayerDim, int] = {}
         for i, dim in enumerate(dims):
+            # `workload` here is already the tiled workload TilingGenerationStage produced, so the
+            # dimension sizes are one steady-state iteration's worth. Only the inter-core split still
+            # has to be divided out.
             full = self.workload.get_dimension_size(dim)
-            per_core = self._per_core_size(full, factors.get(str(dim), 1))
-            # A fusion tile never exceeds what one core already holds; take the smaller.
-            data[ZigZagLayerDim(f"D{i}")] = min(per_core, tiles.get(str(dim), per_core))
+            data[ZigZagLayerDim(f"D{i}")] = self._per_core_size(full, factors.get(str(dim), 1))
         return ZigZagLayerDimSizes(data)
 
     def create_operand_precision(self, node: ComputationNode) -> ZigZagLayerOperandPrecision:
