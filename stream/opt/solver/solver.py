@@ -89,19 +89,43 @@ class SolveStats:
     """Number of simplex iterations, or None if not available for this backend."""
 
 
+class PipeliningModel(Enum):
+    """How much of one steady-state iteration the next one may be slid into.
+
+    Both feed the same accounting -- ``total = N * T - (N - 1) * overlap`` -- and differ only in how
+    much of a resource's iteration counts as reclaimable idle.
+
+    SPAN treats a resource as occupied from its first use to its last, so only idle *before* the
+    first and *after* the last counts. A bus that both feeds and drains the compute is busy in the
+    first and the last slot, so it reports zero idle and pins the overlap to zero no matter how long
+    it sits unused in between.
+
+    OCCUPANCY counts only the slots a resource actually uses, which makes ``T - overlap`` the
+    initiation interval of a modulo schedule: ``total = T + (N - 1) * II``. The dependency chain is
+    still paid in full once, in the T term, so nothing is reordered across a dependence -- only
+    throughput improves. It assumes the next iteration may prefetch while the current one computes,
+    which needs a second buffer, so it degrades to SPAN when double buffering is off.
+    """
+
+    SPAN = "span"
+    OCCUPANCY = "occupancy"
+
+
 @dataclass(frozen=True)
 class ConstraintSelection:
-    """Toggle hardware resource constraint groups in TransferAndTensorAllocator.
+    """How TransferAndTensorAllocator builds its model.
 
-    All groups default to True (fully constrained). Set a field to False
-    to skip that constraint group entirely -- no variables are created,
-    no constraints are added, and (for dma_channels) objective terms are omitted.
+    The boolean fields toggle hardware resource constraint groups; all default to True (fully
+    constrained). Set one to False to skip that group entirely -- no variables are created, no
+    constraints are added, and (for dma_channels) objective terms are omitted. ``pipelining``
+    selects which of the two inter-iteration overlap formulations is built.
     """
 
     memory_capacity: bool = True
     object_fifo_depth: bool = True
     buffer_descriptors: bool = True
     dma_channels: bool = True
+    pipelining: PipeliningModel = PipeliningModel.OCCUPANCY
 
     def __post_init__(self) -> None:
         if not self.memory_capacity and self.object_fifo_depth:

@@ -43,6 +43,7 @@ from stream.opt.allocation.constraint_optimization.utils import get_active_laten
 from stream.opt.solver import (
     ConstraintSelection,
     ObjectiveLevel,
+    PipeliningModel,
     SolverBackend,
     SolverModel,
     SolverParams,
@@ -50,6 +51,7 @@ from stream.opt.solver import (
     SolverVarType,
     create_solver,
 )
+from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import HasOutputs, TransferType
 from stream.workload.steady_state.iteration_space import (
     IterationVariableType,
@@ -338,7 +340,11 @@ class TransferAndTensorAllocator:
                 else:
                     bds_needed *= Nl
                 self.bds_needed_levels[(t, i)] = bds_needed
-            if self.force_double_buffering:
+            # A second buffer only buys something when the tensor actually has more than one tile to
+            # alternate between. A loop-invariant tensor (a weight matrix: every steady-state loop is
+            # ABSENT or INVARIANT for it, so tiles_factor stays 1) holds the same tile for the whole
+            # run -- reserving twice its size just halves the memory available to everything else.
+            if self.force_double_buffering and tiles_factor > 1:
                 self.tiles_needed_levels[(t, -1)] = 2
 
     def _is_const_i(self, tr: TransferNode) -> bool:
@@ -1053,23 +1059,45 @@ class TransferAndTensorAllocator:
         self._set_total_latency_and_objective()
 
     def _init_idle_indicators(self, max_s: int, big_m: int) -> None:
-        self.idleS: dict[tuple[Resource, int], SolverVar] = {}
-        self.idleE: dict[tuple[Resource, int], SolverVar] = {}
-        self._init_link_idle_indicators(max_s, big_m)
-        self._init_core_idle_indicators(max_s, big_m)
+        """Per (resource, slot), the binaries whose sum says how much of that slot's latency the next
+        iteration may reclaim. Both pipelining models produce the same shape, so everything
+        downstream -- the idle-latency vars, the overlap var, the reporting -- is model-agnostic."""
+        self.idle_ind: dict[tuple[Resource, int], list[SolverVar]] = {}
+        for res, active_s, used in self._resource_activity(max_s, big_m):
+            builder = (
+                self._add_occupancy_indicators
+                if self._pipelining is PipeliningModel.OCCUPANCY
+                else self._add_span_indicators
+            )
+            builder(res, active_s, used, max_s, big_m)
 
-    def _init_link_idle_indicators(self, max_s: int, big_m: int) -> None:
+    @property
+    def _pipelining(self) -> PipeliningModel:
+        """The overlap formulation actually in force. OCCUPANCY lets the next iteration prefetch
+        while this one computes, which needs somewhere to prefetch *into* -- so without double
+        buffering the reservation isn't there and the conservative SPAN model is what holds."""
+        selected = self.constraint_selection.pipelining
+        if selected is PipeliningModel.OCCUPANCY and not self.force_double_buffering:
+            _logger.warning("PipeliningModel.OCCUPANCY needs double buffering; falling back to SPAN.")
+            return PipeliningModel.SPAN
+        return selected
+
+    def _resource_activity(self, max_s: int, big_m: int) -> list[tuple[Resource, dict[int, Any], SolverVar]]:
+        """Per resource: whether it is active in each slot, and whether it is used at all. Links get
+        an expression over the path choices (the solver picks those); compute cores get a constant,
+        their mapping being fixed."""
+        out: list[tuple[Resource, dict[int, Any], SolverVar]] = []
+
         self.link_used: dict[CommunicationLink, SolverVar] = {}
-        self.prefixs: dict[CommunicationLink, list[SolverVar]] = {}
-        self.suffixs: dict[CommunicationLink, list[SolverVar]] = {}
         for link in self.link_set:
-            active_s: dict[int, Any] = {}
-            for s in range(max_s + 1):
-                active_s[s] = self.model.quicksum(
+            active_s: dict[int, Any] = {
+                s: self.model.quicksum(
                     self.y_path_choice[(tr, choice)]._raw
                     for (tr, choice) in self.y_path_choice
                     if link in self.links_in_choice[(tr, choice)] and self.slot_of[tr] == s
                 )
+                for s in range(max_s + 1)
+            }
             lu = self.model.add_var(vtype=SolverVarType.BINARY, name=f"linkUsed_{_resource_key(link)}")
             self.link_used[link] = lu
             sum_active = self.model.quicksum(active_s.values())
@@ -1082,44 +1110,8 @@ class TransferAndTensorAllocator:
                 kind="link_contention",
                 resource=link,
             )
+            out.append((link, active_s, lu))
 
-            prefix = [
-                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"pre_{_resource_key(link)}_{s}")
-                for s in range(max_s + 1)
-            ]
-            suffix = [
-                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"suf_{_resource_key(link)}_{s}")
-                for s in range(max_s + 1)
-            ]
-            self.prefixs[link] = prefix
-            self.suffixs[link] = suffix
-            self.model.add_constr(prefix[0] == active_s[0])
-            self.model.add_constr(suffix[-1] == active_s[max_s])
-            for s in range(1, max_s + 1):
-                self.model.add_constr(prefix[s] == prefix[s - 1] + active_s[s])
-                self.model.add_constr(suffix[max_s - s] == suffix[max_s - s + 1] + active_s[max_s - s])
-
-            for s in range(max_s + 1):
-                is_ = self.model.add_var(vtype=SolverVarType.BINARY, name=f"idleS_{_resource_key(link)}_{s}")
-                ie_ = self.model.add_var(vtype=SolverVarType.BINARY, name=f"idleE_{_resource_key(link)}_{s}")
-                self.idleS[(link, s)] = is_
-                self.idleE[(link, s)] = ie_
-
-                self.model.add_constr(prefix[s] <= big_m * (1 - is_))
-                self.model.add_constr(prefix[s] >= lu - big_m * is_)
-                self.model.add_constr(suffix[s] <= big_m * (1 - ie_))
-                self.model.add_constr(suffix[s] >= lu - big_m * ie_)
-                self.model.add_constr(is_ >= 1 - lu)
-                self.model.add_constr(ie_ <= lu)
-
-    def _init_core_idle_indicators(self, max_s: int, big_m: int) -> None:
-        # Collect the set of all compute cores from the (fixed) mapping
-        core_set: set[Core] = set()
-        for node in self.ssc_nodes:
-            for group in self.mapping.get(node).resource_allocation:
-                core_set.update(group)
-
-        # Build core → set of slots in which it is active
         core_active_slots: dict[Core, set[int]] = defaultdict(set)
         for node in self.ssc_nodes:
             s = self.slot_of[node]
@@ -1127,42 +1119,61 @@ class TransferAndTensorAllocator:
                 for core in group:
                     core_active_slots[core].add(s)
 
-        for core in core_set:
-            active_slots = core_active_slots[core]
-
-            # active_s[s] is a constant 0/1 for compute cores (mapping is fixed)
-            active_s: dict[int, int] = {s: (1 if s in active_slots else 0) for s in range(max_s + 1)}
-
-            # lu: core is used (always 1 since we only iterate cores from the mapping)
+        for core, active_slots in core_active_slots.items():
             lu = self.model.add_var(vtype=SolverVarType.BINARY, name=f"coreUsed_{_resource_key(core)}")
             self.model.add_constr(lu == 1, name=f"core_used_def_{_resource_key(core)}")
+            out.append((core, {s: (1 if s in active_slots else 0) for s in range(max_s + 1)}, lu))
 
-            prefix = [
-                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"pre_{_resource_key(core)}_{s}")
-                for s in range(max_s + 1)
-            ]
-            suffix = [
-                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"suf_{_resource_key(core)}_{s}")
-                for s in range(max_s + 1)
-            ]
-            self.model.add_constr(prefix[0] == active_s[0])
-            self.model.add_constr(suffix[-1] == active_s[max_s])
-            for s in range(1, max_s + 1):
-                self.model.add_constr(prefix[s] == prefix[s - 1] + active_s[s])
-                self.model.add_constr(suffix[max_s - s] == suffix[max_s - s + 1] + active_s[max_s - s])
+        return out
 
-            for s in range(max_s + 1):
-                is_ = self.model.add_var(vtype=SolverVarType.BINARY, name=f"idleS_{_resource_key(core)}_{s}")
-                ie_ = self.model.add_var(vtype=SolverVarType.BINARY, name=f"idleE_{_resource_key(core)}_{s}")
-                self.idleS[(core, s)] = is_
-                self.idleE[(core, s)] = ie_
+    def _add_span_indicators(
+        self, res: Resource, active_s: dict[int, Any], used: SolverVar, max_s: int, big_m: int
+    ) -> None:
+        """Legacy model: only the slots before a resource's first use and after its last one are
+        reclaimable. Running prefix/suffix sums of the activity locate those two ends."""
+        prefix = [
+            self.model.add_var(vtype=SolverVarType.INTEGER, name=f"pre_{_resource_key(res)}_{s}")
+            for s in range(max_s + 1)
+        ]
+        suffix = [
+            self.model.add_var(vtype=SolverVarType.INTEGER, name=f"suf_{_resource_key(res)}_{s}")
+            for s in range(max_s + 1)
+        ]
+        self.model.add_constr(prefix[0] == active_s[0])
+        self.model.add_constr(suffix[-1] == active_s[max_s])
+        for s in range(1, max_s + 1):
+            self.model.add_constr(prefix[s] == prefix[s - 1] + active_s[s])
+            self.model.add_constr(suffix[max_s - s] == suffix[max_s - s + 1] + active_s[max_s - s])
 
-                self.model.add_constr(prefix[s] <= big_m * (1 - is_))
-                self.model.add_constr(prefix[s] >= lu - big_m * is_)
-                self.model.add_constr(suffix[s] <= big_m * (1 - ie_))
-                self.model.add_constr(suffix[s] >= lu - big_m * ie_)
-                self.model.add_constr(is_ >= 1 - lu)
-                self.model.add_constr(ie_ <= lu)
+        for s in range(max_s + 1):
+            is_ = self.model.add_var(vtype=SolverVarType.BINARY, name=f"idleS_{_resource_key(res)}_{s}")
+            ie_ = self.model.add_var(vtype=SolverVarType.BINARY, name=f"idleE_{_resource_key(res)}_{s}")
+            self.idle_ind[(res, s)] = [is_, ie_]
+
+            self.model.add_constr(prefix[s] <= big_m * (1 - is_))
+            self.model.add_constr(prefix[s] >= used - big_m * is_)
+            self.model.add_constr(suffix[s] <= big_m * (1 - ie_))
+            self.model.add_constr(suffix[s] >= used - big_m * ie_)
+            self.model.add_constr(is_ >= 1 - used)
+            self.model.add_constr(ie_ <= used)
+
+    def _add_occupancy_indicators(
+        self, res: Resource, active_s: dict[int, Any], used: SolverVar, max_s: int, big_m: int
+    ) -> None:
+        """Modulo-scheduling model: every slot the resource does not use is reclaimable, wherever it
+        sits. One indicator per slot, forced to the complement of activity -- no prefix/suffix
+        machinery, so this is also the cheaper of the two to solve."""
+        del used
+        for s in range(max_s + 1):
+            idle = self.model.add_var(vtype=SolverVarType.BINARY, name=f"idle_{_resource_key(res)}_{s}")
+            self.idle_ind[(res, s)] = [idle]
+            # Activity is a path-choice expression for a link but a plain int for a compute core, so
+            # pin it to a variable first and compare against that -- the same shape the span model
+            # gets from its prefix sums.
+            act = self.model.add_var(vtype=SolverVarType.INTEGER, name=f"act_{_resource_key(res)}_{s}")
+            self.model.add_constr(act == active_s[s], name=f"act_def_{_resource_key(res)}_{s}")
+            self.model.add_constr(act <= big_m * (1 - idle), name=f"idle_off_{_resource_key(res)}_{s}")
+            self.model.add_constr(act >= 1 - idle, name=f"idle_on_{_resource_key(res)}_{s}")
 
     def _create_idle_latency_vars(self, max_s: int) -> None:
         self.idle_lat: dict[Resource, SolverVar] = {}
@@ -1179,29 +1190,18 @@ class TransferAndTensorAllocator:
                 lat = ceil(self._transfer_latency_for_path(tr, choice))
                 slot_latency_ub = max(slot_latency_ub, lat)
 
-        for res in {r for r, _ in self.idleS} | {r for r, _ in self.idleE}:
+        for res in {r for r, _ in self.idle_ind}:
             terms = []
             for s in range(max_s + 1):
-                idle_s = self.idleS.get((res, s), None)
-                idle_e = self.idleE.get((res, s), None)
-
-                if idle_s is not None:
-                    prod_s = self._add_binary_scaled_continuous(
-                        binary_var=idle_s,
-                        continuous_var=self.slot_latency[s],
-                        continuous_ub=slot_latency_ub,
-                        base_name=f"idleS_lat_{_resource_key(res)}_{s}",
+                for i, ind in enumerate(self.idle_ind.get((res, s), ())):
+                    terms.append(
+                        self._add_binary_scaled_continuous(
+                            binary_var=ind,
+                            continuous_var=self.slot_latency[s],
+                            continuous_ub=slot_latency_ub,
+                            base_name=f"idle{i}_lat_{_resource_key(res)}_{s}",
+                        )
                     )
-                    terms.append(prod_s)
-
-                if idle_e is not None:
-                    prod_e = self._add_binary_scaled_continuous(
-                        binary_var=idle_e,
-                        continuous_var=self.slot_latency[s],
-                        continuous_ub=slot_latency_ub,
-                        base_name=f"idleE_lat_{_resource_key(res)}_{s}",
-                    )
-                    terms.append(prod_e)
 
             v = self.model.add_var(vtype=SolverVarType.INTEGER, name=f"idleLat_{_resource_key(res)}")
             self.model.add_constr(
@@ -1214,6 +1214,46 @@ class TransferAndTensorAllocator:
         self.overlap = overlap
         for v in self.idle_lat.values():
             self.model.add_constr(overlap <= v)
+        # Resource idle bounds how much of an iteration is free; a loop-carried state bounds how much
+        # of it may be *reordered*. Both cap the overlap, so II ends up max(ResMII, RecMII).
+        rec = self._recurrence_bound()
+        if rec > 0:
+            self.model.add_constr(
+                overlap <= self.model.quicksum(v._raw for v in self.slot_latency.values()) - rec,
+                name="overlap_recurrence_bound",
+            )
+
+    def _recurrence_bound(self) -> int:
+        """Cycles of an iteration that a loop-carried state forbids overlapping (modulo scheduling's
+        RecMII). A recurrence reads its state at t-1 and writes it at t, so the next iteration's
+        update cannot begin until this one's chain from that read to that write has finished. Only
+        that chain is bound -- an SSM's projections and gating sit off the cycle and still pipeline,
+        which is why this is a second bound on the overlap rather than a switch that disables it.
+
+        Zero when nothing carries state, which is every feed-forward workload."""
+        carriers = {n for n in self.ssc_nodes if any(is_state_operand(n, t) for t in n.inputs)}
+        if not carriers:
+            return 0
+        latency = {
+            n: ceil(max((self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)), default=0))
+            for n in self.ssc_nodes
+        }
+        # Longest chain, in node latency, running from one carrier to another (a single scan node is
+        # its own chain). Walking in dataflow order lets one pass carry the running maximum.
+        longest_from_carrier: dict[Any, int] = {}
+        worst = 0
+        for node in self.workload.dataflow_sort():
+            if node not in latency:
+                continue
+            reaching = [longest_from_carrier[p] for p in self.workload.predecessors(node) if p in longest_from_carrier]
+            best = max(reaching, default=0) + latency[node] if reaching else 0
+            if node in carriers:
+                best = max(best, latency[node])
+            if best:
+                longest_from_carrier[node] = best
+            if node in carriers:
+                worst = max(worst, best)
+        return worst
 
     def _transfer_dma_usage_expr(self, tr: TransferNode, core: Core):
         return self.model.quicksum(self._tensor_on_core_expr(t, core) for t in tr.tensors if isinstance(t, Tensor))
