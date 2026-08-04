@@ -34,6 +34,12 @@ MIN_TRUST = 0.1
 removed: it stays in the menu because the *next* evidence may be the case it is right about, and a
 registry that deleted operators would silently shrink its own action space."""
 
+INTRA_RUN = "intra_run"
+"""Scored inside the run that is reading it: a wave's own earlier candidate."""
+
+CROSS_RUN = "cross_run"
+"""Read back from an earlier run on the same (hardware, workload) pair."""
+
 TRUST_HALF_LIFE = 2.0
 """Over-predicting by this ratio (predicted / achieved) halves the trust factor.
 
@@ -57,6 +63,14 @@ class Residual:
     unit: str
     objective: str = "latency"
     note: str = ""
+    scope: str = INTRA_RUN
+    """Where this application was observed: :data:`INTRA_RUN` (this run's own earlier waves) or
+    :data:`CROSS_RUN` (a stored prior from an earlier run on the same hardware and workload).
+
+    A trust factor of 0.10 earned over a fifteen-run history and one earned over two applications in
+    the current run are the same number and warrant very different belief. Nothing else in the
+    record distinguishes them, because both arrive through the same scorecard parameter.
+    """
 
     @property
     def residual(self) -> float | None:
@@ -89,6 +103,7 @@ class Residual:
             "over_prediction_ratio": None if ratio is None or math.isinf(ratio) else ratio,
             "made_it_worse": self.achieved is not None and self.achieved < 0,
             "note": self.note,
+            "scope": self.scope,
         }
 
     def summary(self) -> str:
@@ -134,11 +149,31 @@ class OperatorScorecard:
         """`predicted`, scaled by what this operator's history says it is actually worth."""
         return predicted * self.trust(operator_id)
 
+    def scope(self, operator_id: str) -> dict[str, Any]:
+        """Where this operator's trust factor was earned, and over how many applications.
+
+        A reader shown ``trust 0.10`` cannot act on it without this: two applications inside the
+        current run and a fifteen-run history are the same number and very different evidence.
+        ``kind`` is ``intra_run``/``cross_run`` when every application came from one side, and
+        ``mixed`` when both contributed.
+        """
+        scoped = [r for r in self.residuals if r.operator_id == operator_id]
+        intra = sum(1 for r in scoped if r.scope == INTRA_RUN)
+        cross = sum(1 for r in scoped if r.scope == CROSS_RUN)
+        if intra and cross:
+            kind = "mixed"
+        elif cross:
+            kind = CROSS_RUN
+        else:
+            kind = INTRA_RUN
+        return {"kind": kind, "applications": len(scoped), "intra_run": intra, "cross_run": cross}
+
     def as_dict(self) -> dict[str, Any]:
         operators = sorted({r.operator_id for r in self.residuals})
         return {
             "history": [r.as_dict() for r in self.residuals],
             "trust": {op: self.trust(op) for op in operators},
+            "scope": {op: self.scope(op) for op in operators},
         }
 
     def report(self) -> str:
@@ -149,8 +184,10 @@ class OperatorScorecard:
         lines = []
         for op in operators:
             applications = [r for r in self.residuals if r.operator_id == op]
+            scope = self.scope(op)
             lines.append(
-                f"  - {op}: trust {self.trust(op):.2f} over {len(applications)} application(s); "
+                f"  - {op}: trust {self.trust(op):.2f} over {scope['applications']} "
+                f"{scope['kind'].replace('_', '-')} application(s); "
                 + "; ".join(r.summary().split(": ", 1)[1] for r in applications)
             )
         return "\n".join(lines)

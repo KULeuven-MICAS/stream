@@ -102,8 +102,27 @@ class NodeEvidence:
     fallback: bool
     memory_levels: dict[str, MemoryLevelEvidence] | None
     """None means NO EVIDENCE, not "no level stalls"."""
+    estimator: str = "unknown"
+    """Which cost model produced this node's figures, as the tracker labelled it.
+
+    ``"zigzag"`` = a full CME breakdown; ``"ideal-cycle"`` = ZigZag could not spatially map the op
+    and only the compute-ideal cycle count exists. Carried because it is the difference between a
+    modelled latency and an arithmetic floor, and both arrive in the same field.
+    """
     capacity_utilization_raw: dict[str, list[float]] = field(default_factory=dict)
     """ZigZag's ``mem_utili_shared``, keyed by layer operand, on its own per-operand index basis."""
+    sources: dict[str, str] = field(default_factory=dict)
+    """Which artifact supplied each of the four figures both node-level readings can carry.
+
+    ``"ir"`` = the solved :class:`~stream.ir.allocation.AllocationIR`'s per-node performance row;
+    ``"tracker"`` = ZigZag's CME as ``progress.json`` recorded it. A key is absent when neither
+    reading had the field.
+
+    This has to be recorded rather than inferred because the two are not always the same quantity:
+    ``latency_cycles`` from the IR is the per-node value the scheduler solved for, and from the
+    tracker it is the CME's whole-node ``latency_total``. A consumer holding the merged record
+    cannot tell them apart, and the merge is exactly where that information used to be destroyed.
+    """
 
     @property
     def modelled(self) -> bool:
@@ -300,6 +319,43 @@ class RunEvidence:
             ),
         )
 
+    def provenance(self) -> dict[str, Any]:
+        """Who produced the per-run figures this menu was judged on.
+
+        The **dynamic** half of provenance: the two things that genuinely vary run to run and
+        cannot be read off the schema. Everything else about an artifact's shape is a property of
+        the schema and belongs in the static map, not in every record.
+
+        * ``nodes`` — per node, which estimator ran, whether its memory hierarchy was modelled at
+          all, and which of the two node-level readings supplied each merged figure. A rule fed an
+          unmodelled node is not a proof, and this is what says so per node rather than in prose.
+        * ``noise_floor`` — whether the floor every "too small to see" verdict rests on is the
+          solver's own optimality gap or the conservative stand-in. It is the stand-in on 118 of
+          119 stored records, and until now nothing rendered the difference.
+        """
+        floor = self.noise_floor
+        return {
+            "nodes": [
+                {
+                    "name": node.name,
+                    "estimator": node.estimator,
+                    "evidence": node.evidence,
+                    "fallback": node.fallback,
+                    "sources": dict(node.sources),
+                }
+                for node in self.nodes
+            ],
+            "noise_floor": {
+                "cycles": floor.cycles,
+                "relative": floor.relative,
+                # `substituted` rather than `not known`: one bit plus a string that names the
+                # stand-in, which is the shape the codebase already uses for every substitution.
+                "substituted": not floor.known,
+                "detail": floor.source,
+                "mip_gap": self.mip_gap,
+            },
+        }
+
     def node(self, name: str) -> NodeEvidence | None:
         return next((n for n in self.nodes if n.name == name), None)
 
@@ -382,6 +438,7 @@ def _parse_node(row: dict[str, Any]) -> NodeEvidence:
         core_ids=tuple(int(c) for c in row.get("cores") or ()),
         # An explicit "none" and a missing key are the same claim: nothing was modelled.
         evidence="cme" if row.get("evidence") == "cme" else "none",
+        estimator=str(row.get("estimator") or "unknown"),
         latency_cycles=_optional_float(row.get("latency")),
         ideal_cycles=_optional_float(row.get("ideal_cycle")),
         compute_efficiency=_optional_float(row.get("efficiency")),
@@ -396,16 +453,33 @@ def _parse_node(row: dict[str, Any]) -> NodeEvidence:
     )
 
 
-def _prefer(preferred: Any, fallback: float | None) -> float | None:
-    """The IR's value when it has one, else the tracker's.
+IR_SOURCE = "ir"
+TRACKER_SOURCE = "tracker"
+MERGED_FIELDS = ("latency_cycles", "ideal_cycles", "compute_efficiency", "mac_spatial_utilization")
+"""The figures both node-level readings can supply. See :attr:`NodeEvidence.sources`."""
+
+
+def _prefer(preferred: Any, fallback: float | None) -> tuple[float | None, str | None]:
+    """``(value, which source supplied it)``: the IR's value when it has one, else the tracker's.
 
     `a or b` is wrong here twice over: a legitimate 0.0 is falsy and would silently hand over to the
     tracker, and for `latency_cycles` the two are not the same quantity -- the IR carries the
     per-node value the scheduler solved for, the tracker carries the whole-node CME `latency_total`.
     Substituting one for the other is a wrong number, not a coarser one.
+
+    Which side won is returned rather than discarded for the same reason: once merged, the two are
+    indistinguishable in the record, and "these are not the same quantity" is only actionable if a
+    consumer can see which one it is holding.
     """
     value = _optional_float(preferred)
-    return fallback if value is None else value
+    if value is not None:
+        return value, IR_SOURCE
+    return fallback, (None if fallback is None else TRACKER_SOURCE)
+
+
+def _sources(**taken: str | None) -> dict[str, str]:
+    """Drop the fields neither reading supplied: an absent key says "nobody measured this"."""
+    return {field_name: source for field_name, source in taken.items() if source is not None}
 
 
 def _merge_performance(nodes: list[NodeEvidence], allocation: dict[str, Any] | None) -> list[NodeEvidence]:
@@ -422,16 +496,30 @@ def _merge_performance(nodes: list[NodeEvidence], allocation: dict[str, Any] | N
     merged = []
     for node in nodes:
         row = performance.pop(node.name, None)
+        if row is None:
+            # Nothing but the tracker ever reported this node; whatever it has came from there.
+            merged.append(replace(node, sources=_tracker_only_sources(node)))
+            continue
+        mac = _optional_float(row.get("mac_spatial_utilization"))
+        efficiency, efficiency_source = _prefer(row.get("compute_efficiency"), node.compute_efficiency)
+        latency, latency_source = _prefer(row.get("latency_cycles"), node.latency_cycles)
+        ideal, ideal_source = _prefer(row.get("ideal_compute_cycles"), node.ideal_cycles)
         merged.append(
-            node
-            if row is None
-            else replace(
+            replace(
                 node,
-                mac_spatial_utilization=_optional_float(row.get("mac_spatial_utilization")),
-                compute_efficiency=_prefer(row.get("compute_efficiency"), node.compute_efficiency),
-                latency_cycles=_prefer(row.get("latency_cycles"), node.latency_cycles),
-                ideal_cycles=_prefer(row.get("ideal_compute_cycles"), node.ideal_cycles),
+                mac_spatial_utilization=mac,
+                compute_efficiency=efficiency,
+                latency_cycles=latency,
+                ideal_cycles=ideal,
                 fallback=bool(row.get("fallback")) or node.fallback,
+                sources=_sources(
+                    latency_cycles=latency_source,
+                    ideal_cycles=ideal_source,
+                    compute_efficiency=efficiency_source,
+                    # The IR is the only reading of this one -- it is a property of the solved
+                    # placement, which the tracker's per-node CME does not know.
+                    mac_spatial_utilization=None if mac is None else IR_SOURCE,
+                ),
             )
         )
     merged.extend(
@@ -446,10 +534,26 @@ def _merge_performance(nodes: list[NodeEvidence], allocation: dict[str, Any] | N
             mac_spatial_utilization=_optional_float(row.get("mac_spatial_utilization")),
             fallback=bool(row.get("fallback")),
             memory_levels=None,
+            sources=_sources(
+                **{
+                    field_name: (IR_SOURCE if _optional_float(row.get(key)) is not None else None)
+                    for field_name, key in zip(MERGED_FIELDS, IR_PERFORMANCE_KEYS, strict=True)
+                }
+            ),
         )
         for name, row in performance.items()
     )
     return merged
+
+
+IR_PERFORMANCE_KEYS = ("latency_cycles", "ideal_compute_cycles", "compute_efficiency", "mac_spatial_utilization")
+"""The AllocationIR performance row's spelling of :data:`MERGED_FIELDS`, in the same order."""
+
+
+def _tracker_only_sources(node: NodeEvidence) -> dict[str, str]:
+    return _sources(
+        **{field_name: (None if getattr(node, field_name) is None else TRACKER_SOURCE) for field_name in MERGED_FIELDS}
+    )
 
 
 def _parse_allocation(allocation: dict[str, Any] | None) -> dict[str, Any]:

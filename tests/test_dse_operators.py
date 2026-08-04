@@ -33,7 +33,7 @@ from stream.dse import (
 )
 from stream.dse.evidence import DEFAULT_NOISE_FLOOR_RELATIVE
 from stream.dse.operators import GROWTH_FACTORS, SHRINK_HEADROOM
-from stream.dse.residual import MIN_TRUST
+from stream.dse.residual import CROSS_RUN, INTRA_RUN, MIN_TRUST
 from stream.hardware.bundle import HardwareBundle
 from stream.hardware.cost import HardwareBudget, evaluate_bundle_cost
 
@@ -1104,3 +1104,77 @@ def test_a_persistent_over_predictor_is_discounted_not_removed(bundle, swiglu_ev
     assert tiling["discounted_delta"] == pytest.approx(9088.0 * MIN_TRUST)
     untouched = next(o for o in payload["offered"] if o["operator"] == "system.alloc.cores")
     assert untouched["trust"] == 1.0, "untried is not unreliable"
+
+
+# ── T1-4 / T1-7: every judgement says where its inputs came from ────────────────────────────────
+
+
+def test_the_evidence_says_which_source_supplied_each_merged_figure(swiglu_evidence):
+    """The merge takes the IR's value when it has one and the tracker's otherwise, and the two are
+    not always the same quantity — the IR's `latency_cycles` is the per-node value the scheduler
+    solved for, the tracker's is the CME's whole-node `latency_total`. Once merged they are
+    indistinguishable, so which side won has to be recorded rather than inferred."""
+    provenance = swiglu_evidence.provenance()
+    by_name = {node["name"]: node for node in provenance["nodes"]}
+
+    elt_mul = by_name["Elt_Mul"]
+    assert elt_mul["estimator"] == "zigzag"
+    assert elt_mul["evidence"] == "cme"
+    # Every one of the four is in the AllocationIR performance row for this node, so the IR wins.
+    assert elt_mul["sources"] == {
+        "latency_cycles": "ir",
+        "ideal_cycles": "ir",
+        "compute_efficiency": "ir",
+        "mac_spatial_utilization": "ir",
+    }
+
+    silu = by_name["Silu"]
+    assert silu["estimator"] == "ideal-cycle"
+    assert silu["evidence"] == "none"
+    # The IR reports no spatial fill for Silu, so the key is absent rather than claiming a source
+    # for a figure nobody produced.
+    assert "mac_spatial_utilization" not in silu["sources"]
+    assert silu["sources"]["latency_cycles"] == "ir"
+
+
+def test_a_node_the_ir_never_reported_is_attributed_to_the_tracker():
+    evidence = RunEvidence.from_artifacts(progress=progress_json([ELT_MUL]), allocation=allocation_json(nodes={}))
+    sources = evidence.provenance()["nodes"][0]["sources"]
+    assert sources["latency_cycles"] == "tracker"
+    assert sources["compute_efficiency"] == "tracker"
+    # The tracker's `mac_utilization` is a different quantity from the array fill, so it is never
+    # read as one and there is no source to name.
+    assert "mac_spatial_utilization" not in sources
+
+
+def test_the_noise_floor_says_whether_it_is_a_measurement_or_a_stand_in():
+    """Every "too small to see" verdict in the system rests on this, and `mip_gap` is present in one
+    stored record out of 119 — so it is almost always the 2% stand-in, and nothing rendered that."""
+    substituted = RunEvidence.from_artifacts(allocation=allocation_json(mip_gap=None)).provenance()["noise_floor"]
+    assert substituted["substituted"] is True
+    assert substituted["mip_gap"] is None
+    assert "conservative fallback" in substituted["detail"]
+
+    measured = RunEvidence.from_artifacts(allocation=allocation_json(mip_gap=0.004)).provenance()["noise_floor"]
+    assert measured["substituted"] is False
+    assert measured["mip_gap"] == 0.004
+    assert "optimality gap" in measured["detail"]
+
+
+def test_a_trust_factor_says_over_how_many_applications_and_from_where():
+    """`trust 0.10` earned over a fifteen-run history and over two applications in the current run
+    are the same number and warrant very different belief."""
+    scorecard = OperatorScorecard()
+    scorecard.record(Residual("system.tiling.intra_core", 9088.0, -24178.0, "cycles"))
+    scorecard.record(Residual("system.tiling.intra_core", 4000.0, 100.0, "cycles", scope=CROSS_RUN))
+    scorecard.record(Residual("core.memory.bandwidth", 463.0, 2000.0, "cycles"))
+
+    scopes = scorecard.as_dict()["scope"]
+    assert scopes["system.tiling.intra_core"] == {
+        "kind": "mixed",
+        "applications": 2,
+        "intra_run": 1,
+        "cross_run": 1,
+    }
+    assert scopes["core.memory.bandwidth"]["kind"] == INTRA_RUN
+    assert "intra-run application(s)" in scorecard.report()
