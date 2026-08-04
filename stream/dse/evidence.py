@@ -396,6 +396,18 @@ def _parse_node(row: dict[str, Any]) -> NodeEvidence:
     )
 
 
+def _prefer(preferred: Any, fallback: float | None) -> float | None:
+    """The IR's value when it has one, else the tracker's.
+
+    `a or b` is wrong here twice over: a legitimate 0.0 is falsy and would silently hand over to the
+    tracker, and for `latency_cycles` the two are not the same quantity -- the IR carries the
+    per-node value the scheduler solved for, the tracker carries the whole-node CME `latency_total`.
+    Substituting one for the other is a wrong number, not a coarser one.
+    """
+    value = _optional_float(preferred)
+    return fallback if value is None else value
+
+
 def _merge_performance(nodes: list[NodeEvidence], allocation: dict[str, Any] | None) -> list[NodeEvidence]:
     """Fill in the per-node figures only the AllocationIR has, and add the nodes it alone knows.
 
@@ -416,9 +428,9 @@ def _merge_performance(nodes: list[NodeEvidence], allocation: dict[str, Any] | N
             else replace(
                 node,
                 mac_spatial_utilization=_optional_float(row.get("mac_spatial_utilization")),
-                compute_efficiency=_optional_float(row.get("compute_efficiency")) or node.compute_efficiency,
-                latency_cycles=_optional_float(row.get("latency_cycles")) or node.latency_cycles,
-                ideal_cycles=_optional_float(row.get("ideal_compute_cycles")) or node.ideal_cycles,
+                compute_efficiency=_prefer(row.get("compute_efficiency"), node.compute_efficiency),
+                latency_cycles=_prefer(row.get("latency_cycles"), node.latency_cycles),
+                ideal_cycles=_prefer(row.get("ideal_compute_cycles"), node.ideal_cycles),
                 fallback=bool(row.get("fallback")) or node.fallback,
             )
         )
