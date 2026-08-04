@@ -309,6 +309,67 @@ OPERATORS: dict[str, Operator] = {
 }
 
 
+# ── Where a judgement's inputs came from ────────────────────────────────────────────────────────
+#
+# `evidence` is prose. It is what a human reads, and it is unwalkable: "'vregs' stalls 1326 cycles"
+# names neither the artifact that measured it nor the path inside it. `refs` is the same claim in a
+# shape a consumer can follow, and it has exactly two shapes -- a *fact* in another artifact, or a
+# *declared* value that terminates the chain because nobody computed it.
+
+ALLOCATION_ARTIFACT = "allocation.json"
+PROGRESS_ARTIFACT = "progress.json"
+INFEASIBILITY_ARTIFACT = "infeasibility.json"
+
+# The dominant fused group's own paths. `*` rather than an index because the group whose latency
+# sets the runtime is chosen at read time; the static provenance map is keyed by the same glob.
+_GROUP = "/groups/*/allocation"
+NODE_PERFORMANCE_PATH = f"{_GROUP}/performance/nodes"
+OVERLAP_PATH = f"{_GROUP}/performance/overlap"
+LATENCY_PATH = f"{_GROUP}/latency"
+CORE_COST_NODES_PATH = "/stages/core_cost/artifact/groups/*/nodes"
+
+
+def fact_ref(artifact: str, path: str) -> dict[str, str]:
+    """A reference to another stamped fact: which artifact, and where inside it."""
+    return {"kind": "fact", "artifact": artifact, "path": path}
+
+
+def declared_ref(label: str, path: str | None = None) -> dict[str, str]:
+    """The terminus of a chain: a bundle YAML value or a launch parameter nobody computed.
+
+    `declared` is not a producer. It is where every chain ends -- the point past which there is no
+    upstream computation to attribute, only somebody's decision.
+    """
+    ref = {"kind": "declared", "label": label}
+    if path is not None:
+        ref["path"] = path
+    return ref
+
+
+def node_ref(node_name: str) -> dict[str, str]:
+    return fact_ref(PROGRESS_ARTIFACT, f"{CORE_COST_NODES_PATH}/{node_name}")
+
+
+def node_performance_ref(node_name: str) -> dict[str, str]:
+    return fact_ref(ALLOCATION_ARTIFACT, f"{NODE_PERFORMANCE_PATH}/{node_name}")
+
+
+def slack_ref() -> dict[str, str]:
+    return fact_ref(ALLOCATION_ARTIFACT, f"{OVERLAP_PATH}/per_resource_slack")
+
+
+def binding_ref() -> dict[str, str]:
+    return fact_ref(ALLOCATION_ARTIFACT, f"{OVERLAP_PATH}/binding_resources")
+
+
+def per_iteration_ref() -> dict[str, str]:
+    return fact_ref(ALLOCATION_ARTIFACT, f"{LATENCY_PATH}/per_iteration")
+
+
+def bundle_ref(what: str) -> dict[str, str]:
+    return declared_ref(f"hardware bundle: {what}")
+
+
 @dataclass(frozen=True)
 class Offer:
     """One legal move on this run's evidence."""
@@ -325,6 +386,8 @@ class Offer:
     predicted_delta: PredictedDelta
     cost: dict[str, Any] | None = None
     """Area/energy of the resulting bundle against the budget, for a hardware edit."""
+    refs: tuple[dict[str, str], ...] = ()
+    """:attr:`evidence`, walkable. See the module section above. Every chain ends in a `declared`."""
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -338,6 +401,7 @@ class Offer:
             "couples": list(self.couples),
             "predicted_delta": self.predicted_delta.as_dict(),
             "cost": self.cost,
+            "refs": [dict(ref) for ref in self.refs],
         }
 
 
@@ -353,9 +417,25 @@ class Veto:
     target: dict[str, Any]
     rule: str
     reason: str
+    unknown: bool = False
+    """True when the refusal is for *absent* evidence rather than for evidence that ruled the move
+    out -- ``evidence: "none"`` on a node ZigZag never modelled.
+
+    The two are opposite statements about the design space. "We know this cannot help" is a finding;
+    "we could not tell" is a gap in the measurement, and a refusal ledger that reports them as one
+    number overstates how much of the space has actually been ruled out.
+    """
+    refs: tuple[dict[str, str], ...] = ()
 
     def as_dict(self) -> dict[str, Any]:
-        return {"operator": self.operator_id, "target": self.target, "rule": self.rule, "reason": self.reason}
+        return {
+            "operator": self.operator_id,
+            "target": self.target,
+            "rule": self.rule,
+            "reason": self.reason,
+            "unknown": self.unknown,
+            "refs": [dict(ref) for ref in self.refs],
+        }
 
 
 @dataclass(frozen=True)
@@ -580,6 +660,8 @@ def _core_memory(
                     "rule-1",
                     f"node '{node.name}' has evidence=none (no CME): its memory behaviour was not "
                     "modelled, so the absence of a stall is not evidence that a growth is legal",
+                    unknown=True,
+                    refs=(node_ref(node.name),),
                 )
             )
             continue
@@ -666,6 +748,11 @@ def _bandwidth_offers(
             couples=OPERATORS["core.memory.bandwidth"].couples,
             predicted_delta=PredictedDelta(value=headroom, scope="node", derivation=derivation),
             cost=cost,
+            refs=(
+                node_ref(node.name),
+                node_performance_ref(node.name),
+                bundle_ref(f"port geometry of '{level.name}' on cores {list(node.core_ids)}"),
+            ),
         )
     ]
 
@@ -725,6 +812,10 @@ def _capacity_offers(  # noqa: PLR0913 -- one call site; the arguments are the g
                 couples=OPERATORS["core.memory.capacity"].couples,
                 predicted_delta=PredictedDelta(value=level.stall_cycles, scope="node", derivation=derivation),
                 cost=cost,
+                refs=(
+                    node_ref(node.name),
+                    bundle_ref(f"declared size of '{level.name}' on cores {list(node.core_ids)}"),
+                ),
             )
         )
     return out
@@ -809,6 +900,10 @@ def _infeasible_capacity_offers(
                     ),
                 ),
                 cost=cost,
+                refs=(
+                    fact_ref(INFEASIBILITY_ARTIFACT, "/resources/*/unmet"),
+                    bundle_ref(f"declared size of '{memory}' on core {core_id}"),
+                ),
             )
         )
     return out
@@ -997,6 +1092,10 @@ def _shrink_offers(  # noqa: PLR0913 -- one call site; each argument is an input
                     ),
                 ),
                 cost=cost,
+                refs=(
+                    fact_ref(ALLOCATION_ARTIFACT, f"{_GROUP}/memory_occupancy"),
+                    bundle_ref(f"declared size of '{memory_class.name}' on cores {list(memory_class.owner_cores)}"),
+                ),
             )
         )
     return out
@@ -1099,6 +1198,10 @@ def _narrow_offers(  # noqa: PLR0913 -- one call site; each argument is an input
                     ),
                 ),
                 cost=cost,
+                refs=(
+                    fact_ref(PROGRESS_ARTIFACT, f"{CORE_COST_NODES_PATH}/*/memory_levels/{memory_class.name}"),
+                    bundle_ref(f"port geometry of '{memory_class.name}' on cores {list(memory_class.owner_cores)}"),
+                ),
             )
         )
     return out
@@ -1263,7 +1366,14 @@ def _core_array(
         target = {"node": node.name, "cores": list(node.core_ids)}
         if node.evidence != "cme":
             vetoes.append(
-                Veto("core.array.resize", target, "rule-1", f"node '{node.name}' has evidence=none: nothing measured")
+                Veto(
+                    "core.array.resize",
+                    target,
+                    "rule-1",
+                    f"node '{node.name}' has evidence=none: nothing measured",
+                    unknown=True,
+                    refs=(node_ref(node.name),),
+                )
             )
             continue
         utilization = node.mac_spatial_utilization
@@ -1378,6 +1488,11 @@ def _array_offers(
                         ),
                     ),
                     cost=cost,
+                    refs=(
+                        node_performance_ref(node.name),
+                        node_ref(node.name),
+                        bundle_ref(f"operational_array of core {core_ids[0]}"),
+                    ),
                 )
             )
     return out
@@ -1488,6 +1603,12 @@ def _tiling_offers(
                             "compute would reclaim. A tile change can also move cycles the other way."
                         ),
                     ),
+                    refs=(
+                        fact_ref(ALLOCATION_ARTIFACT, f"{OVERLAP_PATH}/recurrence_bound_cycles"),
+                        fact_ref(ALLOCATION_ARTIFACT, f"{_GROUP}/performance/bottleneck/transfer_bound_pct"),
+                        per_iteration_ref(),
+                        declared_ref("intra_core_tiling", "launch parameter"),
+                    ),
                 )
             )
     return out
@@ -1529,6 +1650,10 @@ def _fusion_offers(evidence: RunEvidence, mapping_params: dict[str, Any], vetoes
                         f"the {unmet.gap:.6g} {unmet.unit} of residency it cannot afford. The cost is "
                         "off-chip traffic for the intermediate that stops being fused."
                     ),
+                ),
+                refs=(
+                    fact_ref(INFEASIBILITY_ARTIFACT, "/resources/*/unmet"),
+                    fact_ref(ALLOCATION_ARTIFACT, f"{_GROUP}/fused_groups"),
                 ),
             )
         ]
@@ -1574,6 +1699,11 @@ def _fusion_offers(evidence: RunEvidence, mapping_params: dict[str, Any], vetoes
                     "Re-fusing also raises on-chip pressure and can make a group infeasible."
                 ),
             ),
+            refs=(
+                fact_ref(ALLOCATION_ARTIFACT, f"{_GROUP}/performance/bottleneck/transfer_bound_pct"),
+                fact_ref(ALLOCATION_ARTIFACT, f"{_GROUP}/fused_groups"),
+                per_iteration_ref(),
+            ),
         )
     ]
 
@@ -1585,6 +1715,7 @@ def _fusion_offer(
     evidence_text: str,
     effect: str,
     delta: PredictedDelta,
+    refs: tuple[dict[str, str], ...],
 ) -> Offer:
     return Offer(
         operator_id="system.fusion.cut",
@@ -1596,6 +1727,7 @@ def _fusion_offer(
         effect=effect,
         couples=OPERATORS["system.fusion.cut"].couples,
         predicted_delta=delta,
+        refs=refs,
     )
 
 
@@ -1672,6 +1804,7 @@ def _core_count_offers(
                     "operators -- operator_types may forbid it, in which case the saving is zero."
                 ),
             ),
+            refs=(binding_ref(), slack_ref(), per_iteration_ref(), declared_ref("nb_cols_to_use", "launch parameter")),
         )
     ]
 
@@ -1779,6 +1912,12 @@ def _link(
                         ),
                     ),
                     cost=cost,
+                    refs=(
+                        binding_ref(),
+                        slack_ref(),
+                        per_iteration_ref(),
+                        bundle_ref(f"core_connectivity link at {args['link_bandwidth']} bits/cycle"),
+                    ),
                 )
             )
     return offers, vetoes
@@ -2107,10 +2246,36 @@ def _price(  # noqa: PLR0913 -- the guard needs all of them; splitting it would 
         vetoes.append(Veto(operator_id, target, "budget", f"rejected before any solve: {verdict}"))
         return None
     return {
-        "area_mm2": verdict.report.total_area_mm2,
-        "peak_access_energy_pj_per_cycle": verdict.report.peak_access_energy_pj_per_cycle,
+        **price_of(verdict.report),
         "budget": budget.label if budget else None,
         "max_area_mm2": budget.max_area_mm2 if budget else None,
+    }
+
+
+def price_of(report) -> dict[str, Any]:
+    """The three budgetable scalars *and the caveats the model publishes about them*.
+
+    Three numbers used to be all that survived here. The model states its own tolerance under a
+    heading called ACCURACY CLAIM, warns when it priced a bundle at a technology node the bundle
+    never declared, counts the memories whose authored energy it disagrees with by more than 2x, and
+    records when a core's compute area was not modelled at all -- and every one of those was thrown
+    away one line after being computed, leaving a bare `area_mm2` that reads as exact.
+
+    Quoting a producer's own published tolerance is not inventing one. Nothing here is modelled or
+    estimated; it is the report, un-discarded.
+    """
+    return {
+        "area_mm2": report.total_area_mm2,
+        "peak_access_energy_pj_per_cycle": report.peak_access_energy_pj_per_cycle,
+        "technology_node": report.technology_node,
+        # False = priced at the default node because the bundle named none. The one documented
+        # substitution in this number, and the thing that flips how honest it is.
+        "technology_declared": report.technology_declared,
+        # False = at least one on-die core declares no array, so the area is a LOWER BOUND.
+        "compute_modelled": report.compute_modelled,
+        "accuracy_claim": report.accuracy_claim,
+        "authored_disagreements": list(report.authored_disagreements),
+        "warnings": list(report.warnings),
     }
 
 

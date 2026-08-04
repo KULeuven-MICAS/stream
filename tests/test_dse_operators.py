@@ -32,10 +32,16 @@ from stream.dse import (
     post_hoc_reduction_check,
 )
 from stream.dse.evidence import DEFAULT_NOISE_FLOOR_RELATIVE
-from stream.dse.operators import GROWTH_FACTORS, SHRINK_HEADROOM
+from stream.dse.operators import (
+    ALLOCATION_ARTIFACT,
+    GROWTH_FACTORS,
+    INFEASIBILITY_ARTIFACT,
+    PROGRESS_ARTIFACT,
+    SHRINK_HEADROOM,
+)
 from stream.dse.residual import CROSS_RUN, INTRA_RUN, MIN_TRUST
 from stream.hardware.bundle import HardwareBundle
-from stream.hardware.cost import HardwareBudget, evaluate_bundle_cost
+from stream.hardware.cost import ACCURACY_CLAIM, HardwareBudget, evaluate_bundle_cost
 
 TPU_V7 = "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml"
 
@@ -1107,6 +1113,58 @@ def test_a_persistent_over_predictor_is_discounted_not_removed(bundle, swiglu_ev
 
 
 # ── T1-4 / T1-7: every judgement says where its inputs came from ────────────────────────────────
+
+
+def test_every_offer_carries_a_walkable_chain_that_ends_in_a_declaration(bundle, swiglu_evidence):
+    """`evidence` is prose: "'vregs' stalls 1326 cycles" names neither the artifact that measured it
+    nor the path inside it. `refs` is the same claim in a shape a consumer can follow, and a chain
+    that never reaches a `declared` leaf has no terminus — it just stops."""
+    result = offer_operators(swiglu_evidence, bundle=bundle, mapping_params=MAPPING)
+    assert result.offered
+
+    known_artifacts = {ALLOCATION_ARTIFACT, PROGRESS_ARTIFACT, INFEASIBILITY_ARTIFACT}
+    for offer in result.offered:
+        assert offer.refs, f"{offer.operator_id} offers no chain to walk"
+        kinds = {ref["kind"] for ref in offer.refs}
+        assert kinds <= {"fact", "declared"}, kinds
+        assert "declared" in kinds, f"{offer.operator_id}'s chain never terminates"
+        for ref in offer.refs:
+            if ref["kind"] == "fact":
+                assert ref["artifact"] in known_artifacts, ref
+                assert ref["path"].startswith("/"), ref
+            else:
+                assert ref["label"]
+
+    # And it survives serialization, which is the only form a consumer ever sees.
+    serialized = result.as_dict()["offered"][0]
+    assert serialized["refs"] and serialized["refs"][0]["kind"] in {"fact", "declared"}
+
+
+def test_a_refusal_for_missing_evidence_is_marked_as_one(bundle, swiglu_evidence):
+    """Silu has no CME. Refusing a move on it is "we could not tell", not "we know it cannot help",
+    and a refusal ledger that reports the two as one number overstates what has been ruled out."""
+    result = offer_operators(swiglu_evidence, bundle=bundle, mapping_params=MAPPING)
+    silu_vetoes = [v for v in result.vetoed if "Silu" in v.reason]
+    assert silu_vetoes, "Silu must be refused: nothing modelled its memory behaviour"
+    assert all(v.unknown for v in silu_vetoes)
+    assert all(v.refs and v.refs[0]["artifact"] == PROGRESS_ARTIFACT for v in silu_vetoes)
+
+    # A move refused because the evidence ruled it out is NOT flagged.
+    judged = [v for v in result.vetoed if v.rule == "rule-4"]
+    assert judged and not any(v.unknown for v in judged)
+
+    assert result.as_dict()["vetoed"][0]["unknown"] in (True, False)
+
+
+def test_the_price_carries_the_cost_models_caveats_not_only_its_scalars(bundle, swiglu_evidence):
+    """`_price` returned three numbers and dropped the tolerance, the substitution bit and the
+    disagreement list one line after computing them, so `area_mm2` reached the UI reading as exact."""
+    result = offer_operators(swiglu_evidence, bundle=bundle, mapping_params=MAPPING)
+    priced = next(o for o in result.offered if o.cost)
+    assert priced.cost["accuracy_claim"] == ACCURACY_CLAIM
+    assert priced.cost["technology_declared"] is True
+    assert priced.cost["compute_modelled"] is True
+    assert priced.cost["authored_disagreements"], "TPU7x's authored r_cost values disagree by >2x"
 
 
 def test_the_evidence_says_which_source_supplied_each_merged_figure(swiglu_evidence):
