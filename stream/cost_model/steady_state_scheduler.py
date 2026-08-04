@@ -259,6 +259,12 @@ class SteadyStateScheduler:
             expanded = False
             for cn in self.workload.get_computation_nodes():
                 core_loops = self._core_loops(cn)
+                # Tag the owner. A fused group holds several nodes, each with its own intra-core
+                # nest, and concatenating them yields one flat list that reads as a single nest it
+                # never was -- five nests and four spatial unrollings shown as one 35-deep loop.
+                # The loops above the tile are shared by the group and stay untagged.
+                for loop in core_loops:
+                    loop["node"] = cn.name
                 loops.extend(core_loops)
                 expanded = expanded or bool(core_loops)
             if expanded:
@@ -266,7 +272,11 @@ class SteadyStateScheduler:
                 # alongside would double-count the intra-core work. An AIE tile has no ZigZag mapping,
                 # so nothing was expanded and its kernel loops stay.
                 loops = [loop for loop in loops if loop["type"] != "kernel"]
-            loops.sort(key=lambda loop: _LOOP_NEST_DEPTH.get(loop["type"], len(_LOOP_NEST_DEPTH)))
+
+            def _nest_order(loop: dict) -> tuple[str, int]:
+                return loop.get("node") or "", _LOOP_NEST_DEPTH.get(loop["type"], len(_LOOP_NEST_DEPTH))
+
+            loops.sort(key=_nest_order)
             # The tiled workload graph WITH transfer nodes -- the tensor copies that reside on-chip.
             tiled_nodes: list[dict] = []
             edges: list[dict] = []

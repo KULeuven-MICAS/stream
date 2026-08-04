@@ -163,6 +163,15 @@ class SteadyStateLoopIR(BaseModel):
     dim: str = Field(description="The tiled loop dimension")
     size: int = Field(description="Trip count within a single steady-state slice")
     type: str = Field(description="Loop kind: 'temporal' (a for-loop), 'spatial' (unrolled across cores), 'kernel'")
+    node: str | None = Field(
+        default=None,
+        description=(
+            "The computation node this loop belongs to, for loops below the tile. A fused group "
+            "holds several nodes, each with its own intra-core nest; without the owner they "
+            "concatenate into one flat list that reads as a nest that never existed. None for the "
+            "loops above the tile, which the whole group shares."
+        ),
+    )
 
 
 class SteadyStateIR(BaseModel):
