@@ -144,9 +144,6 @@ and runs at 0.39 efficiency). Enlarging the array there shortens a term that is 
 the latency; the memory operators are what address it.
 """
 
-LOAD_IMBALANCE = 1.25
-"""Ratio of the busiest resource's occupancy to the mean before a rebalance is worth offering."""
-
 COMPUTE_BOUND_PCT = 50.0
 """Above this share of per-iteration cycles the schedule is compute-bound and Rule 4 refuses."""
 
@@ -293,12 +290,13 @@ OPERATORS: dict[str, Operator] = {
             kind="mapping",
             summary="Move the fusion boundaries: which layers share on-chip residency.",
         ),
-        Operator(
-            id="system.alloc.cores",
-            tier=OperatorTier.SYSTEM,
-            kind="mapping",
-            summary="Let the mapper spread work over more cores (nb_cols_to_use).",
-        ),
+        # There is deliberately no "spread the work over more cores" operator. The only knob that
+        # looked like one, `nb_cols_to_use`, gates which *memory* cores may cache a tensor
+        # (`col_id < nb_cols_to_use`, see constraint_optimization/context.py and
+        # steady_state_scheduler.py); it does not widen the compute allocation, which the MILP
+        # derives from the mapping generator's `core_allocation`. An operator claiming otherwise
+        # offers a saving it structurally cannot deliver -- exactly what this registry exists to
+        # stop -- so the knob is now pinned to the full array at launch instead.
         Operator(
             id="link.bandwidth",
             tier=OperatorTier.LINK,
@@ -1507,8 +1505,8 @@ def _system(
     budget: HardwareBudget | None,
     mapping_params: dict[str, Any],
 ) -> tuple[list[Offer], list[Veto]]:
-    """Fusion / intra-core tile / core-count, selected from the binding set and the II decomposition."""
-    del budget
+    """Fusion / intra-core tile, selected from the binding set and the II decomposition."""
+    del budget, bundle
     offers: list[Offer] = []
     vetoes: list[Veto] = []
     interval = evidence.initiation_interval
@@ -1532,7 +1530,6 @@ def _system(
 
     offers.extend(_tiling_offers(evidence, mapping_params, interval, vetoes))
     offers.extend(_fusion_offers(evidence, mapping_params, vetoes))
-    offers.extend(_core_count_offers(evidence, bundle, mapping_params, vetoes))
     return offers, vetoes
 
 
@@ -1729,84 +1726,6 @@ def _fusion_offer(
         predicted_delta=delta,
         refs=refs,
     )
-
-
-def _core_count_offers(
-    evidence: RunEvidence,
-    bundle: HardwareBundle | None,
-    mapping_params: dict[str, Any],
-    vetoes: list[Veto],
-) -> list[Offer]:
-    """Spread the work wider, when there is idle silicon AND the load is uneven.
-
-    Busy time is derivable: ``busy_i = latency_per_iteration - slack_i``. The classic load-balance
-    bound then says the schedule cannot go below the mean busy time however the work is spread, so
-    ``max_busy - mean_busy`` is the ceiling on a rebalance.
-    """
-    per_iteration = evidence.latency_per_iteration
-    cores = [s for s in evidence.per_resource_slack if s.kind == "core"]
-    if per_iteration is None or not cores or bundle is None:
-        return []
-    available = _compute_core_ids(bundle)
-    current = int(mapping_params.get("nb_cols_to_use") or 0)
-    target = {"nb_cols_to_use": current, "compute_cores": len(available)}
-    if current >= len(available):
-        vetoes.append(
-            Veto(
-                "system.alloc.cores",
-                target,
-                "rule-3",
-                f"the mapper may already use {current} of {len(available)} compute cores; there is no "
-                "wider allocation to ask for",
-            )
-        )
-        return []
-
-    busy = [max(0.0, per_iteration - s.slack_cycles) for s in cores]
-    active = [b for b in busy if b > 0]
-    if not active:
-        return []
-    peak, mean = max(active), sum(active) / len(active)
-    if peak < mean * LOAD_IMBALANCE:
-        vetoes.append(
-            Veto(
-                "system.alloc.cores",
-                target,
-                "rule-3",
-                f"the busy cores are already balanced (peak {peak:.0f} vs mean {mean:.0f} cycles per "
-                "iteration); more cores cannot take work off a resource that is not the outlier",
-            )
-        )
-        return []
-
-    new_value = min(len(available), max(current * 2, current + 1))
-    return [
-        Offer(
-            operator_id="system.alloc.cores",
-            tier=OperatorTier.SYSTEM,
-            kind="mapping",
-            target=target,
-            args={"nb_cols_to_use": new_value},
-            evidence=(
-                f"binding resources {list(evidence.binding_resources)} are busy {peak:.0f} cycles per "
-                f"iteration against a {mean:.0f}-cycle mean over the {len(active)} active cores, while "
-                f"the mapper is limited to {current} of {len(available)} compute cores"
-            ),
-            effect=f"nb_cols_to_use: {current} -> {new_value}",
-            couples=OPERATORS["system.alloc.cores"].couples,
-            predicted_delta=PredictedDelta(
-                value=peak - mean,
-                scope="iteration",
-                derivation=(
-                    f"busy_i = latency_per_iteration - slack_i; peak {peak:.0f}, mean {mean:.0f}. No "
-                    "redistribution can go below the mean, so the ceiling is their difference. It is "
-                    "only reachable if the added cores can actually run the binding resource's "
-                    "operators -- operator_types may forbid it, in which case the saving is zero."
-                ),
-            ),
-            refs=(binding_ref(), slack_ref(), per_iteration_ref(), declared_ref("nb_cols_to_use", "launch parameter")),
-        )
-    ]
 
 
 # ── Rule 4: NoC and off-chip ────────────────────────────────────────────────────────────────────
@@ -2296,16 +2215,6 @@ def _memory_matching_bound(bundle: HardwareBundle, core_id: int, bound_value: fl
         if size and (size == int(bound_value) or size == int(bound_value) * BITS_PER_BYTE):
             return name
     return None
-
-
-def _compute_core_ids(bundle: HardwareBundle) -> list[int]:
-    """Cores with a non-empty operational array — the ones a wider allocation could reach."""
-    out = []
-    for core_id, core in bundle.cores.items():
-        sizes = (core.get("operational_array") or {}).get("sizes") or ()
-        if math.prod(int(s) for s in sizes) > 1:
-            out.append(int(core_id))
-    return sorted(out)
 
 
 def _tiling_spec(mapping_params: dict[str, Any]) -> list[dict[str, Any]] | None:

@@ -635,23 +635,19 @@ def test_a_layer_by_layer_transfer_bound_run_is_offered_re_fusion(bundle):
     assert offer.predicted_delta.scope == "iteration"
 
 
-def test_the_rebalance_bound_is_the_load_balance_bound(bundle, swiglu_evidence):
-    """busy_i = per_iteration - slack_i. The MXU quad is busy 172,140 cycles against an 88,997-cycle
-    mean over the eight active cores, so the ceiling on any redistribution is their difference."""
+def test_nothing_offers_to_widen_the_column_count(bundle, swiglu_evidence):
+    """There used to be a `system.alloc.cores` operator here, offering `nb_cols_to_use` as a way to
+    spread work over idle silicon. Its mechanism was false: the knob gates which *memory* cores may
+    cache a tile (`col_id < nb_cols_to_use`), and compute placement comes from the mapping
+    generator's `core_allocation`, which it never touches. On TPU7x it offered 83,143 cycles from a
+    real load imbalance and achieved exactly 0.0 -- the failure mode this registry exists to stop.
+
+    The load imbalance it read is genuine; the edit was not. Guarding it here rather than trusting
+    the absence, because an offer whose target is inert is worse than no offer at all.
+    """
     result = offer_operators(swiglu_evidence, bundle=bundle, mapping_params=MAPPING)
-    offer = _offer(result, "system.alloc.cores")
-    assert offer is not None
-    busy_mxu, busy_vpu = 187082 - 14942, 187082 - 181228
-    mean = (4 * busy_mxu + 4 * busy_vpu) / 8
-    assert offer.predicted_delta.cycles == pytest.approx(busy_mxu - mean)
-    assert "operator_types may forbid it" in offer.predicted_delta.derivation
-
-
-def test_no_rebalance_when_the_mapper_already_reaches_every_core(bundle, swiglu_evidence):
-    result = offer_operators(swiglu_evidence, bundle=bundle, mapping_params={**MAPPING, "nb_cols_to_use": 8})
-    assert _offer(result, "system.alloc.cores") is None
-    veto = next(v for v in result.vetoed if v.operator_id == "system.alloc.cores")
-    assert "no wider allocation" in veto.reason
+    for offer in result.offered:
+        assert "nb_cols_to_use" not in offer.args, f"{offer.operator_id} offers an inert knob"
 
 
 # ── D6: Rule 4, the NoC / off-chip veto ─────────────────────────────────────────────────────────
@@ -761,7 +757,7 @@ def test_the_serialized_form_reports_the_noise_floor_per_offer(bundle, swiglu_ev
     payload = offer_operators(swiglu_evidence, bundle=bundle, mapping_params=MAPPING).as_dict()
     by_id = {o["operator"]: o for o in payload["offered"]}
     assert by_id["core.memory.bandwidth"]["clears_noise_floor"] is False
-    assert by_id["system.alloc.cores"]["clears_noise_floor"] is True
+    assert by_id["system.tiling.intra_core"]["clears_noise_floor"] is True
     assert payload["noise_floor"]["known"] is False
 
 
@@ -1108,7 +1104,7 @@ def test_a_persistent_over_predictor_is_discounted_not_removed(bundle, swiglu_ev
     tiling = next(o for o in payload["offered"] if o["operator"] == "system.tiling.intra_core")
     assert tiling["trust"] == pytest.approx(MIN_TRUST)
     assert tiling["discounted_delta"] == pytest.approx(9088.0 * MIN_TRUST)
-    untouched = next(o for o in payload["offered"] if o["operator"] == "system.alloc.cores")
+    untouched = next(o for o in payload["offered"] if o["operator"] == "core.memory.bandwidth")
     assert untouched["trust"] == 1.0, "untried is not unreliable"
 
 
