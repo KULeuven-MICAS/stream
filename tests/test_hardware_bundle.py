@@ -13,6 +13,7 @@ import yaml
 from stream.api import hardware_cost_report, optimize_allocation_co_generic
 from stream.hardware.bundle import HardwareBundle
 from stream.hardware.cost import (
+    ACCURACY_CLAIM,
     TECH_NODES,
     BudgetVerdict,
     HardwareBudget,
@@ -350,3 +351,46 @@ def test_budget_headroom_admits_a_bounded_increase():
     generous = HardwareBudget.from_bundle(bundle, headroom=math.ceil(growth * 100) / 100)
     assert check_budget(variant, generous).ok
     assert assert_within_budget(variant, generous).total_area_mm2 > 0
+
+
+# ── T1-5: the model's own caveats, no longer discarded ──────────────────────────────────────────
+
+
+def test_the_report_quotes_its_own_published_tolerance():
+    """`hardware_cost()` and `_price` returned three scalars and dropped everything else, so a
+    modelled area reached the UI reading as exact. The module publishes a tolerance under a heading
+    called ACCURACY CLAIM; carrying it is quoting the producer, not inventing an error bar."""
+    report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
+    assert report.accuracy_claim == ACCURACY_CLAIM
+    assert "2x" in report.accuracy_claim
+    assert report.to_dict()["accuracy_claim"] == ACCURACY_CLAIM
+
+
+def test_authored_disagreements_are_countable_not_only_a_warning_sentence():
+    """The count is the reportable fact: "the model and the YAML disagree about N memories" says
+    how much of the energy accounting to believe, and a prose warning cannot be counted."""
+    report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
+    assert report.authored_disagreements, "TPU7x authors r_cost values two orders of magnitude off"
+    assert all(": authored " in line for line in report.authored_disagreements)
+    # Still summarised into `warnings` for a reader who only reads those.
+    assert any("authored access energies disagree" in w for w in report.warnings)
+
+
+def test_a_bundle_with_no_declared_array_says_its_compute_was_not_modelled():
+    """An aie2 tile declares no operational_array, so its compute area is UNKNOWN and the bundle's
+    total is a lower bound. Reporting it as an estimate would understate the silicon silently."""
+    aie2 = evaluate_bundle_cost(HardwareBundle.from_yaml(AIE2_STRIX))
+    assert aie2.compute_modelled is False
+    tpu = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
+    assert tpu.compute_modelled is True
+
+
+def test_an_undeclared_technology_node_is_reported_as_the_substitution_it_is():
+    bundle = HardwareBundle.from_yaml(TPU_V7)
+    assert evaluate_bundle_cost(bundle).technology_declared
+
+    undeclared = bundle.copy()
+    undeclared.accelerator.pop("technology_node")
+    report = evaluate_bundle_cost(undeclared)
+    assert not report.technology_declared
+    assert any("declares no `technology_node`" in w for w in report.warnings)

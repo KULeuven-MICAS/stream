@@ -178,6 +178,18 @@ DRAM_ENERGY_PJ_PER_BIT = 4.0
 AUTHORED_DISAGREEMENT_FACTOR = 2.0
 """Ratio beyond which an authored r_cost/unit_energy is reported as disagreeing with the model."""
 
+ACCURACY_CLAIM = (
+    "order-of-magnitude model with the right derivatives, not a signoff estimate: treat absolute "
+    "figures as +/-2x, and relative comparisons between two bundles of the same shape as much tighter"
+)
+"""This module's own published tolerance, from the ACCURACY CLAIM heading above, as one string.
+
+Carried on every report so a consumer quotes the model's stated accuracy rather than inventing an
+uncertainty for it -- or, as every consumer did until now, presenting a modelled area as if it were
+exact. It is a constant and not a computation for the same reason: it is a claim this module makes
+about itself, and nothing downstream may sharpen it.
+"""
+
 OFF_DIE_KINDS = frozenset({"offchip", "shim"})
 """Core kinds that front external memory: they carry no on-die array of their declared capacity."""
 
@@ -290,9 +302,33 @@ class HardwareCostReport:
     """
     off_die_access_energy_pj_per_cycle: float
     warnings: list[str] = field(default_factory=list)
+    authored_disagreements: list[str] = field(default_factory=list)
+    """One line per memory or array whose authored per-access energy differs from the model by more
+    than :data:`AUTHORED_DISAGREEMENT_FACTOR`.
+
+    Carried as its own list, not only folded into a `warnings` sentence, because the *count* is the
+    reportable fact: "the model and the YAML disagree about 6 of 14 memories" says something about
+    how much of the energy accounting to believe, and a prose warning cannot be counted.
+    """
+    accuracy_claim: str = ACCURACY_CLAIM
+    """What this module says its own numbers are worth. See :data:`ACCURACY_CLAIM`."""
+
+    @property
+    def compute_modelled(self) -> bool | None:
+        """Whether every core that *has* compute had its compute area actually modelled.
+
+        False when at least one core declares no array description (aie2 tiles): its compute area is
+        **unknown**, not zero, and `total_area_mm2` is therefore a lower bound rather than an
+        estimate. None when no core carries compute at all -- a memory-only core has nothing to
+        model, which is not the same as something that went unmodelled.
+        """
+        computes = [c.compute for c in self.cores if c.compute is not None]
+        if not computes:
+            return None
+        return all(c.modelled for c in computes)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        return {**asdict(self), "compute_modelled": self.compute_modelled}
 
 
 # ── Cost evaluation ─────────────────────────────────────────────────────────────────────────────
@@ -505,6 +541,7 @@ def evaluate_bundle_cost(bundle: HardwareBundle, technology_node: str | None = N
         peak_access_energy_pj_per_cycle=peak_energy_pj,
         off_die_access_energy_pj_per_cycle=sum(m.instances * m.nb_ports * m.read_energy_pj for _, m in off_die),
         warnings=warnings,
+        authored_disagreements=disagreements,
     )
 
 
