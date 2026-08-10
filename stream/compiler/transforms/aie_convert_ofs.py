@@ -122,9 +122,10 @@ class StrideSet:
         if any(s.spatial for s in self.strides):
             raise RuntimeError("cannot legalize strideset with spatial strides")
         new_strides: list[Stride] = []
-        # make sure that no bound limits are exceeded
-        # FIXME: figure out actual limits
-        # these are innermost to outermost:
+        # Exclusive bounds, innermost to outermost. A shim BD encodes the d0 and d1 wraps
+        # in 10 bits and the iteration wrap in 6 (mlir-aie ShimBdFieldWidths), so those
+        # three are exact. d2 has no wrap field of its own, its extent following the
+        # transfer length, so its bound is a conservative stand-in.
         bound_limits = (1024, 1024, 16384, 64)
         for i, (stride, bound_limit) in enumerate(zip(self.strides, bound_limits, strict=False)):
             if stride.size >= bound_limit:
