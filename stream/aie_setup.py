@@ -27,16 +27,19 @@ from pathlib import Path
 
 # Installed --no-deps: they pin xdsl to a git commit that would otherwise clobber the released
 # xdsl that stream-dse depends on.
-_XDSL_AIE = "git+https://github.com/xdslproject/xdsl-aie.git@378c4c69c7f643ec31c6ef96c2fd830a0fb87244"
+_XDSL_AIE = "git+https://github.com/xdslproject/xdsl-aie.git@bcc307f47e63e8566db19e19950cdee5368ead6a"
 _SNAX_MLIR = "git+https://github.com/kuleuven-micas/snax-mlir.git@1c01c5d100df128c9fa01d3336ebea98e19b20cf"
 
-# Opt-in only (--with-mlir-aie). Several llvm-aie indices are listed because the pinned build
-# ages out of the rolling `nightly` window into the dated archival tag.
-_MLIR_AIE_PIN = "mlir_aie==0.0.1.2026033104+e4f35d6"
-_LLVM_AIE_PIN = "llvm-aie==21.0.0.2026051101+adc9df1a"
+# Opt-in only (--with-mlir-aie). Codegen emits the v1.4.0 buffer descriptor form, which
+# earlier mlir-aie parses by dropping the attributes it does not know rather than failing,
+# so a standalone toolchain has to be v1.4.0 or newer. This llvm-aie is the build amd/iron
+# pairs with it. Several llvm-aie indices are listed because a pinned build ages out of the
+# rolling `nightly` window into the dated archival tag.
+_MLIR_AIE_PIN = "mlir_aie==1.4.0"
+_LLVM_AIE_PIN = "llvm-aie==21.0.0.2026062301+cb664e8c"
 _AIE_WHEEL_INDICES = [
     "--extra-index-url",
-    "https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-3",
+    "https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.4.0",
     "--extra-index-url",
     "https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly",
     "--extra-index-url",
