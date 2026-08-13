@@ -33,9 +33,6 @@ from xdsl.rewriter import InsertPoint, Rewriter
 from xdsl.traits import SymbolTable
 from xdsl.utils.hints import isa
 from xdsl_aie.dialects.aie import (
-    BDDimLayout,
-    BDDimLayoutArray,
-    BDDimLayoutArrayAttr,
     CoreOp,
     DeviceOp,
     DMABDOp,
@@ -125,9 +122,10 @@ class StrideSet:
         if any(s.spatial for s in self.strides):
             raise RuntimeError("cannot legalize strideset with spatial strides")
         new_strides: list[Stride] = []
-        # make sure that no bound limits are exceeded
-        # FIXME: figure out actual limits
-        # these are innermost to outermost:
+        # Exclusive bounds, innermost to outermost. A shim BD encodes the d0 and d1 wraps
+        # in 10 bits and the iteration wrap in 6 (mlir-aie ShimBdFieldWidths), so those
+        # three are exact. d2 has no wrap field of its own, its extent following the
+        # transfer length, so its bound is a conservative stand-in.
         bound_limits = (1024, 1024, 16384, 64)
         for i, (stride, bound_limit) in enumerate(zip(self.strides, bound_limits, strict=False)):
             if stride.size >= bound_limit:
@@ -965,16 +963,15 @@ class TransferToRuntimeSequence(RewritePattern):
                 for x in combined_ranges
             ]
 
-            for r in reduced_ranges:
-                bd_dimensions = BDDimLayoutArrayAttr(
-                    BDDimLayoutArray([BDDimLayout((var.size, var.stride)) for var in hardware_strides[::-1]])
-                )
+            outermost_first = hardware_strides[::-1]
 
+            for r in reduced_ranges:
                 dma_bd = DMABDOp(
                     arg,
                     offset=spatial_offset + r.stride,
                     len=prod(var.size for var in hardware_strides[:3]),
-                    dimensions=bd_dimensions,
+                    sizes=[var.size for var in outermost_first],
+                    strides=[var.stride for var in outermost_first],
                 )
 
                 # configure task
