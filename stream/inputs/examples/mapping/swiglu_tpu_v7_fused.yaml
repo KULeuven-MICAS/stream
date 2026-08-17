@@ -1,15 +1,24 @@
-# SwiGLU on TPU7x, fused into one region streamed over the token axis.
+# SwiGLU on TPU7x, fused -- with the weights streamed from HBM, the way a real FFN runs on Ironwood.
 #
-# The three Gemms spread across all 32 MXU cores (eight per TensorCore), splitting their output
-# columns (D2) 32 ways -- the natural split for a weight-stationary array, since each core then holds
-# a different slice of the weights. SiLU and the gate multiply go to the four vector cores. All five
-# layers sit in one fused group tiled along D0 (the 256 tokens) in blocks of 64, so a block of tokens
-# flows gate -> up -> SiLU -> multiply -> down while it is still resident on the shared VMEM, and only
-# the final result goes back to HBM.
+# The smart part is the memory wall. A Llama-3 SwiGLU carries 336 MiB of weights (gate + up + down,
+# each 112 MiB at bf16). The chip's four TensorCores hold 4 x 64 = 256 MiB of VMEM, so the weights
+# CANNOT all be resident: on real Ironwood they stream from HBM once and flow through VMEM into the
+# arrays. A mapping that tried to keep every Gemm's weights on-chip (the naive fused mapping) is
+# genuinely infeasible here, and Stream now says so.
 #
-# What that buys: the [256, d_ff] intermediates (gate, up, silu, hidden) never have to be
-# materialised in full; tiling the token axis cuts the live set and turns HBM round-trips into
-# on-chip hand-offs through the 64 MiB VMEM.
+# So this mapping keeps the *activations* on-chip and streams the *weights*:
+#  * All 32 MXU cores (eight per TensorCore) run the three Gemms, splitting the output columns (D2)
+#    32 ways -- each core owns a slice of the output and its matching slice of the weights.
+#  * SiLU and the gate multiply go to the four vector cores.
+#  * One fused group over the whole token batch (D0 tile = 256): the gate/up/silu/mul/down chain runs
+#    with its [tokens, d_ff] intermediates resident on VMEM (~1.75 MiB per core) and never written to
+#    HBM -- that is the fusion win.
+#  * Each Gemm's contraction (D1) is tiled so its weight streams HBM -> VMEM -> array in blocks rather
+#    than staying resident. gate/up contract over d_model (D1 = 4096, not a fused dim) so tile 512 is
+#    literal (eight K-blocks). down contracts over the hidden dim (D1 = 14336), which is the same
+#    fused axis already split 32 ways as the Gemms' output, so its tile is scaled by that split: 16 x
+#    32 = a 512-wide effective K-block (28 blocks). The result fits the 64 MiB VMEM with room to
+#    spare, and the schedule is weight-bandwidth-bound at low batch, exactly as the silicon is.
 layers:
 - name: Gemm_Left
   core_allocation: [[0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21, 22, 23, 24, 25, 26, 27, 30, 31, 32, 33, 34, 35, 36, 37]]
@@ -31,4 +40,7 @@ fused_groups:
 - name: SwiGLU_Fused
   layers: [Gemm_Left, Gemm_Right, Silu, Elt_Mul, Gemm_Down]
   intra_core_tiling:
-  - {dim: Gemm_Left.D0, tile: 64}
+  - {dim: Gemm_Left.D0, tile: 256}
+  - {dim: Gemm_Left.D1, tile: 512}
+  - {dim: Gemm_Right.D1, tile: 512}
+  - {dim: Gemm_Down.D1, tile: 16}
