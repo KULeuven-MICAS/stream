@@ -20,6 +20,7 @@ import yaml
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
+from stream.mapping.capacity_tiler import CapacityTiler
 from stream.parser.mapping_validator import MappingValidator
 from stream.workload.affine_access import map_dim_positions
 from stream.workload.iterator_type import (
@@ -377,7 +378,34 @@ class GenericMappingGenerator:
             names = {cn.name for cn in cns}
             selected = [dict(e) for e in self.intra_core_tiling if str(e["dim"]).split(".")[0] in names]
             return selected or self._whole_layer_tiling(sub_workload, cns)
-        return self._auto_fusion_tiling(sub_workload, cns) or self._whole_layer_tiling(sub_workload, cns)
+        automatic = self._auto_fusion_tiling(sub_workload, cns) or self._whole_layer_tiling(sub_workload, cns)
+        return self._capacity_refine(sub_workload, cns, automatic)
+
+    def _capacity_refine(
+        self, sub_workload: Workload, cns: tuple[ComputationNode, ...], seed_tiling: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """Stream extra axes -- typically a matmul's contraction axis, to free a resident weight -- when
+        the whole per-core footprint of ``seed_tiling`` still overflows the compute cores' operand buffer.
+        The streaming-axis (activation) tile ``_auto_fusion_tiling`` chose is kept; this only adds what a
+        weight-heavy layer needs, so activation-bound groups (attention, recurrences) are untouched."""
+        cores_per_node = {cn: self._select_cores_for_node(cn) for cn in cns}
+        if not any(cores_per_node.values()):
+            return seed_tiling
+        unroll = self._inter_core_unrolling(sub_workload, cns)
+        # Only nonlinear (softmax/layernorm) reductions are off-limits temporally; a linear matmul
+        # contraction is exactly the axis we want to stream, and a recurrence's streamed token axis is
+        # already in the seed. determine_fusion_splits still guards the nonlinear case.
+        protected = {
+            dim
+            for cn in cns
+            for pos in nonlinear_reduction_dims(cn)
+            if pos < len(sub_workload.get_dims(cn))
+            for dim in (sub_workload.get_dims(cn)[pos],)
+        }
+        refined = CapacityTiler(sub_workload, self.accelerator).plan(
+            cns, cores_per_node, unroll, protected, seed_tiling
+        )
+        return refined or seed_tiling
 
     def _whole_layer_tiling(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> list[dict[str, Any]]:
         """Tile the first node's first dimension so the group is one steady-state tile (nb_splits=1).
