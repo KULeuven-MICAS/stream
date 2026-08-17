@@ -69,6 +69,16 @@ class ImplicatedResourceIR(BaseModel):
     )
 
 
+class StructuralConflictIR(BaseModel):
+    """A conflict that is not a hardware-capacity overflow: a scheduling/reuse/routing rule that cannot
+    be satisfied (e.g. a fused intermediate pinned resident by the AIE no-spill rule fighting a streamed
+    weight). Explained in plain terms, with the raw IIS constraint names it groups for detail."""
+
+    title: str = Field(description="Short human label, e.g. 'Fused intermediate must stay resident'")
+    explanation: str = Field(description="One-to-two sentence plain-language cause")
+    constraints: list[str] = Field(default_factory=list, description="Raw IIS constraint names in this group")
+
+
 class InfeasibilityReportIR(BaseModel):
     """The minimal conflict (IIS) mapped back to physical resources -- an inspectable result produced
     instead of crashing on an infeasible mapping."""
@@ -84,7 +94,16 @@ class InfeasibilityReportIR(BaseModel):
     solver: str = Field(description="Underlying solver, e.g. 'gurobi'")
     group: str | None = Field(default=None, description="Fusion group this diagnosis is for, if per-group")
     iis_available: bool = Field(description="False when the backend cannot compute an IIS (e.g. OR-Tools)")
+    nature: Literal["capacity", "structural", "unknown"] = Field(
+        default="unknown",
+        description="'capacity' = a resource is genuinely over budget; 'structural' = a reuse/routing "
+        "rule conflict with no single resource over budget; 'unknown' = could not be classified",
+    )
     resources: list[ImplicatedResourceIR] = Field(default_factory=list)
+    conflicts: list[StructuralConflictIR] = Field(
+        default_factory=list,
+        description="Plain-language structural conflicts (reuse/routing), when not a capacity overflow",
+    )
     unbound_constraints: list[str] = Field(
         default_factory=list, description="IIS constraints not bound to one physical resource (structural)"
     )

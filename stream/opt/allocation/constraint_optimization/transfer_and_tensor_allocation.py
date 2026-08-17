@@ -28,6 +28,7 @@ from stream.ir.infeasibility import (
     InfeasibilityReportIR,
     InfeasibleAllocationError,
     ResourceRefIR,
+    StructuralConflictIR,
     TileDimIR,
     UnmetConstraintIR,
 )
@@ -1405,6 +1406,44 @@ class TransferAndTensorAllocator:
         ("dma", "dma_channels"),
     )
 
+    # Structural (non-capacity) conflict families: an IIS constraint-name prefix -> (short title,
+    # plain-language cause). These are the scheduling/reuse rules that make a mapping infeasible even when
+    # no single core is over budget -- the AIE "keep partials on-chip" rules and the reuse-level selector.
+    # Most specific prefix first. New structural rules add one line here.
+    _STRUCTURAL_FAMILIES: tuple[tuple[str, str, str], ...] = (
+        (
+            "force_intermediate_reuse",
+            "Fused intermediate must stay resident",
+            "A fused group's intermediate is pinned on-chip and re-read rather than spilled to HBM (the AIE "
+            "code-gen cannot stream partial results out and back), which fixes its reuse level across the fused loop.",
+        ),
+        (
+            "force_output_reuse",
+            "Output must stay resident",
+            "An operator's output is pinned resident and reused in place (no partial spill to HBM), "
+            "which fixes its reuse level.",
+        ),
+        (
+            "zStop_Choose_One",
+            "No consistent reuse schedule",
+            "A tensor's reuse level (how long it stays resident) has no value consistent with the other pinned tensors "
+            "-- typically a streamed (K-tiled) weight competing with a pinned activation for the same on-chip budget.",
+        ),
+    )
+
+    def _structural_conflicts(self, names: list[str]) -> list[StructuralConflictIR]:
+        """Group the structural IIS constraint names into plain-language conflicts. A name that matches no
+        structural family is left out of the grouped view (still visible in ``unbound_constraints``)."""
+        buckets: dict[str, StructuralConflictIR] = {}
+        for name in names:
+            match = next((fam for fam in self._STRUCTURAL_FAMILIES if name.startswith(fam[0])), None)
+            if match is None:
+                continue
+            key, title, explanation = match
+            bucket = buckets.setdefault(key, StructuralConflictIR(title=title, explanation=explanation, constraints=[]))
+            bucket.constraints.append(name)
+        return list(buckets.values())
+
     # Per resource-capacity family: how to phrase and quantify its unmet inequality. `term_prefixes`
     # are the IIS constraint-name prefixes whose subject is a demand contributor for this family. A new
     # capacity family becomes quantifiable by adding one entry here + recording its bound/terms.
@@ -1643,6 +1682,7 @@ class TransferAndTensorAllocator:
             solver=solver,
             group=None,
             iis_available=False,
+            nature="structural",
             resources=[],
             unbound_constraints=[reason],
             summary=(
@@ -1703,11 +1743,6 @@ class TransferAndTensorAllocator:
         family (memory / object-FIFO / buffer descriptors) is among its conflicts -- the quantitative
         unmet inequality."""
         kinds = sorted(entry["kinds"])
-        reason = (
-            "; ".join(self._KIND_REASON.get(k, k.replace("_", " ")) for k in kinds)
-            if kinds
-            else "conflicting allocation constraints"
-        )
         ref = entry["ref"]
         unmet: UnmetConstraintIR | None = None
         if ref.kind == "core" and ref.id.isdigit():
@@ -1715,6 +1750,22 @@ class TransferAndTensorAllocator:
                 unmet = self._build_unmet(fam, int(ref.id), entry["constraints"])
                 if unmet is not None:
                     break
+        # A quantified overflow (gap > 0) reads as the hardware limit it broke. A non-positive gap means
+        # the IIS pulled this capacity constraint into a structural conflict (a reuse/routing rule touching
+        # this core's memory) without the core being over budget -- so it is "involved", not "over budget".
+        # Presenting that as "capacity exceeded / short by -1.9 MB" is the misleading claim we drop here.
+        overflow = unmet is not None and unmet.gap > 0
+        capacity_kinds = self._FAMILY_META.keys() | {"memory_capacity"}
+        if overflow:
+            reason = "; ".join(self._KIND_REASON.get(k, k.replace("_", " ")) for k in kinds)
+        else:
+            unmet = None
+            if kinds and all(k in capacity_kinds for k in kinds):
+                reason = "involved in a reuse/scheduling conflict (not over budget)"
+            elif kinds:
+                reason = "; ".join(self._KIND_REASON.get(k, k.replace("_", " ")) for k in kinds)
+            else:
+                reason = "conflicting allocation constraints"
         return ImplicatedResourceIR(
             resource=ref, constraint_kinds=kinds, reason=reason, constraints=entry["constraints"], unmet=unmet
         )
@@ -1756,19 +1807,34 @@ class TransferAndTensorAllocator:
         if not resources:
             resources = self._direct_capacity_overflows()
 
+        # A structural conflict is a reuse/routing rule, not a full core. Group those constraints -- from
+        # the unbound set AND from any resource dragged in without an overflow -- into plain-language causes.
+        structural_names = list(unbound) + [c for r in resources if r.unmet is None for c in r.constraints]
+        conflicts = self._structural_conflicts(structural_names)
+
         quantified = next((r for r in resources if r.unmet is not None), None)
+        involved_cores = ", ".join(r.resource.label for r in resources if r.resource.kind == "core")
         if quantified is not None:
+            nature = "capacity"
             summary = f"Infeasible mapping — {quantified.resource.label}: {quantified.unmet.statement}"
+        elif conflicts:
+            nature = "structural"
+            lead = conflicts[0]
+            summary = f"Infeasible mapping — structural conflict: {lead.title.lower()}. {lead.explanation}" + (
+                f" Involves {involved_cores}." if involved_cores else ""
+            )
         elif resources:
-            cores = ", ".join(r.resource.label for r in resources if r.resource.kind == "core")
-            summary = f"Infeasible mapping: {resources[0].reason}" + (f" on {cores}" if cores else "")
+            nature = "unknown"
+            summary = f"Infeasible mapping: {resources[0].reason}" + (f" on {involved_cores}" if involved_cores else "")
         elif not iis_available:
+            nature = "unknown"
             summary = (
                 f"Infeasible mapping ({status}); no single per-core capacity is over its recorded budget, "
                 f"so the conflict is structural (e.g. transfer routing). The {stats.backend} backend cannot "
                 "compute an IIS -- re-run with the Gurobi backend for the minimal conflict set."
             )
         else:
+            nature = "unknown"
             summary = (
                 f"Infeasible mapping ({status}); {len(iis_names)} conflicting constraints, "
                 "none pinned to a single resource."
@@ -1780,7 +1846,9 @@ class TransferAndTensorAllocator:
             solver=stats.solver,
             group=group,
             iis_available=iis_available,
+            nature=nature,
             resources=resources,
+            conflicts=conflicts,
             unbound_constraints=unbound,
             summary=summary,
         )

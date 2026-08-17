@@ -1,12 +1,16 @@
-# SwiGLU on TPU7x, fused -- with the weights streamed from HBM, the way a real FFN runs on Ironwood.
+# SwiGLU on TPU7x, fused, weights streamed from HBM -- and a genuine INFEASIBILITY demonstration.
 #
-# The smart part is the memory wall. A Llama-3 SwiGLU carries 336 MiB of weights (gate + up + down,
-# each 112 MiB at bf16). The chip's four TensorCores hold 4 x 64 = 256 MiB of VMEM, so the weights
-# CANNOT all be resident: on real Ironwood they stream from HBM once and flow through VMEM into the
-# arrays. A mapping that tried to keep every Gemm's weights on-chip (the naive fused mapping) is
-# genuinely infeasible here, and Stream now says so.
+# The memory wall is real. A Llama-3 SwiGLU carries 336 MiB of weights (gate + up + down, each 112 MiB
+# at bf16). The chip's four TensorCores hold 4 x 64 = 256 MiB of VMEM, so the weights CANNOT all be
+# resident: on real Ironwood they stream from HBM once and flow through VMEM into the arrays. Streaming
+# the weights (below) does fix the per-core capacity -- but the fully-fused chain is still infeasible
+# for a deeper reason: the AIE code-gen cannot spill a fused group's partials to HBM and back, so each
+# intermediate is pinned resident (force_intermediate_reuse). That pin has no reuse schedule consistent
+# with the streamed (K-tiled) weights, so the solve reports a STRUCTURAL conflict, not a capacity one.
+# Kept as the worked example behind the infeasibility diagnosis; a feasible fused SwiGLU needs either a
+# code-gen that spills partials or a non-fused (layer-by-layer) split.
 #
-# So this mapping keeps the *activations* on-chip and streams the *weights*:
+# The mapping keeps the *activations* on-chip and streams the *weights*:
 #  * All 32 MXU cores (eight per TensorCore) run the three Gemms, splitting the output columns (D2)
 #    32 ways -- each core owns a slice of the output and its matching slice of the weights.
 #  * SiLU and the gate multiply go to the four vector cores.
