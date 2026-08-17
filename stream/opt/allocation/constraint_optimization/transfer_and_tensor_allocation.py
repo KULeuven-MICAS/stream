@@ -965,11 +965,17 @@ class TransferAndTensorAllocator:
                 assert len(inputs) == 1, "Expected exactly one input tensor for MEM_TO_COMPUTE transfer."
                 input_tensor = inputs[0]
                 for output_tensor in outputs:
-                    for s in range(-1, len(relevancies)):
-                        self.model.add_constr(
-                            self.z_stop[(input_tensor, s)] == self.z_stop[(output_tensor, s)],
-                            name=f"reuse_eq_output_{tr.name}_L{s}",
-                        )
+                    # On the way in the memory tile need only hold the tensor for AT LEAST as long as
+                    # the compute tile reads it: its reuse level bounds the compute level from above,
+                    # it does not equal it. Equating the two lets the compute tile's residency decide
+                    # how long the memory keeps a tensor, evicting data that is invariant across a
+                    # deeper loop and re-fetching it off-chip -- the activation re-stream a broadcast
+                    # operand would otherwise avoid. `_reuse_level_expr` is the chosen level as a
+                    # linear expr, so `>=` is exactly "held at least as long".
+                    self.model.add_constr(
+                        self._reuse_level_expr(input_tensor) >= self._reuse_level_expr(output_tensor),
+                        name=f"reuse_ge_output_{tr.name}",
+                    )
 
     def _force_reuse_includes_spatial(self):
         """
