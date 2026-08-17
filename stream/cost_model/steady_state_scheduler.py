@@ -481,6 +481,21 @@ class SteadyStateScheduler:
                 for dst in node.outputs:
                     self._propagate_spatial_reuse(src, dst)
                     self._propagate_spatial_reuse(dst, src)
+        # Mirror the solved reuse onto the transfer-node iteration spaces. The allocator prices a
+        # transfer's reuse against its moved tensor's SSIS (self.ssis[tensor]); the memory-access
+        # observability instead reads the transfer's own SSIS, which would otherwise stay NOT_SET and
+        # report no reuse whatever the allocator chose. Copy the loops they share, matched by
+        # (dimension, size) so it is robust to loop ordering.
+        for node in self.ssw.get_transfer_nodes():
+            governing = next(
+                (t for t in (*node.outputs, *node.inputs) if isinstance(t, Tensor) and t in self.ssis), None
+            )
+            if governing is None:
+                continue
+            reuse_by_loop = {(v.dimension, v.size): v.reuse for v in self.ssis[governing].get_temporal_variables()}
+            for iv in self.ssis[node].get_temporal_variables():
+                if (iv.dimension, iv.size) in reuse_by_loop:
+                    iv.reuse = reuse_by_loop[(iv.dimension, iv.size)]
 
     def _propagate_spatial_reuse(self, spatial_side: Tensor, temporal_side: Tensor) -> None:
         """Mark spatiotemporal variables on ``temporal_side`` as REUSE when they
