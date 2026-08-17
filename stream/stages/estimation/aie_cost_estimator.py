@@ -39,7 +39,7 @@ class AIECostEstimator:
             cme=None,
             mapping=None,
             layer=node,
-            metadata={"utilization": utilization},
+            metadata={"utilization": utilization, "backend": "aie"},
         )
 
     def _get_total_inter_core_tiling_factor(self, node):

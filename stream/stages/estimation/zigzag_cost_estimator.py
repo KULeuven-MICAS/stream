@@ -320,6 +320,7 @@ class ZigZagCostEstimator:
                 cme=cme,
                 mapping=getattr(cme, "mapping", None),
                 layer=node,
+                metadata={"backend": "zigzag"},
             )
         except Exception as exc:
             # Fallback: this core is not costable by ZigZag -- either it has no ZigZag backend (e.g. an
@@ -356,6 +357,7 @@ class ZigZagCostEstimator:
                 cme=None,
                 mapping=None,
                 layer=node,
+                metadata={"backend": "ideal-cycle"},
             )
 
     def run_zigzag(self, node: ComputationNode, core: Core) -> CostModelEvaluation:
