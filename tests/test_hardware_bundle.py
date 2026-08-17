@@ -32,8 +32,10 @@ TPU_V7 = "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml"
 QUAD_CORE = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 AIE2_STRIX = "stream/inputs/aie/hardware/whole_array_strix.yaml"
 
-# One 128 MiB TensorCore VMEM, from the ZigZag declaration in cores/tpu_v7_vmem.yaml.
-_VMEM_BITS = 1024 * 1024 * 1024
+# One 64 MiB TensorCore VMEM, from the ZigZag declaration in cores/tpu_v7_vmem.yaml.
+_VMEM_BITS = 512 * 1024 * 1024
+# Array-local operand staging on each MXU/VPU compute core (cores/tpu_v7_mxu.yaml).
+_OPERAND_BUFFER_BITS = 16 * 1024 * 1024
 
 
 def _parse(accelerator_path: str):
@@ -53,14 +55,14 @@ def test_bundle_de_aliases_shared_core_files():
     assert bundle.cores[0] == bundle.cores[2]  # identical content, independent objects
 
     bundle.cores[0]["memories"]["operand_buffer"]["size"] *= 2
-    assert bundle.cores[2]["memories"]["operand_buffer"]["size"] == _VMEM_BITS
+    assert bundle.cores[2]["memories"]["operand_buffer"]["size"] == _OPERAND_BUFFER_BITS
 
 
 def test_materialized_bundle_carries_a_per_core_vmem_and_parses():
-    """The C1 done-condition: a bundle in which core 0's VMEM differs from core 2's, on disk,
+    """The C1 done-condition: a bundle in which core 9's VMEM differs from core 19's, on disk,
     parsed by Stream."""
     bundle = HardwareBundle.from_yaml(TPU_V7)
-    bundle.cores[8]["memories"]["vmem"]["size"] = 2 * _VMEM_BITS
+    bundle.cores[9]["memories"]["vmem"]["size"] = 2 * _VMEM_BITS
 
     with tempfile.TemporaryDirectory() as tmpdir:
         accelerator_path = bundle.materialize(tmpdir)
@@ -71,8 +73,8 @@ def test_materialized_bundle_carries_a_per_core_vmem_and_parses():
         accelerator = _parse(str(accelerator_path))
 
     capacities = {core.id: core.get_memory_capacity() for core in accelerator.core_list}
-    assert capacities[8] == 2 * _VMEM_BITS
-    assert capacities[9] == _VMEM_BITS
+    assert capacities[9] == 2 * _VMEM_BITS
+    assert capacities[19] == _VMEM_BITS
 
 
 def test_bundle_to_accelerator_needs_no_files():
@@ -93,7 +95,7 @@ def test_inline_core_rejected_when_invalid():
 def test_memory_alias_typo_is_rejected():
     """A mistyped alias would stop deduplicating and quietly inflate the modelled area."""
     data = HardwareBundle.from_yaml(TPU_V7).to_data()
-    data["memory_aliases"] = [["8.vmem", "0.not_a_memory"]]
+    data["memory_aliases"] = [["9.vmem", "0.not_a_memory"]]
     validator = AcceleratorValidator(data, TPU_V7)
     assert not validator.validate()
     assert any("not_a_memory" in e for e in validator.errors)
@@ -140,7 +142,7 @@ def test_asymmetric_bundle_runs_end_to_end():
 def test_tpu_v7_baseline_area_is_defensible():
     """The baseline must land where an Ironwood-class TensorCore slice plausibly lands.
 
-    The dominant term is four 128 MiB VMEM scratchpads. At the N3 bitcell (0.0199 um^2), 70% array
+    The dominant term is four 64 MiB VMEM scratchpads. At the N3 bitcell (0.0199 um^2), 70% array
     efficiency and the 1R1W port factor that works out near 24 Mb/mm^2 of macro, so each is tens of
     mm^2 -- not the 0.01 mm^2 an unpriced model would imply, and not the hundreds a triple-counted
     one would.
@@ -150,7 +152,7 @@ def test_tpu_v7_baseline_area_is_defensible():
     assert report.technology_node == "n3"
     assert report.technology_declared
 
-    vmem = next(m for c in report.cores if c.core_id == 8 for m in c.memories if m.memory_name == "vmem")
+    vmem = next(m for c in report.cores if c.core_id == 9 for m in c.memories if m.memory_name == "vmem")
     assert vmem.counted
     assert 20.0 < vmem.area_mm2 < 80.0, vmem.area_mm2
     # Macro density implied by the model, in Mb/mm^2 -- the number to argue with.
@@ -162,14 +164,14 @@ def test_tpu_v7_baseline_area_is_defensible():
     assert report.off_die_memory_bits == 3298534883328  # HBM is priced as energy, not die area
 
 
-def test_shared_vmem_is_priced_once():
-    """MXU.operand_buffer, VPU.operand_buffer and the VMEM core are three views of one scratchpad."""
+def test_vmem_is_one_core_per_tensorcore_priced_once():
+    """Each TensorCore's 64 MiB VMEM is a single memory core, not aliased views inside the compute
+    cores, so it is priced once with no memory_aliases needed."""
     report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
-    views = [m for c in report.cores for m in c.memories if m.total_bits == _VMEM_BITS]
-    counted = [m for m in views if m.counted]
-    assert len(views) == 12  # 4 TensorCores x (mxu + vpu + vmem core)
-    assert len(counted) == 4
-    assert all(m.core_id in (8, 9, 10, 11) for m in counted)
+    vmems = [m for c in report.cores for m in c.memories if m.total_bits == _VMEM_BITS]
+    assert len(vmems) == 4  # one per TensorCore, no compute-core duplicate
+    assert all(m.counted for m in vmems)
+    assert sorted(m.core_id for m in vmems) == [9, 19, 29, 39]
 
 
 def test_doubling_a_memory_raises_the_reported_area():
@@ -178,14 +180,14 @@ def test_doubling_a_memory_raises_the_reported_area():
     baseline = evaluate_bundle_cost(bundle)
 
     variant = bundle.copy()
-    variant.cores[8]["memories"]["vmem"]["size"] *= 2
+    variant.cores[9]["memories"]["vmem"]["size"] *= 2
     grown = evaluate_bundle_cost(variant)
 
     delta = grown.total_area_mm2 - baseline.total_area_mm2
-    vmem_area = next(m for c in baseline.cores if c.core_id == 8 for m in c.memories).area_mm2
+    vmem_area = next(m for c in baseline.cores if c.core_id == 9 for m in c.memories).area_mm2
     # One of four scratchpads doubled: the added area is that scratchpad's, to within the
-    # width-driven IO term which does not double with capacity.
-    assert delta == pytest.approx(vmem_area, rel=0.05)
+    # width-driven IO term which does not double with capacity -- a ~8% fraction at 64 MiB.
+    assert delta == pytest.approx(vmem_area, rel=0.1)
     assert grown.peak_access_energy_pj_per_cycle > baseline.peak_access_energy_pj_per_cycle
 
 
@@ -195,7 +197,7 @@ def test_widening_a_port_costs_area_at_unchanged_capacity():
     baseline = evaluate_bundle_cost(bundle)
 
     variant = bundle.copy()
-    for port in variant.cores[8]["memories"]["vmem"]["ports"]:
+    for port in variant.cores[9]["memories"]["vmem"]["ports"]:
         port["bandwidth_max"] *= 4
     wider = evaluate_bundle_cost(variant)
 
@@ -209,7 +211,7 @@ def test_adding_a_port_costs_area():
     baseline = evaluate_bundle_cost(bundle)
 
     variant = bundle.copy()
-    vmem = variant.cores[8]["memories"]["vmem"]
+    vmem = variant.cores[9]["memories"]["vmem"]
     extra = dict(vmem["ports"][0])
     extra["name"] = "r_port_2"
     vmem["ports"].append(extra)
@@ -240,7 +242,7 @@ def test_offchip_and_shim_cores_carry_no_die_area():
     """An HBM stack and an AIE shim front external memory; billing their capacity as SRAM would
     swamp everything else."""
     report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
-    hbm = next(c for c in report.cores if c.core_id == 12)
+    hbm = next(c for c in report.cores if c.core_id == 40)
     assert not hbm.on_die
     assert hbm.area_mm2 == 0.0
     assert report.off_die_access_energy_pj_per_cycle > 0
@@ -249,7 +251,7 @@ def test_offchip_and_shim_cores_carry_no_die_area():
 def test_authored_energies_are_preserved_and_the_disagreement_is_reported():
     """The authored r_cost values keep driving the engine; the model says where it disagrees."""
     report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
-    vmem = next(m for c in report.cores if c.core_id == 8 for m in c.memories)
+    vmem = next(m for c in report.cores if c.core_id == 9 for m in c.memories)
     assert vmem.authored_read_energy_pj == 200.0  # unchanged, as authored
     assert vmem.read_energy_pj > vmem.authored_read_energy_pj
     assert any("disagree" in w for w in report.warnings)
@@ -259,16 +261,16 @@ def test_access_energy_is_sublinear_in_capacity_and_linear_in_width():
     bundle = HardwareBundle.from_yaml(TPU_V7)
 
     def vmem_read(b):
-        return next(m for c in evaluate_bundle_cost(b).cores if c.core_id == 8 for m in c.memories).read_energy_pj
+        return next(m for c in evaluate_bundle_cost(b).cores if c.core_id == 9 for m in c.memories).read_energy_pj
 
     base = vmem_read(bundle)
 
     bigger = bundle.copy()
-    bigger.cores[8]["memories"]["vmem"]["size"] *= 4
+    bigger.cores[9]["memories"]["vmem"]["size"] *= 4
     assert base < vmem_read(bigger) < 4 * base  # grows, but sub-linearly
 
     wider = bundle.copy()
-    for port in wider.cores[8]["memories"]["vmem"]["ports"]:
+    for port in wider.cores[9]["memories"]["vmem"]["ports"]:
         port["bandwidth_max"] *= 2
     assert vmem_read(wider) > 1.9 * base  # linear in access width
 
@@ -318,7 +320,7 @@ def test_over_budget_variant_is_rejected_without_a_solve(monkeypatch):
     budget = HardwareBudget.from_bundle(bundle)
 
     variant = bundle.copy()
-    variant.cores[8]["memories"]["vmem"]["size"] *= 2
+    variant.cores[9]["memories"]["vmem"]["size"] *= 2
     verdict = check_budget(variant, budget)
     assert not verdict.ok
     assert "area" in verdict.violations[0]
@@ -344,7 +346,7 @@ def test_over_budget_variant_is_rejected_without_a_solve(monkeypatch):
 def test_budget_headroom_admits_a_bounded_increase():
     bundle = HardwareBundle.from_yaml(TPU_V7)
     variant = bundle.copy()
-    variant.cores[8]["memories"]["vmem"]["size"] *= 2
+    variant.cores[9]["memories"]["vmem"]["size"] *= 2
     growth = evaluate_bundle_cost(variant).total_area_mm2 / evaluate_bundle_cost(bundle).total_area_mm2
 
     assert not check_budget(variant, HardwareBudget.from_bundle(bundle, headroom=0.05)).ok

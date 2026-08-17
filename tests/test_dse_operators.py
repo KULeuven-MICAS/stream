@@ -43,7 +43,11 @@ from stream.dse.residual import CROSS_RUN, INTRA_RUN, MIN_TRUST
 from stream.hardware.bundle import HardwareBundle
 from stream.hardware.cost import ACCURACY_CLAIM, HardwareBudget, evaluate_bundle_cost
 
-TPU_V7 = "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml"
+# The DSE operators are exercised against a frozen aliased-scratchpad model: the operators must keep
+# working on hardware that models one shared VMEM as several core-local views (memory_aliases). The
+# production tpu_v7_ironwood.yaml no longer aliases -- it gives the VMEM its own memory core -- so
+# these operator tests carry their own fixture rather than tracking that modelling choice.
+TPU_V7 = "tests/fixtures/hardware/tpu_v7_aliased.yaml"
 
 MXU_CORES = [0, 2, 4, 6]
 VPU_CORES = [1, 3, 5, 7]

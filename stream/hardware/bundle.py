@@ -1,9 +1,9 @@
 """Per-core hardware bundles.
 
 An accelerator YAML addresses cores by *file*, and several core ids routinely point at the same
-file: ``tpu_v7_ironwood.yaml`` maps cores 0/2/4/6 at one ``cores/tpu_v7_mxu.yaml``. That is the
-right thing to author — those four cores really are identical — and the wrong thing to mutate.
-Editing the file to grow core 0's VMEM grows all four, so "give core 0 more memory" is
+file: ``tpu_v7_ironwood.yaml`` maps its 32 MXU cores at one ``cores/tpu_v7_mxu.yaml``. That is the
+right thing to author — those cores really are identical — and the wrong thing to mutate. Editing
+the file to grow core 0's operand buffer grows all of them, so "give core 0 more memory" is
 inexpressible, and a hardware search cannot express an asymmetric design at all.
 
 A :class:`HardwareBundle` is the de-aliased form: the accelerator description plus one

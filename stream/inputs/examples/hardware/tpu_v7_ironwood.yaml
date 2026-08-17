@@ -2,115 +2,160 @@
 #
 # Per published specs, one Ironwood chip is a dual-chiplet part: 2 TensorCores, 4 SparseCores,
 # 192 GiB HBM3e at 7380 GB/s, 2307 TFLOP/s bf16 and 4614 TFLOP/s fp8, with 1200 GB/s of
-# inter-chip interconnect. Each TensorCore is one or more 256x256 systolic MXUs plus a (8, 128)
-# SIMD vector unit and a scalar unit, backed by a software-managed VMEM scratchpad. Multiplies
-# take bf16; accumulation is fp32. The MXU dataflow is weight stationary.
+# inter-chip interconnect, at a 1.1 GHz core clock. Each TensorCore is eight 256x256 systolic MXUs
+# plus a (8, 128) SIMD vector unit and a scalar unit, all reading from a software-managed 64 MiB
+# VMEM scratchpad (128 MiB per chip). Multiplies take bf16; accumulation is fp32. The MXU dataflow
+# is weight stationary.
 #
-# Two modelling decisions, both deliberate:
+# Modelling decisions:
 #
-#  * A TensorCore becomes two Stream cores. Stream gives a core one operational array, and a
-#    TensorCore has two very different ones (a 256x256 matrix array and a 2-D vector machine).
-#    Splitting them is what lets the mapper send SiLU and the gate multiply to vector hardware
-#    instead of spending MXU rows on elementwise work. The pair shares VMEM, modelled as a
-#    wide link between them.
-#  * SparseCores are omitted. They accelerate embeddings and sparse lookups, which none of the
-#    dense workloads modelled here touch.
+#  * A TensorCore becomes eleven Stream cores: its eight MXUs, its VPU, and its VMEM. Stream gives a
+#    core one operational array, and an MXU and a vector machine are very different arrays; giving
+#    each MXU its own core lets the mapper spread a Gemm across all eight and send SiLU and the gate
+#    multiply to the vector core instead of spending MXU rows on elementwise work.
+#  * The VMEM is a separate memory core, not a level inside each compute core. It is the one physical
+#    64 MiB scratchpad the whole TensorCore shares, so its capacity is the on-chip residency limit,
+#    counted once. The MXUs and the VPU reach it over a per-TensorCore bus; an MXU->VPU hand-off is a
+#    VMEM write then a VMEM read, the real cost.
+#  * SparseCores are omitted. They accelerate embeddings and sparse lookups, which none of the dense
+#    workloads modelled here touch.
 #
-# Cores 0-7 are the four TensorCores (MXU + VPU each), 8-9 the per-chip on-chip staging buffer,
-# 10 the HBM controller. Bandwidths are bits/cycle at 1.75 GHz.
+# 32 MXUs across the slice at 1.1 GHz give 32 * 65536 * 1.1e9 * 2 = 4.61 PFLOP/s bf16 = 2.307/chip,
+# the published peak. Bandwidths are bits/cycle at 1.1 GHz.
+#
+# Core map (per TensorCore: 8 MXU, 1 VPU, 1 VMEM):
+#   chip 0: TC0 = MXU 0-7,  VPU 8,  VMEM 9    TC1 = MXU 10-17, VPU 18, VMEM 19
+#   chip 1: TC2 = MXU 20-27, VPU 28, VMEM 29   TC3 = MXU 30-37, VPU 38, VMEM 39
+#   HBM controller: 40
 name: tpu_v7_ironwood
 
 cores:
-  0: ./cores/tpu_v7_mxu.yaml    # chip 0, TensorCore 0 -- matrix
-  1: ./cores/tpu_v7_vpu.yaml    # chip 0, TensorCore 0 -- vector
-  2: ./cores/tpu_v7_mxu.yaml    # chip 0, TensorCore 1 -- matrix
-  3: ./cores/tpu_v7_vpu.yaml    # chip 0, TensorCore 1 -- vector
-  4: ./cores/tpu_v7_mxu.yaml    # chip 1, TensorCore 0 -- matrix
-  5: ./cores/tpu_v7_vpu.yaml    # chip 1, TensorCore 0 -- vector
-  6: ./cores/tpu_v7_mxu.yaml    # chip 1, TensorCore 1 -- matrix
-  7: ./cores/tpu_v7_vpu.yaml    # chip 1, TensorCore 1 -- vector
-  8: ./cores/tpu_v7_vmem.yaml   # TensorCore 0 VMEM scratchpad
-  9: ./cores/tpu_v7_vmem.yaml   # TensorCore 1 VMEM scratchpad
-  10: ./cores/tpu_v7_vmem.yaml  # TensorCore 2 VMEM scratchpad
-  11: ./cores/tpu_v7_vmem.yaml  # TensorCore 3 VMEM scratchpad
-  12: ./cores/tpu_v7_hbm.yaml   # HBM3e controller
+  0: ./cores/tpu_v7_mxu.yaml
+  1: ./cores/tpu_v7_mxu.yaml
+  2: ./cores/tpu_v7_mxu.yaml
+  3: ./cores/tpu_v7_mxu.yaml
+  4: ./cores/tpu_v7_mxu.yaml
+  5: ./cores/tpu_v7_mxu.yaml
+  6: ./cores/tpu_v7_mxu.yaml
+  7: ./cores/tpu_v7_mxu.yaml
+  8: ./cores/tpu_v7_vpu.yaml
+  9: ./cores/tpu_v7_vmem.yaml
+  10: ./cores/tpu_v7_mxu.yaml
+  11: ./cores/tpu_v7_mxu.yaml
+  12: ./cores/tpu_v7_mxu.yaml
+  13: ./cores/tpu_v7_mxu.yaml
+  14: ./cores/tpu_v7_mxu.yaml
+  15: ./cores/tpu_v7_mxu.yaml
+  16: ./cores/tpu_v7_mxu.yaml
+  17: ./cores/tpu_v7_mxu.yaml
+  18: ./cores/tpu_v7_vpu.yaml
+  19: ./cores/tpu_v7_vmem.yaml
+  20: ./cores/tpu_v7_mxu.yaml
+  21: ./cores/tpu_v7_mxu.yaml
+  22: ./cores/tpu_v7_mxu.yaml
+  23: ./cores/tpu_v7_mxu.yaml
+  24: ./cores/tpu_v7_mxu.yaml
+  25: ./cores/tpu_v7_mxu.yaml
+  26: ./cores/tpu_v7_mxu.yaml
+  27: ./cores/tpu_v7_mxu.yaml
+  28: ./cores/tpu_v7_vpu.yaml
+  29: ./cores/tpu_v7_vmem.yaml
+  30: ./cores/tpu_v7_mxu.yaml
+  31: ./cores/tpu_v7_mxu.yaml
+  32: ./cores/tpu_v7_mxu.yaml
+  33: ./cores/tpu_v7_mxu.yaml
+  34: ./cores/tpu_v7_mxu.yaml
+  35: ./cores/tpu_v7_mxu.yaml
+  36: ./cores/tpu_v7_mxu.yaml
+  37: ./cores/tpu_v7_mxu.yaml
+  38: ./cores/tpu_v7_vpu.yaml
+  39: ./cores/tpu_v7_vmem.yaml
+  40: ./cores/tpu_v7_hbm.yaml
 
+# [col, row]. VMEM cores sit at columns 0-3 (col_id < nb_cols_to_use) so all four are usable as
+# on-chip memory cores; each TensorCore's compute cores share its column.
 core_coordinates:
   0: [0, 0]
   1: [0, 1]
-  2: [1, 0]
-  3: [1, 1]
-  4: [2, 0]
-  5: [2, 1]
-  6: [3, 0]
-  7: [3, 1]
-  8: [0, 2]
-  9: [1, 2]
-  10: [2, 2]
-  11: [3, 2]
-  12: [2, 3]
+  2: [0, 2]
+  3: [0, 3]
+  4: [0, 4]
+  5: [0, 5]
+  6: [0, 6]
+  7: [0, 7]
+  8: [0, 8]
+  9: [0, 9]
+  10: [1, 0]
+  11: [1, 1]
+  12: [1, 2]
+  13: [1, 3]
+  14: [1, 4]
+  15: [1, 5]
+  16: [1, 6]
+  17: [1, 7]
+  18: [1, 8]
+  19: [1, 9]
+  20: [2, 0]
+  21: [2, 1]
+  22: [2, 2]
+  23: [2, 3]
+  24: [2, 4]
+  25: [2, 5]
+  26: [2, 6]
+  27: [2, 7]
+  28: [2, 8]
+  29: [2, 9]
+  30: [3, 0]
+  31: [3, 1]
+  32: [3, 2]
+  33: [3, 3]
+  34: [3, 4]
+  35: [3, 5]
+  36: [3, 6]
+  37: [3, 7]
+  38: [3, 8]
+  39: [3, 9]
+  40: [0, 10]
 
-offchip_core_id: 12
+offchip_core_id: 40
 unit_energy_cost: 0
 
 # ── Physical cost ──
-# `area: 0` in the core files does not mean this hardware is free: area and access energy are
-# computed from the declared capacities, widths, port counts and array dimensions by
-# `stream.hardware.cost`, so they follow a mutation instead of going stale.
+# `area: 0` in the core files is not "free": area and access energy are computed from the declared
+# capacities, widths, port counts and array dimensions by `stream.hardware.cost`.
 technology_node: n3
 
-# The paired VMEM core's `vmem` and the MXU's and VPU's `operand_buffer` are three views of one
-# physical scratchpad -- the modelling split described above. Without this the cost model would bill
-# the same 128 MiB three times over. The first entry of a group is the one billed.
-memory_aliases:
-  - [8.vmem, 0.operand_buffer, 1.operand_buffer]
-  - [9.vmem, 2.operand_buffer, 3.operand_buffer]
-  - [10.vmem, 4.operand_buffer, 5.operand_buffer]
-  - [11.vmem, 6.operand_buffer, 7.operand_buffer]
-
 core_connectivity:
-  # ── Inside a TensorCore: MXU and VPU share VMEM, so this link is wide. ──
-  - type: link
-    cores: [0, 1]
-    bandwidth: 262144
-  - type: link
-    cores: [2, 3]
-    bandwidth: 262144
-  - type: link
-    cores: [4, 5]
-    bandwidth: 262144
-  - type: link
-    cores: [6, 7]
-    bandwidth: 262144
+  # ── Inside each TensorCore: the 8 MXUs and the VPU share the VMEM over one bus (shared bandwidth,
+  #    so the MXUs contend for the VMEM ports, as on silicon). ──
+  - type: bus
+    cores: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+    bandwidth: 416974
+  - type: bus
+    cores: [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    bandwidth: 416974
+  - type: bus
+    cores: [20, 21, 22, 23, 24, 25, 26, 27, 28, 29]
+    bandwidth: 416974
+  - type: bus
+    cores: [30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+    bandwidth: 416974
 
-  # ── Each TensorCore's MXU and VPU both read from that core's VMEM. ──
-  - type: bus
-    cores: [0, 1, 8]
-    bandwidth: 262144
-  - type: bus
-    cores: [2, 3, 9]
-    bandwidth: 262144
-  - type: bus
-    cores: [4, 5, 10]
-    bandwidth: 262144
-  - type: bus
-    cores: [6, 7, 11]
-    bandwidth: 262144
-
-  # ── Within a chip, the two TensorCores' scratchpads exchange directly (die-to-die). ──
+  # ── Within a chip, the two TensorCores' VMEMs exchange directly (die-to-die). ──
   - type: link
-    cores: [8, 9]
-    bandwidth: 131072
+    cores: [9, 19]
+    bandwidth: 208487
   - type: link
-    cores: [10, 11]
-    bandwidth: 131072
+    cores: [29, 39]
+    bandwidth: 208487
 
-  # ── Between chips: the inter-chip interconnect, 1200 GB/s -> 5486 bits/cc. ──
+  # ── Between chips: the inter-chip interconnect, 1200 GB/s -> 8727 bits/cc at 1.1 GHz. ──
   - type: link
-    cores: [9, 10]
-    bandwidth: 5486
+    cores: [19, 29]
+    bandwidth: 8727
 
-  # ── HBM: every core reaches it, at the published 2 x 7380 GB/s. ──
+  # ── HBM: every TensorCore's VMEM reaches it, at the published 2 x 7380 GB/s. Compute cores reach
+  #    HBM through their VMEM. ──
   - type: bus
-    cores: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
-    bandwidth: 65536
+    cores: [9, 19, 29, 39, 40]
+    bandwidth: 107345

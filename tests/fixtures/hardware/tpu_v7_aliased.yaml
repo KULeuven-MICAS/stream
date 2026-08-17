@@ -1,0 +1,116 @@
+# Google TPU7x "Ironwood" (TPU v7) -- a two-chip slice.
+#
+# Per published specs, one Ironwood chip is a dual-chiplet part: 2 TensorCores, 4 SparseCores,
+# 192 GiB HBM3e at 7380 GB/s, 2307 TFLOP/s bf16 and 4614 TFLOP/s fp8, with 1200 GB/s of
+# inter-chip interconnect. Each TensorCore is one or more 256x256 systolic MXUs plus a (8, 128)
+# SIMD vector unit and a scalar unit, backed by a software-managed VMEM scratchpad. Multiplies
+# take bf16; accumulation is fp32. The MXU dataflow is weight stationary.
+#
+# Two modelling decisions, both deliberate:
+#
+#  * A TensorCore becomes two Stream cores. Stream gives a core one operational array, and a
+#    TensorCore has two very different ones (a 256x256 matrix array and a 2-D vector machine).
+#    Splitting them is what lets the mapper send SiLU and the gate multiply to vector hardware
+#    instead of spending MXU rows on elementwise work. The pair shares VMEM, modelled as a
+#    wide link between them.
+#  * SparseCores are omitted. They accelerate embeddings and sparse lookups, which none of the
+#    dense workloads modelled here touch.
+#
+# Cores 0-7 are the four TensorCores (MXU + VPU each), 8-9 the per-chip on-chip staging buffer,
+# 10 the HBM controller. Bandwidths are bits/cycle at 1.75 GHz.
+name: tpu_v7_ironwood
+
+cores:
+  0: ./cores/tpu_v7_mxu.yaml    # chip 0, TensorCore 0 -- matrix
+  1: ./cores/tpu_v7_vpu.yaml    # chip 0, TensorCore 0 -- vector
+  2: ./cores/tpu_v7_mxu.yaml    # chip 0, TensorCore 1 -- matrix
+  3: ./cores/tpu_v7_vpu.yaml    # chip 0, TensorCore 1 -- vector
+  4: ./cores/tpu_v7_mxu.yaml    # chip 1, TensorCore 0 -- matrix
+  5: ./cores/tpu_v7_vpu.yaml    # chip 1, TensorCore 0 -- vector
+  6: ./cores/tpu_v7_mxu.yaml    # chip 1, TensorCore 1 -- matrix
+  7: ./cores/tpu_v7_vpu.yaml    # chip 1, TensorCore 1 -- vector
+  8: ./cores/tpu_v7_vmem.yaml   # TensorCore 0 VMEM scratchpad
+  9: ./cores/tpu_v7_vmem.yaml   # TensorCore 1 VMEM scratchpad
+  10: ./cores/tpu_v7_vmem.yaml  # TensorCore 2 VMEM scratchpad
+  11: ./cores/tpu_v7_vmem.yaml  # TensorCore 3 VMEM scratchpad
+  12: ./cores/tpu_v7_hbm.yaml   # HBM3e controller
+
+core_coordinates:
+  0: [0, 0]
+  1: [0, 1]
+  2: [1, 0]
+  3: [1, 1]
+  4: [2, 0]
+  5: [2, 1]
+  6: [3, 0]
+  7: [3, 1]
+  8: [0, 2]
+  9: [1, 2]
+  10: [2, 2]
+  11: [3, 2]
+  12: [2, 3]
+
+offchip_core_id: 12
+unit_energy_cost: 0
+
+# ── Physical cost ──
+# `area: 0` in the core files does not mean this hardware is free: area and access energy are
+# computed from the declared capacities, widths, port counts and array dimensions by
+# `stream.hardware.cost`, so they follow a mutation instead of going stale.
+technology_node: n3
+
+# The paired VMEM core's `vmem` and the MXU's and VPU's `operand_buffer` are three views of one
+# physical scratchpad -- the modelling split described above. Without this the cost model would bill
+# the same 128 MiB three times over. The first entry of a group is the one billed.
+memory_aliases:
+  - [8.vmem, 0.operand_buffer, 1.operand_buffer]
+  - [9.vmem, 2.operand_buffer, 3.operand_buffer]
+  - [10.vmem, 4.operand_buffer, 5.operand_buffer]
+  - [11.vmem, 6.operand_buffer, 7.operand_buffer]
+
+core_connectivity:
+  # ── Inside a TensorCore: MXU and VPU share VMEM, so this link is wide. ──
+  - type: link
+    cores: [0, 1]
+    bandwidth: 262144
+  - type: link
+    cores: [2, 3]
+    bandwidth: 262144
+  - type: link
+    cores: [4, 5]
+    bandwidth: 262144
+  - type: link
+    cores: [6, 7]
+    bandwidth: 262144
+
+  # ── Each TensorCore's MXU and VPU both read from that core's VMEM. ──
+  - type: bus
+    cores: [0, 1, 8]
+    bandwidth: 262144
+  - type: bus
+    cores: [2, 3, 9]
+    bandwidth: 262144
+  - type: bus
+    cores: [4, 5, 10]
+    bandwidth: 262144
+  - type: bus
+    cores: [6, 7, 11]
+    bandwidth: 262144
+
+  # ── Within a chip, the two TensorCores' scratchpads exchange directly (die-to-die). ──
+  - type: link
+    cores: [8, 9]
+    bandwidth: 131072
+  - type: link
+    cores: [10, 11]
+    bandwidth: 131072
+
+  # ── Between chips: the inter-chip interconnect, 1200 GB/s -> 5486 bits/cc. ──
+  - type: link
+    cores: [9, 10]
+    bandwidth: 5486
+
+  # ── HBM: every core reaches it, at the published 2 x 7380 GB/s. ──
+  - type: bus
+    cores: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+    bandwidth: 65536

@@ -21,11 +21,13 @@ from stream.workload.utils import is_mac_operator_type
 HARDWARE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "stream", "inputs", "examples", "hardware")
 TPU_V7 = os.path.abspath(os.path.join(HARDWARE_DIR, "tpu_v7_ironwood.yaml"))
 
-# The verified TPU7x reference point: SwiGLU 2048 x 4096 x 14336 fused, solved at 1,392,195 cycles
-# against 4 MXUs of 256x256 -> an ideal 1,376,256 cycles, i.e. ~99% of the 4-MXU roofline.
-SWIGLU_2048_MAC_OPS = 360_777_252_864
-SWIGLU_2048_LATENCY = 1_392_195
-TPU_V7_MXU_PEAK = 4 * 256 * 256
+# The verified TPU7x reference point: SwiGLU 256 x 512 x 2048 fused, solved at 2863 cycles against
+# the 32 MXUs of 256x256 (eight per TensorCore) -> an ideal 384 cycles. This small shape only fills a
+# quarter of each array (d_ff 2048 / 32 cores = 64 of 256 columns), so its ~13% end-to-end MAC
+# utilization is the metric correctly reporting an underfilled 32-MXU chip, not a solver failure.
+SWIGLU_REF_MAC_OPS = 805_306_368
+SWIGLU_REF_LATENCY = 2863
+TPU_V7_MXU_PEAK = 32 * 256 * 256
 
 
 def load_accelerator(path: str):
@@ -59,12 +61,12 @@ class TestIsMacOperatorType:
 
 class TestMacRooflinePeak:
     def test_tpu_v7_counts_only_the_mxus(self) -> None:
-        """TPU7x has 4 MXU + 4 VPU + 4 VMEM + 1 HBM core. Only the MXUs admit MatMul/Gemm/Conv."""
+        """TPU7x has 32 MXU + 4 VPU + 4 VMEM + 1 HBM core. Only the MXUs admit MatMul/Gemm/Conv."""
         accelerator = load_accelerator(TPU_V7)
-        scheduler = make_scheduler(accelerator, SWIGLU_2048_MAC_OPS, SWIGLU_2048_LATENCY)
+        scheduler = make_scheduler(accelerator, SWIGLU_REF_MAC_OPS, SWIGLU_REF_LATENCY)
         peak, n_cores = scheduler._mac_roofline_peak()
-        assert n_cores == 4
-        assert peak == TPU_V7_MXU_PEAK == 262144
+        assert n_cores == 32
+        assert peak == TPU_V7_MXU_PEAK == 2097152
 
     def test_vector_cores_are_excluded_from_the_peak(self) -> None:
         """The pre-fix denominator summed every non-offchip core. Assert the difference is real, so
@@ -76,9 +78,9 @@ class TestMacRooflinePeak:
             for c in accelerator.core_list
             if c.id != offchip_id
         )
-        scheduler = make_scheduler(accelerator, SWIGLU_2048_MAC_OPS, SWIGLU_2048_LATENCY)
+        scheduler = make_scheduler(accelerator, SWIGLU_REF_MAC_OPS, SWIGLU_REF_LATENCY)
         peak, _ = scheduler._mac_roofline_peak()
-        assert all_cores_peak == 262144 + 4 * 8 * 128  # + the four (8, 128) VPUs
+        assert all_cores_peak == 2097152 + 4 * 8 * 128  # + the four (8, 128) VPUs
         assert peak < all_cores_peak
 
     def test_unrestricted_cores_count_but_specialised_non_mac_cores_do_not(self) -> None:
@@ -99,34 +101,35 @@ class TestMacRooflinePeak:
 
 
 class TestEndToEndMacUtilization:
-    def test_swiglu_2048_matches_the_hand_computed_roofline(self) -> None:
-        """The done-condition: 360,777,252,864 MACs over 4x(256x256) is an ideal 1,376,256 cycles,
-        and the solved schedule took 1,392,195 -- so the metric must read ~98.9%, not lower."""
+    def test_swiglu_ref_matches_the_hand_computed_roofline(self) -> None:
+        """The numerator/denominator agreement: 805,306,368 MACs over 32x(256x256) is an ideal 384
+        cycles, and the solved schedule took 2863 -- so the metric reads ~13.4%. Low because this
+        small shape underfills the 32 MXUs; the point is that the arithmetic and the peak are right."""
         accelerator = load_accelerator(TPU_V7)
-        scheduler = make_scheduler(accelerator, SWIGLU_2048_MAC_OPS, SWIGLU_2048_LATENCY)
+        scheduler = make_scheduler(accelerator, SWIGLU_REF_MAC_OPS, SWIGLU_REF_LATENCY)
         scheduler._augment_performance_stats_end_to_end()
         agg = scheduler.performance_stats["aggregate"]
 
-        ideal_cycles = SWIGLU_2048_MAC_OPS / TPU_V7_MXU_PEAK
-        assert ideal_cycles == 1_376_256
+        ideal_cycles = SWIGLU_REF_MAC_OPS / TPU_V7_MXU_PEAK
+        assert ideal_cycles == 384
         assert agg["peak_macs_per_cycle"] == TPU_V7_MXU_PEAK
-        assert agg["mac_capable_cores"] == 4
-        assert agg["total_mac_ops"] == SWIGLU_2048_MAC_OPS
-        assert agg["end_to_end_mac_utilization"] == pytest.approx(ideal_cycles / SWIGLU_2048_LATENCY)
-        assert agg["end_to_end_mac_utilization"] == pytest.approx(0.98855, abs=1e-5)
+        assert agg["mac_capable_cores"] == 32
+        assert agg["total_mac_ops"] == SWIGLU_REF_MAC_OPS
+        assert agg["end_to_end_mac_utilization"] == pytest.approx(ideal_cycles / SWIGLU_REF_LATENCY)
+        assert agg["end_to_end_mac_utilization"] == pytest.approx(0.13413, abs=1e-5)
 
     def test_no_mac_work_reports_none_not_zero(self) -> None:
         """A workload with no matmul/conv has no MAC roofline. None says so; 0.0 would read on a
         chart as a measured, terrible utilization."""
         accelerator = load_accelerator(TPU_V7)
-        scheduler = make_scheduler(accelerator, 0, SWIGLU_2048_LATENCY)
+        scheduler = make_scheduler(accelerator, 0, SWIGLU_REF_LATENCY)
         scheduler._augment_performance_stats_end_to_end()
         assert scheduler.performance_stats["aggregate"]["end_to_end_mac_utilization"] is None
 
     def test_missing_aggregate_is_a_no_op(self) -> None:
         """Observability must never break a solved run."""
         accelerator = load_accelerator(TPU_V7)
-        scheduler = make_scheduler(accelerator, SWIGLU_2048_MAC_OPS, SWIGLU_2048_LATENCY)
+        scheduler = make_scheduler(accelerator, SWIGLU_REF_MAC_OPS, SWIGLU_REF_LATENCY)
         scheduler.performance_stats = None
         scheduler._augment_performance_stats_end_to_end()
         assert scheduler.performance_stats is None

@@ -1,23 +1,21 @@
-# TPU7x (Ironwood) TensorCore matrix unit -- one of eight MXUs per TensorCore.
+# TPU7x (Ironwood) TensorCore matrix unit.
 #
 # A 256x256 systolic MXU, the array size Google moved to in v6e and kept for TPU7x (earlier
 # generations were 128x128). Multiplies take bf16 and accumulate in fp32.
 #
-# A TensorCore carries eight of these MXUs (16 per chip, two TensorCores). At the 1.1 GHz Ironwood
-# core clock, 32 MXUs across the two-chip slice deliver 32 * 65536 * 1.1e9 * 2 = 4.61 PFLOP/s bf16,
-# i.e. 2.307 PFLOP/s per chip -- the published Ironwood bf16 peak. Each MXU is modelled as its own
-# Stream core so the mapper can spread a Gemm across all eight, and all eight share the TensorCore's
-# 64 MiB VMEM (a separate memory core they reach over a bus).
-#
 # The silicon is weight stationary: parameters are loaded into the array and held there while
-# activations stream through. `served_dimensions: []` on the weight registers is one private weight
-# register per PE; the accumulator is shared along D2 so partial sums reduce down an array axis
-# rather than round-tripping through memory. Which axes land on D1/D2 is left to ZigZag's mapping
-# search rather than pinned here, since the right choice is layer-dependent.
+# activations stream through. The hierarchy below gives that its structure -- `served_dimensions: []`
+# on the weight registers is one private weight register per PE, and the accumulator is shared along
+# D2 so partial sums reduce down an array axis rather than round-tripping through memory.
 #
-# `operand_buffer` is the array-local operand staging (weights held stationary plus the streaming
-# activation/output tile), NOT a second scratchpad: the shared 128 MiB-per-chip VMEM lives on
-# tpu_v7_vmem.yaml. Bandwidths are bits/cycle at the 1.1 GHz core clock.
+# Which axes land on D1/D2 is left to ZigZag's mapping search rather than pinned here, since the
+# right choice is layer-dependent. On the SwiGLU shapes it picks tokens x output-columns, an
+# output-stationary unrolling that reaches ~100% MAC utilization; latency is therefore accurate,
+# but weights are re-fetched per cycle instead of held, so the weight-register energy it reports is
+# an upper bound. Pinning the contraction axis to the array would need a per-layer spatial mapping.
+#
+# Bandwidths are bits/cycle at a 1.75 GHz core clock. VMEM is quoted as roughly 22x HBM bandwidth;
+# 262144 bits/cc is ~57 TB/s per TensorCore, a little under that estimate and a clean power of two.
 name: tpu_v7_mxu
 type: zigzag.compute
 
@@ -47,8 +45,7 @@ memories:
           - I2, fh
     served_dimensions: []
 
-  # fp32 accumulator per array column: partial sums walk down D2. Width is array-inherent (256
-  # columns x 32 bit), so it does not scale with the core clock.
+  # fp32 accumulator per array column: partial sums walk down D2.
   accumulator:
     size: 8192
     r_cost: 0.01
@@ -83,13 +80,11 @@ memories:
           - O, fl
     served_dimensions: [D2]
 
-  # Array-local operand staging (the register files plus a small operand FIFO), 2 MiB. It is
-  # deliberately small: the TensorCore's 64 MiB working set lives on the shared VMEM core
-  # (tpu_v7_vmem.yaml), reached over the intra-TensorCore bus, and keeping this buffer to a
-  # steady-state tile stops it from becoming a second scratchpad that would hide the VMEM limit.
-  # Port width is the VMEM feed bandwidth, re-derived at 1.1 GHz to preserve ~57 TB/s per TensorCore.
+  # VMEM as this unit sees it: 128 MiB, the scratchpad weights and activations are streamed from.
+  # tpu_v7_vmem.yaml models the same memory as a transfer staging point, which is what gives the
+  # allocator somewhere to place a tensor between off-chip and the array.
   operand_buffer:
-    size: 16777216
+    size: 1073741824
     r_cost: 120
     w_cost: 130
     area: 0
@@ -99,7 +94,7 @@ memories:
       - name: r_port_1
         type: read
         bandwidth_min: 256
-        bandwidth_max: 416974
+        bandwidth_max: 262144
         allocation:
           - I1, tl
           - I2, tl
@@ -108,7 +103,7 @@ memories:
       - name: w_port_1
         type: write
         bandwidth_min: 256
-        bandwidth_max: 416974
+        bandwidth_max: 262144
         allocation:
           - I1, fh
           - I2, fh

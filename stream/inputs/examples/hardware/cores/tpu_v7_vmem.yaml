@@ -1,19 +1,23 @@
-# TPU7x VMEM -- the software-managed scratchpad private to one TensorCore, 128 MiB.
+# TPU7x VMEM -- the software-managed scratchpad shared by one TensorCore's eight MXUs and its VPU.
 #
-# This is the level the MXU and VPU actually read from: tensors are staged into VMEM from HBM and
-# streamed into the array from there. Its bandwidth to the array is roughly 22x HBM's, which is why
-# a block whose working set fits in VMEM runs at a completely different arithmetic intensity than
+# 64 MiB per TensorCore (128 MiB per two-TensorCore chip, per the Ironwood datasheet). This is the
+# single physical scratchpad every compute unit in the TensorCore reads from and writes to: tensors
+# are staged into VMEM from HBM and streamed into the arrays from there, and a block's intermediates
+# live here between the MXUs and the VPU. Its bandwidth to the arrays is roughly 22x HBM's, which is
+# why a block whose working set fits in VMEM runs at a completely different arithmetic intensity than
 # one that does not -- the effect this model exists to expose.
 #
-# Memory-only: the operational array is empty, so nothing is ever scheduled onto it. It holds
-# tensors, which is what makes staging visible in the allocation as a decision rather than a
-# side effect.
+# Modelled as a memory core, not a level inside each compute core: it is the one place the whole
+# TensorCore's intermediates are resident, so its 64 MiB is the on-chip residency limit the mapper
+# must respect, counted once. The eight MXUs and the VPU reach it over the intra-TensorCore bus;
+# an MXU->VPU hand-off is a VMEM write then a VMEM read, which is the real cost. Bandwidth is
+# bits/cycle at 1.1 GHz (~57 TB/s per TensorCore).
 name: tpu_v7_vmem
 type: zigzag.memory
 
 memories:
   vmem:
-    size: 1073741824
+    size: 536870912
     r_cost: 200
     w_cost: 220
     area: 0
@@ -23,7 +27,7 @@ memories:
       - name: r_port_1
         type: read
         bandwidth_min: 256
-        bandwidth_max: 262144
+        bandwidth_max: 416974
         allocation:
           - I1, tl
           - I2, tl
@@ -32,7 +36,7 @@ memories:
       - name: w_port_1
         type: write
         bandwidth_min: 256
-        bandwidth_max: 262144
+        bandwidth_max: 416974
         allocation:
           - I1, fh
           - I2, fh

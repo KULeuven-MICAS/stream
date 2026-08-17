@@ -1,16 +1,13 @@
-# TPU7x (Ironwood) TensorCore vector unit (VPU) -- one per TensorCore.
+# TPU7x (Ironwood) TensorCore vector unit (VPU).
 #
 # A two-dimensional SIMD machine of (8, 128): 128 lanes x 8 sublanes, with several independent
 # ALUs at each position. It handles activations, elementwise arithmetic and the non-matrix parts
 # of a block -- in a SwiGLU that is the SiLU and the gate multiply.
 #
-# On real silicon the VPU sits inside the TensorCore alongside its eight MXUs and reads/writes the
-# same 64 MiB VMEM. Stream gives a core one operational array, so the VPU is its own core and shares
-# the TensorCore's VMEM (a separate memory core, tpu_v7_vmem.yaml) over the intra-TensorCore bus.
-# That split is what lets the mapper put vector work on vector hardware instead of burning MXU rows.
-#
-# `operand_buffer` is array-local operand staging, not a second scratchpad. Bandwidths are
-# bits/cycle at the 1.1 GHz core clock.
+# On real silicon the VPU sits inside the TensorCore alongside the MXU and shares its VMEM. Stream
+# gives a core one operational array, so the MXU and the VPU are modelled as two cores that share
+# VMEM through a high-bandwidth link. That split is what lets the mapper put vector work on vector
+# hardware instead of burning MXU rows on it.
 name: tpu_v7_vpu
 type: zigzag.compute
 
@@ -27,7 +24,7 @@ memories:
       - name: rw_port_1
         type: read_write
         bandwidth_min: 512
-        bandwidth_max: 52131
+        bandwidth_max: 32768
         allocation:
           - I1, tl
           - I2, tl
@@ -36,7 +33,7 @@ memories:
       - name: rw_port_2
         type: read_write
         bandwidth_min: 512
-        bandwidth_max: 52131
+        bandwidth_max: 32768
         allocation:
           - I1, fh
           - I2, fh
@@ -44,11 +41,9 @@ memories:
           - O, fl
     served_dimensions: [D1, D2]
 
-  # Array-local operand staging (2 MiB): the shared 64 MiB VMEM lives on tpu_v7_vmem.yaml, reached
-  # over the intra-TensorCore bus. Kept small so it stays a staging FIFO, not a second scratchpad.
-  # Port width is the VMEM feed bandwidth at 1.1 GHz.
+  # VMEM as the vector unit sees it: the same 128 MiB scratchpad the MXU streams from.
   operand_buffer:
-    size: 16777216
+    size: 1073741824
     r_cost: 120
     w_cost: 130
     area: 0
@@ -58,7 +53,7 @@ memories:
       - name: r_port_1
         type: read
         bandwidth_min: 256
-        bandwidth_max: 416974
+        bandwidth_max: 262144
         allocation:
           - I1, tl
           - I2, tl
@@ -67,7 +62,7 @@ memories:
       - name: w_port_1
         type: write
         bandwidth_min: 256
-        bandwidth_max: 416974
+        bandwidth_max: 262144
         allocation:
           - I1, fh
           - I2, fh

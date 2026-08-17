@@ -1054,6 +1054,12 @@ class SteadyStateScheduler:
             # never the array's rows-per-column: a layer placed one core per column has nothing
             # to gather and needs a memory tile of its own in each.
             required_nb_memory_cores = min(columns, total_relevant_unrolling)
+        elif node.transfer_type is TransferType.MEM_TO_MEM and columns:
+            # A column's compute cores share that column's one memory tile, so a constant input
+            # staged for a layer split across N columns needs N tiles, never one per unrolled core.
+            # On TPU7x eight MXUs share their TensorCore's VMEM, so a 32-way Gemm split stages
+            # through the 4 column VMEMs, not 32 tiles that do not exist.
+            required_nb_memory_cores = min(columns, total_relevant_unrolling)
         else:
             required_nb_memory_cores = ceil(
                 total_relevant_unrolling / MAX_RELEVANT_FACTOR_PER_TRANSFER_TYPE[node.transfer_type]
