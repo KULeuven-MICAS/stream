@@ -89,19 +89,43 @@ class SolveStats:
     """Number of simplex iterations, or None if not available for this backend."""
 
 
+class PipeliningModel(Enum):
+    """How much of one steady-state iteration the next one may be slid into.
+
+    Both feed the same accounting -- ``total = N * T - (N - 1) * overlap`` -- and differ only in how
+    much of a resource's iteration counts as reclaimable idle.
+
+    SPAN treats a resource as occupied from its first use to its last, so only idle *before* the
+    first and *after* the last counts. A bus that both feeds and drains the compute is busy in the
+    first and the last slot, so it reports zero idle and pins the overlap to zero no matter how long
+    it sits unused in between.
+
+    OCCUPANCY counts only the slots a resource actually uses, which makes ``T - overlap`` the
+    initiation interval of a modulo schedule: ``total = T + (N - 1) * II``. The dependency chain is
+    still paid in full once, in the T term, so nothing is reordered across a dependence -- only
+    throughput improves. It assumes the next iteration may prefetch while the current one computes,
+    which needs a second buffer, so it degrades to SPAN when double buffering is off.
+    """
+
+    SPAN = "span"
+    OCCUPANCY = "occupancy"
+
+
 @dataclass(frozen=True)
 class ConstraintSelection:
-    """Toggle hardware resource constraint groups in TransferAndTensorAllocator.
+    """How TransferAndTensorAllocator builds its model.
 
-    All groups default to True (fully constrained). Set a field to False
-    to skip that constraint group entirely -- no variables are created,
-    no constraints are added, and (for dma_channels) objective terms are omitted.
+    The boolean fields toggle hardware resource constraint groups; all default to True (fully
+    constrained). Set one to False to skip that group entirely -- no variables are created, no
+    constraints are added, and (for dma_channels) objective terms are omitted. ``pipelining``
+    selects which of the two inter-iteration overlap formulations is built.
     """
 
     memory_capacity: bool = True
     object_fifo_depth: bool = True
     buffer_descriptors: bool = True
     dma_channels: bool = True
+    pipelining: PipeliningModel = PipeliningModel.OCCUPANCY
 
     def __post_init__(self) -> None:
         if not self.memory_capacity and self.object_fifo_depth:
@@ -695,23 +719,37 @@ class GurobiBackend(SolverModel):
     def get_sol_count(self) -> int:
         return self._model.SolCount
 
+    def _mip_gap(self) -> float | None:
+        """Relative optimality gap -- the noise floor below which a latency difference between two
+        results is inside the solver's own tolerance rather than evidence of anything.
+
+        ``MIPGap`` is only set on a model Gurobi actually treated as a MIP; one finished in presolve
+        or solved as a continuous relaxation has none, so fall back to the primal/dual bounds, which
+        mean the same thing."""
+        if self._model.SolCount <= 0:
+            return None
+        try:
+            return float(self._model.MIPGap)
+        except Exception:  # noqa: BLE001 -- attribute absent for this model class
+            pass
+        try:
+            primal, dual = float(self._model.ObjVal), float(self._model.ObjBound)
+        except Exception:  # noqa: BLE001
+            return None
+        if not (math.isfinite(primal) and math.isfinite(dual)) or primal == 0:
+            return None
+        return abs(primal - dual) / abs(primal)
+
     def solve_stats(self) -> SolveStats:
         has_solution = self._model.SolCount > 0
         objective: float | None = self._model.ObjVal if has_solution else None
-        if has_solution:
-            try:
-                mip_gap: float | None = self._model.MIPGap
-            except Exception:
-                mip_gap = None
-        else:
-            mip_gap = None
         return SolveStats(
             backend="GUROBI",
             solver="gurobi",
             status=self.get_status(),
             objective=objective,
             solve_time_s=self._model.Runtime,
-            mip_gap=mip_gap,
+            mip_gap=self._mip_gap(),
             node_count=int(self._model.NodeCount),
             iteration_count=int(self._model.IterCount),
         )
@@ -1078,6 +1116,18 @@ class ORToolsBackend(SolverModel):
             return 0
         return 1 if self._result.has_primal_feasible_solution() else 0
 
+    def _mip_gap(self) -> float | None:
+        """Relative optimality gap from MathOpt's primal/dual bounds -- it reports the two bounds
+        rather than the gap itself. This is the noise floor for reading any two results against each
+        other: a latency difference smaller than it is inside the solver's own tolerance."""
+        if self._result is None or not self._result.has_primal_feasible_solution():
+            return None
+        primal = self._result.objective_value()
+        dual = self._result.best_objective_bound()
+        if not (math.isfinite(primal) and math.isfinite(dual)) or primal == 0:
+            return None
+        return abs(primal - dual) / abs(primal)
+
     def solve_stats(self) -> SolveStats:
         has_solution = self._result is not None and self._result.has_primal_feasible_solution()
         objective: float | None = self._result.objective_value() if has_solution else None
@@ -1091,7 +1141,7 @@ class ORToolsBackend(SolverModel):
             status=self.get_status(),
             objective=objective,
             solve_time_s=solve_time_s,
-            mip_gap=None,
+            mip_gap=self._mip_gap(),
             node_count=None,
             iteration_count=None,
         )

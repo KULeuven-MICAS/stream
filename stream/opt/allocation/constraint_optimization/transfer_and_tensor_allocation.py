@@ -28,6 +28,7 @@ from stream.ir.infeasibility import (
     InfeasibilityReportIR,
     InfeasibleAllocationError,
     ResourceRefIR,
+    StructuralConflictIR,
     TileDimIR,
     UnmetConstraintIR,
 )
@@ -43,6 +44,7 @@ from stream.opt.allocation.constraint_optimization.utils import get_active_laten
 from stream.opt.solver import (
     ConstraintSelection,
     ObjectiveLevel,
+    PipeliningModel,
     SolverBackend,
     SolverModel,
     SolverParams,
@@ -50,6 +52,7 @@ from stream.opt.solver import (
     SolverVarType,
     create_solver,
 )
+from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import HasOutputs, TransferType
 from stream.workload.steady_state.iteration_space import (
     IterationVariableType,
@@ -69,6 +72,9 @@ from stream.workload.workload import (
 )
 
 _logger = logging.getLogger(__name__)
+
+_OCCUPANCY_TOP_TENSORS = 8
+"""Largest resident tensors reported per core: enough to see what sets the shrink floor, not a dump."""
 
 TensorPlacementChoice: TypeAlias = tuple[Core, ...]
 
@@ -162,6 +168,10 @@ class TransferAndTensorAllocator:
         # reported as an intuitive "demand vs bound" inequality with per-contributor terms.
         self._resource_bounds: dict[tuple[str, int], float] = {}
         self._resource_terms: dict[tuple[str, int], dict[str, float]] = defaultdict(dict)
+        # core id -> [(indicator, bits it contributes when the indicator is 1, tensor name)], the term
+        # list of that core's memory-capacity constraint. Kept so `_memory_occupancy()` can report the
+        # residency the solver actually chose, which is the floor a capacity SHRINK must respect.
+        self._memory_load_terms: dict[int, list[tuple[SolverVar, int, str]]] = defaultdict(list)
 
         # primary decision vars
         self.x_tensor_choice: dict[tuple[Tensor, TensorPlacementChoice], SolverVar] = {}
@@ -185,6 +195,7 @@ class TransferAndTensorAllocator:
         self.slot_latency: dict[int, SolverVar] = {}
         self.overlap: SolverVar | None = None
         self.total_latency: SolverVar | None = None
+        self.recurrence_bound: int = 0
 
         # transfer fire helpers init
         self._ensure_same_ssis_for_all_transfers()
@@ -338,7 +349,11 @@ class TransferAndTensorAllocator:
                 else:
                     bds_needed *= Nl
                 self.bds_needed_levels[(t, i)] = bds_needed
-            if self.force_double_buffering:
+            # A second buffer only buys something when the tensor actually has more than one tile to
+            # alternate between. A loop-invariant tensor (a weight matrix: every steady-state loop is
+            # ABSENT or INVARIANT for it, so tiles_factor stays 1) holds the same tile for the whole
+            # run -- reserving twice its size just halves the memory available to everything else.
+            if self.force_double_buffering and tiles_factor > 1:
                 self.tiles_needed_levels[(t, -1)] = 2
 
     def _is_const_i(self, tr: TransferNode) -> bool:
@@ -803,6 +818,11 @@ class TransferAndTensorAllocator:
                             base_name=f"memload_{t.name}_{_resource_key(c)}_L{stop}",
                         )
                         self.core_load[c] = self.core_load[c] + req_size * uz._raw
+                        # Keep the indicator alongside its coefficient so the SOLVED residency can be
+                        # recomputed after the solve. `core_load` is a raw backend expression whose
+                        # value is not portably readable, and the residency is the one number that
+                        # says how far a memory could be SHRUNK without breaking this mapping.
+                        self._memory_load_terms[c.id].append((uz, req_size, t.name))
                     if min_req is not None:  # bytes this tensor's tile adds if resident on c
                         self._resource_terms[("memory_capacity", c.id)][t.name] = {
                             "value": min_req / 8,
@@ -946,11 +966,17 @@ class TransferAndTensorAllocator:
                 assert len(inputs) == 1, "Expected exactly one input tensor for MEM_TO_COMPUTE transfer."
                 input_tensor = inputs[0]
                 for output_tensor in outputs:
-                    for s in range(-1, len(relevancies)):
-                        self.model.add_constr(
-                            self.z_stop[(input_tensor, s)] == self.z_stop[(output_tensor, s)],
-                            name=f"reuse_eq_output_{tr.name}_L{s}",
-                        )
+                    # On the way in the memory tile need only hold the tensor for AT LEAST as long as
+                    # the compute tile reads it: its reuse level bounds the compute level from above,
+                    # it does not equal it. Equating the two lets the compute tile's residency decide
+                    # how long the memory keeps a tensor, evicting data that is invariant across a
+                    # deeper loop and re-fetching it off-chip -- the activation re-stream a broadcast
+                    # operand would otherwise avoid. `_reuse_level_expr` is the chosen level as a
+                    # linear expr, so `>=` is exactly "held at least as long".
+                    self.model.add_constr(
+                        self._reuse_level_expr(input_tensor) >= self._reuse_level_expr(output_tensor),
+                        name=f"reuse_ge_output_{tr.name}",
+                    )
 
     def _force_reuse_includes_spatial(self):
         """
@@ -1053,23 +1079,45 @@ class TransferAndTensorAllocator:
         self._set_total_latency_and_objective()
 
     def _init_idle_indicators(self, max_s: int, big_m: int) -> None:
-        self.idleS: dict[tuple[Resource, int], SolverVar] = {}
-        self.idleE: dict[tuple[Resource, int], SolverVar] = {}
-        self._init_link_idle_indicators(max_s, big_m)
-        self._init_core_idle_indicators(max_s, big_m)
+        """Per (resource, slot), the binaries whose sum says how much of that slot's latency the next
+        iteration may reclaim. Both pipelining models produce the same shape, so everything
+        downstream -- the idle-latency vars, the overlap var, the reporting -- is model-agnostic."""
+        self.idle_ind: dict[tuple[Resource, int], list[SolverVar]] = {}
+        for res, active_s, used in self._resource_activity(max_s, big_m):
+            builder = (
+                self._add_occupancy_indicators
+                if self._pipelining is PipeliningModel.OCCUPANCY
+                else self._add_span_indicators
+            )
+            builder(res, active_s, used, max_s, big_m)
 
-    def _init_link_idle_indicators(self, max_s: int, big_m: int) -> None:
+    @property
+    def _pipelining(self) -> PipeliningModel:
+        """The overlap formulation actually in force. OCCUPANCY lets the next iteration prefetch
+        while this one computes, which needs somewhere to prefetch *into* -- so without double
+        buffering the reservation isn't there and the conservative SPAN model is what holds."""
+        selected = self.constraint_selection.pipelining
+        if selected is PipeliningModel.OCCUPANCY and not self.force_double_buffering:
+            _logger.warning("PipeliningModel.OCCUPANCY needs double buffering; falling back to SPAN.")
+            return PipeliningModel.SPAN
+        return selected
+
+    def _resource_activity(self, max_s: int, big_m: int) -> list[tuple[Resource, dict[int, Any], SolverVar]]:
+        """Per resource: whether it is active in each slot, and whether it is used at all. Links get
+        an expression over the path choices (the solver picks those); compute cores get a constant,
+        their mapping being fixed."""
+        out: list[tuple[Resource, dict[int, Any], SolverVar]] = []
+
         self.link_used: dict[CommunicationLink, SolverVar] = {}
-        self.prefixs: dict[CommunicationLink, list[SolverVar]] = {}
-        self.suffixs: dict[CommunicationLink, list[SolverVar]] = {}
         for link in self.link_set:
-            active_s: dict[int, Any] = {}
-            for s in range(max_s + 1):
-                active_s[s] = self.model.quicksum(
+            active_s: dict[int, Any] = {
+                s: self.model.quicksum(
                     self.y_path_choice[(tr, choice)]._raw
                     for (tr, choice) in self.y_path_choice
                     if link in self.links_in_choice[(tr, choice)] and self.slot_of[tr] == s
                 )
+                for s in range(max_s + 1)
+            }
             lu = self.model.add_var(vtype=SolverVarType.BINARY, name=f"linkUsed_{_resource_key(link)}")
             self.link_used[link] = lu
             sum_active = self.model.quicksum(active_s.values())
@@ -1082,44 +1130,8 @@ class TransferAndTensorAllocator:
                 kind="link_contention",
                 resource=link,
             )
+            out.append((link, active_s, lu))
 
-            prefix = [
-                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"pre_{_resource_key(link)}_{s}")
-                for s in range(max_s + 1)
-            ]
-            suffix = [
-                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"suf_{_resource_key(link)}_{s}")
-                for s in range(max_s + 1)
-            ]
-            self.prefixs[link] = prefix
-            self.suffixs[link] = suffix
-            self.model.add_constr(prefix[0] == active_s[0])
-            self.model.add_constr(suffix[-1] == active_s[max_s])
-            for s in range(1, max_s + 1):
-                self.model.add_constr(prefix[s] == prefix[s - 1] + active_s[s])
-                self.model.add_constr(suffix[max_s - s] == suffix[max_s - s + 1] + active_s[max_s - s])
-
-            for s in range(max_s + 1):
-                is_ = self.model.add_var(vtype=SolverVarType.BINARY, name=f"idleS_{_resource_key(link)}_{s}")
-                ie_ = self.model.add_var(vtype=SolverVarType.BINARY, name=f"idleE_{_resource_key(link)}_{s}")
-                self.idleS[(link, s)] = is_
-                self.idleE[(link, s)] = ie_
-
-                self.model.add_constr(prefix[s] <= big_m * (1 - is_))
-                self.model.add_constr(prefix[s] >= lu - big_m * is_)
-                self.model.add_constr(suffix[s] <= big_m * (1 - ie_))
-                self.model.add_constr(suffix[s] >= lu - big_m * ie_)
-                self.model.add_constr(is_ >= 1 - lu)
-                self.model.add_constr(ie_ <= lu)
-
-    def _init_core_idle_indicators(self, max_s: int, big_m: int) -> None:
-        # Collect the set of all compute cores from the (fixed) mapping
-        core_set: set[Core] = set()
-        for node in self.ssc_nodes:
-            for group in self.mapping.get(node).resource_allocation:
-                core_set.update(group)
-
-        # Build core → set of slots in which it is active
         core_active_slots: dict[Core, set[int]] = defaultdict(set)
         for node in self.ssc_nodes:
             s = self.slot_of[node]
@@ -1127,42 +1139,61 @@ class TransferAndTensorAllocator:
                 for core in group:
                     core_active_slots[core].add(s)
 
-        for core in core_set:
-            active_slots = core_active_slots[core]
-
-            # active_s[s] is a constant 0/1 for compute cores (mapping is fixed)
-            active_s: dict[int, int] = {s: (1 if s in active_slots else 0) for s in range(max_s + 1)}
-
-            # lu: core is used (always 1 since we only iterate cores from the mapping)
+        for core, active_slots in core_active_slots.items():
             lu = self.model.add_var(vtype=SolverVarType.BINARY, name=f"coreUsed_{_resource_key(core)}")
             self.model.add_constr(lu == 1, name=f"core_used_def_{_resource_key(core)}")
+            out.append((core, {s: (1 if s in active_slots else 0) for s in range(max_s + 1)}, lu))
 
-            prefix = [
-                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"pre_{_resource_key(core)}_{s}")
-                for s in range(max_s + 1)
-            ]
-            suffix = [
-                self.model.add_var(vtype=SolverVarType.INTEGER, name=f"suf_{_resource_key(core)}_{s}")
-                for s in range(max_s + 1)
-            ]
-            self.model.add_constr(prefix[0] == active_s[0])
-            self.model.add_constr(suffix[-1] == active_s[max_s])
-            for s in range(1, max_s + 1):
-                self.model.add_constr(prefix[s] == prefix[s - 1] + active_s[s])
-                self.model.add_constr(suffix[max_s - s] == suffix[max_s - s + 1] + active_s[max_s - s])
+        return out
 
-            for s in range(max_s + 1):
-                is_ = self.model.add_var(vtype=SolverVarType.BINARY, name=f"idleS_{_resource_key(core)}_{s}")
-                ie_ = self.model.add_var(vtype=SolverVarType.BINARY, name=f"idleE_{_resource_key(core)}_{s}")
-                self.idleS[(core, s)] = is_
-                self.idleE[(core, s)] = ie_
+    def _add_span_indicators(
+        self, res: Resource, active_s: dict[int, Any], used: SolverVar, max_s: int, big_m: int
+    ) -> None:
+        """Legacy model: only the slots before a resource's first use and after its last one are
+        reclaimable. Running prefix/suffix sums of the activity locate those two ends."""
+        prefix = [
+            self.model.add_var(vtype=SolverVarType.INTEGER, name=f"pre_{_resource_key(res)}_{s}")
+            for s in range(max_s + 1)
+        ]
+        suffix = [
+            self.model.add_var(vtype=SolverVarType.INTEGER, name=f"suf_{_resource_key(res)}_{s}")
+            for s in range(max_s + 1)
+        ]
+        self.model.add_constr(prefix[0] == active_s[0])
+        self.model.add_constr(suffix[-1] == active_s[max_s])
+        for s in range(1, max_s + 1):
+            self.model.add_constr(prefix[s] == prefix[s - 1] + active_s[s])
+            self.model.add_constr(suffix[max_s - s] == suffix[max_s - s + 1] + active_s[max_s - s])
 
-                self.model.add_constr(prefix[s] <= big_m * (1 - is_))
-                self.model.add_constr(prefix[s] >= lu - big_m * is_)
-                self.model.add_constr(suffix[s] <= big_m * (1 - ie_))
-                self.model.add_constr(suffix[s] >= lu - big_m * ie_)
-                self.model.add_constr(is_ >= 1 - lu)
-                self.model.add_constr(ie_ <= lu)
+        for s in range(max_s + 1):
+            is_ = self.model.add_var(vtype=SolverVarType.BINARY, name=f"idleS_{_resource_key(res)}_{s}")
+            ie_ = self.model.add_var(vtype=SolverVarType.BINARY, name=f"idleE_{_resource_key(res)}_{s}")
+            self.idle_ind[(res, s)] = [is_, ie_]
+
+            self.model.add_constr(prefix[s] <= big_m * (1 - is_))
+            self.model.add_constr(prefix[s] >= used - big_m * is_)
+            self.model.add_constr(suffix[s] <= big_m * (1 - ie_))
+            self.model.add_constr(suffix[s] >= used - big_m * ie_)
+            self.model.add_constr(is_ >= 1 - used)
+            self.model.add_constr(ie_ <= used)
+
+    def _add_occupancy_indicators(
+        self, res: Resource, active_s: dict[int, Any], used: SolverVar, max_s: int, big_m: int
+    ) -> None:
+        """Modulo-scheduling model: every slot the resource does not use is reclaimable, wherever it
+        sits. One indicator per slot, forced to the complement of activity -- no prefix/suffix
+        machinery, so this is also the cheaper of the two to solve."""
+        del used
+        for s in range(max_s + 1):
+            idle = self.model.add_var(vtype=SolverVarType.BINARY, name=f"idle_{_resource_key(res)}_{s}")
+            self.idle_ind[(res, s)] = [idle]
+            # Activity is a path-choice expression for a link but a plain int for a compute core, so
+            # pin it to a variable first and compare against that -- the same shape the span model
+            # gets from its prefix sums.
+            act = self.model.add_var(vtype=SolverVarType.INTEGER, name=f"act_{_resource_key(res)}_{s}")
+            self.model.add_constr(act == active_s[s], name=f"act_def_{_resource_key(res)}_{s}")
+            self.model.add_constr(act <= big_m * (1 - idle), name=f"idle_off_{_resource_key(res)}_{s}")
+            self.model.add_constr(act >= 1 - idle, name=f"idle_on_{_resource_key(res)}_{s}")
 
     def _create_idle_latency_vars(self, max_s: int) -> None:
         self.idle_lat: dict[Resource, SolverVar] = {}
@@ -1179,29 +1210,18 @@ class TransferAndTensorAllocator:
                 lat = ceil(self._transfer_latency_for_path(tr, choice))
                 slot_latency_ub = max(slot_latency_ub, lat)
 
-        for res in {r for r, _ in self.idleS} | {r for r, _ in self.idleE}:
+        for res in {r for r, _ in self.idle_ind}:
             terms = []
             for s in range(max_s + 1):
-                idle_s = self.idleS.get((res, s), None)
-                idle_e = self.idleE.get((res, s), None)
-
-                if idle_s is not None:
-                    prod_s = self._add_binary_scaled_continuous(
-                        binary_var=idle_s,
-                        continuous_var=self.slot_latency[s],
-                        continuous_ub=slot_latency_ub,
-                        base_name=f"idleS_lat_{_resource_key(res)}_{s}",
+                for i, ind in enumerate(self.idle_ind.get((res, s), ())):
+                    terms.append(
+                        self._add_binary_scaled_continuous(
+                            binary_var=ind,
+                            continuous_var=self.slot_latency[s],
+                            continuous_ub=slot_latency_ub,
+                            base_name=f"idle{i}_lat_{_resource_key(res)}_{s}",
+                        )
                     )
-                    terms.append(prod_s)
-
-                if idle_e is not None:
-                    prod_e = self._add_binary_scaled_continuous(
-                        binary_var=idle_e,
-                        continuous_var=self.slot_latency[s],
-                        continuous_ub=slot_latency_ub,
-                        base_name=f"idleE_lat_{_resource_key(res)}_{s}",
-                    )
-                    terms.append(prod_e)
 
             v = self.model.add_var(vtype=SolverVarType.INTEGER, name=f"idleLat_{_resource_key(res)}")
             self.model.add_constr(
@@ -1214,6 +1234,46 @@ class TransferAndTensorAllocator:
         self.overlap = overlap
         for v in self.idle_lat.values():
             self.model.add_constr(overlap <= v)
+        # Resource idle bounds how much of an iteration is free; a loop-carried state bounds how much
+        # of it may be *reordered*. Both cap the overlap, so II ends up max(ResMII, RecMII).
+        rec = self.recurrence_bound = self._recurrence_bound()
+        if rec > 0:
+            self.model.add_constr(
+                overlap <= self.model.quicksum(v._raw for v in self.slot_latency.values()) - rec,
+                name="overlap_recurrence_bound",
+            )
+
+    def _recurrence_bound(self) -> int:
+        """Cycles of an iteration that a loop-carried state forbids overlapping (modulo scheduling's
+        RecMII). A recurrence reads its state at t-1 and writes it at t, so the next iteration's
+        update cannot begin until this one's chain from that read to that write has finished. Only
+        that chain is bound -- an SSM's projections and gating sit off the cycle and still pipeline,
+        which is why this is a second bound on the overlap rather than a switch that disables it.
+
+        Zero when nothing carries state, which is every feed-forward workload."""
+        carriers = {n for n in self.ssc_nodes if any(is_state_operand(n, t) for t in n.inputs)}
+        if not carriers:
+            return 0
+        latency = {
+            n: ceil(max((self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)), default=0))
+            for n in self.ssc_nodes
+        }
+        # Longest chain, in node latency, running from one carrier to another (a single scan node is
+        # its own chain). Walking in dataflow order lets one pass carry the running maximum.
+        longest_from_carrier: dict[Any, int] = {}
+        worst = 0
+        for node in self.workload.dataflow_sort():
+            if node not in latency:
+                continue
+            reaching = [longest_from_carrier[p] for p in self.workload.predecessors(node) if p in longest_from_carrier]
+            best = max(reaching, default=0) + latency[node] if reaching else 0
+            if node in carriers:
+                best = max(best, latency[node])
+            if best:
+                longest_from_carrier[node] = best
+            if node in carriers:
+                worst = max(worst, best)
+        return worst
 
     def _transfer_dma_usage_expr(self, tr: TransferNode, core: Core):
         return self.model.quicksum(self._tensor_on_core_expr(t, core) for t in tr.tensors if isinstance(t, Tensor))
@@ -1345,6 +1405,44 @@ class TransferAndTensorAllocator:
         ("link_used", "link_contention"),
         ("dma", "dma_channels"),
     )
+
+    # Structural (non-capacity) conflict families: an IIS constraint-name prefix -> (short title,
+    # plain-language cause). These are the scheduling/reuse rules that make a mapping infeasible even when
+    # no single core is over budget -- the AIE "keep partials on-chip" rules and the reuse-level selector.
+    # Most specific prefix first. New structural rules add one line here.
+    _STRUCTURAL_FAMILIES: tuple[tuple[str, str, str], ...] = (
+        (
+            "force_intermediate_reuse",
+            "Fused intermediate must stay resident",
+            "A fused group's intermediate is pinned on-chip and re-read rather than spilled to HBM (the AIE "
+            "code-gen cannot stream partial results out and back), which fixes its reuse level across the fused loop.",
+        ),
+        (
+            "force_output_reuse",
+            "Output must stay resident",
+            "An operator's output is pinned resident and reused in place (no partial spill to HBM), "
+            "which fixes its reuse level.",
+        ),
+        (
+            "zStop_Choose_One",
+            "No consistent reuse schedule",
+            "A tensor's reuse level (how long it stays resident) has no value consistent with the other pinned tensors "
+            "-- typically a streamed (K-tiled) weight competing with a pinned activation for the same on-chip budget.",
+        ),
+    )
+
+    def _structural_conflicts(self, names: list[str]) -> list[StructuralConflictIR]:
+        """Group the structural IIS constraint names into plain-language conflicts. A name that matches no
+        structural family is left out of the grouped view (still visible in ``unbound_constraints``)."""
+        buckets: dict[str, StructuralConflictIR] = {}
+        for name in names:
+            match = next((fam for fam in self._STRUCTURAL_FAMILIES if name.startswith(fam[0])), None)
+            if match is None:
+                continue
+            key, title, explanation = match
+            bucket = buckets.setdefault(key, StructuralConflictIR(title=title, explanation=explanation, constraints=[]))
+            bucket.constraints.append(name)
+        return list(buckets.values())
 
     # Per resource-capacity family: how to phrase and quantify its unmet inequality. `term_prefixes`
     # are the IIS constraint-name prefixes whose subject is a demand contributor for this family. A new
@@ -1584,6 +1682,7 @@ class TransferAndTensorAllocator:
             solver=solver,
             group=None,
             iis_available=False,
+            nature="structural",
             resources=[],
             unbound_constraints=[reason],
             summary=(
@@ -1644,11 +1743,6 @@ class TransferAndTensorAllocator:
         family (memory / object-FIFO / buffer descriptors) is among its conflicts -- the quantitative
         unmet inequality."""
         kinds = sorted(entry["kinds"])
-        reason = (
-            "; ".join(self._KIND_REASON.get(k, k.replace("_", " ")) for k in kinds)
-            if kinds
-            else "conflicting allocation constraints"
-        )
         ref = entry["ref"]
         unmet: UnmetConstraintIR | None = None
         if ref.kind == "core" and ref.id.isdigit():
@@ -1656,6 +1750,22 @@ class TransferAndTensorAllocator:
                 unmet = self._build_unmet(fam, int(ref.id), entry["constraints"])
                 if unmet is not None:
                     break
+        # A quantified overflow (gap > 0) reads as the hardware limit it broke. A non-positive gap means
+        # the IIS pulled this capacity constraint into a structural conflict (a reuse/routing rule touching
+        # this core's memory) without the core being over budget -- so it is "involved", not "over budget".
+        # Presenting that as "capacity exceeded / short by -1.9 MB" is the misleading claim we drop here.
+        overflow = unmet is not None and unmet.gap > 0
+        capacity_kinds = self._FAMILY_META.keys() | {"memory_capacity"}
+        if overflow:
+            reason = "; ".join(self._KIND_REASON.get(k, k.replace("_", " ")) for k in kinds)
+        else:
+            unmet = None
+            if kinds and all(k in capacity_kinds for k in kinds):
+                reason = "involved in a reuse/scheduling conflict (not over budget)"
+            elif kinds:
+                reason = "; ".join(self._KIND_REASON.get(k, k.replace("_", " ")) for k in kinds)
+            else:
+                reason = "conflicting allocation constraints"
         return ImplicatedResourceIR(
             resource=ref, constraint_kinds=kinds, reason=reason, constraints=entry["constraints"], unmet=unmet
         )
@@ -1697,19 +1807,34 @@ class TransferAndTensorAllocator:
         if not resources:
             resources = self._direct_capacity_overflows()
 
+        # A structural conflict is a reuse/routing rule, not a full core. Group those constraints -- from
+        # the unbound set AND from any resource dragged in without an overflow -- into plain-language causes.
+        structural_names = list(unbound) + [c for r in resources if r.unmet is None for c in r.constraints]
+        conflicts = self._structural_conflicts(structural_names)
+
         quantified = next((r for r in resources if r.unmet is not None), None)
+        involved_cores = ", ".join(r.resource.label for r in resources if r.resource.kind == "core")
         if quantified is not None:
+            nature = "capacity"
             summary = f"Infeasible mapping — {quantified.resource.label}: {quantified.unmet.statement}"
+        elif conflicts:
+            nature = "structural"
+            lead = conflicts[0]
+            summary = f"Infeasible mapping — structural conflict: {lead.title.lower()}. {lead.explanation}" + (
+                f" Involves {involved_cores}." if involved_cores else ""
+            )
         elif resources:
-            cores = ", ".join(r.resource.label for r in resources if r.resource.kind == "core")
-            summary = f"Infeasible mapping: {resources[0].reason}" + (f" on {cores}" if cores else "")
+            nature = "unknown"
+            summary = f"Infeasible mapping: {resources[0].reason}" + (f" on {involved_cores}" if involved_cores else "")
         elif not iis_available:
+            nature = "unknown"
             summary = (
                 f"Infeasible mapping ({status}); no single per-core capacity is over its recorded budget, "
                 f"so the conflict is structural (e.g. transfer routing). The {stats.backend} backend cannot "
                 "compute an IIS -- re-run with the Gurobi backend for the minimal conflict set."
             )
         else:
+            nature = "unknown"
             summary = (
                 f"Infeasible mapping ({status}); {len(iis_names)} conflicting constraints, "
                 "none pinned to a single resource."
@@ -1721,7 +1846,9 @@ class TransferAndTensorAllocator:
             solver=stats.solver,
             group=group,
             iis_available=iis_available,
+            nature=nature,
             resources=resources,
+            conflicts=conflicts,
             unbound_constraints=unbound,
             summary=summary,
         )
@@ -2373,7 +2500,57 @@ class TransferAndTensorAllocator:
             "aggregate": aggregate,
             "overlap": self._overlap_section(),
             "tensor_reuse": self._tensor_reuse_breakdown(),
+            "memory_occupancy": self._memory_occupancy(),
         }
+
+    def _memory_occupancy(self) -> list[dict[str, Any]]:
+        """Per core: how many bits the solved placement actually keeps resident, against capacity.
+
+        This is the term-by-term value of the memory-capacity constraint
+        (``sum(req_size x u x z) <= get_memory_capacity()``) at the solution, so it is the allocator's
+        own residency figure rather than a re-derivation. It answers the question the stall vector
+        cannot: **how much smaller could this memory be and still hold this mapping?**
+
+        Reported only for cores whose constraint was actually built. A core absent from the list has
+        no measurement -- which is not the same as "it holds nothing", and a consumer must treat the
+        two differently, exactly as ``evidence: "none"`` differs from ``stall_cycles == 0``.
+        """
+        rows: list[dict[str, Any]] = []
+        cores = {c.id: c for c in self.accelerator.core_list}
+        for core_id, terms in sorted(self._memory_load_terms.items()):
+            core = cores.get(core_id)
+            if core is None:
+                continue
+            resident = 0
+            per_tensor: dict[str, int] = {}
+            try:
+                for indicator, bits, tensor_name in terms:
+                    # A MILP binary comes back as 0.9999...; anything above the midpoint is a 1.
+                    if float(indicator.X) <= self.VAR_THRESHOLD:
+                        continue
+                    resident += bits
+                    per_tensor[tensor_name] = per_tensor.get(tensor_name, 0) + bits
+            except Exception:  # noqa: BLE001 -- an unreadable solution means no measurement, not zero
+                continue
+            try:
+                capacity = int(core.get_memory_capacity())
+            except Exception:  # noqa: BLE001
+                continue
+            rows.append(
+                {
+                    "core_id": core_id,
+                    "core_name": str(getattr(core, "type", "")) or str(core),
+                    "resident_bits": resident,
+                    "capacity_bits": capacity,
+                    "utilization": (resident / capacity) if capacity else None,
+                    # Largest contributors first: the tensors that set the floor on any shrink.
+                    "tensors": [
+                        {"tensor": name, "bits": bits}
+                        for name, bits in sorted(per_tensor.items(), key=lambda kv: -kv[1])[:_OCCUPANCY_TOP_TENSORS]
+                    ],
+                }
+            )
+        return rows
 
     def _tensor_reuse_breakdown(self) -> list[dict[str, Any]]:
         """Per-tensor on-chip reuse chosen by the solver -- to make the fused execution legible.
@@ -2414,16 +2591,31 @@ class TransferAndTensorAllocator:
         return rows
 
     def _overlap_section(self) -> dict[str, Any]:
-        """Overlap summary: the inter-iteration overlap, which resource(s) bind it, and the
-        per-resource slack it is the minimum of. ``binding_resources`` are those whose slack equals
-        the overlap (a busy-throughout resource has slack 0 and pins the overlap to 0)."""
+        """Overlap summary: the inter-iteration overlap, which resource(s) bind it, the per-resource
+        slack it is the minimum of, and the recurrence bound that separately caps it.
+
+        ``binding_resources`` are those at the MINIMUM slack -- the resource-side cap on the overlap
+        (a busy-throughout resource has slack 0 and pins the overlap to 0). Testing ``slack ==
+        overlap`` instead would be empty whenever the solved overlap sits strictly below that cap,
+        which it routinely does: the primary objective is a *sum* in which total latency trades
+        against DMA balance, so the optimum need not push the overlap onto its bound, and the
+        recurrence bound caps it separately. An empty set reads as "nothing limits the pipelining",
+        which is never true. ``recurrence_bound_cycles`` is modulo scheduling's RecMII: 0 for every
+        feed-forward workload, so a non-zero value means a loop-carried state, not a resource, is
+        what the overlap is up against."""
         slack = self._resource_slack_breakdown()
         try:
             overlap_cycles = int(self.overlap.X) if self.overlap is not None else None
         except Exception:  # noqa: BLE001
             overlap_cycles = None
-        binding = [d["resource"] for d in slack if overlap_cycles is not None and d["slack_cycles"] <= overlap_cycles]
-        return {"overlap_cycles": overlap_cycles, "binding_resources": binding, "per_resource_slack": slack}
+        min_slack = min((d["slack_cycles"] for d in slack), default=None)
+        binding = [d["resource"] for d in slack if d["slack_cycles"] == min_slack]
+        return {
+            "overlap_cycles": overlap_cycles,
+            "binding_resources": binding,
+            "per_resource_slack": slack,
+            "recurrence_bound_cycles": self.recurrence_bound,
+        }
 
     def _resource_slack_breakdown(self) -> list[dict[str, Any]]:
         """Per-resource steady-state slack (boundary idle within one iteration), ascending.

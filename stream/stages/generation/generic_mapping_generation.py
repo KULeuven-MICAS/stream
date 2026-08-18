@@ -3,8 +3,12 @@ import logging
 from stream.mapping.generic_generator import GenericMappingGenerator
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
+from stream.workload.node import HasIterationSpace
 
 logger = logging.getLogger(__name__)
+
+#: Sentinel for ``fusion_cut_points``: give every layer its own fusion group.
+PER_LAYER = "per-layer"
 
 
 class GenericMappingGenerationStage(Stage):
@@ -26,8 +30,25 @@ class GenericMappingGenerationStage(Stage):
     def run(self):
         from stream.workload.workload import determine_fusion_cut_points  # noqa: PLC0415
 
-        cut_points = determine_fusion_cut_points(self.workload)
-        logger.info(f"Determined {len(cut_points)} fusion cut points: {cut_points}")
+        # Caller-supplied cuts win over the derived ones. Cutting at every node is how a
+        # layer-by-layer mapping is expressed: each layer becomes its own fused group, so nothing
+        # is kept on chip between them -- the baseline a fused mapping is measured against.
+        cut_points = self.ctx.get("fusion_cut_points", None)
+        if cut_points == PER_LAYER:
+            # Every computation node starts its own group. Derived from the workload's own dataflow
+            # order rather than a caller-written list, because which nodes end up adjacent is a
+            # property of the graph -- naming them by hand silently fuses whichever pair the order
+            # happened to make neighbours.
+            # A cut point *ends* its group, so cutting after every layer but the last gives one group
+            # per layer; cutting at the last as well would leave a trailing group with no computation.
+            names = [n.name for n in self.workload.dataflow_sort() if isinstance(n, HasIterationSpace)]
+            cut_points = names[:-1]
+            logger.info(f"Layer-by-layer: cutting at every layer boundary ({len(cut_points)} cuts)")
+        elif cut_points is None:
+            cut_points = determine_fusion_cut_points(self.workload)
+            logger.info(f"Determined {len(cut_points)} fusion cut points: {cut_points}")
+        else:
+            logger.info(f"Using {len(cut_points)} caller-supplied fusion cut points: {cut_points}")
 
         generator = GenericMappingGenerator(
             accelerator=self.accelerator,

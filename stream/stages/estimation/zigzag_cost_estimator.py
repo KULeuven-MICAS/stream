@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from math import ceil
 
 import zigzag.mapping.spatial_mapping as zigzag_spatial_mapping
 import zigzag.mapping.temporal_mapping as zigzag_temporal_mapping
@@ -199,6 +200,9 @@ class ZigZagCostEstimator:
         factors = self._inter_core_factors(node)
         data: dict[ZigZagLayerDim, int] = {}
         for i, dim in enumerate(dims):
+            # `workload` here is already the tiled workload TilingGenerationStage produced, so the
+            # dimension sizes are one steady-state iteration's worth. Only the inter-core split still
+            # has to be divided out.
             full = self.workload.get_dimension_size(dim)
             data[ZigZagLayerDim(f"D{i}")] = self._per_core_size(full, factors.get(str(dim), 1))
         return ZigZagLayerDimSizes(data)
@@ -316,27 +320,44 @@ class ZigZagCostEstimator:
                 cme=cme,
                 mapping=getattr(cme, "mapping", None),
                 layer=node,
+                metadata={"backend": "zigzag"},
             )
-        except Exception:
+        except Exception as exc:
             # Fallback: this core is not costable by ZigZag -- either it has no ZigZag backend (e.g. an
-            # AIE tile, whose `dataflows`/`mem_hierarchy_dict` do not exist) or spatial-mapping generation
-            # crashed for certain Conv configs. Use an ideal-cycle estimate from the (core-independent)
-            # layer dimension sizes so a mappable node still gets a cost instead of failing the run.
+            # AIE tile, whose `dataflows`/`mem_hierarchy_dict` do not exist) or spatial-mapping
+            # generation rejected the pair. Report *why*: a bare "estimation failed" leaves a silently
+            # degraded number in the results with nothing to act on.
             logger.warning(
-                f"ZigZag estimation failed for {node.name} on core {core.id}. Falling back to ideal-cycle estimate."
+                "ZigZag estimation failed for %s on core %s (%s: %s). Falling back to an ideal-cycle estimate.",
+                node.name,
+                core.id,
+                type(exc).__name__,
+                exc,
             )
             from functools import reduce  # noqa: PLC0415
 
             dim_sizes = self.get_layer_node_attributes(node).layer_dim_sizes
-            ideal_cycle = float(reduce(lambda a, b: a * b, dim_sizes.data.values(), 1))
+            total_ops = float(reduce(lambda a, b: a * b, dim_sizes.data.values(), 1))
+            # Spread the work over the core's operational array and charge the op's real cycle cost.
+            # Ignoring both -- as this fallback used to -- prices every unit of work at one scalar
+            # cycle, which reported an elementwise op on a 1024-lane vector core as a thousand times
+            # slower than the hardware can run it.
+            # A core that describes no array at all -- an aie2 tile -- has no `operational_array` to
+            # ask, and `Core.__getattr__` raises rather than returning None. The default has to be on
+            # THAT lookup, not only on the attribute inside it: reaching for it first turned a core
+            # whose array is simply not modelled into a crash that took the whole run with it.
+            array = getattr(core, "operational_array", None)
+            unit_count = max(1, int(getattr(array, "total_unit_count", 1) or 1))
+            ideal_cycle = ceil(total_ops / unit_count) * self.get_cc_per_op(node.type.lower())
             return CoreCostEntry(
                 energy_total=0.0,
-                latency_total=ideal_cycle,
-                ideal_cycle=ideal_cycle,
-                ideal_temporal_cycle=ideal_cycle,
+                latency_total=float(ideal_cycle),
+                ideal_cycle=float(ideal_cycle),
+                ideal_temporal_cycle=float(ideal_cycle),
                 cme=None,
                 mapping=None,
                 layer=node,
+                metadata={"backend": "ideal-cycle"},
             )
 
     def run_zigzag(self, node: ComputationNode, core: Core) -> CostModelEvaluation:

@@ -14,7 +14,7 @@ from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
-from stream.stages.estimation.zigzag_cost_estimator import ZigZagCostEstimator
+from stream.stages.estimation.core_cost_backends import CoreEstimator, select_backend
 from stream.stages.stage import Stage, StageCallable
 from stream.visualization.cost_model_evaluation_lut import (
     visualize_cost_lut_pickle,
@@ -123,24 +123,10 @@ class CoreCostEstimationStage(Stage):
         for n in same_name_nodes:
             self.cost_lut.remove_node(n)
 
-    def get_estimator(self, core: Core):
-        if self.is_aie_compute_core(core):
-            # Lazy import: AIECostEstimator pulls in the AIE toolchain (xdsl-aie), which is an
-            # optional install. Only AIE compute cores need it, so keep the base path import-clean.
-            from stream.stages.estimation.aie_cost_estimator import AIECostEstimator  # noqa: PLC0415
-
-            return AIECostEstimator(self.workload, self.mapping)
-        return ZigZagCostEstimator(
-            workload=self.workload,
-            accelerator=self.accelerator,
-            mapping=self.mapping,
-            temporal_mapping_type=self.temporal_mapping_type,
-            loma_lpf_limit=self.loma_lpf_limit,
-            nb_spatial_mappings_generated=self.nb_spatial_mappings_generated,
-        )
-
-    def is_aie_compute_core(self, core: Core) -> bool:
-        return str(core.core_type).startswith("aie2.") and core.type == "compute"
+    def get_estimator(self, core: Core) -> CoreEstimator:
+        # The AIE-vs-ZigZag choice moved into the backends' `claims`; this stage resolves through the
+        # registry only, so an out-of-tree hardware namespace ships its own backend without editing here.
+        return select_backend(core).make(self)
 
     def visualize_cost_lut(self):
         scale_factors = {

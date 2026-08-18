@@ -77,6 +77,26 @@ stream-setup-aie = "stream.aie_setup:main"
 onnx = "stream.frontends.onnx:OnnxFrontend"
 torch_export = "stream.frontends.torch_export:TorchExportFrontend"
 
+# Namespace-specific MILP constraints: the entry-point name is the core namespace, its object a
+# NamespaceConstraints subclass. Instantiated via from_config whenever the accelerator contains a
+# core of that namespace, so an out-of-tree extension supplies constraints for its own hardware
+# namespace. The built-in aie2 strategy registers here too -- the public path is the plugin path.
+[project.entry-points."stream.constraints"]
+aie2 = "stream.opt.allocation.constraint_optimization.context:AIE2Constraints"
+
+# Core-cost estimator backends: the entry-point name is the backend's `name` (= metadata["backend"]),
+# its object a CoreCostBackend that `claims` the cores it models and `make`s the estimator. The engine's
+# own AIE and ZigZag backends register here -- the public path is the plugin path -- so an out-of-tree
+# extension supplies a cost backend for its own hardware namespace without editing the dispatch.
+[project.entry-points."stream.core_cost_backends"]
+aie = "stream.stages.estimation.core_cost_backends:AIE_BACKEND"
+zigzag = "stream.stages.estimation.core_cost_backends:ZIGZAG_BACKEND"
+
+# A plugin distribution declares itself here so it can be allowlisted (STREAM_ALLOWED_OVERLAYS) and
+# ordered by an OVERLAY_PRIORITY int on its module -- public entry points are priority 0, so a plugin
+# outranks a built-in of the same name. The value is the distribution's module.
+[project.entry-points."stream.overlays"]
+
 [project.entry-points."stream.workload_blocks"]
 # Built-in blocks register in-tree (stream.workload.blocks); overlays add their own entries here.
 

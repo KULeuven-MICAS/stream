@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from xdsl.dialects.builtin import FixedBitwidthType, bf16
-from xdsl.ir.affine import AffineExpr, AffineMap
+from xdsl.ir.affine import AffineMap
 
 from stream.workload.data_movement import slice_node
 from stream.workload.node import ComputationNode, InEdge, NormalizationNode, OutEdge
@@ -26,20 +26,6 @@ __all__ = [
     "build_kv_cache_decode_step",
     "MODEL_CATALOG",
 ]
-
-
-def _matmul_maps(rank_batch: int) -> tuple[AffineMap, AffineMap, AffineMap]:
-    """Affine maps for a batched projection ``out[b.., m, n] = sum_k A[b.., m, k] W[k, n]``
-    (``rank_batch`` leading batch axes on the activation)."""
-    b = rank_batch
-    dim = AffineExpr.dimension
-    batch = tuple(dim(i) for i in range(b))
-    pos_m, pos_n, pos_k = b, b + 1, b + 2
-    num_dims = b + 3
-    a_map = AffineMap(num_dims, 0, (*batch, dim(pos_m), dim(pos_k)))  # A[batch.., m, k]
-    w_map = AffineMap(num_dims, 0, (dim(pos_k), dim(pos_n)))  # W[k, n]
-    o_map = AffineMap(num_dims, 0, (*batch, dim(pos_m), dim(pos_n)))  # O[batch.., m, n]
-    return a_map, w_map, o_map
 
 
 @dataclass(frozen=True)
@@ -142,49 +128,104 @@ def build_attention_block(config: AttentionConfig | None = None) -> Workload:
 
 @dataclass(frozen=True)
 class MambaConfig:
-    seq: int = 128
-    d_model: int = 256
-    hidden: int = 512
+    """A selective-scan (Mamba) state-update block. Dimensions follow the paper (arXiv:2504.17333,
+    Fig. 7): ``seq`` = token axis ``L`` (SEQUENTIAL), ``d_inner`` = expanded channel axis ``D``
+    (PARALLEL), ``d_state`` = SSM state axis ``N`` (the readout contraction)."""
+
+    seq: int = 256  # L -- token axis (recurrent / SEQUENTIAL)
+    d_inner: int = 512  # D -- expanded channel axis (PARALLEL, kept resident per timestep)
+    d_state: int = 16  # N -- SSM state dimension (Mamba1 default; the readout reduces it)
     dtype: FixedBitwidthType = bf16
 
 
 def build_mamba_block(config: MambaConfig | None = None) -> Workload:
-    """A Mamba-style block: input projection -> selective scan (SEQUENTIAL recurrence,
-    chunked-rewritten) -> output projection."""
+    """The Mamba selective-scan **state-update block**, decomposed into atomic affine sub-operators
+    exactly as arXiv:2504.17333 Fig. 7 draws it.
+
+    Inputs are the discretized state-space parameters over ``L`` timesteps: ``delta[L,D]`` (step),
+    ``A[D,N]`` (state transition), ``B[L,N]`` / ``C[L,N]`` (input/output maps), ``x[L,D]`` (input) and
+    the per-channel skip ``D_skip[D]``. The block computes, per the paper:
+
+    * a **discretization precompute**, parallel over every timestep:
+      ``dA = delta ⊗ A``, ``Abar = exp(dA)``, ``dB = delta ⊗ B``, ``dBx = dB ⊙ x`` (all ``[L,D,N]``);
+    * a **sequential scan** carrying the ``[D,N]`` state: ``h_t = Abar_t ⊙ h_{t-1} + dBx_t`` -- the
+      ``h_{t-1}`` read makes the token axis ``t`` SEQUENTIAL (state resident, O(1) in ``L``);
+    * a **readout** contraction over the state axis ``N``: ``y'_t = sum_N C_t · h_t`` (``[L,D]``);
+    * the **skip**: ``y = y' + D_skip ⊙ x``.
+
+    There is no data-dependent read and no nonlinear reduction, so the whole block fuses into one
+    region; the fusion streams the SEQUENTIAL token axis ``L`` while the ``[D,N]`` state stays resident
+    (the paper's Fuse-All), which is exactly the memory-bound-to-compute-bound shift it identifies."""
     c = config or MambaConfig()
-    s, dm, hid, dt = c.seq, c.d_model, c.hidden, c.dtype
-    nodes: list = []
+    ll, dd, nn, dt = c.seq, c.d_inner, c.d_state, c.dtype
 
-    x = Tensor.create("x", dt, (s, dm))
-    w_in = Tensor.create("W_in", dt, (dm, hid))
-    u = Tensor.create("u", dt, (s, hid))
-    nodes.append(InEdge(name="x", outputs=(x,)))
-    nodes.append(InEdge(name="W_in", outputs=(w_in,)))
-    nodes.append(
-        ComputationNode(type="MatMul", name="in_proj", inputs=(x, w_in), outputs=(u,), operand_mapping=_matmul_maps(0))
-    )
+    delta = Tensor.create("delta", dt, (ll, dd))
+    a_mat = Tensor.create("A", dt, (dd, nn))
+    b_mat = Tensor.create("B", dt, (ll, nn))
+    c_mat = Tensor.create("C", dt, (ll, nn))
+    x = Tensor.create("x", dt, (ll, dd))
+    d_skip = Tensor.create("D_skip", dt, (dd,))
+    h_prev = Tensor.create("h_prev", dt, (ll, dd, nn))
 
-    # selective scan: h[t,d] = h[t-1,d] + u[t,d]  -> t is SEQUENTIAL (state read at t-1)
-    h_prev = Tensor.create("h_prev", dt, (s, hid))
-    h = Tensor.create("h", dt, (s, hid))
-    scan_maps = (
-        AffineMap.from_callable(lambda t, d: (t, d)),  # u[t,d]
-        AffineMap.from_callable(lambda t, d: (t - 1, d)),  # h_prev[t-1,d] -- the state read
-        AffineMap.from_callable(lambda t, d: (t, d)),  # h[t,d] -- the state written
-    )
-    nodes.append(InEdge(name="h_prev", outputs=(h_prev,)))
-    nodes.append(ComputationNode(type="Scan", name="scan", inputs=(u, h_prev), outputs=(h,), operand_mapping=scan_maps))
+    d_a = Tensor.create("dA", dt, (ll, dd, nn))
+    a_bar = Tensor.create("Abar", dt, (ll, dd, nn))
+    d_b = Tensor.create("dB", dt, (ll, dd, nn))
+    d_bx = Tensor.create("dBx", dt, (ll, dd, nn))
+    h = Tensor.create("h", dt, (ll, dd, nn))
+    y_ssm = Tensor.create("y_ssm", dt, (ll, dd))
+    dx = Tensor.create("Dx", dt, (ll, dd))
+    y = Tensor.create("y", dt, (ll, dd))
 
-    w_out = Tensor.create("W_out", dt, (hid, dm))
-    y = Tensor.create("y", dt, (s, dm))
-    nodes.append(InEdge(name="W_out", outputs=(w_out,)))
-    nodes.append(
+    # 3-D iteration space (t, d, n) for the discretization + scan; the readout reduces n.
+    tdn = AffineMap.from_callable(lambda t, d, n: (t, d, n))
+    td_of_tdn = AffineMap.from_callable(lambda t, d, n: (t, d))
+    dn_of_tdn = AffineMap.from_callable(lambda t, d, n: (d, n))
+    tn_of_tdn = AffineMap.from_callable(lambda t, d, n: (t, n))
+    state_read = AffineMap.from_callable(lambda t, d, n: (t - 1, d, n))  # h_{t-1} -- the state carry
+    # 2-D iteration space (t, d) for the skip.
+    td = AffineMap.from_callable(lambda t, d: (t, d))
+    d_of_td = AffineMap.from_callable(lambda t, d: (d,))
+
+    nodes = [
+        InEdge(name="delta", outputs=(delta,)),
+        InEdge(name="A", outputs=(a_mat,)),
+        InEdge(name="B", outputs=(b_mat,)),
+        InEdge(name="C", outputs=(c_mat,)),
+        InEdge(name="x", outputs=(x,)),
+        InEdge(name="D_skip", outputs=(d_skip,)),
+        InEdge(name="h_prev", outputs=(h_prev,)),
+        # discretization precompute (parallel over all timesteps)
         ComputationNode(
-            type="MatMul", name="out_proj", inputs=(h, w_out), outputs=(y,), operand_mapping=_matmul_maps(0)
-        )
-    )
-    nodes.append(OutEdge(name="y", inputs=(y,)))
-
+            type="Mul", name="dA", inputs=(delta, a_mat), outputs=(d_a,), operand_mapping=(td_of_tdn, dn_of_tdn, tdn)
+        ),
+        ComputationNode(type="Exp", name="Abar", inputs=(d_a,), outputs=(a_bar,), operand_mapping=(tdn, tdn)),
+        ComputationNode(
+            type="Mul", name="dB", inputs=(delta, b_mat), outputs=(d_b,), operand_mapping=(td_of_tdn, tn_of_tdn, tdn)
+        ),
+        ComputationNode(
+            type="Mul", name="dBx", inputs=(d_b, x), outputs=(d_bx,), operand_mapping=(tdn, td_of_tdn, tdn)
+        ),
+        # sequential state update: h_t = Abar_t ⊙ h_{t-1} + dBx_t  (t is SEQUENTIAL)
+        ComputationNode(
+            type="SelectiveScan",
+            name="scan",
+            inputs=(a_bar, h_prev, d_bx),
+            outputs=(h,),
+            operand_mapping=(tdn, state_read, tdn, tdn),
+        ),
+        # readout: y'_t = sum_N C_t · h_t  (n is the REDUCTION)
+        ComputationNode(
+            type="MatMul",
+            name="readout",
+            inputs=(c_mat, h),
+            outputs=(y_ssm,),
+            operand_mapping=(tn_of_tdn, tdn, td_of_tdn),
+        ),
+        # skip connection: y = y' + D_skip ⊙ x
+        ComputationNode(type="Mul", name="skip", inputs=(d_skip, x), outputs=(dx,), operand_mapping=(d_of_td, td, td)),
+        ComputationNode(type="Add", name="out", inputs=(y_ssm, dx), outputs=(y,), operand_mapping=(td, td, td)),
+        OutEdge(name="y", inputs=(y,)),
+    ]
     return Workload(nodes)
 
 
@@ -389,10 +430,12 @@ MODEL_CATALOG: tuple[ModelSpec, ...] = (
     ),
     ModelSpec(
         key="mamba",
-        label="Mamba (SSM recurrence)",
+        label="Mamba (SSM state update)",
         description=(
-            "The selective scan reads its state at t−1 and writes it at t, so the sequence axis is "
-            "SEQUENTIAL and the chunked rewrite turns it into a chain of dense per-chunk reductions."
+            "The selective-scan state-update block (arXiv:2504.17333 Fig. 7): a discretization "
+            "precompute (dA, Abar=exp, dB, dBx), a SEQUENTIAL scan h_t=Abar_t·h_{t-1}+dBx_t carrying "
+            "the [D,N] state, and a readout reducing the state axis N. It fuses into one region that "
+            "streams the token axis L with the state resident — the paper's Fuse-All."
         ),
         build=build_mamba_block,
     ),

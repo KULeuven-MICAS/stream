@@ -41,6 +41,7 @@ class FusionGroupIterationStage(Stage):
         group_latencies: dict[int, float] = {}
         group_wall_times: dict[int, float] = {}
         group_allocations: dict[int, dict | None] = {}
+        group_memory_accesses: dict[int, dict | None] = {}
         final_ctx = None
 
         if self.sub_mappings is not None:
@@ -84,6 +85,15 @@ class FusionGroupIterationStage(Stage):
             except Exception as exc:  # noqa: BLE001 -- a missing perf summary must not fail the solve
                 logger.warning(f"Group {i}: could not build AllocationIR: {exc}")
                 group_allocations[i] = None
+            # Capture the memory-access breakdown (per core, per tensor, off-chip vs on-chip) so the
+            # exploration result can show where the traffic goes -- the memory-wall view.
+            try:
+                mem_accesses = ctx.get("memory_accesses")
+                offchip_id = getattr(self.accelerator, "offchip_core_id", None)
+                group_memory_accesses[i] = mem_accesses.to_ir(offchip_id) if mem_accesses is not None else None
+            except Exception as exc:  # noqa: BLE001 -- observability must never fail the solve
+                logger.warning(f"Group {i}: could not serialise memory accesses: {exc}")
+                group_memory_accesses[i] = None
             logger.info(f"Group {i} latency: {group_latency}")
             logger.info(f"Group {i} wall time: {group_wall_times[i]:.2f}s")
             final_ctx = ctx
@@ -94,6 +104,7 @@ class FusionGroupIterationStage(Stage):
             group_latencies=group_latencies,
             group_wall_times=group_wall_times,
             group_allocations=group_allocations,
+            group_memory_accesses=group_memory_accesses,
         )
         logger.info(f"Total latency across all groups: {total_latency}")
         logger.info(f"Per-group latencies: {group_latencies}")

@@ -1,0 +1,50 @@
+# SwiGLU on TPU7x, fused, weights streamed from HBM -- and a genuine INFEASIBILITY demonstration.
+#
+# The memory wall is real. A Llama-3 SwiGLU carries 336 MiB of weights (gate + up + down, each 112 MiB
+# at bf16). The chip's four TensorCores hold 4 x 64 = 256 MiB of VMEM, so the weights CANNOT all be
+# resident: on real Ironwood they stream from HBM once and flow through VMEM into the arrays. Streaming
+# the weights (below) does fix the per-core capacity -- but the fully-fused chain is still infeasible
+# for a deeper reason: the AIE code-gen cannot spill a fused group's partials to HBM and back, so each
+# intermediate is pinned resident (force_intermediate_reuse). That pin has no reuse schedule consistent
+# with the streamed (K-tiled) weights, so the solve reports a STRUCTURAL conflict, not a capacity one.
+# Kept as the worked example behind the infeasibility diagnosis; a feasible fused SwiGLU needs either a
+# code-gen that spills partials or a non-fused (layer-by-layer) split.
+#
+# The mapping keeps the *activations* on-chip and streams the *weights*:
+#  * All 32 MXU cores (eight per TensorCore) run the three Gemms, splitting the output columns (D2)
+#    32 ways -- each core owns a slice of the output and its matching slice of the weights.
+#  * SiLU and the gate multiply go to the four vector cores.
+#  * One fused group over the whole token batch (D0 tile = 256): the gate/up/silu/mul/down chain runs
+#    with its [tokens, d_ff] intermediates resident on VMEM (~1.75 MiB per core) and never written to
+#    HBM -- that is the fusion win.
+#  * Each Gemm's contraction (D1) is tiled so its weight streams HBM -> VMEM -> array in blocks rather
+#    than staying resident. gate/up contract over d_model (D1 = 4096, not a fused dim) so tile 512 is
+#    literal (eight K-blocks). down contracts over the hidden dim (D1 = 14336), which is the same
+#    fused axis already split 32 ways as the Gemms' output, so its tile is scaled by that split: 16 x
+#    32 = a 512-wide effective K-block (28 blocks). The result fits the 64 MiB VMEM with room to
+#    spare, and the schedule is weight-bandwidth-bound at low batch, exactly as the silicon is.
+layers:
+- name: Gemm_Left
+  core_allocation: [[0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21, 22, 23, 24, 25, 26, 27, 30, 31, 32, 33, 34, 35, 36, 37]]
+  inter_core_tiling: [[{dim: D2, split: 32}]]
+- name: Gemm_Right
+  core_allocation: [[0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21, 22, 23, 24, 25, 26, 27, 30, 31, 32, 33, 34, 35, 36, 37]]
+  inter_core_tiling: [[{dim: D2, split: 32}]]
+- name: Silu
+  core_allocation: [[8, 18, 28, 38]]
+  inter_core_tiling: [[{dim: D1, split: 4}]]
+- name: Elt_Mul
+  core_allocation: [[8, 18, 28, 38]]
+  inter_core_tiling: [[{dim: D1, split: 4}]]
+- name: Gemm_Down
+  core_allocation: [[0, 1, 2, 3, 4, 5, 6, 7, 10, 11, 12, 13, 14, 15, 16, 17, 20, 21, 22, 23, 24, 25, 26, 27, 30, 31, 32, 33, 34, 35, 36, 37]]
+  inter_core_tiling: [[{dim: D2, split: 32}]]
+
+fused_groups:
+- name: SwiGLU_Fused
+  layers: [Gemm_Left, Gemm_Right, Silu, Elt_Mul, Gemm_Down]
+  intra_core_tiling:
+  - {dim: Gemm_Left.D0, tile: 256}
+  - {dim: Gemm_Left.D1, tile: 512}
+  - {dim: Gemm_Right.D1, tile: 512}
+  - {dim: Gemm_Down.D1, tile: 16}

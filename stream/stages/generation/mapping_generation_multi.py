@@ -5,8 +5,10 @@ import os
 
 import yaml
 
+from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.mapping.generator import MappingGenerator
 from stream.stages.context import StageContext
+from stream.stages.generation.mapping_generation import save_infeasibility_report
 from stream.stages.stage import Stage, StageCallable
 
 logger = logging.getLogger(__name__)
@@ -50,31 +52,36 @@ def _evaluate_one_mapping(  # top-level for clean pickling if you ever switch to
     logger.info(f"Evaluating mapping: {mapping_path}")
     sub_stage = list_of_callables[0](list_of_callables[1:], ctx_i)
 
+    def _record(latency: float, path: str | None) -> tuple[int, float, str | None]:
+        # Always leave a latency.yaml, including for a failure: a consumer scanning the run
+        # directory can only tell "attempted and failed" from "not attempted yet" by its presence.
+        with open(os.path.join(output_path_i, "latency.yaml"), "w") as f:
+            yaml.safe_dump({"latency": latency}, f)
+        return (i, latency, path)
+
     try:
         ctxs = list(sub_stage.run())
+    except InfeasibleAllocationError as e:
+        save_infeasibility_report(output_path_i, e.report)
+        logger.error(f"Mapping {mapping_path} is infeasible: {e.report.summary}")
+        return _record(float("inf"), None)
     except RuntimeError as e:
         logger.error(f"Error evaluating mapping {mapping_path}: {e}")
-        return (i, float("inf"), None)
+        return _record(float("inf"), None)
 
     if len(ctxs) != 1:
         logger.error(f"Expected exactly one context, but got {len(ctxs)} for {mapping_path}")
-        return (i, float("inf"), None)
+        return _record(float("inf"), None)
 
     ctx_out = ctxs[0]
     scheduler = ctx_out.get("scheduler", None)
     if scheduler is None:
         logger.error(f"No scheduler found in context for {mapping_path}")
-        return (i, float("inf"), None)
+        return _record(float("inf"), None)
 
     latency = float(scheduler.latency_total)
-
-    # Save the latency to yaml for later analysis
-    latency_yaml_path = os.path.join(output_path_i, "latency.yaml")
-    with open(latency_yaml_path, "w") as f:
-        yaml.safe_dump({"latency": latency}, f)
-
     logger.info(f"Mapping {mapping_path} has latency {latency}")
-    return (i, latency, mapping_path)
+    return _record(latency, mapping_path)
 
 
 class MappingGenerationMultiThreadedStage(Stage):
@@ -131,6 +138,7 @@ class MappingGenerationMultiThreadedStage(Stage):
 
     def run(self):
         best_mapping_path = None
+        best_index = None
         best_latency = float("inf")
 
         # Snapshot once; do NOT mutate self.ctx in parallel loop.
@@ -180,7 +188,7 @@ class MappingGenerationMultiThreadedStage(Stage):
                         submit_one(i2, variant2, mapping2)
 
                     try:
-                        _, latency, mapping_path = fut.result()
+                        idx, latency, mapping_path = fut.result()
                     except Exception as e:
                         logger.exception(f"Worker crashed: {e}")
                         continue
@@ -191,6 +199,7 @@ class MappingGenerationMultiThreadedStage(Stage):
                     if latency < best_latency:
                         best_latency = latency
                         best_mapping_path = mapping_path
+                        best_index = idx
 
         logger.info(f"Best mapping found with latency {best_latency}: {best_mapping_path}")
 
@@ -209,4 +218,9 @@ class MappingGenerationMultiThreadedStage(Stage):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], ctx_best)
         ctxs = list(sub_stage.run())
         assert len(ctxs) == 1, f"Expected exactly one context, but got {len(ctxs)}"
+        ctxs[0].set(
+            best_mapping_index=best_index,
+            best_mapping_path=best_mapping_path,
+            best_latency=best_latency,
+        )
         yield ctxs[0]

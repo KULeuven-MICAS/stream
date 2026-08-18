@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from stream.datatypes import LayerDim
 from stream.workload.affine_access import footprint, map_dim_positions
 from stream.workload.decompose import decompose, has_decomposition
 from stream.workload.fusion.proposer import iteration_extents, propose_fusion_regions
@@ -25,6 +26,7 @@ from stream.workload.node import (
 from stream.workload.normalization import parallel_axes
 from stream.workload.steady_state.computation import SteadyStateComputation
 from stream.workload.structure import find_repeated_blocks
+from stream.workload.tensor import Tensor
 
 if TYPE_CHECKING:
     from stream.workload.workload import Workload
@@ -41,6 +43,13 @@ class GraphDimIR(BaseModel):
     name: str = Field(description="Loop-dimension name")
     size: int | None = Field(default=None)
     iterator_type: str = Field(description="PARALLEL | REDUCTION | SEQUENTIAL")
+
+
+class TensorRefIR(BaseModel):
+    """A tensor as it appears on the graph -- its name and concrete shape (tile-sized in a tiled graph)."""
+
+    name: str
+    shape: list[int] = Field(default_factory=list, description="Dimension sizes, in tensor-axis order")
 
 
 class OperandReuseIR(BaseModel):
@@ -94,6 +103,9 @@ class GraphNodeIR(BaseModel):
     block_class: int | None = Field(default=None, description="Repeated-block class id (None = unique)")
     region: int | None = Field(default=None, description="Fusable-region id (barrier-cut)")
     proposed_region: int | None = Field(default=None, description="Auto-proposed fusion-region id")
+    tensor: TensorRefIR | None = Field(
+        default=None, description="For input/output boundary nodes: the tensor (name + shape) they carry"
+    )
     reuse: list[OperandReuseIR] = Field(default_factory=list)
     reduction_axes: list[AxisRefIR] | None = None
     parallel_axes: list[AxisRefIR] | None = None
@@ -104,7 +116,10 @@ class GraphNodeIR(BaseModel):
 class GraphEdgeIR(BaseModel):
     source: str
     target: str
-    shared_tensors: list[str] = Field(default_factory=list)
+    shared_tensors: list[str] = Field(default_factory=list, description="Shared-tensor names (legacy)")
+    tensors: list[TensorRefIR] = Field(
+        default_factory=list, description="Tensors flowing on this edge, with shapes, in order of appearance"
+    )
 
 
 class BlockClassIR(BaseModel):
@@ -137,7 +152,7 @@ class WorkloadGraphView(BaseModel):
         json_schema_extra={"$schema": "https://json-schema.org/draft/2020-12/schema", "$id": "stream/workload_graph/v1"}
     )
 
-    schema_version: Literal["1.0"] = "1.0"
+    schema_version: Literal["1.1"] = "1.1"
     tiled: bool = Field(description="True if the workload is a tiled/steady-state graph")
     nodes: list[GraphNodeIR]
     edges: list[GraphEdgeIR]
@@ -154,8 +169,14 @@ class WorkloadGraphView(BaseModel):
         proposed_of, proposed_regions = _proposed_structure(workload, fusion_capacity)
         order = _topo_names(workload)
         by_name = {n.name: n for n in workload.nodes}
-        nodes = [_node_ir(workload, by_name[name], block_of, region_of, proposed_of) for name in order]
-        edges = [GraphEdgeIR(source=s.name, target=t.name, shared_tensors=_shared(s, t)) for s, t in workload.edges]
+        dims = _DimResolver(workload)
+        nodes = [_node_ir(by_name[name], dims, block_of, region_of, proposed_of) for name in order]
+        edges = []
+        for s, t in workload.edges:
+            shared = _shared(s, t)
+            edges.append(
+                GraphEdgeIR(source=s.name, target=t.name, shared_tensors=[x.name for x in shared], tensors=shared)
+            )
         return cls(
             tiled=_is_tiled(workload),
             nodes=nodes,
@@ -169,6 +190,32 @@ class WorkloadGraphView(BaseModel):
 # --------------------------------------------------------------------------- structure
 
 
+class _DimResolver:
+    """Resolves per-node iteration dims and their sizes from ONE workload-global affine solve.
+
+    ``Workload.get_dims`` and ``Workload.get_dimension_size`` each recompute ``unique_dimensions()``
+    -- a full-workload sympy RREF, ~0.5 s on resnet18 -- on every call, and ``get_dimension_size`` also
+    re-runs ``get_dimension_sizes()``. Building the per-node view calls them O(nodes * dims) times, so
+    for resnet18 (48 nodes, 255 dims) it spent ~200 s redoing the same solve ~560 times. The solve is a
+    pure function of the (here read-only) workload structure, so we run it once and reduce every
+    per-node lookup to a slice / list index -- ~290x faster, with identical results."""
+
+    def __init__(self, workload: Workload):
+        self._global_idxs = workload.global_idxs
+        _, self._expressions = workload.unique_dimensions()
+        self._ranges = workload.get_dimension_sizes()
+
+    def dims(self, node: HasIterationSpace) -> list[LayerDim]:
+        span = self._global_idxs[node]
+        return self._expressions[span.start : span.stop]
+
+    def size(self, dim: LayerDim) -> int | None:
+        try:
+            return self._ranges[self._expressions.index(dim)]
+        except Exception:  # noqa: BLE001 -- unknown sizes render blank, exactly as get_dimension_size
+            return None
+
+
 def _is_tiled(workload: Workload) -> bool:
     return any(isinstance(n, SteadyStateComputation) for n in workload.nodes)
 
@@ -177,9 +224,17 @@ def _topo_names(workload: Workload) -> list[str]:
     return [n.name for n in workload.dataflow_sort()]
 
 
-def _shared(src, dst) -> list[str]:
+def _tensor_ref(t: Tensor) -> TensorRefIR:
+    try:
+        shape = [int(s) for s in t.shape]
+    except Exception:  # noqa: BLE001 -- a symbolic/unknown shape renders as no dims, not a crash
+        shape = []
+    return TensorRefIR(name=t.name, shape=shape)
+
+
+def _shared(src, dst) -> list[TensorRefIR]:
     if isinstance(src, HasOutputs) and isinstance(dst, HasInputs):
-        return [t.name for t in src.outputs if t in dst.inputs]
+        return [_tensor_ref(t) for t in src.outputs if t in dst.inputs]
     return []
 
 
@@ -269,7 +324,11 @@ def _op(node) -> str:
 
 
 def _node_ir(
-    workload: Workload, node, block_of: dict[str, int], region_of: dict[str, int], proposed_of: dict[str, int]
+    node,
+    resolver: _DimResolver,
+    block_of: dict[str, int],
+    region_of: dict[str, int],
+    proposed_of: dict[str, int],
 ) -> GraphNodeIR:
     ir = GraphNodeIR(
         name=node.name,
@@ -279,14 +338,19 @@ def _node_ir(
         region=region_of.get(node.name),
         proposed_region=proposed_of.get(node.name),
     )
+    # Boundary nodes (graph inputs/outputs) are a single tensor -- carry its shape so the view can show
+    # the entry/exit tensor dims alongside the operators' loop dims.
+    if isinstance(node, InEdge) and node.outputs:
+        ir.tensor = _tensor_ref(node.outputs[0])
+    elif isinstance(node, OutEdge) and node.inputs:
+        ir.tensor = _tensor_ref(node.inputs[0])
     if not isinstance(node, HasIterationSpace):
         return ir
 
-    dims = workload.get_dims(node)
+    dims = resolver.dims(node)
     iterator_types = derive_iterator_types(node)
     ir.dims = [
-        GraphDimIR(name=str(d), size=_size(workload, d), iterator_type=iterator_types[p].name)
-        for p, d in enumerate(dims)
+        GraphDimIR(name=str(d), size=resolver.size(d), iterator_type=iterator_types[p].name) for p, d in enumerate(dims)
     ]
     ir.is_recurrence = bool(sequential_dims(node))
     ir.reuse = _reuse(node, ir.dims)
@@ -304,13 +368,6 @@ def _node_ir(
         if sub_workload is not None:
             ir.decomposition = _decomposition_ir(sub_workload)
     return ir
-
-
-def _size(workload: Workload, dim) -> int | None:
-    try:
-        return workload.get_dimension_size(dim)
-    except Exception:  # noqa: BLE001 -- unknown sizes render as blank, not a crash
-        return None
 
 
 def _reuse(node: ComputationNode, dims: list[GraphDimIR]) -> list[OperandReuseIR]:
