@@ -1,0 +1,47 @@
+# TPU7x VMEM -- the software-managed scratchpad private to one TensorCore, 128 MiB.
+#
+# This is the level the MXU and VPU actually read from: tensors are staged into VMEM from HBM and
+# streamed into the array from there. Its bandwidth to the array is roughly 22x HBM's, which is why
+# a block whose working set fits in VMEM runs at a completely different arithmetic intensity than
+# one that does not -- the effect this model exists to expose.
+#
+# Memory-only: the operational array is empty, so nothing is ever scheduled onto it. It holds
+# tensors, which is what makes staging visible in the allocation as a decision rather than a
+# side effect.
+name: tpu_v7_vmem
+type: zigzag.memory
+
+memories:
+  vmem:
+    size: 1073741824
+    r_cost: 200
+    w_cost: 220
+    area: 0
+    latency: 1
+    operands: [I1, I2, O]
+    ports:
+      - name: r_port_1
+        type: read
+        bandwidth_min: 256
+        bandwidth_max: 262144
+        allocation:
+          - I1, tl
+          - I2, tl
+          - O, tl
+          - O, th
+      - name: w_port_1
+        type: write
+        bandwidth_min: 256
+        bandwidth_max: 262144
+        allocation:
+          - I1, fh
+          - I2, fh
+          - O, fh
+          - O, fl
+    served_dimensions: [D1, D2]
+
+operational_array:
+  unit_energy: 0
+  unit_area: 0
+  dimensions: [D1, D2]
+  sizes: [0, 0]
