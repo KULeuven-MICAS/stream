@@ -8,7 +8,7 @@ gets the same precedence, the same failure behaviour and the same provenance.
 Two rules make the mechanism safe to use with more than one overlay:
 
 **Loading is explicit, not ambient.** Entry points are global to a Python environment, so a process
-with several overlays installed can otherwise reach all of them. ``STREAM_ALLOWED_OVERLAYS`` names the
+with several overlays installed can otherwise reach all of them. ``STREAM_OVERLAYS`` names the
 overlays a process may load; when it is set, anything else is ignored. A multi-tenant worker sets it
 per job, and nothing else has to know about tenancy.
 
@@ -29,7 +29,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 OVERLAY_GROUP = "stream.overlays"
-OVERLAY_ALLOWLIST_ENV = "STREAM_ALLOWED_OVERLAYS"
+OVERLAY_ALLOWLIST_ENV = "STREAM_OVERLAYS"
 PUBLIC_DISTRIBUTION = "stream-dse"
 
 
@@ -59,7 +59,7 @@ def _entry_points(group: str) -> list[EntryPoint]:
 def overlay_allowlist() -> frozenset[str] | None:
     """Distributions this process may load overlays from, or None when unrestricted.
 
-    Reads ``STREAM_ALLOWED_OVERLAYS`` (comma-separated distribution names). The public distribution is always
+    Reads ``STREAM_OVERLAYS`` (comma-separated distribution names). The public distribution is always
     allowed. Setting the variable to an empty string restricts the process to public code alone.
     """
     raw = os.environ.get(OVERLAY_ALLOWLIST_ENV)
