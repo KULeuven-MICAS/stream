@@ -95,6 +95,10 @@ class TransferNode(HasIterationSpace):
 @dataclass(frozen=True, repr=False)
 class ComputationNode(HasIterationSpace):
     type: str  # e.g., "Conv", "Gemm", etc.
+    # When this node is a sub-operator of a decomposed fused kernel (e.g. a softmax expanded into
+    # ReduceMax/Exp/ReduceSum/Div), this tags the origin kernel as ``"<OpType>:<name>"`` so the sub-ops
+    # can be re-collapsed into that single native kernel for codegen. ``None`` for an ordinary node.
+    fused_kernel: str | None = None
 
     def has_same_performance(self, other: "ComputationNode") -> bool:
         """Whether two nodes cost the same: identical op type, operand precisions/shapes, and affine

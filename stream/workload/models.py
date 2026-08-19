@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from xdsl.dialects.builtin import FixedBitwidthType, bf16
-from xdsl.ir.affine import AffineExpr, AffineMap
+from xdsl.ir.affine import AffineMap
 
 from stream.workload.data_movement import slice_node
 from stream.workload.node import ComputationNode, InEdge, NormalizationNode, OutEdge
@@ -28,18 +28,31 @@ __all__ = [
 ]
 
 
-def _matmul_maps(rank_batch: int) -> tuple[AffineMap, AffineMap, AffineMap]:
-    """Affine maps for a batched projection ``out[b.., m, n] = sum_k A[b.., m, k] W[k, n]``
-    (``rank_batch`` leading batch axes on the activation)."""
-    b = rank_batch
-    dim = AffineExpr.dimension
-    batch = tuple(dim(i) for i in range(b))
-    pos_m, pos_n, pos_k = b, b + 1, b + 2
-    num_dims = b + 3
-    a_map = AffineMap(num_dims, 0, (*batch, dim(pos_m), dim(pos_k)))  # A[batch.., m, k]
-    w_map = AffineMap(num_dims, 0, (dim(pos_k), dim(pos_n)))  # W[k, n]
-    o_map = AffineMap(num_dims, 0, (*batch, dim(pos_m), dim(pos_n)))  # O[batch.., m, n]
-    return a_map, w_map, o_map
+def _attention_core(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    scores: Tensor,
+    context: Tensor,
+    score_maps: tuple[AffineMap, ...],
+    ctx_maps: tuple[AffineMap, ...],
+    reduction_axis: int,
+) -> list[ComputationNode]:
+    """The scores -> Softmax -> context skeleton shared by MHA, GQA and the KV-cache decode step."""
+    identity = AffineMap.identity(len(scores.shape))
+    probs = Tensor.create("probs", scores.operand_type, scores.shape)
+    return [
+        ComputationNode(type="MatMul", name="scores", inputs=(q, k), outputs=(scores,), operand_mapping=score_maps),
+        NormalizationNode(
+            type="Softmax",
+            name="softmax",
+            inputs=(scores,),
+            outputs=(probs,),
+            operand_mapping=(identity, identity),
+            reduction_axes=(reduction_axis,),
+        ),
+        ComputationNode(type="MatMul", name="context", inputs=(probs, v), outputs=(context,), operand_mapping=ctx_maps),
+    ]
 
 
 @dataclass(frozen=True)
@@ -90,26 +103,7 @@ def build_attention_block(config: AttentionConfig | None = None) -> Workload:
         AffineMap.from_callable(lambda b_, h_, i, j, e: (b_, h_, j, e)),  # K
         AffineMap.from_callable(lambda b_, h_, i, j, e: (b_, h_, i, j)),  # S
     )
-    nodes.append(
-        ComputationNode(
-            type="MatMul", name="scores", inputs=(heads["q"], heads["k"]), outputs=(scores,), operand_mapping=score_maps
-        )
-    )
-
-    # softmax over the key axis j (position 3): a schedulable NormalizationNode, not a barrier
-    probs = Tensor.create("probs", dt, (b, h, s, s))
-    identity4d = AffineMap.identity(4)
-    nodes.append(
-        NormalizationNode(
-            type="Softmax",
-            name="softmax",
-            inputs=(scores,),
-            outputs=(probs,),
-            operand_mapping=(identity4d, identity4d),
-            reduction_axes=(3,),
-        )
-    )
-
+    # softmax reduces the key axis j (position 3); parallel over batch/head/query
     # context: O[b,h,i,e] = sum_j P[b,h,i,j] V[b,h,j,e]  (contract key position j = REDUCTION)
     ctx = Tensor.create("context", dt, (b, h, s, dh))
     ctx_maps = (
@@ -117,10 +111,8 @@ def build_attention_block(config: AttentionConfig | None = None) -> Workload:
         AffineMap.from_callable(lambda b_, h_, i, e, j: (b_, h_, j, e)),  # V
         AffineMap.from_callable(lambda b_, h_, i, e, j: (b_, h_, i, e)),  # O
     )
-    nodes.append(
-        ComputationNode(
-            type="MatMul", name="context", inputs=(probs, heads["v"]), outputs=(ctx,), operand_mapping=ctx_maps
-        )
+    nodes.extend(
+        _attention_core(heads["q"], heads["k"], heads["v"], scores, ctx, score_maps, ctx_maps, reduction_axis=3)
     )
 
     # output projection, head-merge folded in: Y[b,s,o] = sum_{h,e} O[b,h,s,e] Wo[h,e,o]
@@ -142,49 +134,86 @@ def build_attention_block(config: AttentionConfig | None = None) -> Workload:
 
 @dataclass(frozen=True)
 class MambaConfig:
-    seq: int = 128
-    d_model: int = 256
-    hidden: int = 512
+    """Selective-scan (Mamba) state-update block dimensions (arXiv:2504.17333, Fig. 7)."""
+
+    seq: int = 256  # L -- token axis (recurrent / SEQUENTIAL)
+    d_inner: int = 512  # D -- expanded channel axis (PARALLEL, kept resident per timestep)
+    d_state: int = 16  # N -- SSM state dimension (Mamba1 default; the readout reduces it)
     dtype: FixedBitwidthType = bf16
 
 
 def build_mamba_block(config: MambaConfig | None = None) -> Workload:
-    """A Mamba-style block: input projection -> selective scan (SEQUENTIAL recurrence,
-    chunked-rewritten) -> output projection."""
+    """The Mamba selective-scan state-update block as atomic affine sub-operators (arXiv:2504.17333, Fig. 7)."""
     c = config or MambaConfig()
-    s, dm, hid, dt = c.seq, c.d_model, c.hidden, c.dtype
-    nodes: list = []
+    ll, dd, nn, dt = c.seq, c.d_inner, c.d_state, c.dtype
 
-    x = Tensor.create("x", dt, (s, dm))
-    w_in = Tensor.create("W_in", dt, (dm, hid))
-    u = Tensor.create("u", dt, (s, hid))
-    nodes.append(InEdge(name="x", outputs=(x,)))
-    nodes.append(InEdge(name="W_in", outputs=(w_in,)))
-    nodes.append(
-        ComputationNode(type="MatMul", name="in_proj", inputs=(x, w_in), outputs=(u,), operand_mapping=_matmul_maps(0))
-    )
+    delta = Tensor.create("delta", dt, (ll, dd))
+    a_mat = Tensor.create("A", dt, (dd, nn))
+    b_mat = Tensor.create("B", dt, (ll, nn))
+    c_mat = Tensor.create("C", dt, (ll, nn))
+    x = Tensor.create("x", dt, (ll, dd))
+    d_skip = Tensor.create("D_skip", dt, (dd,))
+    h_prev = Tensor.create("h_prev", dt, (ll, dd, nn))
 
-    # selective scan: h[t,d] = h[t-1,d] + u[t,d]  -> t is SEQUENTIAL (state read at t-1)
-    h_prev = Tensor.create("h_prev", dt, (s, hid))
-    h = Tensor.create("h", dt, (s, hid))
-    scan_maps = (
-        AffineMap.from_callable(lambda t, d: (t, d)),  # u[t,d]
-        AffineMap.from_callable(lambda t, d: (t - 1, d)),  # h_prev[t-1,d] -- the state read
-        AffineMap.from_callable(lambda t, d: (t, d)),  # h[t,d] -- the state written
-    )
-    nodes.append(InEdge(name="h_prev", outputs=(h_prev,)))
-    nodes.append(ComputationNode(type="Scan", name="scan", inputs=(u, h_prev), outputs=(h,), operand_mapping=scan_maps))
+    d_a = Tensor.create("dA", dt, (ll, dd, nn))
+    a_bar = Tensor.create("Abar", dt, (ll, dd, nn))
+    d_b = Tensor.create("dB", dt, (ll, dd, nn))
+    d_bx = Tensor.create("dBx", dt, (ll, dd, nn))
+    h = Tensor.create("h", dt, (ll, dd, nn))
+    y_ssm = Tensor.create("y_ssm", dt, (ll, dd))
+    dx = Tensor.create("Dx", dt, (ll, dd))
+    y = Tensor.create("y", dt, (ll, dd))
 
-    w_out = Tensor.create("W_out", dt, (hid, dm))
-    y = Tensor.create("y", dt, (s, dm))
-    nodes.append(InEdge(name="W_out", outputs=(w_out,)))
-    nodes.append(
+    # 3-D iteration space (t, d, n) for the discretization + scan; the readout reduces n.
+    tdn = AffineMap.from_callable(lambda t, d, n: (t, d, n))
+    td_of_tdn = AffineMap.from_callable(lambda t, d, n: (t, d))
+    dn_of_tdn = AffineMap.from_callable(lambda t, d, n: (d, n))
+    tn_of_tdn = AffineMap.from_callable(lambda t, d, n: (t, n))
+    state_read = AffineMap.from_callable(lambda t, d, n: (t - 1, d, n))  # h_{t-1} -- the state carry
+    # 2-D iteration space (t, d) for the skip.
+    td = AffineMap.from_callable(lambda t, d: (t, d))
+    d_of_td = AffineMap.from_callable(lambda t, d: (d,))
+
+    nodes = [
+        InEdge(name="delta", outputs=(delta,)),
+        InEdge(name="A", outputs=(a_mat,)),
+        InEdge(name="B", outputs=(b_mat,)),
+        InEdge(name="C", outputs=(c_mat,)),
+        InEdge(name="x", outputs=(x,)),
+        InEdge(name="D_skip", outputs=(d_skip,)),
+        InEdge(name="h_prev", outputs=(h_prev,)),
+        # discretization precompute (parallel over all timesteps)
         ComputationNode(
-            type="MatMul", name="out_proj", inputs=(h, w_out), outputs=(y,), operand_mapping=_matmul_maps(0)
-        )
-    )
-    nodes.append(OutEdge(name="y", inputs=(y,)))
-
+            type="Mul", name="dA", inputs=(delta, a_mat), outputs=(d_a,), operand_mapping=(td_of_tdn, dn_of_tdn, tdn)
+        ),
+        ComputationNode(type="Exp", name="Abar", inputs=(d_a,), outputs=(a_bar,), operand_mapping=(tdn, tdn)),
+        ComputationNode(
+            type="Mul", name="dB", inputs=(delta, b_mat), outputs=(d_b,), operand_mapping=(td_of_tdn, tn_of_tdn, tdn)
+        ),
+        ComputationNode(
+            type="Mul", name="dBx", inputs=(d_b, x), outputs=(d_bx,), operand_mapping=(tdn, td_of_tdn, tdn)
+        ),
+        # sequential state update: h_t = Abar_t ⊙ h_{t-1} + dBx_t  (t is SEQUENTIAL)
+        ComputationNode(
+            type="SelectiveScan",
+            name="scan",
+            inputs=(a_bar, h_prev, d_bx),
+            outputs=(h,),
+            operand_mapping=(tdn, state_read, tdn, tdn),
+        ),
+        # readout: y'_t = sum_N C_t · h_t  (n is the REDUCTION)
+        ComputationNode(
+            type="MatMul",
+            name="readout",
+            inputs=(c_mat, h),
+            outputs=(y_ssm,),
+            operand_mapping=(tn_of_tdn, tdn, td_of_tdn),
+        ),
+        # skip connection: y = y' + D_skip ⊙ x
+        ComputationNode(type="Mul", name="skip", inputs=(d_skip, x), outputs=(dx,), operand_mapping=(d_of_td, td, td)),
+        ComputationNode(type="Add", name="out", inputs=(y_ssm, dx), outputs=(y,), operand_mapping=(td, td, td)),
+        OutEdge(name="y", inputs=(y,)),
+    ]
     return Workload(nodes)
 
 
@@ -207,7 +236,6 @@ def build_gqa_block(config: GQAConfig | None = None) -> Workload:
     k = Tensor.create("k", dt, (b, g, s, e))  # no rep axis -> shared across reps
     v = Tensor.create("v", dt, (b, g, s, e))
     scores = Tensor.create("scores", dt, (b, g, r, s, s))
-    probs = Tensor.create("probs", dt, (b, g, r, s, s))
     ctx = Tensor.create("context", dt, (b, g, r, s, e))
 
     score_maps = (
@@ -220,21 +248,12 @@ def build_gqa_block(config: GQAConfig | None = None) -> Workload:
         AffineMap.from_callable(lambda b_, g_, r_, i, e_, j: (b_, g_, j, e_)),  # V[b,g,j,e] -- no r
         AffineMap.from_callable(lambda b_, g_, r_, i, e_, j: (b_, g_, r_, i, e_)),  # O[b,g,r,i,e]
     )
-    identity5d = AffineMap.identity(5)
     nodes = [
         InEdge(name="q", outputs=(q,)),
         InEdge(name="k", outputs=(k,)),
         InEdge(name="v", outputs=(v,)),
-        ComputationNode(type="MatMul", name="scores", inputs=(q, k), outputs=(scores,), operand_mapping=score_maps),
-        NormalizationNode(
-            type="Softmax",
-            name="softmax",
-            inputs=(scores,),
-            outputs=(probs,),
-            operand_mapping=(identity5d, identity5d),
-            reduction_axes=(4,),  # the key position j
-        ),
-        ComputationNode(type="MatMul", name="context", inputs=(probs, v), outputs=(ctx,), operand_mapping=ctx_maps),
+        # softmax reduces the key position j (axis 4); parallel over b,g,r,i
+        *_attention_core(q, k, v, scores, ctx, score_maps, ctx_maps, reduction_axis=4),
         OutEdge(name="context_out", inputs=(ctx,)),
     ]
     return Workload(nodes)
@@ -310,7 +329,6 @@ def build_kv_cache_decode_step(config: KVCacheConfig | None = None) -> Workload:
     v_slice, v_valid = slice_node(v_cache, axis=0, start=0, length=t, name="V_valid")
 
     scores = Tensor.create("scores", dt, (1, t))
-    probs = Tensor.create("probs", dt, (1, t))
     ctx = Tensor.create("context", dt, (1, e))
     score_maps = (
         AffineMap.from_callable(lambda i, j, e_: (i, e_)),  # q[1,e]
@@ -328,20 +346,8 @@ def build_kv_cache_decode_step(config: KVCacheConfig | None = None) -> Workload:
         InEdge(name="q_new", outputs=(q,)),
         k_slice,
         v_slice,
-        ComputationNode(
-            type="MatMul", name="scores", inputs=(q, k_valid), outputs=(scores,), operand_mapping=score_maps
-        ),
-        NormalizationNode(
-            type="Softmax",
-            name="softmax",
-            inputs=(scores,),
-            outputs=(probs,),
-            operand_mapping=(AffineMap.identity(2), AffineMap.identity(2)),
-            reduction_axes=(1,),  # over the valid cache positions
-        ),
-        ComputationNode(
-            type="MatMul", name="context", inputs=(probs, v_valid), outputs=(ctx,), operand_mapping=ctx_maps
-        ),
+        # the new query attends over the valid cache prefix; softmax reduces the cache positions (axis 1)
+        *_attention_core(q, k_valid, v_valid, scores, ctx, score_maps, ctx_maps, reduction_axis=1),
         OutEdge(name="context_out", inputs=(ctx,)),
     ]
     return Workload(nodes)
@@ -389,10 +395,12 @@ MODEL_CATALOG: tuple[ModelSpec, ...] = (
     ),
     ModelSpec(
         key="mamba",
-        label="Mamba (SSM recurrence)",
+        label="Mamba (SSM state update)",
         description=(
-            "The selective scan reads its state at t−1 and writes it at t, so the sequence axis is "
-            "SEQUENTIAL and the chunked rewrite turns it into a chain of dense per-chunk reductions."
+            "The selective-scan state-update block (arXiv:2504.17333 Fig. 7): a discretization "
+            "precompute (dA, Abar=exp, dB, dBx), a SEQUENTIAL scan h_t=Abar_t·h_{t-1}+dBx_t carrying "
+            "the [D,N] state, and a readout reducing the state axis N. It fuses into one region that "
+            "streams the token axis L with the state resident — the paper's Fuse-All."
         ),
         build=build_mamba_block,
     ),

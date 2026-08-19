@@ -1,0 +1,87 @@
+# TPU7x (Ironwood) TensorCore vector unit (VPU).
+#
+# A two-dimensional SIMD machine of (8, 128): 128 lanes x 8 sublanes, with several independent
+# ALUs at each position. It handles activations, elementwise arithmetic and the non-matrix parts
+# of a block -- in a SwiGLU that is the SiLU and the gate multiply.
+#
+# On real silicon the VPU sits inside the TensorCore alongside the MXU and shares its VMEM. Stream
+# gives a core one operational array, so the MXU and the VPU are modelled as two cores that share
+# VMEM through a high-bandwidth link. That split is what lets the mapper put vector work on vector
+# hardware instead of burning MXU rows on it.
+name: tpu_v7_vpu
+type: zigzag.compute
+
+memories:
+  # Vector registers: 64 VREGs of (8, 128) x 32 bit ~= 256 KB per core.
+  vregs:
+    size: 2097152
+    r_cost: 0.05
+    w_cost: 0.05
+    area: 0
+    latency: 1
+    operands: [I1, I2, O]
+    ports:
+      - name: rw_port_1
+        type: read_write
+        bandwidth_min: 512
+        bandwidth_max: 32768
+        allocation:
+          - I1, tl
+          - I2, tl
+          - O, tl
+          - O, th
+      - name: rw_port_2
+        type: read_write
+        bandwidth_min: 512
+        bandwidth_max: 32768
+        allocation:
+          - I1, fh
+          - I2, fh
+          - O, fh
+          - O, fl
+    served_dimensions: [D1, D2]
+
+  # VMEM as the vector unit sees it: the same 128 MiB scratchpad the MXU streams from.
+  operand_buffer:
+    size: 1073741824
+    r_cost: 120
+    w_cost: 130
+    area: 0
+    latency: 1
+    operands: [I1, I2, O]
+    ports:
+      - name: r_port_1
+        type: read
+        bandwidth_min: 256
+        bandwidth_max: 262144
+        allocation:
+          - I1, tl
+          - I2, tl
+          - O, tl
+          - O, th
+      - name: w_port_1
+        type: write
+        bandwidth_min: 256
+        bandwidth_max: 262144
+        allocation:
+          - I1, fh
+          - I2, fh
+          - O, fh
+          - O, fl
+    served_dimensions: [D1, D2]
+
+operational_array:
+  unit_energy: 0.06 # pJ per vector op
+  unit_area: 0.05
+  dimensions: [D1, D2]
+  sizes: [8, 128]
+
+# The VPU works in fp32. The cost model prices a lane as a full fp32 multiply-accumulate, which is
+# an upper bound for the adds and activations that dominate a SwiGLU.
+operand_precision:
+  input: fp32
+  accumulator: fp32
+
+# Elementwise and activation ops only. Core selection matches on the node's op type, so listing a
+# superset is harmless -- only the types actually present in a workload can match.
+operator_types: [Add, Sub, Mul, Div, Exp, Pow, Silu, Sigmoid, Gelu, Tanh, Relu, Softmax, ReduceMax, ReduceSum]

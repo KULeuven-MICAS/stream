@@ -26,8 +26,10 @@ from stream.workload.tensor import Tensor
 __all__ = [
     "IteratorType",
     "SequentialUnrollError",
+    "NonlinearReductionUnrollError",
     "derive_iterator_types",
     "sequential_dims",
+    "nonlinear_reduction_dims",
     "is_state_operand",
     "check_spatial_unroll_legal",
 ]
@@ -41,6 +43,10 @@ class IteratorType(Enum):
 
 class SequentialUnrollError(ValueError):
     """Raised when a SEQUENTIAL iteration dimension is assigned to spatial unrolling."""
+
+
+class NonlinearReductionUnrollError(ValueError):
+    """Raised when a nonlinear-reduction (softmax/layernorm) axis is assigned to spatial unrolling."""
 
 
 def _as_dim_plus_const(expr: AffineExpr) -> tuple[int, int] | None:
@@ -91,6 +97,16 @@ def sequential_dims(node: HasIterationSpace) -> frozenset[int]:
     return frozenset(sequential)
 
 
+def nonlinear_reduction_dims(node: HasIterationSpace) -> frozenset[int]:
+    """Positions this node reduces nonlinearly (softmax/layernorm); empty for an ordinary node."""
+    declared = getattr(node, "reduction_axes", ())
+    if declared:
+        return frozenset(declared)
+    if getattr(node, "fused_kernel", None) is None:
+        return frozenset()
+    return frozenset(pos for pos, kind in derive_iterator_types(node).items() if kind is IteratorType.REDUCTION)
+
+
 def derive_iterator_types(node: HasIterationSpace) -> dict[int, IteratorType]:
     """Algorithmic type of every iteration dimension, keyed by position."""
     sequential = sequential_dims(node)
@@ -107,10 +123,18 @@ def derive_iterator_types(node: HasIterationSpace) -> dict[int, IteratorType]:
 
 
 def check_spatial_unroll_legal(node: HasIterationSpace, spatial_positions: Iterable[int]) -> None:
-    """Raise :class:`SequentialUnrollError` if any spatially-unrolled dimension is SEQUENTIAL."""
-    illegal = sequential_dims(node) & set(spatial_positions)
-    if illegal:
+    """Raise if any spatially-unrolled dimension is SEQUENTIAL or a nonlinear (normalization) reduction."""
+    positions = set(spatial_positions)
+    illegal_sequential = sequential_dims(node) & positions
+    if illegal_sequential:
         raise SequentialUnrollError(
-            f"Node {node.name!r} dimension(s) {sorted(illegal)} carry a recurrent state (SEQUENTIAL) "
-            f"and cannot be spatially unrolled; tile them temporally (chunk) instead."
+            f"Node {node.name!r} dimension(s) {sorted(illegal_sequential)} carry a recurrent state "
+            f"(SEQUENTIAL) and cannot be spatially unrolled; tile them temporally (chunk) instead."
+        )
+    illegal_nonlinear = nonlinear_reduction_dims(node) & positions
+    if illegal_nonlinear:
+        raise NonlinearReductionUnrollError(
+            f"Node {node.name!r} dimension(s) {sorted(illegal_nonlinear)} are a nonlinear reduction "
+            f"(softmax/layernorm) and cannot be spatially unrolled; fuse via the online-softmax rewrite "
+            f"or keep the reduced axis resident."
         )

@@ -38,18 +38,10 @@ def _load_parser_plugins() -> None:
     if _PARSER_PLUGINS_LOADED["done"]:
         return
     _PARSER_PLUGINS_LOADED["done"] = True
-    try:
-        from importlib.metadata import entry_points  # noqa: PLC0415
+    from stream.plugins import load_group  # noqa: PLC0415
 
-        eps = entry_points(group="stream.onnx_parsers")
-    except Exception as exc:  # pragma: no cover - importlib.metadata edge cases
-        logger.debug("onnx-parser entry-point discovery failed: %s", exc)
-        return
-    for ep in eps:
-        try:
-            register_onnx_parser(ep.name, ep.load())
-        except Exception as exc:  # pragma: no cover - a broken plugin must not break ingestion
-            logger.warning("skipping onnx-parser plugin %r: %s", ep.name, exc)
+    for plugin in load_group("stream.onnx_parsers"):
+        register_onnx_parser(plugin.name, plugin.obj)
 
 
 def onnx_parser_for(op_type: str) -> type[OnnxOperatorParser] | None:

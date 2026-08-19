@@ -5,6 +5,7 @@ from math import ceil, prod
 from stream.cost_model.memory_accesses import CoreMemoryAccesses
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.hardware.architecture.accelerator import Accelerator
+from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
@@ -13,6 +14,24 @@ from stream.workload.steady_state.iteration_space import SteadyStateIterationSpa
 from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
+
+
+def _flatten_cores(allocation) -> list[Core]:
+    """Flatten a node's resource/memory allocation to its cores (dropping non-core slot entries)."""
+    out: list[Core] = []
+    for item in allocation or ():
+        candidates = item if isinstance(item, (list, tuple)) else (item,)
+        out.extend(c for c in candidates if isinstance(c, Core))
+    return out
+
+
+def _memory_tile_cores(allocation) -> list[Core]:
+    """The distinct memory-kind cores a transfer's memory allocation names."""
+    tiles: dict[int, Core] = {}
+    for core in _flatten_cores(allocation):
+        if core.kind == "memory":
+            tiles.setdefault(core.id, core)
+    return list(tiles.values())
 
 
 class MemoryAccessesEstimationStage(Stage):
@@ -56,10 +75,15 @@ class MemoryAccessesEstimationStage(Stage):
 
     def run(self):
         logger.info("Start MemoryAccessesEstimationStage.")
-        # self.calculate_memory_accesses()
+        try:
+            self.calculate_memory_accesses()
+            accesses = self.core_memory_accesses
+        except Exception as exc:  # noqa: BLE001 -- memory-access estimation is observability; never fail the solve
+            logger.warning(f"MemoryAccessesEstimationStage: could not estimate memory accesses: {exc}")
+            accesses = None  # None means "estimation failed", distinct from "nothing to count"
         logger.info("Finished MemoryAccessesEstimationStage.")
 
-        self.ctx.set(workload=self.workload, accelerator=self.accelerator, memory_accesses=self.core_memory_accesses)
+        self.ctx.set(workload=self.workload, accelerator=self.accelerator, memory_accesses=accesses)
         yield from (self.ctx,)
 
     def calculate_memory_accesses(self) -> None:
@@ -87,10 +111,10 @@ class MemoryAccessesEstimationStage(Stage):
             src_idx = tn.inputs.index(tensor)
             src = list(self.workload.predecessors(tn))[src_idx]
             if isinstance(src, InEdge):
-                core_allocation = (self.accelerator.get_core(self.accelerator.offchip_core_id),)
+                cores = [self.accelerator.get_core(self.accelerator.offchip_core_id)]
             else:
-                core_allocation = self.mapping.get(src).resource_allocation
-            for core in core_allocation:
+                cores = _flatten_cores(self.mapping.get(src).resource_allocation)
+            for core in cores:
                 # Calculate the number of accesses per fire based on tensor size and bw on the core
                 bandwidth = core.get_max_memory_bandwidth(type="read")
                 accesses_per_fire = ceil(t_core.size_bits() / bandwidth)
@@ -98,32 +122,26 @@ class MemoryAccessesEstimationStage(Stage):
                 self.core_memory_accesses.add_read(core, t_core, total_accesses)
 
     def get_mem_core_accesses(self, tn: TransferNode, ssis: SteadyStateIterationSpace):
-        mem_cores = self.mapping.get(tn).memory_allocation
+        # A transfer's tensor may reside on several memory tiles; account the accesses on each.
+        mem_cores = _memory_tile_cores(self.mapping.get(tn).memory_allocation)
         if not mem_cores:
             return  # No mem tile involved in this transfer, skip
-        assert len(mem_cores) == 1, "Multiple memory cores allocated for a single transfer node is not supported yet."
-        mem_core = mem_cores[0]
         nb_temporal_iterations = prod(ssis.get_applicable_temporal_sizes())
         reuse = ssis.reuse_factor()
         assert reuse != 0, "Memory core reuse factor cannot be zero if memory core is chosen."
-        # For the mem tile we look at both inputs for writes and outputs for reads
-        for tensor in tn.inputs:
-            nb_fires = nb_temporal_iterations // reuse
-            t_core = self.workload.get_tensor_of_transfer_from_single_core(tensor, tn, self.mapping)
-            # Calculate the number of accesses per fire based on tensor size and bw on the core
-            bandwidth = mem_core.get_max_memory_bandwidth(type="write")
-            accesses_per_fire = ceil(t_core.size_bits() / bandwidth)
-            total_accesses = accesses_per_fire * nb_fires
-            self.core_memory_accesses.add_write(mem_core, t_core, total_accesses)
-        for tensor in tn.outputs:
-            # Number of times we read from the mem core decreases by compute reuse
-            nb_fires = nb_temporal_iterations // reuse
-            t_core = self.workload.get_tensor_of_transfer_to_single_core(tensor, tn, self.mapping)
-            # Calculate the number of accesses per fire based on tensor size and bw on the core
-            bandwidth = mem_core.get_max_memory_bandwidth(type="read")
-            accesses_per_fire = ceil(t_core.size_bits() / bandwidth)
-            total_accesses = accesses_per_fire * nb_fires
-            self.core_memory_accesses.add_read(mem_core, t_core, total_accesses)
+        nb_fires = nb_temporal_iterations // reuse
+        for mem_core in mem_cores:
+            # For the mem tile we look at both inputs for writes and outputs for reads
+            for tensor in tn.inputs:
+                t_core = self.workload.get_tensor_of_transfer_from_single_core(tensor, tn, self.mapping)
+                bandwidth = mem_core.get_max_memory_bandwidth(type="write")
+                accesses_per_fire = ceil(t_core.size_bits() / bandwidth)
+                self.core_memory_accesses.add_write(mem_core, t_core, accesses_per_fire * nb_fires)
+            for tensor in tn.outputs:
+                t_core = self.workload.get_tensor_of_transfer_to_single_core(tensor, tn, self.mapping)
+                bandwidth = mem_core.get_max_memory_bandwidth(type="read")
+                accesses_per_fire = ceil(t_core.size_bits() / bandwidth)
+                self.core_memory_accesses.add_read(mem_core, t_core, accesses_per_fire * nb_fires)
 
     def get_destination_accesses(self, tn: TransferNode, ssis: SteadyStateIterationSpace):
         nb_temporal_iterations = prod(ssis.get_applicable_temporal_sizes())
@@ -136,10 +154,10 @@ class MemoryAccessesEstimationStage(Stage):
             dst_idx = tn.outputs.index(tensor)
             dst = list(self.workload.successors(tn))[dst_idx]
             if isinstance(dst, OutEdge):
-                core_allocation = (self.accelerator.get_core(self.accelerator.offchip_core_id),)
+                cores = [self.accelerator.get_core(self.accelerator.offchip_core_id)]
             else:
-                core_allocation = self.mapping.get(dst).resource_allocation
-            for core in core_allocation:
+                cores = _flatten_cores(self.mapping.get(dst).resource_allocation)
+            for core in cores:
                 # Calculate the number of accesses per fire based on tensor size and bw on the core
                 bandwidth = core.get_max_memory_bandwidth(type="write")
                 accesses_per_fire = ceil(t_core.size_bits() / bandwidth)

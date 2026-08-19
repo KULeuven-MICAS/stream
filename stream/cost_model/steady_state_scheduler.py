@@ -1,5 +1,6 @@
 import logging
 import os
+from dataclasses import replace
 from itertools import combinations
 from math import ceil, prod
 from typing import cast
@@ -47,11 +48,34 @@ from stream.workload.utils import (
     get_compute_predecessors_successors,
     get_equivalent_dimension,
     get_node_with_largest_resource_allocation,
+    is_mac_operator_type,
     is_reused_on_chip,
 )
 from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
+
+#: Nest depth of each steady-state loop kind, outermost first.
+_LOOP_NEST_DEPTH: dict[str, int] = {
+    "temporal": 0,
+    "spatiotemporal": 1,
+    "spatial": 2,
+    "core_temporal": 3,
+    "core_spatial": 4,
+    "kernel": 5,
+}
+
+#: Core kinds that model a memory/DMA endpoint, not a compute engine -- never in a compute roofline.
+_NON_COMPUTE_CORE_TYPES: frozenset[str] = frozenset({"offchip", "shim", "memory"})
+
+
+def largest_divisor_leq(n: int, cap: int) -> int:
+    """Largest divisor of ``n`` at most ``cap`` (never below 1)."""
+    cap = max(1, min(cap, n))
+    for candidate in range(cap, 0, -1):
+        if n % candidate == 0:
+            return candidate
+    return 1
 
 
 class SteadyStateScheduler:
@@ -111,7 +135,22 @@ class SteadyStateScheduler:
         - Backend and constraint configuration used for the solve
         - Fusion splits applied
         - Mapping with node-to-resource allocations
+        - Solve statistics (status, optimality gap, wall time)
         """
+        stats = self.solve_stats
+        solve_ir = (
+            {
+                "status": stats.status,
+                "solver": stats.solver,
+                "mip_gap": stats.mip_gap,
+                "objective": stats.objective,
+                "solve_time_s": stats.solve_time_s,
+                "node_count": stats.node_count,
+                "iteration_count": stats.iteration_count,
+            }
+            if stats is not None
+            else None
+        )
         cs = self.constraint_selection
         constraint_selection_ir = (
             {
@@ -130,11 +169,112 @@ class SteadyStateScheduler:
                 "overlap_between_iterations": self.overlap_between_iterations,
             },
             "backend": self.backend,
+            "solve": solve_ir,
             "constraint_selection": constraint_selection_ir,
             "fusion_splits": {str(dim): size for dim, size in self.fusion_splits.items()},
             "mapping": self.mapping.get_ir(),
             "performance": self.performance_stats,
+            "steady_state": self._steady_state_ir(),
         }
+
+    def _core_loops(self, cn: ComputationNode) -> list[dict]:
+        """The loop nest inside one core (ZigZag mapping), as ``core_*`` loops; empty for a non-ZigZag core."""
+        # Resolve by name -- the mapping is keyed by steady-state nodes, the cost LUT by the costed node.
+        try:
+            lut_node = next(n for n in self.cost_lut.get_nodes() if n.name == cn.name)
+            allocation = self.mapping.get(lut_node).resource_allocation
+            cores = [c for slot in (allocation or ()) for c in slot if isinstance(c, Core)]
+            if not cores:
+                return []
+            entry = self.cost_lut.get_cost(lut_node, cores[0])
+        except Exception:  # noqa: BLE001
+            return []
+        mapping = getattr(entry, "mapping", None)
+        if mapping is None:
+            return []
+
+        loops: list[dict] = []
+
+        def add(dim: str, size: int, kind: str) -> None:
+            # No de-dup: ZigZag splits one dim over several levels, so equal-size loops are real levels.
+            if int(size) > 1:
+                loops.append({"dim": dim, "size": int(size), "type": kind, "node": cn.name})
+
+        # ZigZag annotates the nest once per operand; take one operand's view (summing multiplies every dim).
+        def one_operand(per_operand: dict) -> list:
+            return next(iter(per_operand.values()), [])
+
+        # Array unrollings first: these run in parallel, so they sit outside the temporal walk.
+        for level in one_operand(getattr(mapping.spatial_mapping, "mapping_dict_origin", {})):
+            for layer_dim, size in level:
+                add(str(layer_dim), size, "core_spatial")
+        for level in one_operand(getattr(mapping.temporal_mapping, "mapping_dic_stationary", {})):
+            for layer_dim, size in level:
+                add(str(layer_dim), size, "core_temporal")
+        return loops
+
+    def _steady_state_ir(self) -> dict | None:
+        """Serialise the tiled/steady-state inspection view (operators, loop nest, transfer graph); None on failure."""
+        try:
+            operators = [
+                {
+                    "name": cn.name,
+                    "op": getattr(cn, "type", "computation"),
+                    "tensors": [{"name": t.name, "shape": [int(s) for s in t.shape]} for t in cn.tensors],
+                }
+                for cn in self.workload.get_computation_nodes()
+            ]
+            # The for-loop nest over the steady-state iteration space (deduped across operands, size > 1).
+            loops: list[dict] = []
+            seen: set = set()
+            for ssis in (self.ssis or {}).values():
+                for iv in ssis.variables:
+                    # ABSENT: the node lacks the dim (unrolling replicates it); counting it double-counts one unrolling.
+                    if iv.effect is LoopEffect.ABSENT:
+                        continue
+                    key = (str(iv.dimension), int(iv.size))
+                    if int(iv.size) > 1 and key not in seen:
+                        seen.add(key)
+                        loops.append({"dim": str(iv.dimension), "size": int(iv.size), "type": iv.type.name.lower()})
+            # Below the tile: expand each node's intra-core mapping per node (fused groups stay separate).
+            expanded = False
+            for cn in self.workload.get_computation_nodes():
+                core_loops = self._core_loops(cn)
+                for loop in core_loops:
+                    loop["node"] = cn.name
+                loops.extend(core_loops)
+                expanded = expanded or bool(core_loops)
+            if expanded:
+                # Drop the kernel stand-in once expanded (it would double-count the intra-core work).
+                loops = [loop for loop in loops if loop["type"] != "kernel"]
+
+            def _nest_order(loop: dict) -> tuple[str, int]:
+                return loop.get("node") or "", _LOOP_NEST_DEPTH.get(loop["type"], len(_LOOP_NEST_DEPTH))
+
+            loops.sort(key=_nest_order)
+            # The tiled workload graph WITH transfer nodes -- the tensor copies that reside on-chip.
+            tiled_nodes: list[dict] = []
+            edges: list[dict] = []
+            if self.ssw is not None:
+                for cn in self.ssw.get_computation_nodes():
+                    tiled_nodes.append({"name": cn.name, "kind": "compute", "op": getattr(cn, "type", "computation")})
+                for tn in self.ssw.get_transfer_nodes():
+                    out = tn.outputs[0] if tn.outputs else None
+                    transfer_type = getattr(tn, "transfer_type", None)
+                    tiled_nodes.append(
+                        {
+                            "name": tn.name,
+                            "kind": "transfer",
+                            "transfer_type": getattr(transfer_type, "name", None),
+                            "tensor": out.name if out is not None else None,
+                            "elements": int(prod(out.shape)) if out is not None else 0,
+                        }
+                    )
+                edges = [{"source": s.name, "target": t.name} for s, t in self.ssw.edges()]
+            return {"operators": operators, "loops": loops, "tiled_graph": {"nodes": tiled_nodes, "edges": edges}}
+        except Exception as exc:  # noqa: BLE001 -- inspection view must never break a solved run
+            logger.warning("could not build steady-state IR: %s", exc)
+            return None
 
     def run(self) -> Workload:
         """
@@ -237,33 +377,39 @@ class SteadyStateScheduler:
         self.steady_state_workload = self.ssw
         return self.ssw
 
-    def _augment_performance_stats_end_to_end(self) -> None:
-        """Add end-to-end MAC utilization to performance_stats['aggregate'] in place.
+    def _mac_roofline_peak(self) -> tuple[int, int]:
+        """``(peak_macs_per_cycle, n_cores)`` over the on-chip cores that may execute MAC work."""
+        offchip_id = self.accelerator.offchip_core_id
+        peak = 0
+        n_cores = 0
+        for core in self.accelerator.core_list:
+            if core.id == offchip_id or core.type in _NON_COMPUTE_CORE_TYPES:
+                continue
+            op_types = getattr(core, "operator_types", None)
+            if op_types is not None and not any(is_mac_operator_type(t) for t in op_types):
+                continue
+            units = getattr(getattr(core, "operational_array", None), "total_unit_count", 0) or 0
+            if not units:
+                continue
+            peak += units
+            n_cores += 1
+        return peak, n_cores
 
-        ``end_to_end_mac_utilization = total_mac_ops / (peak_macs_per_cycle * total_latency)``, where
-        ``peak_macs_per_cycle`` is the summed operational-array size over all on-chip (non-offchip)
-        cores. Unlike ``mac_spatial_utilization`` (per-layer PE-array spatial fill), this folds in
-        temporal stalls, idle cores AND transfer overhead, so it is the true fraction of the chip's
-        compute throughput the inference actually used. Also records the raw ``total_mac_ops`` and
-        ``peak_macs_per_cycle`` for transparency. Per fusion group (so it equals the whole-inference
-        figure for single-group workloads).
-        """
+    def _augment_performance_stats_end_to_end(self) -> None:
+        """Add end-to-end MAC utilization (``total_mac_ops / (peak_macs_per_cycle * total_latency)``,
+        both restricted to the matmul/conv family) to performance_stats['aggregate'] in place."""
         if not isinstance(self.performance_stats, dict):
             return
         agg = self.performance_stats.get("aggregate")
         if not isinstance(agg, dict):
             return
-        offchip_id = self.accelerator.offchip_core_id
-        peak = sum(
-            getattr(getattr(c, "operational_array", None), "total_unit_count", 0) or 0
-            for c in self.accelerator.core_list
-            if c.id != offchip_id
-        )
+        peak, mac_cores = self._mac_roofline_peak()
         macs = self.total_mac_ops
         lat = self.latency_total
         util = (macs / (peak * lat)) if (macs and peak and lat and lat > 0) else None
         agg["total_mac_ops"] = macs
         agg["peak_macs_per_cycle"] = peak
+        agg["mac_capable_cores"] = mac_cores
         agg["end_to_end_mac_utilization"] = util
 
     def update_tensor_steady_state_iteration_spaces(self, tensor_reuse_levels: TensorReuseLevels):
@@ -285,6 +431,17 @@ class SteadyStateScheduler:
                 for dst in node.outputs:
                     self._propagate_spatial_reuse(src, dst)
                     self._propagate_spatial_reuse(dst, src)
+        # Mirror solved reuse from the moved tensor's SSIS (priced) onto each transfer's SSIS, by (dim, size).
+        for node in self.ssw.get_transfer_nodes():
+            governing = next(
+                (t for t in (*node.outputs, *node.inputs) if isinstance(t, Tensor) and t in self.ssis), None
+            )
+            if governing is None:
+                continue
+            reuse_by_loop = {(v.dimension, v.size): v.reuse for v in self.ssis[governing].get_temporal_variables()}
+            for iv in self.ssis[node].get_temporal_variables():
+                if (iv.dimension, iv.size) in reuse_by_loop:
+                    iv.reuse = reuse_by_loop[(iv.dimension, iv.size)]
 
     def _propagate_spatial_reuse(self, spatial_side: Tensor, temporal_side: Tensor) -> None:
         """Mark spatiotemporal variables on ``temporal_side`` as REUSE when they
@@ -375,13 +532,7 @@ class SteadyStateScheduler:
         input_idx = dst_new.inputs.index(tensor)
         new_inputs = dst_new.inputs[:input_idx] + (updated_tensor,) + dst_new.inputs[input_idx + 1 :]
         if isinstance(dst_new, ComputationNode):
-            new_dst = ComputationNode(
-                type=dst_new.type,
-                name=dst_new.name,
-                inputs=new_inputs,
-                outputs=dst_new.outputs,
-                operand_mapping=dst_new.operand_mapping,
-            )
+            new_dst = replace(dst_new, inputs=new_inputs)
         elif isinstance(dst_new, OutEdge):
             new_dst = OutEdge(
                 name=dst_new.name,
@@ -454,13 +605,7 @@ class SteadyStateScheduler:
     def update_source_tensor(self, tensor, src, new_nodes, new_tensor) -> ComputationNode:
         output_idx = src.outputs.index(tensor)
         new_outputs = src.outputs[:output_idx] + (new_tensor,) + src.outputs[output_idx + 1 :]
-        new_src = ComputationNode(
-            type=src.type,
-            name=src.name,
-            inputs=src.inputs,
-            outputs=new_outputs,
-            operand_mapping=src.operand_mapping,
-        )
+        new_src = replace(src, outputs=new_outputs)
         new_nodes[new_src.name] = new_src
         # Update the mapping entry for this new_src node to be the same as the original src node
         self.mapping.set(new_src, self.mapping.get(src))
@@ -489,13 +634,7 @@ class SteadyStateScheduler:
             input_idx = dst_new.inputs.index(tensor)
             new_inputs = dst_new.inputs[:input_idx] + (updated_tensor,) + dst_new.inputs[input_idx + 1 :]
             if isinstance(dst_new, ComputationNode):
-                new_dst = ComputationNode(
-                    type=dst_new.type,
-                    name=dst_new.name,
-                    inputs=new_inputs,
-                    outputs=dst_new.outputs,
-                    operand_mapping=dst_new.operand_mapping,
-                )
+                new_dst = replace(dst_new, inputs=new_inputs)
             elif isinstance(dst_new, OutEdge):
                 new_dst = OutEdge(
                     name=dst_new.name,
@@ -741,16 +880,22 @@ class SteadyStateScheduler:
         self, compute_tiling: InterCoreTiling, dst_allocs: tuple[Core, ...]
     ) -> tuple[LayerDim, int]:
         # TODO: Make sure that the selected tiling_loop is relevant for the transfer node
+        nb_allocs = len(dst_allocs)
         for tiling_loop in compute_tiling:
             _, size = tiling_loop
-            if size == len(dst_allocs):
+            if size == nb_allocs:
                 return tiling_loop
         # No size with exact match found, try to find one that is a multiple of the number of dst allocs
         for tiling_loop in compute_tiling:
             dim, size = tiling_loop
-            if size % len(dst_allocs) == 0:
-                return (dim, len(dst_allocs))
-        raise ValueError(f"No matching tiling found for compute tiling {compute_tiling} and dst allocs {dst_allocs}")
+            if size % nb_allocs == 0:
+                return (dim, nb_allocs)
+        # No clean divisor: split the best loop into the largest even share that fits, instead of raising.
+        best = max(compute_tiling, key=lambda loop: largest_divisor_leq(loop[1], nb_allocs), default=None)
+        if best is None:
+            raise ValueError(f"No tiling loop to reconcile with dst allocs {dst_allocs}")
+        dim, size = best
+        return (dim, largest_divisor_leq(size, nb_allocs))
 
     def determine_possible_transfer_plans(
         self, src: HasOutputs, possible_dst_allocs: tuple[tuple[Core, ...], ...]
@@ -871,15 +1016,16 @@ class SteadyStateScheduler:
                 if tiling_dim == dim:
                     total_relevant_unrolling *= size
         columns = self._columns_of(src)
-        if node.transfer_type is TransferType.COMPUTE_TO_MEM and columns:
-            # How many memory tiles the gather needs is how many columns the source occupies,
-            # never the array's rows-per-column: a layer placed one core per column has nothing
-            # to gather and needs a memory tile of its own in each.
+        if columns and node.transfer_type in (TransferType.COMPUTE_TO_MEM, TransferType.MEM_TO_MEM):
+            # A column's cores share its one memory tile, so both need one tile per occupied column, not per core.
             required_nb_memory_cores = min(columns, total_relevant_unrolling)
         else:
             required_nb_memory_cores = ceil(
                 total_relevant_unrolling / MAX_RELEVANT_FACTOR_PER_TRANSFER_TYPE[node.transfer_type]
             )
+        # Snap the count down to a divisor of the compute split so the transfer is one even inter-core tiling.
+        if total_relevant_unrolling > 1:
+            required_nb_memory_cores = largest_divisor_leq(total_relevant_unrolling, required_nb_memory_cores)
         all_mem_cores = self._get_accelerator_memory_cores()
         candidates = [tuple(combo) for combo in combinations(all_mem_cores, required_nb_memory_cores)]
         return tuple(candidates)

@@ -140,15 +140,23 @@ def test_find_comment_marker():
 
 
 # ---------------------------------------------------------------------------
-# 9. Exactly one pytest invocation in ci.yml (matrix runs once)
+# 9. A push or PR runs the suite exactly once
 # ---------------------------------------------------------------------------
 
 
-def test_single_pytest_invocation():
-    """ci.yml must contain exactly one 'pytest' substring — the matrix runs exactly once."""
-    _, raw = _load()
-    count = raw.count("pytest")
-    assert count == 1, f"Expected exactly 1 'pytest' invocation in ci.yml (matrix-once), found {count}"
+def test_single_ungated_pytest_invocation():
+    """Exactly one ungated pytest step runs; any others must be gated on schedule/workflow_dispatch."""
+    data, _ = _load()
+    runs = [
+        step for job in data["jobs"].values() for step in job.get("steps", []) if "pytest" in str(step.get("run", ""))
+    ]
+    ungated = [s for s in runs if not s.get("if")]
+    assert len(ungated) == 1, f"Expected exactly 1 ungated pytest step, found {len(ungated)}: {ungated}"
+    for step in runs:
+        if condition := step.get("if"):
+            assert "schedule" in condition or "workflow_dispatch" in condition, (
+                f"Extra pytest step {step.get('name')!r} must be gated on schedule/workflow_dispatch, got: {condition}"
+            )
 
 
 # ---------------------------------------------------------------------------

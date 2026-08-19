@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
+
+import networkx as nx
 import numpy as np
 from xdsl.dialects.builtin import FixedBitwidthType
-from xdsl.ir.affine import AffineExpr, AffineMap
+from xdsl.ir.affine import AffineDimExpr, AffineExpr, AffineMap
 
 from stream.workload.node import ComputationNode, InEdge, NormalizationNode, OutEdge
 from stream.workload.tensor import Tensor
@@ -15,9 +18,19 @@ __all__ = [
     "reduction_axes",
     "parallel_axes",
     "decompose_normalization",
+    "expand_normalizations",
+    "collapse_fused_kernels",
+    "fused_kernel_tag",
     "softmax_reference",
     "NORMALIZATION_OPS",
+    "REDUCTION_SUBOPS",
 ]
+
+# Sub-operator types that carry the normalization's intra-op reduction (they drop the reduced axes).
+REDUCTION_SUBOPS = ("ReduceMax", "ReduceSum", "ReduceSumSquare")
+
+# Separator in a ``fused_kernel`` tag: ``"<OpType>:<name>"`` (e.g. ``"Softmax:softmax"``).
+FUSED_KERNEL_SEP = ":"
 
 
 def reduction_axes(node: ComputationNode) -> tuple[int, ...]:
@@ -107,6 +120,79 @@ def decompose_normalization(node: NormalizationNode) -> Workload:
     x = node.inputs[0]
     subnodes, y = builder(x, node.reduction_axes, x.operand_type, node.name)
     return Workload([InEdge(name=x.name, outputs=(x,)), *subnodes, OutEdge(name=f"{node.name}_out", inputs=(y,))])
+
+
+def fused_kernel_tag(node: NormalizationNode) -> str:
+    """The ``fused_kernel`` label carried by every sub-op of ``node`` once expanded (``"<type>:<name>"``)."""
+    return f"{node.type}{FUSED_KERNEL_SEP}{node.name}"
+
+
+def _splice_decomposition(node: NormalizationNode, sub: Workload) -> list[ComputationNode]:
+    """Rewire a decomposition subgraph into the parent graph, tagging each sub-op with its fused kernel."""
+    sub_out = sub.get_out_edges()[0].inputs[0]
+    y = node.outputs[0]
+    tag = fused_kernel_tag(node)
+    return [
+        ComputationNode(
+            type=c.type,
+            name=c.name,
+            inputs=c.inputs,
+            outputs=tuple(y if t is sub_out else t for t in c.outputs),
+            operand_mapping=c.operand_mapping,
+            fused_kernel=tag,
+        )
+        for c in sub.get_computation_nodes()
+    ]
+
+
+def expand_normalizations(workload: Workload) -> Workload:
+    """Replace every ``NormalizationNode`` with its affine sub-operator subgraph via the decompose registry."""
+    from stream.workload.decompose import decompose  # noqa: PLC0415 -- registry imports this module lazily
+
+    new_nodes: list = []
+    for node in nx.lexicographical_topological_sort(workload, key=lambda n: n.name):
+        sub = decompose(node) if isinstance(node, NormalizationNode) else None
+        if sub is not None:
+            new_nodes.extend(_splice_decomposition(node, sub))
+        else:
+            new_nodes.append(node)
+    return Workload(new_nodes)
+
+
+def collapse_fused_kernels(workload: Workload) -> Workload:
+    """Inverse of :func:`expand_normalizations`: regroup sub-ops sharing a ``fused_kernel`` tag."""
+    groups: dict[str, list[ComputationNode]] = defaultdict(list)
+    passthrough: list = []
+    for node in nx.lexicographical_topological_sort(workload, key=lambda n: n.name):
+        tag = getattr(node, "fused_kernel", None)
+        if tag and isinstance(node, ComputationNode):
+            groups[tag].append(node)
+        else:
+            passthrough.append(node)
+
+    new_nodes: list = list(passthrough)
+    for tag, subs in groups.items():
+        norm_type, _, norm_name = tag.partition(FUSED_KERNEL_SEP)
+        produced = {t.name for s in subs for t in s.outputs}
+        consumed = {t.name for s in subs for t in s.inputs}
+        x = next(t for s in subs for t in s.inputs if t.name not in produced)
+        y = next(t for s in subs for t in s.outputs if t.name not in consumed)
+        reduce_op = next(s for s in subs if s.type in REDUCTION_SUBOPS)
+        rank = reduce_op.num_dims
+        kept = {r.position for r in reduce_op.get_mapping(reduce_op.outputs[0]).results if isinstance(r, AffineDimExpr)}
+        reduction_axes = tuple(sorted(set(range(rank)) - kept))
+        idn = _identity(rank)
+        new_nodes.append(
+            NormalizationNode(
+                type=norm_type,
+                name=norm_name,
+                inputs=(x,),
+                outputs=(y,),
+                operand_mapping=(idn, idn),
+                reduction_axes=reduction_axes,
+            )
+        )
+    return Workload(new_nodes)
 
 
 def softmax_reference(x: np.ndarray, axis: int = -1) -> np.ndarray:

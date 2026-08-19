@@ -1,0 +1,51 @@
+# TPU7x VMEM -- the software-managed scratchpad shared by one TensorCore's eight MXUs and its VPU.
+#
+# 64 MiB per TensorCore (128 MiB per two-TensorCore chip, per the Ironwood datasheet). This is the
+# single physical scratchpad every compute unit in the TensorCore reads from and writes to: tensors
+# are staged into VMEM from HBM and streamed into the arrays from there, and a block's intermediates
+# live here between the MXUs and the VPU. Its bandwidth to the arrays is roughly 22x HBM's, which is
+# why a block whose working set fits in VMEM runs at a completely different arithmetic intensity than
+# one that does not -- the effect this model exists to expose.
+#
+# Modelled as a memory core, not a level inside each compute core: it is the one place the whole
+# TensorCore's intermediates are resident, so its 64 MiB is the on-chip residency limit the mapper
+# must respect, counted once. The eight MXUs and the VPU reach it over the intra-TensorCore bus;
+# an MXU->VPU hand-off is a VMEM write then a VMEM read, which is the real cost. Bandwidth is
+# bits/cycle at 1.1 GHz (~57 TB/s per TensorCore).
+name: tpu_v7_vmem
+type: zigzag.memory
+
+memories:
+  vmem:
+    size: 536870912
+    r_cost: 200
+    w_cost: 220
+    area: 0
+    latency: 1
+    operands: [I1, I2, O]
+    ports:
+      - name: r_port_1
+        type: read
+        bandwidth_min: 256
+        bandwidth_max: 416974
+        allocation:
+          - I1, tl
+          - I2, tl
+          - O, tl
+          - O, th
+      - name: w_port_1
+        type: write
+        bandwidth_min: 256
+        bandwidth_max: 416974
+        allocation:
+          - I1, fh
+          - I2, fh
+          - O, fh
+          - O, fl
+    served_dimensions: [D1, D2]
+
+operational_array:
+  unit_energy: 0
+  unit_area: 0
+  dimensions: [D1, D2]
+  sizes: [0, 0]

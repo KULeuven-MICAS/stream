@@ -245,3 +245,102 @@ def test_all_enabled_calls_all():
     tta.big_m = 10
     tta._overlap_and_objective()
     tta._add_dma_usage_constraints.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Pipelining model
+# ---------------------------------------------------------------------------
+
+from types import SimpleNamespace  # noqa: E402
+
+from stream.opt.solver import PipeliningModel  # noqa: E402
+from stream.workload.steady_state.iteration_space import Reuse  # noqa: E402
+
+
+def test_pipelining_defaults_to_occupancy():
+    """The modulo-scheduling model is the default; span is the opt-in legacy one."""
+    assert ConstraintSelection().pipelining is PipeliningModel.OCCUPANCY
+    assert ConstraintSelection(pipelining=PipeliningModel.SPAN).pipelining is PipeliningModel.SPAN
+
+
+@pytest.mark.parametrize(
+    ("selected", "double_buffered", "expected"),
+    [
+        (PipeliningModel.OCCUPANCY, True, PipeliningModel.OCCUPANCY),
+        # Overlapping means prefetching the next tile while this one computes -- with a single
+        # buffer there is nowhere to prefetch into, so the credit must not be handed out.
+        (PipeliningModel.OCCUPANCY, False, PipeliningModel.SPAN),
+        (PipeliningModel.SPAN, True, PipeliningModel.SPAN),
+        (PipeliningModel.SPAN, False, PipeliningModel.SPAN),
+    ],
+)
+def test_pipelining_requires_double_buffering(selected, double_buffered, expected):
+    from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
+        TransferAndTensorAllocator,
+    )
+
+    tta = _make_tta_stub(ConstraintSelection(pipelining=selected))
+    tta.force_double_buffering = double_buffered
+    assert TransferAndTensorAllocator._pipelining.fget(tta) is expected
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_builder", "other_builder"),
+    [
+        (PipeliningModel.OCCUPANCY, "_add_occupancy_indicators", "_add_span_indicators"),
+        (PipeliningModel.SPAN, "_add_span_indicators", "_add_occupancy_indicators"),
+    ],
+)
+def test_idle_indicator_dispatch(model, expected_builder, other_builder):
+    """Each model builds its own indicators and only its own."""
+    from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
+        TransferAndTensorAllocator,
+    )
+
+    tta = _make_tta_stub(ConstraintSelection(pipelining=model))
+    tta._pipelining = model
+    tta._resource_activity.return_value = [("res", {0: 0}, "used")]
+    TransferAndTensorAllocator._init_idle_indicators(tta, 0, 10)
+    getattr(tta, expected_builder).assert_called_once()
+    getattr(tta, other_builder).assert_not_called()
+
+
+class _FakeTensor:
+    """Hashable stand-in -- the helper keys its dicts by tensor."""
+
+    name = "t"
+
+
+def _fire_helper_stub(*, relevant_sizes, force_double_buffering=True):
+    """A TTA stub carrying one tensor whose steady-state loops have the given relevancies."""
+    from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
+        TransferAndTensorAllocator,
+    )
+
+    tensor = _FakeTensor()
+    variables = [SimpleNamespace(size=size, relevant=rel, reuse=Reuse.NOT_SET) for size, rel in relevant_sizes]
+    tta = MagicMock(spec=TransferAndTensorAllocator)
+    tta.workload = SimpleNamespace(tensors=[tensor])
+    tta.ssis = {tensor: SimpleNamespace(get_applicable_temporal_variables=lambda: variables)}
+    tta.tensors_to_optimize_reuse_for = []
+    tta.reuse_levels, tta.tiles_needed_levels, tta.bds_needed_levels = {}, {}, {}
+    tta.force_double_buffering = force_double_buffering
+    TransferAndTensorAllocator._init_transfer_fire_helpers(tta)
+    return tensor, tta
+
+
+def test_double_buffering_skips_loop_invariant_tensors():
+    """A loop-invariant tensor (same tile every iteration) reserves one tile, not a double buffer."""
+    tensor, tta = _fire_helper_stub(relevant_sizes=[(8, False)])
+    assert tta.tiles_needed_levels[(tensor, -1)] == 1
+
+
+def test_double_buffering_applies_to_streamed_tensors():
+    """An activation tile changes every iteration, so it does need somewhere to prefetch into."""
+    tensor, tta = _fire_helper_stub(relevant_sizes=[(8, True)])
+    assert tta.tiles_needed_levels[(tensor, -1)] == 2
+
+
+def test_double_buffering_off_reserves_one_tile():
+    tensor, tta = _fire_helper_stub(relevant_sizes=[(8, True)], force_double_buffering=False)
+    assert tta.tiles_needed_levels[(tensor, -1)] == 1

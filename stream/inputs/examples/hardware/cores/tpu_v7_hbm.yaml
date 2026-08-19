@@ -1,0 +1,36 @@
+# TPU7x HBM3e stack, fronted as the off-chip memory controller.
+#
+# 192 GiB per chip at 7.38 TB/s; this models a two-chip slice, so 384 GiB and double the bandwidth.
+# 107345 bits/cycle at the 1.1 GHz core clock is ~14.76 TB/s, the published 2 x 7380 GB/s.
+name: tpu_v7_hbm
+type: zigzag.offchip
+
+memories:
+  hbm3e:
+    size: 3298534883328
+    r_cost: 4000
+    w_cost: 4000
+    area: 0
+    latency: 1
+    operands: [I1, I2, O]
+    ports:
+      - name: rw_port_1
+        type: read_write
+        bandwidth_min: 256
+        bandwidth_max: 107345
+        allocation:
+          - I1, fh
+          - I1, tl
+          - I2, fh
+          - I2, tl
+          - O, fh
+          - O, tl
+          - O, fl
+          - O, th
+    served_dimensions: [D1, D2]
+
+operational_array:
+  unit_energy: 0
+  unit_area: 0
+  dimensions: [D1, D2]
+  sizes: [0, 0]

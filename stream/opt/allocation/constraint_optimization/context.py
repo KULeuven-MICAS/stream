@@ -14,6 +14,7 @@ from stream.opt.allocation.constraint_optimization.config import (
     pick_profile,
 )
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import _resource_key
+from stream.plugins import load_group
 
 if TYPE_CHECKING:
     from stream.opt.solver import LinExpr, SolverModel, SolverVar
@@ -81,12 +82,26 @@ def build_constraint_context(accelerator: Accelerator, cfg: ConstraintOptStageCo
 #
 # HOW TO ADD A NEW NAMESPACE
 # --------------------------
-#   1. Subclass NamespaceConstraints below.
-#   2. Override any of the add_*_constraints methods you need.
-#   3. In build_transfer_context(), detect when the namespace is present
-#      in the accelerator and instantiate your strategy with appropriate
-#      parameters.
+#   1. Subclass NamespaceConstraints, set NAMESPACE, override the
+#      add_*_constraints methods you need, and override from_config if the
+#      subclass takes constructor arguments.
+#   2. Register it in the "stream.constraints" entry-point group under the
+#      namespace name. It is then picked up whenever the accelerator has a core
+#      of that namespace -- in-tree here, or from an overlay with no fork.
 # ============================================================================
+
+
+@dataclass(frozen=True)
+class NamespaceConstraintConfig:
+    """What a namespace's constraints may be built from."""
+
+    accelerator: Accelerator
+    offchip_core_id: int | None
+    mem_cores: tuple[Core, ...]
+    nb_cols_to_use: int
+    max_compute_tile_dma_channels: int
+    max_mem_tile_dma_channels: int
+    max_shim_tile_dma_channels: int
 
 
 class NamespaceConstraints:
@@ -98,6 +113,11 @@ class NamespaceConstraints:
     """
 
     NAMESPACE: str = ""
+
+    @classmethod
+    def from_config(cls, config: NamespaceConstraintConfig) -> NamespaceConstraints:
+        """Build this strategy for one solve. Override when the subclass needs constructor arguments."""
+        return cls()
 
     def applies_to(self, core: Core) -> bool:
         """Return ``True`` if *core* belongs to this namespace."""
@@ -160,6 +180,15 @@ class AIE2Constraints(NamespaceConstraints):
         self.max_compute_tile_dma_channels = max_compute_tile_dma_channels
         self.max_mem_tile_dma_channels = max_mem_tile_dma_channels
         self.max_shim_tile_dma_channels = max_shim_tile_dma_channels
+
+    @classmethod
+    def from_config(cls, config: NamespaceConstraintConfig) -> AIE2Constraints:
+        return cls(
+            offchip_core_id=config.offchip_core_id,
+            max_compute_tile_dma_channels=config.max_compute_tile_dma_channels,
+            max_mem_tile_dma_channels=config.max_mem_tile_dma_channels,
+            max_shim_tile_dma_channels=config.max_shim_tile_dma_channels,
+        )
 
     # ---- object-FIFO depth ----
 
@@ -276,6 +305,28 @@ class TransferAndTensorContext:
             )
 
 
+CONSTRAINTS_GROUP = "stream.constraints"
+
+
+def namespace_constraints_for(
+    accelerator: Accelerator, config: NamespaceConstraintConfig
+) -> list[NamespaceConstraints]:
+    """The constraint strategies for the namespaces this accelerator contains (from the
+    ``stream.constraints`` entry-point group, keyed by namespace name)."""
+    present = {c.namespace for c in accelerator.core_list if isinstance(c, Core) and c.namespace}
+    strategies: dict[str, NamespaceConstraints] = {}
+    for plugin in load_group(CONSTRAINTS_GROUP):
+        if plugin.name not in present:
+            continue
+        try:
+            strategies[plugin.name] = plugin.obj.from_config(config)
+        except Exception as exc:  # noqa: BLE001 -- a broken strategy must not fail the solve
+            logger.warning("skipping %r constraints from %r: %s", plugin.name, plugin.distribution, exc)
+    for namespace in sorted(present - strategies.keys()):
+        logger.debug("no MILP constraints registered for core namespace %r", namespace)
+    return [strategies[name] for name in sorted(strategies)]
+
+
 def build_transfer_context(
     accelerator: Accelerator,
     *,
@@ -300,26 +351,21 @@ def build_transfer_context(
         and c.col_id < nb_cols_to_use
     ]
 
-    # Detect which namespaces are present and instantiate their constraint
-    # strategies.  Each namespace appears at most once.
-    namespaces: set[str] = {c.namespace for c in accelerator.core_list if isinstance(c, Core) and c.namespace}
-
-    ns_constraints: list[NamespaceConstraints] = []
-    if "aie2" in namespaces:
-        ns_constraints.append(
-            AIE2Constraints(
-                offchip_core_id=offchip_core_id,
-                max_compute_tile_dma_channels=max_compute_tile_dma_channels,
-                max_mem_tile_dma_channels=max_mem_tile_dma_channels,
-                max_shim_tile_dma_channels=max_shim_tile_dma_channels,
-            )
-        )
-    # Future namespaces: add elif / append blocks here.
+    config = NamespaceConstraintConfig(
+        accelerator=accelerator,
+        offchip_core_id=offchip_core_id,
+        mem_cores=tuple(mem_cores),
+        nb_cols_to_use=nb_cols_to_use,
+        max_compute_tile_dma_channels=max_compute_tile_dma_channels,
+        max_mem_tile_dma_channels=max_mem_tile_dma_channels,
+        max_shim_tile_dma_channels=max_shim_tile_dma_channels,
+    )
+    ns_constraints = tuple(namespace_constraints_for(accelerator, config))
 
     return TransferAndTensorContext(
         offchip_core_id=offchip_core_id,
         mem_cores=mem_cores,
         force_double_buffering=force_double_buffering,
         force_io_transfers_on_mem_tile=force_io_transfers_on_mem_tile,
-        namespace_constraints=tuple(ns_constraints),
+        namespace_constraints=ns_constraints,
     )

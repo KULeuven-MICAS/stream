@@ -179,9 +179,25 @@ class Workload(DiGraphWrapper[Node]):
                     mapping_b = self.global_mapping(b, b.get_mapping(output))
                     for expr_a, expr_b in zip(mapping_a.results, mapping_b.results, strict=True):
                         relation = expr_a - expr_b
-                        if self._is_identity_relation(relation):
+                        if self._is_identity_relation(relation) and not self._both_parallel_outputs(
+                            a, b, expr_a, expr_b
+                        ):
                             result.append(relation)
         return result
+
+    def _both_parallel_outputs(
+        self, a: "HasIterationSpace", b: "HasIterationSpace", expr_a: AffineExpr, expr_b: AffineExpr
+    ) -> bool:
+        """Whether a shared-input axis is a PARALLEL output for both consumers ``a`` and ``b``."""
+        from stream.workload.iterator_type import IteratorType, derive_iterator_types  # noqa: PLC0415
+
+        if not (isinstance(expr_a, AffineDimExpr) and isinstance(expr_b, AffineDimExpr)):
+            return False
+        a_local = expr_a.position - self.global_idxs[a].start
+        b_local = expr_b.position - self.global_idxs[b].start
+        types_a = derive_iterator_types(a)
+        types_b = derive_iterator_types(b)
+        return types_a.get(a_local) == IteratorType.PARALLEL and types_b.get(b_local) == IteratorType.PARALLEL
 
     def get_computation_nodes(self) -> tuple[ComputationNode, ...]:
         return tuple(cast(ComputationNode, node) for node in self.nodes if isinstance(node, ComputationNode))
@@ -313,7 +329,8 @@ class Workload(DiGraphWrapper[Node]):
         # Build sub-workloads
         sub_workloads = []
         for nodes in group_nodes:
-            if nodes:
+            # A group of only boundary edges (no iteration space) would fail later in the affine solve; drop it here.
+            if any(isinstance(node, HasIterationSpace) for node in nodes):
                 sub_workloads.append(Workload(nodes))
 
         return sub_workloads
@@ -485,22 +502,25 @@ class Workload(DiGraphWrapper[Node]):
         unique_dims, dim_values = self.unique_dimensions()
         # The size of each unique dim z0..zN
         z_sizes = [dimension_sizes[z] for z in unique_dims]
-        node = next(iter(n for n in self.get_iteration_space_nodes() if tensor in n.tensors))
-        mapping = node.get_mapping(tensor)
-        global_mapping = self.global_mapping(node, mapping)
         # This is the logical tensor domain we want to clip to.
         # If your Tensor already knows its shape, use it.
         logical_shape = tensor.shape  # type: ignore[attr-defined]
-        out_shape: list[int] = []
-        for axis, idx_expr in enumerate(global_mapping.results):
-            idx_expr_in_z = idx_expr.replace_dims_and_symbols(dim_values, ())
-            amin, amax = affine_bounds(idx_expr_in_z, z_sizes)
-            # Clip to valid tensor index range [0, logical_shape[axis]-1]
-            lo = max(amin, 0)
-            hi = min(amax, logical_shape[axis] - 1)
-            extent = max(0, hi - lo + 1)
-            out_shape.append(int(extent))
-        return tuple(out_shape)
+
+        def extents_for(node: HasIterationSpace) -> list[int]:
+            global_mapping = self.global_mapping(node, node.get_mapping(tensor))
+            out: list[int] = []
+            for axis, idx_expr in enumerate(global_mapping.results):
+                idx_expr_in_z = idx_expr.replace_dims_and_symbols(dim_values, ())
+                amin, amax = affine_bounds(idx_expr_in_z, z_sizes)
+                # Clip to valid tensor index range [0, logical_shape[axis]-1]
+                lo = max(amin, 0)
+                hi = min(amax, logical_shape[axis] - 1)
+                out.append(int(max(0, hi - lo + 1)))
+            return out
+
+        # A tensor several nodes access can have a different footprint per accessor; take the largest.
+        shapes = [extents_for(n) for n in self.get_iteration_space_nodes() if tensor in n.tensors]
+        return tuple(max(axis_extents) for axis_extents in zip(*shapes, strict=True))
 
     def get_tensor_shape_with_tiling(self, tensor: Tensor, tiling: InterCoreTiling) -> tuple[int, ...]:
         unique_dims, _ = self.unique_dimensions()
@@ -580,6 +600,9 @@ class Workload(DiGraphWrapper[Node]):
         pred = list(self.predecessors(transfer))[pred_idx]
         if isinstance(pred, InEdge):
             pred_tiling = tuple()
+        elif isinstance(pred, TransferNode):
+            # A multi-hop staged transfer: its own tiling determines the shape here.
+            pred_tiling = self.get_unique_dims_inter_core_tiling(transfer, mapping)
         else:
             assert isinstance(pred, ComputationNode), f"Expected ComputationNode, got {type(pred)}"
             pred_tiling = self.get_unique_dims_inter_core_tiling(pred, mapping)
@@ -677,6 +700,7 @@ class Workload(DiGraphWrapper[Node]):
                     inputs=new_inputs,
                     outputs=(new_output,),
                     operand_mapping=node.operand_mapping,
+                    fused_kernel=node.fused_kernel,
                 )
             elif isinstance(node, TransferNode):
                 new_inputs = tuple(cast(Tensor, tensor_map[inp.name]) for inp in node.inputs)
@@ -1111,22 +1135,26 @@ def determine_fusion_cut_points(workload: Workload) -> list[str]:
             topo_comp_names.append(node.name)
     last_comp_name = topo_comp_names[-1] if topo_comp_names else None
 
-    cut_points: list[str] = []
+    from stream.workload.fusion.analysis import barrier_cut_points  # noqa: PLC0415 -- avoid import cycle
+
+    wanted: set[str] = set(barrier_cut_points(workload))
     for node in workload.dataflow_sort():
         if not isinstance(node, ComputationNode):
             continue
 
         # MaxPool ends the front-end group
         if node.type == "MaxPool":
-            cut_points.append(node.name)
+            wanted.add(node.name)
             continue
 
         # Add followed by a single Relu successor -> split after Relu
         if node.type == "Add":
             comp_succs = [s for s in workload.successors(node) if isinstance(s, ComputationNode)]
             if len(comp_succs) == 1 and comp_succs[0].type == "Relu":
-                relu = comp_succs[0]
-                cut_points.append(relu.name)
+                wanted.add(comp_succs[0].name)
+
+    # Emit the wanted cuts in topological order (dedupes barrier + heuristic overlaps).
+    cut_points = [name for name in topo_comp_names if name in wanted]
 
     # Guard: do not split after the last ComputationNode in the workload — that
     # would create an empty trailing group with no ComputationNodes.

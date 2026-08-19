@@ -1,13 +1,27 @@
+import json
 import logging
 import os
 
 import yaml
 
+from stream.ir.infeasibility import InfeasibilityReportIR, InfeasibleAllocationError
 from stream.mapping.generator import MappingGenerator
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 
 logger = logging.getLogger(__name__)
+
+# Written beside latency.yaml when a variant's mapping does not fit.
+INFEASIBILITY_REPORT_FILENAME = "infeasibility_report.json"
+
+
+def save_infeasibility_report(output_dir: str, report: InfeasibilityReportIR) -> None:
+    """Persist a variant's typed infeasibility diagnosis next to its latency."""
+    try:
+        with open(os.path.join(output_dir, INFEASIBILITY_REPORT_FILENAME), "w") as f:
+            json.dump(report.model_dump(), f)
+    except Exception as exc:  # noqa: BLE001 -- a diagnosis that cannot be written must not fail the search
+        logger.warning(f"could not write infeasibility report to {output_dir}: {exc}")
 
 
 class MappingGenerationStage(Stage):
@@ -65,6 +79,7 @@ class MappingGenerationStage(Stage):
 
     def run(self):
         best_mapping_path = None
+        best_index = None
         best_context = None
         best_latency = float("inf")
         for i, variant, mapping in self.mapping_generator.run():
@@ -93,18 +108,31 @@ class MappingGenerationStage(Stage):
                 ctx = ctxs[0]
                 scheduler = ctx.get("scheduler", None)
                 latency = scheduler.latency_total
+            except InfeasibleAllocationError as e:
+                save_infeasibility_report(output_path_i, e.report)
+                logger.error(f"Mapping {mapping_path} is infeasible: {e.report.summary}")
+                latency = float("inf")
             except RuntimeError as e:
                 logger.error(f"Error evaluating mapping {mapping_path}: {e}")
                 print(f"Error evaluating mapping {mapping_path}: {e}")
                 latency = float("inf")  # treat errors as infinite latency
-            if best_latency is None or latency < best_latency:
+            if latency < best_latency:
                 best_latency = latency
                 best_mapping_path = mapping_path
-                best_context = ctx
+                best_index = i
+                # Snapshot the winner: the inner pipeline reuses one shared StageContext that later
+                # variants overwrite in place.
+                best_context = StageContext(data=dict(ctx.data))
             # Save the latency to yaml for later analysis
             latency_yaml_path = os.path.join(output_path_i, "latency.yaml")
             with open(latency_yaml_path, "w") as f:
                 yaml.dump({"latency": latency}, f)
             logger.info(f"Mapping {mapping_path} has latency {latency}")
         logger.info(f"Best mapping found with latency {best_latency}: {best_mapping_path}")
+        if best_context is not None:
+            best_context.set(
+                best_mapping_index=best_index,
+                best_mapping_path=best_mapping_path,
+                best_latency=best_latency,
+            )
         yield best_context
