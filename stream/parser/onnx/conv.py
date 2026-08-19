@@ -15,6 +15,7 @@ class ConvParser(OnnxOperatorParser):
     def get_mappings_2d_conv(self) -> tuple[AffineMap, AffineMap, AffineMap]:
         strides = self.get_node_attribute_ints("strides")
         required_strides_length = 2
+        required_pads_length = 4
         if not strides:
             strides = [1, 1]
         assert len(strides) == required_strides_length, "Strides should be 2D for 2D convolution."
@@ -22,12 +23,13 @@ class ConvParser(OnnxOperatorParser):
         pads = self.get_node_attribute_ints("pads")
         if not pads:
             pads = [0, 0, 0, 0]
-        if not all(p == pads[0] for p in pads):
-            raise NotImplementedError("Asymmetric padding is not supported yet.")
-        p = pads[0]
+        assert len(pads) == required_pads_length, "Pads should be 2D for 2D convolution."
+        pad_top, pad_left, _pad_bottom, _pad_right = pads
 
         return (
-            AffineMap.from_callable(lambda b, ox, oy, fx, fy, c, k: (b, c, sy * oy + fy - p, sx * ox + fx - p)),
+            AffineMap.from_callable(
+                lambda b, ox, oy, fx, fy, c, k: (b, c, sy * oy + fy - pad_top, sx * ox + fx - pad_left)
+            ),
             AffineMap.from_callable(lambda b, ox, oy, fx, fy, c, k: (k, c, fy, fx)),
             AffineMap.from_callable(lambda b, ox, oy, fx, fy, c, k: (b, k, oy, ox)),
         )
