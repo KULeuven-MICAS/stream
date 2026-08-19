@@ -22,7 +22,7 @@ namespaces = true
 
 [project]
 name = "stream-dse"
-version = "1.13.12"
+version = "1.13.13"
 description = "Stream - Multi-core accelerator design space exploration with layer-fused scheduling"
 readme = "README.md"
 authors = [{ name = "Arne Symons", email = "arne.symons@kuleuven.be" }, { name = "Linyan Mei", email = "linyan.mei@kuleuven.be" }]
