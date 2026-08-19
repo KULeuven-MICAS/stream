@@ -330,8 +330,7 @@ def _fire_helper_stub(*, relevant_sizes, force_double_buffering=True):
 
 
 def test_double_buffering_skips_loop_invariant_tensors():
-    """A weight matrix addresses the same tile every steady-state iteration, so a second buffer
-    would only halve the memory left for everything else."""
+    """A loop-invariant tensor (same tile every iteration) reserves one tile, not a double buffer."""
     tensor, tta = _fire_helper_stub(relevant_sizes=[(8, False)])
     assert tta.tiles_needed_levels[(tensor, -1)] == 1
 

@@ -1,9 +1,4 @@
-"""Tests for the solver's overlap evidence (``_overlap_section``).
-
-``binding_resources`` is the answer to "what limits the pipelining", and it is only useful if it
-is never spuriously empty: a consumer reading an empty list concludes nothing binds the overlap,
-which is never true of a solved schedule.
-"""
+"""Tests for the solver's overlap evidence (``_overlap_section``)."""
 
 from __future__ import annotations
 
@@ -30,10 +25,7 @@ def core(core_id: int) -> Core:
 
 class TestOverlapSection:
     def test_binding_is_the_argmin_when_overlap_sits_below_the_cap(self) -> None:
-        """The real TPU7x SwiGLU numbers: the overlap solves to 14923 while the tightest resource has
-        14942 cycles of slack. The primary objective is a sum in which latency trades against DMA
-        balance, so the optimum need not push the overlap onto its bound -- an equality test reports
-        an empty binding set on a perfectly ordinary run."""
+        """The binding set is the argmin of slack even when overlap sits below its cap (not equality)."""
         allocator = make_allocator({core(0): 14942, core(1): 181228, core(2): 14942}, overlap=14923)
 
         section = allocator._overlap_section()

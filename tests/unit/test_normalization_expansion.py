@@ -1,11 +1,4 @@
-"""Parse-stage decomposition of the softmax into affine sub-operators.
-
-A safe softmax over the key axis is ``max → exp(·−max) → sum → div``: two reduction passes plus two
-element-wise broadcasts. As one identity-mapped ``NormalizationNode`` those passes are invisible (the
-cost model sees one element-wise op and the reduction axis reads PARALLEL). ``expand_normalizations``
-rewrites it, in-graph, into explicit sub-ops so the cost is right and the fusion analysis reads an
-ordinary affine reduction; the sub-ops stay tagged so codegen can re-collapse them (round-trip proven).
-"""
+"""Parse-stage decomposition of the softmax into affine sub-operators."""
 
 from __future__ import annotations
 
@@ -49,9 +42,7 @@ def test_expand_softmax_yields_the_safe_softmax_subops():
 
 
 def test_reduction_is_explicit_after_expansion():
-    """The two reduce sub-ops reduce the key axis as an ordinary affine reduction -- so no softmax
-    special-case is needed in the fusion/tiling analysis (contrast: the monolithic node's identity map
-    reads the key axis as PARALLEL)."""
+    """After expansion the reduce sub-ops read the key axis as a genuine REDUCTION, not PARALLEL."""
     workload = build_attention_block(AttentionConfig(batch=1, heads=2, seq=8, d_head=8))
     key_axis = _softmax(workload).reduction_axes[0]
     # monolithic node: identity map hides the reduction
@@ -64,8 +55,7 @@ def test_reduction_is_explicit_after_expansion():
 
 
 def test_expansion_counts_two_reduction_passes():
-    """The safe softmax has TWO reduction passes (max, sum) -- the fidelity a single identity-mapped
-    node under-counts to one element-wise pass."""
+    """The safe softmax expands to TWO reduction passes (ReduceMax, ReduceSum), not one."""
     expanded = expand_normalizations(build_attention_block())
     reductions = [n for n in expanded.get_computation_nodes() if n.type in REDUCTION_SUBOPS]
     assert sorted(n.type for n in reductions) == ["ReduceMax", "ReduceSum"]
@@ -80,8 +70,7 @@ def test_expansion_reconnects_downstream_consumers():
 
 
 def test_expanded_attention_still_fuses_into_one_region():
-    """Expansion is a cost/fusion refinement, not a barrier: the block still has no data-dependent read,
-    so it fuses into one region (now with the reduction passes explicit)."""
+    """Expansion is not a barrier: the expanded block still fuses into one region."""
     expanded = expand_normalizations(build_attention_block())
     assert determine_fusion_cut_points(expanded) == []
 
@@ -95,8 +84,7 @@ def test_expanded_attention_still_fuses_into_one_region():
     ids=["mha", "gqa"],
 )
 def test_expand_collapse_round_trip(workload):
-    """collapse(expand(·)) reconstructs the exact softmax -- the tagged sub-op representation is
-    sufficient to rebuild the native kernel for codegen (type, name, reduction axis, tensors)."""
+    """collapse(expand(.)) reconstructs the exact softmax (type, name, reduction axis, tensors)."""
     original = _softmax(workload)
     collapsed = collapse_fused_kernels(expand_normalizations(workload))
     restored = _softmax(collapsed)
@@ -109,8 +97,7 @@ def test_expand_collapse_round_trip(workload):
 
 
 def test_stage_expands_the_softmax():
-    """ExpandNormalizationStage rewrites the softmax into its sub-ops (the generic pipeline always runs
-    it, so the cost/fusion/MILP stages see the two reduction passes)."""
+    """ExpandNormalizationStage rewrites the softmax into its sub-ops in the pipeline."""
     ctx = StageContext.from_kwargs(workload=build_attention_block())
     expanded = list(MainStage([ExpandNormalizationStage, LeafStage], ctx).run())[0].get("workload")
     assert not any(isinstance(n, NormalizationNode) for n in expanded.get_computation_nodes())

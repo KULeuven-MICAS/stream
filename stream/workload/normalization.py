@@ -128,10 +128,7 @@ def fused_kernel_tag(node: NormalizationNode) -> str:
 
 
 def _splice_decomposition(node: NormalizationNode, sub: Workload) -> list[ComputationNode]:
-    """Rewire a standalone decomposition subgraph (from the :mod:`stream.workload.decompose` registry) into
-    the parent graph: the sub-ops keep the node's input, the subgraph's external output is rewired to the
-    node's *original* output tensor (so downstream consumers are unchanged), and every sub-op is tagged
-    with the origin fused kernel."""
+    """Rewire a decomposition subgraph into the parent graph, tagging each sub-op with its fused kernel."""
     sub_out = sub.get_out_edges()[0].inputs[0]
     y = node.outputs[0]
     tag = fused_kernel_tag(node)
@@ -149,15 +146,7 @@ def _splice_decomposition(node: NormalizationNode, sub: Workload) -> list[Comput
 
 
 def expand_normalizations(workload: Workload) -> Workload:
-    """Replace every ``NormalizationNode`` in ``workload`` with its affine sub-operator subgraph, in place.
-
-    Dispatch goes through the shared :func:`stream.workload.decompose.decompose` registry (the single
-    source of truth for what expands into what, including overlay-registered decomposers); the standalone
-    subgraph it returns is spliced in so downstream consumers are unchanged and every sub-op is tagged for
-    re-collapse. This is the cost/fusion view: the two reduction passes of a safe softmax (max, sum) become
-    explicit affine reductions the cost model counts and the fusion analysis reads directly, instead of an
-    identity-mapped node that under-counts to one element-wise pass. A normalization with no registered
-    decomposition (or any non-normalization node) passes through unchanged."""
+    """Replace every ``NormalizationNode`` with its affine sub-operator subgraph via the decompose registry."""
     from stream.workload.decompose import decompose  # noqa: PLC0415 -- registry imports this module lazily
 
     new_nodes: list = []
@@ -171,12 +160,7 @@ def expand_normalizations(workload: Workload) -> Workload:
 
 
 def collapse_fused_kernels(workload: Workload) -> Workload:
-    """Inverse of :func:`expand_normalizations`: regroup the sub-ops that share a ``fused_kernel`` tag back
-    into their single ``NormalizationNode``.
-
-    Proves the decomposition is reversible -- the tagged sub-op representation is sufficient to reconstruct
-    the native kernel a codegen backend emits (the reduction axes are recovered from the reduce sub-op's
-    dropped axes; the type and name from the tag). Untagged nodes pass through unchanged."""
+    """Inverse of :func:`expand_normalizations`: regroup sub-ops sharing a ``fused_kernel`` tag."""
     groups: dict[str, list[ComputationNode]] = defaultdict(list)
     passthrough: list = []
     for node in nx.lexicographical_topological_sort(workload, key=lambda n: n.name):

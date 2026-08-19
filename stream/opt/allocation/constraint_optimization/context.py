@@ -93,8 +93,7 @@ def build_constraint_context(accelerator: Accelerator, cfg: ConstraintOptStageCo
 
 @dataclass(frozen=True)
 class NamespaceConstraintConfig:
-    """What a namespace's constraints may be built from. Extending this is additive: a factory reads
-    only the fields it needs, so an out-of-tree namespace is unaffected by new ones."""
+    """What a namespace's constraints may be built from."""
 
     accelerator: Accelerator
     offchip_core_id: int | None
@@ -111,11 +110,6 @@ class NamespaceConstraints:
     Subclasses set :attr:`NAMESPACE` and override the ``add_*_constraints``
     methods they need.  Methods that are *not* overridden default to a no-op,
     so only the constraints relevant to a namespace are ever emitted.
-
-    A namespace is discovered, not hardcoded: register the subclass in the
-    ``stream.constraints`` entry-point group under its namespace name and
-    :func:`build_transfer_context` instantiates it whenever the accelerator
-    contains a core of that namespace.
     """
 
     NAMESPACE: str = ""
@@ -317,12 +311,8 @@ CONSTRAINTS_GROUP = "stream.constraints"
 def namespace_constraints_for(
     accelerator: Accelerator, config: NamespaceConstraintConfig
 ) -> list[NamespaceConstraints]:
-    """The constraint strategies for the namespaces this accelerator actually contains.
-
-    Registrations come from the ``stream.constraints`` entry-point group (name = namespace), so an
-    out-of-tree hardware namespace ships its own MILP constraints without editing this file. A
-    namespace contributes at most once; the highest-priority registration of a name wins.
-    """
+    """The constraint strategies for the namespaces this accelerator contains (from the
+    ``stream.constraints`` entry-point group, keyed by namespace name)."""
     present = {c.namespace for c in accelerator.core_list if isinstance(c, Core) and c.namespace}
     strategies: dict[str, NamespaceConstraints] = {}
     for plugin in load_group(CONSTRAINTS_GROUP):

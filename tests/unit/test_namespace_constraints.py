@@ -1,8 +1,4 @@
-"""MILP constraints attach by hardware namespace, discovered rather than hardcoded.
-
-A proprietary hardware namespace ships its own constraints from an overlay; the built-in aie2
-strategy goes through the same path, so the public route is the one overlays get.
-"""
+"""MILP constraints attach by hardware namespace, discovered rather than hardcoded."""
 
 from __future__ import annotations
 

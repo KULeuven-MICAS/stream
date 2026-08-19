@@ -55,8 +55,7 @@ from stream.workload.workload import Workload
 
 logger = logging.getLogger(__name__)
 
-#: Nest depth of each steady-state loop kind, outermost first (temporal walks tiles, spatial unrolls
-#: across cores, kernel is innermost).
+#: Nest depth of each steady-state loop kind, outermost first.
 _LOOP_NEST_DEPTH: dict[str, int] = {
     "temporal": 0,
     "spatiotemporal": 1,
@@ -71,8 +70,7 @@ _NON_COMPUTE_CORE_TYPES: frozenset[str] = frozenset({"offchip", "shim", "memory"
 
 
 def largest_divisor_leq(n: int, cap: int) -> int:
-    """Largest divisor of ``n`` at most ``cap`` (never below 1). Snaps a memory-core count down to a
-    divisor of the compute split, so the transfer stays a single even inter-core tiling."""
+    """Largest divisor of ``n`` at most ``cap`` (never below 1)."""
     cap = max(1, min(cap, n))
     for candidate in range(cap, 0, -1):
         if n % candidate == 0:
@@ -180,11 +178,8 @@ class SteadyStateScheduler:
         }
 
     def _core_loops(self, cn: ComputationNode) -> list[dict]:
-        """The loop nest *inside* one core, from ZigZag's intra-core mapping: the array unrolling and
-        the temporal walk over the tile, reported as ``core_*`` loops. Empty for a non-ZigZag core (an
-        AIE tile), which keeps its single ``kernel`` entry."""
-        # Resolve the node by name (the mapping is keyed by steady-state nodes, the cost LUT by the
-        # costed node) and give up quietly if neither knows it -- inspection must never fail a run.
+        """The loop nest inside one core (ZigZag mapping), as ``core_*`` loops; empty for a non-ZigZag core."""
+        # Resolve by name -- the mapping is keyed by steady-state nodes, the cost LUT by the costed node.
         try:
             lut_node = next(n for n in self.cost_lut.get_nodes() if n.name == cn.name)
             allocation = self.mapping.get(lut_node).resource_allocation
@@ -205,8 +200,7 @@ class SteadyStateScheduler:
             if int(size) > 1:
                 loops.append({"dim": dim, "size": int(size), "type": kind, "node": cn.name})
 
-        # ZigZag annotates the same nest once per operand; take a single operand's view (summing them
-        # would multiply every dimension by the operand count).
+        # ZigZag annotates the nest once per operand; take one operand's view (summing multiplies every dim).
         def one_operand(per_operand: dict) -> list:
             return next(iter(per_operand.values()), [])
 
@@ -220,10 +214,7 @@ class SteadyStateScheduler:
         return loops
 
     def _steady_state_ir(self) -> dict | None:
-        """Serialise the tiled/steady-state view for inspection: the ORIGINAL operators with their tensor
-        sizes, the for-loop nest over the steady-state iteration space, and the tiled workload graph with
-        the transfer nodes (the tensor copies kept on-chip between cores). Best-effort: any failure returns
-        None, so this inspection view never breaks an otherwise-solved run."""
+        """Serialise the tiled/steady-state inspection view (operators, loop nest, transfer graph); None on failure."""
         try:
             operators = [
                 {
@@ -238,16 +229,14 @@ class SteadyStateScheduler:
             seen: set = set()
             for ssis in (self.ssis or {}).values():
                 for iv in ssis.variables:
-                    # ABSENT means the node lacks the dimension (the unrolling replicates it); counting
-                    # it alongside the SPATIAL variable would double-count one physical unrolling.
+                    # ABSENT: the node lacks the dim (unrolling replicates it); counting it double-counts one unrolling.
                     if iv.effect is LoopEffect.ABSENT:
                         continue
                     key = (str(iv.dimension), int(iv.size))
                     if int(iv.size) > 1 and key not in seen:
                         seen.add(key)
                         loops.append({"dim": str(iv.dimension), "size": int(iv.size), "type": iv.type.name.lower()})
-            # Below the tile level, expand each node's intra-core mapping (per node, so a fused group's
-            # nests stay separate rather than concatenating into one flat nest they never formed).
+            # Below the tile: expand each node's intra-core mapping per node (fused groups stay separate).
             expanded = False
             for cn in self.workload.get_computation_nodes():
                 core_loops = self._core_loops(cn)
@@ -256,8 +245,7 @@ class SteadyStateScheduler:
                 loops.extend(core_loops)
                 expanded = expanded or bool(core_loops)
             if expanded:
-                # Drop the kernel stand-in once expanded (it would double-count the intra-core work); an
-                # AIE tile has no ZigZag mapping, so nothing expanded and its kernel loops stay.
+                # Drop the kernel stand-in once expanded (it would double-count the intra-core work).
                 loops = [loop for loop in loops if loop["type"] != "kernel"]
 
             def _nest_order(loop: dict) -> tuple[str, int]:
@@ -390,9 +378,7 @@ class SteadyStateScheduler:
         return self.ssw
 
     def _mac_roofline_peak(self) -> tuple[int, int]:
-        """``(peak_macs_per_cycle, n_cores)`` over the on-chip cores that may execute MAC work: a core
-        counts only if its ``operator_types`` admit a MAC op (or declares none, accepting all) and it
-        has an operational array; memory/DMA endpoints contribute nothing."""
+        """``(peak_macs_per_cycle, n_cores)`` over the on-chip cores that may execute MAC work."""
         offchip_id = self.accelerator.offchip_core_id
         peak = 0
         n_cores = 0
@@ -410,16 +396,8 @@ class SteadyStateScheduler:
         return peak, n_cores
 
     def _augment_performance_stats_end_to_end(self) -> None:
-        """Add end-to-end MAC utilization to performance_stats['aggregate'] in place.
-
-        ``end_to_end_mac_utilization = total_mac_ops / (peak_macs_per_cycle * total_latency)``, a MAC
-        roofline: both terms are restricted to the matmul/conv family (``total_mac_ops`` counts only
-        ``is_mac_operator_type`` nodes; ``peak_macs_per_cycle`` sums only MAC-capable cores, see
-        ``_mac_roofline_peak``), so 1.0 means the matrix engines are saturated, not the whole chip.
-        Unlike ``mac_spatial_utilization`` (per-layer spatial fill) it folds in temporal stalls, idle
-        MAC cores and transfer overhead. Raw ``total_mac_ops``/``peak_macs_per_cycle``/``mac_capable_cores``
-        are recorded alongside. Per fusion group (equals the whole-inference figure for single-group).
-        """
+        """Add end-to-end MAC utilization (``total_mac_ops / (peak_macs_per_cycle * total_latency)``,
+        both restricted to the matmul/conv family) to performance_stats['aggregate'] in place."""
         if not isinstance(self.performance_stats, dict):
             return
         agg = self.performance_stats.get("aggregate")
@@ -453,8 +431,7 @@ class SteadyStateScheduler:
                 for dst in node.outputs:
                     self._propagate_spatial_reuse(src, dst)
                     self._propagate_spatial_reuse(dst, src)
-        # Mirror the solved reuse onto each transfer's own SSIS (which observability reads) from the
-        # moved tensor's SSIS (which the allocator priced), matched by (dimension, size).
+        # Mirror solved reuse from the moved tensor's SSIS (priced) onto each transfer's SSIS, by (dim, size).
         for node in self.ssw.get_transfer_nodes():
             governing = next(
                 (t for t in (*node.outputs, *node.inputs) if isinstance(t, Tensor) and t in self.ssis), None
@@ -913,8 +890,7 @@ class SteadyStateScheduler:
             dim, size = tiling_loop
             if size % nb_allocs == 0:
                 return (dim, nb_allocs)
-        # No count divides a loop cleanly: keep the transfer well-defined by splitting the best loop
-        # into the largest even share that still fits the memory cores, instead of raising.
+        # No clean divisor: split the best loop into the largest even share that fits, instead of raising.
         best = max(compute_tiling, key=lambda loop: largest_divisor_leq(loop[1], nb_allocs), default=None)
         if best is None:
             raise ValueError(f"No tiling loop to reconcile with dst allocs {dst_allocs}")
@@ -1041,15 +1017,13 @@ class SteadyStateScheduler:
                     total_relevant_unrolling *= size
         columns = self._columns_of(src)
         if columns and node.transfer_type in (TransferType.COMPUTE_TO_MEM, TransferType.MEM_TO_MEM):
-            # A column's compute cores share that column's one memory tile, so both a gather and a
-            # staged constant need one tile per occupied column, never one per unrolled core.
+            # A column's cores share its one memory tile, so both need one tile per occupied column, not per core.
             required_nb_memory_cores = min(columns, total_relevant_unrolling)
         else:
             required_nb_memory_cores = ceil(
                 total_relevant_unrolling / MAX_RELEVANT_FACTOR_PER_TRANSFER_TYPE[node.transfer_type]
             )
-        # Snap the count down to a divisor of the compute split so ``get_matching_tiling`` can express
-        # the transfer as one even inter-core tiling (a count that already divides is unchanged).
+        # Snap the count down to a divisor of the compute split so the transfer is one even inter-core tiling.
         if total_relevant_unrolling > 1:
             required_nb_memory_cores = largest_divisor_leq(total_relevant_unrolling, required_nb_memory_cores)
         all_mem_cores = self._get_accelerator_memory_cores()

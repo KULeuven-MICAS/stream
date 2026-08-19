@@ -465,8 +465,7 @@ ALLOCATION_RAW: dict = {
 
 class TestAllocationIR:
     def test_json_schema(self):
-        """AllocationIR.model_json_schema() must include schema_version const '1.5' (1.5 = the
-        performance view carries per-core solved memory occupancy)."""
+        """AllocationIR.model_json_schema() must include schema_version const '1.5'."""
         schema = AllocationIR.model_json_schema()
         assert "schema_version" in schema["properties"]
         sv = schema["properties"]["schema_version"]
@@ -524,8 +523,7 @@ class TestAllocationIR:
         assert len(ir.fused_groups) == 1
 
     def test_tiling_distinguishes_split_counts_from_block_extents(self):
-        """fusion_splits/inter_core carry a split count, intra_core a block extent in elements. One
-        model for both let a consumer read `dim_size // value` on a value that was already an extent."""
+        """fusion_splits/inter_core carry a split count; intra_core carries a block extent in elements."""
         mock_scheduler = MagicMock()
         mock_scheduler.latency_total = 2000
         mock_scheduler.get_ir.return_value = ALLOCATION_RAW
@@ -539,8 +537,7 @@ class TestAllocationIR:
         assert not any(hasattr(t, "factor") for t in tiling.intra_core["group_0"])
 
     def test_from_internal_coerces_non_string_runtime_args(self):
-        """runtime_args values are stringified: some workloads carry AffineMap objects there, which
-        must not break the JSON-serializable IR (regression for the demo allocation.json path)."""
+        """runtime_args values (e.g. AffineMap objects) are stringified to keep the IR JSON-serializable."""
 
         class _FakeAffineMap:
             def __str__(self) -> str:
@@ -654,8 +651,7 @@ class TestAllocationIR:
         assert "MatMul" in parsed["mapping_nodes"]
 
 
-# The solver already computes all of this; the IR used to read three of the five performance
-# sub-dicts and drop the rest, so the overlap evidence and the optimality gap never left the engine.
+# All five performance sub-dicts plus the solve stats must survive the IR boundary.
 SOLVER_EVIDENCE_RAW: dict = {
     **ALLOCATION_RAW,
     "solve": {
@@ -720,9 +716,7 @@ SOLVER_EVIDENCE_RAW: dict = {
 
 
 class TestAllocationIRSolverEvidence:
-    """A4/A5: the overlap breakdown, the recurrence bound and the optimality gap must survive the IR
-    boundary -- without them a consumer cannot say what limits the pipelining, nor whether a latency
-    delta is above the solver's own noise floor."""
+    """The overlap breakdown, recurrence bound and optimality gap must survive the IR boundary."""
 
     def _ir(self):
         scheduler = MagicMock()
@@ -774,8 +768,7 @@ class TestAllocationIRSolverEvidence:
 
 
 def test_allocation_ir_records_which_overlays_were_loaded(monkeypatch):
-    """Provenance: an overlay can supply operators, hardware namespaces or constraints that change
-    the answer, so a result is only comparable against one produced with the same set."""
+    """Provenance: from_internal records the set of loaded overlays on the IR."""
     from unittest.mock import MagicMock
 
     from stream.ir import allocation as allocation_module

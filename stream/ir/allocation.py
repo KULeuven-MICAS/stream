@@ -44,13 +44,7 @@ class CostModelsIR(BaseModel):
 
 
 class SolveStatsIR(BaseModel):
-    """What the MILP solver reported about the solve itself.
-
-    ``mip_gap`` is the noise floor for any comparison built on this result: a latency delta smaller
-    than the gap is inside the solver's own optimality tolerance and is not evidence of anything.
-    None means the floor is UNKNOWN, not zero -- Gurobi defines no single gap for a multi-objective
-    (lexicographic) model, so a consumer must withhold attribution there rather than assume the
-    result is exact."""
+    """What the MILP solver reported about the solve itself."""
 
     status: str = Field(description="Solve status, e.g. 'OPTIMAL', 'TIME_LIMIT'")
     solver: str = Field(description="Underlying solver, e.g. 'gurobi', 'gscip', 'highs'")
@@ -108,31 +102,21 @@ class SplitIR(BaseModel):
 
 
 class TileIR(BaseModel):
-    """A loop dimension walked in blocks of `tile` elements -- an extent, so the number of steps is
-    `dim_size // tile`. Distinct from SplitIR because the two are not interchangeable: reading one as
-    the other inverts the quantity."""
+    """Walked in blocks of `tile` elements -- an extent (steps = `dim_size // tile`), not a count like SplitIR."""
 
     dim: str = Field(description="The loop dimension being tiled")
     tile: int = Field(description="Block extent in elements")
 
 
 class FusionIR(BaseModel):
-    """Stage-2 (Fuse) typed artifact: which layers share on-chip residency.
-
-    A dedicated typed sub-object for the fusion decision, rather than reading it
-    out of `fused_groups` strings.
-    """
+    """Stage-2 (Fuse) typed artifact: which layers share on-chip residency."""
 
     n_groups: int = Field(description="Number of fused groups the workload was partitioned into")
     groups: list[FusedGroupIR] = Field(description="The fused groups: their layers and intra-core tiling")
 
 
 class TilingIR(BaseModel):
-    """Stage-3 (Tile) typed artifact: the spatial (inter-core) and temporal (intra-core) tiling.
-
-    A dedicated typed sub-object so the Tile decision is inspectable directly,
-    rather than reconstructed from `fusion_splits`/`inter_core_tiling` strings.
-    """
+    """Stage-3 (Tile) typed artifact: the spatial (inter-core) and temporal (intra-core) tiling."""
 
     fusion_splits: list[SplitIR] = Field(
         description="Per-dimension fusion split counts before scheduling; global dim names ('z1')"
@@ -175,9 +159,7 @@ class SteadyStateLoopIR(BaseModel):
 
 
 class SteadyStateIR(BaseModel):
-    """The tiled / steady-state view of a fused group: the original operators with their tensor sizes, the
-    for-loop nest over the steady-state iteration space, and the tiled workload graph with the transfer
-    nodes (the tensor copies kept on-chip between cores). Best-effort inspection view; None if unavailable."""
+    """Tiled/steady-state view of a fused group: operators + tensor sizes, loop nest, and tiled transfer graph."""
 
     operators: list[SteadyStateOperatorIR] = Field(description="Original operators + tensor sizes")
     loops: list[SteadyStateLoopIR] = Field(description="The steady-state iteration-space for-loop nest")
@@ -323,12 +305,7 @@ class ResourceSlackIR(BaseModel):
 
 
 class OverlapIR(BaseModel):
-    """Why the inter-iteration overlap is what it is.
-
-    The overlap is capped by the MINIMUM slack across every resource, so ``binding_resources`` is the
-    solver's own answer to 'what limits the pipelining' -- as opposed to a heuristic read off the
-    schedule trace. A separate ``recurrence_bound_cycles`` (modulo scheduling's RecMII) caps it when
-    a loop-carried state forbids reordering; it is 0 for every feed-forward workload."""
+    """Why the inter-iteration overlap is what it is (the solver's own slack breakdown)."""
 
     overlap_cycles: int | None = Field(default=None, description="Solved overlap between consecutive iterations")
     binding_resources: list[str] = Field(
@@ -368,14 +345,7 @@ class ResidentTensorIR(BaseModel):
 
 
 class MemoryOccupancyIR(BaseModel):
-    """How full one core's memory actually is under the solved placement.
-
-    The counterpart to the stall vector, and the only evidence that can justify making a memory
-    SMALLER: ``resident_bits`` is the value of that core's memory-capacity constraint at the solution,
-    so any capacity at or above it holds this mapping and any capacity below it does not. A core the
-    allocator never constrained is absent from the list rather than reported as empty -- an unmeasured
-    core is not a free one.
-    """
+    """How full one core's memory actually is under the solved placement."""
 
     core_id: int
     core_name: str
@@ -432,15 +402,6 @@ class AllocationIR(BaseModel):
         }
     )
 
-    # 1.1 (additive): typed `fusion` (stage 2) and `tiling` (stage 3) sub-objects.
-    # 1.2 (additive): `overlays` -- which out-of-tree extensions were loaded for this run.
-    # 1.3 (additive): `solve` (status + optimality gap) and the performance view's `overlap` /
-    #     `tensor_reuse` / aggregate extras, which the solver already computed and the IR dropped.
-    # 1.4 (additive + redefinition): `aggregate.mac_capable_cores`; `peak_macs_per_cycle` and hence
-    #     `end_to_end_mac_utilization` are now taken over the MAC-capable cores only (was: every
-    #     on-chip core), so numerator and denominator finally cover the same operators.
-    # 1.5 (additive): the performance view's `memory_occupancy` -- per-core solved residency against
-    #     declared capacity, which is what makes a capacity REDUCTION checkable rather than a guess.
     schema_version: Literal["1.5"] = "1.5"
     latency: LatencyInfo = Field(description="Latency metrics from the solved scheduler")
     backend: str = Field(description="Solver backend used: e.g. 'ORTOOLS_GSCIP' or 'ORTOOLS_HIGHS'")
@@ -540,9 +501,7 @@ class AllocationIR(BaseModel):
         ss_raw = raw.get("steady_state")
         steady_state = SteadyStateIR(**ss_raw) if ss_raw else None
 
-        # Stage-2 (Fuse) and stage-3 (Tile) typed artifacts, derived from the
-        # same mapping dict — so the fuse/tile decisions are inspectable as
-        # typed objects rather than reconstructed from strings downstream.
+        # Stage-2 (Fuse) and stage-3 (Tile) typed artifacts, derived from the mapping dict.
         def _pairs(pairs: list) -> list[tuple[str, int]]:
             return [
                 (str(p[0]), int(p[1])) for p in pairs or [] if isinstance(p, (list, tuple)) and len(p) >= _TILE_PAIR_LEN

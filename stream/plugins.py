@@ -1,11 +1,4 @@
-"""Discovery of out-of-tree extensions, shared by every plugin registry.
-
-Turns entry points into objects in one place, so every registry gets the same precedence, failure
-behaviour and provenance. Loading is explicit: ``STREAM_OVERLAYS`` names the overlays a process may
-load (a multi-tenant worker sets it per job). Precedence is declared: an overlay's ``OVERLAY_PRIORITY``
-in the ``stream.overlays`` group decides which registration wins, the public distribution is priority 0,
-and every conflict is logged.
-"""
+"""Discovery of out-of-tree extensions, shared by every plugin registry."""
 
 from __future__ import annotations
 
@@ -67,8 +60,7 @@ def overlay_priorities() -> dict[str, int]:
 
 
 def loaded_overlays() -> tuple[str, ...]:
-    """Overlay distributions visible to this process, after the allowlist. Provenance for a run: two
-    results are only comparable when they were produced with the same overlays."""
+    """Overlay distributions visible to this process, after the allowlist."""
     allow = overlay_allowlist()
     names = (d for d in overlay_priorities() if allow is None or d in allow)
     return tuple(sorted(names))

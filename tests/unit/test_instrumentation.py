@@ -1,8 +1,4 @@
-"""The observation hook: enabled by name, per call, and never load-bearing.
-
-A pipeline must run identically whether or not an observer is installed, and an observer that is
-absent, broken, or throwing must not change the outcome of a solve.
-"""
+"""The observation hook: enabled by name, per call, and never load-bearing."""
 
 from __future__ import annotations
 

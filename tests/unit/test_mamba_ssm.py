@@ -1,11 +1,4 @@
-"""The Mamba selective-scan state-update block: fusion + tiling must match arXiv:2504.17333 Fig. 7.
-
-The paper's key result is that the whole state-update block fuses and is tiled along the token axis
-``L`` (Fuse-All): each tile is one slice of the ``[L,D,N]`` tensors while the ``[D,N]`` state and the
-state-transition matrix ``A`` stay resident across timesteps. That shifts the block from memory-bound
-to compute-bound. These tests pin that the generic mapper produces exactly that shape, and a NumPy
-reference proves the affine sub-op decomposition is the real selective-scan recurrence (not a toy).
-"""
+"""The Mamba selective-scan state-update block: fusion + tiling must match arXiv:2504.17333 Fig. 7."""
 
 from __future__ import annotations
 
@@ -36,14 +29,12 @@ def _generator(config: MambaConfig) -> tuple[GenericMappingGenerator, object]:
     return gen, workload
 
 
-# A config large enough that the [L,D,N] intermediates overflow the small SIMD memory, so the fusion
-# actually tiles the token axis (the interesting, memory-bound case the paper targets).
+# Large enough that the [L,D,N] intermediates overflow on-chip, so the fusion tiles the token axis.
 _BIG = MambaConfig(seq=256, d_inner=512, d_state=16)
 
 
 def test_fusion_plan_streams_the_token_axis_with_state_resident():
-    """The plan: one fused region that streams the SEQUENTIAL token axis L in
-    blocks (``recurrence: true``), keeping the [D,N] state resident -- the paper's Fuse-All."""
+    """One fused region streams the SEQUENTIAL token axis L, keeping the [D,N] state resident."""
     gen, workload = _generator(_BIG)
     plan = gen.fusion_tiling_plan()
     assert len(plan) == 1, "the whole state-update block fuses into one region"
@@ -59,8 +50,7 @@ def test_fusion_plan_streams_the_token_axis_with_state_resident():
 
 
 def test_tensor_tiles_expose_L_streamed_state_and_A_resident():
-    """Tile sizes on the tensors: the [L,D,N] activations are sliced along L, while the state-transition
-    matrix A[D,N] stays fully resident (reused every timestep -- paper Fig. 10)."""
+    """The [L,D,N] activations are sliced along L while the state matrix A[D,N] stays fully resident."""
     gen, _ = _generator(_BIG)
     tensors = {t["name"]: t for t in gen.fusion_tiling_plan()[0]["tensors"]}
 
@@ -94,8 +84,7 @@ def test_intra_core_tiling_tiles_the_token_axis():
 
 
 def test_token_axis_is_never_inter_core_split():
-    """The token axis is streamed *temporally* (intra-core), never split across cores: a recurrence
-    cannot be spatially parallelised. It stays in the protected set while D remains splittable."""
+    """The recurrence token axis is streamed temporally (protected), never split across cores."""
     gen, workload = _generator(_BIG)
     sub = workload.split_fusion_groups()[0]
     cns = tuple(sub.get_computation_nodes())
@@ -152,9 +141,7 @@ def _selective_scan_direct(delta, a_mat, b_mat, c_mat, x, d_skip):
 
 
 def test_block_wiring_is_the_selective_scan_recurrence():
-    """Every sub-op's operands, in the order ``_selective_scan_via_subops`` consumes them. Rewire any
-    operand -- feed the scan ``delta`` instead of ``x``, read ``h`` instead of ``h_prev`` -- and this
-    fails, which is what ties the numerical reference below to the graph rather than to itself."""
+    """Pins every sub-op's operands, tying the numerical reference below to the actual graph wiring."""
     wl = build_mamba_block(MambaConfig(seq=12, d_inner=5, d_state=4))
     wiring = {n.name: (n.type, tuple(t.name for t in n.inputs), n.outputs[0].name) for n in wl.get_computation_nodes()}
     assert wiring == {
@@ -188,8 +175,7 @@ def test_subop_decomposition_matches_direct_selective_scan():
 
 
 def test_affine_subop_shapes_match_the_reference_intermediates():
-    """The affine sub-op output tensors carry exactly the shapes the numerical reference produces --
-    connecting the affine IR to a working [L,D,N] selective scan."""
+    """The affine sub-op output tensors carry exactly the [L,D,N] shapes the reference produces."""
     cfg = MambaConfig(seq=12, d_inner=5, d_state=4)
     wl = build_mamba_block(cfg)
     shapes = {t.name: tuple(t.shape) for n in wl.get_computation_nodes() for t in n.tensors}

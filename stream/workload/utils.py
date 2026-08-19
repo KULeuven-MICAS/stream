@@ -25,20 +25,12 @@ if TYPE_CHECKING:
     from stream.workload.workload import ComputationNode, HasIterationSpace, TransferNode, Workload
 
 
-#: Operator-type substrings that denote multiply-accumulate work. Matched case-insensitively as a
-#: substring so ONNX spellings (``MatMulInteger``, ``ConvTranspose``) and framework aliases
-#: (``Linear``) all classify alike.
+#: Operator-type substrings that denote multiply-accumulate work (matched case-insensitively as a substring).
 MAC_OPERATOR_TYPES: tuple[str, ...] = ("conv", "gemm", "matmul", "linear")
 
 
 def is_mac_operator_type(op_type: object) -> bool:
-    """Whether ``op_type`` names multiply-accumulate work (the matmul/conv family).
-
-    One predicate for BOTH sides of the MAC roofline: it selects the workload nodes that contribute
-    to ``total_mac_ops`` and the cores whose ``operator_types`` admit those nodes. The two must
-    agree -- dividing matmul-only MAC counts by a peak that includes vector units the mapper may
-    never send a matmul to reports a ceiling the workload cannot reach by construction.
-    """
+    """Whether ``op_type`` names multiply-accumulate work (the matmul/conv family)."""
     lowered = str(op_type).lower()
     return any(k in lowered for k in MAC_OPERATOR_TYPES)
 
@@ -62,8 +54,7 @@ def determine_fusion_splits(workload: "Workload", mapping: "Mapping") -> dict[La
             f"Dimension size {workload.get_dimension_size(dim)} not divisible by "
             f"desired tile size {tile_size * unique_unrollings_dict.get(dim, 1)}"
         )
-        # Tiling a nonlinear (softmax/layernorm) reduction into blocks is online-softmax (flash) --
-        # only valid via the rewrite, never in the conservative fused model.
+        # Tiling a nonlinear (softmax/layernorm) reduction into blocks needs the online-softmax rewrite.
         if nb_splits > 1 and dim in protected:
             raise NonlinearReductionUnrollError(
                 f"Fused group tiles nonlinear-reduction dimension {dim} into {nb_splits} blocks; keep it "
@@ -248,8 +239,7 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
 def _reject_illegal_spatial_unroll(
     workload: "Workload", node: "HasIterationSpace", unrollings: InterCoreTiling
 ) -> None:
-    """Raise if a mapping spatially unrolls (inter-core splits) a SEQUENTIAL dimension or a nonlinear
-    (normalization) reduction of ``node`` -- neither can be split across cores in the conservative model."""
+    """Raise if a mapping spatially unrolls a SEQUENTIAL dimension or a nonlinear reduction of ``node``."""
     if not (sequential_dims(node) or nonlinear_reduction_dims(node)):
         return
     node_dims = workload.get_dims(node)

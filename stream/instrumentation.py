@@ -1,17 +1,4 @@
-"""Observation of a running pipeline, supplied out of tree.
-
-A stage list describes *what* a run does; how a run is watched is a separate concern, and one the
-framework has no opinion about. An out-of-tree package registers a factory in the
-``stream.instrumentation`` entry-point group and a caller enables it by name, so the framework never
-learns what any particular observer records.
-
-Enabling is per call, not ambient::
-
-    optimize_allocation_co_generic(..., instrumentation={"progress": {"path": "run/progress.json"}})
-
-Nothing is instrumented unless the caller asks for it by name, and an unknown name is a no-op: a
-pipeline must not fail because an optional observer is absent from the environment.
-"""
+"""Observation of a running pipeline, supplied out of tree via the ``stream.instrumentation`` group."""
 
 from __future__ import annotations
 
@@ -46,10 +33,7 @@ class StageInstrumentation(Protocol):
 
 
 def build_instrumentation(run_name: str, spec: dict[str, Any] | None) -> list[StageInstrumentation]:
-    """Instantiate the observers named in ``spec`` ({name: options}); empty when nothing is requested.
-
-    A factory that is missing or raises is skipped with a warning: observation is never load-bearing.
-    """
+    """Instantiate the observers named in ``spec`` ({name: options}); empty when nothing is requested."""
     if not spec:
         return []
     factories = {plugin.name: plugin.obj for plugin in load_group(ENTRY_POINT_GROUP)}

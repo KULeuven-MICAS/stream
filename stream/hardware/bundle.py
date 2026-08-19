@@ -1,12 +1,4 @@
-"""Per-core hardware bundles.
-
-Several core ids routinely share one file (``tpu_v7_ironwood.yaml`` maps its 32 MXU cores at one
-``cores/tpu_v7_mxu.yaml``), which is right to author but wrong to mutate: editing the file to grow
-core 0 grows all of them. A :class:`HardwareBundle` is the de-aliased form -- the accelerator plus
-one independent core description per core id -- handed straight to the parser
-(:meth:`to_accelerator`) or written out as per-core YAMLs (:meth:`materialize`). It is also the unit
-the cost model prices (:mod:`stream.hardware.cost`), so a mutation's cost comes from the object it edits.
-"""
+"""Per-core hardware bundles: the de-aliased accelerator plus one core description per core id."""
 
 from __future__ import annotations
 
@@ -34,13 +26,9 @@ class HardwareBundle:
     """An accelerator plus one independent core description per core id."""
 
     name: str
-    #: Everything in the accelerator YAML except ``cores``, verbatim.
     accelerator: dict[str, Any]
-    #: core id -> core description. Never shared between ids, even when authored from one file.
     cores: dict[int, dict[str, Any]]
-    #: core id -> the reference it was authored from; only used to name materialized files.
     core_sources: dict[int, str] = field(default_factory=dict)
-    #: Directory the accelerator was read from; core references resolve against it.
     accelerator_dirname: str = ""
 
     # Construction
@@ -109,11 +97,7 @@ class HardwareBundle:
         return data
 
     def validated_data(self) -> dict[str, Any]:
-        """:meth:`to_data` run through the validators, so schema defaults are filled in.
-
-        Raises ``ValueError`` with the collected messages when the bundle is not a legal
-        accelerator — a mutated bundle that no longer validates must not reach a solve.
-        """
+        """:meth:`to_data` run through the validators, so schema defaults are filled in."""
         validator = AcceleratorValidator(self.to_data(), os.path.join(self.accelerator_dirname, "accelerator.yaml"))
         normalized = validator.normalized_data
         if not validator.validate():
@@ -127,10 +111,7 @@ class HardwareBundle:
         return AcceleratorFactory(self.validated_data()).create()
 
     def materialize(self, out_dir: str | Path, accelerator_filename: str = DEFAULT_ACCELERATOR_FILENAME) -> Path:
-        """Write the bundle as an accelerator YAML plus one (de-aliased) core YAML per core id.
-
-        Returns the path of the written accelerator YAML.
-        """
+        """Write the bundle as an accelerator YAML plus one de-aliased core YAML per core id."""
         out_dir = Path(out_dir)
         cores_dir = out_dir / CORES_SUBDIR
         cores_dir.mkdir(parents=True, exist_ok=True)

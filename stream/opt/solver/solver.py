@@ -90,22 +90,7 @@ class SolveStats:
 
 
 class PipeliningModel(Enum):
-    """How much of one steady-state iteration the next one may be slid into.
-
-    Both feed the same accounting -- ``total = N * T - (N - 1) * overlap`` -- and differ only in how
-    much of a resource's iteration counts as reclaimable idle.
-
-    SPAN treats a resource as occupied from its first use to its last, so only idle *before* the
-    first and *after* the last counts. A bus that both feeds and drains the compute is busy in the
-    first and the last slot, so it reports zero idle and pins the overlap to zero no matter how long
-    it sits unused in between.
-
-    OCCUPANCY counts only the slots a resource actually uses, which makes ``T - overlap`` the
-    initiation interval of a modulo schedule: ``total = T + (N - 1) * II``. The dependency chain is
-    still paid in full once, in the T term, so nothing is reordered across a dependence -- only
-    throughput improves. It assumes the next iteration may prefetch while the current one computes,
-    which needs a second buffer, so it degrades to SPAN when double buffering is off.
-    """
+    """Inter-iteration overlap model: SPAN (idle only before first / after last use) or OCCUPANCY (any unused slot)."""
 
     SPAN = "span"
     OCCUPANCY = "occupancy"
@@ -113,13 +98,8 @@ class PipeliningModel(Enum):
 
 @dataclass(frozen=True)
 class ConstraintSelection:
-    """How TransferAndTensorAllocator builds its model.
-
-    The boolean fields toggle hardware resource constraint groups; all default to True (fully
-    constrained). Set one to False to skip that group entirely -- no variables are created, no
-    constraints are added, and (for dma_channels) objective terms are omitted. ``pipelining``
-    selects which of the two inter-iteration overlap formulations is built.
-    """
+    """How TransferAndTensorAllocator builds its model: the boolean fields toggle constraint groups
+    (all default True); ``pipelining`` picks the inter-iteration overlap formulation."""
 
     memory_capacity: bool = True
     object_fifo_depth: bool = True
@@ -720,12 +700,7 @@ class GurobiBackend(SolverModel):
         return self._model.SolCount
 
     def _mip_gap(self) -> float | None:
-        """Relative optimality gap -- the noise floor below which a latency difference between two
-        results is inside the solver's own tolerance rather than evidence of anything.
-
-        ``MIPGap`` is only set on a model Gurobi actually treated as a MIP; one finished in presolve
-        or solved as a continuous relaxation has none, so fall back to the primal/dual bounds, which
-        mean the same thing."""
+        """Relative optimality gap; falls back to the primal/dual bounds when ``MIPGap`` is absent."""
         if self._model.SolCount <= 0:
             return None
         try:
@@ -1117,9 +1092,7 @@ class ORToolsBackend(SolverModel):
         return 1 if self._result.has_primal_feasible_solution() else 0
 
     def _mip_gap(self) -> float | None:
-        """Relative optimality gap from MathOpt's primal/dual bounds -- it reports the two bounds
-        rather than the gap itself. This is the noise floor for reading any two results against each
-        other: a latency difference smaller than it is inside the solver's own tolerance."""
+        """Relative optimality gap, derived from MathOpt's primal/dual bounds."""
         if self._result is None or not self._result.has_primal_feasible_solution():
             return None
         primal = self._result.objective_value()

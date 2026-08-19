@@ -1,12 +1,4 @@
-"""Parse stage: expand every normalization (Softmax/LpNorm) into its affine sub-operators.
-
-Runs right after parsing in the generic CO pipeline, so the workload the cost, fusion and MILP stages
-see carries explicit ReduceMax/Exp/ReduceSum/Div sub-ops. A safe softmax's two reduction passes are then
-counted (not under-counted as one element-wise pass), and its reduction is an ordinary affine reduction
-the fusion/tiling analysis reads directly. The sub-ops stay tagged with their origin kernel, so a codegen
-backend can re-collapse them into one native softmax later (``collapse_fused_kernels``). Dispatch goes
-through the shared ``stream.workload.decompose`` registry.
-"""
+"""Parse stage: expand every normalization (Softmax/LpNorm) into its affine sub-operators."""
 
 from __future__ import annotations
 

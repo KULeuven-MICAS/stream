@@ -17,11 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 def _flatten_cores(allocation) -> list[Core]:
-    """Flatten a node's resource/memory allocation to its cores.
-
-    ``resource_allocation`` is nested slots, ``memory_allocation`` can be flat, and a transfer's slots
-    hold ``MulticastPathPlan`` routing choices rather than cores. Only cores are memory targets.
-    """
+    """Flatten a node's resource/memory allocation to its cores (dropping non-core slot entries)."""
     out: list[Core] = []
     for item in allocation or ():
         candidates = item if isinstance(item, (list, tuple)) else (item,)
@@ -30,13 +26,7 @@ def _flatten_cores(allocation) -> list[Core]:
 
 
 def _memory_tile_cores(allocation) -> list[Core]:
-    """The distinct memory tiles a transfer's memory allocation names.
-
-    Only a memory-kind core is a mem tile. Where the solver left candidates rather than a chosen
-    allocation, the slots list every placement it considered -- on hardware with no mem tiles those
-    are compute cores, and charging each of them a full transfer's traffic is what the removed
-    ``assert len(mem_cores) == 1`` used to hide.
-    """
+    """The distinct memory-kind cores a transfer's memory allocation names."""
     tiles: dict[int, Core] = {}
     for core in _flatten_cores(allocation):
         if core.kind == "memory":
@@ -132,8 +122,7 @@ class MemoryAccessesEstimationStage(Stage):
                 self.core_memory_accesses.add_read(core, t_core, total_accesses)
 
     def get_mem_core_accesses(self, tn: TransferNode, ssis: SteadyStateIterationSpace):
-        # A transfer's tensor may reside on several memory tiles; account the accesses on each rather
-        # than assuming a single mem core (the original single-core assumption is why this was disabled).
+        # A transfer's tensor may reside on several memory tiles; account the accesses on each.
         mem_cores = _memory_tile_cores(self.mapping.get(tn).memory_allocation)
         if not mem_cores:
             return  # No mem tile involved in this transfer, skip

@@ -1,9 +1,4 @@
-"""Conformance kit for the ``stream.core_cost_backends`` seam: any object claiming the
-:class:`CoreCostBackend` Protocol advertises ``name``/``priority``, has a cheap ``claims``, and produces
-a :class:`CoreCostEntry` with ``ideal_cycle`` and a ``backend`` tag. A customer overlay must pass it.
-
-Run just this kit with ``pytest -k conformance_core_cost_backends``.
-"""
+"""Conformance kit for the ``stream.core_cost_backends`` seam."""
 
 from __future__ import annotations
 
@@ -70,8 +65,7 @@ def test_claims_returns_bool_for_every_backend() -> None:
 
 
 def test_claims_is_cheap_and_imports_nothing_heavy() -> None:
-    """The lazy backend must decide without importing its toolchain -- ``claims`` gates selection, and
-    the whole point of a lazy import is that an unselected AIE run never pulls the AIE estimator."""
+    """``claims`` must decide without importing the toolchain -- no AIE estimator import when unselected."""
     sys.modules.pop(_AIE_ESTIMATOR_MODULE, None)
     assert AIE_BACKEND.claims(_fake_core("aie2.compute")) is True
     assert AIE_BACKEND.claims(_fake_core("compute")) is False

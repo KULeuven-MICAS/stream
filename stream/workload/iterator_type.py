@@ -46,11 +46,7 @@ class SequentialUnrollError(ValueError):
 
 
 class NonlinearReductionUnrollError(ValueError):
-    """Raised when a nonlinear-reduction (softmax/layernorm) axis is assigned to spatial unrolling.
-
-    A linear contraction can be split across cores as cross-core partial sums, but a nonlinear
-    reduction needs every element of the reduced axis before it produces any output, so splitting it
-    is only valid via the online-softmax (flash) rewrite -- never in the conservative model."""
+    """Raised when a nonlinear-reduction (softmax/layernorm) axis is assigned to spatial unrolling."""
 
 
 def _as_dim_plus_const(expr: AffineExpr) -> tuple[int, int] | None:
@@ -102,10 +98,7 @@ def sequential_dims(node: HasIterationSpace) -> frozenset[int]:
 
 
 def nonlinear_reduction_dims(node: HasIterationSpace) -> frozenset[int]:
-    """Positions this node reduces nonlinearly (softmax/layernorm) -- never spatially unrollable or
-    fusion-splittable without the online-softmax rewrite. A NormalizationNode declares them (its
-    identity map hides the reduction); an expanded sub-op carries ``fused_kernel``, so the maps expose
-    it and it is derived. Empty for an ordinary node: its linear contractions split as partial sums."""
+    """Positions this node reduces nonlinearly (softmax/layernorm); empty for an ordinary node."""
     declared = getattr(node, "reduction_axes", ())
     if declared:
         return frozenset(declared)
@@ -115,11 +108,7 @@ def nonlinear_reduction_dims(node: HasIterationSpace) -> frozenset[int]:
 
 
 def derive_iterator_types(node: HasIterationSpace) -> dict[int, IteratorType]:
-    """Algorithmic type of every iteration dimension, keyed by position.
-
-    This is the node's own (fused-kernel) view: a normalization keeps its identity maps here, so its
-    reduced axis reads PARALLEL -- that reduction is exposed by ``decompose_normalization`` and by
-    ``nonlinear_reduction_dims`` (the tiling guards), not folded in here."""
+    """Algorithmic type of every iteration dimension, keyed by position."""
     sequential = sequential_dims(node)
     output_dims = map_dim_positions(node.get_mapping(node.outputs[-1])) if node.outputs else frozenset()
     types: dict[int, IteratorType] = {}
@@ -134,8 +123,7 @@ def derive_iterator_types(node: HasIterationSpace) -> dict[int, IteratorType]:
 
 
 def check_spatial_unroll_legal(node: HasIterationSpace, spatial_positions: Iterable[int]) -> None:
-    """Raise if any spatially-unrolled dimension carries a recurrent state (SEQUENTIAL) or is a
-    nonlinear (normalization) reduction -- neither can be split across cores in the conservative model."""
+    """Raise if any spatially-unrolled dimension is SEQUENTIAL or a nonlinear (normalization) reduction."""
     positions = set(spatial_positions)
     illegal_sequential = sequential_dims(node) & positions
     if illegal_sequential:

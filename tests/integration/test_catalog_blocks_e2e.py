@@ -1,11 +1,4 @@
-"""End-to-end allocation of the affine-IR model-catalog blocks (MHA / linear attention).
-
-Runs the whole constraint-optimization pipeline on an *in-memory* ``Workload`` (no ONNX round-trip)
-via ``optimize_allocation_co_generic_workload``. The softmax is a nonlinear reduction, not a hard
-barrier, so the whole attention chain fuses into ONE region (its reduction axis kept resident, never
-spilled); a SEQUENTIAL recurrence (linear attention) likewise stays a single group. Slow (the MILP
-solve takes a while), so excluded from the default ``-m 'not slow'`` run.
-"""
+"""End-to-end allocation of the affine-IR model-catalog blocks (MHA / linear attention)."""
 
 from __future__ import annotations
 
@@ -52,8 +45,7 @@ def test_attention_block_fuses_into_one_region(tmp_path: Path):
 @pytest.mark.slow
 @pytest.mark.timeout(600)
 def test_softmax_is_decomposed_in_the_pipeline(tmp_path: Path):
-    """The generic pipeline decomposes the MHA softmax into ReduceMax/Exp/ReduceSum/Div and the whole
-    block still solves feasibly -- so the two reduction passes are cost-modelled end to end."""
+    """The pipeline decomposes the MHA softmax into ReduceMax/Exp/ReduceSum/Div and still solves."""
     ctx = optimize_allocation_co_generic_workload(
         hardware=_ACCELERATOR,
         workload=build_attention_block(AttentionConfig(batch=1, heads=1, seq=8, d_head=8)),
@@ -82,8 +74,7 @@ def test_linear_attention_recurrence_is_a_single_group(tmp_path: Path):
 @pytest.mark.slow
 @pytest.mark.timeout(600)
 def test_mamba_state_update_fuses_and_allocates(tmp_path: Path):
-    """The full selective-scan state-update block (discretization + SEQUENTIAL scan + readout + skip)
-    fuses into one region and allocates end to end through the generic CO pipeline."""
+    """The full selective-scan state-update block fuses into one region and allocates end to end."""
     ctx = _run(build_mamba_block(MambaConfig(seq=16, d_inner=16, d_state=4)), tmp_path)
 
     group_latencies = ctx.get("group_latencies")

@@ -1,5 +1,4 @@
-"""The plugin registry: the allowlist, declared precedence, and a broken overlay that cannot take the
-framework down -- the guarantees several overlays depend on."""
+"""The plugin registry: allowlist, declared precedence, and broken-overlay containment."""
 
 from __future__ import annotations
 
@@ -60,8 +59,7 @@ def test_allowlist_always_includes_the_public_distribution(monkeypatch):
 
 
 def test_load_group_excludes_overlays_outside_the_allowlist(monkeypatch, entry_points):
-    """The isolation guarantee: one tenant's worker must not reach another tenant's operators, even
-    though both overlays are installed in the same environment."""
+    """Isolation: an overlay outside the allowlist is excluded even when installed in the same env."""
     monkeypatch.setenv(plugins.OVERLAY_ALLOWLIST_ENV, "vendor-overlay-acme")
     entry_points["stream.decompositions"] = [
         _EntryPoint("PublicOp", "public", PUBLIC_DISTRIBUTION),
@@ -83,8 +81,7 @@ def test_explicit_allow_overrides_the_environment(monkeypatch, entry_points):
 
 
 def test_higher_priority_overlay_is_registered_last(monkeypatch, entry_points):
-    """Callers register in the returned order, so the last one wins. An overlay outranks a built-in,
-    and a more specific overlay outranks the shared one."""
+    """Higher-priority overlays are returned last (last wins): overlay outranks built-in."""
     monkeypatch.delenv(plugins.OVERLAY_ALLOWLIST_ENV, raising=False)
     entry_points[plugins.OVERLAY_GROUP] = [
         _EntryPoint("shared", _overlay(10), "vendor-overlay"),

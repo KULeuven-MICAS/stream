@@ -200,8 +200,7 @@ class GenericMappingGenerator:
         3. Fallback: if nothing matches, use all cores with kind 'compute'.
 
         This ensures MaxPool goes to the pooling core, Add to the simd core, and
-        Conv/Gemm go to all 4 generic compute cores. Memory tiles (e.g. AIE mem tiles) hold no
-        operational array, so they never host computation even though they carry no operator_types.
+        Conv/Gemm go to all 4 generic compute cores.
         """
         _SKIP_TYPES = {"offchip", "shim", "memory"}
         node_op = node.type
@@ -297,27 +296,20 @@ class GenericMappingGenerator:
         return out
 
     def _protected_dims(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> set[LayerDim]:
-        """Global dims the fused group must never inter-core split: a SEQUENTIAL recurrence carry or a
-        nonlinear (softmax/layernorm) reduction for ANY node. The group shares one spatial unrolling, so
-        a dim illegal for one fused node is illegal for all (e.g. the attention key axis)."""
+        """Global dims never inter-core split: a SEQUENTIAL carry or nonlinear reduction for any node."""
         return self._global_dims_at(sub_workload, cns, lambda cn: sequential_dims(cn) | nonlinear_reduction_dims(cn))
 
     def _recurrence_dims(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> set[LayerDim]:
-        """Global dims carrying a recurrent state (SEQUENTIAL) for any node -- the SSM/linear-attention
-        token axis a recurrence streams temporally, never split across cores (``_protected_dims``)."""
+        """Global dims carrying a recurrent state (SEQUENTIAL) for any node."""
         return self._global_dims_at(sub_workload, cns, sequential_dims)
 
     def _streaming_axis(
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...], indexed: set[LayerDim]
     ) -> LayerDim | None:
-        """The single axis a fused group streams: dims indexing a fused intermediate with size > 1. A
-        recurrence streams its SEQUENTIAL token axis (state is the only cross-tile residency); a
-        feed-forward group streams its largest fusible PARALLEL axis (attention's query), keeping the
-        reductions resident. None when nothing is streamable."""
+        """The single axis a fused group streams: dims indexing a fused intermediate with size > 1."""
 
         def largest(dims: set[LayerDim]) -> LayerDim | None:
-            # Tie-break by name: `dims` is a set, so equal-sized axes would otherwise be ordered by
-            # iteration order and the same workload could stream a different axis between processes.
+            # Tie-break by name so equal-sized axes are chosen deterministically across processes.
             candidates = [d for d in dims if sub_workload.get_dimension_size(d) > 1]
             return max(candidates, key=lambda d: (sub_workload.get_dimension_size(d), str(d))) if candidates else None
 
@@ -328,8 +320,7 @@ class GenericMappingGenerator:
     def _indexed_by_intermediates(
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...]
     ) -> tuple[list[Tensor], dict[LayerDim, set[Tensor]]]:
-        """The group's fused intermediates (tensors produced and consumed inside the group) and, per global
-        dimension, the set of those intermediates it indexes."""
+        """The group's fused intermediates and, per global dimension, the intermediates it indexes."""
         intermediates = [t for cn in cns for t in cn.outputs if any(t in c.inputs for c in cns)]
         indexed: dict[LayerDim, set[Tensor]] = {}
         for tensor in intermediates:
@@ -360,16 +351,13 @@ class GenericMappingGenerator:
         return unroll
 
     def _cut_points(self, cut_points: list[str] | None) -> list[str]:
-        """The caller's fusion cuts, else the affine barriers. Defaulting here rather than at each call
-        site is what keeps ``fusion_tiling_plan`` and a real run from disagreeing about what fuses."""
+        """The caller's fusion cuts, else the affine barriers ``determine_fusion_cut_points`` derives."""
         return determine_fusion_cut_points(self.workload) if cut_points is None else cut_points
 
     def _build_intra_core_tiling(
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...]
     ) -> list[dict[str, Any]]:
-        """Intra-core (layer-fusion) tiling for one fused group, in precedence order: a caller-supplied
-        ``intra_core_tiling`` wins outright, else automatic fusion tiling along the streaming axis, else
-        the whole-layer tile. A caller who supplies entries never silently gets the automatic ones."""
+        """Intra-core (layer-fusion) tiling: caller-supplied, else automatic fusion tiling, else whole-layer."""
         if self.intra_core_tiling is not None:
             names = {cn.name for cn in cns}
             selected = [dict(e) for e in self.intra_core_tiling if str(e["dim"]).split(".")[0] in names]
@@ -380,16 +368,12 @@ class GenericMappingGenerator:
     def _capacity_refine(
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...], seed_tiling: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """Stream extra axes -- typically a matmul's contraction axis, to free a resident weight -- when
-        the whole per-core footprint of ``seed_tiling`` still overflows the compute cores' operand buffer.
-        The streaming-axis (activation) tile ``_auto_fusion_tiling`` chose is kept; this only adds what a
-        weight-heavy layer needs, so activation-bound groups (attention, recurrences) are untouched."""
+        """Stream extra axes (e.g. a matmul contraction) when ``seed_tiling`` still overflows the operand buffer."""
         cores_per_node = {cn: self._select_cores_for_node(cn) for cn in cns}
         if not any(cores_per_node.values()):
             return seed_tiling
         unroll = self._inter_core_unrolling(sub_workload, cns)
-        # Only nonlinear (softmax/layernorm) reductions are off-limits temporally; a linear matmul
-        # contraction is the axis we stream, and a recurrence's token axis is already in the seed.
+        # Only nonlinear (softmax/layernorm) reductions are off-limits temporally; the contraction is streamed.
         protected = self._global_dims_at(sub_workload, cns, nonlinear_reduction_dims)
         refined = CapacityTiler(sub_workload, self.accelerator).plan(
             cns, cores_per_node, unroll, protected, seed_tiling
@@ -397,9 +381,7 @@ class GenericMappingGenerator:
         return refined or seed_tiling
 
     def _whole_layer_tiling(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> list[dict[str, Any]]:
-        """Tile the first node's first dimension so the group is one steady-state tile (nb_splits=1).
-        The tile is ``dim_size // inter_core_unrolling`` so ``tile x unrolling == dim_size`` and
-        ``determine_fusion_splits`` cannot overflow. Empty only when no node has dimensions."""
+        """Tile the first node's first dimension so the group is one steady-state tile (nb_splits=1)."""
         unroll = self._inter_core_unrolling(sub_workload, cns)
         for ref_cn in cns:
             dims = sub_workload.get_dims(ref_cn)
@@ -411,10 +393,7 @@ class GenericMappingGenerator:
         return []
 
     def fusion_tiling_plan(self, cut_points: list[str] | None = None) -> list[dict[str, Any]]:
-        """A serialisable per-group description of what fuses and how it is tiled: the member nodes, the
-        STREAMED axis and its tile size, the RESIDENT axes kept on-chip, a per-tensor full-vs-tile shape
-        breakdown, and the on-chip buffer (elements) of the largest streamed intermediate. Uses the same
-        cut points and ``_build_intra_core_tiling`` a run does, so it shows what the pipeline would map."""
+        """A serialisable per-group description of what fuses and how it is tiled."""
         groups: list[dict[str, Any]] = []
         for sub in self.workload.split_fusion_groups(cut_points=self._cut_points(cut_points)):
             cns = sub.get_computation_nodes()
@@ -463,8 +442,7 @@ class GenericMappingGenerator:
         fusion_dim: LayerDim | None,
         factor: int,
     ) -> list[dict[str, Any]]:
-        """Per distinct tensor of the group: its full shape and on-chip tile shape when the streamed axis
-        is tiled by ``factor``. ``streamed`` marks a tensor the fusion shrinks; ``state`` the recurrence carry."""
+        """Per distinct tensor: full shape and on-chip tile shape when the streamed axis is tiled by ``factor``."""
         seen: set[str] = set()
         out: list[dict[str, Any]] = []
         for cn in cns:
@@ -497,8 +475,7 @@ class GenericMappingGenerator:
         fusion_dim: LayerDim,
         tiling: list[dict[str, Any]],
     ) -> int | None:
-        """The tile size the auto tiling assigns to ``fusion_dim`` (None when it tiles a different dim or
-        does not tile -- i.e. the whole axis stays resident)."""
+        """The tile size the auto tiling assigns to ``fusion_dim`` (None when it does not tile that dim)."""
         for entry in tiling:
             node_name, _, pos = str(entry["dim"]).partition(".D")
             node = next((n for n in cns if n.name == node_name), None)
@@ -511,9 +488,7 @@ class GenericMappingGenerator:
     def _resident_axes(
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...], fusion_dim: LayerDim | None
     ) -> list[dict[str, Any]]:
-        """Axes kept resident while the streamed axis flows, largest first. ``softmax`` marks a softmax
-        reduction axis (nonlinear NormalizationNode or decomposed ReduceMax/ReduceSum); ``state`` an axis
-        of a recurrence's carried state (every state-tensor axis other than the streamed token axis)."""
+        """Axes kept resident while the streamed axis flows, largest first."""
         softmax_axes: dict[LayerDim, bool] = {}
         state_axes: set[LayerDim] = set()
         for cn in cns:
@@ -543,9 +518,7 @@ class GenericMappingGenerator:
         ]
 
     def _fusible_parallel_dims(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> set[LayerDim]:
-        """Global dims that are a PARALLEL output axis for every node indexing them -- the only axes a
-        fused group can tile so each tile produces complete outputs and every reduction stays resident
-        (e.g. attention's query axis, not the key axis nor the head axis)."""
+        """Global dims that are a PARALLEL output axis for every node indexing them (e.g. attention's query axis)."""
         non_parallel: set[LayerDim] = set()
         all_dims: set[LayerDim] = set()
         for cn in cns:
@@ -561,9 +534,7 @@ class GenericMappingGenerator:
     def _auto_fusion_tiling(  # noqa: PLR0911 -- a sequence of early-out guards, each a distinct "no tiling" case
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...]
     ) -> list[dict[str, Any]]:
-        """Fuse a multi-node group along its streaming axis (:meth:`_streaming_axis`), tiled to the largest
-        per-core block whose resident intermediate fits a fraction of the core's memory; reductions and the
-        recurrence state are never tiled. Returns [] to fall back to the whole-layer tiling."""
+        """Fuse a multi-node group along its streaming axis; [] falls back to the whole-layer tiling."""
         if len(cns) <= 1:
             return []
         intermediates, indexed = self._indexed_by_intermediates(sub_workload, cns)
@@ -574,9 +545,7 @@ class GenericMappingGenerator:
             return []
 
         full = sub_workload.get_dimension_size(fusion_dim)
-        # Only the intermediates the fusion dim indexes shrink with the tile; the others (e.g. attention's
-        # K/V, indexed by the key axis, not the query) are separate resident tensors the memory model
-        # handles -- they are not the streamed fusion buffer and must not drive the fusion tile size.
+        # Only the intermediates the fusion dim indexes shrink with the tile; the others stay resident.
         streamed = [
             t for t in intermediates if sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, full)]) != t.shape
         ]
@@ -596,8 +565,7 @@ class GenericMappingGenerator:
                 _tensor_bits(sub_workload.get_tensor_shape_with_tiling(t, [(fusion_dim, factor)]), t) for t in streamed
             )
 
-        # Only tile when the whole per-core slice does NOT fit; a group that already fits keeps the
-        # whole-layer tiling. This is the layer-fusion trigger.
+        # Only tile when the whole per-core slice does not fit (the layer-fusion trigger).
         if budget <= 0 or resident_bits(per_core) <= budget:
             return []
         divisors = sorted((t for t in range(1, per_core + 1) if per_core % t == 0), reverse=True)

@@ -57,13 +57,7 @@ def test_tiling_rejects_spatial_unroll_of_sequential_dim():
 
 
 def test_the_ideal_cycle_fallback_survives_a_core_with_no_modelled_array():
-    """An aie2 tile describes no `operational_array` at all, and `Core.__getattr__` raises rather
-    than returning None for it.
-
-    The fallback exists precisely for cores ZigZag cannot map, so reaching for an attribute that
-    kind of core does not have turned "this array is not modelled" into an AttributeError that took
-    the whole run down — on the one hardware the fallback was written to serve.
-    """
+    """The ideal-cycle fallback survives an aie2 tile whose `operational_array` access raises."""
     from stream.hardware.architecture.core import Core  # noqa: PLC0415
 
     accelerator = _accelerator_from("stream/inputs/aie/hardware/single_core.yaml")

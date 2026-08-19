@@ -1,14 +1,4 @@
-"""Regression: the AIE Strix auto-map must not crash reconciling a compute split with memory cores.
-
-The generic auto-mapper split ``attention``'s scores matmul 8 ways onto cores spanning 3 array
-columns, so the steady-state scheduler asked for 3 memory tiles to stage a transfer whose compute
-split was 8. ``get_matching_tiling`` required the memory-core count to divide the split (3 does not
-divide 8) and raised ``ValueError`` before the MILP ever solved. The count is now snapped to a
-divisor of the split, so the run reaches the solver and returns a well-defined result.
-
-The outcome (feasible or infeasible) is not pinned -- only that no reconciliation error escapes the
-scheduler. The crash was pre-solve, so this holds without a Gurobi license (OR-Tools SCIP).
-"""
+"""Regression: the AIE Strix auto-map must not crash reconciling a compute split with memory cores."""
 
 from __future__ import annotations
 

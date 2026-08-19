@@ -38,10 +38,7 @@ def _attention_core(
     ctx_maps: tuple[AffineMap, ...],
     reduction_axis: int,
 ) -> list[ComputationNode]:
-    """The scores -> Softmax -> context skeleton shared by MHA, GQA and the KV-cache decode step:
-    ``scores = q @ k`` (contract the head dim), ``probs = softmax(scores)`` over ``reduction_axis``
-    (a schedulable NormalizationNode, not a barrier), ``context = probs @ v`` (contract the key
-    position). ``probs`` mirrors ``scores`` and the softmax carries identity maps over its full shape."""
+    """The scores -> Softmax -> context skeleton shared by MHA, GQA and the KV-cache decode step."""
     identity = AffineMap.identity(len(scores.shape))
     probs = Tensor.create("probs", scores.operand_type, scores.shape)
     return [
@@ -137,9 +134,7 @@ def build_attention_block(config: AttentionConfig | None = None) -> Workload:
 
 @dataclass(frozen=True)
 class MambaConfig:
-    """A selective-scan (Mamba) state-update block. Dimensions follow the paper (arXiv:2504.17333,
-    Fig. 7): ``seq`` = token axis ``L`` (SEQUENTIAL), ``d_inner`` = expanded channel axis ``D``
-    (PARALLEL), ``d_state`` = SSM state axis ``N`` (the readout contraction)."""
+    """Selective-scan (Mamba) state-update block dimensions (arXiv:2504.17333, Fig. 7)."""
 
     seq: int = 256  # L -- token axis (recurrent / SEQUENTIAL)
     d_inner: int = 512  # D -- expanded channel axis (PARALLEL, kept resident per timestep)
@@ -148,23 +143,7 @@ class MambaConfig:
 
 
 def build_mamba_block(config: MambaConfig | None = None) -> Workload:
-    """The Mamba selective-scan **state-update block**, decomposed into atomic affine sub-operators
-    exactly as arXiv:2504.17333 Fig. 7 draws it.
-
-    Inputs are the discretized state-space parameters over ``L`` timesteps: ``delta[L,D]`` (step),
-    ``A[D,N]`` (state transition), ``B[L,N]`` / ``C[L,N]`` (input/output maps), ``x[L,D]`` (input) and
-    the per-channel skip ``D_skip[D]``. The block computes, per the paper:
-
-    * a **discretization precompute**, parallel over every timestep:
-      ``dA = delta ⊗ A``, ``Abar = exp(dA)``, ``dB = delta ⊗ B``, ``dBx = dB ⊙ x`` (all ``[L,D,N]``);
-    * a **sequential scan** carrying the ``[D,N]`` state: ``h_t = Abar_t ⊙ h_{t-1} + dBx_t`` -- the
-      ``h_{t-1}`` read makes the token axis ``t`` SEQUENTIAL (state resident, O(1) in ``L``);
-    * a **readout** contraction over the state axis ``N``: ``y'_t = sum_N C_t · h_t`` (``[L,D]``);
-    * the **skip**: ``y = y' + D_skip ⊙ x``.
-
-    There is no data-dependent read and no nonlinear reduction, so the whole block fuses into one
-    region; the fusion streams the SEQUENTIAL token axis ``L`` while the ``[D,N]`` state stays resident
-    (the paper's Fuse-All), which is exactly the memory-bound-to-compute-bound shift it identifies."""
+    """The Mamba selective-scan state-update block as atomic affine sub-operators (arXiv:2504.17333, Fig. 7)."""
     c = config or MambaConfig()
     ll, dd, nn, dt = c.seq, c.d_inner, c.d_state, c.dtype
 

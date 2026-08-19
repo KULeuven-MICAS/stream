@@ -1,11 +1,4 @@
-"""Capacity-aware intra-core tiling for the generic auto-mapper.
-
-Picks each fused group's per-core tile from the whole resident footprint (every operand of every node),
-and when it does not fit streams whichever axis frees the most memory -- the contraction axis for a
-weight-bound layer, a parallel axis for an activation-bound one -- keeping tiles as large as reuse allows,
-via a greedy pass. Emits ``{"dim": "NodeName.D{n}", "tile": size}`` (per-core resident tile), matching
-``determine_fusion_splits``.
-"""
+"""Capacity-aware intra-core tiling for the generic auto-mapper."""
 
 import logging
 import math
@@ -23,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def _divisors_desc(n: int) -> list[int]:
-    """Divisors of ``n``, largest first. sqrt enumeration so a 14336-wide axis is cheap."""
+    """Divisors of ``n``, largest first."""
     if n <= 1:
         return [1]
     small: list[int] = []
@@ -39,21 +32,16 @@ def _divisors_desc(n: int) -> list[int]:
 
 
 class CapacityTiler:
-    """Choose per-core intra-core tiles so every compute core's resident footprint fits its operand
-    buffer, tiling the axes that free the most memory while keeping tiles as large as reuse allows."""
+    """Choose per-core intra-core tiles so every compute core's resident footprint fits its operand buffer."""
 
-    # Past this many steady-state tiles, fitting only shatters dims into tiny tiles (no reuse) -- give up.
     MAX_STEADY_STATE_TILES = 1024
 
     def __init__(self, sub_workload: Workload, accelerator: Accelerator, fill_fraction: float = 0.5) -> None:
         self.sub_workload = sub_workload
         self.accelerator = accelerator
-        # Fraction of the operand buffer usable; the rest double-buffers the streamed operands.
         self.fill_fraction = fill_fraction
 
-    # ------------------------------------------------------------------ #
-
-    def plan(  # noqa: PLR0912, PLR0915 -- one cohesive pass: per-core footprint, candidate dims, greedy fit
+    def plan(  # noqa: PLR0912, PLR0915
         self,
         cns: tuple[ComputationNode, ...],
         cores_per_node: dict[ComputationNode, list[Core]],
@@ -61,19 +49,7 @@ class CapacityTiler:
         protected: set[LayerDim],
         seed_tiling: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Intra-core tiling for the group, or ``[]`` when it already fits (caller keeps its own tiling).
-
-        Footprint is accounted per physical core (a fused group's weights sum on the matmul core they
-        share, matching the MILP's per-core constraint). Runs additively on ``seed_tiling``, tiling
-        further only when a core still overflows.
-
-        Args:
-            cns: the group's computation nodes.
-            cores_per_node: the compute cores each node is spread across (its inter-core allocation).
-            unroll: inter-core split factor already applied to each global dimension.
-            protected: dimensions that must never be temporally tiled (nonlinear reductions).
-            seed_tiling: tiling already chosen for the group, as ``{"dim": "Node.Dn", "tile": T}`` entries.
-        """
+        """Intra-core tiling for the group, or ``[]`` when it already fits (caller keeps its own tiling)."""
         # Per physical core: its capacity and the distinct tensors resident on it (deduped by name).
         core_cap: dict[int, int] = {}
         core_tensors: dict[int, list[tuple[Tensor, frozenset[LayerDim]]]] = {}
@@ -90,8 +66,7 @@ class CapacityTiler:
                         bucket.append((tensor, dims))
         budgets = {cid: int(cap * self.fill_fraction) for cid, cap in core_cap.items()}
 
-        # Per candidate dim: its per-core size (full / inter-core unroll) and divisors (tile sizes).
-        # A candidate must index a resident tensor, be unprotected, and have per-core size > 1.
+        # Per candidate dim: per-core size (full / inter-core unroll) and divisor tile sizes.
         all_dims: set[LayerDim] = {d for ts in core_tensors.values() for entry in ts for d in entry[1]}
         per_core: dict[LayerDim, int] = {}
         divisors: dict[LayerDim, list[int]] = {}
@@ -106,9 +81,7 @@ class CapacityTiler:
         seeded = self._seed_resident(cns, seed_tiling or [], per_core)
         resident: dict[LayerDim, int] = {dim: seeded.get(dim, per_core[dim]) for dim in per_core}
 
-        # Precompute per core each resident tensor as (base bits, candidate dims that scale it): base is
-        # its per-core bits untiled, and bits scale multiplicatively per tiled dim, so the greedy
-        # evaluates a footprint by cheap arithmetic instead of re-deriving tile shapes each step.
+        # Per core, each resident tensor as (base bits, scaling dims) so overflow() is cheap arithmetic.
         base_of: dict[str, tuple[float, tuple[LayerDim, ...]]] = {}
         core_terms: dict[int, list[tuple[float, tuple[LayerDim, ...]]]] = {}
         for cid, tensors in core_tensors.items():
@@ -141,9 +114,7 @@ class CapacityTiler:
         if overflow() <= 0 or not per_core:
             return []
 
-        # Greedy steepest-descent: repeatedly drop the dim (to its next-smaller divisor) that most
-        # reduces the worst overflow, keeping other tiles large. Reject a step past MAX_STEADY_STATE_TILES
-        # (fitting only by shattering a dim kills reuse) -- then give up and leave the group untiled.
+        # Greedy: repeatedly shrink the dim that most reduces the worst overflow, keeping others large.
         def ss_tiles() -> float:
             return math.prod(per_core[d] / resident[d] for d in per_core)
 
@@ -169,11 +140,8 @@ class CapacityTiler:
 
         return self._emit(cns, resident, per_core)
 
-    # ------------------------------------------------------------------ #
-
     def _node_tensors(self, cn: ComputationNode) -> list[tuple[Tensor, frozenset[LayerDim]]]:
-        """One node's own operands (weight + inputs + output), each with the global dims that index it --
-        the tensors that must fit the node's core."""
+        """One node's own operands, each with the global dims that index it."""
         node_dims = self.sub_workload.get_dims(cn)
         seen: set[str] = set()
         out: list[tuple[Tensor, frozenset[LayerDim]]] = []
@@ -191,8 +159,7 @@ class CapacityTiler:
         seed_tiling: list[dict[str, Any]],
         per_core: dict[LayerDim, int],
     ) -> dict[LayerDim, int]:
-        """Resolve seeded ``{"dim": "Node.Dn", "tile": T}`` entries to ``{global dim: T}``, keeping only
-        dims this group tiles (a candidate with a per-core size)."""
+        """Resolve seeded ``{"dim": "Node.Dn", "tile": T}`` entries to ``{global dim: T}`` for dims this group tiles."""
         by_name = {cn.name: cn for cn in cns}
         seeded: dict[LayerDim, int] = {}
         for entry in seed_tiling:

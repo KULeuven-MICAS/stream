@@ -48,8 +48,7 @@ def test_attention_is_one_fusible_region():
 
 
 def test_mamba_state_update_decomposes_to_paper_subops():
-    """The Mamba block is the paper's Fig. 7 state-update, decomposed into atomic affine sub-ops:
-    the discretization (dA, Abar, dB, dBx), the sequential scan, the readout and the skip."""
+    """The Mamba block decomposes into the paper's Fig. 7 state-update affine sub-ops."""
     wl = build_mamba_block()
     by_name = {n.name: n for n in wl.get_computation_nodes()}
     assert set(by_name) == {"dA", "Abar", "dB", "dBx", "scan", "readout", "skip", "out"}
@@ -57,8 +56,7 @@ def test_mamba_state_update_decomposes_to_paper_subops():
 
 
 def test_mamba_scan_is_sequential_over_the_token_axis():
-    """The selective scan h_t = Abar_t·h_{t-1} + dBx_t reads its [D,N] state at t-1, so the token axis
-    is SEQUENTIAL while the channel/state axes are PARALLEL."""
+    """The selective scan reads state at t-1: the token axis is SEQUENTIAL, channel/state PARALLEL."""
     scan = next(n for n in build_mamba_block().get_computation_nodes() if n.type == "SelectiveScan")
     assert sequential_dims(scan) == frozenset({0})  # the token axis carries the state
     types = derive_iterator_types(scan)
@@ -74,8 +72,7 @@ def test_mamba_readout_reduces_the_state_axis():
 
 
 def test_mamba_fuses_into_one_region():
-    """No data-dependent read and no nonlinear reduction: the whole state-update block is one fusible
-    region (the paper's Fuse-All)."""
+    """No data-dependent read and no nonlinear reduction: the state-update block is one fusible region."""
     groups = build_mamba_block().split_fusion_groups()
     assert len(groups) == 1
     names = {c.name for c in groups[0].get_computation_nodes()}

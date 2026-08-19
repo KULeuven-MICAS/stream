@@ -1,12 +1,4 @@
-"""The attention head's tiling must respect the softmax's reduction axis.
-
-A softmax reduces the key axis *nonlinearly*: unlike a matmul contraction (a linear reduction that can
-be split across cores as partial sums), the softmax needs every element of the key axis before it emits
-any output, so the key axis must stay resident -- never spatially unrolled or fusion-split -- in the
-conservative (non-flash) model. These tests pin that: the reduced axis is derived as a REDUCTION, the
-spatial-unroll guard rejects it, and the generic mapper never splits it while still parallelising the
-attention block over its parallel axes (heads/batch) and linear contractions.
-"""
+"""The attention head's tiling must respect the softmax's reduction axis."""
 
 from __future__ import annotations
 
@@ -39,8 +31,7 @@ def _parse_accelerator():
 
 
 def test_softmax_reduced_axis_is_tracked_as_a_nonlinear_reduction():
-    """The node keeps its fused-kernel identity view, so its maps alone read every axis as PARALLEL --
-    which is why the reduction has to be declared until expansion exposes it."""
+    """The fused-kernel identity view reads every axis PARALLEL; the reduction must be declared."""
     sm = _softmax(build_attention_block())
     assert sm.reduction_axes  # the softmax really does reduce an axis
     # the fused-kernel node view is unchanged: identity, so no axis reads REDUCTION on the node alone
@@ -61,8 +52,7 @@ def test_spatial_unroll_guard_rejects_the_softmax_reduction_axis():
 
 
 def test_generic_mapper_never_splits_the_softmax_reduction_axis():
-    """End-to-end tiling: across every fused group of the attention head, the softmax's reduced global
-    dimension is protected and never inter-core split -- while the block is still split on other axes."""
+    """Across every fused group the softmax's reduced dim is protected and never inter-core split."""
     workload = build_attention_block(AttentionConfig(batch=1, heads=2, seq=8, d_head=8))
     accelerator = _parse_accelerator()
     gen = GenericMappingGenerator(
@@ -84,9 +74,7 @@ def test_generic_mapper_never_splits_the_softmax_reduction_axis():
 
 
 def test_expansion_does_not_change_what_the_mapper_protects_or_splits():
-    """The pipeline expands normalizations before mapping, so every guard must read the same answer on
-    the expanded graph as on the fused one. Read the declared reduction_axes only and the guards go
-    silently dead exactly where they matter -- the expanded graph is the one that gets mapped."""
+    """Every guard reads the same protect/split answer on the expanded graph as on the fused one."""
     raw = build_attention_block(AttentionConfig(batch=1, heads=2, seq=8, d_head=8))
     accelerator = _parse_accelerator()
 
@@ -109,9 +97,7 @@ def test_expansion_does_not_change_what_the_mapper_protects_or_splits():
 
 
 def test_tensor_tiles_do_not_depend_on_node_insertion_order():
-    """A tensor read by both projections has one footprint per accessor once the query and key axes
-    are decoupled. Resolving through whichever accessor came first made the reported on-chip tile a
-    function of graph construction order rather than of the mapping."""
+    """Tensor tiles are a function of the mapping, not of graph construction / node insertion order."""
     from stream.workload.workload import Workload
 
     accelerator = _parse_accelerator()
@@ -129,8 +115,7 @@ def test_tensor_tiles_do_not_depend_on_node_insertion_order():
 
 
 def test_fusion_split_protects_the_softmax_reduction_axis():
-    """'Tiling after fusion' respects the reduction too: the softmax's reduced axis is in the set
-    determine_fusion_splits refuses to block-tile (blocking it is online-softmax / flash)."""
+    """Tiling after fusion refuses to block-tile the softmax's reduced axis (that would be flash)."""
     from stream.workload.utils import _nonlinear_reduction_group_dims
 
     workload = build_attention_block(AttentionConfig(batch=1, heads=2, seq=8, d_head=8))
@@ -145,8 +130,7 @@ def test_fusion_split_protects_the_softmax_reduction_axis():
 
 
 def test_linear_contraction_axis_stays_splittable():
-    """The fix must not over-block: a matmul's *linear* contraction is still spatially splittable (it is
-    not in the protected set), so cross-core partial-sum reduction remains available."""
+    """A matmul's linear contraction stays splittable (not protected), so partial-sum reduction works."""
     workload = build_attention_block(AttentionConfig(batch=1, heads=2, seq=8, d_head=8))
     accelerator = _parse_accelerator()
     gen = GenericMappingGenerator(
@@ -162,9 +146,7 @@ def test_linear_contraction_axis_stays_splittable():
 
 
 def test_auto_fusion_tiles_the_query_axis_when_intermediates_overflow():
-    """A large attention head whose score matrix overflows on-chip auto-fuses along the QUERY axis (a
-    parallel axis that flows through the intermediates), keeping the key axis (the softmax reduction)
-    resident -- the SOTA non-flash fused-attention shape (stream query blocks, keys stay put)."""
+    """An overflowing attention head auto-fuses along the query axis, keeping the softmax key resident."""
     workload = build_attention_block(AttentionConfig(batch=1, heads=4, seq=1024, d_head=64))
     gen = GenericMappingGenerator(
         accelerator=_parse_accelerator(), workload=workload, output_dir=tempfile.mkdtemp(), intra_core_tiling=None
@@ -193,10 +175,7 @@ def test_small_attention_keeps_the_whole_region_resident():
 
 
 def test_expanded_attention_fuses_and_tiles_the_query_axis():
-    """The generic pipeline decomposes the softmax first, so verify the *expanded* attention behaves:
-    it still fuses into one region (only data-dependent reads cut), and the auto layer-fusion tiling is
-    along the query axis -- the key axis is now an ordinary affine reduction (ReduceMax/ReduceSum) that
-    is kept resident, not tiled."""
+    """The expanded attention still fuses into one region and auto-tiles the query axis, key resident."""
     workload = expand_normalizations(build_attention_block(AttentionConfig(batch=1, heads=4, seq=1024, d_head=64)))
     assert {"ReduceMax", "Exp", "ReduceSum", "Div"} <= {n.type for n in workload.get_computation_nodes()}
     assert determine_fusion_cut_points(workload) == []
@@ -216,8 +195,7 @@ def test_expanded_attention_fuses_and_tiles_the_query_axis():
 
 
 def test_fusion_tiling_plan_describes_query_streaming_softmax_resident():
-    """The fusion_tiling_plan API says attention streams the query axis in
-    blocks while the softmax key axis stays resident on-chip, and reports the decomposed softmax."""
+    """fusion_tiling_plan streams the query axis in blocks, softmax key resident, softmax decomposed."""
     workload = expand_normalizations(build_attention_block(AttentionConfig(batch=1, heads=4, seq=1024, d_head=64)))
     gen = GenericMappingGenerator(
         accelerator=_parse_accelerator(), workload=workload, output_dir=tempfile.mkdtemp(), intra_core_tiling=None
@@ -235,9 +213,7 @@ def test_fusion_tiling_plan_describes_query_streaming_softmax_resident():
 
 
 def test_streaming_axis_breaks_size_ties_deterministically(monkeypatch):
-    """The streaming axis is chosen from a set, so equal-sized candidates would otherwise be ordered
-    by iteration order -- the same workload streamed a different axis between processes, and two
-    identical runs produced different mappings and different latency."""
+    """A size tie between streaming-axis candidates resolves by name, deterministically across runs."""
     accelerator = _parse_accelerator()
     workload = expand_normalizations(build_attention_block(AttentionConfig(batch=1, heads=2, seq=8, d_head=8)))
     gen = GenericMappingGenerator(

@@ -145,8 +145,7 @@ def test_find_comment_marker():
 
 
 def test_single_ungated_pytest_invocation():
-    """Exactly one pytest step may run unconditionally, so a push or PR runs the suite once. Further
-    pytest steps are allowed only when gated on schedule/workflow_dispatch (the nightly slow set)."""
+    """Exactly one ungated pytest step runs; any others must be gated on schedule/workflow_dispatch."""
     data, _ = _load()
     runs = [
         step for job in data["jobs"].values() for step in job.get("steps", []) if "pytest" in str(step.get("run", ""))

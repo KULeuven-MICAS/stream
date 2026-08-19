@@ -37,9 +37,7 @@ def test_flatten_empty():
 
 
 def test_only_memory_tiles_are_charged_mem_tile_traffic():
-    """A candidate allocation lists every core the solver considered. On hardware with no mem tiles
-    those are compute cores; charging each a full transfer's traffic inflated the count by the number
-    of candidates."""
+    """On hardware with no mem tiles, no core is charged mem-tile traffic (candidates are compute)."""
     candidates = tuple((_typed_core(i, "compute"),) for i in range(6))
     assert len(_flatten_cores(candidates)) == 6
     assert _memory_tile_cores(candidates) == []

@@ -30,17 +30,10 @@ class GenericMappingGenerationStage(Stage):
     def run(self):
         from stream.workload.workload import determine_fusion_cut_points  # noqa: PLC0415
 
-        # Caller-supplied cuts win over the derived ones. Cutting at every node is how a
-        # layer-by-layer mapping is expressed: each layer becomes its own fused group, so nothing
-        # is kept on chip between them -- the baseline a fused mapping is measured against.
+        # Caller-supplied cuts win over the derived ones.
         cut_points = self.ctx.get("fusion_cut_points", None)
         if cut_points == PER_LAYER:
-            # Every computation node starts its own group. Derived from the workload's own dataflow
-            # order rather than a caller-written list, because which nodes end up adjacent is a
-            # property of the graph -- naming them by hand silently fuses whichever pair the order
-            # happened to make neighbours.
-            # A cut point *ends* its group, so cutting after every layer but the last gives one group
-            # per layer; cutting at the last as well would leave a trailing group with no computation.
+            # A cut point ends its group, so cut after every layer but the last -> one group per layer.
             names = [n.name for n in self.workload.dataflow_sort() if isinstance(n, HasIterationSpace)]
             cut_points = names[:-1]
             logger.info(f"Layer-by-layer: cutting at every layer boundary ({len(cut_points)} cuts)")

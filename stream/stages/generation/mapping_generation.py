@@ -11,15 +11,12 @@ from stream.stages.stage import Stage, StageCallable
 
 logger = logging.getLogger(__name__)
 
-# Written beside latency.yaml when a variant's mapping does not fit. Deliberately not
-# "infeasibility.json": that basename is a whole-run artifact, and one file per variant under it
-# would give a consumer N files that all claim to be the run's diagnosis.
+# Written beside latency.yaml when a variant's mapping does not fit.
 INFEASIBILITY_REPORT_FILENAME = "infeasibility_report.json"
 
 
 def save_infeasibility_report(output_dir: str, report: InfeasibilityReportIR) -> None:
-    """Persist a variant's typed infeasibility diagnosis next to its latency, so a consumer reads
-    why the mapping did not fit instead of re-deriving it from the solver's .ilp dump."""
+    """Persist a variant's typed infeasibility diagnosis next to its latency."""
     try:
         with open(os.path.join(output_dir, INFEASIBILITY_REPORT_FILENAME), "w") as f:
             json.dump(report.model_dump(), f)
@@ -123,9 +120,8 @@ class MappingGenerationStage(Stage):
                 best_latency = latency
                 best_mapping_path = mapping_path
                 best_index = i
-                # The inner pipeline yields the ONE shared StageContext, which every later variant
-                # overwrites in place. Snapshot the winner's bindings, or what we yield describes
-                # whichever variant happened to run last rather than the one we picked.
+                # Snapshot the winner: the inner pipeline reuses one shared StageContext that later
+                # variants overwrite in place.
                 best_context = StageContext(data=dict(ctx.data))
             # Save the latency to yaml for later analysis
             latency_yaml_path = os.path.join(output_path_i, "latency.yaml")

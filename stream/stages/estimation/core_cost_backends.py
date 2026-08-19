@@ -1,10 +1,4 @@
-"""Core-cost estimator backends, selected by hardware rather than hardcoded.
-
-Which backend costs a core is a plugin decision (highest-priority backend whose ``claims(core)`` is
-true); the ZigZag backend claims everything at the lowest priority as the universal fallback. A backend
-advertises itself cheaply (``name``, ``priority``, ``claims``) and builds the estimator on demand via
-``make``, so the heavy AIE toolchain is imported only when its backend is selected.
-"""
+"""Core-cost estimator backends, selected by hardware rather than hardcoded."""
 
 from __future__ import annotations
 
@@ -35,8 +29,7 @@ class CoreEstimator(Protocol):
 
 
 class CoreCostContext(Protocol):
-    """The subset of the estimation stage a backend reads to build its estimator (satisfied
-    structurally, so the seam does not depend on the concrete stage type)."""
+    """The subset of the estimation stage a backend reads to build its estimator."""
 
     workload: Workload
     accelerator: Accelerator
@@ -47,9 +40,8 @@ class CoreCostContext(Protocol):
 
 
 class CoreCostBackend(Protocol):
-    """A discovered core-cost estimator backend. ``name`` becomes ``metadata["backend"]`` on the
-    produced :class:`CoreCostEntry`; ``priority`` breaks ties (highest wins, ZigZag lowest); ``claims``
-    must be cheap and import nothing heavy."""
+    """A discovered core-cost estimator backend. ``name`` becomes ``metadata["backend"]``; ``priority``
+    breaks ties (highest wins, ZigZag lowest)."""
 
     name: str
     priority: int
@@ -64,8 +56,7 @@ class CoreCostBackend(Protocol):
 
 
 class AIEBackend:
-    """AIE compute tiles: the utilization-based estimator. Claims cheaply; the optional AIE toolchain
-    is imported inside ``make`` only when this backend is selected."""
+    """AIE compute tiles: the utilization-based estimator."""
 
     name = "aie"
     priority = 10
@@ -80,8 +71,7 @@ class AIEBackend:
 
 
 class ZigZagBackend:
-    """The universal fallback: claims every core at the lowest priority. Its internal
-    ZigZag-to-ideal-cycle fallback is untouched -- it stays inside the ZigZag estimator."""
+    """The universal fallback: claims every core at the lowest priority."""
 
     name = "zigzag"
     priority = 0
@@ -100,15 +90,14 @@ class ZigZagBackend:
         )
 
 
-# Registered as entry points under the public distribution (see pyproject.toml). The instances are the
-# entry-point targets, so the built-in default travels the same discovery path an overlay does.
+# Entry-point targets registered under the public distribution (see pyproject.toml).
 AIE_BACKEND = AIEBackend()
 ZIGZAG_BACKEND = ZigZagBackend()
 
 
 def discover_backends() -> list[CoreCostBackend]:
     """Every registered core-cost backend, in discovery order (a later, higher-priority overlay
-    registration comes last). This is the single ``load_group`` site for this seam."""
+    registration comes last)."""
     backends: list[CoreCostBackend] = []
     for plugin in load_group(CORE_COST_BACKENDS_GROUP):
         obj = plugin.obj
@@ -119,8 +108,7 @@ def discover_backends() -> list[CoreCostBackend]:
 def select_backend(core: Core, backends: list[CoreCostBackend] | None = None) -> CoreCostBackend:
     """The backend that costs ``core``: highest ``priority`` among those whose ``claims(core)`` is true.
 
-    Ties go to the later registration (an overlay outranks a built-in of equal priority), matching the
-    precedence ``load_group`` already applies across distributions.
+    Ties go to the later registration (an overlay outranks a built-in of equal priority).
     """
     candidates = discover_backends() if backends is None else backends
     chosen: CoreCostBackend | None = None

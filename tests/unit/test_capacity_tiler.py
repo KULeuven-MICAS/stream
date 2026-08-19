@@ -1,5 +1,4 @@
-"""Tests for the capacity-aware intra-core tiler that streams a resident weight (contraction axis)
-when the whole per-core footprint overflows the operand buffer, and leaves fitting groups untouched."""
+"""The capacity-aware intra-core tiler streams a resident weight on overflow, leaves fitting groups alone."""
 
 import math
 import tempfile
@@ -63,8 +62,7 @@ def test_divisors_desc():
 
 
 def test_streams_contraction_axis_when_weight_overflows():
-    """A large Gemm whose resident weight does not fit gets its contraction axis (D1) tiled, and the
-    resulting per-core footprint fits -- where the trivial mapper left it over budget."""
+    """A large Gemm whose resident weight overflows gets its contraction axis (D1) tiled until it fits."""
     acc, w = _parse(_TPU_QUAD, _GEMM)
     gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
     subs = w.split_fusion_groups(cut_points=gen._cut_points(None))
@@ -84,8 +82,7 @@ def test_streams_contraction_axis_when_weight_overflows():
 
 
 def test_noop_when_group_fits():
-    """A group whose footprint already fits is returned unchanged -- no over-tiling that would cost
-    reuse and off-chip traffic."""
+    """A group whose footprint already fits is returned unchanged -- no over-tiling."""
     acc, w = _parse(_TPU_QUAD, _SWIGLU_FITS)
     gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
     for sub in w.split_fusion_groups(cut_points=gen._cut_points(None)):
@@ -98,9 +95,7 @@ def test_noop_when_group_fits():
 
 
 def test_footprint_is_summed_per_physical_core():
-    """The tiler accounts a fused group PER PHYSICAL CORE: distinct tensors from different fused nodes on
-    one core SUM against its budget, while a tensor shared by producer and consumer is counted ONCE --
-    the per-core bucket (keyed by core.id, deduped by name) the MILP's per-core constraint also enforces."""
+    """A fused group is accounted per physical core: distinct tensors sum, a shared tensor counts once."""
     acc, w = _parse(_TPU_QUAD, _SWIGLU_FITS)
     gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
     sub = next(s for s in w.split_fusion_groups(cut_points=gen._cut_points(None)) if tuple(s.get_computation_nodes()))

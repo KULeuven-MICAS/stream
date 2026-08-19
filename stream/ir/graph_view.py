@@ -191,14 +191,7 @@ class WorkloadGraphView(BaseModel):
 
 
 class _DimResolver:
-    """Resolves per-node iteration dims and their sizes from ONE workload-global affine solve.
-
-    ``Workload.get_dims`` and ``Workload.get_dimension_size`` each recompute ``unique_dimensions()``
-    -- a full-workload sympy RREF, ~0.5 s on resnet18 -- on every call, and ``get_dimension_size`` also
-    re-runs ``get_dimension_sizes()``. Building the per-node view calls them O(nodes * dims) times, so
-    for resnet18 (48 nodes, 255 dims) it spent ~200 s redoing the same solve ~560 times. The solve is a
-    pure function of the (here read-only) workload structure, so we run it once and reduce every
-    per-node lookup to a slice / list index -- ~290x faster, with identical results."""
+    """Per-node iteration dims and sizes from one cached workload-global affine solve."""
 
     def __init__(self, workload: Workload):
         self._global_idxs = workload.global_idxs
@@ -338,8 +331,7 @@ def _node_ir(
         region=region_of.get(node.name),
         proposed_region=proposed_of.get(node.name),
     )
-    # Boundary nodes (graph inputs/outputs) are a single tensor -- carry its shape so the view can show
-    # the entry/exit tensor dims alongside the operators' loop dims.
+    # Boundary nodes (graph inputs/outputs) carry a single tensor -- keep its shape.
     if isinstance(node, InEdge) and node.outputs:
         ir.tensor = _tensor_ref(node.outputs[0])
     elif isinstance(node, OutEdge) and node.inputs:

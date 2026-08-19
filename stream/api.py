@@ -217,15 +217,13 @@ def _run_generic_co(  # noqa: PLR0913
     instrumentation: dict[str, Any] | None = None,
     hardware_budget: HardwareBudget | None = None,
 ) -> StageContext:
-    """Shared generic CO pipeline. Feeds either an ONNX ``workload_path`` (parsed by the ONNX stage)
-    or a prebuilt in-memory ``workload_obj`` (the ONNX stage is skipped).
+    """Shared generic CO pipeline. Feeds either an ONNX ``workload_path`` or a prebuilt in-memory
+    ``workload_obj`` (the ONNX stage is skipped).
 
     ``instrumentation`` names out-of-tree observers to wrap the stage list with ({name: options});
-    see :mod:`stream.instrumentation`. Observers never change which real stages run, and an observer
-    that fails is skipped, so watching a solve cannot alter or fail one.
-
-    ``hardware_budget`` rejects an over-budget hardware variant *before* the solve. A search that
-    can grow memories for free will, so the ceiling has to bind before the cost of finding out."""
+    see :mod:`stream.instrumentation`. ``hardware_budget`` rejects an over-budget hardware variant
+    before the solve.
+    """
     assert os.path.exists(hardware), f"Hardware file {hardware} does not exist"
     if hardware_budget is not None:
         assert_within_budget(HardwareBundle.from_yaml(hardware), hardware_budget)
@@ -262,8 +260,7 @@ def _run_generic_co(  # noqa: PLR0913
         ctx = pickle_load(ctx_path)
         logger.info(f"Loaded context from {ctx_path}")
     else:
-        # The ONNX parser stage is only needed when a file/proto workload is given; an in-memory
-        # Workload is injected directly and the generic mapper consumes it unchanged.
+        # The ONNX parser stage is only needed when a file/proto workload is given.
         parse_stages: list[StageCallable] = [StreamONNXModelParserStage] if workload_path is not None else []
         stages = _build_generic_co_stages(parse_stages)
         observers = build_instrumentation("optimize_allocation_co_generic", instrumentation)

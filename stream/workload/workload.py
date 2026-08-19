@@ -188,13 +188,7 @@ class Workload(DiGraphWrapper[Node]):
     def _both_parallel_outputs(
         self, a: "HasIterationSpace", b: "HasIterationSpace", expr_a: AffineExpr, expr_b: AffineExpr
     ) -> bool:
-        """Whether a shared-input axis is a PARALLEL output for both consumers ``a`` and ``b``.
-
-        Coupling two such axes wrongly ties them together: self-attention's Q and K project the same
-        input sequence, so their (parallel) output-seq axes would merge, forcing query==key and
-        blocking tiling the query independently of the key. Genuine alignment that is actually needed
-        is re-established by the shared-intermediate (edge) couplings downstream, so skipping this case
-        is cost-neutral -- it only frees the two independent output axes to tile separately."""
+        """Whether a shared-input axis is a PARALLEL output for both consumers ``a`` and ``b``."""
         from stream.workload.iterator_type import IteratorType, derive_iterator_types  # noqa: PLC0415
 
         if not (isinstance(expr_a, AffineDimExpr) and isinstance(expr_b, AffineDimExpr)):
@@ -335,9 +329,7 @@ class Workload(DiGraphWrapper[Node]):
         # Build sub-workloads
         sub_workloads = []
         for nodes in group_nodes:
-            # A group of only boundary edges -- what a cut naming the last node leaves behind -- has
-            # no iteration space. Emitting it fails much later inside the affine solve with an
-            # unrelated shape error, so drop it here where the reason is still visible.
+            # A group of only boundary edges (no iteration space) would fail later in the affine solve; drop it here.
             if any(isinstance(node, HasIterationSpace) for node in nodes):
                 sub_workloads.append(Workload(nodes))
 
@@ -526,10 +518,7 @@ class Workload(DiGraphWrapper[Node]):
                 out.append(int(max(0, hi - lo + 1)))
             return out
 
-        # A tensor several nodes access has one footprint per accessor, and they can differ once the
-        # workload decouples their axes (attention's query vs key sequence). Resolving through an
-        # arbitrary accessor made the answer depend on node insertion order; the resident footprint is
-        # the largest any accessor needs.
+        # A tensor several nodes access can have a different footprint per accessor; take the largest.
         shapes = [extents_for(n) for n in self.get_iteration_space_nodes() if tensor in n.tensors]
         return tuple(max(axis_extents) for axis_extents in zip(*shapes, strict=True))
 
@@ -612,9 +601,7 @@ class Workload(DiGraphWrapper[Node]):
         if isinstance(pred, InEdge):
             pred_tiling = tuple()
         elif isinstance(pred, TransferNode):
-            # A tensor can be staged in more than one hop -- off-chip to a scratchpad, scratchpad to
-            # the array. The upstream transfer already shaped it, so this transfer's own tiling is
-            # what determines the shape here, mirroring get_tensor_of_transfer_to_single_core.
+            # A multi-hop staged transfer: its own tiling determines the shape here.
             pred_tiling = self.get_unique_dims_inter_core_tiling(transfer, mapping)
         else:
             assert isinstance(pred, ComputationNode), f"Expected ComputationNode, got {type(pred)}"

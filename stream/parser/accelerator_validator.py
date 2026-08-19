@@ -23,12 +23,7 @@ FILENAME_REGEX = (
 
 
 def resolve_core_path(core_file_name: str, accelerator_dirname: str) -> str | None:
-    """Resolve a ``cores:`` reference to a path on disk, or None when nothing matches.
-
-    Order: (1) explicit ``./`` or path-qualified refs taken as given; (2) a bare filename relative to
-    the accelerator's own dir (``cores/`` then alongside); (3) a last-resort input-tree search that
-    warns, being ambiguous when the name is reused under several ``hardware`` dirs.
-    """
+    """Resolve a ``cores:`` reference to a path on disk, or None when nothing matches."""
     if "./" in core_file_name:
         return os.path.normpath(os.path.join(accelerator_dirname, core_file_name))
     if "/" in core_file_name:
@@ -69,10 +64,8 @@ class AcceleratorValidator:
     SCHEMA: dict[str, Any] = {
         # Basic identification
         "name": {"type": "string", "required": True},
-        # Core catalogue (file names relative to the inputs folder)
-        # A value is either a file reference (several ids may share one file) or a fully inlined
-        # core description. The inline form is what a de-aliased `HardwareBundle` emits, so that a
-        # mutation can target a single core id without the shared file dragging its siblings along.
+        # Core catalogue: each value is either a file reference (ids may share one file) or an
+        # inlined core description.
         "cores": {
             "type": "dict",
             "required": True,
@@ -131,14 +124,10 @@ class AcceleratorValidator:
             "default": {},
             "valuesrules": {"type": "list", "minlength": 2, "maxlength": 2, "schema": {"type": "integer"}},
         },
-        # Physical-cost annotations (see stream.hardware.cost)
-        # Process node the numbers below are meant to describe, e.g. "n3". Only the area/energy
-        # model reads it; scheduling is unaffected.
+        # Physical-cost annotations (see stream.hardware.cost); scheduling-inert.
+        # Process node the numbers below describe, e.g. "n3".
         "technology_node": {"type": "string", "required": False},
-        # Groups of "<core id>.<memory name>" references that are *views of one physical memory*.
-        # Stream models a shared scratchpad as a separate memory per core that sees it, so without
-        # this the cost model would bill the same silicon once per view. Costing-only: it changes
-        # no scheduling behaviour.
+        # Groups of "<core id>.<memory name>" refs that are views of one physical memory (costing-only).
         "memory_aliases": {
             "type": "list",
             "required": False,
@@ -198,12 +187,7 @@ class AcceleratorValidator:
             self.invalidate("offchip_core_id does not correspond to any entry in `cores`.")
 
     def validate_all_cores(self) -> None:
-        """For every core entry:
-        - parse core data (a file reference is opened; an inline description is taken as given)
-        - normalize core data (replace with defaults)
-        - validate core data
-        - replace the entry with the normalized core data
-        """
+        """Parse, normalize and validate each core entry (file reference or inline dict) into normalized data."""
         for core_id, core_entry in self.data["cores"].items():
             if isinstance(core_entry, dict):
                 # Inline description: copy first, validation pops the Stream extension fields.
@@ -401,11 +385,7 @@ class AcceleratorValidator:
                     )
 
     def validate_memory_aliases(self):
-        """Every ``<core id>.<memory name>`` in `memory_aliases` must name a memory that exists.
-
-        A typo here would silently *stop* deduplicating that memory and inflate the modelled area,
-        which is exactly the kind of quiet cost error the budget guard exists to prevent.
-        """
+        """Every ``<core id>.<memory name>`` in `memory_aliases` must name a memory that exists."""
         for group in self.data.get("memory_aliases", []):
             for ref in group:
                 core_id_str, _, mem_name = ref.partition(".")

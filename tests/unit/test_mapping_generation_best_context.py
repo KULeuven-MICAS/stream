@@ -1,8 +1,4 @@
-"""The mapping search must yield the winning variant's context, not the last one's.
-
-Every variant runs the inner pipeline against the ONE shared StageContext, so keeping a reference
-to it after the loop describes whichever variant finished last. Only the float latency was right.
-"""
+"""The mapping search must yield the winning variant's context, not the last one's."""
 
 from __future__ import annotations
 
