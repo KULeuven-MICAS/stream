@@ -12,6 +12,7 @@ from stream.plugins import LoadedPlugin
 from stream.stages.estimation import core_cost_backends as backends_module
 from stream.stages.estimation.core_cost_backends import (
     AIE_BACKEND,
+    CONTRACT_VERSION,
     ZIGZAG_BACKEND,
     discover_backends,
     select_backend,
@@ -45,6 +46,10 @@ def _fake_core(core_type: str) -> Core:
 # ---------------------------------------------------------------------------
 # The contract every registered backend must satisfy
 # ---------------------------------------------------------------------------
+
+
+def test_contract_version_is_declared() -> None:
+    assert isinstance(CONTRACT_VERSION, int) and CONTRACT_VERSION >= 1
 
 
 def test_registered_backends_declare_the_contract() -> None:

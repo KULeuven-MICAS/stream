@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 CORE_COST_BACKENDS_GROUP = "stream.core_cost_backends"
+CONTRACT_VERSION = 1
 
 
 class CoreEstimator(Protocol):
