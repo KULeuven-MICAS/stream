@@ -1,14 +1,4 @@
-"""Area and access-energy cost of a hardware bundle, and the budget guard around it.
-
-TPU7x YAMLs price growth at zero (``area: 0``, ``unit_energy_cost: 0``), so an agent minimising
-latency wins by enlarging every memory and port. This module prices that unpriced axis from the
-quantities a mutation edits -- capacity, access width, port count, array dimensions.
-
-:func:`evaluate_bundle_cost` is the entry point. It delegates to a registered
-``stream.hardware_cost_model`` backend when one is installed (highest priority wins); otherwise it
-uses the trivial built-in model below. The report dataclasses and the budget API are the contract
-both share.
-"""
+"""Coarse area and access-energy cost of a hardware bundle, and the budget guard around it."""
 
 from __future__ import annotations
 
@@ -34,15 +24,13 @@ __all__ = [
 
 HARDWARE_COST_MODEL_GROUP = "stream.hardware_cost_model"
 
-# ── Report ──────────────────────────────────────────────────────────────────────────────────────
-
 
 @dataclass(frozen=True)
 class MemoryCost:
     core_id: int
     core_name: str
     memory_name: str
-    style: str  # "sram" | "register" | "off_die"
+    style: str
     instances: int
     bits_per_instance: int
     total_bits: int
@@ -50,12 +38,9 @@ class MemoryCost:
     nb_ports: int
     area_mm2: float
     read_energy_pj: float
-    """Modelled energy of one full-width read of one instance."""
     write_energy_pj: float
     authored_read_energy_pj: float | None
-    """`r_cost` as authored, when non-zero. ZigZag charges it per max-bandwidth-wide access."""
     counted: bool
-    """False when this is an aliased view of a memory already priced under another core."""
     alias_group: str | None
 
 
@@ -64,7 +49,6 @@ class ComputeCost:
     core_id: int
     core_name: str
     modelled: bool
-    """False when the core schema carries no array description (aie2 tiles) — unknown, not zero."""
     nb_units: int
     input_format: str
     accumulator_format: str
@@ -88,9 +72,6 @@ class CoreCost:
 
 @dataclass(frozen=True)
 class HardwareCostReport:
-    """Per-bundle silicon cost. `total_area_mm2` and `peak_access_energy_pj_per_cycle` are the two
-    budgetable figures; everything else is the breakdown that explains them."""
-
     bundle_name: str
     technology_node: str
     technology_declared: bool
@@ -101,18 +82,13 @@ class HardwareCostReport:
     on_die_memory_bits: int
     off_die_memory_bits: int
     peak_access_energy_pj_per_cycle: float
-    """Ceiling if every on-die port and MAC ran full-width for one cycle; monotone in what a mutation edits."""
     off_die_access_energy_pj_per_cycle: float
     warnings: list[str] = field(default_factory=list)
     authored_disagreements: list[str] = field(default_factory=list)
-    """One line per memory/array whose authored per-access energy differs from a detailed model; the
-    built-in model leaves it empty."""
     accuracy_claim: str | None = None
-    """A detailed model's own published tolerance, when it carries one; None for the built-in model."""
 
     @property
     def compute_modelled(self) -> bool | None:
-        """True/False if every compute core was/wasn't modelled; None when no core carries compute."""
         computes = [c.compute for c in self.cores if c.compute is not None]
         if not computes:
             return None
@@ -120,9 +96,6 @@ class HardwareCostReport:
 
     def to_dict(self) -> dict[str, Any]:
         return {**asdict(self), "compute_modelled": self.compute_modelled}
-
-
-# ── Built-in densities ──────────────────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -134,30 +107,16 @@ class _Density:
     mac_pj: float
 
 
+# Coarse 16 nm public defaults; detailed per-node models plug in via HARDWARE_COST_MODEL_GROUP.
 _DENSITIES: dict[str, _Density] = {
-    # 7 nm: coarse read/write energy, SRAM cell area, MAC area and MAC energy.
-    "n7": _Density(0.10, 0.11, 0.040, 0.60, 0.30),
-    # 5 nm: same quantities, one node down.
-    "n5": _Density(0.08, 0.088, 0.030, 0.42, 0.20),
+    "n16": _Density(0.16, 0.18, 0.10, 200.0, 0.5),
 }
-DEFAULT_TECH_NODE = "n5"
-
-DRAM_PJ_PER_BIT = 4.0  # off-die transfer energy per bit; off-die memory carries no die area
-
+DEFAULT_TECH_NODE = "n16"
+DRAM_PJ_PER_BIT = 4.0
 OFF_DIE_KINDS = frozenset({"offchip", "shim"})
 
 
-# ── Cost evaluation ─────────────────────────────────────────────────────────────────────────────
-
-
 def evaluate_bundle_cost(bundle: HardwareBundle, technology_node: str | None = None) -> HardwareCostReport:
-    """Price a bundle: area in mm², peak access energy in pJ/cycle, plus the full breakdown.
-
-    Delegates to the highest-priority ``stream.hardware_cost_model`` backend when one is registered,
-    otherwise runs the built-in model. Either way everything is derived from the bundle's own
-    declarations, so mutating a capacity, a port width, a port count or an array dimension moves the
-    result.
-    """
     plugins = load_group(HARDWARE_COST_MODEL_GROUP)
     if plugins:
         return plugins[-1].obj(bundle, technology_node=technology_node)
@@ -223,8 +182,6 @@ def _evaluate_builtin(bundle: HardwareBundle, technology_node: str | None) -> Ha
 
 
 def _alias_maps(bundle: HardwareBundle) -> tuple[dict[tuple[int, str], str], dict[str, tuple[int, str]]]:
-    """An aliased memory is one physical macro seen from several cores: the first ref owns it and is
-    billed, the rest are views."""
     alias_of: dict[tuple[int, str], str] = {}
     alias_owner: dict[str, tuple[int, str]] = {}
     for group in bundle.memory_aliases:
@@ -245,7 +202,6 @@ def _memory_costs(
     alias_of: dict[tuple[int, str], str],
     alias_owner: dict[str, tuple[int, str]],
 ) -> list[MemoryCost]:
-    """Price every memory one core declares, billing an aliased macro once."""
     is_zigzag = "memories" in core
     declared: dict[str, dict[str, Any]] = dict(core["memories"]) if is_zigzag else {"memory": core.get("memory", {})}
     oa_sizes = _oa_sizes(core) if is_zigzag else {}
@@ -306,7 +262,6 @@ def _memory_costs(
 def _compute_cost(core_id: int, core_name: str, core: dict[str, Any], density: _Density) -> ComputeCost | None:
     array = core.get("operational_array")
     if not isinstance(array, dict):
-        # aie2 tiles describe no array: report "not modelled", not 0 (which would claim free compute).
         return ComputeCost(
             core_id=core_id,
             core_name=core_name,
@@ -325,7 +280,7 @@ def _compute_cost(core_id: int, core_name: str, core: dict[str, Any], density: _
     for size in array.get("sizes") or []:
         nb_units *= max(int(size), 0)
     if nb_units <= 0:
-        return None  # memory-only core: the array exists in the schema but has no units
+        return None
 
     precision = core.get("operand_precision") or {}
     return ComputeCost(
@@ -350,21 +305,12 @@ def _oa_sizes(core: dict[str, Any]) -> dict[str, int]:
     return {str(dim): int(size) for dim, size in zip(dims, sizes, strict=False)}
 
 
-# ── Budget guard ────────────────────────────────────────────────────────────────────────────────
-
-
 class HardwareBudgetExceededError(ValueError):
-    """A hardware variant costs more silicon (or power) than its budget allows."""
+    """A hardware variant exceeds its silicon or power budget."""
 
 
 @dataclass(frozen=True)
 class HardwareBudget:
-    """A hard ceiling on what a hardware variant may cost.
-
-    The default is the baseline bundle's own cost, so "better" means better at equal-or-less
-    silicon. Without that, minimising latency degenerates into growing everything.
-    """
-
     max_area_mm2: float | None = None
     max_energy_pj_per_cycle: float | None = None
     label: str = "baseline"
@@ -376,7 +322,6 @@ class HardwareBudget:
         headroom: float = 0.0,
         technology_node: str | None = None,
     ) -> HardwareBudget:
-        """Budget equal to this bundle's cost, optionally with fractional `headroom` on top."""
         report = evaluate_bundle_cost(bundle, technology_node=technology_node)
         scale = 1.0 + headroom
         return cls(
@@ -401,7 +346,6 @@ def check_budget(
     budget: HardwareBudget,
     technology_node: str | None = None,
 ) -> BudgetVerdict:
-    """Price `bundle` and compare it against `budget`. Pure arithmetic on the YAML — no solve."""
     report = evaluate_bundle_cost(bundle, technology_node=technology_node)
     violations: list[str] = []
     if budget.max_area_mm2 is not None and report.total_area_mm2 > budget.max_area_mm2:
@@ -425,7 +369,6 @@ def assert_within_budget(
     budget: HardwareBudget,
     technology_node: str | None = None,
 ) -> HardwareCostReport:
-    """Raise :class:`HardwareBudgetExceededError` when the bundle busts its budget."""
     verdict = check_budget(bundle, budget, technology_node=technology_node)
     if not verdict.ok:
         raise HardwareBudgetExceededError(f"Hardware bundle '{bundle.name}' vs budget '{budget.label}': {verdict}")

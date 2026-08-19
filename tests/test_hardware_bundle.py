@@ -1,9 +1,4 @@
-"""De-aliased hardware bundles (C1) and the built-in hardware cost model / budget guard (C4): what
-does a hardware mutation cost, and can the answer be produced before a solve runs?
-
-The detailed analytical cost model lives in the private overlay; its area/energy assertions are in
-``stream-overlay/tests/test_hardware_cost_detailed.py``. Here the trivial built-in model is exercised:
-positive cost, alias de-dup, off-die handling, and the budget guard."""
+"""De-aliased hardware bundles (C1) and the built-in hardware cost model / budget guard (C4)."""
 
 import math
 import tempfile
@@ -160,9 +155,7 @@ def test_simple_model_reports_positive_cost_and_counts_aliases_once():
 
 
 def test_mutating_a_non_counted_alias_view_does_not_change_area():
-    """The de-dup, exercised under mutation: growing an aliased *view* (not the billed owner) must not
-    move the priced area, while growing the physical owner does. This is what stops a search from
-    'adding' silicon that does not exist by editing a second view of the same macro."""
+    """Growing an aliased view (not the billed owner) must not move priced area; growing the owner does."""
     bundle = HardwareBundle.from_yaml(TPU_V7_ALIASED)
     baseline = evaluate_bundle_cost(bundle).total_area_mm2
 
@@ -176,8 +169,7 @@ def test_mutating_a_non_counted_alias_view_does_not_change_area():
 
 
 def test_memory_aliases_do_not_change_scheduling_capacity():
-    """`memory_aliases` is a cost-model annotation only, never read on a scheduling/capacity path: the
-    per-core capacity the allocator and tiler see must be identical with and without the aliases."""
+    """`memory_aliases` is cost-only: per-core capacity is identical with and without the aliases."""
     bundle = HardwareBundle.from_yaml(TPU_V7_ALIASED)
     assert bundle.memory_aliases  # the fixture declares them
     with_aliases = {c.id: c.get_memory_capacity() for c in bundle.to_accelerator().core_list}
@@ -217,7 +209,7 @@ def test_aie_bundle_is_priceable_and_reports_what_it_cannot_model():
 
     assert report.memory_area_mm2 > 0
     assert not report.technology_declared
-    assert report.technology_node == "n5"
+    assert report.technology_node == "n16"
     compute_tiles = [c for c in report.cores if c.compute and c.on_die]
     assert compute_tiles and all(not c.compute.modelled for c in compute_tiles)
 
@@ -286,8 +278,7 @@ def test_budget_headroom_admits_a_bounded_increase():
 
 
 def test_a_bundle_with_no_declared_array_says_its_compute_was_not_modelled():
-    """An aie2 tile declares no operational_array, so its compute area is UNKNOWN and the bundle's
-    total is a lower bound. Reporting it as an estimate would understate the silicon silently."""
+    """An aie2 tile declares no operational_array, so its compute area is UNKNOWN, not an estimate."""
     aie2 = evaluate_bundle_cost(HardwareBundle.from_yaml(AIE2_STRIX))
     assert aie2.compute_modelled is False
     tpu = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
