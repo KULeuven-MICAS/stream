@@ -1,21 +1,10 @@
 """Discovery of out-of-tree extensions, shared by every plugin registry.
 
-The public package ships the framework, the interfaces and reference implementations; an out-of-tree
-overlay distribution adds operators, hardware namespaces, constraints or instrumentation by declaring
-entry points. This module is the one place that turns entry points into objects, so every registry
-gets the same precedence, the same failure behaviour and the same provenance.
-
-Two rules make the mechanism safe to use with more than one overlay:
-
-**Loading is explicit, not ambient.** Entry points are global to a Python environment, so a process
-with several overlays installed can otherwise reach all of them. ``STREAM_OVERLAYS`` names the
-overlays a process may load; when it is set, anything else is ignored. A multi-tenant worker sets it
-per job, and nothing else has to know about tenancy.
-
-**Precedence is declared, not incidental.** Two overlays may register the same operator. An overlay
-declares itself in the ``stream.overlays`` group with an ``OVERLAY_PRIORITY`` module constant; the
-highest priority wins and every conflict is logged. Entry points from the public distribution are
-priority 0, so an overlay always wins over a built-in.
+Turns entry points into objects in one place, so every registry gets the same precedence, failure
+behaviour and provenance. Loading is explicit: ``STREAM_OVERLAYS`` names the overlays a process may
+load (a multi-tenant worker sets it per job). Precedence is declared: an overlay's ``OVERLAY_PRIORITY``
+in the ``stream.overlays`` group decides which registration wins, the public distribution is priority 0,
+and every conflict is logged.
 """
 
 from __future__ import annotations
@@ -57,11 +46,8 @@ def _entry_points(group: str) -> list[EntryPoint]:
 
 
 def overlay_allowlist() -> frozenset[str] | None:
-    """Distributions this process may load overlays from, or None when unrestricted.
-
-    Reads ``STREAM_OVERLAYS`` (comma-separated distribution names). The public distribution is always
-    allowed. Setting the variable to an empty string restricts the process to public code alone.
-    """
+    """Distributions this process may load overlays from (``STREAM_OVERLAYS``, comma-separated), or None
+    when unrestricted. The public distribution is always allowed; an empty string means public only."""
     raw = os.environ.get(OVERLAY_ALLOWLIST_ENV)
     if raw is None:
         return None
@@ -89,12 +75,9 @@ def loaded_overlays() -> tuple[str, ...]:
 
 
 def load_group(group: str, allow: frozenset[str] | None | object = ...) -> list[LoadedPlugin]:
-    """Entry points in ``group``, lowest priority first, so a caller registering in order lets the
-    highest priority win. Conflicting names are logged. A plugin that fails to load is skipped, never
-    raised: a broken overlay must not take the framework down.
-
-    ``allow`` defaults to :func:`overlay_allowlist`; pass an explicit set to override it for one call.
-    """
+    """Entry points in ``group``, lowest priority first so the last registration wins. Conflicts are
+    logged; a plugin that fails to load is skipped, never raised. ``allow`` defaults to
+    :func:`overlay_allowlist`; pass an explicit set to override it for one call."""
     allowed = overlay_allowlist() if allow is ... else allow
     priorities = overlay_priorities()
 

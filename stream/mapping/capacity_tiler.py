@@ -1,19 +1,10 @@
 """Capacity-aware intra-core tiling for the generic auto-mapper.
 
-The trivial auto-mapper sizes a fused group's tile from the streamed *activation* intermediate alone
-against a flat ``capacity // 2`` budget, so it never sees the weight footprint: a matmul whose weight
-slice is larger than the operand buffer stays fully resident and overflows. This picks the per-core
-tile from the *whole* resident footprint (every operand of every node in the group), and when the
-footprint does not fit it streams whichever axis frees the most memory -- the contraction (K) axis for
-a weight-bound layer, the parallel axis for an activation-bound one -- keeping the tiles as large as
-possible so on-chip reuse (and off-chip traffic) stays near optimal.
-
-The formulation follows CoSA's prime-factor view (assign each dimension's factors to spatial vs.
-temporal so the mapping fits memory and maximises reuse), solved by a fast greedy pass rather than an
-ILP so it stays inline in the mapping generator.
-
-Emitted entries are ``{"dim": "NodeName.D{n}", "tile": size}`` where ``size`` is the per-core resident
-tile (``nb_splits = full / (size * inter_core_unroll)``), matching ``determine_fusion_splits``.
+Picks each fused group's per-core tile from the whole resident footprint (every operand of every node),
+and when it does not fit streams whichever axis frees the most memory -- the contraction axis for a
+weight-bound layer, a parallel axis for an activation-bound one -- keeping tiles as large as reuse allows,
+via a greedy pass. Emits ``{"dim": "NodeName.D{n}", "tile": size}`` (per-core resident tile), matching
+``determine_fusion_splits``.
 """
 
 import logging
@@ -51,16 +42,13 @@ class CapacityTiler:
     """Choose per-core intra-core tiles so every compute core's resident footprint fits its operand
     buffer, tiling the axes that free the most memory while keeping tiles as large as reuse allows."""
 
-    # Beyond this many steady-state tiles per fused group, fitting only comes from shattering a
-    # dimension into tiny tiles -- no on-chip reuse left -- so the tiler treats the group as not fitting.
+    # Past this many steady-state tiles, fitting only shatters dims into tiny tiles (no reuse) -- give up.
     MAX_STEADY_STATE_TILES = 1024
 
     def __init__(self, sub_workload: Workload, accelerator: Accelerator, fill_fraction: float = 0.5) -> None:
         self.sub_workload = sub_workload
         self.accelerator = accelerator
-        # A fraction of the operand buffer is left for double-buffering the streamed operands (a resident
-        # tile and its next prefetch coexist); the same 0.5 the trivial mapper used, now over the whole
-        # footprint instead of the intermediate alone.
+        # Fraction of the operand buffer usable; the rest double-buffers the streamed operands.
         self.fill_fraction = fill_fraction
 
     # ------------------------------------------------------------------ #
@@ -73,15 +61,11 @@ class CapacityTiler:
         protected: set[LayerDim],
         seed_tiling: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
-        """Return the intra-core tiling entries for the group, or ``[]`` when it already fits so the
-        caller keeps its own tiling unchanged.
+        """Intra-core tiling for the group, or ``[]`` when it already fits (caller keeps its own tiling).
 
-        The footprint is accounted *per physical core*: in a fused group the matmul cores host every
-        Gemm at once, so their weights sum on one core -- exactly the MILP's per-core memory constraint.
-        A Gemm's weight is fit to the 2 MB matmul core it shares; a small elementwise core is sized by
-        only the elementwise tensors it actually holds. Runs *additively* on ``seed_tiling``: it only
-        tiles further (typically streaming the contraction axis to free a resident weight) when a core
-        still overflows. The returned list is the merged tiling; ``[]`` means "seed already fits".
+        Footprint is accounted per physical core (a fused group's weights sum on the matmul core they
+        share, matching the MILP's per-core constraint). Runs additively on ``seed_tiling``, tiling
+        further only when a core still overflows.
 
         Args:
             cns: the group's computation nodes.
@@ -90,8 +74,7 @@ class CapacityTiler:
             protected: dimensions that must never be temporally tiled (nonlinear reductions).
             seed_tiling: tiling already chosen for the group, as ``{"dim": "Node.Dn", "tile": T}`` entries.
         """
-        # Per physical core: its capacity and the distinct tensors resident on it (every operand of
-        # every node placed on it -- the fused group's weights and intermediates accumulate here).
+        # Per physical core: its capacity and the distinct tensors resident on it (deduped by name).
         core_cap: dict[int, int] = {}
         core_tensors: dict[int, list[tuple[Tensor, frozenset[LayerDim]]]] = {}
         core_seen: dict[int, set[str]] = {}
@@ -107,9 +90,8 @@ class CapacityTiler:
                         bucket.append((tensor, dims))
         budgets = {cid: int(cap * self.fill_fraction) for cid, cap in core_cap.items()}
 
-        # Per-candidate-dim: the per-core size (full / inter-core unroll) and its divisors (candidate
-        # resident tile sizes, largest first). A dim is a candidate only if tiling it can shrink a
-        # resident tensor: it indexes one, is not protected, and its per-core size is > 1.
+        # Per candidate dim: its per-core size (full / inter-core unroll) and divisors (tile sizes).
+        # A candidate must index a resident tensor, be unprotected, and have per-core size > 1.
         all_dims: set[LayerDim] = {d for ts in core_tensors.values() for entry in ts for d in entry[1]}
         per_core: dict[LayerDim, int] = {}
         divisors: dict[LayerDim, list[int]] = {}
@@ -124,11 +106,9 @@ class CapacityTiler:
         seeded = self._seed_resident(cns, seed_tiling or [], per_core)
         resident: dict[LayerDim, int] = {dim: seeded.get(dim, per_core[dim]) for dim in per_core}
 
-        # Precompute, per core, each resident tensor as (base bits, the candidate dims that scale it) --
-        # base = its per-core bits with no temporal tiling: the full tensor divided by the inter-core
-        # split on the axes it is indexed by. A tensor's bits then scale multiplicatively with each tiled
-        # dim (resident/per-core), so the greedy evaluates a footprint by cheap arithmetic instead of
-        # re-deriving tile shapes in its inner loop (which made a many-layer conv workload hang).
+        # Precompute per core each resident tensor as (base bits, candidate dims that scale it): base is
+        # its per-core bits untiled, and bits scale multiplicatively per tiled dim, so the greedy
+        # evaluates a footprint by cheap arithmetic instead of re-deriving tile shapes each step.
         base_of: dict[str, tuple[float, tuple[LayerDim, ...]]] = {}
         core_terms: dict[int, list[tuple[float, tuple[LayerDim, ...]]]] = {}
         for cid, tensors in core_tensors.items():
@@ -161,12 +141,9 @@ class CapacityTiler:
         if overflow() <= 0 or not per_core:
             return []
 
-        # Greedy steepest-descent on the worst-overflowing core: repeatedly drop the dim (to its
-        # next-smaller divisor) that most reduces the group's worst overflow, keeping every other tile as
-        # large as possible so reuse stays high. A step that would push the group past MAX_STEADY_STATE_TILES
-        # is rejected: fitting a layer only by shattering a dimension into thousands of tiny tiles trades
-        # away all its on-chip reuse and balloons the schedule -- past that granularity the tiler gives up
-        # and leaves the group untiled, a fast and honest capacity overflow rather than a pathological map.
+        # Greedy steepest-descent: repeatedly drop the dim (to its next-smaller divisor) that most
+        # reduces the worst overflow, keeping other tiles large. Reject a step past MAX_STEADY_STATE_TILES
+        # (fitting only by shattering a dim kills reuse) -- then give up and leave the group untiled.
         def ss_tiles() -> float:
             return math.prod(per_core[d] / resident[d] for d in per_core)
 

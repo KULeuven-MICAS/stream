@@ -1,17 +1,9 @@
 """Core-cost estimator backends, selected by hardware rather than hardcoded.
 
-A core-cost backend models how long (and how much energy) a computation node takes on one core. Which
-backend costs a given core is a plugin decision: the engine ships the AIE and ZigZag backends as
-ordinary entry points under the public distribution, and an out-of-tree overlay registers a backend
-for its own hardware namespace without editing this file. The dispatch is "highest-priority backend
-whose ``claims(core)`` is true", so the ZigZag backend claiming everything at the lowest priority is
-the universal fallback -- a run with no overlay behaves exactly as the old ``if is_aie_compute_core``
-branch did.
-
-A backend advertises itself cheaply through :class:`CoreCostBackend` (``name``, ``priority``,
-``claims``) and only builds the actual estimator on demand via ``make`` -- so a backend that pulls a
-heavy optional toolchain (the AIE one) claims without importing it, and imports only when it is the
-one selected.
+Which backend costs a core is a plugin decision (highest-priority backend whose ``claims(core)`` is
+true); the ZigZag backend claims everything at the lowest priority as the universal fallback. A backend
+advertises itself cheaply (``name``, ``priority``, ``claims``) and builds the estimator on demand via
+``make``, so the heavy AIE toolchain is imported only when its backend is selected.
 """
 
 from __future__ import annotations
@@ -35,10 +27,6 @@ logger = logging.getLogger(__name__)
 
 CORE_COST_BACKENDS_GROUP = "stream.core_cost_backends"
 
-# Bumped when this seam's Protocol changes shape. A backend declares the version it was written
-# against so a mismatch is a named error, not an AttributeError three frames deep.
-CONTRACT_VERSION = 1
-
 
 class CoreEstimator(Protocol):
     """What a backend produces: the object the stage calls once per node-core pair."""
@@ -47,11 +35,8 @@ class CoreEstimator(Protocol):
 
 
 class CoreCostContext(Protocol):
-    """The subset of the estimation stage a backend reads to build its estimator.
-
-    The stage satisfies this structurally, so a backend preserves its own constructor args (ZigZag
-    takes more than AIE) without the seam depending on the concrete stage type.
-    """
+    """The subset of the estimation stage a backend reads to build its estimator (satisfied
+    structurally, so the seam does not depend on the concrete stage type)."""
 
     workload: Workload
     accelerator: Accelerator
@@ -62,12 +47,9 @@ class CoreCostContext(Protocol):
 
 
 class CoreCostBackend(Protocol):
-    """A core-cost estimator backend, discovered rather than hardcoded.
-
-    ``name`` becomes ``metadata["backend"]`` on the produced :class:`CoreCostEntry` (provenance).
-    ``priority`` breaks ties when several backends claim the same core -- highest wins, so the
-    universal ZigZag fallback sits at the lowest. ``claims`` must be cheap and import nothing heavy.
-    """
+    """A discovered core-cost estimator backend. ``name`` becomes ``metadata["backend"]`` on the
+    produced :class:`CoreCostEntry`; ``priority`` breaks ties (highest wins, ZigZag lowest); ``claims``
+    must be cheap and import nothing heavy."""
 
     name: str
     priority: int
@@ -82,11 +64,8 @@ class CoreCostBackend(Protocol):
 
 
 class AIEBackend:
-    """AIE compute tiles: the utilization-based estimator. Claims cheaply, imports lazily.
-
-    The AIE estimator pulls in the AIE toolchain (an optional install), so the import stays inside
-    ``make`` -- only a selected AIE backend triggers it, keeping the base path import-clean.
-    """
+    """AIE compute tiles: the utilization-based estimator. Claims cheaply; the optional AIE toolchain
+    is imported inside ``make`` only when this backend is selected."""
 
     name = "aie"
     priority = 10

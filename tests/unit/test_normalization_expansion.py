@@ -5,7 +5,6 @@ element-wise broadcasts. As one identity-mapped ``NormalizationNode`` those pass
 cost model sees one element-wise op and the reduction axis reads PARALLEL). ``expand_normalizations``
 rewrites it, in-graph, into explicit sub-ops so the cost is right and the fusion analysis reads an
 ordinary affine reduction; the sub-ops stay tagged so codegen can re-collapse them (round-trip proven).
-These tests use the real MHA / GQA attention blocks -- the modern usage of softmax.
 """
 
 from __future__ import annotations

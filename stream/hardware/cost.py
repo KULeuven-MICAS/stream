@@ -1,94 +1,19 @@
 """Analytical area and access-energy model for a hardware bundle.
 
-WHY THIS EXISTS
----------------
-Every TPU7x core YAML carries ``area: 0`` and the accelerator carries ``unit_energy_cost: 0``.
-Growing hardware is therefore free in the engine's own accounting, and an agent asked to minimise
-latency wins by enlarging every memory and widening every port. That is not design, it is
-exploiting an unpriced axis. This module prices it.
+TPU7x YAMLs price growth at zero (``area: 0``, ``unit_energy_cost: 0``), so an agent minimising
+latency wins by enlarging every memory and port. This module prices that unpriced axis, computing
+everything from the quantities a mutation edits -- capacity, access width, port count, instance
+count, array dimensions, operand precision -- never from a stored constant.
 
-A static ``area:`` number in a YAML cannot do that job: the moment a mutation doubles a memory's
-capacity the authored number is simply wrong. So everything here is **computed from the quantities
-a mutation edits** — capacity, access width, port count, instance count, array dimensions and
-operand precision — and never read back from a stored constant.
+Area is in bitcell-equivalents (one 6T HD SRAM bitcell at the node), converted to mm2. Three cost
+classes: SRAM macro (bits/eta * portfactor + IO_SLICE * width * ports), flop/latch array (fewer
+than REGISTER_MIN_ROWS rows), and MAC array (NAND2 gate-equivalents from dimensions x precision).
+Access energy per bit is a bank term (Horowitz ISSCC 2014, scaled by bitcell shrink and V^2) plus
+a wire term (C.V^2 over half a macro side): linear in width, sub-linear in capacity.
 
-WHAT THE MODEL IS
------------------
-Area is expressed in *bitcell-equivalents* (the area of one 6T high-density SRAM bitcell at the
-target node) and converted to mm² at the end. Three cost classes:
-
-1. **SRAM macro** — a memory deep enough to have row structure::
-
-       A = n_inst · A_cell · [ bits/η · portfactor(p) + IO_SLICE · width · p ]
-
-   * ``bits/η`` is the bitcell array plus its per-sub-array periphery. η = 0.70 is the array
-     efficiency of dense SRAM macros (published dense macros sit in the 0.60–0.75 band). It is
-     capacity-independent because macros are built from fixed-size sub-arrays, so periphery grows
-     with capacity rather than being amortised away. At the N5 bitcell of 0.021 µm² this η
-     corresponds to 33 Mb/mm² of single-ported macro, which is the right order for the node.
-   * ``portfactor(p) = (1 + 0.15·(p−1))²`` — each extra port adds a wordline (cell height) and a
-     bitline pair (cell width), so cell area grows as a product of two linear terms. The 0.15
-     coefficient is set so a 2-port cell is 1.32× a 6T cell, matching the ~1.3× area of a
-     published 8T dual-port bitcell. This is what makes "add a port" cost silicon.
-   * ``IO_SLICE · width · p`` — the column IO stack (sense amp, write driver, column mux, output
-     latch) replicated per accessed bit per port. A pitch-matched IO slice spans roughly ten column
-     pitches by ten cell heights, hence ~100 bitcell areas. This is what makes "widen the port"
-     cost silicon even at unchanged capacity.
-
-2. **Flop/latch array** — a memory with fewer than ``REGISTER_MIN_ROWS`` rows
-   (``rows = ceil(bits/width)``) is not a macro; reading it whole every cycle means it is built
-   from flip-flops. The MXU weight registers (32 b, 16 b ports) and the per-column fp32
-   accumulator (8192 b read 8192 b wide) are both of this kind::
-
-       A = n_inst · A_cell · bits · FLOP_BITCELL_RATIO · portfactor(p)
-
-   ``FLOP_BITCELL_RATIO = 5``: a standard-cell D flip-flop is about 6 tracks tall by ~11 CPP wide,
-   i.e. ≈0.10 µm² at N5 against a 0.021 µm² bitcell.
-
-3. **MAC array** — priced from dimensions and operand precision, in NAND2 gate-equivalents::
-
-       gates = 5·m_in² · fp_overhead   (array multiplier: m² full adders, 1 FA ≈ 5 NAND2)
-             + 5·m_acc · fp_overhead   (accumulate adder)
-       A     = n_units · gates · A_nand2 / LOGIC_UTILIZATION
-
-   ``m`` is the multiplier operand width — the significand for a float format, the full width for
-   an integer one. ``fp_overhead = 1.3`` covers exponent handling, normalisation and rounding.
-   ``LOGIC_UTILIZATION = 0.6`` is placed-and-routed datapath cell utilisation. Quadrupling a
-   256×256 array to 512×512 therefore quadruples its area, and moving bf16→fp32 multiplies it by
-   (24/8)² ≈ 9.
-
-Access energy per bit is a bank term plus a wire term::
-
-    e_bit = E_BANK_BIT(node) + E_WIRE_BIT_PER_MM(node) · 0.5·sqrt(area_per_instance_mm²)
-
-The bank term comes from Horowitz (ISSCC 2014 plenary, "Computing's Energy Problem"): a 32-bit
-read from an 8 KB SRAM costs 5 pJ at 45 nm, i.e. 0.156 pJ/bit, scaled to the target node by the
-linear bitcell shrink and by (V/V₄₅)². The wire term is C·V² on global metal at ~0.2 pF/mm, over
-the average traversal of a square macro. Energy is therefore **linear in access width and
-sub-linear in capacity** (through sqrt of the macro's area), which is the shape Horowitz's own
-8 KB / 32 KB / 1 MB points show.
-
-ON THE AUTHORED r_cost / w_cost VALUES
---------------------------------------
-Several memories carry non-zero ``r_cost``/``w_cost``, and ZigZag charges those per
-*max-bandwidth-wide* access (``cost_model.py:_calc_memory_access`` counts accesses in units of
-``bw_max``). Read that way they are not physically calibrated: the TPU7x VMEM's 200 pJ for a
-262144-bit access is 0.00076 pJ/bit, some two to three orders of magnitude below any SRAM at any
-node, and the HBM's 4000 pJ per 65536-bit access is 0.061 pJ/bit against a real HBM figure near
-4 pJ/bit. They are a self-consistent *relative* ladder, not absolute energies.
-
-The lane taken here, deliberately: the authored values are left untouched and keep driving the
-engine's energy accounting, because changing them would silently move every existing latency and
-energy result. This module reports its own figure **alongside** the authored one plus their ratio,
-so the disagreement is visible and auditable rather than silent, and the budget guard uses the
-computed figure — it is the only one that responds to a mutation.
-
-ACCURACY CLAIM
---------------
-This is an order-of-magnitude model with the right derivatives, not a signoff estimate. Treat
-absolute numbers as ±2× and relative comparisons between two bundles of the same shape as much
-tighter. Every constant below states where it comes from; correct one and the whole model moves
-with it.
+Authored r_cost/w_cost/unit_energy values are left untouched and keep driving the engine; this
+module reports its own figure alongside plus their ratio, and the budget guard uses the computed
+one. Every constant below states where it comes from. Order-of-magnitude model: see ACCURACY_CLAIM.
 """
 
 from __future__ import annotations
@@ -199,13 +124,7 @@ ACCURACY_CLAIM = (
     "order-of-magnitude model with the right derivatives, not a signoff estimate: treat absolute "
     "figures as +/-2x, and relative comparisons between two bundles of the same shape as much tighter"
 )
-"""This module's own published tolerance, from the ACCURACY CLAIM heading above, as one string.
-
-Carried on every report so a consumer quotes the model's stated accuracy rather than inventing an
-uncertainty for it -- or, as every consumer did until now, presenting a modelled area as if it were
-exact. It is a constant and not a computation for the same reason: it is a claim this module makes
-about itself, and nothing downstream may sharpen it.
-"""
+"""This module's own published tolerance, carried on every report so consumers quote it."""
 
 OFF_DIE_KINDS = frozenset({"offchip", "shim"})
 """Core kinds that front external memory: they carry no on-die array of their declared capacity."""
@@ -311,34 +230,18 @@ class HardwareCostReport:
     on_die_memory_bits: int
     off_die_memory_bits: int
     peak_access_energy_pj_per_cycle: float
-    """Energy if every on-die port and every MAC ran at full width for one cycle.
-
-    A comparative ceiling, not a power prediction: no schedule drives every port at once. It is
-    budgetable because it is monotone in exactly the quantities a mutation edits — capacity (through
-    the wire term), access width and port count.
-    """
+    """Ceiling if every on-die port and MAC ran full-width for one cycle; monotone in what a mutation edits."""
     off_die_access_energy_pj_per_cycle: float
     warnings: list[str] = field(default_factory=list)
     authored_disagreements: list[str] = field(default_factory=list)
-    """One line per memory or array whose authored per-access energy differs from the model by more
-    than :data:`AUTHORED_DISAGREEMENT_FACTOR`.
-
-    Carried as its own list, not only folded into a `warnings` sentence, because the *count* is the
-    reportable fact: "the model and the YAML disagree about 6 of 14 memories" says something about
-    how much of the energy accounting to believe, and a prose warning cannot be counted.
-    """
+    """One line per memory/array whose authored per-access energy differs from the model by more than
+    :data:`AUTHORED_DISAGREEMENT_FACTOR`; a countable list, not only a warnings sentence."""
     accuracy_claim: str = ACCURACY_CLAIM
     """What this module says its own numbers are worth. See :data:`ACCURACY_CLAIM`."""
 
     @property
     def compute_modelled(self) -> bool | None:
-        """Whether every core that *has* compute had its compute area actually modelled.
-
-        False when at least one core declares no array description (aie2 tiles): its compute area is
-        **unknown**, not zero, and `total_area_mm2` is therefore a lower bound rather than an
-        estimate. None when no core carries compute at all -- a memory-only core has nothing to
-        model, which is not the same as something that went unmodelled.
-        """
+        """True/False if every compute core was/wasn't modelled; None when no core carries compute."""
         computes = [c.compute for c in self.cores if c.compute is not None]
         if not computes:
             return None
@@ -351,24 +254,11 @@ class HardwareCostReport:
 # ── Cost evaluation ─────────────────────────────────────────────────────────────────────────────
 
 
-def _port_area_factor(nb_ports: int) -> float:
-    return (1.0 + PORT_AREA_COEFF * (max(nb_ports, 1) - 1)) ** 2
-
-
 def _tech_energy_scale(tech: TechNode, cell_um2_45nm: float) -> float:
     """Dynamic energy scaling 45 nm -> target node: capacitance shrinks with the linear dimension,
     energy with V^2."""
     linear_shrink = math.sqrt(tech.sram_bitcell_um2 / cell_um2_45nm) if cell_um2_45nm else 1.0
     return linear_shrink * (tech.vdd_v / VDD_45NM_V) ** 2
-
-
-def _sram_bank_energy_pj_per_bit(tech: TechNode) -> float:
-    return SRAM_BANK_ENERGY_PJ_PER_BIT_45NM * _tech_energy_scale(tech, SRAM_BITCELL_UM2_45NM)
-
-
-def _wire_energy_pj_per_bit_per_mm(tech: TechNode) -> float:
-    """E = C·V² on a full-swing global wire."""
-    return WIRE_CAP_PF_PER_MM * tech.vdd_v**2
 
 
 def _memory_area_and_energy(
@@ -381,7 +271,7 @@ def _memory_area_and_energy(
     """(style, total area in mm², read energy in pJ for one full-width access of one instance)."""
     width_bits = max(width_bits, 1)
     rows = max(1, math.ceil(bits_per_instance / width_bits))
-    port_factor = _port_area_factor(nb_ports)
+    port_factor = (1.0 + PORT_AREA_COEFF * (max(nb_ports, 1) - 1)) ** 2
 
     if rows < REGISTER_MIN_ROWS:
         style = "register"
@@ -395,10 +285,11 @@ def _memory_area_and_energy(
     area_um2_per_instance = bitcells_per_instance * tech.sram_bitcell_um2
     area_mm2 = area_um2_per_instance * instances / 1e6
 
-    # Wire energy scales with how far a bit travels inside its own macro: half a side of a square
-    # of that area. A 32-bit register file pays nothing here; a 128 MiB scratchpad pays most of it.
+    # Wire energy scales with how far a bit travels inside its own macro: half a side of its square.
     side_mm = math.sqrt(area_um2_per_instance / 1e6)
-    energy_per_bit = _sram_bank_energy_pj_per_bit(tech) + _wire_energy_pj_per_bit_per_mm(tech) * 0.5 * side_mm
+    bank_energy = SRAM_BANK_ENERGY_PJ_PER_BIT_45NM * _tech_energy_scale(tech, SRAM_BITCELL_UM2_45NM)
+    wire_energy = WIRE_CAP_PF_PER_MM * tech.vdd_v**2  # C·V² on a full-swing global wire
+    energy_per_bit = bank_energy + wire_energy * 0.5 * side_mm
     return style, area_mm2, energy_per_bit * width_bits
 
 
@@ -426,8 +317,7 @@ def _compute_cost(
 ) -> ComputeCost | None:
     array = core.get("operational_array")
     if not isinstance(array, dict):
-        # aie2 tiles describe no array. Reporting 0 would claim their compute is free; report
-        # "not modelled" instead, the same discipline the stall evidence uses for missing CMEs.
+        # aie2 tiles describe no array: report "not modelled", not 0 (which would claim free compute).
         return ComputeCost(
             core_id=core_id,
             core_name=core_name,
@@ -497,9 +387,8 @@ def evaluate_bundle_cost(bundle: HardwareBundle, technology_node: str | None = N
 
     cores_data = bundle.validated_data()["cores"]
 
-    # An aliased memory is one physical macro seen from several cores. The *first* ref in a group
-    # owns it and is the one billed; the rest are views. Author-controlled, so the breakdown can be
-    # made to read the way the hardware does.
+    # An aliased memory is one physical macro seen from several cores: the first ref owns it and is
+    # billed, the rest are views.
     alias_of: dict[tuple[int, str], str] = {}
     alias_owner: dict[str, tuple[int, str]] = {}
     for group in bundle.memory_aliases:

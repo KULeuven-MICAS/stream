@@ -1,8 +1,5 @@
-"""De-aliased hardware bundles (C1) and the hardware cost model / budget guard (C4).
-
-The two are tested together because they answer one question: what does a hardware mutation cost,
-and can the answer be produced before a solve runs?
-"""
+"""De-aliased hardware bundles (C1) and the hardware cost model / budget guard (C4): what does a
+hardware mutation cost, and can the answer be produced before a solve runs?"""
 
 import math
 import tempfile
@@ -16,8 +13,11 @@ from stream.hardware.cost import (
     ACCURACY_CLAIM,
     TECH_NODES,
     BudgetVerdict,
+    ComputeCost,
     HardwareBudget,
     HardwareBudgetExceededError,
+    HardwareCostReport,
+    MemoryCost,
     assert_within_budget,
     check_budget,
     evaluate_bundle_cost,
@@ -49,6 +49,16 @@ def _parse(accelerator_path: str):
     ctxs = MainStage([AcceleratorParserStage, LeafStage], ctx).run()
     assert len(ctxs) == 1
     return ctxs[0].get("accelerator")
+
+
+def _vmem(report: HardwareCostReport) -> MemoryCost:
+    """Core 9's `vmem` MemoryCost -- the TensorCore scratchpad most cost tests probe."""
+    return next(m for c in report.cores if c.core_id == 9 for m in c.memories if m.memory_name == "vmem")
+
+
+def _mxu(report: HardwareCostReport) -> ComputeCost:
+    """Core 0's MXU ComputeCost."""
+    return next(c.compute for c in report.cores if c.core_id == 0 and c.compute)
 
 
 # ── C1: de-aliasing ─────────────────────────────────────────────────────────────────────────────
@@ -109,11 +119,8 @@ def test_memory_alias_typo_is_rejected():
 
 @pytest.mark.timeout(300)
 def test_asymmetric_bundle_runs_end_to_end():
-    """Stream runs a materialized bundle whose cores were authored from one shared file.
-
-    `tpu_like_quad_core` points cores 0-3 at `tpu_like.yaml`; here core 0 alone gets a bigger
-    top-level memory, which is inexpressible without de-aliasing.
-    """
+    """Stream runs a materialized bundle whose cores were authored from one shared file: here core 0
+    alone gets a bigger top-level memory, inexpressible without de-aliasing."""
     bundle = HardwareBundle.from_yaml(QUAD_CORE)
     top_memory = list(bundle.cores[0]["memories"])[-1]
     bundle.cores[0]["memories"][top_memory]["size"] *= 2
@@ -158,7 +165,7 @@ def test_tpu_v7_baseline_area_is_defensible():
     assert report.technology_node == "n3"
     assert report.technology_declared
 
-    vmem = next(m for c in report.cores if c.core_id == 9 for m in c.memories if m.memory_name == "vmem")
+    vmem = _vmem(report)
     assert vmem.counted
     assert 20.0 < vmem.area_mm2 < 80.0, vmem.area_mm2
     # Macro density implied by the model, in Mb/mm^2 -- the number to argue with.
@@ -239,7 +246,7 @@ def test_doubling_a_memory_raises_the_reported_area():
     grown = evaluate_bundle_cost(variant)
 
     delta = grown.total_area_mm2 - baseline.total_area_mm2
-    vmem_area = next(m for c in baseline.cores if c.core_id == 9 for m in c.memories).area_mm2
+    vmem_area = _vmem(baseline).area_mm2
     # One of four scratchpads doubled: the added area is that scratchpad's, to within the
     # width-driven IO term which does not double with capacity -- a ~8% fraction at 64 MiB.
     assert delta == pytest.approx(vmem_area, rel=0.1)
@@ -279,16 +286,16 @@ def test_enlarging_the_array_costs_area_quadratically_in_precision():
     """Compute area follows dimensions and operand precision, not a stored `unit_area`."""
     bundle = HardwareBundle.from_yaml(TPU_V7)
     baseline = evaluate_bundle_cost(bundle)
-    mxu_area = next(c.compute.area_mm2 for c in baseline.cores if c.core_id == 0 and c.compute)
+    mxu_area = _mxu(baseline).area_mm2
 
     doubled = bundle.copy()
     doubled.cores[0]["operational_array"]["sizes"] = [512, 512]
-    grown = next(c.compute.area_mm2 for c in evaluate_bundle_cost(doubled).cores if c.core_id == 0 and c.compute)
+    grown = _mxu(evaluate_bundle_cost(doubled)).area_mm2
     assert grown == pytest.approx(4 * mxu_area, rel=1e-6)
 
     wider = bundle.copy()
     wider.cores[0]["operand_precision"]["input"] = "fp32"
-    precise = next(c.compute.area_mm2 for c in evaluate_bundle_cost(wider).cores if c.core_id == 0 and c.compute)
+    precise = _mxu(evaluate_bundle_cost(wider)).area_mm2
     # bf16 multiplies an 8-bit significand, fp32 a 24-bit one: the multiplier grows ~9x.
     assert 5.0 < precise / mxu_area < 12.0
 
@@ -306,7 +313,7 @@ def test_offchip_and_shim_cores_carry_no_die_area():
 def test_authored_energies_are_preserved_and_the_disagreement_is_reported():
     """The authored r_cost values keep driving the engine; the model says where it disagrees."""
     report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
-    vmem = next(m for c in report.cores if c.core_id == 9 for m in c.memories)
+    vmem = _vmem(report)
     assert vmem.authored_read_energy_pj == 200.0  # unchanged, as authored
     assert vmem.read_energy_pj > vmem.authored_read_energy_pj
     assert any("disagree" in w for w in report.warnings)
@@ -316,7 +323,7 @@ def test_access_energy_is_sublinear_in_capacity_and_linear_in_width():
     bundle = HardwareBundle.from_yaml(TPU_V7)
 
     def vmem_read(b):
-        return next(m for c in evaluate_bundle_cost(b).cores if c.core_id == 9 for m in c.memories).read_energy_pj
+        return _vmem(evaluate_bundle_cost(b)).read_energy_pj
 
     base = vmem_read(bundle)
 
@@ -414,9 +421,8 @@ def test_budget_headroom_admits_a_bounded_increase():
 
 
 def test_the_report_quotes_its_own_published_tolerance():
-    """`hardware_cost()` and `_price` returned three scalars and dropped everything else, so a
-    modelled area reached the UI reading as exact. The module publishes a tolerance under a heading
-    called ACCURACY CLAIM; carrying it is quoting the producer, not inventing an error bar."""
+    """The module publishes a tolerance under an ACCURACY CLAIM heading; carrying it on the report is
+    quoting the producer, not inventing an error bar."""
     report = evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7))
     assert report.accuracy_claim == ACCURACY_CLAIM
     assert "2x" in report.accuracy_claim

@@ -1,21 +1,11 @@
 """Per-core hardware bundles.
 
-An accelerator YAML addresses cores by *file*, and several core ids routinely point at the same
-file: ``tpu_v7_ironwood.yaml`` maps its 32 MXU cores at one ``cores/tpu_v7_mxu.yaml``. That is the
-right thing to author — those cores really are identical — and the wrong thing to mutate. Editing
-the file to grow core 0's operand buffer grows all of them, so "give core 0 more memory" is
-inexpressible, and a hardware search cannot express an asymmetric design at all.
-
-A :class:`HardwareBundle` is the de-aliased form: the accelerator description plus one
-*independent* core description per core id. Authoring keeps the shared file; de-aliasing happens
-when the bundle is built. From there a bundle can be
-
-* handed straight to the parser (:meth:`to_accelerator`, no file IO), or
-* written back out as a directory of per-core YAMLs (:meth:`materialize`) for the runners, which
-  stage core files by name and reference them from ``cores:``.
-
-The bundle is also the unit the hardware cost model prices (:mod:`stream.hardware.cost`), so a
-mutation's silicon cost is computed from the same object the mutation edits.
+Several core ids routinely share one file (``tpu_v7_ironwood.yaml`` maps its 32 MXU cores at one
+``cores/tpu_v7_mxu.yaml``), which is right to author but wrong to mutate: editing the file to grow
+core 0 grows all of them. A :class:`HardwareBundle` is the de-aliased form -- the accelerator plus
+one independent core description per core id -- handed straight to the parser
+(:meth:`to_accelerator`) or written out as per-core YAMLs (:meth:`materialize`). It is also the unit
+the cost model prices (:mod:`stream.hardware.cost`), so a mutation's cost comes from the object it edits.
 """
 
 from __future__ import annotations
@@ -53,9 +43,7 @@ class HardwareBundle:
     #: Directory the accelerator was read from; core references resolve against it.
     accelerator_dirname: str = ""
 
-    # ------------------------------------------------------------------ #
-    # Construction                                                        #
-    # ------------------------------------------------------------------ #
+    # Construction
 
     @classmethod
     def from_yaml(cls, accelerator_path: str | Path) -> HardwareBundle:
@@ -99,9 +87,7 @@ class HardwareBundle:
         """A fully independent copy — the starting point for any mutation."""
         return copy.deepcopy(self)
 
-    # ------------------------------------------------------------------ #
-    # Cost-model annotations                                              #
-    # ------------------------------------------------------------------ #
+    # Cost-model annotations
 
     @property
     def technology_node(self) -> str | None:
@@ -114,9 +100,7 @@ class HardwareBundle:
         """Groups of ``<core id>.<memory name>`` refs that are views of one physical memory."""
         return [list(group) for group in self.accelerator.get("memory_aliases", []) or []]
 
-    # ------------------------------------------------------------------ #
-    # Output forms                                                        #
-    # ------------------------------------------------------------------ #
+    # Output forms
 
     def to_data(self) -> dict[str, Any]:
         """The accelerator description with every core inlined — what the validator consumes."""
@@ -143,11 +127,7 @@ class HardwareBundle:
         return AcceleratorFactory(self.validated_data()).create()
 
     def materialize(self, out_dir: str | Path, accelerator_filename: str = DEFAULT_ACCELERATOR_FILENAME) -> Path:
-        """Write the bundle as an accelerator YAML plus one core YAML per core id.
-
-        Every core id gets its own file even when several were authored from one, so the on-disk
-        form is de-aliased too — that is what lets a runner (or an external file store, which keys
-        core files by name) carry a bundle in which core 0 differs from core 2.
+        """Write the bundle as an accelerator YAML plus one (de-aliased) core YAML per core id.
 
         Returns the path of the written accelerator YAML.
         """

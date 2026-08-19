@@ -28,6 +28,36 @@ __all__ = [
 ]
 
 
+def _attention_core(
+    q: Tensor,
+    k: Tensor,
+    v: Tensor,
+    scores: Tensor,
+    context: Tensor,
+    score_maps: tuple[AffineMap, ...],
+    ctx_maps: tuple[AffineMap, ...],
+    reduction_axis: int,
+) -> list[ComputationNode]:
+    """The scores -> Softmax -> context skeleton shared by MHA, GQA and the KV-cache decode step:
+    ``scores = q @ k`` (contract the head dim), ``probs = softmax(scores)`` over ``reduction_axis``
+    (a schedulable NormalizationNode, not a barrier), ``context = probs @ v`` (contract the key
+    position). ``probs`` mirrors ``scores`` and the softmax carries identity maps over its full shape."""
+    identity = AffineMap.identity(len(scores.shape))
+    probs = Tensor.create("probs", scores.operand_type, scores.shape)
+    return [
+        ComputationNode(type="MatMul", name="scores", inputs=(q, k), outputs=(scores,), operand_mapping=score_maps),
+        NormalizationNode(
+            type="Softmax",
+            name="softmax",
+            inputs=(scores,),
+            outputs=(probs,),
+            operand_mapping=(identity, identity),
+            reduction_axes=(reduction_axis,),
+        ),
+        ComputationNode(type="MatMul", name="context", inputs=(probs, v), outputs=(context,), operand_mapping=ctx_maps),
+    ]
+
+
 @dataclass(frozen=True)
 class AttentionConfig:
     batch: int = 1
@@ -76,26 +106,7 @@ def build_attention_block(config: AttentionConfig | None = None) -> Workload:
         AffineMap.from_callable(lambda b_, h_, i, j, e: (b_, h_, j, e)),  # K
         AffineMap.from_callable(lambda b_, h_, i, j, e: (b_, h_, i, j)),  # S
     )
-    nodes.append(
-        ComputationNode(
-            type="MatMul", name="scores", inputs=(heads["q"], heads["k"]), outputs=(scores,), operand_mapping=score_maps
-        )
-    )
-
-    # softmax over the key axis j (position 3): a schedulable NormalizationNode, not a barrier
-    probs = Tensor.create("probs", dt, (b, h, s, s))
-    identity4d = AffineMap.identity(4)
-    nodes.append(
-        NormalizationNode(
-            type="Softmax",
-            name="softmax",
-            inputs=(scores,),
-            outputs=(probs,),
-            operand_mapping=(identity4d, identity4d),
-            reduction_axes=(3,),
-        )
-    )
-
+    # softmax reduces the key axis j (position 3); parallel over batch/head/query
     # context: O[b,h,i,e] = sum_j P[b,h,i,j] V[b,h,j,e]  (contract key position j = REDUCTION)
     ctx = Tensor.create("context", dt, (b, h, s, dh))
     ctx_maps = (
@@ -103,10 +114,8 @@ def build_attention_block(config: AttentionConfig | None = None) -> Workload:
         AffineMap.from_callable(lambda b_, h_, i, e, j: (b_, h_, j, e)),  # V
         AffineMap.from_callable(lambda b_, h_, i, e, j: (b_, h_, i, e)),  # O
     )
-    nodes.append(
-        ComputationNode(
-            type="MatMul", name="context", inputs=(probs, heads["v"]), outputs=(ctx,), operand_mapping=ctx_maps
-        )
+    nodes.extend(
+        _attention_core(heads["q"], heads["k"], heads["v"], scores, ctx, score_maps, ctx_maps, reduction_axis=3)
     )
 
     # output projection, head-merge folded in: Y[b,s,o] = sum_{h,e} O[b,h,s,e] Wo[h,e,o]
@@ -248,7 +257,6 @@ def build_gqa_block(config: GQAConfig | None = None) -> Workload:
     k = Tensor.create("k", dt, (b, g, s, e))  # no rep axis -> shared across reps
     v = Tensor.create("v", dt, (b, g, s, e))
     scores = Tensor.create("scores", dt, (b, g, r, s, s))
-    probs = Tensor.create("probs", dt, (b, g, r, s, s))
     ctx = Tensor.create("context", dt, (b, g, r, s, e))
 
     score_maps = (
@@ -261,21 +269,12 @@ def build_gqa_block(config: GQAConfig | None = None) -> Workload:
         AffineMap.from_callable(lambda b_, g_, r_, i, e_, j: (b_, g_, j, e_)),  # V[b,g,j,e] -- no r
         AffineMap.from_callable(lambda b_, g_, r_, i, e_, j: (b_, g_, r_, i, e_)),  # O[b,g,r,i,e]
     )
-    identity5d = AffineMap.identity(5)
     nodes = [
         InEdge(name="q", outputs=(q,)),
         InEdge(name="k", outputs=(k,)),
         InEdge(name="v", outputs=(v,)),
-        ComputationNode(type="MatMul", name="scores", inputs=(q, k), outputs=(scores,), operand_mapping=score_maps),
-        NormalizationNode(
-            type="Softmax",
-            name="softmax",
-            inputs=(scores,),
-            outputs=(probs,),
-            operand_mapping=(identity5d, identity5d),
-            reduction_axes=(4,),  # the key position j
-        ),
-        ComputationNode(type="MatMul", name="context", inputs=(probs, v), outputs=(ctx,), operand_mapping=ctx_maps),
+        # softmax reduces the key position j (axis 4); parallel over b,g,r,i
+        *_attention_core(q, k, v, scores, ctx, score_maps, ctx_maps, reduction_axis=4),
         OutEdge(name="context_out", inputs=(ctx,)),
     ]
     return Workload(nodes)
@@ -351,7 +350,6 @@ def build_kv_cache_decode_step(config: KVCacheConfig | None = None) -> Workload:
     v_slice, v_valid = slice_node(v_cache, axis=0, start=0, length=t, name="V_valid")
 
     scores = Tensor.create("scores", dt, (1, t))
-    probs = Tensor.create("probs", dt, (1, t))
     ctx = Tensor.create("context", dt, (1, e))
     score_maps = (
         AffineMap.from_callable(lambda i, j, e_: (i, e_)),  # q[1,e]
@@ -369,20 +367,8 @@ def build_kv_cache_decode_step(config: KVCacheConfig | None = None) -> Workload:
         InEdge(name="q_new", outputs=(q,)),
         k_slice,
         v_slice,
-        ComputationNode(
-            type="MatMul", name="scores", inputs=(q, k_valid), outputs=(scores,), operand_mapping=score_maps
-        ),
-        NormalizationNode(
-            type="Softmax",
-            name="softmax",
-            inputs=(scores,),
-            outputs=(probs,),
-            operand_mapping=(AffineMap.identity(2), AffineMap.identity(2)),
-            reduction_axes=(1,),  # over the valid cache positions
-        ),
-        ComputationNode(
-            type="MatMul", name="context", inputs=(probs, v_valid), outputs=(ctx,), operand_mapping=ctx_maps
-        ),
+        # the new query attends over the valid cache prefix; softmax reduces the cache positions (axis 1)
+        *_attention_core(q, k_valid, v_valid, scores, ctx, score_maps, ctx_maps, reduction_axis=1),
         OutEdge(name="context_out", inputs=(ctx,)),
     ]
     return Workload(nodes)

@@ -1,9 +1,6 @@
-"""Conformance kit for the ``stream.core_cost_backends`` seam.
-
-Validates any object claiming the :class:`CoreCostBackend` Protocol: it advertises a ``name`` and
-``priority``, its ``claims`` is a cheap predicate that imports nothing heavy, and a run through the
-registry produces a :class:`CoreCostEntry` carrying ``ideal_cycle`` and a ``backend`` tag equal to the
-selected backend's name. A customer overlay's backend must pass this kit before it is trusted.
+"""Conformance kit for the ``stream.core_cost_backends`` seam: any object claiming the
+:class:`CoreCostBackend` Protocol advertises ``name``/``priority``, has a cheap ``claims``, and produces
+a :class:`CoreCostEntry` with ``ideal_cycle`` and a ``backend`` tag. A customer overlay must pass it.
 
 Run just this kit with ``pytest -k conformance_core_cost_backends``.
 """
@@ -20,7 +17,6 @@ from stream.plugins import LoadedPlugin
 from stream.stages.estimation import core_cost_backends as backends_module
 from stream.stages.estimation.core_cost_backends import (
     AIE_BACKEND,
-    CONTRACT_VERSION,
     ZIGZAG_BACKEND,
     discover_backends,
     select_backend,
@@ -64,10 +60,6 @@ def test_registered_backends_declare_the_contract() -> None:
         assert isinstance(backend.priority, int), f"{backend.name!r} must advertise an int priority"
         assert callable(backend.claims), f"{backend.name!r}.claims must be callable"
         assert callable(backend.make), f"{backend.name!r}.make must be callable"
-
-
-def test_contract_version_is_declared() -> None:
-    assert isinstance(CONTRACT_VERSION, int) and CONTRACT_VERSION >= 1
 
 
 def test_claims_returns_bool_for_every_backend() -> None:

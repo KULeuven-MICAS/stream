@@ -25,15 +25,9 @@ FILENAME_REGEX = (
 def resolve_core_path(core_file_name: str, accelerator_dirname: str) -> str | None:
     """Resolve a ``cores:`` reference to a path on disk, or None when nothing matches.
 
-    Resolution order:
-    1. An explicit relative (``./foo.yaml``) or path-qualified (``a/b/foo.yaml``) reference is
-       taken as given.
-    2. A bare filename (``foo.yaml``) is resolved *relative to this accelerator's own directory* —
-       first ``<accelerator_dir>/cores/foo.yaml``, then ``<accelerator_dir>/foo.yaml``. Core files
-       live next to the accelerator that uses them, so this is unambiguous.
-    3. As a last resort the whole input tree is searched. This is ambiguous when the same filename
-       exists under several ``hardware`` dirs (e.g. examples/ vs testing/) — so it warns. Keeping
-       core files in the accelerator's own ``cores/`` dir avoids silently loading the wrong file.
+    Order: (1) explicit ``./`` or path-qualified refs taken as given; (2) a bare filename relative to
+    the accelerator's own dir (``cores/`` then alongside); (3) a last-resort input-tree search that
+    warns, being ambiguous when the name is reused under several ``hardware`` dirs.
     """
     if "./" in core_file_name:
         return os.path.normpath(os.path.join(accelerator_dirname, core_file_name))
@@ -73,13 +67,9 @@ class AcceleratorValidator:
     COORDINATES_LEN = 2
 
     SCHEMA: dict[str, Any] = {
-        # ------------------------------------------------------------------ #
-        # Basic identification                                               #
-        # ------------------------------------------------------------------ #
+        # Basic identification
         "name": {"type": "string", "required": True},
-        # ------------------------------------------------------------------ #
-        # Core catalogue (file names relative to the inputs folder)          #
-        # ------------------------------------------------------------------ #
+        # Core catalogue (file names relative to the inputs folder)
         # A value is either a file reference (several ids may share one file) or a fully inlined
         # core description. The inline form is what a de-aliased `HardwareBundle` emits, so that a
         # mutation can target a single core id without the shared file dragging its siblings along.
@@ -95,19 +85,14 @@ class AcceleratorValidator:
         },
         # Id of the core that acts as the off-chip memory controller
         "offchip_core_id": {"type": "integer", "min": 0, "required": True},
-        # ------------------------------------------------------------------ #
-        # Optional unit_energy_cost that is used for all connections         #
-        # that don't specify their own unit_energy_cost                      #
-        # ------------------------------------------------------------------ #
+        # Optional unit_energy_cost used for connections that don't specify their own
         "unit_energy_cost": {
             "type": "float",
             "min": 0,
             "required": False,
             "default": 0,
         },
-        # ------------------------------------------------------------------ #
-        # Topology description                                               #
-        # ------------------------------------------------------------------ #
+        # Topology description
         "core_connectivity": {
             "type": "list",
             "required": True,
@@ -133,26 +118,20 @@ class AcceleratorValidator:
                 },
             },
         },
-        # ------------------------------------------------------------------ #
-        # Optional memory-sharing groups                                     #
-        # ------------------------------------------------------------------ #
+        # Optional memory-sharing groups
         "core_memory_sharing": {
             "type": "list",
             "default": [],
             "schema": {"type": "string", "regex": CORE_IDS_REGEX},
         },
-        # ------------------------------------------------------------------ #
-        # Translation from core id to coordinates                            #
-        # ------------------------------------------------------------------ #
+        # Translation from core id to coordinates
         "core_coordinates": {
             "type": "dict",
             "required": False,
             "default": {},
             "valuesrules": {"type": "list", "minlength": 2, "maxlength": 2, "schema": {"type": "integer"}},
         },
-        # ------------------------------------------------------------------ #
-        # Physical-cost annotations (see stream.hardware.cost)                #
-        # ------------------------------------------------------------------ #
+        # Physical-cost annotations (see stream.hardware.cost)
         # Process node the numbers below are meant to describe, e.g. "n3". Only the area/energy
         # model reads it; scheduling is unaffected.
         "technology_node": {"type": "string", "required": False},
@@ -187,9 +166,7 @@ class AcceleratorValidator:
         logger.critical("User-defined accelerator is invalid. %s", extra_msg)
 
     def validate(self) -> bool:
-        """! Validate the user-provided accelerator data. Log a critical warning when invalid data is encountered and
-        return true iff valid.
-        """
+        """Validate the accelerator data; log a critical warning when invalid and return True iff valid."""
         # Validate according to schema
         validate_success = self.validator.validate(self.data)  # type: ignore
         errors = self.validator.errors  # type: ignore
@@ -455,23 +432,9 @@ class AcceleratorValidator:
         return self.data
 
 
-# =============================================================================
-# Namespace-specific accelerator validation
-# -----------------------------------------------------------------------------
-# Every accelerator YAML uses cores that all belong to a single namespace
-# (e.g. "zigzag" or "aie2").  The classes below encode what extra top-level
-# fields and constraints are required for each namespace.
-#
-# HOW TO ADD A NEW NAMESPACE
-# --------------------------
-#   1. Create a subclass of BaseAcceleratorNamespaceValidator below.
-#   2. Set NAMESPACE = "<your-namespace>" (must match the prefix used in
-#      core_type strings, e.g. "aie3" for "aie3.compute").
-#   3. Decorate the class with @AcceleratorNamespaceValidatorRegistry.register.
-#   4. Override validate() and call self._invalidate(msg) for any violation.
-#      The message will be logged and collected in the parent validator's error
-#      list automatically.
-# =============================================================================
+# Namespace-specific accelerator validation: each namespace ("zigzag", "aie2") declares what extra
+# top-level fields it requires. To add one, subclass BaseAcceleratorNamespaceValidator, set NAMESPACE,
+# register it with @AcceleratorNamespaceValidatorRegistry.register, and override validate().
 
 
 class AcceleratorNamespaceValidatorRegistry:
@@ -495,13 +458,7 @@ class AcceleratorNamespaceValidatorRegistry:
 
 
 class BaseAcceleratorNamespaceValidator:
-    """Base class for namespace-specific accelerator validators.
-
-    Subclasses should set :attr:`NAMESPACE` and override :meth:`validate`.
-    Violations are reported via :meth:`_invalidate`, which delegates to the
-    parent :class:`AcceleratorValidator` so all errors are collected in one
-    place.
-    """
+    """Base namespace validator: set :attr:`NAMESPACE`, override :meth:`validate`, report via ``_invalidate``."""
 
     NAMESPACE: str = ""  # must be overridden
 

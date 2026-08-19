@@ -38,8 +38,7 @@ def test_attention_softmax_is_a_fusible_normalization_not_a_barrier():
 
 
 def test_attention_is_one_fusible_region():
-    """Softmax fuses (parallel over b,h,i), so the whole block is a single fusible region containing
-    the projections, scores, softmax and context/output — the flash-attention view."""
+    """Softmax is parallel over b,h,i, so the whole block is one fusible region (flash-attention view)."""
     wl = build_attention_block()
     groups = wl.split_fusion_groups()
     assert len(groups) == 1

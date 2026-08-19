@@ -1,8 +1,5 @@
-"""The plugin registry: what a process is allowed to load, and which registration wins.
-
-These are the guarantees several overlays depend on -- an allowlist that fails closed, precedence
-that is declared rather than incidental, and a broken overlay that cannot take the framework down.
-"""
+"""The plugin registry: the allowlist, declared precedence, and a broken overlay that cannot take the
+framework down -- the guarantees several overlays depend on."""
 
 from __future__ import annotations
 

@@ -1,6 +1,7 @@
 """Tests for the capacity-aware intra-core tiler that streams a resident weight (contraction axis)
 when the whole per-core footprint overflows the operand buffer, and leaves fitting groups untouched."""
 
+import math
 import tempfile
 
 import pytest
@@ -29,8 +30,6 @@ def _parse(hardware: str, workload: str):
 def _worst_core_ratio(gen: GenericMappingGenerator, sub, cns, tiling) -> float:
     """Worst per-core footprint / (capacity * fill) after applying ``tiling`` by global dim, using the
     same arithmetic footprint model the tiler does (full tensor / inter-core split, scaled by tiles)."""
-    import math
-
     tiler = CapacityTiler(sub, gen.accelerator)
     unroll = gen._inter_core_unrolling(sub, cns)
     node_tensors = {cn: tiler._node_tensors(cn) for cn in cns}
@@ -99,13 +98,9 @@ def test_noop_when_group_fits():
 
 
 def test_footprint_is_summed_per_physical_core():
-    """The tiler accounts a fused group PER PHYSICAL CORE: distinct tensors from different fused nodes
-    that land on one core SUM against that core's budget, while a tensor shared by a producer and its
-    consumer is counted ONCE (not once per logical view). This is the per-core bucket `CapacityTiler`
-    builds -- keyed by core.id, deduped by tensor name -- and the invariant the MILP's per-core memory
-    constraint also enforces."""
-    import math
-
+    """The tiler accounts a fused group PER PHYSICAL CORE: distinct tensors from different fused nodes on
+    one core SUM against its budget, while a tensor shared by producer and consumer is counted ONCE --
+    the per-core bucket (keyed by core.id, deduped by name) the MILP's per-core constraint also enforces."""
     acc, w = _parse(_TPU_QUAD, _SWIGLU_FITS)
     gen = GenericMappingGenerator(acc, w, tempfile.mkdtemp())
     sub = next(s for s in w.split_fusion_groups(cut_points=gen._cut_points(None)) if tuple(s.get_computation_nodes()))

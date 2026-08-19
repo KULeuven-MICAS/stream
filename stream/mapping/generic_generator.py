@@ -13,6 +13,7 @@ written to disk.  A ValueError is raised if validation fails.
 import logging
 import math
 import os
+from collections.abc import Callable, Iterable
 from typing import Any
 
 import yaml
@@ -282,43 +283,37 @@ class GenericMappingGenerator:
                 remaining //= factor
         return split_factors
 
-    def _protected_dims(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> set[LayerDim]:
-        """Global dimensions the whole fused group must not inter-core split: a dim that is a SEQUENTIAL
-        recurrence carry or a nonlinear (softmax/layernorm) reduction for ANY node. The group shares one
-        spatial unrolling, so a dim illegal for one fused node is illegal for all -- e.g. the attention
-        key axis is a parallel output of the scores matmul but the softmax's nonlinear reduction, so it
-        stays resident, never split across cores (that would need the online-softmax rewrite)."""
-        protected: set[LayerDim] = set()
+    def _global_dims_at(
+        self,
+        sub_workload: Workload,
+        cns: tuple[ComputationNode, ...],
+        positions: Callable[[ComputationNode], Iterable[int]],
+    ) -> set[LayerDim]:
+        """Global dims at the node-relative positions ``positions(cn)`` yields, unioned over every node."""
+        out: set[LayerDim] = set()
         for cn in cns:
             node_dims = sub_workload.get_dims(cn)
-            for pos in sequential_dims(cn) | nonlinear_reduction_dims(cn):
-                if pos < len(node_dims):
-                    protected.add(node_dims[pos])
-        return protected
+            out |= {node_dims[pos] for pos in positions(cn) if pos < len(node_dims)}
+        return out
+
+    def _protected_dims(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> set[LayerDim]:
+        """Global dims the fused group must never inter-core split: a SEQUENTIAL recurrence carry or a
+        nonlinear (softmax/layernorm) reduction for ANY node. The group shares one spatial unrolling, so
+        a dim illegal for one fused node is illegal for all (e.g. the attention key axis)."""
+        return self._global_dims_at(sub_workload, cns, lambda cn: sequential_dims(cn) | nonlinear_reduction_dims(cn))
 
     def _recurrence_dims(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> set[LayerDim]:
-        """Global dimensions that carry a recurrent state (SEQUENTIAL) for any node in the fused group --
-        the SSM/linear-attention token axis. This is the axis a recurrence must stream *temporally* (one
-        chunk of timesteps at a time, state resident); it is never split across cores (``_protected_dims``)."""
-        dims: set[LayerDim] = set()
-        for cn in cns:
-            node_dims = sub_workload.get_dims(cn)
-            for pos in sequential_dims(cn):
-                if pos < len(node_dims):
-                    dims.add(node_dims[pos])
-        return dims
+        """Global dims carrying a recurrent state (SEQUENTIAL) for any node -- the SSM/linear-attention
+        token axis a recurrence streams temporally, never split across cores (``_protected_dims``)."""
+        return self._global_dims_at(sub_workload, cns, sequential_dims)
 
     def _streaming_axis(
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...], indexed: set[LayerDim]
     ) -> LayerDim | None:
-        """The single axis a fused group streams, restricted to dims that index a fused intermediate and
-        have size > 1.
-
-        A recurrence streams its **SEQUENTIAL** token axis: the carried state is then the only cross-tile
-        residency (O(1) in the sequence length), whereas tiling a parallel channel axis instead would leave
-        every intermediate O(L) -- the paper's reason to tile along L, not D or N. A feed-forward group has
-        no sequential axis, so it streams its largest fusible **PARALLEL** axis (e.g. attention's query),
-        keeping the reductions resident. Returns None when nothing is streamable."""
+        """The single axis a fused group streams: dims indexing a fused intermediate with size > 1. A
+        recurrence streams its SEQUENTIAL token axis (state is the only cross-tile residency); a
+        feed-forward group streams its largest fusible PARALLEL axis (attention's query), keeping the
+        reductions resident. None when nothing is streamable."""
 
         def largest(dims: set[LayerDim]) -> LayerDim | None:
             # Tie-break by name: `dims` is a set, so equal-sized axes would otherwise be ordered by
@@ -394,15 +389,8 @@ class GenericMappingGenerator:
             return seed_tiling
         unroll = self._inter_core_unrolling(sub_workload, cns)
         # Only nonlinear (softmax/layernorm) reductions are off-limits temporally; a linear matmul
-        # contraction is exactly the axis we want to stream, and a recurrence's streamed token axis is
-        # already in the seed. determine_fusion_splits still guards the nonlinear case.
-        protected = {
-            dim
-            for cn in cns
-            for pos in nonlinear_reduction_dims(cn)
-            if pos < len(sub_workload.get_dims(cn))
-            for dim in (sub_workload.get_dims(cn)[pos],)
-        }
+        # contraction is the axis we stream, and a recurrence's token axis is already in the seed.
+        protected = self._global_dims_at(sub_workload, cns, nonlinear_reduction_dims)
         refined = CapacityTiler(sub_workload, self.accelerator).plan(
             cns, cores_per_node, unroll, protected, seed_tiling
         )
@@ -423,16 +411,10 @@ class GenericMappingGenerator:
         return []
 
     def fusion_tiling_plan(self, cut_points: list[str] | None = None) -> list[dict[str, Any]]:
-        """A serialisable description of what fuses and how it is tiled, per fused group.
-
-        For each group: its member nodes (with the fused-kernel tag so a softmax's sub-ops can be
-        collapsed for display); the STREAMED axis the fusion tiles and its tile size -- a recurrence's
-        SEQUENTIAL token axis (``recurrence: true``) or a feed-forward group's parallel axis; the RESIDENT
-        axes kept on-chip while it streams (the softmax key axis, a matmul contraction, or the recurrence
-        state's channel/state axes); a per-tensor breakdown of each tensor's full vs on-chip-tile shape
-        (the tile sizes exposed on the tensors); and the on-chip buffer (elements) of the largest streamed
-        intermediate. Goes through the same cut points and the same ``_build_intra_core_tiling`` a run
-        does, so what is shown is what the pipeline would map."""
+        """A serialisable per-group description of what fuses and how it is tiled: the member nodes, the
+        STREAMED axis and its tile size, the RESIDENT axes kept on-chip, a per-tensor full-vs-tile shape
+        breakdown, and the on-chip buffer (elements) of the largest streamed intermediate. Uses the same
+        cut points and ``_build_intra_core_tiling`` a run does, so it shows what the pipeline would map."""
         groups: list[dict[str, Any]] = []
         for sub in self.workload.split_fusion_groups(cut_points=self._cut_points(cut_points)):
             cns = sub.get_computation_nodes()
@@ -481,10 +463,8 @@ class GenericMappingGenerator:
         fusion_dim: LayerDim | None,
         factor: int,
     ) -> list[dict[str, Any]]:
-        """Per distinct tensor touched by the group's compute nodes: its full shape and its on-chip tile
-        shape when the streamed axis is tiled by ``factor``. ``streamed`` marks a tensor the fusion tiles
-        (its shape shrinks); ``state`` marks the recurrence carry (read at t-1). This is the tile-size view
-        rendered on the tensors."""
+        """Per distinct tensor of the group: its full shape and on-chip tile shape when the streamed axis
+        is tiled by ``factor``. ``streamed`` marks a tensor the fusion shrinks; ``state`` the recurrence carry."""
         seen: set[str] = set()
         out: list[dict[str, Any]] = []
         for cn in cns:
@@ -531,11 +511,9 @@ class GenericMappingGenerator:
     def _resident_axes(
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...], fusion_dim: LayerDim | None
     ) -> list[dict[str, Any]]:
-        """Axes kept resident while the streamed axis flows, largest first. ``softmax`` marks the axis a
-        softmax reduces (monolithic NormalizationNode nonlinear axis or a decomposed ReduceMax/ReduceSum
-        sub-op); other reductions are linear matmul contractions. ``state`` marks an axis of a recurrence's
-        carried state (the ``[D,N]`` the scan keeps on-chip across timesteps) -- every axis of the state
-        tensor other than the streamed token axis."""
+        """Axes kept resident while the streamed axis flows, largest first. ``softmax`` marks a softmax
+        reduction axis (nonlinear NormalizationNode or decomposed ReduceMax/ReduceSum); ``state`` an axis
+        of a recurrence's carried state (every state-tensor axis other than the streamed token axis)."""
         softmax_axes: dict[LayerDim, bool] = {}
         state_axes: set[LayerDim] = set()
         for cn in cns:
@@ -565,11 +543,9 @@ class GenericMappingGenerator:
         ]
 
     def _fusible_parallel_dims(self, sub_workload: Workload, cns: tuple[ComputationNode, ...]) -> set[LayerDim]:
-        """Global dims that are a PARALLEL output axis for *every* node that indexes them.
-
-        These are the only axes a fused group can tile so each tile produces complete outputs and every
-        reduction (linear contraction or nonlinear softmax) stays resident -- e.g. attention's query
-        axis, not the key axis (softmax reduction) nor the head axis (the output projection reduces it)."""
+        """Global dims that are a PARALLEL output axis for every node indexing them -- the only axes a
+        fused group can tile so each tile produces complete outputs and every reduction stays resident
+        (e.g. attention's query axis, not the key axis nor the head axis)."""
         non_parallel: set[LayerDim] = set()
         all_dims: set[LayerDim] = set()
         for cn in cns:
@@ -585,14 +561,9 @@ class GenericMappingGenerator:
     def _auto_fusion_tiling(  # noqa: PLR0911 -- a sequence of early-out guards, each a distinct "no tiling" case
         self, sub_workload: Workload, cns: tuple[ComputationNode, ...]
     ) -> list[dict[str, Any]]:
-        """Automatically fuse a multi-node group along its streaming axis, tiled so the largest resident
-        intermediate fits on-chip.
-
-        The streaming axis (:meth:`_streaming_axis`) is a recurrence's SEQUENTIAL token axis when the group
-        has one (stream timesteps, keep the state resident -- the paper's Fuse-All), else the largest axis
-        PARALLEL for every node (stream attention's query, keep the keys resident). Tiles it to the largest
-        block (per core) whose resident intermediate fits a fraction of the core's memory; the reductions
-        and the recurrence state are never tiled. Returns [] to fall back to the trivial whole-layer tiling."""
+        """Fuse a multi-node group along its streaming axis (:meth:`_streaming_axis`), tiled to the largest
+        per-core block whose resident intermediate fits a fraction of the core's memory; reductions and the
+        recurrence state are never tiled. Returns [] to fall back to the whole-layer tiling."""
         if len(cns) <= 1:
             return []
         intermediates, indexed = self._indexed_by_intermediates(sub_workload, cns)
