@@ -114,7 +114,7 @@ zigzag = "stream.stages.estimation.core_cost_backends:ZIGZAG_BACKEND"
 Homepage = "https://github.com/KULeuven-MICAS/stream"
 
 [tool.bumpver]
-current_version = "1.13.12"
+current_version = "1.13.13"
 version_pattern = "MAJOR.MINOR.PATCH"
 commit_message = "bump version {old_version} -> {new_version}"
 commit = true
