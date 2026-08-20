@@ -84,18 +84,16 @@ class StrideSet:
     def total_size(self) -> int:
         return self.repeats() * self.size()
 
-    def split(self) -> dict[int, Self]:
+    def split(self, into: int = 1) -> list[tuple[int, Self]]:
+        """One (offset, strides) pair per destination fifo, replicas included."""
         spatial_strides = [s for s in self.strides if s.spatial]
         if len(spatial_strides) == 0:
-            return {0: self}
+            return [(0, self)] * into
         assert len(spatial_strides) == 1
         spatial_stride = spatial_strides[0]
         idx = self.strides.index(spatial_stride)
         new_strides = self.strides[:idx] + self.strides[idx + 1 :]
-        result = {}
-        for i in range(spatial_stride.size):
-            result[i * spatial_stride.stride] = type(self)(new_strides)
-        return result
+        return [(i * spatial_stride.stride, type(self)(new_strides)) for i in range(spatial_stride.size)]
 
     def canonicalize(self) -> Self:
         if any(s.spatial for s in self.strides):
@@ -938,15 +936,12 @@ class TransferToRuntimeSequence(RewritePattern):
                 if cvar.dim in dim_strides:
                     dim_strides[cvar.dim] *= cvar.size
 
-        stride_dict = {x: y.canonicalize().legalize() for x, y in StrideSet(tuple(strides)).split().items()}
+        ofs = op.attributes.get("of")
+        assert isa(ofs, StringAttr) or isa(ofs, ArrayAttr[StringAttr])
+        names = [ofs] if isinstance(ofs, StringAttr) else list(ofs.data)
+        groups = [(x, y.canonicalize().legalize()) for x, y in StrideSet(tuple(strides)).split(len(names))]
 
-        for i, (spatial_offset, stride_set) in enumerate(stride_dict.items()):
-            ofs = op.attributes.get("of")
-            assert isa(ofs, StringAttr) or isa(ofs, ArrayAttr[StringAttr])
-            if isinstance(ofs, StringAttr):
-                of = ofs
-            else:
-                of = ofs.data[i]
+        for of, (spatial_offset, stride_set) in zip(names, groups, strict=True):
             hardware_strides = stride_set.strides[:4]
             # Perform software for loop unrolling:
             software_strides = stride_set.strides[4:]
@@ -1343,3 +1338,19 @@ class AIEConvertOfs(ModulePass):
         PatternRewriteWalker(TransferToObjectFIFOPattern()).rewrite_module(op)
         PatternRewriteWalker(RemoveChannels()).rewrite_module(op)
         PatternRewriteWalker(RemoveEmptyCores()).rewrite_module(op)
+        _verify_shim_fifos_are_fed(op)
+
+
+def _verify_shim_fifos_are_fed(module: ModuleOp) -> None:
+    """Fail the build on a shim fifo nothing fills, which would hang on hardware."""
+    shim_rows = {tile.result: tile.row.value.data for tile in module.walk() if isinstance(tile, TileOp)}
+    fed = {task.alloc.string_value() for task in module.walk() if isinstance(task, DmaConfigureTaskForOp)}
+    starved = [
+        fifo.sym_name.data
+        for fifo in module.walk()
+        if isinstance(fifo, ObjectFifoOp) and shim_rows.get(fifo.producerTile) == 0 and fifo.sym_name.data not in fed
+    ]
+    if starved:
+        raise RuntimeError(
+            f"objectfifo(s) produced by a shim tile with no runtime transfer to fill them: {', '.join(sorted(starved))}"
+        )
