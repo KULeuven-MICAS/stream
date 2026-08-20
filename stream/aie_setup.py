@@ -27,7 +27,8 @@ from pathlib import Path
 
 # Installed --no-deps: they pin xdsl to a git commit that would otherwise clobber the released
 # xdsl that stream-dse depends on.
-_XDSL_AIE = "git+https://github.com/xdslproject/xdsl-aie.git@bcc307f47e63e8566db19e19950cdee5368ead6a"
+# TODO: repoint at xdslproject/xdsl-aie once PR 28 merges; this fork commit is a stand-in.
+_XDSL_AIE = "git+https://github.com/KULeuven-MICAS/xdsl-aie.git@2674ab272ce4f9597ff8afd77772527f2d887ab4"
 _SNAX_MLIR = "git+https://github.com/kuleuven-micas/snax-mlir.git@1c01c5d100df128c9fa01d3336ebea98e19b20cf"
 
 # Opt-in only (--with-mlir-aie). Codegen emits the v1.4.0 buffer descriptor form, which

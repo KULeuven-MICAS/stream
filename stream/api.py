@@ -70,7 +70,8 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
     skip_if_exists: bool = False,
     temporal_mapping_type: str = "uneven",
     enable_codegen: bool = False,
-    trace_size: int = 1048576,
+    trace_size: int = 0,
+    trace_max_tiles: int = 31,
     nb_cols_to_use: int = 4,
     npu: str = "npu2",
     backend: str = "ortools_gscip",
@@ -125,6 +126,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
             output_path=output_path,
             temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
             trace_size=trace_size,
+            trace_max_tiles=trace_max_tiles,
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
             backend=_backend_enum.value,
             constraint_selection=constraint_selection,
@@ -391,7 +393,8 @@ def optimize_mapping(  # noqa: PLR0913
     skip_if_exists: bool = False,
     temporal_mapping_type: str = "uneven",
     enable_codegen: bool = False,
-    trace_size: int = 1048576,
+    trace_size: int = 0,
+    trace_max_tiles: int = 31,
     nb_cols_to_use: int = 8,
     nb_rows_to_use: int = 4,
     seq_len_tile_size: int = 32,
@@ -457,6 +460,7 @@ def optimize_mapping(  # noqa: PLR0913
             output_path=output_path,
             temporal_mapping_type=temporal_mapping_type,  # required by CoreCostEstimationStage
             trace_size=trace_size,
+            trace_max_tiles=trace_max_tiles,
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
             nb_rows_to_use=nb_rows_to_use,  # used by MappingGenerator for shape-aware tiling
             seq_len_tile_size=seq_len_tile_size,
