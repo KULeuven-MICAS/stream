@@ -1042,7 +1042,8 @@ class SteadyStateScheduler:
         # Snap the count down to a divisor of the compute split so the transfer is one even inter-core tiling.
         if total_relevant_unrolling > 1:
             required_nb_memory_cores = largest_divisor_leq(total_relevant_unrolling, required_nb_memory_cores)
-        all_mem_cores = self._get_accelerator_memory_cores()
+        # Unrolling binds allocation position to spatial index, so column order keeps a tile with its own cores.
+        all_mem_cores = sorted(self._get_accelerator_memory_cores(), key=lambda core: (core.col_id, core.id))
         candidates = [tuple(combo) for combo in combinations(all_mem_cores, required_nb_memory_cores)]
         return tuple(candidates)
 
