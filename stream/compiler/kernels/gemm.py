@@ -1,10 +1,12 @@
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import cast
 
 from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.dialects.builtin import (
     AnyDenseElement,
     FunctionType,
+    MemRefType,
 )
 from xdsl.dialects.func import CallOp
 from xdsl.irdl import Operation
@@ -83,6 +85,15 @@ class GemmKernel(AIEKernelWithZeroing):
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         assert op.output is not None
+        # The object file is compiled for one tile, so a mapping that tiles the loop
+        # differently would read past its operands.
+        for operand, expected in zip(op.inputs, ((self.m, self.k), (self.k, self.n), (self.m, self.n)), strict=True):
+            shape = tuple(cast(MemRefType[AnyDenseElement], operand.type).get_shape())
+            if shape != expected:
+                raise ValueError(
+                    f"kernel {self.function_name} takes a {expected[0]}x{expected[1]} operand "
+                    f"but the tiling gives it {shape}"
+                )
         return [
             CallOp(self.function_name, [op.inputs[0], op.inputs[1], op.inputs[2]], []),
         ]
