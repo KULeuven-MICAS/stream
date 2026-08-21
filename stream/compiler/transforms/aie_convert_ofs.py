@@ -491,7 +491,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 # number of elements is the kernel shape
                 local_shape = target_type.get_local_shape()
                 assert len(local_shape) <= 1
-                num_elements = max((2, prod(local_shape)))
+                num_elements = max((self.held_count(target_type), prod(local_shape)))
 
                 object_fifo = ObjectFifoOp.from_referenced_type(
                     producer_tile,
@@ -660,6 +660,18 @@ class ChannelToObjectFifoPass(RewritePattern):
             ofs.append(object_fifo)
 
         return ofs
+
+    @staticmethod
+    def held_count(strensor: StrensorType) -> int:
+        """How many buffers of one fifo element a tile needs to keep its consumer fed.
+
+        Two overlaps the next transfer with the current compute. One is enough when nothing
+        varies outside the tensor's reuse window: the fifo then hands over the same data
+        every iteration, which is also the single copy the allocator costed it at.
+        """
+        variables = strensor.ssis.data.vars
+        outer = variables[: len(variables) - strensor.reuse_index.data]
+        return 2 if any(var.type == StrensorVarType.TEMPORAL for var in outer) else 1
 
     @classmethod
     def held_shape(cls, strensor: StrensorType) -> tuple[int, ...]:
