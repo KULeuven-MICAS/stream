@@ -1100,7 +1100,6 @@ class TransferToObjectFIFOPattern(RewritePattern):
             index_ops.extend([i_arg, add_val, mult_val])
         if relevant_reuse_vars:
             for_op = for_op.parent_op()
-            assert isinstance(for_op, ForOp)
 
         index_switch = IndexSwitchOp(
             arg=add_val,
