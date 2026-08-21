@@ -37,7 +37,7 @@ class MappingValidator:
         "kernel": {
             "type": "dict",
             "schema": {
-                "name": {"type": "string", "required": True},
+                "name": {"type": "string", "required": False},
                 "kwargs": {"type": "dict", "required": True},
             },
             "required": False,
@@ -172,8 +172,8 @@ class MappingValidator:
         layer_data["inter_core_tiling"] = normalized_entries
 
     def add_defaults(self, layer_data: dict[str, Any]) -> None:
+        # No name means no kernel: only an AIE-code-generated layer names one.
         kernel = layer_data.setdefault("kernel", {})
-        kernel.setdefault("name", layer_data.get("name", ""))
         kernel.setdefault("kwargs", {"utilization": 100.0})
         layer_data.setdefault("inter_core_tiling", [])
 

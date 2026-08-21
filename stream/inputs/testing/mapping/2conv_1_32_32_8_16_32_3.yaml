@@ -8,9 +8,6 @@ layers:
   inter_core_tiling:
   - - dim: D6
       split: 4
-  kernel:
-    name: conv
-    kwargs: {}
 - name: Conv2
   core_allocation:
   - - 0
@@ -20,9 +17,6 @@ layers:
   inter_core_tiling:
   - - dim: D6
       split: 4
-  kernel:
-    name: conv
-    kwargs: {}
 fused_groups:
 - name: Fused_Group_1
   layers:
