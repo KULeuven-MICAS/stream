@@ -101,6 +101,12 @@ class SetKernelLayouts(RewritePattern):
         shaped_operands = [operand for operand in op.operands if isinstance(operand.type, ShapedType)]
         for layout, operand in zip(layouts, shaped_operands, strict=True):
             assert isa(old_type := operand.type, MemRefType[FixedBitwidthType])
+            if layout.dimension() != old_type.get_num_dims():
+                raise ValueError(
+                    f"Kernel {op.kernel.data} declares a {layout.dimension()}-D operand layout for a "
+                    f"{old_type.get_num_dims()}-D operand {old_type}; the missing dimensions would be "
+                    f"dropped from its buffer descriptor."
+                )
             layout_attr = TiledStridedLayoutAttr(layout)
             if old_type.layout == layout_attr:
                 continue
@@ -156,6 +162,11 @@ def get_transform(source: TiledStridedLayout, dest: TiledStridedLayout) -> tuple
     """
     Returns sizes, strides
     """
+
+    if source.dimension() != dest.dimension():
+        raise ValueError(
+            f"Cannot transform a {source.dimension()}-D layout {source} into a {dest.dimension()}-D layout {dest}"
+        )
 
     # list of dim, depth
     keys: list[tuple[int, int]] = []
