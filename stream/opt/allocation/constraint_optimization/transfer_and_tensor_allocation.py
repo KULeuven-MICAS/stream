@@ -417,6 +417,34 @@ class TransferAndTensorAllocator:
         """
         return self._unique_tensor_list(tr.inputs)
 
+    def _placement_width(self, tensors: list[Tensor]) -> int:
+        """How many cores one side of a transfer occupies."""
+        return max((len(choice) for t in tensors for choice in self._tensor_choices(t)), default=1)
+
+    def _is_broadcast(self, tr: TransferNode) -> bool:
+        """Whether every destination core reads the same data, so one DMA channel serves them all."""
+        spatial = [
+            v
+            for t in self._transfer_incoming_tensors(tr)
+            for v in (self.ssis[t].variables if t in self.ssis else ())
+            if v.type is IterationVariableType.SPATIAL
+        ]
+        return bool(spatial) and not any(v.relevant for v in spatial)
+
+    def _transfer_fan_out(self, tr: TransferNode) -> int:
+        """DMA channels one source core drives: a fifo per destination it feeds a distinct slice to."""
+        if self._is_broadcast(tr):
+            return 1
+        n_src = self._placement_width(self._transfer_outgoing_tensors(tr))
+        n_dst = self._placement_width(self._transfer_incoming_tensors(tr))
+        return max(1, n_dst // n_src)
+
+    def _transfer_fan_in(self, tr: TransferNode) -> int:
+        """DMA channels one destination core is fed by: a fifo per source that gathers into it."""
+        n_src = self._placement_width(self._transfer_outgoing_tensors(tr))
+        n_dst = self._placement_width(self._transfer_incoming_tensors(tr))
+        return max(1, n_src // n_dst)
+
     def _transfer_incoming_dma_expr(self, tr: TransferNode, core: Core):
         """
         DMA contribution of one transfer to the incoming DMA load of one core.
@@ -429,14 +457,16 @@ class TransferAndTensorAllocator:
             so this helper is only used in the per-transfer mode.
         """
         tensors = self._transfer_incoming_tensors(tr)
-        return self.model.quicksum(self._tensor_on_core_expr(t, core) for t in tensors)
+        fan = self._transfer_fan_in(tr)
+        return self.model.quicksum(fan * self._tensor_on_core_expr(t, core) for t in tensors)
 
     def _transfer_outgoing_dma_expr(self, tr: TransferNode, core: Core):
         """
         DMA contribution of one transfer to the outgoing DMA load of one core.
         """
         tensors = self._transfer_outgoing_tensors(tr)
-        return self.model.quicksum(self._tensor_on_core_expr(t, core) for t in tensors)
+        fan = self._transfer_fan_out(tr)
+        return self.model.quicksum(fan * self._tensor_on_core_expr(t, core) for t in tensors)
 
     def _global_incoming_dma_expr(self, core: Core):
         """
