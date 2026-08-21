@@ -421,22 +421,25 @@ class TransferAndTensorAllocator:
         """How many cores one side of a transfer occupies."""
         return max((len(choice) for t in tensors for choice in self._tensor_choices(t)), default=1)
 
-    def _is_broadcast(self, tr: TransferNode) -> bool:
-        """Whether every destination core reads the same data, so one DMA channel serves them all."""
-        spatial = [
-            v
-            for t in self._transfer_incoming_tensors(tr)
-            for v in (self.ssis[t].variables if t in self.ssis else ())
-            if v.type is IterationVariableType.SPATIAL
-        ]
-        return bool(spatial) and not any(v.relevant for v in spatial)
+    def _distinct_slice_width(self, tensors: list[Tensor]) -> int:
+        """How many distinct slices one side of a transfer holds.
+
+        Cores that a spatial loop does not address separately read the same slice, and the
+        object-fifo lowering serves them from one channel, so they do not widen the fan-out.
+        """
+        return max(
+            (
+                prod(v.size for v in self.ssis[t].variables if v.type is IterationVariableType.SPATIAL and v.relevant)
+                for t in tensors
+                if t in self.ssis
+            ),
+            default=1,
+        )
 
     def _transfer_fan_out(self, tr: TransferNode) -> int:
         """DMA channels one source core drives: a fifo per destination it feeds a distinct slice to."""
-        if self._is_broadcast(tr):
-            return 1
-        n_src = self._placement_width(self._transfer_outgoing_tensors(tr))
-        n_dst = self._placement_width(self._transfer_incoming_tensors(tr))
+        n_src = self._distinct_slice_width(self._transfer_outgoing_tensors(tr))
+        n_dst = self._distinct_slice_width(self._transfer_incoming_tensors(tr))
         return max(1, n_dst // n_src)
 
     def _transfer_fan_in(self, tr: TransferNode) -> int:
