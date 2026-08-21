@@ -8,6 +8,7 @@ from xdsl.ir.affine import AffineConstantExpr, AffineDimExpr, AffineExpr
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.workload.iterator_type import (
     NonlinearReductionUnrollError,
+    check_spatial_unroll_accumulation_free,
     check_spatial_unroll_legal,
     nonlinear_reduction_dims,
     sequential_dims,
@@ -237,14 +238,17 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
 
 
 def _reject_illegal_spatial_unroll(
-    workload: "Workload", node: "HasIterationSpace", unrollings: InterCoreTiling
+    workload: "Workload", node: "HasIterationSpace", unrollings: InterCoreTiling, code_generated: bool
 ) -> None:
-    """Raise if a mapping spatially unrolls a SEQUENTIAL dimension or a nonlinear reduction of ``node``."""
-    if not (sequential_dims(node) or nonlinear_reduction_dims(node)):
+    """Raise if a mapping spatially unrolls a SEQUENTIAL dimension or a nonlinear reduction of ``node``,
+    or, when ``node`` is code-generated, any reduction at all."""
+    if not (code_generated or sequential_dims(node) or nonlinear_reduction_dims(node)):
         return
     node_dims = workload.get_dims(node)
     spatial_positions = [node_dims.index(dim) for dim, factor in unrollings if factor > 1 and dim in node_dims]
     check_spatial_unroll_legal(node, spatial_positions)
+    if code_generated:
+        check_spatial_unroll_accumulation_free(node, spatial_positions)
 
 
 def collect_spatial_unrollings(workload: "Workload", mapping: "Mapping"):
@@ -253,7 +257,7 @@ def collect_spatial_unrollings(workload: "Workload", mapping: "Mapping"):
         node_mapping = mapping.get(node)
         assert node_mapping is not None, f"No mapping found for node {node.name}"
         unrollings = workload.get_unique_dims_inter_core_tiling(node, mapping)
-        _reject_illegal_spatial_unroll(workload, node, unrollings)
+        _reject_illegal_spatial_unroll(workload, node, unrollings, node_mapping.kernel is not None)
         spatial_unrollings[node] = unrollings
 
     unique_spatial_unrollings: list[tuple[LayerDim, int]] = []

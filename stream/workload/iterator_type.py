@@ -27,11 +27,13 @@ __all__ = [
     "IteratorType",
     "SequentialUnrollError",
     "NonlinearReductionUnrollError",
+    "ReductionUnrollError",
     "derive_iterator_types",
     "sequential_dims",
     "nonlinear_reduction_dims",
     "is_state_operand",
     "check_spatial_unroll_legal",
+    "check_spatial_unroll_accumulation_free",
 ]
 
 
@@ -47,6 +49,10 @@ class SequentialUnrollError(ValueError):
 
 class NonlinearReductionUnrollError(ValueError):
     """Raised when a nonlinear-reduction (softmax/layernorm) axis is assigned to spatial unrolling."""
+
+
+class ReductionUnrollError(ValueError):
+    """Raised when a reduction axis is spatially unrolled onto cores that cannot accumulate partial sums."""
 
 
 def _as_dim_plus_const(expr: AffineExpr) -> tuple[int, int] | None:
@@ -137,4 +143,20 @@ def check_spatial_unroll_legal(node: HasIterationSpace, spatial_positions: Itera
             f"Node {node.name!r} dimension(s) {sorted(illegal_nonlinear)} are a nonlinear reduction "
             f"(softmax/layernorm) and cannot be spatially unrolled; fuse via the online-softmax rewrite "
             f"or keep the reduced axis resident."
+        )
+
+
+def check_spatial_unroll_accumulation_free(node: HasIterationSpace, spatial_positions: Iterable[int]) -> None:
+    """Raise if a spatially-unrolled dimension is a REDUCTION.
+
+    Only for backends without cross-core accumulation: they join cores by selecting one
+    contribution, so the other cores' partial sums are silently dropped.
+    """
+    types = derive_iterator_types(node)
+    illegal = sorted(p for p in set(spatial_positions) if types.get(p) is IteratorType.REDUCTION)
+    if illegal:
+        raise ReductionUnrollError(
+            f"Node {node.name!r} dimension(s) {illegal} are a reduction and cannot be spatially unrolled "
+            f"for a code-generated node: the backend has no cross-core accumulation, so the partial sums "
+            f"would be dropped; unroll a parallel dimension or tile the reduction temporally instead."
         )
