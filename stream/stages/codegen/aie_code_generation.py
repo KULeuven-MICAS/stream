@@ -40,6 +40,7 @@ from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping, NodeMapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
+from stream.workload.normalization import reduction_axes
 from stream.workload.steady_state.iteration_space import (
     IterationVariableType,
     LoopEffect,
@@ -262,6 +263,21 @@ class AIECodeGenerationStage(Stage):
                 shape.append(kernel_vars[dim].size)
             return shape
 
+        def check_reduction_axes_resident(node: ComputationNode) -> None:
+            """A normalization is only correct over its whole reduction axis, and a kernel sees one kernel tile."""
+            if mapping.get(node).kernel is None:
+                return
+            dims = workload.get_dims(node)
+            kernel_sizes = {var.dimension: var.size for var in ssis_dict[node].get_kernel_variables()}
+            for position in reduction_axes(node):
+                dim = dims[position]
+                extent = workload.get_dimension_size(dim)
+                if kernel_sizes.get(dim, extent) != extent:
+                    raise ValueError(
+                        f"Node {node.name!r} reduces over {dim}, but its kernel tile covers "
+                        f"{kernel_sizes[dim]} of {extent}; keep the reduced axis resident in the kernel."
+                    )
+
         def ssis_to_strensorspace(tensor: Tensor) -> tuple[int, StrensorSpace]:
             # kernel vars:
             vars: list[StrensorVar] = []
@@ -322,6 +338,7 @@ class AIECodeGenerationStage(Stage):
                     reuse_index,
                 )
             if isinstance(node, ComputationNode):
+                check_reduction_axes_resident(node)
                 reuse_index, ss = ssis_to_strensorspace(node.outputs[0])
                 ops[node] = self.create_computation_node_op(
                     node,
