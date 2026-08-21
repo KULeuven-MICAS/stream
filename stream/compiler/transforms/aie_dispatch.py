@@ -1,4 +1,5 @@
 from collections import defaultdict
+from dataclasses import dataclass
 
 from xdsl.context import Context
 from xdsl.dialects.builtin import IntegerAttr, ModuleOp
@@ -31,7 +32,10 @@ from stream.compiler.dialects.stream import (
 )
 
 
+@dataclass
 class FusionGroupDispatcher(RewritePattern):
+    device: AIEDeviceEnum
+
     @op_type_rewrite_pattern
     def match_and_rewrite(self, fusion_op: FusionGroupOp, rewriter: PatternRewriter):
         locs: dict[str, list[Operation]] = defaultdict(list)
@@ -84,15 +88,15 @@ class FusionGroupDispatcher(RewritePattern):
             core_ops.extend((tile_op, core_op))
 
         # All of this gets put in a device op:
-        device = AIEDeviceEnum.npu2
         device_op = DeviceOp(
-            IntegerAttr.from_int_and_width(device.get_int(), 32),
+            IntegerAttr.from_int_and_width(self.device.get_int(), 32),
             Region(Block((*root_ops, runtime, *core_ops, EndOp()))),
         )
 
         rewriter.replace_matched_op(device_op)
 
 
+@dataclass(frozen=True)
 class AIEDispatchPass(ModulePass):
     """
     Performs all dispatches for an aie design.
@@ -100,5 +104,7 @@ class AIEDispatchPass(ModulePass):
 
     name = "aie-dispatch"
 
+    device: str = AIEDeviceEnum.npu2.value
+
     def apply(self, ctx: Context, op: ModuleOp) -> None:
-        PatternRewriteWalker(FusionGroupDispatcher()).rewrite_module(op)
+        PatternRewriteWalker(FusionGroupDispatcher(AIEDeviceEnum(self.device))).rewrite_module(op)

@@ -388,7 +388,7 @@ class AIECodeGenerationStage(Stage):
         SpatialUnrollPass().apply(self.context, module)
         with open(output_path + "/unrolled.mlir", "w") as f:
             f.write(str(module))
-        AIEDispatchPass().apply(self.context, module)
+        AIEDispatchPass(self.npu).apply(self.context, module)
         with open(output_path + "/dispatched.mlir", "w") as f:
             f.write(str(module))
         IterationSpaceToFor().apply(self.context, module)
