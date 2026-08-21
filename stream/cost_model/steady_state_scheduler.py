@@ -487,9 +487,7 @@ class SteadyStateScheduler:
         new_workload = Workload(new_nodes.values())
         return new_workload
 
-    def add_transfer_nodes(
-        self, tensor: Tensor, src: HasOutputs, dsts: list[HasInputs], new_nodes: dict[str, Node]
-    ):
+    def add_transfer_nodes(self, tensor: Tensor, src: HasOutputs, dsts: list[HasInputs], new_nodes: dict[str, Node]):
         """
         Move ``tensor`` from its source to its destinations, either directly or staged on a memory tile.
 
@@ -499,8 +497,6 @@ class SteadyStateScheduler:
         """
         if not self._stages_on_mem_tile(tensor, src, dsts):
             transfer_type = self.determine_transfer_type(src, dsts)
-            if transfer_type == TransferType.NONE:
-                return
             out_name = f"{tensor.name}_1"
             transfer_node, updated_tensors = self.generate_transfer_node(dsts, tensor, transfer_type, out_name)
             new_nodes[transfer_node.name] = transfer_node
@@ -536,13 +532,22 @@ class SteadyStateScheduler:
             if self.transfer_context.force_io_transfers_on_mem_tile:
                 return True
             return is_reused_on_chip(self.workload, tensor, dsts)
-        return any(self._declared_layout(src, tensor) != self._declared_layout(dst, tensor) for dst in dsts)
+        produced = self._declared_layout(src, tensor)
+        if produced is None:
+            return False
+        consumed = (self._declared_layout(dst, tensor) for dst in dsts)
+        return any(layout is not None and layout != produced for layout in consumed)
 
     def _declared_layout(self, node: Node, tensor: Tensor):
-        """The layout ``node``'s kernel declares for ``tensor``, or None when it declares none."""
+        """The layout ``node``'s kernel declares for ``tensor``, None when it declares none.
+
+        None is "not known", never "differs": a node without a kernel, a kernel that declares
+        no layouts, and an operand past the end all leave the transfer unstaged.
+        """
         kernel = self.mapping.get(node).kernel
         layouts = kernel.operand_layouts() if kernel else ()
-        index = (*node.inputs, *node.outputs).index(tensor)
+        operands = (*getattr(node, "inputs", ()), *getattr(node, "outputs", ()))
+        index = operands.index(tensor)
         return layouts[index] if index < len(layouts) else None
 
     def update_destination_node_inputs(self, tensor, src, new_nodes, dst, updated_tensor):
