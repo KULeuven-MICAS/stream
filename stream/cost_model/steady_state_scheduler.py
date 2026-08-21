@@ -14,6 +14,7 @@ from stream.datatypes import InterCoreTiling, LayerDim
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
+from stream.opt.allocation.constraint_optimization.context import build_transfer_context
 from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
     MemoryAlloc,
     TensorDepths,
@@ -117,6 +118,7 @@ class SteadyStateScheduler:
         self.tensor_depths: TensorDepths = {}
 
         self.nb_cols_to_use = nb_cols_to_use
+        self.transfer_context = build_transfer_context(accelerator, nb_cols_to_use=nb_cols_to_use)
         self.backend = backend
         self.constraint_selection = constraint_selection
         self.total_mac_ops = total_mac_ops
@@ -314,6 +316,7 @@ class SteadyStateScheduler:
             mapping=self.mapping,
             cost_lut=self.cost_lut,
             nb_cols_to_use=self.nb_cols_to_use,
+            context=self.transfer_context,
             output_path=self.output_path,
             backend=self.backend,
             constraint_selection=self.constraint_selection,
@@ -497,11 +500,12 @@ class SteadyStateScheduler:
         This is to ensure that the constant tensor is properly allocated in memory and can be reused across iterations.
 
         Falls back to a single direct transfer from the source to the destinations (MEM_TO_COMPUTE)
-        when the accelerator has no on-chip memory tiles (e.g. TPU-like hardware), or when the tensor
-        is read only once and the memory tile would buy nothing.
+        when the accelerator has no on-chip memory tiles (e.g. TPU-like hardware), or -- unless
+        ``force_io_transfers_on_mem_tile`` -- when the tensor is read only once and the memory tile
+        would buy nothing.
         """
         assert isinstance(src, InEdge), f"Expected source of constant transfer to be an InEdge, found {type(src)}"
-        if not self._get_accelerator_memory_cores() or not is_reused_on_chip(self.workload, tensor, dsts):
+        if not self._stages_input_on_mem_tile(tensor, dsts):
             transfer_type = self.determine_transfer_type(src, dsts)
             out_name = f"{tensor.name}_1"
             transfer_node, updated_tensors = self.generate_transfer_node(dsts, tensor, transfer_type, out_name)
@@ -523,6 +527,18 @@ class SteadyStateScheduler:
         new_nodes[transfer_node_2.name] = transfer_node_2
         for dst, updated_tensor in zip(dsts, updated_tensors_2, strict=True):
             self.update_destination_node_inputs(tensor, src, new_nodes, dst, updated_tensor)
+
+    def _stages_input_on_mem_tile(self, tensor: Tensor, dsts: list[HasInputs]) -> bool:
+        """Whether an offchip input is staged in a memory tile instead of landing on the cores.
+
+        Staging is what keeps a fan-out off the shim's two DMA channels: one channel feeds the
+        memory tile, which then serves every core from its own channels.
+        """
+        if not self._get_accelerator_memory_cores():
+            return False
+        if self.transfer_context.force_io_transfers_on_mem_tile:
+            return True
+        return is_reused_on_chip(self.workload, tensor, dsts)
 
     def update_destination_node_inputs(self, tensor, src, new_nodes, dst, updated_tensor):
         # Find corresponding node in new_nodes as it might have already been updated
