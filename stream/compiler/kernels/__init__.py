@@ -4,6 +4,7 @@ from stream.compiler.kernels.eltwise_mul import EltwiseMulKernel
 from stream.compiler.kernels.gemm import GemmKernel
 from stream.compiler.kernels.matvec import MatVecKernel
 from stream.compiler.kernels.silu import SiluKernel
+from stream.compiler.kernels.softmax import SoftmaxKernel
 
 AIEKernels = {
     "matvec": lambda utilization: MatVecKernel(utilization, bf16),
@@ -14,6 +15,8 @@ AIEKernels = {
     "eltwise_mul": lambda utilization, layout, m=32, n=64, bfp16_mmul=False: EltwiseMulKernel(
         utilization, bf16, m, n, layout, bfp16_mmul
     ),
+    # n is the row softmax reduces, which no default can guess.
+    "softmax": lambda utilization, n, layout, m=1: SoftmaxKernel(utilization, bf16, m, n, layout),
     "gemm": lambda utilization, m, k, n, layout, bfp16_mmul=False: GemmKernel(
         utilization, bf16, m, k, n, layout, bfp16_mmul
     ),
