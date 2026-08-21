@@ -36,6 +36,13 @@ class OnnxOperatorParser(metaclass=ABCMeta):
             for onnx_tensor, output in zip(onnx_tensors, self.node.output, strict=False)
         )
 
+    def get_node_attribute_int(self, attribute_name: str) -> int | None:
+        """Read a scalar INT attribute; ``get_node_attribute_ints`` reads the unrelated INTS field."""
+        for attribute in self.node.attribute:
+            if attribute.name == attribute_name:
+                return attribute.i
+        return None
+
     def get_node_attribute_ints(self, attribute_name: str) -> list[int] | None:
         for attribute in self.node.attribute:
             if attribute.name == attribute_name:

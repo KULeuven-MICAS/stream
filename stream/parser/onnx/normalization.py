@@ -13,8 +13,8 @@ class NormalizationParser(OnnxOperatorParser):
     SPANS_TO_END = {"LayerNormalization"}
 
     def _reduction_axes(self, rank: int) -> tuple[int, ...]:
-        axis = self.get_node_attribute_ints("axis")
-        raw = axis[0] if axis else -1  # ONNX default is -1 for all three ops
+        axis = self.get_node_attribute_int("axis")
+        raw = -1 if axis is None else axis  # ONNX default is -1 for all three ops
         pos = raw if raw >= 0 else rank + raw
         if self.node.op_type in self.SPANS_TO_END:
             return tuple(range(pos, rank))
