@@ -30,6 +30,7 @@ class FixedMappingGenerationStage(Stage):
         self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
         self.workload = self.ctx.require_value("workload", self.__class__.__name__)
         self.mapping_path: str = self.ctx.require_value("mapping_path", self.__class__.__name__)
+        self.kernels = self.ctx.get("kernels")
 
     def run(self):
         mapping_data = self._parse_and_validate_yaml()
@@ -60,7 +61,7 @@ class FixedMappingGenerationStage(Stage):
                 "fused_groups": [fused_groups_data[i]],
                 "runtime_args": self._runtime_args_for_group(full_runtime_args, sub_workload),
             }
-            factory = MappingFactory(per_group_data, sub_workload, self.accelerator)
+            factory = MappingFactory(per_group_data, sub_workload, self.accelerator, kernels=self.kernels)
             sub_mappings.append(factory.create())
 
         logger.info(f"Built {len(sub_mappings)} in-memory mappings from fixed YAML: {self.mapping_path}")
