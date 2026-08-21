@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from dataclasses import replace
 from itertools import combinations
 from typing import TYPE_CHECKING, cast
 
@@ -694,14 +695,8 @@ class Workload(DiGraphWrapper[Node]):
                 new_inputs = tuple(cast(Tensor, tensor_map[inp.name]) for inp in node.inputs)
                 new_output = tensor_map.get(node.outputs[0].name)
                 assert new_output is not None, f"ComputationNode output tensor {node.name} must have been inferred"
-                new_node = ComputationNode(
-                    type=node.type,
-                    name=node.name,
-                    inputs=new_inputs,
-                    outputs=(new_output,),
-                    operand_mapping=node.operand_mapping,
-                    fused_kernel=node.fused_kernel,
-                )
+                # replace() keeps the concrete subclass and its fields (NormalizationNode.reduction_axes).
+                new_node = replace(node, inputs=new_inputs, outputs=(new_output,))
             elif isinstance(node, TransferNode):
                 new_inputs = tuple(cast(Tensor, tensor_map[inp.name]) for inp in node.inputs)
                 new_output = tensor_map.get(node.outputs[0].name)
