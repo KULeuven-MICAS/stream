@@ -43,6 +43,7 @@ from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency
 from stream.opt.solver import (
     ConstraintSelection,
+    LinExpr,
     ObjectiveLevel,
     PipeliningModel,
     SolverBackend,
@@ -940,6 +941,8 @@ class TransferAndTensorAllocator:
         memory tile and brought back, so the compute tile owns it until it is complete
         and the memory tile inherits exactly that residency.
         """
+        memory_reuse: list[tuple[Core, LinExpr, LinExpr]] = []
+        namespace_cores = list({c.namespace: c for c in self.mem_cores}.values())
         for tr in self.transfer_nodes:
             inputs = tr.inputs
             outputs = tr.outputs
@@ -963,6 +966,18 @@ class TransferAndTensorAllocator:
                         self._reuse_level_expr(input_tensor) >= self._reuse_level_expr(output_tensor),
                         name=f"reuse_ge_output_{tr.name}",
                     )
+                    # Whether that extra residency is realisable is a target property.
+                    # One core per namespace is enough; the rest repeat the constraint.
+                    memory_reuse.extend(
+                        (
+                            core,
+                            self._reuse_level_expr(input_tensor),
+                            self._reuse_level_expr(output_tensor),
+                        )
+                        for core in namespace_cores
+                    )
+
+        self.context.add_memory_reuse_constraints(self.model, memory_reuse)
 
     def _force_reuse_includes_spatial(self):
         """

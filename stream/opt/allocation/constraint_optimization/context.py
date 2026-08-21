@@ -132,6 +132,18 @@ class NamespaceConstraints:
     ) -> None:
         """Enforce FIFO-depth limits for cores in this namespace."""
 
+    # ---- memory-tile reuse ----
+
+    def add_memory_reuse_constraints(
+        self,
+        model: SolverModel,
+        transfers: list[tuple[Core, LinExpr, LinExpr]],
+    ) -> None:
+        """Narrow how much longer a memory tile may hold a tensor than its reader.
+
+        Each entry is (memory tile, its reuse level, the compute tile's).
+        """
+
     # ---- buffer descriptors ----
 
     def add_buffer_descriptor_constraints(
@@ -203,6 +215,23 @@ class AIE2Constraints(NamespaceConstraints):
             model.add_constr(
                 expr <= core.max_object_fifo_depth,
                 name=f"aie2_obj_fifo_depth_Core_{core.id}",
+            )
+
+    # ---- memory-tile reuse ----
+
+    def add_memory_reuse_constraints(
+        self,
+        model: SolverModel,
+        transfers: list[tuple[Core, LinExpr, LinExpr]],
+    ) -> None:
+        """An AIE memory tile cannot re-send an object it holds, so it may not outlive
+        its reader. Liftable once the object FIFO repeat count is emitted."""
+        for core, mem_level, compute_level in transfers:
+            if not self.applies_to(core):
+                continue
+            model.add_constr(
+                mem_level == compute_level,
+                name=f"aie2_mem_reuse_eq_Core_{core.id}",
             )
 
     # ---- buffer descriptors ----
@@ -277,6 +306,15 @@ class TransferAndTensorContext:
         """Dispatch object-FIFO depth constraints to all namespace strategies."""
         for ns in self.namespace_constraints:
             ns.add_object_fifo_constraints(model, object_fifo_depth)
+
+    def add_memory_reuse_constraints(
+        self,
+        model: SolverModel,
+        transfers: list[tuple[Core, LinExpr, LinExpr]],
+    ) -> None:
+        """Dispatch memory-tile reuse constraints to all namespace strategies."""
+        for ns in self.namespace_constraints:
+            ns.add_memory_reuse_constraints(model, transfers)
 
     def add_buffer_descriptor_constraints(
         self,
