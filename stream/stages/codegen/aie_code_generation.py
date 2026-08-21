@@ -24,6 +24,7 @@ from stream.compiler.dialects.stream import (
     TransferOp,
     YieldOp,
 )
+from stream.compiler.transforms.aie_add_tracing_script import MAX_TRACED_TILES, AIEAddTracingScript
 from stream.compiler.transforms.aie_convert_ofs import AIEConvertOfs
 from stream.compiler.transforms.aie_dispatch import AIEDispatchPass
 from stream.compiler.transforms.aie_move_tile_ops_up import AIEMoveTileOpsUp
@@ -76,7 +77,12 @@ class AIECodeGenerationStage(Stage):
         self.context.load_dialect(Stream)
         self.context.load_dialect(TSL)
 
-        self.trace_size = self.ctx.get("trace_size", 1048576)
+        # Off unless asked for: tracing adds a trailing runtime sequence argument,
+        # so it changes the calling convention, and its packet flows need routing.
+        self.trace_size = self.ctx.get("trace_size", 0)
+        # Each traced tile needs its own packet route, and a whole-array design has more
+        # cores than the stream switches can carry routes for.
+        self.trace_max_tiles = self.ctx.get("trace_max_tiles", MAX_TRACED_TILES)
         self.npu = self.ctx.get("npu", "npu2")
         self.runtime_args = self.ctx.get("runtime_args", [])
         self.module = None
@@ -396,12 +402,11 @@ class AIECodeGenerationStage(Stage):
             f.write(str(module))
         AIEMoveTileOpsUp().apply(self.context, module)
         ClearMemorySpace().apply(self.context, module)
+        # Before final.mlir is written, since that file is what downstream hosts compile.
+        if self.trace_size:
+            AIEAddTracingScript(trace_size=self.trace_size, max_tiles=self.trace_max_tiles).apply(self.context, module)
         with open(output_path + "/final.mlir", "w") as f:
             f.write(str(module))
-
-        # Optionally, Add Tracing Script
-        # if False:
-        # AIEAddTracingScript(trace_size=trace_size).apply(self.context, module)
 
         self.module = module
 
