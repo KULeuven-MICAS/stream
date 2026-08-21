@@ -93,9 +93,10 @@ class MappingFactory:
             # estimation, so leaving it None is correct for the base pipeline.
             return None
 
-        kernel = {**AIEKernels, **self.kernel_overrides}.get(kernel_name, None)
-        if kernel is None:
-            return None
+        known_kernels = {**AIEKernels, **self.kernel_overrides}
+        if kernel_name not in known_kernels:
+            raise ValueError(f"Unknown kernel name {kernel_name!r}. Known kernels: {sorted(known_kernels)}")
+        kernel = known_kernels[kernel_name]
         kernel_kwargs = mapping_data["kernel"].get("kwargs", {})
         if not self.kernel_args_match_kernel_signature(kernel, kernel_kwargs):
             raise ValueError(f"Kernel arguments {kernel_kwargs} do not match kernel {kernel_name} signature.")
