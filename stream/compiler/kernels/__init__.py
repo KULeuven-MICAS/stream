@@ -16,7 +16,9 @@ AIEKernels = {
         utilization, bf16, m, n, layout, bfp16_mmul
     ),
     # n is the row softmax reduces, which no default can guess.
-    "softmax": lambda utilization, n, layout, m=1: SoftmaxKernel(utilization, bf16, m, n, layout),
+    "softmax": lambda utilization, n, layout, m=1, bfp16_mmul=False: SoftmaxKernel(
+        utilization, bf16, m, n, layout, bfp16_mmul
+    ),
     "gemm": lambda utilization, m, k, n, layout, bfp16_mmul=False: GemmKernel(
         utilization, bf16, m, k, n, layout, bfp16_mmul
     ),
