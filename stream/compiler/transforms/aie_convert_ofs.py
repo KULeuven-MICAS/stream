@@ -137,7 +137,17 @@ class StrideSet:
                     if divider is None:
                         raise RuntimeError("Could not find legalized transfer for the runtime sequence.")
                 else:
-                    divider = stride.size // bound_limit
+                    # The bound is exclusive, so the tile has to come strictly under it.
+                    # size // bound_limit leaves a tile of exactly the bound whenever the
+                    # size is a multiple of it, which is no progress and recurses forever,
+                    # so take the smallest divisor that does get under.
+                    divider = None
+                    for d in range(2, stride.size + 1):
+                        if stride.size % d == 0 and stride.size // d < bound_limit:
+                            divider = d
+                            break
+                    if divider is None:
+                        raise RuntimeError("Could not find legalized transfer for the runtime sequence.")
                 tiled_size = stride.size // divider
                 tiled_stride = Stride(tiled_size, stride.stride, stride.iteration_t)
                 tiling_stride = Stride(
