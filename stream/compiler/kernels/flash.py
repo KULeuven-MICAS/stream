@@ -10,10 +10,12 @@ The running state is ``mha.cc``'s scale buffer, four ``B_q``-long rows holding
 ``[m_{i-1} | m_i | l_i | exp2(m_{i-1} - m_i)]``. ``partial_softmax`` writes it and
 ``matmul_PV``/``rescale_O`` read it, and the two cannot share a core: the probability
 block leaves ``partial_softmax`` row major and reaches ``matmul_PV`` in the MAC tiling,
-and only a DMA re-lays it out. So the scale crosses one core boundary, as a *depth one*
-object fifo -- a single buffer and a pair of locks between neighbouring tiles, no DMA
-channel and no copy. Depth one is what makes it state rather than a message: the
-producer cannot run into the next key block before the consumer is done with this one.
+and only a DMA re-lays it out. So the scale crosses one core boundary, as an object fifo
+between neighbouring tiles -- buffers and locks in the memory they already share, no DMA
+channel. The state itself stays on the softmax core, where it has to: it is read and
+written across key blocks, and a fifo hands out a different buffer each time. What
+crosses is a copy of it, taken every key block, which is what lets the fifo be two deep
+and the two cores run a block apart instead of in lockstep.
 
 Neither the scale buffer nor the block-index buffer is a workload tensor. Both are
 kernel artifacts the binding creates, the way :class:`AIEKernelWithZeroing` creates the
@@ -75,6 +77,9 @@ probability block, and both it and ``rescale_O`` walk the context block with 64-
 
 SCALE_ROWS = 4
 """Rows of ``B_q`` the scale buffer holds: m_{i-1}, m_i, l_i and exp2(m_{i-1} - m_i)."""
+
+SNAPSHOT, SNAPSHOT_OBJECT = "passThroughLine", "mha_passThrough.o"
+"""The vectorized copy that takes the scale off the softmax core, and its object."""
 
 LOG2E = 1.4453125
 """bf16 log2(e), the factor softmax.cc scales by before exp2.
@@ -151,19 +156,22 @@ def _scale_name(tile: TileOp) -> str:
     return f"flash_scale_{col}_{row}"
 
 
-def _index_name(tile: TileOp) -> str:
+def _core_buffer(
+    device: DeviceOp, tile: TileOp, kind: str, element_type, size: int, rewriter: PatternRewriter | None = None
+) -> SSAValue:
+    """A core's own buffer of one kind, made once and found again by name."""
     col, row = _position(tile)
-    return f"flash_index_{col}_{row}"
+    buffer = _named(device, BufferOp, name := f"flash_{kind}_{col}_{row}")
+    if buffer is None:
+        assert rewriter is not None
+        buffer = BufferOp(tile.result, element_type, ArrayAttr([IntAttr(size)]), StringAttr(name))
+        rewriter.insert_op(buffer, InsertPoint.after(tile))
+    return buffer.buffer
 
 
 def _index_buffer(device: DeviceOp, tile: TileOp, rewriter: PatternRewriter | None = None) -> SSAValue:
     """``[kv_block, q_block]``, which every mha.cc entry point takes as a pointer."""
-    buffer = _named(device, BufferOp, _index_name(tile))
-    if buffer is None:
-        assert rewriter is not None
-        buffer = BufferOp(tile.result, i32, ArrayAttr([IntAttr(2)]), StringAttr(_index_name(tile)))
-        rewriter.insert_op(buffer, InsertPoint.after(tile))
-    return buffer.buffer
+    return _core_buffer(device, tile, "index", i32, 2, rewriter)
 
 
 def _scale_fifo(
@@ -174,7 +182,7 @@ def _scale_fifo(
     element_type,
     size: int,
 ) -> None:
-    """One buffer and a pair of locks between the two cores an online-softmax step spans.
+    """The buffers and locks between the two cores an online-softmax step spans.
 
     Spelled without a repeat count, which is what keeps it in the shared memory the two
     tiles already have between them rather than on a DMA channel the core cannot spare.
@@ -185,7 +193,7 @@ def _scale_fifo(
         producer.result,
         [consumer.result],
         _scale_name(producer),
-        1,
+        2,
         element_type,
         (size,),
         repeat_count=None,
@@ -243,6 +251,33 @@ def _store_index(buffer: SSAValue, key: SSAValue, query: SSAValue) -> list[Opera
 
 
 @dataclass
+class CausalGemmKernel(GemmKernel):
+    """A GEMM over the score matrix that leaves out the blocks a causal mask would zero.
+
+    Both kernels behind it return before doing anything when the key block sits past the
+    query block, so the scores of such a block are written and never read: the score GEMM
+    is the one stage of the step that a mask inside the kernels cannot skip. The same test
+    around the call skips it here, while the zeroing before it stays unconditional, which
+    is what leaves the block defined whichever way the test goes.
+    """
+
+    @property
+    def unique_name(self) -> str:
+        return f"{super().unique_name}_causal"
+
+    def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
+        query, key = _kernel_dims(op)
+        key_ops, key_block, _ = _block_index(op, key)
+        query_ops, query_block, _ = _block_index(op, query)
+        return [
+            *key_ops,
+            *query_ops,
+            attends := CmpiOp(key_block, query_block, "sle"),
+            IfOp(attends, [], Region(Block([*GemmKernel.function_call(self, op), YieldOp()]))),
+        ]
+
+
+@dataclass
 class PartialSoftmaxKernel(SoftmaxKernel):
     """One online-softmax step over an m x n block of the score matrix.
 
@@ -293,6 +328,7 @@ class PartialSoftmaxKernel(SoftmaxKernel):
     def rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
         device, tile = _device(op), _tile(op)
         _index_buffer(device, tile, rewriter)
+        self._state_buffer(device, tile, rewriter)
         _scale_fifo(device, rewriter, tile, _partner(device, tile, "matmul_PV"), self.element_type, SCALE_ROWS * self.m)
         SymbolTable.insert_or_update(
             device,
@@ -303,7 +339,15 @@ class PartialSoftmaxKernel(SoftmaxKernel):
                 "private",
             ),
         )
+        snapshot = FuncOp(
+            SNAPSHOT, FunctionType.from_lists([self._scale_type(), self._scale_type(), i32], []), Region(), "private"
+        )
+        snapshot.attributes["link_with"] = StringAttr(SNAPSHOT_OBJECT)
+        SymbolTable.insert_or_update(device, snapshot)
         AIEKernel.rewrite(self, op, rewriter)
+
+    def _state_buffer(self, device: DeviceOp, tile: TileOp, rewriter: PatternRewriter | None = None) -> SSAValue:
+        return _core_buffer(device, tile, "state", self.element_type, SCALE_ROWS * self.m, rewriter)
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         device, tile = _device(op), _tile(op)
@@ -317,18 +361,17 @@ class PartialSoftmaxKernel(SoftmaxKernel):
             (SCALE_ROWS * self.m,),
             self.element_type,
         )
+        state = self._state_buffer(device, tile)
         ops: list[Operation] = [*key_ops, *query_ops]
         ops += _store_index(index := _index_buffer(device, tile), key_block, query_block)
         ops += [
-            acquire,
-            scale := ObjectFIFOSubviewAccessOp(IntegerAttr(0, i32), acquire),
             rows := ConstantOp.from_int_and_width(self.m, i32),
             zero := ConstantOp.from_int_and_width(0, i32),
             opening := CmpiOp(key_block, zero, "eq"),
             IfOp(
                 opening,
                 [],
-                Region(Block([CallOp("init_scale_buffer", [scale.output, rows.result], []), YieldOp()])),
+                Region(Block([CallOp("init_scale_buffer", [state, rows.result], []), YieldOp()])),
             ),
             # xDSL has no printer for a bf16 literal, so it is narrowed on the core.
             log2e := ConstantOp(FloatAttr(LOG2E, f32)),
@@ -341,7 +384,7 @@ class PartialSoftmaxKernel(SoftmaxKernel):
                 [
                     op.inputs[0],
                     op.inputs[1],
-                    scale.output,
+                    state,
                     index,
                     scaling.result,
                     rows.result,
@@ -351,6 +394,12 @@ class PartialSoftmaxKernel(SoftmaxKernel):
                 ],
                 [],
             ),
+            acquire,
+            scale := ObjectFIFOSubviewAccessOp(IntegerAttr(0, i32), acquire),
+            width := ConstantOp.from_int_and_width(SCALE_ROWS * self.m, i32),
+            # Unconditional: a block this core skipped still owes the one behind it the
+            # scale it last wrote, which is what the closing rescale divides by.
+            CallOp(SNAPSHOT, [state, scale.output, width.result], []),
             ObjectFIFOReleaseOp(
                 IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Produce.get_int(), 32),
                 IntegerAttr.from_int_and_width(1, 32),

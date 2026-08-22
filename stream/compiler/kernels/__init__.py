@@ -1,7 +1,7 @@
 from xdsl.dialects.builtin import bf16
 
 from stream.compiler.kernels.eltwise_mul import EltwiseMulKernel
-from stream.compiler.kernels.flash import FlashKernel, PartialSoftmaxKernel
+from stream.compiler.kernels.flash import CausalGemmKernel, FlashKernel, PartialSoftmaxKernel
 from stream.compiler.kernels.gemm import GemmKernel
 from stream.compiler.kernels.matvec import MatVecKernel
 from stream.compiler.kernels.silu import SiluKernel
@@ -20,10 +20,11 @@ AIEKernels = {
     "softmax": lambda utilization, n, layout, m=1, bfp16_mmul=False, causal=False: SoftmaxKernel(
         utilization, bf16, m, n, layout, bfp16_mmul, causal
     ),
-    # ``flash`` picks the gemm that carries an online softmax's running scale with it.
-    "gemm": lambda utilization, m, k, n, layout, bfp16_mmul=False, flash=False: (FlashKernel if flash else GemmKernel)(
-        utilization, bf16, m, k, n, layout, bfp16_mmul
-    ),
+    # ``flash`` picks the gemm that carries an online softmax's running scale with it,
+    # ``causal`` the one that skips the blocks a mask would zero.
+    "gemm": lambda utilization, m, k, n, layout, bfp16_mmul=False, flash=False, causal=False: (
+        FlashKernel if flash else CausalGemmKernel if causal else GemmKernel
+    )(utilization, bf16, m, k, n, layout, bfp16_mmul),
     "partial_softmax": lambda utilization, n, layout, m=1, bfp16_mmul=False: PartialSoftmaxKernel(
         utilization, bf16, m, n, layout, bfp16_mmul
     ),
