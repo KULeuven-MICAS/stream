@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from functools import reduce
 from itertools import product
 from math import isqrt, prod
-from typing import Self, cast
+from typing import Self
 
 from xdsl.context import Context
 from xdsl.dialects import scf
@@ -1254,20 +1254,15 @@ class SyncDMAs(RewritePattern):
     waits for the first. That is about the descriptor rather than the data, so it
     applies whichever way the fifo moves.
 
-    The last transfer of every fifo carrying data out is waited on as well, since the
-    host may only read an output once it has landed. Data going in needs no such wait:
-    the cores take it through the fifo's own lock protocol, and an output cannot be
-    produced before its inputs were consumed.
+    Every transfer still outstanding at the end is waited on as well. For a fifo
+    carrying data out that is about the data, since the host may only read an output
+    once it has landed. For a fifo carrying data in it is about the descriptor: the
+    cores take the data through the fifo's own lock protocol and need no wait, but the
+    descriptor stays allocated until it is awaited, and a runtime sequence is not
+    always run alone. A fused operator concatenates one sequence per runlist entry, so
+    descriptors left outstanding accumulate across entries until a shim tile runs out
+    of them.
     """
-
-    @staticmethod
-    def carries_data_out(device: DeviceOp, alloc: Attribute) -> bool:
-        """Whether the fifo named by ``alloc`` moves data towards the shim."""
-        fifo = SymbolTable.lookup_symbol(device, cast(SymbolRefAttr, alloc))
-        assert isinstance(fifo, ObjectFifoOp)
-        producer = fifo.producerTile.owner
-        assert isinstance(producer, TileOp)
-        return producer.row.value.data != 0
 
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: RuntimeSequenceOp, rewriter: PatternRewriter):
@@ -1294,13 +1289,13 @@ class SyncDMAs(RewritePattern):
                 rewriter.insert_op(DmaAwaitTaskOp(to_sync), InsertPoint.before(dma))
                 active_tasks[dma.alloc].append(dma)
 
-        # at the end, wait for the last transfer of every fifo carrying data out
-        for alloc, tasklist in active_tasks.items():
-            if not self.carries_data_out(device, alloc):
-                continue
-            task = tasklist[-1]
-            task.issue_token = IntegerAttr.from_int_and_width(1, 1)
-            rewriter.insert_op(DmaAwaitTaskOp(task), InsertPoint.at_end(op.body.block))
+        # At the end, wait for every transfer still outstanding, whichever way its fifo
+        # moves, so no descriptor is left allocated when the sequence ends.
+        for tasklist in active_tasks.values():
+            for task in tasklist:
+                task.issue_token = IntegerAttr.from_int_and_width(1, 1)
+                rewriter.insert_op(DmaAwaitTaskOp(task),
+                                   InsertPoint.at_end(op.body.block))
 
 
 @dataclass
