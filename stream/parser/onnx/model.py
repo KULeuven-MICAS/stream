@@ -86,6 +86,7 @@ class ONNXModelParser:
         "Pow": ElementwiseParser,
         "Relu": ElementwiseParser,
         "Silu": ElementwiseParser,
+        "PartialSoftmax": ElementwiseParser,
         "Gelu": ElementwiseParser,
         "Sigmoid": ElementwiseParser,
         "Tanh": ElementwiseParser,

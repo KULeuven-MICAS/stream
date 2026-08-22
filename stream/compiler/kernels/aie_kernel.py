@@ -6,14 +6,14 @@ from snaxc.dialects.snax import LayoutCast
 from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.dialects.builtin import FunctionType, StringAttr
 from xdsl.dialects.func import CallOp, FuncOp
-from xdsl.dialects.scf import IndexSwitchOp, YieldOp
-from xdsl.ir import Operation, OpResult, Region
+from xdsl.dialects.scf import ForOp, IndexSwitchOp, YieldOp
+from xdsl.ir import Operation, OpResult, Region, SSAValue
 from xdsl.pattern_rewriter import PatternRewriter
 from xdsl.rewriter import InsertPoint
 from xdsl.traits import SymbolTable
 from xdsl_aie.dialects.aie import CoreOp, DeviceOp, ObjectFIFOSubviewAccessOp
 
-from stream.compiler.dialects.stream import ComputationNodeOp
+from stream.compiler.dialects.stream import ComputationNodeOp, StrensorVar, StrensorVarAttr
 
 # Intrinsic MAC tile of the AIE2p kernels, and the layouts an operand can take.
 # mm.cc takes 8 rows when bf16 matmuls run on the bfp16 MACs and 4 when they do not.
@@ -44,6 +44,20 @@ def elementwise_operand_layout(m: int, n: int, layout: str, mac_rows: int = R) -
             TiledStride([Stride(mac_rows * T, nt), Stride(1, T)]),
         ]
     )
+
+
+def induction_variable(op: Operation, var: StrensorVar) -> SSAValue:
+    """The induction variable of the enclosing loop iterating ``var``.
+
+    ``IterationSpaceToFor`` names every loop it creates after the variable it drives,
+    which is the only way back from a kernel call to where in the iteration space it sits.
+    """
+    parent = op.parent_op()
+    while parent is not None:
+        if isinstance(parent, ForOp) and parent.attributes.get("layer_dim") == StrensorVarAttr(var):
+            return parent.body.block.args[0]
+        parent = parent.parent_op()
+    raise ValueError(f"kernel call is not inside the loop iterating {var}")
 
 
 @dataclass

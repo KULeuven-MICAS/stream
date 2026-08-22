@@ -83,10 +83,10 @@ class GemmKernel(AIEKernelWithZeroing):
             outputs=[],
         )
 
-    def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
+    def check_operands(self, op: ComputationNodeOp) -> None:
+        """The object file is compiled for one tile, so a mapping that tiles the loop
+        differently would read past its operands."""
         assert op.output is not None
-        # The object file is compiled for one tile, so a mapping that tiles the loop
-        # differently would read past its operands.
         for operand, expected in zip(op.inputs, ((self.m, self.k), (self.k, self.n), (self.m, self.n)), strict=True):
             shape = tuple(cast(MemRefType[AnyDenseElement], operand.type).get_shape())
             if shape != expected:
@@ -94,6 +94,9 @@ class GemmKernel(AIEKernelWithZeroing):
                     f"kernel {self.function_name} takes a {expected[0]}x{expected[1]} operand "
                     f"but the tiling gives it {shape}"
                 )
+
+    def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
+        self.check_operands(op)
         return [
             CallOp(self.function_name, [op.inputs[0], op.inputs[1], op.inputs[2]], []),
         ]

@@ -11,15 +11,12 @@ from xdsl.dialects.builtin import (
     i32,
 )
 from xdsl.dialects.func import CallOp
-from xdsl.dialects.scf import ForOp
 from xdsl.ir import SSAValue
 from xdsl.irdl import Operation
 
 from stream.compiler.dialects.stream import (
     ComputationNodeOp,
     StrensorType,
-    StrensorVar,
-    StrensorVarAttr,
     StrensorVarType,
 )
 from stream.compiler.kernels.aie_kernel import (
@@ -29,6 +26,7 @@ from stream.compiler.kernels.aie_kernel import (
     R,
     T,
     elementwise_operand_layout,
+    induction_variable,
 )
 
 SOFTMAX_VECTOR_LANES = 64
@@ -100,15 +98,6 @@ class SoftmaxKernel(AIEKernel):
             outputs=[],
         )
 
-    @staticmethod
-    def _induction_variable(op: ComputationNodeOp, var: StrensorVar) -> SSAValue:
-        parent = op.parent_op()
-        while parent is not None:
-            if isinstance(parent, ForOp) and parent.attributes.get("layer_dim") == StrensorVarAttr(var):
-                return parent.body.block.args[0]
-            parent = parent.parent_op()
-        raise ValueError(f"softmax is not inside the loop iterating {var}")
-
     def row_offset(self, op: ComputationNodeOp) -> tuple[Sequence[Operation], SSAValue]:
         """Where the tile's first row sits in the dimension the rows are handed out from.
 
@@ -132,7 +121,7 @@ class SoftmaxKernel(AIEKernel):
                 constant += position.get(row_dim, 0) * stride
             elif var.type is StrensorVarType.TEMPORAL:
                 ops += [
-                    index := IndexCastOp(self._induction_variable(op, var), i32),
+                    index := IndexCastOp(induction_variable(op, var), i32),
                     size := ConstantOp.from_int_and_width(stride, i32),
                     term := MuliOp(index, size),
                 ]
