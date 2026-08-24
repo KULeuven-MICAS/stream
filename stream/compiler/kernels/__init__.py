@@ -1,7 +1,12 @@
 from xdsl.dialects.builtin import bf16
 
 from stream.compiler.kernels.eltwise_mul import EltwiseMulKernel
-from stream.compiler.kernels.flash import CausalGemmKernel, FlashKernel, PartialSoftmaxKernel
+from stream.compiler.kernels.flash import (
+    CausalGemmKernel,
+    FlashKernel,
+    FusedScoreSoftmaxKernel,
+    PartialSoftmaxKernel,
+)
 from stream.compiler.kernels.gemm import GemmKernel
 from stream.compiler.kernels.matvec import MatVecKernel
 from stream.compiler.kernels.silu import SiluKernel
@@ -27,5 +32,10 @@ AIEKernels = {
     )(utilization, bf16, m, k, n, layout, bfp16_mmul),
     "partial_softmax": lambda utilization, n, layout, m=1, bfp16_mmul=False: PartialSoftmaxKernel(
         utilization, bf16, m, n, layout, bfp16_mmul
+    ),
+    # The score GEMM and the online softmax on one core, which is what lets two fused
+    # layers cover four rows where three layers leave one idle.
+    "matmul_softmax": lambda utilization, m, k, n, layout, bfp16_mmul=False: FusedScoreSoftmaxKernel(
+        utilization, bf16, m, k, n, layout, bfp16_mmul
     ),
 }

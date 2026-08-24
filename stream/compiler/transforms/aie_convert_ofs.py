@@ -1,3 +1,4 @@
+import os
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from functools import reduce
@@ -61,6 +62,92 @@ from stream.compiler.dialects.stream import (
 )
 from stream.compiler.transforms.unroll import iterate_spat_vars
 from stream.datatypes import LayerDim
+
+# A dimension a memory tile hands out arrives in a spatial part and a temporal one.
+SPLIT_PARTS = 2
+
+
+def _splittable(var: StrensorVar, dim: LayerDim) -> bool:
+    """Whether a variable may be folded into a dimension's split. A kernel or absent
+    variable never is: it describes the block itself, not how the block is handed out."""
+    return var.dim == dim and var.type in (StrensorVarType.SPATIAL, StrensorVarType.TEMPORAL)
+
+
+def _align_spaces(
+    in_vars: Sequence[StrensorVar], out_vars: Sequence[StrensorVar]
+) -> list[tuple[StrensorVar, StrensorVar]] | None:
+    """Pair two steady-state spaces variable by variable, splitting an output variable the
+    other side expresses as several.
+
+    A memory tile feeding two compute rows of one layer sees the split it hands out as
+    spatial by temporal -- one tile a column, serving each row in turn -- where the cores
+    see a single spatial variable of the product. The same holds on the way back, with the
+    sides reversed. Returns None when the two spaces do not line up this way, which leaves
+    the caller to report it.
+    """
+    pairs: list[tuple[StrensorVar, StrensorVar]] = []
+    i = j = 0
+    while i < len(in_vars) and j < len(out_vars):
+        source, target = in_vars[i], out_vars[j]
+        if source.dim == target.dim and source.size == target.size:
+            pairs.append((source, target))
+            i, j = i + 1, j + 1
+            continue
+        if source.dim != target.dim:
+            return None
+        if target.size > source.size and not target.size % source.size:
+            group, rest, k = [source], target.size // source.size, i + 1
+            while rest > 1 and k < len(in_vars) and _splittable(in_vars[k], target.dim):
+                if rest % in_vars[k].size:
+                    break
+                group.append(in_vars[k])
+                rest //= in_vars[k].size
+                k += 1
+            if rest != 1:
+                return None
+            pairs.extend((var, StrensorVar(target.type, var.size, target.dim)) for var in group)
+            i, j = k, j + 1
+        elif source.size > target.size and not source.size % target.size:
+            group, rest, k = [target], source.size // target.size, j + 1
+            while rest > 1 and k < len(out_vars) and _splittable(out_vars[k], source.dim):
+                if rest % out_vars[k].size:
+                    break
+                group.append(out_vars[k])
+                rest //= out_vars[k].size
+                k += 1
+            if rest != 1:
+                return None
+            pairs.extend((StrensorVar(source.type, var.size, source.dim), var) for var in group)
+            i, j = i + 1, k
+        else:
+            return None
+    return pairs if i == len(in_vars) and j == len(out_vars) else None
+
+
+def _consumer_point(groups: Sequence[Sequence[StrensorVar]], outer: dict[LayerDim, int]) -> set[StrensorVar]:
+    """The spatial index a consumer carries, from the parts the producer hands out over.
+
+    One part per dimension normally, and this is then the union it always was. Where a
+    dimension arrives in two parts because the memory tile splits what the cores hold
+    whole, the two recombine the way the runtime descriptor lays them out: the spatial
+    part runs fastest, since the stride loops take the spatial variables before the
+    temporal ones whatever their order in the space.
+    """
+    merged: dict[LayerDim, int] = {}
+    seen: dict[LayerDim, int] = {}
+    for group in groups:
+        for var in group:
+            seen[var.dim] = seen.get(var.dim, 0) + 1
+            if var.dim not in merged:
+                merged[var.dim] = var.size
+                continue
+            if seen[var.dim] > SPLIT_PARTS or var.dim not in outer:
+                raise NotImplementedError(
+                    f"dimension {var.dim} is handed out in {seen[var.dim]} parts, and the "
+                    f"index recombines two whose extents are known"
+                )
+            merged[var.dim] = var.size * outer[var.dim] + merged[var.dim]
+    return {StrensorVar(StrensorVarType.POINT, index, dim) for dim, index in merged.items()}
 
 
 @dataclass(frozen=True)
@@ -235,10 +322,9 @@ class ChannelToObjectFifoPass(RewritePattern):
 
                 # find correct consumer:
                 for j, join in enumerate(iterate_spat_vars(join_dims)):
+                    point = _consumer_point((spatial, join), {v.dim: v.size for v in spatial_dims})
                     source = next(
-                        p
-                        for p in producers
-                        if p.spatial_index is not None and set(spatial) | set(join) <= set(p.spatial_index.data.vars)
+                        p for p in producers if p.spatial_index is not None and point <= set(p.spatial_index.data.vars)
                     )
 
                     assert isinstance(source_type := source.input.type, StrensorType)
@@ -263,6 +349,7 @@ class ChannelToObjectFifoPass(RewritePattern):
 
                 # annotate target with all ofs:
                 target.attributes["of"] = ArrayAttr(x.sym_name for x in switch_join)
+                target.attributes["relay_dim"] = StringAttr(str(join_dims[0].dim))
                 ofs.extend(switch_join)
 
             else:
@@ -356,6 +443,7 @@ class ChannelToObjectFifoPass(RewritePattern):
 
                 # annotate target with all ofs:
                 target.attributes["of"] = ArrayAttr(x.sym_name for x in switch_join)
+                target.attributes["relay_dim"] = StringAttr(str(join_dims[0].dim))
                 ofs.extend(switch_join)
 
             elif len(join_dims) == 0 and len(broadcast_dims) == 0:
@@ -425,7 +513,7 @@ class ChannelToObjectFifoPass(RewritePattern):
 
         return ofs
 
-    def mem_to_compute(
+    def mem_to_compute(  # noqa: PLR0912
         self,
         producers: Sequence[PushOp],
         consumers: Sequence[PullOp],
@@ -490,12 +578,18 @@ class ChannelToObjectFifoPass(RewritePattern):
                     for c in consumers:
                         assert c.spatial_index is not None
                         # match on spatial index:
-                        if set(spatial) | set(distribute) | set(broadcast) == set(c.spatial_index.data.vars):
+                        point = _consumer_point(
+                            (spatial, distribute, broadcast),
+                            {v.dim: v.size for v in spatial_dims},
+                        )
+                        if point == set(c.spatial_index.data.vars):
                             targets.append(c)
 
                 # gather all broadcast tiles:
                 consumer_tiles = tuple(self.get_tile(x) for x in targets)
 
+                if not targets:
+                    raise NotImplementedError(f"no consumer carries the spatial index {point}")
                 assert isinstance(target_type := targets[0].output.type, StrensorType)
 
                 # number of elements is the kernel shape
@@ -519,6 +613,8 @@ class ChannelToObjectFifoPass(RewritePattern):
 
             # annotate source
             source.attributes["of"] = ArrayAttr(x.sym_name for x in spat_ofs)
+            if distribute_dims:
+                source.attributes["relay_dim"] = StringAttr(str(distribute_dims[0].dim))
             ofs.extend(spat_ofs)
         return ofs
 
@@ -563,7 +659,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     self.get_tile(producer, target_type.core_allocation.data[0].data),
                     [self.get_tile(target)],
                     name_base + f"mem_{i}",
-                    (2, 2),
+                    (self.held_count(target_type),) * 2 if self.memtile_resend() else (2, 2),
                     target_type.get_element_type(),
                     self.held_shape(target_type),
                 )
@@ -586,7 +682,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 producerTile=producer_tile,
                 consumerTiles=consumer_tiles,
                 name=name_base + "mem",
-                elemNumber=(2, 2),
+                elemNumber=(self.held_count(strensor),) * 2 if self.memtile_resend() else (2, 2),
                 referenced_type=strensor.get_element_type(),
                 shape=self.held_shape(strensor),
             )
@@ -660,7 +756,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 producerTile=producer_tile,
                 consumerTiles=consumer_tiles,
                 name=name_base + "mem",
-                elemNumber=(2, 2),
+                elemNumber=(self.held_count(strensor),) * 2 if self.memtile_resend() else (2, 2),
                 referenced_type=strensor.get_element_type(),
                 shape=self.held_shape(strensor),
             )
@@ -682,6 +778,32 @@ class ChannelToObjectFifoPass(RewritePattern):
         variables = strensor.ssis.data.vars
         outer = variables[: len(variables) - strensor.reuse_index.data]
         return 2 if any(var.type == StrensorVarType.TEMPORAL for var in outer) else 1
+
+    @staticmethod
+    def memtile_resend() -> bool:
+        """Whether the memory tile may keep a tensor longer than its reader.
+
+        The allocator only produces such a solution when the same flag relaxed its
+        constraint, so codegen follows it rather than deciding for itself.
+        """
+        return os.environ.get("STREAM_MEMTILE_RESEND", "0") != "0"
+
+    @classmethod
+    def resend_count(cls, mem: StrensorType, compute: StrensorType) -> int:
+        """How many times a memory tile hands out what it holds before it is refilled.
+
+        The tile stages whole blocks, so it holds a fixed number of fifo elements while
+        the consumer acquires one per temporal step it runs. Keeping a tensor across a
+        loop the consumer iterates means handing the same elements out again, and that
+        ratio is what the object fifo has to repeat.
+        """
+        if not cls.memtile_resend() or mem.reuse_index.data <= compute.reuse_index.data:
+            return 1
+        held = prod(cls.held_shape(mem)) // prod(mem.get_kernel_shape())
+        variables = compute.ssis.data.vars
+        outer = variables[: len(variables) - compute.reuse_index.data]
+        acquires = prod(var.size for var in outer if var.type == StrensorVarType.TEMPORAL)
+        return max(1, acquires // held) if held else 1
 
     @classmethod
     def held_shape(cls, strensor: StrensorType) -> tuple[int, ...]:
@@ -707,7 +829,7 @@ class ChannelToObjectFifoPass(RewritePattern):
         return int(tile[-1]) > 1
 
     @op_type_rewrite_pattern
-    def match_and_rewrite(self, channel: ChannelOp, rewriter: PatternRewriter):  # noqa: PLR0912
+    def match_and_rewrite(self, channel: ChannelOp, rewriter: PatternRewriter):  # noqa: PLR0912, PLR0915
         if "of" in channel.attributes:
             # already converted
             return
@@ -741,8 +863,14 @@ class ChannelToObjectFifoPass(RewritePattern):
 
         elif all(v.type == StrensorVarType.CONSTANT for v in out_ss.vars):
             transformations = [(x, x) for x in in_ss.vars if x.type == StrensorVarType.SPATIAL]
+        elif (aligned := _align_spaces(in_ss.vars, out_ss.vars)) is not None:
+            transformations = [(x, y) for x, y in aligned if StrensorVarType.SPATIAL in (x.type, y.type)]
         else:
-            raise NotImplementedError()
+            raise NotImplementedError(
+                f"a transfer between spaces of different rank is only handled when one "
+                f"side is constant or the two line up variable by variable, and neither "
+                f"holds here: {in_ss} to {out_ss}"
+            )
 
         # use dispatcher based on object fifo type:
         name_base = f"of_{self.of_count}_"
@@ -766,8 +894,17 @@ class ChannelToObjectFifoPass(RewritePattern):
         else:
             raise NotImplementedError()
 
+        resend = (
+            self.resend_count(in_type, out_type)
+            if self.is_mem(in_type.core_allocation.data[0].data)
+            and self.is_compute(out_type.core_allocation.data[0].data)
+            else 1
+        )
         for op in ops:
-            del op.properties["repeat_count"]
+            if resend > 1:
+                op.properties["repeat_count"] = IntegerAttr.from_int_and_width(resend, 32)
+            else:
+                del op.properties["repeat_count"]
         self.of_count += 1
         end_op = device_op.region.block.last_op
         assert isinstance(end_op, EndOp)
@@ -799,34 +936,41 @@ class RealizeLinks(RewritePattern):
         assert isa(ofs_push, StringAttr) or isa(ofs_push, ArrayAttr[StringAttr])
 
         num_elements = prod(strensor.get_kernel_shape()) * prod(strensor.get_local_shape())
-        if isinstance(ofs_pull, ArrayAttr):
-            # join link
-            assert isinstance(ofs_push, StringAttr)
-            link = ObjectFifoLinkOp(
-                [SymbolRefAttr(o) for o in ofs_pull],
-                [SymbolRefAttr(ofs_push)],
-                tuple(range(0, num_elements, num_elements // len(ofs_pull))),
-                [],
-            )
-        elif isinstance(ofs_push, ArrayAttr):
-            # distribute link
-            assert isinstance(ofs_pull, StringAttr)
-            link = ObjectFifoLinkOp(
-                [SymbolRefAttr(ofs_pull)],
-                [SymbolRefAttr(o) for o in ofs_push],
-                [],
-                tuple(range(0, num_elements, num_elements // len(ofs_push))),
-            )
+        # A memory tile gathers from the cores above it and hands out to the cores below,
+        # and either side may be several fifos: one row a layer makes one of them single,
+        # two rows a layer makes both plural.
+        gathering, handing = isinstance(ofs_pull, ArrayAttr), isinstance(ofs_push, ArrayAttr)
+        pulls = list(ofs_pull) if gathering else [ofs_pull]
+        pushes = list(ofs_push) if handing else [ofs_push]
+
+        def offsets(count: int, several: bool) -> Sequence[int]:
+            return tuple(range(0, num_elements, num_elements // count)) if several else []
+
+        if len(pulls) > 1 and len(pushes) > 1:
+            # The tile has no one buffer to gather into and hand out from -- the dialect
+            # takes a join or a distribute, not both -- and it needs none: each core above
+            # feeds the core below it through a relay of its own. The two sides have to be
+            # handing out over the same dimension for the pairing to mean anything, and
+            # the fifos are in that dimension's order on both.
+            gathered, handed = pull.attributes.get("relay_dim"), push.attributes.get("relay_dim")
+            if len(pulls) != len(pushes) or gathered is None or gathered != handed:
+                raise NotImplementedError(
+                    f"a memory tile relaying {len(pulls)} fifos over {gathered} to "
+                    f"{len(pushes)} over {handed} has no pairing between them"
+                )
+            links = [
+                ObjectFifoLinkOp([SymbolRefAttr(a)], [SymbolRefAttr(b)], [], [])
+                for a, b in zip(pulls, pushes, strict=True)
+            ]
         else:
-            # unicast link
-            assert isinstance(ofs_pull, StringAttr)
-            assert isinstance(ofs_push, StringAttr)
-            link = ObjectFifoLinkOp(
-                [SymbolRefAttr(ofs_pull)],
-                [SymbolRefAttr(ofs_push)],
-                [],
-                [],
-            )
+            links = [
+                ObjectFifoLinkOp(
+                    [SymbolRefAttr(o) for o in pulls],
+                    [SymbolRefAttr(o) for o in pushes],
+                    offsets(len(pulls), gathering),
+                    offsets(len(pushes), handing),
+                )
+            ]
 
         # insert link near object fifo definition
         last_fifo = ofs_push.data[-1] if isinstance(ofs_push, ArrayAttr) else ofs_push
@@ -837,7 +981,7 @@ class RealizeLinks(RewritePattern):
 
         last_fifo_op = SymbolTable.lookup_symbol(device_op, last_fifo)
         assert isinstance(last_fifo_op, ObjectFifoOp)
-        rewriter.insert_op(link, InsertPoint.after(last_fifo_op))
+        rewriter.insert_op(links, InsertPoint.after(last_fifo_op))
 
         rewriter.erase_op(push)
         rewriter.erase_op(pull)
@@ -875,11 +1019,19 @@ class TransferToRuntimeSequence(RewritePattern):
 
         # iterate the zipped mem and compute strensors in reverse (innermost -> outermost)
         def iter_strensors() -> Iterable[tuple[StrensorVar, StrensorVar]]:
-            yield from zip(
-                reversed(mem_strensor.ssis.data.vars),
-                reversed(compute_strensor.ssis.data.vars),
-                strict=True,
-            )
+            mem_vars, compute_vars = mem_strensor.ssis.data.vars, compute_strensor.ssis.data.vars
+            if len(mem_vars) == len(compute_vars):
+                yield from zip(reversed(mem_vars), reversed(compute_vars), strict=True)
+                return
+            # A memory tile serving two compute rows of one layer splits a dimension the
+            # cores hold whole, so the two sides differ by a variable.
+            pairs = _align_spaces(mem_vars, compute_vars)
+            if pairs is None:
+                raise NotImplementedError(
+                    f"a runtime transfer between spaces that do not line up variable by "
+                    f"variable: {mem_strensor.ssis.data} to {compute_strensor.ssis.data}"
+                )
+            yield from reversed(pairs)
 
         vars: list[StrensorVar] = []
 
@@ -1304,8 +1456,7 @@ class SyncDMAs(RewritePattern):
         for tasklist in active_tasks.values():
             for task in tasklist:
                 task.issue_token = IntegerAttr.from_int_and_width(1, 1)
-                rewriter.insert_op(DmaAwaitTaskOp(task),
-                                   InsertPoint.at_end(op.body.block))
+                rewriter.insert_op(DmaAwaitTaskOp(task), InsertPoint.at_end(op.body.block))
 
 
 @dataclass

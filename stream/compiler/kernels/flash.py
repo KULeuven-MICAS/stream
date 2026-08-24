@@ -26,6 +26,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast
 
+from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.dialects.arith import AddiOp, CmpiOp, ConstantOp, ExtUIOp, IndexCastOp, MuliOp, TruncFOp
 from xdsl.dialects.builtin import (
     ArrayAttr,
@@ -63,7 +64,7 @@ from stream.compiler.dialects.stream import (
     StrensorType,
     StrensorVarType,
 )
-from stream.compiler.kernels.aie_kernel import AIEKernel, induction_variable
+from stream.compiler.kernels.aie_kernel import MAC_ROWS_BFP16, AIEKernel, T, induction_variable
 from stream.compiler.kernels.gemm import GemmKernel
 from stream.compiler.kernels.softmax import SoftmaxKernel
 
@@ -110,16 +111,23 @@ def _position(tile: TileOp) -> tuple[int, int]:
     return tile.col.value.data, tile.row.value.data
 
 
-def _runs(core: CoreOp, function: str) -> bool:
+# The score side of a step, whichever way it was mapped: on its own core or fused with
+# the GEMM before it. ``matmul_PV`` looks for its partner under either name.
+SCORE_SIDE = ("partial_softmax", "matmul_softmax")
+
+
+def _runs(core: CoreOp, function: str | tuple[str, ...]) -> bool:
     """Whether this core runs ``function``, before or after its node was rewritten."""
+    names = (function,) if isinstance(function, str) else function
     return any(
-        (isinstance(op, ComputationNodeOp) and op.kernel.data.startswith(function))
-        or (isinstance(op, CallOp) and op.callee.root_reference.data == function)
+        (isinstance(op, ComputationNodeOp) and op.kernel.data.startswith(name))
+        or (isinstance(op, CallOp) and op.callee.root_reference.data == name)
         for op in core.walk()
+        for name in names
     )
 
 
-def _partner(device: DeviceOp, tile: TileOp, function: str) -> TileOp:
+def _partner(device: DeviceOp, tile: TileOp, function: str | tuple[str, ...]) -> TileOp:
     """The tile running the other half of this step, which shares the scale buffer.
 
     The two halves sit above one another in one column, and only neighbouring tiles
@@ -410,6 +418,151 @@ class PartialSoftmaxKernel(SoftmaxKernel):
 
 
 @dataclass
+class FusedScoreSoftmaxKernel(GemmKernel):
+    """A step's score side whole: the GEMM and the online softmax on one core.
+
+    The block leaves the GEMM row major, which is the layout the softmax reads, so
+    nothing has to re-lay it out between them and the two share a core -- unlike the
+    softmax and ``matmul_PV``, where the block changes tiling and only a DMA bridges it.
+    Fusing them frees a row of the array and drops a round trip of the block through the
+    memory tile. The running state, and the scale that crosses to ``matmul_PV``, are the
+    same as when the softmax stands on its own.
+    """
+
+    def __post_init__(self) -> None:
+        if (self.m, self.k, self.n) != (FLASH_TILE,) * 3:
+            raise ValueError(
+                f"mha.cc is written for a {FLASH_TILE} query, key and head block, not {self.m}x{self.k}x{self.n}"
+            )
+
+    @property
+    def unique_name(self) -> str:
+        return f"{self.function_name}_{self.m}_{self.k}_{self.n}"
+
+    @property
+    def linkwith_name(self) -> str:
+        return "mha.o"
+
+    @property
+    def function_name(self) -> str:
+        return "matmul_softmax"
+
+    @property
+    def zero_name(self) -> str:
+        return "zero_bf16"
+
+    def operand_layouts(self) -> Sequence[TiledStridedLayout]:
+        a, b, _ = GemmKernel.operand_layouts(self)
+        rows = MAC_ROWS_BFP16 if self.bfp16_mmul else 4
+        return [
+            a,
+            b,
+            TiledStridedLayout(
+                [
+                    TiledStride([Stride(rows * self.n, self.m // rows), Stride(self.n, rows)]),
+                    TiledStride([Stride(T, self.n // T), Stride(1, T)]),
+                ]
+            ),
+        ]
+
+    def _scale_type(self) -> MemRefType:
+        return MemRefType(self.element_type, (SCALE_ROWS * self.m,))
+
+    def _state_buffer(self, device: DeviceOp, tile: TileOp, rewriter: PatternRewriter | None = None) -> SSAValue:
+        return _core_buffer(device, tile, "state", self.element_type, SCALE_ROWS * self.m, rewriter)
+
+    def function_type(self, op: ComputationNodeOp) -> FunctionType:
+        return FunctionType.from_lists(
+            inputs=[
+                op.inputs[0].type,
+                op.inputs[1].type,
+                op.inputs[2].type,
+                self._scale_type(),
+                MemRefType(i32, (2,)),
+                self.element_type,
+                i32,
+                i32,
+                i32,
+                i32,
+            ],
+            outputs=[],
+        )
+
+    def rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
+        device, tile = _device(op), _tile(op)
+        _index_buffer(device, tile, rewriter)
+        self._state_buffer(device, tile, rewriter)
+        _scale_fifo(device, rewriter, tile, _partner(device, tile, "matmul_PV"), self.element_type, SCALE_ROWS * self.m)
+        SymbolTable.insert_or_update(
+            device,
+            FuncOp("init_scale_buffer", FunctionType.from_lists([self._scale_type(), i32], []), Region(), "private"),
+        )
+        snapshot = FuncOp(
+            SNAPSHOT, FunctionType.from_lists([self._scale_type(), self._scale_type(), i32], []), Region(), "private"
+        )
+        snapshot.attributes["link_with"] = StringAttr(SNAPSHOT_OBJECT)
+        SymbolTable.insert_or_update(device, snapshot)
+        GemmKernel.rewrite(self, op, rewriter)
+
+    def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
+        device, tile = _device(op), _tile(op)
+        query, key = _kernel_dims(op)
+        key_ops, key_block, key_blocks = _block_index(op, key)
+        query_ops, query_block, query_blocks = _block_index(op, query)
+        acquire = ObjectFifoAcquireOp(
+            IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Produce.get_int(), 32),
+            IntegerAttr.from_int_and_width(1, 32),
+            _scale_name(tile),
+            (SCALE_ROWS * self.m,),
+            self.element_type,
+        )
+        state = self._state_buffer(device, tile)
+        ops: list[Operation] = [*key_ops, *query_ops]
+        ops += _store_index(index := _index_buffer(device, tile), key_block, query_block)
+        ops += [
+            rows := ConstantOp.from_int_and_width(self.m, i32),
+            zero := ConstantOp.from_int_and_width(0, i32),
+            opening := CmpiOp(key_block, zero, "eq"),
+            IfOp(
+                opening,
+                [],
+                Region(Block([CallOp("init_scale_buffer", [state, rows.result], []), YieldOp()])),
+            ),
+            log2e := ConstantOp(FloatAttr(LOG2E, f32)),
+            scaling := TruncFOp(log2e, self.element_type),
+            columns := ConstantOp.from_int_and_width(self.n, i32),
+            queries := ConstantOp.from_int_and_width(query_blocks * self.m, i32),
+            keys := ConstantOp.from_int_and_width(key_blocks * self.n, i32),
+            CallOp(
+                self.function_name,
+                [
+                    op.inputs[0],
+                    op.inputs[1],
+                    op.inputs[2],
+                    state,
+                    index,
+                    scaling.result,
+                    rows.result,
+                    columns.result,
+                    queries.result,
+                    keys.result,
+                ],
+                [],
+            ),
+            acquire,
+            scale := ObjectFIFOSubviewAccessOp(IntegerAttr(0, i32), acquire),
+            width := ConstantOp.from_int_and_width(SCALE_ROWS * self.m, i32),
+            CallOp(SNAPSHOT, [state, scale.output, width.result], []),
+            ObjectFIFOReleaseOp(
+                IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Produce.get_int(), 32),
+                IntegerAttr.from_int_and_width(1, 32),
+                _scale_name(tile),
+            ),
+        ]
+        return ops
+
+
+@dataclass
 class FlashKernel(GemmKernel):
     """The value half of an online-softmax step: ``O += P V``, rescaled as the row max moves.
 
@@ -468,16 +621,14 @@ class FlashKernel(GemmKernel):
     def rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
         device, tile = _device(op), _tile(op)
         _index_buffer(device, tile, rewriter)
-        _scale_fifo(
-            device, rewriter, _partner(device, tile, "partial_softmax"), tile, self.element_type, SCALE_ROWS * self.m
-        )
+        _scale_fifo(device, rewriter, _partner(device, tile, SCORE_SIDE), tile, self.element_type, SCALE_ROWS * self.m)
         SymbolTable.insert_or_update(device, FuncOp("rescale_O", self._rescale_type(op), Region(), "private"))
         GemmKernel.rewrite(self, op, rewriter)
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         self.check_operands(op)
         device, tile = _device(op), _tile(op)
-        source = _partner(device, tile, "partial_softmax")
+        source = _partner(device, tile, SCORE_SIDE)
         kernel_dims = _kernel_dims(op)
         space = cast(StrensorType, op.output.type).ssis.data
         reduced = {var.dim for var in space.vars if var.type is not StrensorVarType.KERNEL} - set(kernel_dims)

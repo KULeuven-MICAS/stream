@@ -1,0 +1,8 @@
+name: mem_tile
+type: aie2.memory
+max_object_fifo_depth: 48
+
+memory:
+  capacity: 4194304  # 512 KB in bits, AIE2TargetModel::getMemTileSize
+  bandwidth_min: 128  # bits/cc
+  bandwidth_max: 768  # bits/cc
