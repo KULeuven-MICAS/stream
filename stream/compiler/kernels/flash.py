@@ -124,15 +124,6 @@ TILED_IN, TILED_OUT = 1, 2
 FLASH_POINT, FLASH_EXTENT, FLASH_KERNEL = "flash_point", "flash_extent", "flash_kernel"
 
 
-def _runs(core: CoreOp, function: str | tuple[str, ...]) -> bool:
-    """Whether this core runs ``function``, before or after its node was rewritten."""
-    names = (function,) if isinstance(function, str) else function
-    return any(
-        (isinstance(op, ComputationNodeOp) and op.kernel.data.startswith(name))
-        or (isinstance(op, CallOp) and op.callee.root_reference.data == name)
-        for op in core.walk()
-        for name in names
-    )
 
 
 def _spatial_point(op: ComputationNodeOp, dim) -> int | None:
@@ -222,9 +213,6 @@ def _partners(device: DeviceOp, op: ComputationNodeOp, function: str | tuple[str
     return [tile for _, tile in found]
 
 
-def _runs_name(node: ComputationNodeOp, function: str | tuple[str, ...]) -> bool:
-    names = (function,) if isinstance(function, str) else function
-    return any(node.kernel.data.startswith(name) for name in names)
 
 
 def _partner(device: DeviceOp, op: ComputationNodeOp, function: str | tuple[str, ...]) -> TileOp:

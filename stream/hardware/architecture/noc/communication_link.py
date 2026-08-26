@@ -13,14 +13,11 @@ def get_bidirectional_edges(
     unit_energy_cost: float,
     link_type: Literal["bus"] | Literal["link"],
     bus_instance: "CommunicationLink | None" = None,
-    setup_latency: int = 0,
 ) -> list[tuple["Core", "Core", dict[str, "CommunicationLink"]]]:
     """Create a list with two edges: from A to B and B to A."""
-    bus = bus_instance or CommunicationLink(
-        "Any", "Any", bandwidth, unit_energy_cost, bidirectional=True, setup_latency=setup_latency
-    )
-    link_a_to_b = CommunicationLink(core_a, core_b, bandwidth, unit_energy_cost, setup_latency=setup_latency)
-    link_b_to_a = CommunicationLink(core_b, core_a, bandwidth, unit_energy_cost, setup_latency=setup_latency)
+    bus = bus_instance or CommunicationLink("Any", "Any", bandwidth, unit_energy_cost, bidirectional=True)
+    link_a_to_b = CommunicationLink(core_a, core_b, bandwidth, unit_energy_cost)
+    link_b_to_a = CommunicationLink(core_b, core_a, bandwidth, unit_energy_cost)
 
     # if have_shared_memory(core_a, core_b):
     #     # No edge if the cores have a shared memory
@@ -52,15 +49,11 @@ class CommunicationLink:
         bandwidth: int | float,
         unit_energy_cost: float,
         bidirectional: bool = False,
-        setup_latency: int = 0,
     ) -> None:
         self.sender = sender
         self.receiver = receiver
         self.bandwidth = bandwidth
         self.unit_energy_cost = unit_energy_cost
-        # Cycles a transfer over this link costs before any data moves. Zero keeps the
-        # bandwidth-only model this class had.
-        self.setup_latency = setup_latency
         self.bidirectional = bidirectional  # TODO this property is not in use?
 
     def __str__(self) -> str:
@@ -70,9 +63,7 @@ class CommunicationLink:
         return str(self)
 
     def __hash__(self) -> int:
-        return hash(
-            (self.sender, self.receiver, self.bandwidth, self.unit_energy_cost, self.bidirectional, self.setup_latency)
-        )
+        return hash((self.sender, self.receiver, self.bandwidth, self.unit_energy_cost, self.bidirectional))
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, CommunicationLink) and (self.sender, self.receiver, self.bandwidth) == (

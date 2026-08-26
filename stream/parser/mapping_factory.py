@@ -52,7 +52,6 @@ class MappingFactory:
                     resource_allocation=resource_allocation,
                     inter_core_tiling=inter_core_tiling,
                     kernel=kernel,
-                    cost_scale=float(mapping_data.get("cost_scale", 1.0)),
                 ),
             )
         return mapping

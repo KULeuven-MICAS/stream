@@ -34,12 +34,6 @@ class MappingValidator:
             "required": False,
             "default": [],
         },
-        "cost_scale": {
-            "type": "float",
-            "required": False,
-            "default": 1.0,
-            "min": 0,
-        },
         "kernel": {
             "type": "dict",
             "schema": {

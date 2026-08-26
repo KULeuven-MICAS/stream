@@ -286,9 +286,7 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
         # ── Computation node events (one per core group) ── #
         for node in tta.ssc_nodes:
             slot = tta.slot_of[node]
-            # This node's own entry first: nodes equal to the loop nest can still differ
-            # in cost, and only its own entry carries that.
-            eq_node = node if tta.cost_lut.get_cores(node) else tta.cost_lut.get_equal_node(node)
+            eq_node = tta.cost_lut.get_equal_node(node)
             if eq_node is not None:
                 lut_cores = tta.cost_lut.get_cores(eq_node)
                 if lut_cores:
@@ -424,9 +422,7 @@ def export_steady_state_trace(  # noqa: PLR0912, PLR0915
         # Computation node events
         for node in tta.ssc_nodes:
             slot = tta.slot_of[node]
-            # This node's own entry first: nodes equal to the loop nest can still differ
-            # in cost, and only its own entry carries that.
-            eq_node = node if tta.cost_lut.get_cores(node) else tta.cost_lut.get_equal_node(node)
+            eq_node = tta.cost_lut.get_equal_node(node)
             if eq_node is not None:
                 lut_cores = tta.cost_lut.get_cores(eq_node)
                 if lut_cores:

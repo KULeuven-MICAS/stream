@@ -160,9 +160,6 @@ class AcceleratorFactory:
             connection_type = connection.get("type", "link")
             bw = connection["bandwidth"]
             uec = connection.get("unit_energy_cost", default_unit_energy_cost)
-            # Cycles the interconnect charges before any data moves. Absent, links stay
-            # bandwidth only, which is what every description without the field expects.
-            setup = int(connection.get("setup_latency", 0))
             core_objs = [cores[cid] for cid in connection["cores"]]
             CONNECTION_LENGTH_FOR_ONE_TO_ONE = 2
             if connection_type == "link":
@@ -178,12 +175,11 @@ class AcceleratorFactory:
                     bandwidth=bw,
                     unit_energy_cost=uec,
                     link_type=connection_type,
-                    setup_latency=setup,
                 )
             elif connection_type == "bus":
                 # Connect cores to bus, edge by edge
                 # Make sure all links refer to the same `CommunicationLink` instance
-                bus_instance = CommunicationLink("Any", "Any", bw, uec, bidirectional=True, setup_latency=setup)
+                bus_instance = CommunicationLink("Any", "Any", bw, uec, bidirectional=True)
                 pairs_this_connection = [(a, b) for idx, a in enumerate(core_objs) for b in core_objs[idx + 1 :]]
                 for core_a, core_b in pairs_this_connection:
                     edges += get_bidirectional_edges(
@@ -193,7 +189,6 @@ class AcceleratorFactory:
                         unit_energy_cost=uec,
                         link_type="bus",
                         bus_instance=bus_instance,
-                        setup_latency=setup,
                     )
             else:
                 raise ValueError(
