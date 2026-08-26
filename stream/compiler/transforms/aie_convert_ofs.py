@@ -1012,13 +1012,14 @@ class RealizeLinks(RewritePattern):
 
         self.match_link_objects(device_op, pulls, pushes)
 
-        def offsets(names: Sequence[StringAttr]) -> Sequence[int]:
-            # A side with one fifo carries no offsets: the dialect reads a non-empty pair
-            # of offset lists as a join and a distribute at once, which it rejects. The rest
-            # land one object apart, which is what the other side was just sized to hold.
+        def offsets(names: Sequence[StringAttr], across: Sequence[StringAttr]) -> Sequence[int]:
+            # A side with one fifo carries no offsets: the dialect reads a non-empty pair of
+            # offset lists as a join and a distribute at once, which it rejects. The rest
+            # divide the object on the other side between them, so each gets a contiguous
+            # share of whatever that side stages -- one round of it or several.
             if len(names) == 1:
                 return []
-            step = self.object_elements(device_op, names[0])
+            step = self.object_elements(device_op, across[0]) // len(names)
             return tuple(i * step for i in range(len(names)))
 
         if len(pulls) > 1 and len(pushes) > 1:
@@ -1042,8 +1043,8 @@ class RealizeLinks(RewritePattern):
                 ObjectFifoLinkOp(
                     [SymbolRefAttr(o) for o in pulls],
                     [SymbolRefAttr(o) for o in pushes],
-                    offsets(pulls),
-                    offsets(pushes),
+                    offsets(pulls, pushes),
+                    offsets(pushes, pulls),
                 )
             ]
 
@@ -1179,7 +1180,10 @@ class RealizeLinks(RewritePattern):
             raise NotImplementedError(f"a link handing out objects of differing sizes {parts}")
         need = sum(parts)
         shape = tuple(cast(ObjectFIFO[Attribute], held.elemType).buffer.get_shape())
-        if prod(shape) == need:
+        # A tile may stage several rounds of the same gather or hand-out, which is its own
+        # business: the offsets step by one round either way. Only a side that cannot hold a
+        # whole number of them has the wrong object.
+        if prod(shape) >= need and not prod(shape) % need:
             return
         kernel = shape[-2:] if len(shape) > 1 else shape
         count, rem = divmod(need, prod(kernel))
