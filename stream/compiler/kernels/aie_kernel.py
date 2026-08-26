@@ -46,18 +46,23 @@ def elementwise_operand_layout(m: int, n: int, layout: str, mac_rows: int = R) -
     )
 
 
-def induction_variable(op: Operation, var: StrensorVar) -> SSAValue:
+def induction_variable(op: Operation, var: StrensorVar, occurrence: int = 0) -> SSAValue:
     """The induction variable of the enclosing loop iterating ``var``.
 
     ``IterationSpaceToFor`` names every loop it creates after the variable it drives,
     which is the only way back from a kernel call to where in the iteration space it sits.
+    A dimension split into parts of equal size gives loops that name themselves alike, so
+    ``occurrence`` picks among them counting from the innermost out -- the order the parts
+    themselves are read in.
     """
-    parent = op.parent_op()
+    parent, seen = op.parent_op(), 0
     while parent is not None:
         if isinstance(parent, ForOp) and parent.attributes.get("layer_dim") == StrensorVarAttr(var):
-            return parent.body.block.args[0]
+            if seen == occurrence:
+                return parent.body.block.args[0]
+            seen += 1
         parent = parent.parent_op()
-    raise ValueError(f"kernel call is not inside the loop iterating {var}")
+    raise ValueError(f"kernel call is not inside the loop iterating {var} ({occurrence})")
 
 
 @dataclass

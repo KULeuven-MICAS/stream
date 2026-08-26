@@ -180,35 +180,24 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                         type=IterationVariableType.SPATIAL,
                     )
                 )
-            elif dim not in workload.get_dims(node):
-                # if isinstance(node, ComputationNode):
-                #     effect = LoopEffect.ABSENT
-                # elif isinstance(node, TransferNode):
-                #     compute_preds_succs = get_compute_predecessors_successors(node, workload)
-                #     dim_not_in_any_compute = all(dim not in workload.get_dims(n) for n in compute_preds_succs)
-                #     effect = LoopEffect.ABSENT if dim_not_in_any_compute else LoopEffect.INVARIANT
-                # # This dimension is not present, so add an absent spatial var
-                iteration_variables[node].append(
-                    IterationVariable(
-                        dimension=dim,
-                        size=unrolling,
-                        effect=LoopEffect.ABSENT,
-                        type=IterationVariableType.SPATIOTEMPORAL,
-                    )
-                )
             elif any(dim == su[0] for su in spatial_unrollings[node]):
                 # This node has a different unrolling size for the unique dim
                 # Create a hybrid of both spatial and temporal iteration variables
                 spatial_size = next(su[1] for su in spatial_unrollings[node] if su[0] == dim)
                 remaining_size, rem = divmod(unrolling, spatial_size)
                 assert rem == 0, f"Unrolling size {unrolling} not divisible by spatial size {spatial_size}"
-                # First add the spatiotemporal variable
-                effect = LoopEffect.VARYING if dim in workload.get_dims(node) else LoopEffect.INVARIANT
+                own = dim in workload.get_dims(node)
+                effect = LoopEffect.VARYING if own else LoopEffect.INVARIANT
+                # First add the spatiotemporal variable. A dimension outside this operand's
+                # index space addresses nothing over time, so the remainder the cores iterate
+                # is absent rather than invariant: the tensor is already where it is needed
+                # and no step of that loop asks for it again. The spatial half stays, so the
+                # operand still reaches every core the dimension is spread over.
                 iteration_variables[node].append(
                     IterationVariable(
                         dimension=dim,
                         size=remaining_size,
-                        effect=effect,
+                        effect=effect if own else LoopEffect.ABSENT,
                         type=IterationVariableType.SPATIOTEMPORAL,
                     )
                 )
@@ -219,6 +208,17 @@ def _create_spatial_iteration_variables(workload: "Workload", spatial_unrollings
                         size=spatial_size,
                         effect=effect,
                         type=IterationVariableType.SPATIAL,
+                    )
+                )
+            elif dim not in workload.get_dims(node):
+                # Not this node's dimension and no unrolling of its own: one absent extent
+                # over the whole split.
+                iteration_variables[node].append(
+                    IterationVariable(
+                        dimension=dim,
+                        size=unrolling,
+                        effect=LoopEffect.ABSENT,
+                        type=IterationVariableType.SPATIOTEMPORAL,
                     )
                 )
             else:

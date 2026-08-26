@@ -84,6 +84,9 @@ class AIECodeGenerationStage(Stage):
         # Each traced tile needs its own packet route, and a whole-array design has more
         # cores than the stream switches can carry routes for.
         self.trace_max_tiles = self.ctx.get("trace_max_tiles", MAX_TRACED_TILES)
+        # Which tiles, when the first few in walk order are not the interesting ones: a
+        # producer and its consumer say more than two cores running the same kernel.
+        self.trace_tiles = tuple(tuple(t) for t in self.ctx.get("trace_tiles", ()))
         self.npu = self.ctx.get("npu", "npu2")
         self.runtime_args = self.ctx.get("runtime_args", [])
         self.module = None
@@ -421,7 +424,11 @@ class AIECodeGenerationStage(Stage):
         ClearMemorySpace().apply(self.context, module)
         # Before final.mlir is written, since that file is what downstream hosts compile.
         if self.trace_size:
-            AIEAddTracingScript(trace_size=self.trace_size, max_tiles=self.trace_max_tiles).apply(self.context, module)
+            AIEAddTracingScript(
+                trace_size=self.trace_size,
+                max_tiles=self.trace_max_tiles,
+                tiles=self.trace_tiles,
+            ).apply(self.context, module)
         with open(output_path + "/final.mlir", "w") as f:
             f.write(str(module))
 

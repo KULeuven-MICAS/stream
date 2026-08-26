@@ -92,7 +92,8 @@ class CoreCostEstimationStage(Stage):
                 equal_node = self.cost_lut.get_equal_node(node)
                 equal_core = self.cost_lut.get_equal_core(equal_node, core) if equal_node else None
                 equal_mapping = self.check_equal_mapping(node, equal_node) if equal_node else None
-                if equal_node and equal_core and equal_mapping:
+                same_cost = equal_node is not None and self._cost_scale(node) == self._cost_scale(equal_node)
+                if equal_node and equal_core and equal_mapping and same_cost:
                     cost = pickle_deepcopy(self.cost_lut.get_cost(equal_node, equal_core))
                     allow_overwrite = node.name == equal_node.name  # e.g. previous run with same mapping
                     self.cost_lut.add_cost(node, core, cost, allow_overwrite=allow_overwrite)
@@ -104,6 +105,13 @@ class CoreCostEstimationStage(Stage):
             self.remove_old_entries(node)
             if seen_new:
                 self.cost_lut.save()
+
+    def _cost_scale(self, node: ComputationNode) -> float:
+        """What this node's kernel is measured to cost against what its loop nest says."""
+        try:
+            return float(self.mapping.get(node).cost_scale)
+        except KeyError:
+            return 1.0
 
     def check_equal_mapping(self, node1: ComputationNode, node2: ComputationNode) -> bool:
         if node2 is None:

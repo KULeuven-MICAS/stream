@@ -1,10 +1,10 @@
 import os
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from functools import reduce
 from itertools import product
 from math import isqrt, prod
-from typing import Self
+from typing import Self, cast
 
 from xdsl.context import Context
 from xdsl.dialects import scf
@@ -38,6 +38,7 @@ from xdsl_aie.dialects.aie import (
     DeviceOp,
     DMABDOp,
     EndOp,
+    ObjectFIFO,
     ObjectFifoAcquireOp,
     ObjectFifoLinkOp,
     ObjectFifoOp,
@@ -65,12 +66,19 @@ from stream.datatypes import LayerDim
 
 # A dimension a memory tile hands out arrives in a spatial part and a temporal one.
 SPLIT_PARTS = 2
+# The first row of the array holding compute tiles; below it are the shim and memory rows.
+COMPUTE_ROW = 2
 
 
 def _splittable(var: StrensorVar, dim: LayerDim) -> bool:
-    """Whether a variable may be folded into a dimension's split. A kernel or absent
-    variable never is: it describes the block itself, not how the block is handed out."""
-    return var.dim == dim and var.type in (StrensorVarType.SPATIAL, StrensorVarType.TEMPORAL)
+    """Whether a variable may be folded into a dimension's split.
+
+    A kernel variable never is: it describes the block itself, not how the block is handed
+    out. An absent one may, when it carries the split's own dimension -- an operand the
+    dimension does not index still has to say how far the split reaches, and says it by
+    being absent over that extent.
+    """
+    return var.dim == dim and var.type is not StrensorVarType.KERNEL
 
 
 def _align_spaces(
@@ -380,6 +388,47 @@ class ChannelToObjectFifoPass(RewritePattern):
 
         return ofs
 
+    def switch_fork(
+        self,
+        producers: Sequence[PushOp],
+        consumers: Sequence[PullOp],
+        spatial: Sequence[StrensorVar],
+        spatial_dims: Sequence[StrensorVar],
+        fork_dims: Sequence[StrensorVar],
+        name_base: str,
+        i: int,
+    ) -> Sequence[ObjectFifoOp]:
+        """One core's fifos to the several it hands to, one for each of them to hold."""
+        assert len(fork_dims) == 1
+        source = next(
+            p for p in producers if p.spatial_index is not None and set(spatial) <= set(p.spatial_index.data.vars)
+        )
+        assert isinstance(source_type := source.input.type, StrensorType)
+
+        fifos: list[ObjectFifoOp] = []
+        for j, fork in enumerate(iterate_spat_vars(fork_dims)):
+            point = _consumer_point((spatial, fork), {v.dim: v.size for v in spatial_dims})
+            target = next(
+                c for c in consumers if c.spatial_index is not None and point <= set(c.spatial_index.data.vars)
+            )
+            object_fifo = ObjectFifoOp.from_referenced_type(
+                self.get_tile(source),
+                [self.get_tile(target)],
+                name_base + f"switch_fork_{i}_{j}",
+                # One object apiece: the core holds one of every fifo it hands to across the
+                # whole turn, so a second of each buys no overlap and costs the core the room
+                # it needs for the operands it is reading.
+                (1, 1),
+                source_type.get_element_type(),
+                source_type.get_kernel_shape(),
+            )
+            fifos.append(object_fifo)
+            target.attributes["of"] = object_fifo.sym_name
+
+        source.attributes["of"] = ArrayAttr(x.sym_name for x in fifos)
+        source.attributes["relay_dim"] = StringAttr(str(fork_dims[0].dim))
+        return fifos
+
     def compute_to_compute(
         self,
         producers: Sequence[PushOp],
@@ -399,13 +448,23 @@ class ChannelToObjectFifoPass(RewritePattern):
             x[1] for x in transforms if x[0].type == StrensorVarType.ABSENT and x[1].type == StrensorVarType.SPATIAL
         ]
 
+        # The mirror of a join: one core holds over time what several hold at once.
+        fork_dims = [
+            x[1] for x in transforms if x[0].type == StrensorVarType.TEMPORAL and x[1].type == StrensorVarType.SPATIAL
+        ]
+
         ofs: list[ObjectFifoOp] = []
 
         # max one spatial dimension:
         assert len(spatial_dims) <= 1
         for i, spatial in enumerate(iterate_spat_vars(spatial_dims)):
+            # Switch Fork Patterns:
+            if fork_dims:
+                assert len(spatial_dims) + len(fork_dims) == len(transforms)
+                ofs.extend(self.switch_fork(producers, consumers, spatial, spatial_dims, fork_dims, name_base, i))
+
             # Switch Join Patterns:
-            if join_dims:
+            elif join_dims:
                 assert len(join_dims) == 1
                 assert len(spatial_dims) + len(join_dims) == len(transforms)
 
@@ -422,10 +481,9 @@ class ChannelToObjectFifoPass(RewritePattern):
 
                 # find correct consumer:
                 for j, join in enumerate(iterate_spat_vars(join_dims)):
+                    point = _consumer_point((spatial, join), {v.dim: v.size for v in spatial_dims})
                     source = next(
-                        p
-                        for p in producers
-                        if p.spatial_index is not None and set(spatial) | set(join) <= set(p.spatial_index.data.vars)
+                        p for p in producers if p.spatial_index is not None and point <= set(p.spatial_index.data.vars)
                     )
 
                     object_fifo = ObjectFifoOp.from_referenced_type(
@@ -928,23 +986,40 @@ class RealizeLinks(RewritePattern):
         push = next(iter(pull.output.uses)).operation
         assert isinstance(push, PushOp)
 
-        assert isinstance((strensor := pull.output.type), StrensorType)
+        assert isinstance(pull.output.type, StrensorType)
 
         ofs_pull = pull.attributes.get("of")
         assert isa(ofs_pull, StringAttr) or isa(ofs_pull, ArrayAttr[StringAttr])
         ofs_push = push.attributes.get("of")
         assert isa(ofs_push, StringAttr) or isa(ofs_push, ArrayAttr[StringAttr])
 
-        num_elements = prod(strensor.get_kernel_shape()) * prod(strensor.get_local_shape())
         # A memory tile gathers from the cores above it and hands out to the cores below,
         # and either side may be several fifos: one row a layer makes one of them single,
         # two rows a layer makes both plural.
-        gathering, handing = isinstance(ofs_pull, ArrayAttr), isinstance(ofs_push, ArrayAttr)
-        pulls = list(ofs_pull) if gathering else [ofs_pull]
-        pushes = list(ofs_push) if handing else [ofs_push]
+        pulls = list(ofs_pull) if isinstance(ofs_pull, ArrayAttr) else [ofs_pull]
+        pushes = list(ofs_push) if isinstance(ofs_push, ArrayAttr) else [ofs_push]
 
-        def offsets(count: int, several: bool) -> Sequence[int]:
-            return tuple(range(0, num_elements, num_elements // count)) if several else []
+        assert (device_op := pull.parent_op()) is not None
+        while not isinstance(device_op, DeviceOp):
+            assert (device_op := device_op.parent_op()) is not None
+
+        # A layer wider than the one it feeds sends the tile several streams and takes one
+        # back, or the other way round. The tile can relay them side by side -- converting
+        # each one's layout as it goes, which is the whole reason it is there -- once the
+        # thin side has a fifo per stream too.
+        if len(pulls) != len(pushes) and min(len(pulls), len(pushes)) == 1:
+            pulls, pushes = self.widen_relay(device_op, pull, push, pulls, pushes, rewriter)
+
+        self.match_link_objects(device_op, pulls, pushes)
+
+        def offsets(names: Sequence[StringAttr]) -> Sequence[int]:
+            # A side with one fifo carries no offsets: the dialect reads a non-empty pair
+            # of offset lists as a join and a distribute at once, which it rejects. The rest
+            # land one object apart, which is what the other side was just sized to hold.
+            if len(names) == 1:
+                return []
+            step = self.object_elements(device_op, names[0])
+            return tuple(i * step for i in range(len(names)))
 
         if len(pulls) > 1 and len(pushes) > 1:
             # The tile has no one buffer to gather into and hand out from -- the dialect
@@ -967,17 +1042,13 @@ class RealizeLinks(RewritePattern):
                 ObjectFifoLinkOp(
                     [SymbolRefAttr(o) for o in pulls],
                     [SymbolRefAttr(o) for o in pushes],
-                    offsets(len(pulls), gathering),
-                    offsets(len(pushes), handing),
+                    offsets(pulls),
+                    offsets(pushes),
                 )
             ]
 
         # insert link near object fifo definition
         last_fifo = ofs_push.data[-1] if isinstance(ofs_push, ArrayAttr) else ofs_push
-
-        assert (device_op := pull.parent_op()) is not None
-        while not isinstance(device_op, DeviceOp):
-            assert (device_op := device_op.parent_op()) is not None
 
         last_fifo_op = SymbolTable.lookup_symbol(device_op, last_fifo)
         assert isinstance(last_fifo_op, ObjectFifoOp)
@@ -985,6 +1056,143 @@ class RealizeLinks(RewritePattern):
 
         rewriter.erase_op(push)
         rewriter.erase_op(pull)
+
+    @classmethod
+    def widen_relay(
+        cls,
+        device: DeviceOp,
+        pull: PullOp,
+        push: PushOp,
+        pulls: Sequence[StringAttr],
+        pushes: Sequence[StringAttr],
+        rewriter: PatternRewriter,
+    ) -> tuple[Sequence[StringAttr], Sequence[StringAttr]]:
+        """Give the single side of a lopsided link one fifo per stream on the other.
+
+        The core across it then takes turns between them, as it does when wired to several
+        cores directly, and the tile forwards each stream on its own rather than cutting one
+        up or gluing several together. Both sides come back unchanged if it cannot widen.
+        """
+        thin_is_pull = len(pulls) < len(pushes)
+        thin, wide = (pulls, pushes) if thin_is_pull else (pushes, pulls)
+        thin_op, wide_op = (pull, push) if thin_is_pull else (push, pull)
+        over = wide_op.attributes.get("relay_dim")
+        if thin_op.attributes.get("relay_dim") is not None or over is None:
+            return pulls, pushes
+        original = cls.fifo(device, thin[0])
+        if not cls.faces_core(original):
+            return pulls, pushes
+        # The streams together carry what the one fifo carried, so each takes a share rather
+        # than a copy: the core holds one of every stream at once.
+        depth = cls.share_depth(original.elemNumber, len(wide))
+        original.properties["elemNumber"] = depth
+        clones = [original]
+        for j in range(1, len(wide)):
+            clone = ObjectFifoOp(
+                original.producerTile,
+                list(original.consumerTiles),
+                depth,
+                original.elemType,
+                StringAttr(f"{original.sym_name.data}_relay_{j}"),
+                original.dimensionsToStream,
+                original.dimensionsFromStreamPerConsumer,
+            )
+            clones.append(clone)
+        rewriter.insert_op(clones[1:], InsertPoint.after(original))
+        names = ArrayAttr([f.sym_name for f in clones])
+        # The core across the thin side is the one that has to take turns. Every column feeds
+        # the same channel, so re-annotate the op already carrying this fifo, not the first.
+        wanted = PushOp if thin_is_pull else PullOp
+        turning = next(
+            use.operation
+            for use in thin_op.channel.uses
+            if isinstance(use.operation, wanted) and use.operation.attributes.get("of") == thin[0]
+        )
+        for annotated in (turning, thin_op):
+            annotated.attributes["of"] = names
+            annotated.attributes["relay_dim"] = over
+        widened = list(names)
+        return (widened, list(pushes)) if thin_is_pull else (list(pulls), widened)
+
+    @staticmethod
+    def _rebuild_depth(held: Attribute, per_endpoint: Callable[[int, int], int]) -> Attribute:
+        """A fifo's object count, endpoint by endpoint."""
+        if isinstance(held, ArrayAttr):
+            return ArrayAttr(
+                IntegerAttr.from_int_and_width(per_endpoint(i, n.value.data), 32) for i, n in enumerate(held)
+            )
+        assert isinstance(held, IntegerAttr)
+        return IntegerAttr.from_int_and_width(per_endpoint(0, held.value.data), 32)
+
+    @classmethod
+    def scale_depth(cls, held: Attribute, factor: int) -> Attribute:
+        """More objects of a smaller kind, so the tile keeps as much in flight as before."""
+        return cls._rebuild_depth(held, lambda _, n: n * factor)
+
+    @classmethod
+    def share_depth(cls, held: Attribute, streams: int) -> Attribute:
+        """The producer's share when one fifo becomes several.
+
+        It holds one object of every stream at once and has nowhere to put a second set. The
+        tile keeps what it had: it is the side that has to stay ahead.
+        """
+        return cls._rebuild_depth(held, lambda i, n: max(1, n // streams) if i == 0 else n)
+
+    @staticmethod
+    def fifo(device: DeviceOp, name: StringAttr) -> ObjectFifoOp:
+        found = SymbolTable.lookup_symbol(device, name)
+        assert isinstance(found, ObjectFifoOp)
+        return found
+
+    @staticmethod
+    def faces_core(fifo: ObjectFifoOp) -> bool:
+        """Whether either end of this fifo is a compute tile, which fixes its object."""
+        tiles = [fifo.producerTile, *fifo.consumerTiles]
+        rows = [t.owner.row.value.data for t in tiles if isinstance(t.owner, TileOp)]
+        return any(row >= COMPUTE_ROW for row in rows)
+
+    @classmethod
+    def object_elements(cls, device: DeviceOp, name: StringAttr) -> int:
+        return prod(cast(ObjectFIFO[Attribute], cls.fifo(device, name).elemType).buffer.get_shape())
+
+    @classmethod
+    def match_link_objects(cls, device: DeviceOp, pulls: Sequence[StringAttr], pushes: Sequence[StringAttr]) -> None:
+        """Size a link's single side to the whole of its many side.
+
+        A link moves whole objects: gathering, one object below is filled from one of each
+        above; handing out, one above is cut into one for each below. A memory tile sizes its
+        buffer by the reuse window it stages, which is more than it needs when it only
+        forwards. Only the link sees both sides, so the two are reconciled here.
+        """
+        if len(pulls) > 1 and len(pushes) > 1:
+            return
+        many, single = (pulls, pushes) if len(pulls) >= len(pushes) else (pushes, pulls)
+        # A core acquires the object its kernel is written for, so it is the tile's side that
+        # gives way. With one fifo either side that is what decides which of the two moves.
+        if len(many) == 1 and not cls.faces_core(cls.fifo(device, many[0])):
+            many, single = single, many
+        held = cls.fifo(device, single[0])
+        if cls.faces_core(held):
+            return
+        parts = [cls.object_elements(device, name) for name in many]
+        if len(set(parts)) != 1:
+            raise NotImplementedError(f"a link handing out objects of differing sizes {parts}")
+        need = sum(parts)
+        shape = tuple(cast(ObjectFIFO[Attribute], held.elemType).buffer.get_shape())
+        if prod(shape) == need:
+            return
+        kernel = shape[-2:] if len(shape) > 1 else shape
+        count, rem = divmod(need, prod(kernel))
+        if rem:
+            raise NotImplementedError(f"{need} elements is not a whole number of {kernel} blocks")
+        element = cast(ObjectFIFO[Attribute], held.elemType).buffer.get_element_type()
+        held.properties["elemType"] = ObjectFIFO[Attribute].from_element_type_and_shape(
+            element, kernel if count == 1 else (count, *kernel)
+        )
+        # A smaller object leaves the tile less in flight than it was given, so it keeps as
+        # much by holding more of them.
+        if need < prod(shape) and not prod(shape) % need:
+            held.properties["elemNumber"] = cls.scale_depth(held.elemNumber, prod(shape) // need)
 
 
 def transfer_endpoints(op: PushOp | PullOp) -> tuple[StrensorType, StrensorType]:
@@ -1168,13 +1376,18 @@ class TransferToRuntimeSequence(RewritePattern):
 
 @dataclass
 class TransferToObjectFIFOPattern(RewritePattern):
-    def generate_switch_join(
+    def generate_switch(
         self,
-        op: PullOp,
+        op: PushOp | PullOp,
         ofs: Sequence[StringAttr],
         strensor: StrensorType,
         rewriter: PatternRewriter,
     ):
+        """Take turns between several fifos, one per step of the loop that names them.
+
+        Reading it is a join, over the cores the layer behind is spread across; writing it
+        is the mirror. Either way one object of each is held across the turn.
+        """
         *_, t_var = strensor.ssis.data.get_temporal_variables()
         for_op = op.parent_op()
         assert isinstance(for_op, ForOp)
@@ -1183,7 +1396,8 @@ class TransferToObjectFIFOPattern(RewritePattern):
         # one acquire per fifo
         acquires = []
         releases = []
-        port = ObjectFifoPortEnum.Consume
+        pushing = isinstance(op, PushOp)
+        port = ObjectFifoPortEnum.Produce if pushing else ObjectFifoPortEnum.Consume
         for of in ofs:
             acquire_op = ObjectFifoAcquireOp(
                 IntegerAttr.from_int_and_width(port.get_int(), 32),
@@ -1216,7 +1430,21 @@ class TransferToObjectFIFOPattern(RewritePattern):
         # put all releases after for op:
         rewriter.insert_op(releases, InsertPoint.after(for_op))
         # replace use
-        op.output.replace_by(index_switch.results[0])
+        if pushing:
+            assert isinstance(op.input, OpResult)
+            assert isinstance(compute := op.input.op, ComputationNodeOp)
+            rewriter.replace_op(
+                compute,
+                ComputationNodeOp(
+                    (*compute.inputs, index_switch.results[0]),
+                    compute.result_types,
+                    compute.kernel.data,
+                    compute.spatial_index,
+                ),
+            )
+            op.input.replace_by(index_switch.results[0])
+        else:
+            op.output.replace_by(index_switch.results[0])
         # delete original op
         rewriter.erase_matched_op()
 
@@ -1251,11 +1479,16 @@ class TransferToObjectFIFOPattern(RewritePattern):
         # accesses:
         access_ops = [ObjectFIFOSubviewAccessOp(IntegerAttr(i, i32), acquire_op) for i in range(reuse_factor)]
 
-        # index op to select correct access:
-        index_ops: list[Operation] = [
-            mult_val := ConstantOp.from_int_and_width(1, IndexType()),
-            add_val := ConstantOp.from_int_and_width(0, IndexType()),
-        ]
+        # index op to select correct access, only when there is something to select between:
+        # building it unconditionally would register uses on loop arguments that are never
+        # inserted anywhere.
+        selecting = reuse_factor > 1
+        index_ops: list[Operation] = []
+        if selecting:
+            index_ops = [
+                mult_val := ConstantOp.from_int_and_width(1, IndexType()),
+                add_val := ConstantOp.from_int_and_width(0, IndexType()),
+            ]
         for_op = op.parent_op()
         assert isinstance(for_op, ForOp)
         innermost = None
@@ -1268,33 +1501,40 @@ class TransferToObjectFIFOPattern(RewritePattern):
                 assert isinstance((layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr)
             if innermost is None:
                 innermost = for_op
-            i_arg = MuliOp(mult_val, for_op.body.block.args[0])
-            add_val = AddiOp(add_val, i_arg)
-            mult_val = MuliOp(mult_val, for_op.ub)
-            index_ops.extend([i_arg, add_val, mult_val])
+            if selecting:
+                i_arg = MuliOp(mult_val, for_op.body.block.args[0])
+                add_val = AddiOp(add_val, i_arg)
+                mult_val = MuliOp(mult_val, for_op.ub)
+                index_ops.extend([i_arg, add_val, mult_val])
         if relevant_reuse_vars:
             for_op = for_op.parent_op()
 
-        index_switch = IndexSwitchOp(
-            arg=add_val,
-            cases=DenseArrayBase.from_list(IntegerType(64), list(range(reuse_factor))),
-            default_region=Region(Block([scf.YieldOp(access_ops[0])])),
-            case_regions=[Region(Block([scf.YieldOp(access_ops[i])])) for i in range(reuse_factor)],
-            result_types=access_ops[0].result_types,
-        )
-        index_ops.append(index_switch)
-
-        # put index switch at innermost relevant for loop
-        if innermost is not None:
-            rewriter.insert_op(index_ops, InsertPoint.at_start(innermost.body.block))
-        # or just before use if no relevant loops exist:
-        elif isinstance(op, PullOp):
-            use_op = next(use.operation for use in op.output.uses)
-            rewriter.insert_op(index_ops, InsertPoint.before(use_op))
+        # A single object needs no selection, and the acquire below already dominates
+        # every use of it.
+        if not selecting:
+            selected = access_ops[0].results[0]
         else:
-            assert isinstance(op.input, OpResult)
-            use_op = op.input.op
-            rewriter.insert_op(index_ops, InsertPoint.before(use_op))
+            index_switch = IndexSwitchOp(
+                arg=add_val,
+                cases=DenseArrayBase.from_list(IntegerType(64), list(range(reuse_factor))),
+                default_region=Region(Block([scf.YieldOp(access_ops[0])])),
+                case_regions=[Region(Block([scf.YieldOp(access_ops[i])])) for i in range(reuse_factor)],
+                result_types=access_ops[0].result_types,
+            )
+            index_ops.append(index_switch)
+            selected = index_switch.results[0]
+
+            # put index switch at innermost relevant for loop
+            if innermost is not None:
+                rewriter.insert_op(index_ops, InsertPoint.at_start(innermost.body.block))
+            # or just before use if no relevant loops exist:
+            elif isinstance(op, PullOp):
+                use_op = next(use.operation for use in op.output.uses)
+                rewriter.insert_op(index_ops, InsertPoint.before(use_op))
+            else:
+                assert isinstance(op.input, OpResult)
+                use_op = op.input.op
+                rewriter.insert_op(index_ops, InsertPoint.before(use_op))
 
         release_op = ObjectFIFOReleaseOp(
             IntegerAttr.from_int_and_width(port.get_int(), 32),
@@ -1323,14 +1563,14 @@ class TransferToObjectFIFOPattern(RewritePattern):
             assert isinstance(op.input, OpResult)
             assert isinstance(compute := op.input.op, ComputationNodeOp)
             new_compute = ComputationNodeOp(
-                (*compute.inputs, index_switch.results[0]),
+                (*compute.inputs, selected),
                 compute.result_types,
                 compute.kernel.data,
                 compute.spatial_index,
             )
             rewriter.replace_op(compute, new_compute)
 
-        operand.replace_by(index_switch.results[0])
+        operand.replace_by(selected)
         rewriter.erase_matched_op()
 
     @op_type_rewrite_pattern
@@ -1350,9 +1590,8 @@ class TransferToObjectFIFOPattern(RewritePattern):
         assert isa(ofs, ArrayAttr[StringAttr]) or isa(ofs, StringAttr)
 
         if isinstance(ofs, ArrayAttr):
-            assert isinstance(op, PullOp)
             # TODO: make sure there is no other temporal reuse happening
-            self.generate_switch_join(op, ofs.data, strensor, rewriter)
+            self.generate_switch(op, ofs.data, strensor, rewriter)
         else:
             self.generate_reuse_pattern(op, ofs.data, strensor, rewriter)
 

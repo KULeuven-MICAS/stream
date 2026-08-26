@@ -826,20 +826,45 @@ class SteadyStateScheduler:
                 offchip_core = self.accelerator.get_core(self.accelerator.offchip_core_id)
                 possible_memory_cores = ((offchip_core,),)
         else:
-            possible_memory_cores_set: set[Core] = set()
+            # The destination order is the order the consumers declared, because that is what
+            # pairs a spatial index with a core. Sorting here would silently hand each index a
+            # different core than the computation node it feeds whenever a layer's cores are
+            # not listed in ascending id order.
+            destinations: dict[Core, None] = {}
             for dst in dsts:
                 assert len(self._retrieve_core_allocation(dst)) == 1, "TODO: Support multiple compute allocations."
-                possible_memory_cores_set.update(self._retrieve_core_allocation(dst)[0])
-            possible_memory_cores = (tuple(sorted(possible_memory_cores_set, key=lambda x: x.id)),)
+                destinations.update(dict.fromkeys(self._retrieve_core_allocation(dst)[0]))
+            possible_memory_cores = (tuple(destinations),)
         return possible_memory_cores
 
     def determine_possible_inter_core_tiling(
         self, node: TransferNode, possible_dst_allocs: tuple[tuple[Core, ...], ...], dsts: tuple[HasInputs, ...]
     ) -> tuple[InterCoreTiling, ...]:
         possible_inter_core_tiling = []
+        node_dims = set(self.ssw.get_dims(node))
+        # The first hop of a transfer chain lands on a memory tile, so its own destinations
+        # are transfers; the consumers that decide the split are the compute nodes behind it.
+        compute_dsts = [dst for dst in dsts if isinstance(dst, ComputationNode)] or [
+            dst
+            for dst in get_compute_predecessors_successors(tr=node, workload=self.ssw)
+            if isinstance(dst, ComputationNode)
+        ]
+        # A tensor whose dimensions the consumers do not split is held whole by every tile
+        # it sits on, so its transfer carries no tiling however many copies exist.
+        # Only the hop that lands on the memory tiles carries copies; the hop from them to
+        # the cores still describes how those cores split the work.
+        replicated = (
+            node.transfer_type is TransferType.MEM_TO_MEM
+            and bool(compute_dsts)
+            and not any(
+                dim in node_dims
+                for dst in compute_dsts
+                for dim, _ in self.ssw.get_unique_dims_inter_core_tiling(dst, self.mapping)
+            )
+        )
         for dst_allocs in possible_dst_allocs:
             nb_cores = len(dst_allocs)
-            if nb_cores == 1:
+            if nb_cores == 1 or replicated:
                 dst_tiling = tuple()
             elif all(isinstance(dst, ComputationNode) for dst in dsts):
                 # For fan-out: use the destination with the largest resource allocation
@@ -1020,7 +1045,20 @@ class SteadyStateScheduler:
         # Unrolling binds allocation position to spatial index, so column order keeps a tile with its own cores.
         all_mem_cores = sorted(self._get_accelerator_memory_cores(), key=lambda core: (core.col_id, core.id))
         candidates = [tuple(combo) for combo in combinations(all_mem_cores, required_nb_memory_cores)]
+        # A tensor its consumers do not split is held whole, so a single tile can be left
+        # feeding every column. One copy per occupied column is the alternative: each tile
+        # serves its own column, and the shim broadcasts the tensor to them.
+        if total_relevant_unrolling == 1 and node.transfer_type is TransferType.MEM_TO_MEM:
+            per_column = tuple(c for c in all_mem_cores if c.col_id in self._column_ids_of(src))
+            if len(per_column) > 1 and per_column not in candidates:
+                candidates.append(per_column)
         return tuple(candidates)
+
+    def _column_ids_of(self, src: HasOutputs) -> set[int]:
+        """The array columns the source's cores sit in, empty if they carry no coordinates."""
+        allocations = self.mapping.get(src).resource_allocation
+        cores = allocations[0] if allocations else ()
+        return {core.col_id for core in cores if getattr(core, "col_id", None) is not None}
 
     def _columns_of(self, src: HasOutputs) -> int:
         """How many array columns the source's cores sit in, 0 if unknown.
@@ -1028,7 +1066,4 @@ class SteadyStateScheduler:
         Accelerator descriptions need not give their cores coordinates; without them the
         caller falls back to the rows-per-column estimate.
         """
-        allocations = self.mapping.get(src).resource_allocation
-        cores = allocations[0] if allocations else ()
-        columns = {core.col_id for core in cores if getattr(core, "col_id", None) is not None}
-        return len(columns)
+        return len(self._column_ids_of(src))

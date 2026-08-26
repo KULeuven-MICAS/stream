@@ -20,7 +20,8 @@ class AIECostEstimator:
         dim_sizes = [self.workload.get_dimension_size(dim) for dim in self.workload.get_dims(node)]
         total_inter_core_tiling = self._get_total_inter_core_tiling_factor(node)
         macs = prod(dim_sizes) // total_inter_core_tiling
-        kernel = self.mapping.get(node).kernel
+        node_mapping = self.mapping.get(node)
+        kernel = node_mapping.kernel
         # No kernel model (e.g. a generically auto-mapped node) -> assume ideal (100%) utilisation so the
         # run completes with an ideal-cycle estimate instead of failing; a hand-written AIE mapping
         # supplies a real kernel with its measured utilisation.
@@ -28,7 +29,9 @@ class AIECostEstimator:
         ideal_ops_per_cycle = self.ops_per_cycle(node, core)
         ideal_cycles = ceil(macs / ideal_ops_per_cycle)
         ops_per_cycle = ideal_ops_per_cycle * (utilization / 100.0)
-        cycles = ceil(macs / ops_per_cycle)
+        # The operation count says what a kernel computes, not what it costs: a
+        # transcendental is not a multiply-accumulate. cost_scale is the measured ratio.
+        cycles = ceil(macs / ops_per_cycle * node_mapping.cost_scale)
         energy = 0  # TODO
         return CoreCostEntry(
             energy_total=energy,
@@ -39,7 +42,7 @@ class AIECostEstimator:
             cme=None,
             mapping=None,
             layer=node,
-            metadata={"utilization": utilization, "backend": "aie"},
+            metadata={"utilization": utilization, "cost_scale": node_mapping.cost_scale, "backend": "aie"},
         )
 
     def _get_total_inter_core_tiling_factor(self, node):

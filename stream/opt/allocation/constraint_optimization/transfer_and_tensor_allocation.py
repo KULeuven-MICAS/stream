@@ -40,7 +40,10 @@ from stream.opt.allocation.constraint_optimization.context import (
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
     _resource_key,
 )
-from stream.opt.allocation.constraint_optimization.utils import get_active_latency
+from stream.opt.allocation.constraint_optimization.utils import (
+    get_active_latency,
+    get_transfer_latency_for_path,
+)
 from stream.opt.solver import (
     ConstraintSelection,
     LinExpr,
@@ -301,12 +304,7 @@ class TransferAndTensorAllocator:
 
     @staticmethod
     def _transfer_latency_for_path(tr: TransferNode, path: MulticastPathPlan) -> int:
-        if not path or not path.links_used:
-            return 0
-        min_bw = min(link.bandwidth for link in path.links_used)
-        assert len(tr.inputs) == 1, "Only single-input transfers are supported for latency calculation."
-        tensor = tr.inputs[0]
-        return ceil(tensor.size_bits() / min_bw)
+        return get_transfer_latency_for_path(tr, path)
 
     def _ensure_same_ssis_for_all_transfers(self) -> None:
         first_ssis = self.ssis[self.transfer_nodes[0]]

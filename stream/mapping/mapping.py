@@ -44,6 +44,9 @@ class NodeMapping:
     inter_core_tiling: tuple[InterCoreTiling, ...] = field(default_factory=tuple)
     memory_allocation: tuple[tuple[Core, ...], ...] = field(default_factory=tuple)
     kernel: AIEKernel | None = None
+    # What this node's analytical cost is multiplied by to match hardware, since the loop
+    # nest counts operations rather than pricing them. One leaves the model as it was.
+    cost_scale: float = 1.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.resource_allocation, tuple):

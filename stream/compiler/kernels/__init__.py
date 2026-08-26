@@ -33,6 +33,11 @@ AIEKernels = {
     "partial_softmax": lambda utilization, n, layout, m=1, bfp16_mmul=False: PartialSoftmaxKernel(
         utilization, bf16, m, n, layout, bfp16_mmul
     ),
+    # The same step with either side in the tiling a GEMM works in, for a softmax layer that
+    # hands to or takes from the core beside it rather than through a memory tile.
+    "partial_softmax_mode": lambda utilization, n, layout, m=1, bfp16_mmul=False, tiled_in=False, tiled_out=False: (
+        PartialSoftmaxKernel(utilization, bf16, m, n, layout, bfp16_mmul, tiled_in=tiled_in, tiled_out=tiled_out)
+    ),
     # The score GEMM and the online softmax on one core, which is what lets two fused
     # layers cover four rows where three layers leave one idle.
     "matmul_softmax": lambda utilization, m, k, n, layout, bfp16_mmul=False: FusedScoreSoftmaxKernel(
