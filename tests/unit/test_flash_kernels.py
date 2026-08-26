@@ -178,3 +178,17 @@ def test_the_scale_fifo_is_two_deep(column):
     fifos = [op for op in column.walk() if isinstance(op, ObjectFifoOp)]
     assert [fifo.sym_name.data for fifo in fifos] == ["flash_scale_0_1"]
     assert fifos[0].elemNumber.value.data == 2
+
+
+def test_the_fused_score_kernel_stays_in_a_gemms_tilings():
+    """Fusing the score GEMM into the softmax only pays off if neither side is re-laid out.
+
+    Nothing but IRON_FUSED_KERNEL reaches this kernel, so no other test would notice its
+    layouts drifting away from the GEMM it replaces.
+    """
+    from stream.compiler.kernels import AIEKernels
+
+    shape = {"utilization": 50.0, "m": TILE, "k": TILE, "n": TILE, "layout": "default"}
+    fused = AIEKernels["matmul_softmax"](**shape)
+    assert fused.function_name == "matmul_softmax"
+    assert fused.operand_layouts() == AIEKernels["gemm"](**shape).operand_layouts()

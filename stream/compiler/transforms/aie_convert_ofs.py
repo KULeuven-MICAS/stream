@@ -1,4 +1,3 @@
-import os
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from functools import reduce
@@ -717,7 +716,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     self.get_tile(producer, target_type.core_allocation.data[0].data),
                     [self.get_tile(target)],
                     name_base + f"mem_{i}",
-                    (self.held_count(target_type),) * 2 if self.memtile_resend() else (2, 2),
+                    (2, 2),
                     target_type.get_element_type(),
                     self.held_shape(target_type),
                 )
@@ -740,7 +739,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 producerTile=producer_tile,
                 consumerTiles=consumer_tiles,
                 name=name_base + "mem",
-                elemNumber=(self.held_count(strensor),) * 2 if self.memtile_resend() else (2, 2),
+                elemNumber=(2, 2),
                 referenced_type=strensor.get_element_type(),
                 shape=self.held_shape(strensor),
             )
@@ -814,7 +813,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 producerTile=producer_tile,
                 consumerTiles=consumer_tiles,
                 name=name_base + "mem",
-                elemNumber=(self.held_count(strensor),) * 2 if self.memtile_resend() else (2, 2),
+                elemNumber=(2, 2),
                 referenced_type=strensor.get_element_type(),
                 shape=self.held_shape(strensor),
             )
@@ -836,32 +835,6 @@ class ChannelToObjectFifoPass(RewritePattern):
         variables = strensor.ssis.data.vars
         outer = variables[: len(variables) - strensor.reuse_index.data]
         return 2 if any(var.type == StrensorVarType.TEMPORAL for var in outer) else 1
-
-    @staticmethod
-    def memtile_resend() -> bool:
-        """Whether the memory tile may keep a tensor longer than its reader.
-
-        The allocator only produces such a solution when the same flag relaxed its
-        constraint, so codegen follows it rather than deciding for itself.
-        """
-        return os.environ.get("STREAM_MEMTILE_RESEND", "0") != "0"
-
-    @classmethod
-    def resend_count(cls, mem: StrensorType, compute: StrensorType) -> int:
-        """How many times a memory tile hands out what it holds before it is refilled.
-
-        The tile stages whole blocks, so it holds a fixed number of fifo elements while
-        the consumer acquires one per temporal step it runs. Keeping a tensor across a
-        loop the consumer iterates means handing the same elements out again, and that
-        ratio is what the object fifo has to repeat.
-        """
-        if not cls.memtile_resend() or mem.reuse_index.data <= compute.reuse_index.data:
-            return 1
-        held = prod(cls.held_shape(mem)) // prod(mem.get_kernel_shape())
-        variables = compute.ssis.data.vars
-        outer = variables[: len(variables) - compute.reuse_index.data]
-        acquires = prod(var.size for var in outer if var.type == StrensorVarType.TEMPORAL)
-        return max(1, acquires // held) if held else 1
 
     @classmethod
     def held_shape(cls, strensor: StrensorType) -> tuple[int, ...]:
@@ -952,17 +925,8 @@ class ChannelToObjectFifoPass(RewritePattern):
         else:
             raise NotImplementedError()
 
-        resend = (
-            self.resend_count(in_type, out_type)
-            if self.is_mem(in_type.core_allocation.data[0].data)
-            and self.is_compute(out_type.core_allocation.data[0].data)
-            else 1
-        )
         for op in ops:
-            if resend > 1:
-                op.properties["repeat_count"] = IntegerAttr.from_int_and_width(resend, 32)
-            else:
-                del op.properties["repeat_count"]
+            del op.properties["repeat_count"]
         self.of_count += 1
         end_op = device_op.region.block.last_op
         assert isinstance(end_op, EndOp)

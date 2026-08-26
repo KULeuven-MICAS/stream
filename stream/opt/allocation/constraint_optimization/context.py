@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -103,7 +102,6 @@ class NamespaceConstraintConfig:
     max_compute_tile_dma_channels: int
     max_mem_tile_dma_channels: int
     max_shim_tile_dma_channels: int
-    memtile_resend: bool = False
 
 
 class NamespaceConstraints:
@@ -189,10 +187,8 @@ class AIE2Constraints(NamespaceConstraints):
         max_compute_tile_dma_channels: int = 8,
         max_mem_tile_dma_channels: int = 6,
         max_shim_tile_dma_channels: int = 2,
-        memtile_resend: bool = False,
     ) -> None:
         self.offchip_core_id = offchip_core_id
-        self.memtile_resend = memtile_resend
         self.max_compute_tile_dma_channels = max_compute_tile_dma_channels
         self.max_mem_tile_dma_channels = max_mem_tile_dma_channels
         self.max_shim_tile_dma_channels = max_shim_tile_dma_channels
@@ -204,7 +200,6 @@ class AIE2Constraints(NamespaceConstraints):
             max_compute_tile_dma_channels=config.max_compute_tile_dma_channels,
             max_mem_tile_dma_channels=config.max_mem_tile_dma_channels,
             max_shim_tile_dma_channels=config.max_shim_tile_dma_channels,
-            memtile_resend=config.memtile_resend,
         )
 
     # ---- object-FIFO depth ----
@@ -229,17 +224,8 @@ class AIE2Constraints(NamespaceConstraints):
         model: SolverModel,
         transfers: list[tuple[Core, LinExpr, LinExpr]],
     ) -> None:
-        """How long a memory tile may hold a tensor relative to its reader.
-
-        A memory tile can only re-send what it holds if the object fifo carries a repeat
-        count. Without that it may not outlive its reader and the relation is an equality,
-        which lets the compute tile's capacity decide how long the memory tile keeps a
-        tensor and sends the shim offchip for data already on chip. With
-        ``memtile_resend`` the generic ``>=`` in the caller stands instead, and codegen
-        emits the repeat.
-        """
-        if self.memtile_resend:
-            return
+        """An AIE memory tile cannot re-send an object it holds, so it may not outlive
+        its reader. Liftable once the object FIFO repeat count is emitted."""
         for core, mem_level, compute_level in transfers:
             if not self.applies_to(core):
                 continue
@@ -389,10 +375,6 @@ def build_transfer_context(
     max_mem_tile_dma_channels: int = 6,
     max_shim_tile_dma_channels: int = 2,
 ) -> TransferAndTensorContext:
-    # A memory tile may keep a tensor longer than its reader only if codegen emits the
-    # object fifo repeat that re-sends it. Off by default so every other target and
-    # design solves exactly as before.
-    memtile_resend = bool(int(os.environ.get("STREAM_MEMTILE_RESEND", "0")))
     offchip_core_id = accelerator.offchip_core_id
 
     # Memory cores eligible for on-chip caching (not off-chip, memory kind,
@@ -415,7 +397,6 @@ def build_transfer_context(
         max_compute_tile_dma_channels=max_compute_tile_dma_channels,
         max_mem_tile_dma_channels=max_mem_tile_dma_channels,
         max_shim_tile_dma_channels=max_shim_tile_dma_channels,
-        memtile_resend=memtile_resend,
     )
     ns_constraints = tuple(namespace_constraints_for(accelerator, config))
 

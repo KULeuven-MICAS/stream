@@ -124,8 +124,6 @@ TILED_IN, TILED_OUT = 1, 2
 FLASH_POINT, FLASH_EXTENT, FLASH_KERNEL = "flash_point", "flash_extent", "flash_kernel"
 
 
-
-
 def _spatial_point(op: ComputationNodeOp, dim) -> int | None:
     """Where this instance sits along ``dim``, combining the parts its space splits it into.
 
@@ -211,8 +209,6 @@ def _partners(device: DeviceOp, op: ComputationNodeOp, function: str | tuple[str
             f"{_position(mine)}, so they cannot share a scale buffer"
         )
     return [tile for _, tile in found]
-
-
 
 
 def _partner(device: DeviceOp, op: ComputationNodeOp, function: str | tuple[str, ...]) -> TileOp:
