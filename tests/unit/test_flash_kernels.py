@@ -196,3 +196,47 @@ def test_the_fused_score_kernel_stays_in_a_gemms_tilings():
     fused = AIEKernels["matmul_softmax"](**shape)
     assert fused.function_name == "matmul_softmax"
     assert fused.operand_layouts() == AIEKernels["gemm"](**shape).operand_layouts()
+
+
+def test_only_the_kernels_that_carry_a_running_scale_declare_state():
+    """What a kernel keeps between iterations, declared where the size is decided.
+
+    The value GEMM keeps an index buffer too, but both its entries are written on every call
+    and read within it, so nothing crosses an iteration and it is not a recurrence. Declaring
+    it as one would make the value core a carrier in the recurrence bound and forbid the two
+    halves of a step from overlapping.
+    """
+    from stream.compiler.kernels import AIEKernels
+
+    declaring = {
+        name: [s.name for s in kernel.state_operands()]
+        for name, kernel in (
+            ("partial_softmax", AIEKernels["partial_softmax"](utilization=50.0, n=TILE, layout="contiguous", m=TILE)),
+            (
+                "matmul_softmax",
+                AIEKernels["matmul_softmax"](utilization=50.0, m=TILE, k=TILE, n=TILE, layout="default"),
+            ),
+            ("gemm", AIEKernels["gemm"](utilization=61.8, m=TILE, k=TILE, n=TILE, layout="default", flash=True)),
+            ("softmax", AIEKernels["softmax"](utilization=50.0, n=TILE, layout="contiguous")),
+        )
+    }
+    assert declaring == {
+        "partial_softmax": ["flash_state"],
+        "matmul_softmax": ["flash_state"],
+        "gemm": [],
+        "softmax": [],
+    }
+
+
+def test_the_declared_state_is_the_size_the_core_buffer_holds():
+    """The declaration and the allocation are two statements of one fact, so they are checked
+    against each other rather than both against a number written twice."""
+    from stream.compiler.kernels import AIEKernels
+    from stream.compiler.kernels.flash import SCALE_ROWS
+
+    kernel = AIEKernels["partial_softmax"](utilization=50.0, n=TILE, layout="contiguous", m=TILE)
+    (state,) = kernel.state_operands()
+    # _core_buffer allocates SCALE_ROWS * m elements; the declaration says rows per step, and
+    # the node supplies the query extent that a split then divides.
+    assert state.rows * kernel.m == SCALE_ROWS * kernel.m
+    assert (state.carried_over, state.indexed_by) == (1, 0)

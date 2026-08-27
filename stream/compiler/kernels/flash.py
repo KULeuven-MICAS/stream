@@ -67,7 +67,14 @@ from stream.compiler.dialects.stream import (
     StrensorType,
     StrensorVarType,
 )
-from stream.compiler.kernels.aie_kernel import MAC_ROWS_BFP16, AIEKernel, R, T, induction_variable
+from stream.compiler.kernels.aie_kernel import (
+    MAC_ROWS_BFP16,
+    AIEKernel,
+    R,
+    StateOperand,
+    T,
+    induction_variable,
+)
 from stream.compiler.kernels.gemm import GemmKernel
 from stream.compiler.kernels.softmax import SoftmaxKernel
 
@@ -80,6 +87,11 @@ probability block, and both it and ``rescale_O`` walk the context block with 64-
 """
 
 SCALE_ROWS = 4
+
+# The running scale, carried over the key block and indexed by the query, which is the pair
+# of dimensions every flash node's iteration space is written in.
+QUERY_DIM, KEY_DIM = 0, 1
+STATE_SCALE = StateOperand("flash_state", SCALE_ROWS, carried_over=KEY_DIM, indexed_by=QUERY_DIM)
 """Rows of ``B_q`` the scale buffer holds: m_{i-1}, m_i, l_i and exp2(m_{i-1} - m_i)."""
 
 SNAPSHOT, SNAPSHOT_OBJECT = "passThroughLine", "mha_passThrough.o"
@@ -532,6 +544,14 @@ class PartialSoftmaxKernel(SoftmaxKernel):
     def _state_buffer(self, device: DeviceOp, tile: TileOp, rewriter: PatternRewriter | None = None) -> SSAValue:
         return _core_buffer(device, tile, "state", self.element_type, SCALE_ROWS * self.m, rewriter)
 
+    def state_operands(self) -> Sequence[StateOperand]:
+        """The online softmax's running maximum and sum, carried from one key block to the next.
+
+        The index buffer beside it is not a recurrence: both entries are written on every
+        call and read within it, so nothing crosses an iteration.
+        """
+        return [STATE_SCALE]
+
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         device, tile = _device(op), _tile(op)
         query, key = _kernel_dims(op)
@@ -623,6 +643,14 @@ class FusedScoreSoftmaxKernel(GemmKernel):
 
     def _state_buffer(self, device: DeviceOp, tile: TileOp, rewriter: PatternRewriter | None = None) -> SSAValue:
         return _core_buffer(device, tile, "state", self.element_type, SCALE_ROWS * self.m, rewriter)
+
+    def state_operands(self) -> Sequence[StateOperand]:
+        """The online softmax's running maximum and sum, carried from one key block to the next.
+
+        The index buffer beside it is not a recurrence: both entries are written on every
+        call and read within it, so nothing crosses an iteration.
+        """
+        return [STATE_SCALE]
 
     def function_type(self, op: ComputationNodeOp) -> FunctionType:
         return FunctionType.from_lists(
