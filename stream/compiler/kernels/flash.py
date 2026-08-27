@@ -91,7 +91,7 @@ SCALE_ROWS = 4
 # The running scale, carried over the key block and indexed by the query, which is the pair
 # of dimensions every flash node's iteration space is written in.
 QUERY_DIM, KEY_DIM = 0, 1
-STATE_SCALE = StateOperand("flash_state", SCALE_ROWS, carried_over=KEY_DIM, indexed_by=QUERY_DIM)
+STATE_SCALE = StateOperand("flash_state", SCALE_ROWS, carried_over=KEY_DIM, indexed_by=QUERY_DIM, handover=2)
 """Rows of ``B_q`` the scale buffer holds: m_{i-1}, m_i, l_i and exp2(m_{i-1} - m_i)."""
 
 SNAPSHOT, SNAPSHOT_OBJECT = "passThroughLine", "mha_passThrough.o"
@@ -289,7 +289,7 @@ def _scale_fifo(
         producer.result,
         [consumer.result],
         _scale_name(producer, consumer),
-        2,
+        STATE_SCALE.handover,
         element_type,
         (size,),
         repeat_count=None,

@@ -463,6 +463,45 @@ class TransferAndTensorAllocator:
             if i % narrow == j % narrow
         )
 
+    def _handovers(self) -> list[tuple[Core, Core, int]]:
+        """Cores that pass a kernel's state to the step behind them, and the bits each holds.
+
+        A kernel that keeps a running reduction hands the finished scale to whichever core
+        consumes its output, in a buffer both ends hold. Which core meets which is the same
+        relation the transfer between them uses, so it is read off the allocation the mapping
+        already declares rather than being decided again.
+        """
+        found: list[tuple[Core, Core, int]] = []
+        for node in self.ssc_nodes:
+            kernel = self.mapping.get(node).kernel
+            for state in kernel.state_operands() if kernel else ():
+                if not state.handover:
+                    continue
+                held = next((t for t in node.inputs if is_state_operand(node, t)), None)
+                if held is None:
+                    continue
+                bits = self.workload.get_tensor_single_core(held, node, self.mapping).size_bits()
+                sources = self._retrieve_core_allocation(node)[0]
+                for consumer in self._consumers(node):
+                    targets = self._retrieve_core_allocation(consumer)[0]
+                    narrow = min(len(sources), len(targets))
+                    found += [
+                        (sources[i], targets[j], state.handover * bits)
+                        for i in range(len(sources))
+                        for j in range(len(targets))
+                        if narrow and i % narrow == j % narrow
+                    ]
+        return found
+
+    def _consumers(self, node: ComputationNode) -> list[ComputationNode]:
+        """The computation nodes this one's output reaches, across the transfer between them."""
+        reached = []
+        for succ in self.workload.successors(node):
+            reached += [succ] if isinstance(succ, ComputationNode) else [
+                x for x in self.workload.successors(succ) if isinstance(x, ComputationNode)
+            ]
+        return reached
+
     def _transfer_is_broadcast(self, tr: TransferNode) -> bool:
         """Whether several cores are served the same slice, so one fifo carries them all.
 
@@ -916,9 +955,7 @@ class TransferAndTensorAllocator:
         self.core_load: dict[Core, Any] = defaultdict(int)
         # Transfer output tensors on their chosen compute/memory cores
         for node in self.workload.get_iteration_space_nodes():
-            # What a node leaves behind, and what it keeps: a kernel's carried state occupies
-            # its core for as long as the node runs there, so it is charged like any resident
-            # tensor rather than being invisible because nothing transfers it.
+            # A node's outputs, and the state it keeps resident while it runs there.
             carried = [x for x in node.inputs if is_state_operand(node, x)]
             for t in (*node.outputs, *carried):
                 tile = self.workload.get_tensor_single_core(t, node, self.mapping)
@@ -947,6 +984,16 @@ class TransferAndTensorAllocator:
                             "dims": tile_dims,
                             "dtype": tile_dtype,
                         }
+
+        # The core that writes a handover holds it. A core reading one out of memory it
+        # already shares reads it in place; one further away is given a copy of its own.
+        for one, other, bits in self._handovers():
+            holders = (one,) if self.context.shares_memory(one, other) else (one, other)
+            for core in holders:
+                self.core_load[core] = self.core_load[core] + bits
+                terms = self._resource_terms[("memory_capacity", core.id)]
+                held = terms.get("handover", {}).get("value", 0) + bits / 8
+                terms["handover"] = {"value": held, "dims": (), "dtype": ""}
 
         for c, expr in self.core_load.items():
             cap = c.get_memory_capacity()
@@ -1403,6 +1450,16 @@ class TransferAndTensorAllocator:
         self.core_dma_in: dict[Core, SolverVar] = {}
         self.core_dma_out: dict[Core, SolverVar] = {}
 
+        # A handover read out of memory the two cores share costs neither of them a channel;
+        # one that has to cross the array costs the sender an outgoing and the reader an
+        # incoming, like any other fifo between two cores.
+        handover_out: dict[Core, int] = defaultdict(int)
+        handover_in: dict[Core, int] = defaultdict(int)
+        for one, other, _ in self._handovers():
+            if not self.context.shares_memory(one, other):
+                handover_out[one] += 1
+                handover_in[other] += 1
+
         dma_cores = self._all_dma_candidate_cores()
 
         for core in dma_cores:
@@ -1415,6 +1472,8 @@ class TransferAndTensorAllocator:
             else:
                 in_expr = self.model.quicksum(self._transfer_incoming_dma_expr(tr, core) for tr in self.transfer_nodes)
                 out_expr = self.model.quicksum(self._transfer_outgoing_dma_expr(tr, core) for tr in self.transfer_nodes)
+                in_expr = in_expr + handover_in[core]
+                out_expr = out_expr + handover_out[core]
 
             self.model.add_constr(
                 v_in == in_expr,
