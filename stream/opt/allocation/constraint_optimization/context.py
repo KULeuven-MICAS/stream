@@ -123,6 +123,14 @@ class NamespaceConstraints:
         """Return ``True`` if *core* belongs to this namespace."""
         return core.namespace == self.NAMESPACE
 
+    def shares_memory(self, one: Core, other: Core) -> bool:
+        """Whether one core reaches the other's memory without spending a DMA channel.
+
+        Namespaces that have no such path keep the default, which charges every transfer
+        a channel.
+        """
+        return False
+
     # ---- object-FIFO depth ----
 
     def add_object_fifo_constraints(
@@ -184,7 +192,7 @@ class AIE2Constraints(NamespaceConstraints):
         self,
         *,
         offchip_core_id: int | None,
-        max_compute_tile_dma_channels: int = 8,
+        max_compute_tile_dma_channels: int = 2,
         max_mem_tile_dma_channels: int = 6,
         max_shim_tile_dma_channels: int = 2,
     ) -> None:
@@ -250,6 +258,25 @@ class AIE2Constraints(NamespaceConstraints):
             )
 
     # ---- DMA channel usage ----
+    def shares_memory(self, one: Core, other: Core) -> bool:
+        """Whether two tiles are served by one memory module.
+
+        On AIE2 a core reaches the memory north and south of it, the memory west of it and
+        its own -- ``isMemEast`` is ``isInternal``, so there is no east neighbour. The test
+        is still symmetric because a fifo only needs one of its two ends to reach the
+        other, which is what ``isSharedMemory`` decides by trying both orders.
+
+        ``isLegalMemAffinity`` also excludes a memory tile to the south, which the core
+        type already rules out here.
+        """
+        if not (self.applies_to(one) and self.applies_to(other)):
+            return False
+        if one.type != "compute" or other.type != "compute":
+            return False
+        if None in (one.col_id, one.row_id, other.col_id, other.row_id):
+            return False
+        return abs(one.col_id - other.col_id) + abs(one.row_id - other.row_id) == 1
+
     def get_max_dma_channels(self, core: Core) -> int:
         if core.id == self.offchip_core_id:
             return self.max_shim_tile_dma_channels
@@ -325,6 +352,10 @@ class TransferAndTensorContext:
         for ns in self.namespace_constraints:
             ns.add_buffer_descriptor_constraints(model, buffer_descriptor_depth)
 
+    def shares_memory(self, one: Core, other: Core) -> bool:
+        """Whether any namespace puts these two cores on shared memory."""
+        return any(ns.shares_memory(one, other) for ns in self.namespace_constraints)
+
     def add_dma_usage_constraints(
         self,
         model: SolverModel,
@@ -371,7 +402,7 @@ def build_transfer_context(
     nb_cols_to_use: int = 4,
     force_double_buffering: bool = True,
     force_io_transfers_on_mem_tile: bool = True,
-    max_compute_tile_dma_channels: int = 8,
+    max_compute_tile_dma_channels: int = 2,
     max_mem_tile_dma_channels: int = 6,
     max_shim_tile_dma_channels: int = 2,
 ) -> TransferAndTensorContext:

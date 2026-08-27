@@ -179,6 +179,7 @@ class TransferAndTensorAllocator:
         self.y_path_choice: dict[tuple[TransferNode, MulticastPathPlan], SolverVar] = {}
 
         # auxiliary indicators
+        self.transfer_side_indicator: dict[tuple[TransferNode, Core, bool], SolverVar] = {}
         self.transfer_core_indicator: dict[tuple[TransferNode, Core], SolverVar] = {}
         self.tensor_core_indicator: dict[tuple[Tensor, Core], SolverVar] = {}
         self.same_core_indicator: dict[tuple[Tensor, Tensor, Core], SolverVar] = {}
@@ -434,6 +435,62 @@ class TransferAndTensorAllocator:
             default=1,
         )
 
+    @staticmethod
+    def _communicating_pairs(choice: MulticastPathPlan) -> tuple[tuple[Core, Core], ...]:
+        """Which source and target of this transfer actually hand to one another.
+
+        Codegen matches a producer to a consumer by spatial index, and the spatial part of
+        a split runs fastest, so the consumer holding spatial point ``j`` is fed by the
+        producers at ``j``, ``j + m``, ``j + 2m`` and so on, ``m`` being the narrower of
+        the two sides. Which is the same relation the flash bindings use to find the core
+        holding the other half of an online-softmax step.
+        """
+        src, dst = choice.sources, choice.targets
+        if not src or not dst:
+            return ()
+        narrow = min(len(src), len(dst))
+        return tuple(
+            (src[i], dst[j])
+            for i in range(len(src))
+            for j in range(len(dst))
+            if i % narrow == j % narrow
+        )
+
+    def _transfer_is_broadcast(self, tr: TransferNode) -> bool:
+        """Whether several cores are served the same slice, so one fifo carries them all.
+
+        ``requiresDMAs`` bails out before it ever looks at the tiles unless the fifo has a
+        single consumer, so a broadcast is on the DMA however the cores are placed.
+        """
+        tensors = self._transfer_incoming_tensors(tr)
+        return self._distinct_slice_width(tensors) < self._placement_width(tensors)
+
+    def _transfer_shares_memory(self, tr: TransferNode, core: Core, incoming: bool) -> bool:
+        """Whether this core is served this transfer out of memory it already shares.
+
+        The object-fifo lowering keeps a fifo out of the DMA when it has one consumer, no
+        repeat count and no layout transform on the way. Stream only routes a transfer core
+        to core when the two sides already agree on layout -- a disagreement is what puts it
+        on a memory tile -- so the case left to check is whether the cores this one actually
+        hands to, or takes from, are its neighbours.
+        """
+        choices = self.possible_transfer_allocations.get(tr) or ()
+        if not choices or self._transfer_is_broadcast(tr):
+            return False
+        # Only a transfer that lands straight on the cores is lowered core to core. One
+        # staged on a memory tile is two transfers, and each leg ends on the tile.
+        if tr.transfer_type is not TransferType.COMPUTE_TO_COMPUTE:
+            return False
+        for choice in choices:
+            touching = [
+                (a, b) for a, b in self._communicating_pairs(choice) if (b if incoming else a) == core
+            ]
+            if not touching:
+                return False
+            if any(not self.context.shares_memory(one, other) for one, other in touching):
+                return False
+        return True
+
     def _transfer_fan_out(self, tr: TransferNode) -> int:
         """DMA channels one source core drives: a fifo per destination it feeds a distinct slice to."""
         n_src = self._distinct_slice_width(self._transfer_outgoing_tensors(tr))
@@ -457,17 +514,17 @@ class TransferAndTensorAllocator:
             the aggregation across transfers is handled in _add_dma_usage_constraints(),
             so this helper is only used in the per-transfer mode.
         """
-        tensors = self._transfer_incoming_tensors(tr)
-        fan = self._transfer_fan_in(tr)
-        return self.model.quicksum(fan * self._tensor_on_core_expr(t, core) for t in tensors)
+        if self._transfer_shares_memory(tr, core, incoming=True):
+            return 0
+        return self._transfer_fan_in(tr) * self._transfer_side_uses_core_var(tr, core, incoming=True)._raw
 
     def _transfer_outgoing_dma_expr(self, tr: TransferNode, core: Core):
         """
         DMA contribution of one transfer to the outgoing DMA load of one core.
         """
-        tensors = self._transfer_outgoing_tensors(tr)
-        fan = self._transfer_fan_out(tr)
-        return self.model.quicksum(fan * self._tensor_on_core_expr(t, core) for t in tensors)
+        if self._transfer_shares_memory(tr, core, incoming=False):
+            return 0
+        return self._transfer_fan_out(tr) * self._transfer_side_uses_core_var(tr, core, incoming=False)._raw
 
     def _global_incoming_dma_expr(self, core: Core):
         """
@@ -565,6 +622,33 @@ class TransferAndTensorAllocator:
         self.model.add_constr(
             u <= self.model.quicksum(occ_exprs),
             name=f"u_ub_{tr.name}_{_resource_key(core)}",
+        )
+        return u
+
+    def _transfer_side_uses_core_var(self, tr: TransferNode, core: Core, incoming: bool) -> SolverVar:
+        """Whether any tensor this transfer brings to (or takes from) this core sits on it.
+
+        A fifo carries every slice its core works through, one after another, so what a
+        transfer costs a core is its fan and not the number of slices that travel over it.
+        """
+        key = (tr, core, incoming)
+        if key in self.transfer_side_indicator:
+            return self.transfer_side_indicator[key]
+
+        side = "in" if incoming else "out"
+        u = self.model.add_var(vtype=SolverVarType.BINARY, name=f"us_{tr.name}_{_resource_key(core)}_{side}")
+        self.transfer_side_indicator[key] = u
+
+        tensors = self._transfer_incoming_tensors(tr) if incoming else self._transfer_outgoing_tensors(tr)
+        occ_exprs = [self._tensor_on_core_expr(t, core) for t in tensors if isinstance(t, Tensor)]
+        if not occ_exprs:
+            self.model.add_constr(u == 0, name=f"us_zero_{tr.name}_{_resource_key(core)}_{side}")
+            return u
+        for i, occ in enumerate(occ_exprs):
+            self.model.add_constr(u >= occ, name=f"us_lb_{tr.name}_{_resource_key(core)}_{side}_{i}")
+        self.model.add_constr(
+            u <= self.model.quicksum(occ_exprs),
+            name=f"us_ub_{tr.name}_{_resource_key(core)}_{side}",
         )
         return u
 
