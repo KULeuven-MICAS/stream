@@ -1,15 +1,8 @@
 """Give a node the state its kernel keeps between iterations.
 
-A kernel that carries a running reduction -- an online softmax's maximum and sum -- holds it
-in a buffer on its own core from one step of the reduced loop to the next. The graph the
-design is exported from does not say so: the flash softmax is one opaque node whose fake is
-``empty_like``, which drops the reduction over the key and the buffer standing in for it.
-
-Declared by the kernel (:class:`~stream.compiler.kernels.aie_kernel.StateOperand`) and
-materialised here as an ordinary operand read at ``carry - 1``, which is what
-:func:`~stream.workload.iterator_type.is_state_operand` recognises. It is an input and not
-an output because the state never moves: it is *resident* on the cores its node runs on, and
-a tensor that is read where it already sits is not a transfer.
+Declared by the kernel and materialised here as an operand read at ``carry - 1``, which is
+what :func:`~stream.workload.iterator_type.is_state_operand` recognises. An input and not an
+output because the state never moves: it is resident on the cores its node runs on.
 """
 
 from dataclasses import replace

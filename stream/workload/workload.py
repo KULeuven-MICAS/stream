@@ -6,14 +6,14 @@ from typing import TYPE_CHECKING, cast
 import networkx as nx
 import numpy as np
 import sympy as sp
-from networkx.drawing.nx_pydot import to_pydot  # type: ignore
 from xdsl.dialects.memref import SubviewOp
 from xdsl.ir.affine import AffineDimExpr, AffineExpr, AffineMap
 from zigzag.utils import DiGraphWrapper
 
 from stream.datatypes import InterCoreTiling, LayerDim
+from stream.workload._svg import write_svg as _write_svg
 from stream.workload.affine_transform import AffineTransform
-from stream.workload.iterator_type import is_state_operand
+from stream.workload.iterator_type import is_state_operand, sequential_dims
 from stream.workload.node import (
     ComputationNode,
     FusionEdge,
@@ -766,115 +766,104 @@ class Workload(DiGraphWrapper[Node]):
             result[unique_dim] = stride
         return result
 
-    def visualize(  # noqa: PLR0912, PLR0915
+    _PALETTE = {
+        "computation": ("#dbeafe", "#2a78d6"),
+        "transfer": ("#ffe6d1", "#eb6834"),
+        "in": ("#fdf3c8", "#b9992a"),
+        "out": ("#d6f5e3", "#1baf7a"),
+        "fusion": ("#ece0ff", "#7d5bd1"),
+        "tensor": ("#f1f3f5", "#8a929b"),
+        "state": ("#e7f6f0", "#1baf7a"),
+    }
+
+    def _kind(self, node: Node) -> str:
+        if isinstance(node, ComputationNode):
+            return "computation"
+        if isinstance(node, TransferNode):
+            return "transfer"
+        if isinstance(node, InEdge):
+            return "in"
+        if isinstance(node, OutEdge):
+            return "out"
+        return "fusion"
+
+    def _node_label(self, node: Node) -> list[str]:
+        if isinstance(node, (ComputationNode, TransferNode)):
+            dims = {str(d): self.get_dimension_size(d) for d in self.get_dims(node)}
+            head = node.name if isinstance(node, ComputationNode) else f"{node.name} · {node.transfer_type.name}"
+            return [head, " ".join(f"{k}={v}" for k, v in dims.items())]
+        if isinstance(node, InEdge):
+            return [node.name, str(node.outputs[0].shape)]
+        if isinstance(node, OutEdge):
+            return [node.name, str(node.inputs[0].shape)]
+        return [node.name, f"[{getattr(node, 'op_type', '')}]"]
+
+    def _tensor_label(self, tensor: Tensor, carried: str | None, mapping, ssis) -> list[str]:
+        try:
+            dims = {str(d): self.get_dimension_size(d) for d in self.get_tensor_dimensions(tensor)}
+        except (StopIteration, KeyError):
+            dims = {}
+        lines = [tensor.name, str(tensor.shape)]
+        if dims:
+            lines.append(" ".join(f"{k}={v}" for k, v in dims.items()))
+        if carried:
+            lines.append(f"resident · carried over {carried}")
+        if mapping is not None:
+            try:
+                allocation = mapping.get(tensor).memory_allocation
+                if allocation is not None:
+                    lines.append(f"mem {allocation}")
+            except KeyError:
+                pass
+        if ssis:
+            loops = self._get_for_loop_label(ssis.get(tensor, None)).strip()
+            lines += [x for x in loops.split("\n") if x]
+        return lines
+
+    def _carried_over(self) -> dict[str, str]:
+        """Tensor name to the dimension it is carried over, for the state a kernel keeps."""
+        carried: dict[str, str] = {}
+        for node in self.nodes:
+            if not isinstance(node, HasIterationSpace):
+                continue
+            dims = self.get_dims(node)
+            for tensor in getattr(node, "inputs", ()):
+                if not is_state_operand(node, tensor):
+                    continue
+                positions = sorted(sequential_dims(node))
+                carried[tensor.name] = str(dims[positions[0]]) if positions else "?"
+        return carried
+
+    def visualize(
         self,
         filepath: str = "workload_graph.png",
         mapping: "Mapping | None" = None,
         ssis: dict[Node, "SteadyStateIterationSpace"] | None = None,
     ) -> None:
-        """Visualize the graph using Graphviz and save it to an image file.
-
-        Builds a new graph that inserts Tensor nodes between operation nodes,
-        showing the data flow through tensors explicitly. Nodes are laid out
-        horizontally (left to right).
-        """
-        viz = nx.DiGraph()
-
-        # Add all original nodes
+        """Draw the graph, tensors included, as an SVG written beside ``filepath``."""
+        carried = self._carried_over()
+        boxes: dict[str, tuple[list[str], str]] = {}
+        edges: list[tuple[str, str]] = []
+        graph = nx.DiGraph()
+        # An operation and a tensor may carry the same name, so the two are kept apart.
         for node in self.nodes:
-            viz.add_node(node)
-
-        # Add tensor nodes and connect them, using tensor name as key to deduplicate
-        tensor_nodes: dict[str, Tensor] = {}
+            boxes[f"n:{node.name}"] = (self._node_label(node), self._kind(node))
+            graph.add_node(f"n:{node.name}")
         for node in self.nodes:
-            if isinstance(node, HasOutputs):
-                for tensor in node.outputs:
-                    tensor_nodes[tensor.name] = tensor
-                    viz.add_node(tensor.name)
-                    viz.add_edge(node, tensor.name)
-            if isinstance(node, HasInputs):
-                for tensor in node.inputs:
-                    tensor_nodes[tensor.name] = tensor
-                    viz.add_node(tensor.name)
-                    viz.add_edge(tensor.name, node)
-
-        dot = to_pydot(viz)
-        dot.set_rankdir("LR")
-        dot.set_concentrate(True)
-
-        # Style original nodes
-        for node in self.nodes:
-            dot_nodes = dot.get_node(str(node))
-            if not dot_nodes:
-                continue
-            n = dot_nodes[0]
-            if isinstance(node, ComputationNode):
-                dim_sizes = {str(dim): self.get_dimension_size(dim) for dim in self.get_dims(node)}
-                n.set_shape("ellipse")
-                n.set_label(f"{node.name}\nDims: {dim_sizes}")
-                n.set_style("filled")
-                n.set_fillcolor("#60bcf0")
-            elif isinstance(node, TransferNode):
-                dim_sizes = {str(dim): self.get_dimension_size(dim) for dim in self.get_dims(node)}
-                n.set_shape("box")
-                label = f"{node.name}\nType: {node.transfer_type}\nDims: {dim_sizes}"
-                # label += self._get_mem_alloc_label(node, mapping)
-                # if ssis:
-                #     label += self._get_for_loop_label(ssis.get(node, None))
-                n.set_label(label)
-                n.set_style("filled")
-                n.set_fillcolor("#ffcb9a")
-            elif isinstance(node, InEdge):
-                n.set_shape("box")
-                n.set_label(f"{node.name}\nShape: {node.outputs[0].shape}")
-                n.set_style("filled")
-                n.set_fillcolor("#eaff76e1")
-            elif isinstance(node, OutEdge):
-                n.set_shape("box")
-                n.set_label(f"{node.name}\nShape: {node.inputs[0].shape}")
-                n.set_style("filled")
-                n.set_fillcolor("#c2f0c2")
-            elif isinstance(node, FusionEdge):
-                n.set_shape("diamond")
-                n.set_label(f"{node.name}\n[{node.op_type}]")
-                n.set_style("filled")
-                n.set_fillcolor("#d9b3ff")  # light purple for fusion boundaries
-            else:
-                raise ValueError(f"Unknown node type: {type(node)}")
-
-        # Style tensor nodes
-        for tensor_name, tensor in tensor_nodes.items():
-            dot_nodes = dot.get_node(f'"{tensor_name}"') or dot.get_node(tensor_name)
-            if not dot_nodes:
-                continue
-            n = dot_nodes[0]
-            # Compact dim info: {dim: size, ...}
-            try:
-                tensor_dims = self.get_tensor_dimensions(tensor)
-                dim_sizes = {str(d): self.get_dimension_size(d) for d in tensor_dims}
-            except (StopIteration, KeyError):
-                dim_sizes = {}
-            label = f"{tensor_name}\n{tensor.shape}"
-            if dim_sizes:
-                label += f"\n{dim_sizes}"
-            if mapping is not None:
-                try:
-                    tensor_mapping = mapping.get(tensor)
-                    if tensor_mapping.memory_allocation is not None:
-                        label += f"\nMemAlloc: {tensor_mapping.memory_allocation}"
-                except KeyError:
-                    pass
-            if ssis:
-                tensor_ssis = ssis.get(tensor, None)
-                label += self._get_for_loop_label(tensor_ssis)
-            n.set_shape("box")
-            n.set_style("filled,rounded")
-            n.set_fillcolor("#e8e8e8")
-            n.set_label(label)
-
-        # Save to file
-        dot.write_png(filepath)
-        print(f"Graph saved to {filepath}")
+            for tensor in (*getattr(node, "outputs", ()), *getattr(node, "inputs", ())):
+                if f"t:{tensor.name}" not in boxes:
+                    boxes[f"t:{tensor.name}"] = (
+                        self._tensor_label(tensor, carried.get(tensor.name), mapping, ssis),
+                        "state" if tensor.name in carried else "tensor",
+                    )
+                    graph.add_node(f"t:{tensor.name}")
+            for tensor in getattr(node, "outputs", ()):
+                edges.append((f"n:{node.name}", f"t:{tensor.name}"))
+            for tensor in getattr(node, "inputs", ()):
+                edges.append((f"t:{tensor.name}", f"n:{node.name}"))
+        graph.add_edges_from(edges)
+        target = filepath[: filepath.rfind(".")] + ".svg" if "." in filepath else filepath + ".svg"
+        _write_svg(target, boxes, edges, graph, self._PALETTE)
 
     def _get_mem_alloc_label(self, node: TransferNode, mapping: "Mapping | None") -> str:
         if mapping is not None:

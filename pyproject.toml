@@ -37,7 +37,6 @@ dependencies = [
     "cerberus",
     "ortools>=9.15",
     "pydantic>=2.0,<2.12",
-    "pydot",
     "xdsl>=0.29.1,<0.30",
 ]
 requires-python = ">=3.12"

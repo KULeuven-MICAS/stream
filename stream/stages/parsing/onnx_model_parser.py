@@ -21,7 +21,7 @@ class ONNXModelParserStage(Stage):
         super().__init__(list_of_callables, ctx)
         self.workload_path = self.ctx.get("workload_path")
         self.output_path = self.ctx.get("output_path")
-        self.workload_visualization_path = os.path.join(self.output_path, "workload_graph.png")
+        self.workload_visualization_path = os.path.join(self.output_path, "workload_graph.svg")
 
     def run(self):
         onnx_model_parser = ONNXModelParser(self.workload_path)
@@ -32,9 +32,7 @@ class ONNXModelParserStage(Stage):
         if node_count > _VIZ_NODE_LIMIT:
             logger.warning("Skipping workload visualization: %d nodes exceeds limit %d", node_count, _VIZ_NODE_LIMIT)
         else:
-            # The workload graph PNG is a debug-only artifact rendered via graphviz
-            # `dot` (pydot). Don't let a missing/broken graphviz abort code
-            # generation -- e.g. environments without graphviz installed.
+            # A debug-only artifact; a failure to draw it must not stop code generation.
             try:
                 workload.visualize(self.workload_visualization_path)
             except Exception as e:  # noqa: BLE001 -- visualization is best-effort

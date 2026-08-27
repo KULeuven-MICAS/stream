@@ -179,6 +179,7 @@ class TransferAndTensorAllocator:
         self.y_path_choice: dict[tuple[TransferNode, MulticastPathPlan], SolverVar] = {}
 
         # auxiliary indicators
+        self._handover_bits: dict[int, int] = {}
         self.transfer_side_indicator: dict[tuple[TransferNode, Core, bool], SolverVar] = {}
         self.transfer_core_indicator: dict[tuple[TransferNode, Core], SolverVar] = {}
         self.tensor_core_indicator: dict[tuple[Tensor, Core], SolverVar] = {}
@@ -991,6 +992,7 @@ class TransferAndTensorAllocator:
             holders = (one,) if self.context.shares_memory(one, other) else (one, other)
             for core in holders:
                 self.core_load[core] = self.core_load[core] + bits
+                self._handover_bits[core.id] = self._handover_bits.get(core.id, 0) + bits
                 terms = self._resource_terms[("memory_capacity", core.id)]
                 held = terms.get("handover", {}).get("value", 0) + bits / 8
                 terms["handover"] = {"value": held, "dims": (), "dtype": ""}
@@ -2672,8 +2674,9 @@ class TransferAndTensorAllocator:
             core = cores.get(core_id)
             if core is None:
                 continue
-            resident = 0
-            per_tensor: dict[str, int] = {}
+            handed = self._handover_bits.get(core_id, 0)
+            resident = handed
+            per_tensor: dict[str, int] = {"handover": handed} if handed else {}
             try:
                 for indicator, bits, tensor_name in terms:
                     # A MILP binary comes back as 0.9999...; anything above the midpoint is a 1.
