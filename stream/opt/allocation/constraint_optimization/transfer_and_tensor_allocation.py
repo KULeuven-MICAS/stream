@@ -916,7 +916,11 @@ class TransferAndTensorAllocator:
         self.core_load: dict[Core, Any] = defaultdict(int)
         # Transfer output tensors on their chosen compute/memory cores
         for node in self.workload.get_iteration_space_nodes():
-            for t in node.outputs:
+            # What a node leaves behind, and what it keeps: a kernel's carried state occupies
+            # its core for as long as the node runs there, so it is charged like any resident
+            # tensor rather than being invisible because nothing transfers it.
+            carried = [x for x in node.inputs if is_state_operand(node, x)]
+            for t in (*node.outputs, *carried):
                 tile = self.workload.get_tensor_single_core(t, node, self.mapping)
                 tensor_size = tile.size_bits()
                 tile_dims, tile_dtype = self._tile_shape(node, t, tile)
