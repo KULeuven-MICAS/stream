@@ -172,11 +172,15 @@ def test_the_state_is_reset_once_per_query_block(column):
 
 
 def test_the_scale_fifo_is_two_deep(column):
-    """At depth one the softmax could not enter a block before the GEMM had left the one before."""
+    """At depth one the softmax could not enter a block before the GEMM had left the one before.
+
+    Named after both ends, since a softmax core handing to two value cores holds one fifo
+    apiece and the producer alone no longer tells them apart.
+    """
     from xdsl_aie.dialects.aie import ObjectFifoOp
 
     fifos = [op for op in column.walk() if isinstance(op, ObjectFifoOp)]
-    assert [fifo.sym_name.data for fifo in fifos] == ["flash_scale_0_1"]
+    assert [fifo.sym_name.data for fifo in fifos] == ["flash_scale_0_1_0_2"]
     assert fifos[0].elemNumber.value.data == 2
 
 

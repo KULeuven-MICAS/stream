@@ -28,7 +28,7 @@ from math import prod
 from typing import cast
 
 from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
-from xdsl.dialects.arith import AddiOp, CmpiOp, ConstantOp, ExtUIOp, IndexCastOp, MuliOp, TruncFOp
+from xdsl.dialects.arith import AddiOp, CmpiOp, ConstantOp, ExtUIOp, IndexCastOp, MuliOp, RemUIOp, TruncFOp
 from xdsl.dialects.builtin import (
     ArrayAttr,
     DenseArrayBase,
@@ -229,9 +229,15 @@ def _named(device: DeviceOp, kind: type, name: str):
     return None
 
 
-def _scale_name(tile: TileOp) -> str:
-    col, row = _position(tile)
-    return f"flash_scale_{col}_{row}"
+def _scale_name(producer: TileOp, consumer: TileOp) -> str:
+    """One fifo per pair, since either half of a step may span several of the other.
+
+    Naming it after the producer alone was enough while a core handed to exactly one
+    other; a softmax core feeding two value cores needs one fifo apiece.
+    """
+    col, row = _position(producer)
+    other_col, other_row = _position(consumer)
+    return f"flash_scale_{col}_{row}_{other_col}_{other_row}"
 
 
 def _core_buffer(
@@ -265,12 +271,12 @@ def _scale_fifo(
     Spelled without a repeat count, which is what keeps it in the shared memory the two
     tiles already have between them rather than on a DMA channel the core cannot spare.
     """
-    if _named(device, ObjectFifoOp, _scale_name(producer)) is not None:
+    if _named(device, ObjectFifoOp, _scale_name(producer, consumer)) is not None:
         return
     fifo = ObjectFifoOp.from_referenced_type(
         producer.result,
         [consumer.result],
-        _scale_name(producer),
+        _scale_name(producer, consumer),
         2,
         element_type,
         (size,),
@@ -280,6 +286,67 @@ def _scale_fifo(
     assert block is not None
     last = max((producer, consumer), key=block.get_operation_index)
     rewriter.insert_op(fifo, InsertPoint.after(last))
+
+
+def _turn_var(op: ComputationNodeOp):
+    """The variable saying which of the other half's cores this iteration belongs to.
+
+    A dimension split between cores and loops has more than one temporal part, and the turn
+    is the innermost of them -- the same one the object fifo switch alternates on, which
+    reads the last temporal variable of the space. Taking the outermost instead only looks
+    right while the two are the same size, and then picks the wrong loop.
+    """
+    dim = _split_dim(op)
+    space = cast(StrensorType, op.output.type).ssis.data
+    return next(v for v in reversed(space.vars) if v.type is StrensorVarType.TEMPORAL and v.dim == dim)
+
+
+def _hand_scale(op: ComputationNodeOp, targets: Sequence[TileOp], state, width, element_type, rows: int):
+    """Snapshot the running scale into the fifo of whichever value core owns this block.
+
+    A value side wider than this one holds this core's query blocks on several cores, and
+    they come round in the order the blocks do, so the block loop's innermost turn says
+    which fifo this iteration owes. With one target there is nothing to choose between.
+    """
+    tile = _tile(op)
+
+    def hand(target: TileOp) -> list[Operation]:
+        acquire = ObjectFifoAcquireOp(
+            IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Produce.get_int(), 32),
+            IntegerAttr.from_int_and_width(1, 32),
+            _scale_name(tile, target),
+            (rows,),
+            element_type,
+        )
+        return [
+            acquire,
+            scale := ObjectFIFOSubviewAccessOp(IntegerAttr(0, i32), acquire),
+            # Unconditional: a block this core skipped still owes the one behind it the
+            # scale it last wrote, which is what the closing rescale divides by.
+            CallOp(SNAPSHOT, [state, scale.output, width], []),
+            ObjectFIFOReleaseOp(
+                IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Produce.get_int(), 32),
+                IntegerAttr.from_int_and_width(1, 32),
+                _scale_name(tile, target),
+            ),
+        ]
+
+    if len(targets) == 1:
+        return hand(targets[0])
+    turn = induction_variable(op, _turn_var(op))
+    count = ConstantOp(IntegerAttr.from_index_int_value(len(targets)), IndexType())
+    which = RemUIOp(turn, count)
+    return [
+        count,
+        which,
+        IndexSwitchOp(
+            arg=which.result,
+            cases=DenseArrayBase.from_list(IntegerType(64), list(range(len(targets)))),
+            default_region=Region(Block([*hand(targets[0]), YieldOp()])),
+            case_regions=[Region(Block([*hand(target), YieldOp()])) for target in targets],
+            result_types=[],
+        ),
+    ]
 
 
 def _block_index(op: ComputationNodeOp, dim) -> tuple[list[Operation], SSAValue, int]:
@@ -444,7 +511,8 @@ class PartialSoftmaxKernel(SoftmaxKernel):
         device, tile = _device(op), _tile(op)
         _index_buffer(device, tile, rewriter)
         self._state_buffer(device, tile, rewriter)
-        _scale_fifo(device, rewriter, tile, _partner(device, op, "matmul_PV"), self.element_type, SCALE_ROWS * self.m)
+        for target in _partners(device, op, "matmul_PV"):
+            _scale_fifo(device, rewriter, tile, target, self.element_type, SCALE_ROWS * self.m)
         SymbolTable.insert_or_update(
             device,
             FuncOp(
@@ -469,13 +537,6 @@ class PartialSoftmaxKernel(SoftmaxKernel):
         query, key = _kernel_dims(op)
         key_ops, key_block, key_blocks = _block_index(op, key)
         query_ops, query_block, query_blocks = _block_index(op, query)
-        acquire = ObjectFifoAcquireOp(
-            IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Produce.get_int(), 32),
-            IntegerAttr.from_int_and_width(1, 32),
-            _scale_name(tile),
-            (SCALE_ROWS * self.m,),
-            self.element_type,
-        )
         state = self._state_buffer(device, tile)
         ops: list[Operation] = [*key_ops, *query_ops]
         ops += _store_index(index := _index_buffer(device, tile), key_block, query_block)
@@ -511,18 +572,16 @@ class PartialSoftmaxKernel(SoftmaxKernel):
                 ],
                 [],
             ),
-            acquire,
-            scale := ObjectFIFOSubviewAccessOp(IntegerAttr(0, i32), acquire),
             width := ConstantOp.from_int_and_width(SCALE_ROWS * self.m, i32),
-            # Unconditional: a block this core skipped still owes the one behind it the
-            # scale it last wrote, which is what the closing rescale divides by.
-            CallOp(SNAPSHOT, [state, scale.output, width.result], []),
-            ObjectFIFOReleaseOp(
-                IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Produce.get_int(), 32),
-                IntegerAttr.from_int_and_width(1, 32),
-                _scale_name(tile),
-            ),
         ]
+        ops += _hand_scale(
+            op,
+            _partners(device, op, "matmul_PV"),
+            state,
+            width.result,
+            self.element_type,
+            SCALE_ROWS * self.m,
+        )
         return ops
 
 
@@ -586,7 +645,8 @@ class FusedScoreSoftmaxKernel(GemmKernel):
         device, tile = _device(op), _tile(op)
         _index_buffer(device, tile, rewriter)
         self._state_buffer(device, tile, rewriter)
-        _scale_fifo(device, rewriter, tile, _partner(device, op, "matmul_PV"), self.element_type, SCALE_ROWS * self.m)
+        for target in _partners(device, op, "matmul_PV"):
+            _scale_fifo(device, rewriter, tile, target, self.element_type, SCALE_ROWS * self.m)
         SymbolTable.insert_or_update(
             device,
             FuncOp("init_scale_buffer", FunctionType.from_lists([self._scale_type(), i32], []), Region(), "private"),
@@ -603,13 +663,6 @@ class FusedScoreSoftmaxKernel(GemmKernel):
         query, key = _kernel_dims(op)
         key_ops, key_block, key_blocks = _block_index(op, key)
         query_ops, query_block, query_blocks = _block_index(op, query)
-        acquire = ObjectFifoAcquireOp(
-            IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Produce.get_int(), 32),
-            IntegerAttr.from_int_and_width(1, 32),
-            _scale_name(tile),
-            (SCALE_ROWS * self.m,),
-            self.element_type,
-        )
         state = self._state_buffer(device, tile)
         ops: list[Operation] = [*key_ops, *query_ops]
         ops += _store_index(index := _index_buffer(device, tile), key_block, query_block)
@@ -643,16 +696,16 @@ class FusedScoreSoftmaxKernel(GemmKernel):
                 ],
                 [],
             ),
-            acquire,
-            scale := ObjectFIFOSubviewAccessOp(IntegerAttr(0, i32), acquire),
             width := ConstantOp.from_int_and_width(SCALE_ROWS * self.m, i32),
-            CallOp(SNAPSHOT, [state, scale.output, width.result], []),
-            ObjectFIFOReleaseOp(
-                IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Produce.get_int(), 32),
-                IntegerAttr.from_int_and_width(1, 32),
-                _scale_name(tile),
-            ),
         ]
+        ops += _hand_scale(
+            op,
+            _partners(device, op, "matmul_PV"),
+            state,
+            width.result,
+            self.element_type,
+            SCALE_ROWS * self.m,
+        )
         return ops
 
 
@@ -741,7 +794,7 @@ class FlashKernel(GemmKernel):
         # different core, so which scale to take turns with the innermost part of the split
         # -- the same part the block index above counts with, so the turn and the block it
         # is working on stay in step.
-        selector = induction_variable(op, self._turn_var(op))
+        selector = induction_variable(op, _turn_var(op))
         cases = [
             Region(Block([*self._step(op, source, key_block, key_blocks, index), YieldOp()])) for source in sources
         ]
@@ -756,25 +809,12 @@ class FlashKernel(GemmKernel):
         )
         return ops
 
-    @staticmethod
-    def _turn_var(op: ComputationNodeOp):
-        """The variable saying which of its sources this core is taking from.
-
-        A dimension split between cores and loops has more than one temporal part, and the
-        turn is the innermost of them -- the same one the object fifo switch alternates on,
-        which reads the last temporal variable of the space. Taking the outermost instead
-        only looks right while the two are the same size, and then picks the wrong loop.
-        """
-        dim = _split_dim(op)
-        space = cast(StrensorType, op.output.type).ssis.data
-        return next(v for v in reversed(space.vars) if v.type is StrensorVarType.TEMPORAL and v.dim == dim)
-
     def _step(self, op: ComputationNodeOp, source: TileOp, key_block, key_blocks, index) -> list[Operation]:
         """One value accumulation against the scale the given score core wrote."""
         acquire = ObjectFifoAcquireOp(
             IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Consume.get_int(), 32),
             IntegerAttr.from_int_and_width(1, 32),
-            _scale_name(source),
+            _scale_name(source, _tile(op)),
             (SCALE_ROWS * self.m,),
             self.element_type,
         )
@@ -802,6 +842,6 @@ class FlashKernel(GemmKernel):
             ObjectFIFOReleaseOp(
                 IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Consume.get_int(), 32),
                 IntegerAttr.from_int_and_width(1, 32),
-                _scale_name(source),
+                _scale_name(source, _tile(op)),
             ),
         ]
