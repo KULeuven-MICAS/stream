@@ -13,6 +13,7 @@ from zigzag.utils import DiGraphWrapper
 
 from stream.datatypes import InterCoreTiling, LayerDim
 from stream.workload.affine_transform import AffineTransform
+from stream.workload.iterator_type import is_state_operand
 from stream.workload.node import (
     ComputationNode,
     FusionEdge,
@@ -63,6 +64,11 @@ class Workload(DiGraphWrapper[Node]):
         for node in nodes:
             if isinstance(node, HasInputs):
                 for input in node.inputs:
+                    # A state operand is read where it already sits, from one step of the node's
+                    # own loop to the next. Nothing produces it and nothing carries it, so it has
+                    # no edge -- an edge here would be the node waiting on itself.
+                    if isinstance(node, HasIterationSpace) and is_state_operand(node, input):
+                        continue
                     try:
                         pred = next(n for n in nodes if isinstance(n, HasOutputs) and input in n.outputs)
                     except StopIteration as e:

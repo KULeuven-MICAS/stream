@@ -24,6 +24,7 @@ from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocatio
 )
 from stream.opt.solver import ConstraintSelection, SolveStats
 from stream.visualization.steady_state_trace import export_steady_state_trace
+from stream.workload.iterator_type import is_state_operand, streamed_operands
 from stream.workload.node import (
     ComputationNode,
     HasInputs,
@@ -475,6 +476,14 @@ class SteadyStateScheduler:
         new_nodes: dict[str, Node] = {node.name: node for node in self.workload.nodes}
         # Go through the tensors of the workload to find sources and destinations of the tensor
         for tensor in self.workload.tensors:
+            # A kernel's carried state is resident on the cores its node runs on: it is read
+            # where it already sits, from one step of that node's own loop to the next, so
+            # there is nothing to move and no source to move it from.
+            if any(
+                isinstance(n, HasIterationSpace) and tensor in n.inputs and is_state_operand(n, tensor)
+                for n in self.workload.nodes
+            ):
+                continue
             srcs = [n for n in self.workload.nodes if isinstance(n, HasOutputs) and tensor in n.outputs]
             assert len(srcs) == 1, f"Expected exactly one source for tensor {tensor}, found {len(srcs)}"
             src = new_nodes[srcs[0].name]
@@ -546,7 +555,9 @@ class SteadyStateScheduler:
         """
         kernel = self.mapping.get(node).kernel
         layouts = kernel.operand_layouts() if kernel else ()
-        operands = (*getattr(node, "inputs", ()), *getattr(node, "outputs", ()))
+        operands = tuple(streamed_operands(node))
+        if tensor not in operands:
+            return None
         index = operands.index(tensor)
         return layouts[index] if index < len(layouts) else None
 
@@ -749,9 +760,11 @@ class SteadyStateScheduler:
                 succ = next(workload.successors(in_edge))
                 tensor_ssis = self.generate_tensor_ssis(workload, tensor, succ, ssis)
                 ssis[tensor] = tensor_ssis
-        # Generate the new tensor SSIS of node outputs
+        # Generate the new tensor SSIS of node outputs, and of the state a node keeps: the
+        # state's iteration space is the node's own, since it is resident there.
         for node in workload.get_iteration_space_nodes():
-            for tensor in node.outputs:
+            carried = [t for t in node.inputs if is_state_operand(node, t)]
+            for tensor in (*node.outputs, *carried):
                 assert tensor not in ssis, (
                     f"Tensor {tensor.name} already has an SSIS, cannot assign the same tensor multiple SSIS."
                 )

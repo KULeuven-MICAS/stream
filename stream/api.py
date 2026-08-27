@@ -20,6 +20,7 @@ from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStag
 from stream.stages.estimation.memory_accesses_estimation import MemoryAccessesEstimationStage
 from stream.stages.generation.fusion_group_iteration import FusionGroupIterationStage
 from stream.stages.generation.generic_mapping_generation import GenericMappingGenerationStage
+from stream.stages.generation.kernel_state import KernelStateStage
 from stream.stages.generation.mapping_generation import MappingGenerationStage
 from stream.stages.generation.mapping_generation_multi import MappingGenerationMultiThreadedStage
 from stream.stages.generation.normalization_expansion import ExpandNormalizationStage
@@ -114,6 +115,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
             AcceleratorParserStage,  # Parses the accelerator
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
             MappingParserStage,
+            KernelStateStage,  # the state a kernel carries, before the iteration space is read
             TilingGenerationStage,
             CoreCostEstimationStage,
             ConstraintOptimizationAllocationStage,
@@ -157,6 +159,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
                     AIECodeGenerationStage,  # codegen each group (inner pipeline)
                     # No MappingParserStage: FixedMappingGenerationStage supplies the
                     # per-group Mapping objects in-memory via FusionGroupIterationStage.
+                    KernelStateStage,  # the state a kernel carries, before the iteration space is read
                     TilingGenerationStage,
                     CoreCostEstimationStage,
                     ConstraintOptimizationAllocationStage,
@@ -197,6 +200,7 @@ def _build_generic_co_stages(parse_stages: list[StageCallable]) -> list[StageCal
         GenericMappingGenerationStage,  # generates per-group YAMLs + sub_workloads
         FusionGroupIterationStage,  # outer loop over groups (reads sub_workloads from ctx)
         MappingParserStage,  # inner pipeline starts here
+        KernelStateStage,  # the state a kernel carries, before the iteration space is read
         TilingGenerationStage,
         CoreCostEstimationStage,
         ConstraintOptimizationAllocationStage,
@@ -451,6 +455,7 @@ def optimize_mapping(  # noqa: PLR0913
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
             mapping_generation_stage,
             MappingParserStage,
+            KernelStateStage,  # the state a kernel carries, before the iteration space is read
             TilingGenerationStage,
             CoreCostEstimationStage,
             ConstraintOptimizationAllocationStage,

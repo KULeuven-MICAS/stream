@@ -223,7 +223,14 @@ class TransferAndTensorAllocator:
         for node in self.workload.topological_sort():
             if not isinstance(node, HasOutputs):
                 continue
-            for tensor in node.outputs:
+            # A node's outputs, and the state it keeps: the state is resident on the cores the
+            # node runs on, so it is allocated exactly where its node is and never moved.
+            carried = (
+                [x for x in node.inputs if is_state_operand(node, x)]
+                if isinstance(node, HasIterationSpace)
+                else []
+            )
+            for tensor in (*node.outputs, *carried):
                 if tensor in self.possible_tensor_allocations:
                     continue
                 raw_alloc = self._retrieve_core_allocation(node)

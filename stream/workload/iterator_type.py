@@ -32,6 +32,7 @@ __all__ = [
     "sequential_dims",
     "nonlinear_reduction_dims",
     "is_state_operand",
+    "streamed_operands",
     "check_spatial_unroll_legal",
     "check_spatial_unroll_accumulation_free",
 ]
@@ -88,6 +89,20 @@ def is_state_operand(node: HasIterationSpace, operand: Tensor) -> bool:
         set().union(*(map_dim_positions(node.get_mapping(out)) for out in node.outputs)) if node.outputs else set()
     )
     return bool(offset_dims & written)
+
+
+def streamed_operands(node) -> tuple[Tensor, ...]:
+    """The node's operands that travel, in the order a kernel declares them.
+
+    A kernel's per-operand declarations -- layouts above all -- are read off by position, and
+    a state operand occupies none: it is resident on the core rather than carried to it, so
+    counting it would shift every operand after it, the output included.
+    """
+    inputs = tuple(getattr(node, "inputs", ()))
+    outputs = tuple(getattr(node, "outputs", ()))
+    if isinstance(node, HasIterationSpace):
+        inputs = tuple(t for t in inputs if not is_state_operand(node, t))
+    return (*inputs, *outputs)
 
 
 def sequential_dims(node: HasIterationSpace) -> frozenset[int]:
