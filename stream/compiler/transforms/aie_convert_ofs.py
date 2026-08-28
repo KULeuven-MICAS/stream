@@ -191,6 +191,94 @@ class ChannelToObjectFifoPass(RewritePattern):
     Converts channels to object fifo definitions
     """
 
+    @staticmethod
+    def align_strensor_vars(
+        in_vars: Sequence[StrensorVar], out_vars: Sequence[StrensorVar]
+    ) -> list[tuple[StrensorVar, StrensorVar]]:
+        """Align equivalent iteration-space factors on both sides of a transfer."""
+        aligned: list[tuple[StrensorVar, StrensorVar]] = []
+        in_index = out_index = 0
+        while in_index < len(in_vars) and out_index < len(out_vars):
+            in_group = [in_vars[in_index]]
+            out_group = [out_vars[out_index]]
+            in_size = in_group[0].size
+            out_size = out_group[0].size
+            while in_size != out_size:
+                if in_size < out_size:
+                    in_index += 1
+                    if in_index == len(in_vars):
+                        raise NotImplementedError()
+                    in_group.append(in_vars[in_index])
+                    in_size *= in_group[-1].size
+                else:
+                    out_index += 1
+                    if out_index == len(out_vars):
+                        raise NotImplementedError()
+                    out_group.append(out_vars[out_index])
+                    out_size *= out_group[-1].size
+
+            if len({var.dim for var in (*in_group, *out_group)}) != 1:
+                raise NotImplementedError()
+
+            if len(in_group) == len(out_group) == 1:
+                aligned.append((in_group[0], out_group[0]))
+            elif len(out_group) == 1 and out_group[0].type == StrensorVarType.SPATIAL:
+                aligned.extend(
+                    (
+                        in_var,
+                        StrensorVar(
+                            StrensorVarType.SPATIAL,
+                            in_var.size,
+                            out_group[0].dim,
+                        ),
+                    )
+                    for in_var in in_group
+                )
+            elif len(in_group) == 1 and in_group[0].type == StrensorVarType.SPATIAL:
+                aligned.extend(
+                    (
+                        StrensorVar(
+                            StrensorVarType.SPATIAL,
+                            out_var.size,
+                            in_group[0].dim,
+                        ),
+                        out_var,
+                    )
+                    for out_var in out_group
+                )
+            else:
+                raise NotImplementedError()
+
+            in_index += 1
+            out_index += 1
+
+        if in_index != len(in_vars) or out_index != len(out_vars):
+            raise NotImplementedError()
+        return aligned
+
+    @classmethod
+    def spatial_transformations(
+        cls, in_vars: Sequence[StrensorVar], out_vars: Sequence[StrensorVar]
+    ) -> list[tuple[StrensorVar, StrensorVar]]:
+        """Return aligned transformations involving a spatial factor."""
+        return [
+            (in_var, out_var)
+            for in_var, out_var in cls.align_strensor_vars(in_vars, out_vars)
+            if StrensorVarType.SPATIAL in (in_var.type, out_var.type)
+        ]
+
+    @staticmethod
+    def matches_spatial_index(
+        actual_points: Sequence[StrensorVar],
+        expected: Sequence[tuple[StrensorVar, StrensorVar]],
+    ) -> bool:
+        flattened: dict[LayerDim, int] = {}
+        for factor, point in expected:
+            flattened[factor.dim] = (
+                flattened.get(factor.dim, 0) * factor.size + point.size
+            )
+        return flattened == {point.dim: point.size for point in actual_points}
+
     def compute_to_mem(
         self,
         producers: Sequence[PushOp],
@@ -230,7 +318,17 @@ class ChannelToObjectFifoPass(RewritePattern):
                     source = next(
                         p
                         for p in producers
-                        if p.spatial_index is not None and set(spatial) | set(join) <= set(p.spatial_index.data.vars)
+                        if p.spatial_index is not None
+                        and self.matches_spatial_index(
+                            p.spatial_index.data.vars,
+                            tuple(
+                                zip(
+                                    (*spatial_dims, *join_dims),
+                                    (*spatial, *join),
+                                    strict=True,
+                                )
+                            ),
+                        )
                     )
 
                     assert isinstance(source_type := source.input.type, StrensorType)
@@ -481,8 +579,16 @@ class ChannelToObjectFifoPass(RewritePattern):
                 for broadcast in iterate_spat_vars(broadcast_dims):
                     for c in consumers:
                         assert c.spatial_index is not None
-                        # match on spatial index:
-                        if set(spatial) | set(distribute) | set(broadcast) == set(c.spatial_index.data.vars):
+                        expected = tuple(
+                            zip(
+                                (*spatial_dims, *distribute_dims, *broadcast_dims),
+                                (*spatial, *distribute, *broadcast),
+                                strict=True,
+                            )
+                        )
+                        if self.matches_spatial_index(
+                            c.spatial_index.data.vars, expected
+                        ):
                             targets.append(c)
 
                 # gather all broadcast tiles:
@@ -710,19 +816,14 @@ class ChannelToObjectFifoPass(RewritePattern):
         out_ss = out_type.ssis.data
 
         # get ssis transformations of transfer:
-        if len(in_ss.vars) == len(out_ss.vars):
-            transformations = [
-                (x, y)
-                for x, y in zip(in_ss.vars, out_ss.vars, strict=True)
-                if StrensorVarType.SPATIAL in (x.type, y.type)
-            ]
+        if not all(v.type == StrensorVarType.CONSTANT for v in in_ss.vars) and not all(
+            v.type == StrensorVarType.CONSTANT for v in out_ss.vars
+        ):
+            transformations = self.spatial_transformations(in_ss.vars, out_ss.vars)
         elif all(v.type == StrensorVarType.CONSTANT for v in in_ss.vars):
             transformations = [(x, x) for x in out_ss.vars if x.type == StrensorVarType.SPATIAL]
-
-        elif all(v.type == StrensorVarType.CONSTANT for v in out_ss.vars):
-            transformations = [(x, x) for x in in_ss.vars if x.type == StrensorVarType.SPATIAL]
         else:
-            raise NotImplementedError()
+            transformations = [(x, x) for x in in_ss.vars if x.type == StrensorVarType.SPATIAL]
 
         # use dispatcher based on object fifo type:
         name_base = f"of_{self.of_count}_"
@@ -731,6 +832,7 @@ class ChannelToObjectFifoPass(RewritePattern):
             ops = self.shim_to_mem(producers[0], consumers, transformations, name_base)
         elif self.is_mem(in_type.core_allocation.data[0].data):
             if self.is_compute(out_type.core_allocation.data[0].data):
+                # TODO this one needs to work
                 ops = self.mem_to_compute(producers, consumers, transformations, name_base)
             elif self.is_shim(out_type.core_allocation.data[0].data):
                 ops = self.mem_to_shim(producers, consumers, transformations, name_base)
@@ -855,10 +957,11 @@ class TransferToRuntimeSequence(RewritePattern):
 
         # iterate the zipped mem and compute strensors in reverse (innermost -> outermost)
         def iter_strensors() -> Iterable[tuple[StrensorVar, StrensorVar]]:
-            yield from zip(
-                reversed(mem_strensor.ssis.data.vars),
-                reversed(compute_strensor.ssis.data.vars),
-                strict=True,
+            yield from reversed(
+                ChannelToObjectFifoPass.align_strensor_vars(
+                    mem_strensor.ssis.data.vars,
+                    compute_strensor.ssis.data.vars,
+                )
             )
 
         vars: list[StrensorVar] = []
