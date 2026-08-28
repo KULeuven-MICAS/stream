@@ -786,9 +786,12 @@ class TransferAndTensorAllocator:
                         stop = i
                         break
                 assert stop >= -1, f"Something went wrong for {t.name} REUSE indexing: {reuses}"
+                # The declared reuse is a floor, not a target: holding a tensor across more
+                # levels than asked for only removes transfers, and the capacity, routing and
+                # compute-compatibility constraints already say when that does not fit.
                 self.model.add_constr(
-                    self.z_stop[(t, stop)] == 1,
-                    name=f"zStop_FixedStop_{t.name}_L{stop}",
+                    self.model.quicksum(self.z_stop[(t, s)]._raw for s in range(stop, len(sizes))) == 1,
+                    name=f"zStop_AtLeast_{t.name}_L{stop}",
                 )
 
     def __create_transfer_path_vars(self):
