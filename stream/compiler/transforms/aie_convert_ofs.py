@@ -369,11 +369,16 @@ class ChannelToObjectFifoPass(RewritePattern):
                     if c.spatial_index is not None and set(spatial) <= set(c.spatial_index.data.vars)
                 )
                 assert isinstance(source_type := source.input.type, StrensorType)
+
+                local_shape = source_type.get_local_shape()
+                assert len(local_shape) <= 1
+                producer_depth = max((2, prod(local_shape)))
+
                 object_fifo = ObjectFifoOp.from_referenced_type(
                     self.get_tile(source),
                     [self.get_tile(target)],
                     name_base + f"unicast_{i}",
-                    (2, 2),
+                    (producer_depth, 2),
                     source_type.get_element_type(),
                     source_type.get_kernel_shape(),
                 )
