@@ -87,6 +87,9 @@ class AIECodeGenerationStage(Stage):
         # Which tiles, when the first few in walk order are not the interesting ones: a
         # producer and its consumer say more than two cores running the same kernel.
         self.trace_tiles = tuple(tuple(t) for t in self.ctx.get("trace_tiles", ()))
+        # One group at a time: the host wires a trace buffer for the operator it names, and a
+        # group traced without one leaves its runtime sequence expecting an argument nobody passes.
+        self.trace_group = self.ctx.get("trace_group")
         self.npu = self.ctx.get("npu", "npu2")
         self.runtime_args = self.ctx.get("runtime_args", [])
         self.module = None
@@ -423,7 +426,7 @@ class AIECodeGenerationStage(Stage):
         AIEMoveTileOpsUp().apply(self.context, module)
         ClearMemorySpace().apply(self.context, module)
         # Before final.mlir is written, since that file is what downstream hosts compile.
-        if self.trace_size:
+        if self.trace_size and self.trace_group in (None, self.ctx.get("group_index", 0)):
             AIEAddTracingScript(
                 trace_size=self.trace_size,
                 max_tiles=self.trace_max_tiles,

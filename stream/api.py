@@ -74,6 +74,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
     trace_size: int = 0,
     trace_max_tiles: int = 31,
     trace_tiles: tuple[tuple[int, int], ...] = (),
+    trace_group: int | None = None,
     nb_cols_to_use: int = 4,
     npu: str = "npu2",
     backend: str = "ortools_gscip",
@@ -131,6 +132,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
             trace_size=trace_size,
             trace_max_tiles=trace_max_tiles,
             trace_tiles=trace_tiles,
+            trace_group=trace_group,
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
             backend=_backend_enum.value,
             constraint_selection=constraint_selection,
@@ -402,6 +404,7 @@ def optimize_mapping(  # noqa: PLR0913
     trace_size: int = 0,
     trace_max_tiles: int = 31,
     trace_tiles: tuple[tuple[int, int], ...] = (),
+    trace_group: int | None = None,
     nb_cols_to_use: int = 8,
     nb_rows_to_use: int = 4,
     seq_len_tile_size: int = 32,
@@ -470,6 +473,7 @@ def optimize_mapping(  # noqa: PLR0913
             trace_size=trace_size,
             trace_max_tiles=trace_max_tiles,
             trace_tiles=trace_tiles,
+            trace_group=trace_group,
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
             nb_rows_to_use=nb_rows_to_use,  # used by MappingGenerator for shape-aware tiling
             seq_len_tile_size=seq_len_tile_size,

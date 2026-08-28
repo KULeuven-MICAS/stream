@@ -57,7 +57,7 @@ class FusionGroupIterationStage(Stage):
             group_output = os.path.join(self.output_path, f"group_{i}")
             os.makedirs(group_output, exist_ok=True)
 
-            ctx_updates = dict(workload=sub_workload, output_path=group_output)
+            ctx_updates = dict(workload=sub_workload, output_path=group_output, group_index=i)
             if self.sub_mappings is not None:
                 ctx_updates["mapping"] = self.sub_mappings[i]
             else:
