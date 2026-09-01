@@ -309,8 +309,11 @@ class TransferAndTensorAllocator:
     def _mem_factor(t: Tensor, core: Core) -> int:
         return 1
 
-    @staticmethod
-    def _transfer_latency_for_path(tr: TransferNode, path: MulticastPathPlan) -> int:
+    def _transfer_latency_for_path(self, tr: TransferNode, path: MulticastPathPlan) -> int:
+        # A transfer served out of memory the two cores share reads in place: no bytes cross a link,
+        # so it adds no time to the slot, the same reason it spends no DMA channel.
+        if self._choice_shares_memory(tr, path):
+            return 0
         return get_transfer_latency_for_path(tr, path)
 
     def _ensure_same_ssis_for_all_transfers(self) -> None:
@@ -530,6 +533,15 @@ class TransferAndTensorAllocator:
             if any(not self.context.shares_memory(one, other) for one, other in touching):
                 return False
         return True
+
+    def _choice_shares_memory(self, tr: TransferNode, choice: MulticastPathPlan) -> bool:
+        """Whether this transfer, placed on this choice, lands core to core out of memory the two
+        sides already share -- the object-fifo lowering that spends no DMA channel and moves no bytes
+        over a link. The per-choice form of the same conditions ``_transfer_shares_memory`` reads."""
+        if tr.transfer_type is not TransferType.COMPUTE_TO_COMPUTE or self._transfer_is_broadcast(tr):
+            return False
+        pairs = self._communicating_pairs(choice)
+        return bool(pairs) and all(self.context.shares_memory(one, other) for one, other in pairs)
 
     def _transfer_fan_out(self, tr: TransferNode) -> int:
         """DMA channels one source core drives: a fifo per destination it feeds a distinct slice to."""

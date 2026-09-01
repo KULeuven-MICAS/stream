@@ -13,6 +13,7 @@ import pytest
 
 from stream.hardware.architecture.core import Core
 from stream.opt.allocation.constraint_optimization.context import AIE2Constraints
+from stream.workload.node import TransferType
 
 
 def _core(core_id: int, kind: str, col: int | None, row: int | None, namespace: str = "aie2") -> Core:
@@ -110,3 +111,57 @@ def test_the_pairing_follows_the_declared_order_not_the_sorted_one():
 def test_a_core_of_another_namespace_is_not_given_aie2_adjacency(aie2):
     """An accelerator can mix namespaces, and the dispatch asks every strategy in turn."""
     assert aie2.shares_memory(_core(0, "compute", 0, 2), _core(1, "compute", 0, 3, "other")) is False
+
+
+class _Transfer:
+    """Just the operand-type field ``_choice_shares_memory`` reads off a transfer."""
+
+    def __init__(self, transfer_type: TransferType):
+        self.transfer_type = transfer_type
+
+
+def _allocator(context, broadcast: bool = False):
+    """A bare allocator carrying only what the shared-memory latency check reads. ``_transfer_is_broadcast``
+    inspects real tensors, so it is stubbed -- the plan and the transfer type drive everything else."""
+    from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
+        TransferAndTensorAllocator,
+    )
+
+    alloc = TransferAndTensorAllocator.__new__(TransferAndTensorAllocator)
+    alloc.context = context
+    alloc._transfer_is_broadcast = lambda _tr: broadcast  # type: ignore[method-assign]
+    return alloc
+
+
+def test_a_neighbour_transfer_reads_in_place_so_its_path_latency_is_zero(aie2):
+    """A compute-to-compute transfer between neighbours is served out of shared memory: it spends no
+    channel (above) and moves no bytes over a link, so ``_transfer_latency_for_path`` returns 0."""
+    alloc = _allocator(aie2)
+    tr = _Transfer(TransferType.COMPUTE_TO_COMPUTE)
+    plan = _Plan([_core(0, "compute", 0, 2)], [_core(1, "compute", 0, 3)])  # north neighbour
+    assert alloc._choice_shares_memory(tr, plan) is True
+    assert alloc._transfer_latency_for_path(tr, plan) == 0
+
+
+def test_a_transfer_across_the_array_is_not_shared(aie2):
+    """Two rows apart share no memory, so the transfer keeps the normal bytes-over-bandwidth cost."""
+    alloc = _allocator(aie2)
+    tr = _Transfer(TransferType.COMPUTE_TO_COMPUTE)
+    plan = _Plan([_core(0, "compute", 0, 2)], [_core(1, "compute", 0, 4)])  # two rows apart
+    assert alloc._choice_shares_memory(tr, plan) is False
+
+
+def test_a_broadcast_is_on_the_dma_however_it_is_placed(aie2):
+    """One source feeding several consumers goes on the DMA even between neighbours."""
+    alloc = _allocator(aie2, broadcast=True)
+    tr = _Transfer(TransferType.COMPUTE_TO_COMPUTE)
+    plan = _Plan([_core(0, "compute", 0, 2)], [_core(1, "compute", 0, 3)])
+    assert alloc._choice_shares_memory(tr, plan) is False
+
+
+def test_a_transfer_staged_on_a_memory_tile_is_not_shared(aie2):
+    """A transfer routed through a memory tile is two legs on the DMA, not a core-to-core share."""
+    alloc = _allocator(aie2)
+    tr = _Transfer(TransferType.MEM_TO_COMPUTE)
+    plan = _Plan([_core(0, "compute", 0, 2)], [_core(1, "compute", 0, 3)])
+    assert alloc._choice_shares_memory(tr, plan) is False
