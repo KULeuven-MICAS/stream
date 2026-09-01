@@ -1,9 +1,13 @@
 """Trace tile selection: a core needs a south port out of its column, a mem tile does not."""
 
-from xdsl.dialects.builtin import MemRefType, ModuleOp, bf16
-from xdsl_aie.dialects.aie import ObjectFIFO, ObjectFifoOp, TileOp
+import pytest
 
-from stream.compiler.transforms.aie_add_tracing_script import _SOUTH_PORTS, _blocked_columns
+pytest.importorskip("xdsl_aie", reason="the AIE dialects are a separate install, via stream-setup-aie")
+
+from xdsl.dialects.builtin import MemRefType, ModuleOp, bf16  # noqa: E402
+from xdsl_aie.dialects.aie import ObjectFIFO, ObjectFifoOp, TileOp  # noqa: E402
+
+from stream.compiler.transforms.aie_add_tracing_script import _SOUTH_PORTS, _blocked_columns  # noqa: E402
 
 
 def _fifo(name: str, producer: TileOp, consumer: TileOp) -> ObjectFifoOp:
