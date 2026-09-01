@@ -15,6 +15,11 @@ from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, ma
 from stream.inputs.testing.workload.make_conv_relu_flatten_gemm import (
     make_conv_relu_flatten_gemm_workload,
 )
+from stream.inputs.testing.workload.make_resnet_subgraph import (
+    ResNetPattern,
+    ResNetSubgraphConfig,
+    make_resnet_subgraph,
+)
 from stream.mapping.generic_generator import GenericMappingGenerator
 from stream.parser.mapping_validator import MappingValidator
 from stream.stages.context import StageContext
@@ -23,6 +28,7 @@ from stream.stages.parsing.onnx_model_parser import ONNXModelParserStage
 from stream.stages.stage import LeafStage, MainStage
 
 _ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
+_TPU_V7 = "stream/inputs/examples/hardware/tpu_v7_ironwood.yaml"
 _WORKLOAD_CONFIG = TwoConvWorkloadConfig(
     batch_size=1,
     in_channels=8,
@@ -36,12 +42,12 @@ _WORKLOAD_CONFIG = TwoConvWorkloadConfig(
 )
 
 
-def _parse_workload_and_accelerator(workload_path: str | None = None):
+def _parse_workload_and_accelerator(workload_path: str | None = None, accelerator: str = _ACCELERATOR):
     """Helper: parse hardware + workload into objects via the pipeline stages."""
     if workload_path is None:
         workload_path = make_2_conv_workload(_WORKLOAD_CONFIG)
     ctx = StageContext.from_kwargs(
-        accelerator=_ACCELERATOR,
+        accelerator=accelerator,
         workload_path=workload_path,
         output_path=tempfile.mkdtemp(),
     )
@@ -199,3 +205,42 @@ def test_tpu_yaml_validates():
     validator = MappingValidator(data)
     is_valid = validator.validate()
     assert is_valid, f"TPU mapping YAML validation errors: {validator.errors}"
+
+
+def test_pool_ops_saturate_the_vpus_on_tpu_v7():
+    """A pooling op has no matmul owner, so on TPU7x it must run on the four VPUs -- the vector unit
+    that already owns the reductions -- fully split across all four, not smeared across the 36-core
+    MXU+VPU fallback set (an MXU cannot price a pool). Guards the tpu_v7 VPU operator_types routing:
+    without the pooling ops in that list, the pool falls back to every compute core and, worse, lands
+    partly on the systolic arrays."""
+    onnx_path = make_resnet_subgraph(ResNetSubgraphConfig(pattern=ResNetPattern.FRONTEND))
+    accelerator, workload = _parse_workload_and_accelerator(onnx_path, accelerator=_TPU_V7)
+
+    vpu_ids = {c.id for c in accelerator.core_list if getattr(c, "name", "") == "tpu_v7_vpu"}
+    assert len(vpu_ids) == 4, f"Expected 4 VPUs on TPU7x, got {sorted(vpu_ids)}"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        gen = GenericMappingGenerator(accelerator, workload, tmpdir)
+        paths, _ = gen.generate_all_groups()
+
+        pool_layers = []
+        for path in paths:
+            with open(path) as f:
+                data = yaml.safe_load(f)
+            assert MappingValidator(data).validate(), "Generated tpu_v7 mapping failed validation"
+            pool_layers += [layer for layer in data["layers"] if "Pool" in layer["name"]]
+
+        assert pool_layers, "No pooling layer found in the frontend subgraph"
+        for layer in pool_layers:
+            core_ids = {core for slot in layer["core_allocation"] for core in slot}
+            assert core_ids == vpu_ids, (
+                f"{layer['name']} must run on all 4 VPUs {sorted(vpu_ids)}, got {sorted(core_ids)}"
+            )
+            # And it must be split across every one of them, not parked on a subset.
+            split = layer["inter_core_tiling"][0]
+            cores_used = 1
+            for entry in split:
+                cores_used *= entry["split"]
+            assert cores_used == len(vpu_ids), (
+                f"{layer['name']} inter-core split {split} uses {cores_used} cores, expected {len(vpu_ids)}"
+            )

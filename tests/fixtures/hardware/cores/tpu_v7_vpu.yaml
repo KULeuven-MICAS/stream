@@ -82,6 +82,9 @@ operand_precision:
   input: fp32
   accumulator: fp32
 
-# Elementwise and activation ops only. Core selection matches on the node's op type, so listing a
-# superset is harmless -- only the types actually present in a workload can match.
-operator_types: [Add, Sub, Mul, Div, Exp, Pow, Silu, Sigmoid, Gelu, Tanh, Relu, Softmax, ReduceMax, ReduceSum]
+# Elementwise, activation, reduction and pooling ops -- everything that is not a matmul runs on the
+# vector unit, not the MXU array. Pooling is a windowed reduction, so it belongs here alongside the
+# reductions; without it, core selection finds no owner and smears the op across all 36 compute cores
+# (an MXU cannot price a pool). Core selection matches on the node's op type, so listing a superset is
+# harmless -- only the types actually present in a workload can match.
+operator_types: [Add, Sub, Mul, Div, Exp, Pow, Silu, Sigmoid, Gelu, Tanh, Relu, Softmax, ReduceMax, ReduceSum, ReduceMean, MaxPool, AveragePool, GlobalAveragePool, GlobalMaxPool]
