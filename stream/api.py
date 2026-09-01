@@ -114,6 +114,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
     kernel_library: KernelLibrary | str | dict[str, Any] | None = None,
     instrumentation: dict[str, Any] | None = None,
     tile_search: bool = False,
+    codegen_options: dict[str, Any] | None = None,
 ) -> StageContext:
     # Callers (e.g. the web runner) may pass JSON-sourced strings for the booleans; coerce them so a
     # literal "false" cannot read as True and silently pull in the optional AIE code-gen path (snaxc).
@@ -173,6 +174,9 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
             constraint_selection=constraint_selection,
             kernel_library=kernel_library,
             tile_search=tile_search,
+            # Options for the selected codegen backend. Backends differ in what they can be
+            # asked for, so this stays an open dict rather than a growing argument list.
+            **(codegen_options or {}),
         )
         # optionally add a code-generation stage (selected by `codegen_backend`, or
         # `enable_codegen=True` -> "aie"; registered in CODEGEN_BACKENDS)
