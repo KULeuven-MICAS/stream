@@ -2,13 +2,21 @@ import os
 from collections.abc import Iterable, Sequence
 from typing import cast
 
-from snaxc.dialects.tsl import TSL
 from xdsl.dialects.builtin import (
     ModuleOp,
     ShapedType,
 )
 from xdsl.ir import Block, Operation, Region, SSAValue
 from xdsl.parser import StringAttr
+
+# snaxc supplies the tiled-strided-layout dialect the AIE lowering annotates buffers with.
+# It is a heavy, separately-installed dependency (and pins its own xdsl), while everything
+# up to and including IterationSpaceToFor is target-independent -- so a backend that reuses
+# the steady-state IR without the AIE passes can run without it.
+try:
+    from snaxc.dialects.tsl import TSL
+except ImportError:  # pragma: no cover - exercised by non-AIE codegen backends
+    TSL = None
 
 from stream.compiler.context.aie_context import AIEContext
 from stream.compiler.dialects.stream import (
@@ -76,7 +84,8 @@ class AIECodeGenerationStage(Stage):
 
         # add custom dialects and passes
         self.context.load_dialect(Stream)
-        self.context.load_dialect(TSL)
+        if TSL is not None:
+            self.context.load_dialect(TSL)
 
         # Off unless asked for: tracing adds a trailing runtime sequence argument,
         # so it changes the calling convention, and its packet flows need routing.

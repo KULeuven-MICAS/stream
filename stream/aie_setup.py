@@ -84,8 +84,34 @@ def _aie_importable() -> bool:
         return False
 
 
+def _installer() -> list[str]:
+    """The `pip install` prefix to use, preferring the interpreter's own pip.
+
+    Conda/pixi and uv-managed virtualenvs frequently have no `pip` module at all, and the
+    failure is an opaque "No module named pip" from a subprocess several frames down. `uv
+    pip` installs into the interpreter named by --python, so it is a drop-in here.
+    """
+    import shutil  # noqa: PLC0415
+
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "--version"],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except (subprocess.CalledProcessError, OSError):
+        uv = shutil.which("uv")
+        if uv is None:
+            raise SystemExit(
+                f"{sys.executable} has no pip module and `uv` is not on PATH. Install one "
+                f"of them, or install the dialects by hand -- see stream/aie_setup.py for "
+                f"the pinned revisions."
+            ) from None
+        return [uv, "pip", "install", "--python", sys.executable]
+    return [sys.executable, "-m", "pip", "install"]
+
+
 def _steps(with_mlir_aie: bool) -> list[tuple[str, list[str]]]:
-    pip = [sys.executable, "-m", "pip", "install"]
+    pip = _installer()
     steps: list[tuple[str, list[str]]] = []
     if with_mlir_aie and _mlir_aie_installed():
         steps.append(("mlir_aie + llvm-aie -- already installed, skipping", []))
