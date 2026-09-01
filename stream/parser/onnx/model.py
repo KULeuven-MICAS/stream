@@ -95,6 +95,12 @@ class ONNXModelParser:
         "Gelu": ElementwiseParser,
         "Sigmoid": ElementwiseParser,
         "Tanh": ElementwiseParser,
+        # Fixed-point requantisation (rescale + saturate to a narrower integer type).
+        # Elementwise like the rest; it exists as its own node because accelerators that
+        # implement it in hardware need it to appear in the graph rather than be folded
+        # into a neighbour -- an integer feed-forward block has one between its activation
+        # and the projection that consumes the result.
+        "Requant": ElementwiseParser,
     }
 
     def __init__(self, onnx_model_path: str) -> None:

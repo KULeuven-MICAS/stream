@@ -143,20 +143,27 @@ class AIECodeGenerationStage(Stage):
                 raise ValueError("Spatial Strensor for single-core transfer found.")
 
         if cores == [StringAttr("tile_0_0")]:
-            shape = cast(ShapedType, node.output.subview.source.type).get_shape()
+            # One destination core, but possibly several consumers on it: a tensor read by
+            # two nodes gives its transfer two outputs carrying the same tensor. The line
+            # below already indexes outputs[0] for exactly that reason; `.output` asserts
+            # there is only one, which a SwiGLU's shared input trips.
+            shape = cast(ShapedType, node.outputs[0].subview.source.type).get_shape()
             layer_dims = (
                 x[0]
                 for x in sorted(workload.strides_for_tensor(node.outputs[0]).items(), key=lambda x: x[1], reverse=True)
                 if any(x[1])
             )
             result_type = StrensorType(
-                node.output.operand_type,
+                node.outputs[0].operand_type,
                 StrensorSpace(
                     tuple(StrensorVar(StrensorVarType.CONSTANT, s, d) for (s, d) in zip(shape, layer_dims, strict=True))
                 ),
                 [StringAttr("tile_0_0")],
             )
-            result_types = [result_type]
+            # One result per consumer, even when they share a destination core: the
+            # consumers index this transfer's results positionally, so a multicast to two
+            # nodes on one core still needs two (identical) results.
+            result_types = [result_type] * len(node.outputs)
         elif len(node.outputs) > 1:
             # create equal split based on compute allocations
             cores_per_output = len(cores) // len(node.outputs)
@@ -321,7 +328,12 @@ class AIECodeGenerationStage(Stage):
         for node in workload.topological_sort():
             if isinstance(node, InEdge):
                 shape = cast(ShapedType, node.output.subview.source.type).get_shape()
-                layer_dims = reversed(tuple(get_layer_dims([x for x in workload.successors(node)][0].output)))
+                # A tensor consumed by more than one node is multicast: its transfer has
+                # several outputs carrying the *same* tensor to different destinations, so
+                # any of them gives the layer dimensions. `.output` asserts there is only
+                # one, which a SwiGLU trips immediately -- its input feeds both projections.
+                successor = [x for x in workload.successors(node)][0]
+                layer_dims = reversed(tuple(get_layer_dims(successor.outputs[0])))
                 ops[node] = InEdgeOp(
                     node.name,
                     StrensorType(
