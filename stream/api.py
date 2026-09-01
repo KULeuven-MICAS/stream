@@ -137,6 +137,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
     kernels: dict[str, Any] | None = None,
+    codegen_options: dict[str, Any] | None = None,
     instrumentation: dict[str, Any] | None = None,
 ) -> StageContext:
     # Callers (e.g. the web runner) may pass JSON-sourced strings for the booleans; coerce them so a
@@ -194,6 +195,9 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913
             backend=_backend_enum.value,
             constraint_selection=constraint_selection,
             kernels=kernels,  # optional caller-supplied kernel factory overrides
+            # Options for the selected codegen backend. Backends differ in what they can be
+            # asked for, so this stays an open dict rather than a growing argument list.
+            **(codegen_options or {}),
         )
         # optionally add a code-generation stage (modular: selected by `codegen_backend`, or
         # `enable_codegen=True` -> "aie" for back-compat; registered in CODEGEN_BACKENDS).
