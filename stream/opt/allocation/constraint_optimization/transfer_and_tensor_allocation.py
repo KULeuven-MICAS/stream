@@ -227,9 +227,7 @@ class TransferAndTensorAllocator:
             # A node's outputs, and the state it keeps: the state is resident on the cores the
             # node runs on, so it is allocated exactly where its node is and never moved.
             carried = (
-                [x for x in node.inputs if is_state_operand(node, x)]
-                if isinstance(node, HasIterationSpace)
-                else []
+                [x for x in node.inputs if is_state_operand(node, x)] if isinstance(node, HasIterationSpace) else []
             )
             for tensor in (*node.outputs, *carried):
                 if tensor in self.possible_tensor_allocations:
@@ -457,12 +455,7 @@ class TransferAndTensorAllocator:
         if not src or not dst:
             return ()
         narrow = min(len(src), len(dst))
-        return tuple(
-            (src[i], dst[j])
-            for i in range(len(src))
-            for j in range(len(dst))
-            if i % narrow == j % narrow
-        )
+        return tuple((src[i], dst[j]) for i in range(len(src)) for j in range(len(dst)) if i % narrow == j % narrow)
 
     def _handovers(self) -> list[tuple[Core, Core, int]]:
         """Cores that pass a kernel's state to the step behind them, and the bits each holds.
@@ -498,9 +491,11 @@ class TransferAndTensorAllocator:
         """The computation nodes this one's output reaches, across the transfer between them."""
         reached = []
         for succ in self.workload.successors(node):
-            reached += [succ] if isinstance(succ, ComputationNode) else [
-                x for x in self.workload.successors(succ) if isinstance(x, ComputationNode)
-            ]
+            reached += (
+                [succ]
+                if isinstance(succ, ComputationNode)
+                else [x for x in self.workload.successors(succ) if isinstance(x, ComputationNode)]
+            )
         return reached
 
     def _transfer_is_broadcast(self, tr: TransferNode) -> bool:
@@ -529,9 +524,7 @@ class TransferAndTensorAllocator:
         if tr.transfer_type is not TransferType.COMPUTE_TO_COMPUTE:
             return False
         for choice in choices:
-            touching = [
-                (a, b) for a, b in self._communicating_pairs(choice) if (b if incoming else a) == core
-            ]
+            touching = [(a, b) for a, b in self._communicating_pairs(choice) if (b if incoming else a) == core]
             if not touching:
                 return False
             if any(not self.context.shares_memory(one, other) for one, other in touching):
