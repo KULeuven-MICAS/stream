@@ -198,18 +198,22 @@ def test_dma_objective_no_dma_terms():
     tta.iterations = 1
     tta.slot_latency = {}
     tta.tensors_to_optimize_reuse_for = []
+    tta.transfer_nodes = []
+    tta.possible_transfer_allocations = {}
     tta._set_total_latency_and_objective()
     # Verify lexicographic objectives were set with primary = total_lat only
     mock_model.set_lexicographic_objectives.assert_called_once()
     objectives = mock_model.set_lexicographic_objectives.call_args[0][0]
     primary = next(o for o in objectives if o.name == "latency")
     assert primary.expr == "total_lat_raw"
-    # Latency decides first; offchip traffic breaks its ties, and buffering breaks
-    # traffic's. Only the order matters, so assert that rather than the numbers.
+    # Latency decides first; offchip traffic breaks its ties, buffering breaks
+    # traffic's, and route hops break everything's. Only the order matters, so
+    # assert that rather than the numbers.
     assert [o.name for o in sorted(objectives, key=lambda o: -o.priority)] == [
         "latency",
         "offchip_traffic",
         "buffering",
+        "route_hops",
     ]
 
 
