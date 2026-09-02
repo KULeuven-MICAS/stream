@@ -603,7 +603,7 @@ class ChannelToObjectFifoPass(RewritePattern):
 
                 # number of elements is the kernel shape
                 local_shape = target_type.get_local_shape()
-                assert len(local_shape) <= 1
+                assert len([extent for extent in local_shape if extent != 1]) <= 1
                 num_elements = max((2, prod(local_shape)))
 
                 object_fifo = ObjectFifoOp.from_referenced_type(
@@ -1210,7 +1210,6 @@ class TransferToObjectFIFOPattern(RewritePattern):
             index_ops.extend([i_arg, add_val, mult_val])
         if relevant_reuse_vars:
             for_op = for_op.parent_op()
-            assert isinstance(for_op, ForOp)
 
         index_switch = IndexSwitchOp(
             arg=add_val,
@@ -1242,18 +1241,17 @@ class TransferToObjectFIFOPattern(RewritePattern):
         # FIXME: this is mainly necessary because of bad reuse in output stream IR
         # push insertion point higher until next relevant dimension is found
         relevant_dims = {var.dim for var in strensor.ssis.data.get_kernel_variables()}
-        while True:
+        while isinstance(for_op, ForOp):
             assert isinstance((layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr)
             if layer_dim.data.dim in relevant_dims:
                 break
             for_op = for_op.parent_op()
-            if not isinstance(for_op, ForOp):
-                break
         # FIXME: end
 
-        assert (for_yield := for_op.body.block.last_op) is not None
-        rewriter.insert_op(release_op, InsertPoint.before(for_yield))
-        rewriter.insert_op([acquire_op, *access_ops], InsertPoint.at_start(for_op.body.block))
+        scope = for_op.body.block if isinstance(for_op, ForOp) else for_op.region.block
+        assert (terminator := scope.last_op) is not None
+        rewriter.insert_op(release_op, InsertPoint.before(terminator))
+        rewriter.insert_op([acquire_op, *access_ops], InsertPoint.at_start(scope))
 
         # set output of computation node op if this was a push op
         if isinstance(op, PushOp):
