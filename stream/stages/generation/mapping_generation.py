@@ -52,27 +52,13 @@ class MappingGenerationStage(Stage):
             hidden_tile_size=hidden_tile_size,
             last_gemm_down=last_gemm_down,
             max_variants=max_nb_mappings,
-            layer_core_splits={
-                "Gemm_Left": [4, 8, 16],
-                "Gemm_Right": [4, 8, 16],
-                "Silu": [1, 4],
-                "Elt_Mul": [1, 4],
-                "Gemm_Down": [4, 8, 16],  # only used if last_gemm_down=True
-            },
-            # layer_core_splits={
-            #     "Gemm_Left": [8,],
-            #     "Gemm_Right": [8,],
-            #     "Silu": [4,],
-            #     "Elt_Mul": [4,],
-            #     "Gemm_Down": [8,],  # only used if last_gemm_down=True
-            # },
-            layer_max_shapes_per_total={
-                "Gemm_Left": 1,
-                "Gemm_Right": 1,
-                "Silu": 1,
-                "Elt_Mul": 1,
-                "Gemm_Down": 1,
-            },
+            # Totals per layer derive from each layer's share of the workload's cycles
+            # (MappingGenerator._derived_totals); declare a dict here only to override.
+            layer_core_splits=self.ctx.get("layer_core_splits"),
+            layer_max_shapes_per_total=self.ctx.get(
+                "layer_max_shapes_per_total",
+                {"Gemm_Left": 1, "Gemm_Right": 1, "Silu": 1, "Elt_Mul": 1, "Gemm_Down": 1},
+            ),
             nb_rows=nb_rows_to_use,
             nb_cols=nb_cols_to_use,
         )

@@ -2,9 +2,9 @@ import logging
 import os
 from dataclasses import replace
 
+from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
-from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.stages.generation.mapping_generation import save_infeasibility_report
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.workload import Workload

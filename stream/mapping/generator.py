@@ -8,6 +8,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
 from itertools import product
+from math import prod
 from typing import Any
 
 import yaml
@@ -211,6 +212,47 @@ class MappingGenerator:
     # -------------------------
     # Core building blocks
     # -------------------------
+    # Bytes one AIE compute tile offers the kernel's working set (64 KB, double-buffered
+    # operands of 2-byte elements). What does not fit here cannot allocate whatever the
+    # split, so it is rejected before any solve rather than after the slowest one.
+    CORE_BYTES = 64 * 1024
+    ELEMENT_BYTES = 2
+    BUFFERS = 2
+
+    def _tile_fits_core(self) -> None:
+        m, k, n = self.seq_len_tile_size, self.embedding_tile_size, self.hidden_tile_size
+        gemm = self.BUFFERS * self.ELEMENT_BYTES * (m * k + k * n + m * n)
+        eltwise = self.BUFFERS * self.ELEMENT_BYTES * 3 * m * n
+        for name, need in (("gemm", gemm), ("elementwise", eltwise)):
+            if need > self.CORE_BYTES:
+                raise AssertionError(
+                    f"A {name} tile of ({m}, {k}, {n}) needs {need} bytes double-buffered "
+                    f"against a core's {self.CORE_BYTES}; no split can make it fit."
+                )
+
+    def _derived_totals(self, layer_templates: Sequence[dict[str, Any]], tpl: dict[str, Any]) -> list[int]:
+        """Core totals worth offering a layer, from its share of the workload's cycles.
+
+        Each layer's cost is its operation count over its kernel's measured throughput --
+        151 MACs/cycle for the GEMM (the matmul_bf16_bf16_64_64_64 anchor in
+        stream.stages.estimation.kernel_cycles) and 16 elements/cycle for an elementwise
+        body. A layer is offered power-of-two totals within 4x either side of its
+        proportional share of the array. This replaces a hand-declared totals table and
+        keeps the product of per-layer options small without hiding any allocation a
+        balanced schedule could want.
+        """
+        max_cores = len(self.compute_core_ids)
+
+        def cost(t: dict[str, Any]) -> float:
+            ops = prod(int(s) for s in t["dim_sizes"].values())
+            gemm_like = "k" in t["kernel"]["kwargs"]
+            return ops / (151.0 if gemm_like else 16.0)
+
+        share = cost(tpl) / sum(cost(t) for t in layer_templates)
+        ideal = max(1.0, share * max_cores)
+        totals = [t for t in (1, 2, 4, 8, 16, 32, 64) if t <= max_cores and ideal / 4 <= t <= ideal * 4]
+        return totals or [1]
+
     def _validate_problem_sizes(self) -> None:
         if self.seq_len % 4 != 0:
             raise AssertionError("seq_len must be divisible by 4 for these mappings.")
@@ -220,6 +262,7 @@ class MappingGenerator:
             raise AssertionError(f"embedding_dim must be divisible by {self.embedding_tile_size}.")
         if self.hidden_dim % self.hidden_tile_size != 0:
             raise AssertionError(f"hidden_dim must be divisible by {self.hidden_tile_size}.")
+        self._tile_fits_core()
 
     def _get_compute_core_ids(self, accelerator: Accelerator) -> list[int]:
         """
@@ -352,8 +395,10 @@ class MappingGenerator:
             dims: list[str] = list(tpl["inter_core_dims"])
             dim_sizes: dict[str, int] = dict(tpl["dim_sizes"])
 
-            # Allowed totals for this layer (if not specified, fall back to "anything up to max_cores")
-            allowed_totals = self.layer_core_splits.get(lname, None)
+            # Allowed totals for this layer: declared, or derived from the layer's share
+            # of the workload's compute so the enumeration only offers allocations that
+            # make sense (a layer doing 0.5% of the cycles is never offered half the array).
+            allowed_totals = self.layer_core_splits.get(lname, self._derived_totals(layer_templates, tpl))
             if allowed_totals is not None:
                 # sanitize and keep only feasible totals
                 allowed_totals = sorted({int(x) for x in allowed_totals if 1 <= int(x) <= max_cores})
