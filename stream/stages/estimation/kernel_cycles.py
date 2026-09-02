@@ -21,7 +21,11 @@ MEASURED_KERNEL_CYCLES: dict[str, float] = {
     "matmul_bf16_bf16_32_32_64": 575.0,
     "matmul_PV": 1536.0,
     "partial_softmax": 4400.0,
-    "partial_softmax_mode": 4400.0,
+    # The MAC-tiled handover variant measures 2.09x the row-major body (occupancy trace,
+    # 260827_softmax_kernel: 5,149 -> 10,742 cycles per step). This ratio is what makes a
+    # wide-softmax row layout -- which forces the tiled handover -- rank truthfully: the
+    # extra row halves the calls per core and the tiled body doubles each call back.
+    "partial_softmax_mode": 9200.0,
     "matmul_softmax": 6130.0,
 }
 

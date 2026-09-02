@@ -301,11 +301,12 @@ class ChannelToObjectFifoPass(RewritePattern):
         tiles: tuple[SSAValue, ...],
         element_type: Attribute,
         shape: Iterable[int],
+        feed: bool = True,
     ) -> tuple[int, ...]:
         counts = tuple(int(d) for d in depths)
         if self.depths is None:
             return counts
-        return self.depths.deepen(counts, tiles, object_bytes(elem_bits(element_type), tuple(shape)))
+        return self.depths.deepen(counts, tiles, object_bytes(elem_bits(element_type), tuple(shape)), feed=feed)
 
     def compute_to_mem(
         self,
@@ -364,6 +365,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                             (self.get_tile(source), self.get_tile(target)),
                             source_type.get_element_type(),
                             source_type.get_kernel_shape(),
+                            feed=False,
                         ),
                         source_type.get_element_type(),
                         source_type.get_kernel_shape(),
@@ -401,6 +403,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                         (self.get_tile(source), self.get_tile(target)),
                         source_type.get_element_type(),
                         source_type.get_kernel_shape(),
+                        feed=False,
                     ),
                     source_type.get_element_type(),
                     source_type.get_kernel_shape(),
@@ -751,6 +754,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                         (shim_tile, self.get_tile(target)),
                         target_type.get_element_type(),
                         self.held_shape(target_type),
+                        feed=False,
                     ),
                     target_type.get_element_type(),
                     self.held_shape(target_type),
@@ -779,6 +783,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     (producer_tile, *consumer_tiles),
                     strensor.get_element_type(),
                     self.held_shape(strensor),
+                    feed=False,
                 ),
                 referenced_type=strensor.get_element_type(),
                 shape=self.held_shape(strensor),
@@ -828,6 +833,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                         (self.get_tile(source), shim_tile),
                         source_type.get_element_type(),
                         self.held_shape(source_type),
+                        feed=False,
                     ),
                     source_type.get_element_type(),
                     self.held_shape(source_type),
@@ -864,6 +870,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     (producer_tile, *consumer_tiles),
                     strensor.get_element_type(),
                     self.held_shape(strensor),
+                    feed=False,
                 ),
                 referenced_type=strensor.get_element_type(),
                 shape=self.held_shape(strensor),

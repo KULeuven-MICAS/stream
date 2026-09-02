@@ -294,6 +294,10 @@ class Mapping:
     def fused_groups(self) -> tuple[FusedGroup, ...]:
         return self._fused_groups
 
+    def with_fused_groups(self, fused_groups: Iterable[FusedGroup]) -> "Mapping":
+        """The same per-node mapping under different fused groups (e.g. another intra-core tiling)."""
+        return Mapping(initial=dict(self._by_node), fused_groups=fused_groups, runtime_args=self._runtime_args)
+
     @property
     def runtime_args(self) -> dict[str, str]:
         return self._runtime_args

@@ -24,6 +24,7 @@ from stream.stages.generation.kernel_state import KernelStateStage
 from stream.stages.generation.mapping_generation import MappingGenerationStage
 from stream.stages.generation.mapping_generation_multi import MappingGenerationMultiThreadedStage
 from stream.stages.generation.normalization_expansion import ExpandNormalizationStage
+from stream.stages.generation.tile_search import TileSearchStage
 from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
 from stream.stages.parsing.mapping_parser import MappingParserStage
@@ -81,6 +82,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
     constraint_selection: ConstraintSelection | None = None,
     kernels: dict[str, Any] | None = None,
     instrumentation: dict[str, Any] | None = None,
+    tile_search: bool = False,
 ) -> StageContext:
     # Callers (e.g. the web runner) may pass JSON-sourced strings for the booleans; coerce them so a
     # literal "false" cannot read as True and silently pull in the optional AIE code-gen path (snaxc).
@@ -117,6 +119,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
             MappingParserStage,
             KernelStateStage,  # the state a kernel carries, before the iteration space is read
+            TileSearchStage,  # optional: pick each fused group's intra-core tile by solving candidates
             TilingGenerationStage,
             CoreCostEstimationStage,
             ConstraintOptimizationAllocationStage,
@@ -137,6 +140,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
             backend=_backend_enum.value,
             constraint_selection=constraint_selection,
             kernels=kernels,  # optional caller-supplied kernel factory overrides
+            tile_search=tile_search,
         )
         # optionally add code generation stage
         if enable_codegen:
@@ -162,6 +166,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
                     # No MappingParserStage: FixedMappingGenerationStage supplies the
                     # per-group Mapping objects in-memory via FusionGroupIterationStage.
                     KernelStateStage,  # the state a kernel carries, before the iteration space is read
+                    TileSearchStage,  # optional: pick each fused group's intra-core tile by solving candidates
                     TilingGenerationStage,
                     CoreCostEstimationStage,
                     ConstraintOptimizationAllocationStage,
@@ -459,6 +464,7 @@ def optimize_mapping(  # noqa: PLR0913
             mapping_generation_stage,
             MappingParserStage,
             KernelStateStage,  # the state a kernel carries, before the iteration space is read
+            TileSearchStage,  # optional: pick each fused group's intra-core tile by solving candidates
             TilingGenerationStage,
             CoreCostEstimationStage,
             ConstraintOptimizationAllocationStage,

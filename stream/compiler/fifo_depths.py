@@ -40,15 +40,25 @@ class FifoDepths:
             return None
         return owner.col.value.data, owner.row.value.data
 
-    def deepen(self, depths: tuple[int, ...], tiles: tuple[SSAValue, ...], object_bytes: int) -> tuple[int, ...]:
+    def deepen(
+        self, depths: tuple[int, ...], tiles: tuple[SSAValue, ...], object_bytes: int, feed: bool = True
+    ) -> tuple[int, ...]:
         """Per-endpoint depths, raised where the endpoint's tile has slack for the extra objects.
 
-        Endpoints whose default is not 2 keep it: a 1 was chosen deliberately (the
-        allocator costed a single copy) and a larger value already encodes a whole turn.
-        Memory tiles are deepened on both sides; a compute tile only on its consuming
-        side, under a tighter margin, because its leftover bytes also cover what the
-        model does not see (stack, kernel-internal buffers).
+        Only fifos feeding a compute core deepen (a memory tile handing kernel tiles down
+        its column): a deeper feed there lets the memory tile run ahead of the cores'
+        consumption jitter. A deeper DRAM prefetch (shim to memory tile) measured 2.5%
+        SLOWER on the weight-streaming SwiGLU at seq 2048 -- the shim is already the
+        bottleneck and extra runahead only adds burst pressure -- and a deeper drain
+        lengthens buffer-descriptor chains into the per-channel limit the per-tile model
+        cannot see. Endpoints whose default is not 2 keep it: a 1 was chosen deliberately
+        (the allocator costed a single copy) and a larger value already encodes a whole
+        turn. A compute tile deepens only on its consuming side, under a tighter margin,
+        because its leftover bytes also cover what the model does not see (stack,
+        kernel-internal buffers).
         """
+        if not feed:
+            return depths
         if len(depths) != len(tiles):
             return depths
         out = list(depths)
