@@ -111,8 +111,18 @@ class AIEAddTracingScript(ModulePass):
         tiles = list(dict.fromkeys(core.tile for core in op.walk() if isinstance(core, CoreOp)))
         if self.tiles:
             wanted = set(self.tiles)
+            # A memory tile runs no kernel, but it has a trace unit of its own and sees the
+            # DMA traffic no core trace can. Asking for one by name is the only way to look
+            # at a window where the cores are idle.
+            memory = {
+                _coords(tile.result): tile.result
+                for tile in op.walk()
+                if isinstance(tile, TileOp) and tile.row.value.data == _MEM_ROW
+            }
             tiles = [t for t in tiles if _coords(t) in wanted]
-            missing = wanted - {_coords(t) for t in tiles}
+            found = {_coords(t) for t in tiles}
+            tiles += [memory[c] for c in sorted(wanted - found) if c in memory]
+            missing = wanted - found - set(memory)
             if missing:
                 raise ValueError(f"no kernel runs on tile(s) {sorted(missing)}, so they cannot be traced")
         # A column with no south port left traces its mem tile, which sits under the contention.
