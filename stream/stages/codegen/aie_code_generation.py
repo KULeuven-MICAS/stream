@@ -24,6 +24,7 @@ from stream.compiler.dialects.stream import (
     TransferOp,
     YieldOp,
 )
+from stream.compiler.fifo_depths import FifoDepths, TileBudget
 from stream.compiler.transforms.aie_add_tracing_script import MAX_TRACED_TILES, AIEAddTracingScript
 from stream.compiler.transforms.aie_convert_ofs import AIEConvertOfs
 from stream.compiler.transforms.aie_dispatch import AIEDispatchPass
@@ -382,6 +383,27 @@ class AIECodeGenerationStage(Stage):
 
         return module
 
+    def _fifo_depths(self) -> FifoDepths | None:
+        """A depth policy funded by the capacity the solved allocation left unused."""
+        scheduler = self.ctx.get("scheduler")
+        slack = getattr(scheduler, "capacity_slack", None)
+        if not slack:
+            return None
+        budgets: dict[tuple[int, int], TileBudget] = {}
+        for core in scheduler.accelerator.core_list:
+            per_core = slack.get(core.id)
+            if per_core is None or core.col_id is None or core.row_id is None:
+                continue
+            slots = min(
+                per_core.get("object_fifo_depth", float("inf")),
+                per_core.get("buffer_descriptors", float("inf")),
+            )
+            budgets[(core.col_id, core.row_id)] = TileBudget(
+                bytes_free=per_core.get("memory_bytes", 0.0),
+                bds_free=0.0 if slots == float("inf") else slots,
+            )
+        return FifoDepths(budgets)
+
     def codegen_main(self) -> None:
         workload: Workload = self.ctx.get("workload")
         assert workload is not None
@@ -417,7 +439,7 @@ class AIECodeGenerationStage(Stage):
         IterationSpaceToFor().apply(self.context, module)
         with open(output_path + "/with_for.mlir", "w") as f:
             f.write(str(module))
-        AIEConvertOfs().apply(self.context, module)
+        AIEConvertOfs(depths=self._fifo_depths()).apply(self.context, module)
         with open(output_path + "/convert_of.mlir", "w") as f:
             f.write(str(module))
         ConvertStreamToAIEPass().apply(self.context, module)

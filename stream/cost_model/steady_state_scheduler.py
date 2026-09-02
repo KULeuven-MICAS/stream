@@ -339,6 +339,12 @@ class SteadyStateScheduler:
             self.performance_stats = tta.compute_performance_stats()
         except Exception as exc:  # observability must never break the solve
             logger.warning("Failed to compute performance stats: %s", exc)
+        # The solved allocation's unused capacity per core, for post-solve spenders (deeper fifos).
+        try:
+            self.capacity_slack = tta.capacity_slack()
+        except Exception as exc:
+            logger.warning("Failed to compute capacity slack: %s", exc)
+            self.capacity_slack = {}
         # total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
         # assert total == total_latency_solver, (
         #     f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."

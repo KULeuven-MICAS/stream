@@ -173,6 +173,7 @@ class TransferAndTensorAllocator:
         self._resource_terms: dict[tuple[str, int], dict[str, float]] = defaultdict(dict)
         # core id -> [(indicator, bits-when-1, tensor)]: terms of that core's memory-capacity constraint.
         self._memory_load_terms: dict[int, list[tuple[SolverVar, int, str]]] = defaultdict(list)
+        self._capacity_load_terms: dict[tuple[str, int], list[tuple[SolverVar, int]]] = defaultdict(list)
 
         # primary decision vars
         self.x_tensor_choice: dict[tuple[Tensor, TensorPlacementChoice], SolverVar] = {}
@@ -1033,6 +1034,7 @@ class TransferAndTensorAllocator:
                             base_name=f"objfifo_{t.name}_{_resource_key(c)}_L{stop}",
                         )
                         self.object_fifo_depth[c] = self.object_fifo_depth[c] + tiles_needed * uz._raw
+                        self._capacity_load_terms[("object_fifo_depth", c.id)].append((uz, tiles_needed))
                     if min_tiles is not None:
                         self._resource_terms[("object_fifo_depth", c.id)][t.name] = min_tiles
         self.context.add_object_fifo_constraints(self.model, self.object_fifo_depth)
@@ -1063,6 +1065,7 @@ class TransferAndTensorAllocator:
                                 base_name=f"bddepth_{t.name}_{_resource_key(c)}_L{stop}",
                             )
                             self.bd_depth[c] = self.bd_depth[c] + bds_needed * uz._raw
+                            self._capacity_load_terms[("buffer_descriptors", c.id)].append((uz, bds_needed))
                     else:
                         # If the core is a memory core, we add bd usage only if the eq. tensor on compute
                         # is not being reused (zStop[t, stop] == 0 at that reuse level)
@@ -1106,6 +1109,7 @@ class TransferAndTensorAllocator:
                             bds_needed = self.bds_needed_levels[(t, stop)]
                             min_bd = bds_needed if min_bd is None else min(min_bd, bds_needed)
                             self.bd_depth[c] = self.bd_depth[c] + bds_needed * uzgate._raw
+                            self._capacity_load_terms[("buffer_descriptors", c.id)].append((uzgate, bds_needed))
                     if min_bd is not None:
                         self._resource_terms[("buffer_descriptors", c.id)][t.name] = min_bd
         self.context.add_buffer_descriptor_constraints(self.model, self.bd_depth)
@@ -2693,6 +2697,24 @@ class TransferAndTensorAllocator:
             "tensor_reuse": self._tensor_reuse_breakdown(),
             "memory_occupancy": self._memory_occupancy(),
         }
+
+    def capacity_slack(self) -> dict[int, dict[str, float]]:
+        """Per core, what the solved allocation leaves unused of each capacity family,
+        in the family's own unit: memory in bytes, fifo depth and buffer descriptors in slots.
+        Real headroom by the model's own accounting -- what a post-solve step may spend."""
+        slack: dict[int, dict[str, float]] = {}
+        for row in self._memory_occupancy():
+            slack.setdefault(row["core_id"], {})["memory_bytes"] = (row["capacity_bits"] - row["resident_bits"]) / 8
+        for (family, core_id), terms in self._capacity_load_terms.items():
+            bound = self._resource_bounds.get((family, core_id))
+            if bound is None:
+                continue
+            try:
+                used = sum(count for var, count in terms if float(var.X) > self.VAR_THRESHOLD)
+            except Exception:  # noqa: BLE001 -- an unreadable solution means no measurement, not zero
+                continue
+            slack.setdefault(core_id, {})[family] = bound - used
+        return slack
 
     def _memory_occupancy(self) -> list[dict[str, Any]]:
         """Per core: bits the solved placement keeps resident vs capacity (from the memory-capacity constraint)."""
