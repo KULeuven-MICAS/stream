@@ -1574,11 +1574,23 @@ class TransferAndTensorAllocator:
             for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
         )
 
+        # Last tiebreaker: fewest stream-switch hops. Two routings the latency model cannot
+        # tell apart are not equal on hardware -- every extra link a broadcast crosses is
+        # switch bandwidth some other flow loses -- and without this the choice between
+        # them is solver noise, so a cost-model change can flip staging to a farther
+        # memory tile and cost a measured percent for no modelled reason.
+        hops_expr = self.model.quicksum(
+            len(self.links_in_choice[(tr, choice)]) * self.y_path_choice[(tr, choice)]._raw
+            for tr in self.transfer_nodes
+            for choice in self.possible_transfer_allocations[tr]
+        )
+
         self.model.set_lexicographic_objectives(
             [
-                ObjectiveLevel(expr=primary_expr, priority=3, name="latency"),
-                ObjectiveLevel(expr=traffic_expr, priority=2, name="offchip_traffic"),
-                ObjectiveLevel(expr=buffering_expr, priority=1, name="buffering"),
+                ObjectiveLevel(expr=primary_expr, priority=4, name="latency"),
+                ObjectiveLevel(expr=traffic_expr, priority=3, name="offchip_traffic"),
+                ObjectiveLevel(expr=buffering_expr, priority=2, name="buffering"),
+                ObjectiveLevel(expr=hops_expr, priority=1, name="route_hops"),
             ],
             sense="minimize",
         )
