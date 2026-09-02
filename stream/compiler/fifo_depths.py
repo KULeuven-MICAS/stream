@@ -5,10 +5,12 @@ from xdsl.ir import SSAValue
 from xdsl_aie.dialects.aie import TileOp
 
 MEM_ROW = 1
+COMPUTE_ROW = 2
 DEFAULT_DEPTH = 2
 DEEP_DEPTH = 4
 BYTE_MARGIN = 0.5
 BD_MARGIN = 0.75
+COMPUTE_BYTE_MARGIN = 0.25
 
 
 @dataclass
@@ -39,10 +41,13 @@ class FifoDepths:
         return owner.col.value.data, owner.row.value.data
 
     def deepen(self, depths: tuple[int, ...], tiles: tuple[SSAValue, ...], object_bytes: int) -> tuple[int, ...]:
-        """Per-endpoint depths, raised where the endpoint is a memory tile with slack.
+        """Per-endpoint depths, raised where the endpoint's tile has slack for the extra objects.
 
         Endpoints whose default is not 2 keep it: a 1 was chosen deliberately (the
         allocator costed a single copy) and a larger value already encodes a whole turn.
+        Memory tiles are deepened on both sides; a compute tile only on its consuming
+        side, under a tighter margin, because its leftover bytes also cover what the
+        model does not see (stack, kernel-internal buffers).
         """
         if len(depths) != len(tiles):
             return depths
@@ -51,7 +56,13 @@ class FifoDepths:
             if out[i] != DEFAULT_DEPTH:
                 continue
             coords = self._coords(tile)
-            if coords is None or coords[1] != MEM_ROW:
+            if coords is None:
+                continue
+            if coords[1] == MEM_ROW:
+                margin = BYTE_MARGIN
+            elif coords[1] >= COMPUTE_ROW and i > 0:
+                margin = COMPUTE_BYTE_MARGIN
+            else:
                 continue
             budget = self.budgets.get(coords)
             if budget is None:
@@ -60,7 +71,7 @@ class FifoDepths:
             if extra <= 0:
                 continue
             cost = extra * object_bytes
-            if budget.bytes_free * BYTE_MARGIN < cost or budget.bds_free * BD_MARGIN < extra:
+            if budget.bytes_free * margin < cost or budget.bds_free * BD_MARGIN < extra:
                 continue
             budget.bytes_free -= cost
             budget.bds_free -= extra
