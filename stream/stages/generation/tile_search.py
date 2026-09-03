@@ -18,9 +18,9 @@ class TileSearchStage(Stage):
     """Let the optimizer choose each fused group's intra-core tile size.
 
     The mapping's declared tiling is the seed: the finest granule the compiled kernels
-    accept. Multiples of the seed are valid a priori -- they keep kernel-call granularity
-    and still divide the same extents -- so the candidate set needs no external pruning
-    knowledge. Every candidate is priced by the same tiling + cost + allocation tail that
+    accept. Growth is offered only along the group's growable dims -- the ones every
+    declaring kernel consumes in a run-time loop -- since a compiled block's own
+    dimensions never see more than one granule per call. Every candidate is priced by the same tiling + cost + allocation tail that
     prices everything else, so feasibility (memory, fifo depth, DMA channels) and worth
     (latency under the calibrated kernel costs) come from one model, and the best-latency
     solve wins. Off unless the context carries ``tile_search=True``.
@@ -40,6 +40,8 @@ class TileSearchStage(Stage):
         groups = self.mapping.fused_groups
         for gi, group in enumerate(groups):
             for ti, (dim, tile) in enumerate(group.intra_core_tiling):
+                if dim not in group.growable_dims:
+                    continue
                 extent = self.workload.get_dimension_size(dim)
                 for factor in GROWTH_FACTORS:
                     grown = tile * factor
@@ -93,15 +95,15 @@ class TileSearchStage(Stage):
             logger.info("Tile candidate %s: latency %s", tiling, latency)
             if i == 0:
                 seed_latency = latency
-                if self._seed_exhausted(ctxs[0]):
+                if self._seed_exhausted(ctxs[0]) or os.environ.get("STREAM_TILE_FORCE") == "seed":
                     best_latency, best_index = latency, 0
                     best_context = StageContext(data=dict(ctxs[0].data))
                     break
             elif latency >= seed_latency:
                 dead_dims.add(grown_dim)
             if os.environ.get("STREAM_TILE_FORCE") == "largest":
-                # Calibration probe: deploy the largest feasible tile so the per-firing
-                # DMA overhead can be measured against the seed on hardware.
+                # Calibration probe: deploy the largest feasible tile; "seed" above stops
+                # at the granule seed, so the pair brackets what the search itself buys.
                 best_latency, best_index = latency, i
                 best_context = StageContext(data=dict(ctxs[0].data))
                 continue

@@ -50,6 +50,9 @@ class EltwiseMulKernel(AIEKernel):
     def granule(self) -> list[tuple[int, int]]:
         return [(1, self.n), (0, self.m)]
 
+    def growable(self) -> tuple[int, ...]:
+        return (0, 1)
+
     def granule_floor(self) -> tuple[int, ...]:
         return (1,)
 

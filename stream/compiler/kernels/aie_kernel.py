@@ -118,6 +118,11 @@ class AIEKernel(ABC):
         means this kernel puts no floor under the tiling."""
         return []
 
+    def growable(self) -> tuple[int, ...]:
+        """Granule positions the kernel consumes in a run-time loop; a compiled block's
+        own dimensions are fixed, so a larger tile there never reaches the kernel."""
+        return ()
+
     def granule_floor(self) -> tuple[int, ...]:
         """Granule positions that stay in the tiling even at full extent.
 

@@ -25,6 +25,7 @@ class FusedGroup:
     name: str
     layers: tuple[str, ...] = field(default_factory=tuple)
     intra_core_tiling: tuple[tuple[LayerDim, int], ...] = field(default_factory=tuple)
+    growable_dims: tuple[LayerDim, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if not self.name:
