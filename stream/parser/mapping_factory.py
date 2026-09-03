@@ -134,6 +134,7 @@ class MappingFactory:
                     name=fused_group["name"],
                     layers=layers,
                     intra_core_tiling=tiling,
+                    growable_dims=self._growable_dims(layers, tiling),
                 ),
             )
         return fused_groups
@@ -146,6 +147,11 @@ class MappingFactory:
         A tile equal to its extent is dropped unless the kernel's granule_floor claims
         it: the flash lowering rejects the redundant level while the elementwise
         hand-out depends on it, and each kernel knows which it is.
+
+        Dims that index a fused intermediate go innermost: an intermediate re-read
+        across an inner loop must be resident below that loop, and only dims the
+        intermediate does not index can iterate outside its reuse stop, which is what
+        lets the stop sit at the memory tile instead of pinning the slice on a core.
         """
         tiling: dict[LayerDim, int] = {}
         for name in layers:
@@ -163,7 +169,36 @@ class MappingFactory:
                 if size >= extent and position not in floor:
                     continue
                 tiling.setdefault(dim, min(size, extent))
-        return tuple(tiling.items())
+        depth = dict.fromkeys(tiling, 0)
+        shared = [
+            set(self.workload.get_dims(node))
+            for name in layers
+            if isinstance(node := self.workload.get_node_by_name(name), ComputationNode)
+        ]
+        for a, b in zip(shared, shared[1:]):
+            for dim in a & b:
+                if dim in depth:
+                    depth[dim] += 1
+        return tuple(sorted(tiling.items(), key=lambda item: depth[item[0]]))
+
+    def _growable_dims(self, layers: tuple[str, ...], tiling) -> tuple[LayerDim, ...]:
+        """Tiling dims every declaring kernel consumes in a run-time loop. A dimension a
+        kernel compiles into its block cannot take a larger tile than the granule, so it
+        is not a search direction."""
+        fixed: set[LayerDim] = set()
+        loops: set[LayerDim] = set()
+        for name in layers:
+            node = self.workload.get_node_by_name(name)
+            if not isinstance(node, ComputationNode):
+                continue
+            kernel = self.create_kernel(self.get_mapping_data_for_node(node))
+            if kernel is None:
+                continue
+            node_dims = self.workload.get_dims(node)
+            growable = set(kernel.growable())
+            for position, _ in kernel.granule():
+                (loops if position in growable else fixed).add(node_dims[position])
+        return tuple(dim for dim, _ in tiling if dim in loops and dim not in fixed)
 
     def _convert_intra_core_tiling_entry(self, entry: dict[str, Any]) -> tuple[LayerDim, int]:
         node_name, dim_name = entry["dim"].rsplit(".", 1)

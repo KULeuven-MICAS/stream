@@ -76,7 +76,10 @@ class SoftmaxKernel(AIEKernel):
 
     def granule(self) -> list[tuple[int, int]]:
         # A row count is free at run time; the whole reduced row is the one intrinsic floor.
-        return [(1, self.n)]
+        return [(1, self.n), (0, self.m)]
+
+    def growable(self) -> tuple[int, ...]:
+        return (0,)
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         return [self._row_major() for _ in range(2)]
