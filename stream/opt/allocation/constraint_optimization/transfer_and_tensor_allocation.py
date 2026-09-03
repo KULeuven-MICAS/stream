@@ -350,11 +350,15 @@ class TransferAndTensorAllocator:
                 reuse_factor *= Nl if not relevancy else 1
                 tiles_factor *= Nl if relevancy else 1
                 self.reuse_levels[(t, i)] = reuse_factor
-                # Codegen holds max(held_count, window): a temporal loop outside the reuse
-                # window makes the fifo two deep however small the window, so a one-tile
-                # window costed at one buffer let a solve pass that aiecc then rejected.
-                outer_remains = i < len(sizes) - 1
-                self.tiles_needed_levels[(t, i)] = max(tiles_factor, 2) if outer_remains else tiles_factor
+                # Codegen holds max(held_count, window), so a one-tile window under an outer
+                # temporal loop is really two buffers. Charging that floor here is CORRECT
+                # and was tried (max(tiles_factor, 2) when a level remains outside): it
+                # shifts the solved reuse stops, and codegen then moves the input acquire
+                # into an inner loop and the seq-512 SwiGLU output comes back 77% wrong --
+                # a model-choice/codegen inconsistency that has to be fixed on the codegen
+                # side before the floor can land. Reproducer: restore the floor, build
+                # swiglu k=5 at 512x512x2048, compare against the artefact-level numerics.
+                self.tiles_needed_levels[(t, i)] = tiles_factor
                 if relevancy:
                     bds_needed = 1
                 else:
