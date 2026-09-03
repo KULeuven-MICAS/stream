@@ -328,6 +328,7 @@ def _fire_helper_stub(*, relevant_sizes, force_double_buffering=True):
     tta.ssis = {tensor: SimpleNamespace(get_applicable_temporal_variables=lambda: variables)}
     tta.tensors_to_optimize_reuse_for = []
     tta.reuse_levels, tta.tiles_needed_levels, tta.bds_needed_levels = {}, {}, {}
+    tta.rotation_levels = {}
     tta.force_double_buffering = force_double_buffering
     TransferAndTensorAllocator._init_transfer_fire_helpers(tta)
     return tensor, tta
