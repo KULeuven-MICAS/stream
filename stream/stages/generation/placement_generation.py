@@ -88,15 +88,17 @@ class PlacementGenerationStage(Stage):
         kernel = self.mapping.get(node).kernel
         if bandwidth_bound(kernel):
             row = rows[0]  # beside the memory tile that feeds it
-            cores = tuple(grid[(col, row)] for col in columns)
-            self._assign(node, cores, ((0, len(columns)),))
+            width = self._fitting_split(node, 0, len(columns))
+            cores = tuple(grid[(col, row)] for col in columns[:width])
+            self._assign(node, cores, ((0, width),))
             width = self._row_width(node, kernel, next(iter(grid.values())))
             self._retile(node, kernel, m=1, n=width, layout="contiguous")
             return
-        split = [(0, self._fitting_split(node, 0, len(rows)))]
+        granule = dict(kernel.granule())
+        split = [(0, self._fitting_split(node, 0, len(rows), granule.get(0, 1)))]
         cols_used = 1
-        if len(kernel.granule()) > 2:
-            cols_used = self._fitting_split(node, 2, len(columns))
+        if len(granule) > 2:
+            cols_used = self._fitting_split(node, 2, len(columns), granule.get(2, 1))
             split.append((2, cols_used))
         cores = tuple(grid[(col, row)] for col in columns[:cols_used] for row in rows[: split[0][1]])
         self._assign(node, cores, tuple(split))
@@ -124,16 +126,21 @@ class PlacementGenerationStage(Stage):
         for node, kernel, budget in zip(nodes, kernels, budgets):
             tenant = columns[first : first + budget]
             first += budget
-            split = [(0, len(rows))]
-            if len(kernel.granule()) > 2 and budget > 1:
-                split.append((2, budget))
-            cores = tuple(grid[(col, row)] for col in tenant for row in rows)
+            granule = dict(kernel.granule())
+            split = [(0, self._fitting_split(node, 0, len(rows), granule.get(0, 1)))]
+            width = 1
+            if len(granule) > 2 and budget > 1:
+                width = self._fitting_split(node, 2, budget, granule.get(2, 1))
+                if width > 1:
+                    split.append((2, width))
+            cores = tuple(grid[(col, row)] for col in tenant[:width] for row in rows[: split[0][1]])
             self._assign(node, cores, tuple(split))
 
-    def _fitting_split(self, node: ComputationNode, position: int, target: int) -> int:
+    def _fitting_split(self, node: ComputationNode, position: int, target: int, granule: int = 1) -> int:
+        """The widest split that still hands every core whole granules."""
         extent = self.workload.get_dimension_size(self.workload.get_dims(node)[position])
         for split in range(target, 0, -1):
-            if extent % split == 0:
+            if extent % (split * granule) == 0:
                 return split
         return 1
 
