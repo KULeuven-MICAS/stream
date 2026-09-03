@@ -10,7 +10,7 @@ DEFAULT_DEPTH = 2
 DEEP_DEPTH = 4
 BYTE_MARGIN = 0.5
 BD_MARGIN = 0.75
-COMPUTE_BYTE_MARGIN = 0.25
+COMPUTE_BYTE_MARGIN = 0.5
 
 
 @dataclass
@@ -53,9 +53,7 @@ class FifoDepths:
         lengthens buffer-descriptor chains into the per-channel limit the per-tile model
         cannot see. Endpoints whose default is not 2 keep it: a 1 was chosen deliberately
         (the allocator costed a single copy) and a larger value already encodes a whole
-        turn. A compute tile deepens only on its consuming side, under a tighter margin,
-        because its leftover bytes also cover what the model does not see (stack,
-        kernel-internal buffers).
+        turn. A compute tile deepens only on its consuming side; with the stack reserved and buffer rotation charged in the allocator, the margin only covers kernel-internal statics.
         """
         if not feed:
             return depths

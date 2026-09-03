@@ -207,6 +207,7 @@ class TransferAndTensorAllocator:
         self._ensure_same_ssis_for_all_transfers()
         self.reuse_levels: dict[tuple[Tensor, int], int] = {}
         self.tiles_needed_levels: dict[tuple[Tensor, int], int] = {}
+        self.rotation_levels: dict[tuple[Tensor, int], bool] = {}
         self.bds_needed_levels: dict[tuple[Tensor, int], int] = {}
         self.tensors_to_optimize_reuse_for: list[Tensor] = []
         self._init_transfer_fire_helpers()
@@ -352,15 +353,14 @@ class TransferAndTensorAllocator:
                 reuse_factor *= Nl if not relevancy else 1
                 tiles_factor *= Nl if relevancy else 1
                 self.reuse_levels[(t, i)] = reuse_factor
-                # Codegen holds max(held_count, window), so a one-tile window under an outer
-                # temporal loop is really two buffers. Charging that floor here is CORRECT
-                # and was tried (max(tiles_factor, 2) when a level remains outside): it
-                # shifts the solved reuse stops, and codegen then moves the input acquire
-                # into an inner loop and the seq-512 SwiGLU output comes back 77% wrong --
-                # a model-choice/codegen inconsistency that has to be fixed on the codegen
-                # side before the floor can land. Reproducer: restore the floor, build
-                # swiglu k=5 at 512x512x2048, compare against the artefact-level numerics.
+                # A temporal loop left outside the window makes codegen rotate two
+                # buffers (held_count); that is a capacity fact, not a data window, so it
+                # is charged only in the memory term. Folding it into tiles_needed here
+                # instead turns the second buffer into a doubled fifo ELEMENT whose
+                # dimensionsToStream still describes one tile, and the seq-512 SwiGLU
+                # output comes back 77% wrong.
                 self.tiles_needed_levels[(t, i)] = tiles_factor
+                self.rotation_levels[(t, i)] = any(relevancies[i + 1 :])
                 if relevancy:
                     bds_needed = 1
                 else:
@@ -988,6 +988,8 @@ class TransferAndTensorAllocator:
                     min_req: int | None = None
                     for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                         size_factor = self.tiles_needed_levels[(t, stop)]
+                        if self.rotation_levels.get((t, stop)):
+                            size_factor = max(size_factor, 2)
                         req_size = ceil(size_factor * tensor_size)
                         min_req = req_size if min_req is None else min(min_req, req_size)
                         uz = self._add_binary_product(
