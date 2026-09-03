@@ -43,8 +43,12 @@ class LayerPlan:
 def layer_cost(kernel) -> float:
     """Cycles one call of this layer's kernel takes, measured where an anchor exists."""
     measured = MEASURED_KERNEL_CYCLES.get(getattr(kernel, "function_name", None))
-    if measured is not None:
+    if measured is not None and not isinstance(measured, tuple):
         return measured
+    # The traced elementwise rates (a tuple anchor) say silu is compute-bound, which
+    # would widen its lone placement -- and every wider row-split solves infeasible on
+    # the memtile's feed structure. Until placement can back off an infeasible widening,
+    # the rules here stay on the family rates their measured designs were validated at.
     ops = calls_ops(kernel) or 1
     return ops / (GEMM_MACS_PER_CYCLE if len(kernel.granule()) > 2 else ELEMENTWISE_OPS_PER_CYCLE)
 

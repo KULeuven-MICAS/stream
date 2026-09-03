@@ -16,7 +16,7 @@ seq 2048, 8 heads, column 3) and docs/source/aie_calibration.md.
 from math import prod
 from typing import Any
 
-MEASURED_KERNEL_CYCLES: dict[str, float] = {
+MEASURED_KERNEL_CYCLES: dict[str, float | tuple[float, int]] = {
     "matmul_bf16_bf16_64_64_64": 1730.0,
     "matmul_bf16_bf16_32_32_64": 575.0,
     "matmul_PV": 1536.0,
@@ -27,6 +27,10 @@ MEASURED_KERNEL_CYCLES: dict[str, float] = {
     # extra row halves the calls per core and the tiled body doubles each call back.
     "partial_softmax_mode": 9200.0,
     "matmul_softmax": 6130.0,
+    # Dimensionless symbols take a runtime length, so the anchor records the call size it
+    # was measured at (cycles, elements). 260903_B traces, swiglu k=5 seq 512, groups 2/3.
+    "silu_bf16": (2503.0, 4096),
+    "eltwise_mul_bf16_vector": (1100.0, 4096),
 }
 
 _CALL_DIMS = ("m", "k", "n")
@@ -42,9 +46,13 @@ def measured_latency(kernel: Any, ops: int) -> float | None:
     name = getattr(kernel, "function_name", None)
     if name is None:
         return None
-    cycles = MEASURED_KERNEL_CYCLES.get(name)
-    if cycles is None:
+    entry = MEASURED_KERNEL_CYCLES.get(name)
+    if entry is None:
         return None
+    cycles = entry
+    if isinstance(entry, tuple):
+        cycles, anchor_ops = entry
+        return cycles * ops / anchor_ops
     per_call = calls_ops(kernel)
     if per_call <= 0:
         return None

@@ -95,11 +95,11 @@ class PlacementGenerationStage(Stage):
             self._retile(node, kernel, m=1, n=width, layout="contiguous")
             return
         granule = dict(kernel.granule())
-        split = [(0, self._fitting_split(node, 0, len(rows), granule.get(0, 1)))]
-        cols_used = 1
         # D2 splits across all columns or not at all: every measured design does one of
         # the two, and a partial-width scatter of a short output dimension is exactly the
         # shape that hung the generated k=3 attention scores on hardware.
+        split = [(0, self._fitting_split(node, 0, len(rows), granule.get(0, 1)))]
+        cols_used = 1
         if len(granule) > 2 and self._fitting_split(node, 2, len(columns), granule.get(2, 1)) == len(columns):
             cols_used = len(columns)
             split.append((2, cols_used))
