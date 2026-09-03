@@ -55,30 +55,45 @@ class TileSearchStage(Stage):
         return seeds
 
     def run(self):
-        # A placement whose seed cannot allocate backs off to the next shape the
-        # placement stage left behind, priced by the same solve as everything else. The
-        # fallbacks are consumed here so a later group's run does not inherit them.
-        attempts = [self.mapping, *(self.ctx.data.pop("placement_fallbacks", None) or [])]
+        if not self.enabled:
+            self.ctx.data.pop("placement_alternatives", None)
+            sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
+            yield from sub_stage.run()
+            return
+        # Placement candidates share no structure, so a selector-gated union model
+        # decomposes exactly into one solve per candidate; every (placement, tile)
+        # pair is priced by the same tail and the best latency deploys.
+        attempts = [self.mapping, *(self.ctx.data.pop("placement_alternatives", None) or [])]
+        # Reserves are measured-refuted shapes: they never rival on price, they only
+        # stand in when no priced placement allocates.
+        reserves = self.ctx.data.pop("placement_reserves", None) or []
         entry = dict(self.ctx.data)
-        for i, mapping in enumerate(attempts):
+        best = None
+        error: Exception | None = None
+        for a, mapping in enumerate(attempts + reserves):
+            if best is not None and a >= len(attempts):
+                break
+            self._attempt = a
             self.ctx.data = dict(entry)
             self.ctx.set(mapping=mapping)
             self.mapping = mapping
             try:
-                yield from self._run_one()
-                return
-            except RuntimeError:
-                if i + 1 == len(attempts):
-                    raise
-                logger.info("Seed of placement %d infeasible; backing off to the next shape", i)
+                found = self._search()
+            except RuntimeError as e:
+                error = error or e
+                logger.info("Placement %d has no feasible tile", a)
+                continue
+            logger.info("Placement %d prices at %s", a, found[2])
+            if best is None or found[2] < best[2]:
+                best = found
+                if a >= len(attempts):
+                    break
+        if best is None:
+            raise error or RuntimeError("No feasible placement.")
+        yield self._finish(*best, None)
 
-    def _run_one(self):
-        candidates = self._candidates() if self.enabled else [(None, self.mapping)]
-        if len(candidates) == 1:
-            sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
-            yield from sub_stage.run()
-            return
-
+    def _search(self):
+        candidates = self._candidates()
         base = dict(self.ctx.data)
         best_context = None
         best_latency = float("inf")
@@ -93,7 +108,8 @@ class TileSearchStage(Stage):
             if grown_dim in dead_dims:
                 continue
             tiling = {str(d): t for g in mapping.fused_groups for d, t in g.intra_core_tiling}
-            candidate_path = os.path.join(self.output_path, f"tile_{i}")
+            prefix = f"p{self._attempt}_" if self._attempt else ""
+            candidate_path = os.path.join(self.output_path, f"{prefix}tile_{i}")
             os.makedirs(candidate_path, exist_ok=True)
             self.ctx.data = dict(base)
             self.ctx.set(mapping=mapping, output_path=candidate_path)
@@ -129,7 +145,10 @@ class TileSearchStage(Stage):
                 best_latency = latency
                 best_index = i
                 best_context = StageContext(data=dict(ctxs[0].data))
-        yield self._finish(best_context, best_index, best_latency, len(candidates), seed_error)
+        if best_context is None:
+            # The seed is the caller's own finest granule: its failure is the real error.
+            raise RuntimeError("No feasible tile candidate.") from seed_error
+        return best_context, best_index, best_latency, len(candidates)
 
     def _finish(self, best_context, best_index, best_latency, n, seed_error):
         if best_context is None:

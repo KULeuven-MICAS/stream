@@ -94,14 +94,20 @@ def column_budgets(costs: list[float], num_columns: int, caps: list[int] | None 
     to widen on, and its wide row-split measured slower). The sorted cost vector is the
     key, so columns freed by a capped bottleneck reach the next-slowest layer.
     """
-    best: tuple[tuple[float, ...], tuple[int, ...]] | None = None
+    options = column_budget_options(costs, num_columns, caps, limit=1)
+    return options[0] if options else tuple(1 for _ in costs)
+
+
+def column_budget_options(
+    costs: list[float], num_columns: int, caps: list[int] | None = None, limit: int = 2
+) -> list[tuple[int, ...]]:
+    """The ``limit`` best budget vectors by the same key, for the solve to price."""
     caps = caps or [num_columns] * len(costs)
+    ranked: list[tuple[tuple[float, ...], tuple[int, ...]]] = []
     for counts in product(range(1, num_columns + 1), repeat=len(costs)):
         if sum(counts) != num_columns:
             continue
         key = tuple(sorted((c / min(n, cap) for c, n, cap in zip(costs, counts, caps)), reverse=True))
-        if best is None or key < best[0]:
-            best = (key, counts)
-    if best is None:
-        return tuple(1 for _ in costs)
-    return best[1]
+        ranked.append((key, counts))
+    ranked.sort()
+    return [counts for _, counts in ranked[:limit]]

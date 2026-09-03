@@ -5,7 +5,7 @@ from stream.datatypes import LayerDim
 from stream.hardware.architecture.core import Core
 from stream.mapping.chain_placement import (
     bandwidth_bound,
-    column_budgets,
+    column_budget_options,
     layer_cost,
     row_counts,
     widest_columns,
@@ -49,17 +49,22 @@ class PlacementGenerationStage(Stage):
             if c.type == "compute" and c.col_id is not None and c.row_id is not None
         }
         self._pending_fallbacks: list = []
+        self._pending_reserves: list = []
         if grid:
             for group in self.mapping.fused_groups:
                 nodes = [n for name in group.layers if isinstance(n := self._node(name), ComputationNode)]
                 if nodes and all(self._unplaced(n) for n in nodes):
                     self._place_group(nodes, grid)
-            fallbacks: list[Mapping] = []
-            for narrow in self._pending_fallbacks:
-                alt = (fallbacks[-1] if fallbacks else self.mapping).copy()
-                narrow(alt)
-                fallbacks.append(alt)
-            self.ctx.set(placement_fallbacks=fallbacks)
+            def materialize(pending):
+                shapes: list[Mapping] = []
+                for narrow in pending:
+                    alt = (shapes[-1] if shapes else self.mapping).copy()
+                    narrow(alt)
+                    shapes.append(alt)
+                return shapes
+
+            self.ctx.set(placement_alternatives=materialize(self._pending_fallbacks))
+            self.ctx.set(placement_reserves=materialize(self._pending_reserves))
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
@@ -98,12 +103,13 @@ class PlacementGenerationStage(Stage):
             self._place_one_row(node, kernel, grid, columns, rows, self.mapping)
             return
         if len(granule) == 2:
-            # One core per column: the whole-grid row-split the compute-bound rate
-            # suggests measured 13.7% slower; the rows-only shape is the fallback.
+            # One core per column: the model ranks the wider and the rows-only shapes
+            # above it and hardware refutes both (13.7% and 7.5% slower), so those are
+            # reserves for an infeasible seed, never priced rivals.
             self._place_one_row(node, kernel, grid, columns, rows, self.mapping)
             depth = self._fitting_split(node, 0, len(rows), granule.get(0, 1))
             narrow = tuple(grid[(columns[0], row)] for row in rows[:depth])
-            self._pending_fallbacks.append(
+            self._pending_reserves.append(
                 lambda m, n=node, c=narrow, sp=depth: self._assign(n, c, ((0, sp),), m)
             )
             return
@@ -145,21 +151,27 @@ class PlacementGenerationStage(Stage):
     def _place_tenancies(self, nodes: list[ComputationNode], grid, columns, rows) -> None:
         kernels = [self.mapping.get(n).kernel for n in nodes]
         caps = [1 if len(k.granule()) == 2 else len(columns) for k in kernels]
-        budgets = column_budgets([layer_cost(k) for k in kernels], len(columns), caps)
+        options = column_budget_options([layer_cost(k) for k in kernels], len(columns), caps)
+        for budgets in options[1:]:
+            self._pending_fallbacks.append(
+                lambda m, b=budgets: self._assign_tenancy(nodes, kernels, b, grid, columns, rows, m)
+            )
+        self._assign_tenancy(nodes, kernels, options[0], grid, columns, rows, self.mapping)
+
+    def _assign_tenancy(self, nodes, kernels, budgets, grid, columns, rows, mapping) -> None:
         first = 0
         for node, kernel, budget in zip(nodes, kernels, budgets):
             tenant = columns[first : first + budget]
             first += budget
             granule = dict(kernel.granule())
             width = 1
-
             split = [(0, self._fitting_split(node, 0, len(rows), granule.get(0, 1)))]
             if len(granule) > 2 and budget > 1:
                 width = self._fitting_split(node, 2, budget, granule.get(2, 1))
                 if width > 1:
                     split.append((2, width))
             cores = tuple(grid[(col, row)] for col in tenant[:width] for row in rows[: split[0][1]])
-            self._assign(node, cores, tuple(split))
+            self._assign(node, cores, tuple(split), mapping)
 
     def _fitting_split(self, node: ComputationNode, position: int, target: int, granule: int = 1) -> int:
         """The widest split that still hands every core whole granules."""
