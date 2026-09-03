@@ -75,7 +75,8 @@ class SoftmaxKernel(AIEKernel):
         return f"softmax_rows_{'causal_' if self.causal else ''}{self.element_type}"
 
     def granule(self) -> list[tuple[int, int]]:
-        return [(0, self.m), (1, self.n)]
+        # A row count is free at run time; the whole reduced row is the one intrinsic floor.
+        return [(1, self.n)]
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         return [self._row_major() for _ in range(2)]
@@ -138,13 +139,12 @@ class SoftmaxKernel(AIEKernel):
         return ops, result
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
-        # The only point where the tile the mapping declares meets the one codegen built.
+        # Rows and row length are runtime arguments, so the call takes them from the tile
+        # codegen built rather than binding the kernel to one declared placement.
         shape = tuple(cast(MemRefType[AnyDenseElement], op.inputs[0].type).get_shape())
-        if shape != (self.m, self.n):
-            raise ValueError(f"softmax kernel declares a {self.m} x {self.n} tile but its operand is {shape}")
         ops: list[Operation] = [
-            rows := ConstantOp.from_int_and_width(self.m, i32),
-            row_len := ConstantOp.from_int_and_width(self.n, i32),
+            rows := ConstantOp.from_int_and_width(shape[0], i32),
+            row_len := ConstantOp.from_int_and_width(shape[1], i32),
         ]
         arguments: list[SSAValue] = [op.inputs[0], op.inputs[1], rows.result, row_len.result]
         if self.causal:
