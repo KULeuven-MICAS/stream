@@ -23,8 +23,11 @@ from stream.stages.estimation.kernel_cycles import MEASURED_KERNEL_CYCLES, calls
 # and kernel speed substitutes rather than adding up.
 TILED_HANDOVER_FACTOR = 2.09
 
-# Peak elementwise rate the utilization fallback is a percentage of, ops/cycle.
-FALLBACK_OPS_PER_CYCLE = 32.0
+# Measured throughputs the anchors imply, for kernels whose exact symbol has no anchor:
+# a mixed scale (one layer anchored, its neighbour on a hand-fed percentage) skews every
+# proportional rule, so the fallback uses the same family rates the anchors measure.
+GEMM_MACS_PER_CYCLE = 151.0
+ELEMENTWISE_OPS_PER_CYCLE = 16.0
 # One tile's DMA moves this many bf16 elements per cycle.
 DMA_ELEMENTS_PER_CYCLE = 32.0
 
@@ -43,7 +46,7 @@ def layer_cost(kernel) -> float:
     if measured is not None:
         return measured
     ops = calls_ops(kernel) or 1
-    return ops / (FALLBACK_OPS_PER_CYCLE * getattr(kernel, "utilization", 100.0) / 100.0)
+    return ops / (GEMM_MACS_PER_CYCLE if len(kernel.granule()) > 2 else ELEMENTWISE_OPS_PER_CYCLE)
 
 
 def bandwidth_bound(kernel) -> bool:
