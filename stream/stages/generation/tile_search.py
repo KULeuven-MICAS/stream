@@ -85,6 +85,12 @@ class TileSearchStage(Stage):
                 logger.info("Tile candidate %s failed: %s", tiling, e)
                 continue
             logger.info("Tile candidate %s: latency %s", tiling, latency)
+            if os.environ.get("STREAM_TILE_FORCE") == "largest":
+                # Calibration probe: deploy the largest feasible tile so the per-firing
+                # DMA overhead can be measured against the seed on hardware.
+                best_latency, best_index = latency, i
+                best_context = StageContext(data=dict(ctxs[0].data))
+                continue
             if latency < best_latency:
                 best_latency = latency
                 best_index = i
