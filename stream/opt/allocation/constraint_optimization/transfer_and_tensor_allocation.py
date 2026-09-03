@@ -353,12 +353,8 @@ class TransferAndTensorAllocator:
                 reuse_factor *= Nl if not relevancy else 1
                 tiles_factor *= Nl if relevancy else 1
                 self.reuse_levels[(t, i)] = reuse_factor
-                # A temporal loop left outside the window makes codegen rotate two
-                # buffers (held_count); that is a capacity fact, not a data window, so it
-                # is charged only in the memory term. Folding it into tiles_needed here
-                # instead turns the second buffer into a doubled fifo ELEMENT whose
-                # dimensionsToStream still describes one tile, and the seq-512 SwiGLU
-                # output comes back 77% wrong.
+                # A temporal loop outside the window makes codegen rotate two buffers:
+                # a capacity fact charged in the memory term only, never a data window.
                 self.tiles_needed_levels[(t, i)] = tiles_factor
                 self.rotation_levels[(t, i)] = any(relevancies[i + 1 :])
                 if relevancy:

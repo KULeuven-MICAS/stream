@@ -98,10 +98,8 @@ class PlacementGenerationStage(Stage):
             self._place_one_row(node, kernel, grid, columns, rows, self.mapping)
             return
         if len(granule) == 2:
-            # One core per column beside the memory tile, whether or not the traced rate
-            # says compute-bound: the whole-grid row-split it suggests measured 13.7%
-            # slower at seq 512 -- the contiguous whole-row hand-out is what the wall
-            # clock rewards. The rows-only shape stands behind it as the fallback.
+            # One core per column: the whole-grid row-split the compute-bound rate
+            # suggests measured 13.7% slower; the rows-only shape is the fallback.
             self._place_one_row(node, kernel, grid, columns, rows, self.mapping)
             depth = self._fitting_split(node, 0, len(rows), granule.get(0, 1))
             narrow = tuple(grid[(columns[0], row)] for row in rows[:depth])

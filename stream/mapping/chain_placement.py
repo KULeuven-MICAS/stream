@@ -90,11 +90,9 @@ def widest_columns(extent: int, granule: int, lanes: int, num_columns: int) -> i
 def column_budgets(costs: list[float], num_columns: int, caps: list[int] | None = None) -> tuple[int, ...]:
     """Columns per layer, disjoint and exhaustive, minimizing the bottleneck per column.
 
-    A cap of 1 marks a layer that cannot use a second column (an elementwise tenant has
-    no output dim to widen on -- and its wide row-split measured 13.7% slower besides);
-    extra columns beyond a cap buy nothing, so the bottleneck ignores them. The whole
-    sorted cost vector is the key, so columns freed by a capped bottleneck still go to
-    the next-slowest layer.
+    A cap marks the columns a layer can use (1 for an elementwise tenant: no output dim
+    to widen on, and its wide row-split measured slower). The sorted cost vector is the
+    key, so columns freed by a capped bottleneck reach the next-slowest layer.
     """
     best: tuple[tuple[float, ...], tuple[int, ...]] | None = None
     caps = caps or [num_columns] * len(costs)
