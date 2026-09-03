@@ -50,6 +50,9 @@ class EltwiseMulKernel(AIEKernel):
     def granule(self) -> list[tuple[int, int]]:
         return [(1, self.n), (0, self.m)]
 
+    def granule_floor(self) -> tuple[int, ...]:
+        return (1,)
+
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         rows = MAC_ROWS_BFP16 if self.bfp16_mmul else R
         return [elementwise_operand_layout(self.m, self.n, self.layout, rows) for _ in range(3)]

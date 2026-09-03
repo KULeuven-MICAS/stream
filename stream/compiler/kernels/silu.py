@@ -42,6 +42,9 @@ class SiluKernel(AIEKernel):
     def granule(self) -> list[tuple[int, int]]:
         return [(1, self.n), (0, self.m)]
 
+    def granule_floor(self) -> tuple[int, ...]:
+        return (1,)
+
     def function_type(self, op: ComputationNodeOp) -> FunctionType:
         assert op.output is not None
         return FunctionType.from_lists(

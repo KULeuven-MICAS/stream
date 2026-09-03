@@ -118,6 +118,16 @@ class AIEKernel(ABC):
         means this kernel puts no floor under the tiling."""
         return []
 
+    def granule_floor(self) -> tuple[int, ...]:
+        """Granule positions that stay in the tiling even at full extent.
+
+        A level whose tile equals its extent looks redundant, but some kernels' hand-out
+        rides on it: the elementwise row length is what keeps the transfers whole
+        contiguous rows, and dropping it turned the slab distribution row-interleaved
+        and corrupted the output. Kernels without such a dependence keep the default and
+        the level is dropped, which is what the flash lowering requires."""
+        return ()
+
     def state_operands(self) -> Sequence[StateOperand]:
         """What this kernel keeps in its core between iterations. Empty for a kernel that
         keeps nothing, which is every kernel that is not carrying a running reduction."""

@@ -142,9 +142,10 @@ class MappingFactory:
         """A group's default tiling: its kernels' granules, the finest tile one call covers.
 
         The declared tiling was only ever the kernels' compiled block anyway; deriving it
-        here removes that duplication, and the tile-size search grows from this seed. A
-        dimension the granule already covers is left untiled (a loop that runs once still
-        costs the allocator a reuse variable).
+        here removes that duplication, and the tile-size search grows from this seed.
+        A tile equal to its extent is dropped unless the kernel's granule_floor claims
+        it: the flash lowering rejects the redundant level while the elementwise
+        hand-out depends on it, and each kernel knows which it is.
         """
         tiling: dict[LayerDim, int] = {}
         for name in layers:
@@ -155,11 +156,13 @@ class MappingFactory:
             if kernel is None:
                 continue
             node_dims = self.workload.get_dims(node)
+            floor = kernel.granule_floor()
             for position, size in kernel.granule():
                 dim = node_dims[position]
-                if size >= self.workload.get_dimension_size(dim):
+                extent = self.workload.get_dimension_size(dim)
+                if size >= extent and position not in floor:
                     continue
-                tiling.setdefault(dim, size)
+                tiling.setdefault(dim, min(size, extent))
         return tuple(tiling.items())
 
     def _convert_intra_core_tiling_entry(self, entry: dict[str, Any]) -> tuple[LayerDim, int]:
