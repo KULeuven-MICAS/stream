@@ -97,6 +97,8 @@ class TransferAndTensorAllocator:
     """
 
     VAR_THRESHOLD = 0.5
+    # One solve phase never runs longer than this; the incumbent stands in for the optimum.
+    SOLVE_TIME_LIMIT_S = 300
     DMA_COUNT_SAME_TENSOR_ON_CORE_ONCE_GLOBALLY = False
     # False: count tensor-core occupancy separately for each transfer that uses it
     # True:  count tensor-core occupancy only once across all transfers
@@ -2075,8 +2077,17 @@ class TransferAndTensorAllocator:
         self, *, tee: bool = True
     ) -> tuple[TensorReuseLevels, TensorDepths, TensorAlloc, TransferAlloc, MemoryAlloc, int, int, int]:
         self.model.set_param(SolverParams.VERBOSITY, 1 if tee else 0)
+        self.model.set_param(SolverParams.TIME_LIMIT, self.SOLVE_TIME_LIMIT_S)
         self.model.optimize(self._mip_progress_callback)
-        if self.model.get_status() != "OPTIMAL":
+        status = self.model.get_status()
+        if status == "TIME_LIMIT" and self.model.get_sol_count() > 0:
+            # A bounded solve with an incumbent is a usable allocation, not a failure: an
+            # unusual placement can send the MILP into hours the caller never asked for.
+            _logger.warning(
+                "Allocation solve hit the %ss limit; taking the best incumbent (gap unknown)",
+                self.SOLVE_TIME_LIMIT_S,
+            )
+        elif status != "OPTIMAL":
             # Produce a structured, per-resource diagnosis (this computes the IIS on backends that
             # support it) instead of a bare failure, so a launch with an invalid mapping still yields
             # an inspectable result. The .ilp (Gurobi's IIS) is still written for offline debugging.

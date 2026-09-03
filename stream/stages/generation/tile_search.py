@@ -93,6 +93,10 @@ class TileSearchStage(Stage):
             logger.info("Tile candidate %s: latency %s", tiling, latency)
             if i == 0:
                 seed_latency = latency
+                if self._seed_exhausted(ctxs[0]):
+                    best_latency, best_index = latency, 0
+                    best_context = StageContext(data=dict(ctxs[0].data))
+                    break
             elif latency >= seed_latency:
                 dead_dims.add(grown_dim)
             if os.environ.get("STREAM_TILE_FORCE") == "largest":
@@ -117,6 +121,14 @@ class TileSearchStage(Stage):
         best_context.set(output_path=self.output_path)
         self.ctx = best_context
         return best_context
+
+    def _seed_exhausted(self, ctx) -> bool:
+        """A seed that alone hits the solve budget is not a model to search over."""
+        stats = ctx.get("scheduler").solve_stats
+        if stats is not None and stats.status == "TIME_LIMIT":
+            logger.info("Seed solve hit the time limit; skipping tile candidates")
+            return True
+        return False
 
     def _evaluate(self):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
