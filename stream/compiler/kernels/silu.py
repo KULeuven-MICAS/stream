@@ -39,6 +39,9 @@ class SiluKernel(AIEKernel):
     def function_name(self) -> str:
         return f"silu_{self.element_type}"
 
+    def granule(self) -> list[tuple[int, int]]:
+        return [(1, self.n), (0, self.m)]
+
     def function_type(self, op: ComputationNodeOp) -> FunctionType:
         assert op.output is not None
         return FunctionType.from_lists(

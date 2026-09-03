@@ -123,17 +123,44 @@ class MappingFactory:
     def create_fused_groups(self) -> list[FusedGroup]:
         fused_groups: list[FusedGroup] = []
         for fused_group in self.fused_groups_data:
+            layers = tuple(fused_group.get("layers", []))
             intra_core_tiling = fused_group.get("intra_core_tiling", []) or []
+            if intra_core_tiling:
+                tiling = tuple(self._convert_intra_core_tiling_entry(entry) for entry in intra_core_tiling)
+            else:
+                tiling = self._granule_tiling(layers)
             fused_groups.append(
                 FusedGroup(
                     name=fused_group["name"],
-                    layers=tuple(fused_group.get("layers", [])),
-                    intra_core_tiling=tuple(
-                        self._convert_intra_core_tiling_entry(entry) for entry in intra_core_tiling
-                    ),
+                    layers=layers,
+                    intra_core_tiling=tiling,
                 ),
             )
         return fused_groups
+
+    def _granule_tiling(self, layers: tuple[str, ...]) -> tuple[tuple[LayerDim, int], ...]:
+        """A group's default tiling: its kernels' granules, the finest tile one call covers.
+
+        The declared tiling was only ever the kernels' compiled block anyway; deriving it
+        here removes that duplication, and the tile-size search grows from this seed. A
+        dimension the granule already covers is left untiled (a loop that runs once still
+        costs the allocator a reuse variable).
+        """
+        tiling: dict[LayerDim, int] = {}
+        for name in layers:
+            node = self.workload.get_node_by_name(name)
+            if not isinstance(node, ComputationNode):
+                continue
+            kernel = self.create_kernel(self.get_mapping_data_for_node(node))
+            if kernel is None:
+                continue
+            node_dims = self.workload.get_dims(node)
+            for position, size in kernel.granule():
+                dim = node_dims[position]
+                if size >= self.workload.get_dimension_size(dim):
+                    continue
+                tiling.setdefault(dim, size)
+        return tuple(tiling.items())
 
     def _convert_intra_core_tiling_entry(self, entry: dict[str, Any]) -> tuple[LayerDim, int]:
         node_name, dim_name = entry["dim"].rsplit(".", 1)

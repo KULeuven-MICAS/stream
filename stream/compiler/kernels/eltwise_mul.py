@@ -47,6 +47,9 @@ class EltwiseMulKernel(AIEKernel):
         variant = "vector" if self.m * self.n % VECTOR_LANES == 0 else "scalar"
         return f"eltwise_mul_{self.element_type}_{variant}"
 
+    def granule(self) -> list[tuple[int, int]]:
+        return [(1, self.n), (0, self.m)]
+
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         rows = MAC_ROWS_BFP16 if self.bfp16_mmul else R
         return [elementwise_operand_layout(self.m, self.n, self.layout, rows) for _ in range(3)]

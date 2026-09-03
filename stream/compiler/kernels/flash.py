@@ -499,6 +499,9 @@ class PartialSoftmaxKernel(SoftmaxKernel):
         )
         return [mac if self.tiled_in else self._row_major(), mac if self.tiled_out else self._row_major()]
 
+    def granule(self) -> list[tuple[int, int]]:
+        return [(KEY_DIM, self.n), (QUERY_DIM, self.m)]
+
     def _scale_type(self) -> MemRefType:
         return MemRefType(self.element_type, (SCALE_ROWS * self.m,))
 

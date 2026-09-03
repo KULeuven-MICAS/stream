@@ -350,7 +350,11 @@ class TransferAndTensorAllocator:
                 reuse_factor *= Nl if not relevancy else 1
                 tiles_factor *= Nl if relevancy else 1
                 self.reuse_levels[(t, i)] = reuse_factor
-                self.tiles_needed_levels[(t, i)] = tiles_factor
+                # Codegen holds max(held_count, window): a temporal loop outside the reuse
+                # window makes the fifo two deep however small the window, so a one-tile
+                # window costed at one buffer let a solve pass that aiecc then rejected.
+                outer_remains = i < len(sizes) - 1
+                self.tiles_needed_levels[(t, i)] = max(tiles_factor, 2) if outer_remains else tiles_factor
                 if relevancy:
                     bds_needed = 1
                 else:

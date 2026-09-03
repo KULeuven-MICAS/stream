@@ -74,6 +74,9 @@ class SoftmaxKernel(AIEKernel):
     def function_name(self) -> str:
         return f"softmax_rows_{'causal_' if self.causal else ''}{self.element_type}"
 
+    def granule(self) -> list[tuple[int, int]]:
+        return [(0, self.m), (1, self.n)]
+
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         return [self._row_major() for _ in range(2)]
 

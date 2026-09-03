@@ -108,6 +108,16 @@ class AIEKernel(ABC):
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         return []
 
+    def granule(self) -> list[tuple[int, int]]:
+        """The finest tile one call covers, as (parser dimension position, size),
+        innermost loop first.
+
+        A fused group that declares no intra-core tiling is tiled at its kernels'
+        granules in this nest order; the reduction or carried dimension leads, because
+        the output (or running state) stays put only across the innermost loop. Empty
+        means this kernel puts no floor under the tiling."""
+        return []
+
     def state_operands(self) -> Sequence[StateOperand]:
         """What this kernel keeps in its core between iterations. Empty for a kernel that
         keeps nothing, which is every kernel that is not carrying a running reduction."""

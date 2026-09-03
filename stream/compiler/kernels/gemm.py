@@ -39,6 +39,9 @@ class GemmKernel(AIEKernelWithZeroing):
     def function_name(self) -> str:
         return f"matmul_{self.element_type}_{self.element_type}_{self.m}_{self.k}_{self.n}"
 
+    def granule(self) -> list[tuple[int, int]]:
+        return [(1, self.k), (2, self.n), (0, self.m)]
+
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         # Intrinsic dimensions of the MAC the kernel was built for. mm.cc takes
         # 8x8x8 when bf16 matmuls are emulated on the bfp16 MACs and 4x8x8 when
