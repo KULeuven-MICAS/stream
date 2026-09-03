@@ -43,12 +43,11 @@ class LayerPlan:
 def layer_cost(kernel) -> float:
     """Cycles one call of this layer's kernel takes, measured where an anchor exists."""
     measured = MEASURED_KERNEL_CYCLES.get(getattr(kernel, "function_name", None))
-    if measured is not None and not isinstance(measured, tuple):
+    if isinstance(measured, tuple):
+        cycles, anchor_ops = measured
+        return cycles * (calls_ops(kernel) or anchor_ops) / anchor_ops
+    if measured is not None:
         return measured
-    # The traced elementwise rates (a tuple anchor) say silu is compute-bound, which
-    # would widen its lone placement -- and every wider row-split solves infeasible on
-    # the memtile's feed structure. Until placement can back off an infeasible widening,
-    # the rules here stay on the family rates their measured designs were validated at.
     ops = calls_ops(kernel) or 1
     return ops / (GEMM_MACS_PER_CYCLE if len(kernel.granule()) > 2 else ELEMENTWISE_OPS_PER_CYCLE)
 
@@ -88,13 +87,21 @@ def widest_columns(extent: int, granule: int, lanes: int, num_columns: int) -> i
     return 1
 
 
-def column_budgets(costs: list[float], num_columns: int) -> tuple[int, ...]:
-    """Columns per layer, disjoint and exhaustive, minimizing the bottleneck per column."""
-    best: tuple[float, tuple[int, ...]] | None = None
+def column_budgets(costs: list[float], num_columns: int, caps: list[int] | None = None) -> tuple[int, ...]:
+    """Columns per layer, disjoint and exhaustive, minimizing the bottleneck per column.
+
+    A cap of 1 marks a layer that cannot use a second column (an elementwise tenant has
+    no output dim to widen on -- and its wide row-split measured 13.7% slower besides);
+    extra columns beyond a cap buy nothing, so the bottleneck ignores them. The whole
+    sorted cost vector is the key, so columns freed by a capped bottleneck still go to
+    the next-slowest layer.
+    """
+    best: tuple[tuple[float, ...], tuple[int, ...]] | None = None
+    caps = caps or [num_columns] * len(costs)
     for counts in product(range(1, num_columns + 1), repeat=len(costs)):
         if sum(counts) != num_columns:
             continue
-        key = max(c / n for c, n in zip(costs, counts))
+        key = tuple(sorted((c / min(n, cap) for c, n, cap in zip(costs, counts, caps)), reverse=True))
         if best is None or key < best[0]:
             best = (key, counts)
     if best is None:

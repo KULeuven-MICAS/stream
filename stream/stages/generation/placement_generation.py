@@ -48,11 +48,18 @@ class PlacementGenerationStage(Stage):
             for c in self.accelerator.core_list
             if c.type == "compute" and c.col_id is not None and c.row_id is not None
         }
+        self._pending_fallbacks: list = []
         if grid:
             for group in self.mapping.fused_groups:
                 nodes = [n for name in group.layers if isinstance(n := self._node(name), ComputationNode)]
                 if nodes and all(self._unplaced(n) for n in nodes):
                     self._place_group(nodes, grid)
+            fallbacks: list[Mapping] = []
+            for narrow in self._pending_fallbacks:
+                alt = (fallbacks[-1] if fallbacks else self.mapping).copy()
+                narrow(alt)
+                fallbacks.append(alt)
+            self.ctx.set(placement_fallbacks=fallbacks)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
@@ -86,15 +93,22 @@ class PlacementGenerationStage(Stage):
 
     def _place_alone(self, node: ComputationNode, grid, columns, rows) -> None:
         kernel = self.mapping.get(node).kernel
-        if bandwidth_bound(kernel):
-            row = rows[0]  # beside the memory tile that feeds it
-            width = self._fitting_split(node, 0, len(columns))
-            cores = tuple(grid[(col, row)] for col in columns[:width])
-            self._assign(node, cores, ((0, width),))
-            width = self._row_width(node, kernel, next(iter(grid.values())))
-            self._retile(node, kernel, m=1, n=width, layout="contiguous")
-            return
         granule = dict(kernel.granule())
+        if bandwidth_bound(kernel):
+            self._place_one_row(node, kernel, grid, columns, rows, self.mapping)
+            return
+        if len(granule) == 2:
+            # One core per column beside the memory tile, whether or not the traced rate
+            # says compute-bound: the whole-grid row-split it suggests measured 13.7%
+            # slower at seq 512 -- the contiguous whole-row hand-out is what the wall
+            # clock rewards. The rows-only shape stands behind it as the fallback.
+            self._place_one_row(node, kernel, grid, columns, rows, self.mapping)
+            depth = self._fitting_split(node, 0, len(rows), granule.get(0, 1))
+            narrow = tuple(grid[(columns[0], row)] for row in rows[:depth])
+            self._pending_fallbacks.append(
+                lambda m, n=node, c=narrow, sp=depth: self._assign(n, c, ((0, sp),), m)
+            )
+            return
         # D2 splits across all columns or not at all: every measured design does one of
         # the two, and a partial-width scatter of a short output dimension is exactly the
         # shape that hung the generated k=3 attention scores on hardware.
@@ -105,6 +119,14 @@ class PlacementGenerationStage(Stage):
             split.append((2, cols_used))
         cores = tuple(grid[(col, row)] for col in columns[:cols_used] for row in rows[: split[0][1]])
         self._assign(node, cores, tuple(split))
+
+    def _place_one_row(self, node, kernel, grid, columns, rows, mapping) -> None:
+        row = rows[0]  # beside the memory tile that feeds it
+        width = self._fitting_split(node, 0, len(columns))
+        cores = tuple(grid[(col, row)] for col in columns[:width])
+        self._assign(node, cores, ((0, width),), mapping)
+        width = self._row_width(node, kernel, next(iter(grid.values())))
+        self._retile(node, kernel, mapping, m=1, n=width, layout="contiguous")
 
     def _place_stacked(self, nodes: list[ComputationNode], grid, columns, rows) -> None:
         kernels = [self.mapping.get(n).kernel for n in nodes]
@@ -124,14 +146,16 @@ class PlacementGenerationStage(Stage):
 
     def _place_tenancies(self, nodes: list[ComputationNode], grid, columns, rows) -> None:
         kernels = [self.mapping.get(n).kernel for n in nodes]
-        budgets = column_budgets([layer_cost(k) for k in kernels], len(columns))
+        caps = [1 if len(k.granule()) == 2 else len(columns) for k in kernels]
+        budgets = column_budgets([layer_cost(k) for k in kernels], len(columns), caps)
         first = 0
         for node, kernel, budget in zip(nodes, kernels, budgets):
             tenant = columns[first : first + budget]
             first += budget
             granule = dict(kernel.granule())
-            split = [(0, self._fitting_split(node, 0, len(rows), granule.get(0, 1)))]
             width = 1
+
+            split = [(0, self._fitting_split(node, 0, len(rows), granule.get(0, 1)))]
             if len(granule) > 2 and budget > 1:
                 width = self._fitting_split(node, 2, budget, granule.get(2, 1))
                 if width > 1:
@@ -153,8 +177,10 @@ class PlacementGenerationStage(Stage):
         budget = (core.get_memory_capacity() // 8) // (operands * BUFFERS * ELEMENT_BYTES)
         return max(w for w in range(1, min(extent, budget) + 1) if extent % w == 0)
 
-    def _assign(self, node: ComputationNode, cores: tuple[Core, ...], split: tuple[tuple[int, int], ...]) -> None:
-        nm = self.mapping.get(node)
+    def _assign(
+        self, node: ComputationNode, cores: tuple[Core, ...], split: tuple[tuple[int, int], ...], mapping=None
+    ) -> None:
+        nm = (mapping or self.mapping).get(node)
         nm.resource_allocation = (tuple(cores),)
         nm.inter_core_tiling = (tuple((LayerDim(position=p, prefix="d"), s) for p, s in split),)
         logger.info(
@@ -164,8 +190,8 @@ class PlacementGenerationStage(Stage):
             [(str(d), s) for d, s in nm.inter_core_tiling[0]],
         )
 
-    def _retile(self, node: ComputationNode, kernel, **kwargs) -> None:
+    def _retile(self, node: ComputationNode, kernel, mapping=None, **kwargs) -> None:
         try:
-            self.mapping.get(node).kernel = replace(kernel, **kwargs)
+            (mapping or self.mapping).get(node).kernel = replace(kernel, **kwargs)
         except TypeError:
             logger.info("Kernel of %s takes no %s; placement keeps it as declared", node.name, sorted(kwargs))

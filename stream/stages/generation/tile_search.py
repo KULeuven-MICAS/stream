@@ -55,6 +55,24 @@ class TileSearchStage(Stage):
         return seeds
 
     def run(self):
+        # A placement whose seed cannot allocate backs off to the next shape the
+        # placement stage left behind, priced by the same solve as everything else. The
+        # fallbacks are consumed here so a later group's run does not inherit them.
+        attempts = [self.mapping, *(self.ctx.data.pop("placement_fallbacks", None) or [])]
+        entry = dict(self.ctx.data)
+        for i, mapping in enumerate(attempts):
+            self.ctx.data = dict(entry)
+            self.ctx.set(mapping=mapping)
+            self.mapping = mapping
+            try:
+                yield from self._run_one()
+                return
+            except RuntimeError:
+                if i + 1 == len(attempts):
+                    raise
+                logger.info("Seed of placement %d infeasible; backing off to the next shape", i)
+
+    def _run_one(self):
         candidates = self._candidates() if self.enabled else [(None, self.mapping)]
         if len(candidates) == 1:
             sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
