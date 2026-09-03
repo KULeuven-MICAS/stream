@@ -97,8 +97,11 @@ class PlacementGenerationStage(Stage):
         granule = dict(kernel.granule())
         split = [(0, self._fitting_split(node, 0, len(rows), granule.get(0, 1)))]
         cols_used = 1
-        if len(granule) > 2:
-            cols_used = self._fitting_split(node, 2, len(columns), granule.get(2, 1))
+        # D2 splits across all columns or not at all: every measured design does one of
+        # the two, and a partial-width scatter of a short output dimension is exactly the
+        # shape that hung the generated k=3 attention scores on hardware.
+        if len(granule) > 2 and self._fitting_split(node, 2, len(columns), granule.get(2, 1)) == len(columns):
+            cols_used = len(columns)
             split.append((2, cols_used))
         cores = tuple(grid[(col, row)] for col in columns[:cols_used] for row in rows[: split[0][1]])
         self._assign(node, cores, tuple(split))
