@@ -24,6 +24,7 @@ from stream.stages.generation.kernel_state import KernelStateStage
 from stream.stages.generation.mapping_generation import MappingGenerationStage
 from stream.stages.generation.mapping_generation_multi import MappingGenerationMultiThreadedStage
 from stream.stages.generation.normalization_expansion import ExpandNormalizationStage
+from stream.stages.generation.placement_generation import PlacementGenerationStage
 from stream.stages.generation.tile_search import TileSearchStage
 from stream.stages.generation.tiling_generation import TilingGenerationStage
 from stream.stages.parsing.accelerator_parser import AcceleratorParserStage
@@ -118,6 +119,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
             AcceleratorParserStage,  # Parses the accelerator
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
             MappingParserStage,
+            PlacementGenerationStage,  # place what the mapping leaves unplaced
             KernelStateStage,  # the state a kernel carries, before the iteration space is read
             TileSearchStage,  # optional: pick each fused group's intra-core tile by solving candidates
             TilingGenerationStage,
@@ -165,6 +167,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
                     AIECodeGenerationStage,  # codegen each group (inner pipeline)
                     # No MappingParserStage: FixedMappingGenerationStage supplies the
                     # per-group Mapping objects in-memory via FusionGroupIterationStage.
+                    PlacementGenerationStage,  # place what the mapping leaves unplaced
                     KernelStateStage,  # the state a kernel carries, before the iteration space is read
                     TileSearchStage,  # optional: pick each fused group's intra-core tile by solving candidates
                     TilingGenerationStage,
@@ -463,6 +466,7 @@ def optimize_mapping(  # noqa: PLR0913
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
             mapping_generation_stage,
             MappingParserStage,
+            PlacementGenerationStage,  # place what the mapping leaves unplaced
             KernelStateStage,  # the state a kernel carries, before the iteration space is read
             TileSearchStage,  # optional: pick each fused group's intra-core tile by solving candidates
             TilingGenerationStage,
