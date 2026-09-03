@@ -444,7 +444,8 @@ class AIECodeGenerationStage(Stage):
         with open(output_path + "/convert_of.mlir", "w") as f:
             f.write(str(module))
         ConvertStreamToAIEPass().apply(self.context, module)
-        HoistFlashScaleAcquires().apply(self.context, module)
+        if not os.environ.get("STREAM_NO_HOIST"):
+            HoistFlashScaleAcquires().apply(self.context, module)
         with open(output_path + "/to_aie.mlir", "w") as f:
             f.write(str(module))
         AIEMoveTileOpsUp().apply(self.context, module)
