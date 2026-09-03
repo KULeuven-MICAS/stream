@@ -104,7 +104,9 @@ class SteadyStateScheduler:
         """
         self.workload = workload  # Only contains nodes that are part of the current fusion stack
         self.accelerator = accelerator
-        self.mapping = mapping
+        # update_mapping() restamps tilings in the steady-state graph's dimension names and
+        # removes replaced nodes, so the scheduler must own its mapping rather than the caller's.
+        self.mapping = mapping.copy()
         self.fusion_splits = fusion_splits
         self.cost_lut = cost_lut
         self.partitioned_nodes: dict[ComputationNode, list[SteadyStateComputation]] = {}

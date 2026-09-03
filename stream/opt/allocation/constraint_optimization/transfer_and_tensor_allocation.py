@@ -315,7 +315,7 @@ class TransferAndTensorAllocator:
         # so it adds no time to the slot, the same reason it spends no DMA channel.
         if self._choice_shares_memory(tr, path):
             return 0
-        return get_transfer_latency_for_path(tr, path)
+        return self.context.transfer_firing_overhead() + get_transfer_latency_for_path(tr, path)
 
     def _ensure_same_ssis_for_all_transfers(self) -> None:
         first_ssis = self.ssis[self.transfer_nodes[0]]

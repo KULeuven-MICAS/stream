@@ -135,6 +135,11 @@ class NamespaceConstraints:
         """Bits of the core's data memory the toolchain claims before any tensor lands."""
         return 0
 
+    def transfer_firing_overhead(self) -> int:
+        """Cycles one DMA firing costs beyond moving its bytes (descriptor start, lock
+        handshake, task completion). Zero for a namespace that has not measured it."""
+        return 0
+
     # ---- object-FIFO depth ----
 
     def add_object_fifo_constraints(
@@ -266,11 +271,17 @@ class AIE2Constraints(NamespaceConstraints):
     # allocator accept an elementwise tile whose fifo buffers summed to exactly 64 KB,
     # which aiecc then rejected over these 1,024 bytes.
     DEFAULT_CORE_STACK_BYTES = 1024
+    # Measured on swiglu k=5 by growing only the steady tile (halving every firing count
+    # while moving the same bytes); see 260903_B deck notes for the derivation and spread.
+    TRANSFER_FIRING_OVERHEAD_CYCLES = 0
 
     def reserved_memory_bits(self, core: Core) -> int:
         if core.type != "compute":
             return 0
         return self.DEFAULT_CORE_STACK_BYTES * 8
+
+    def transfer_firing_overhead(self) -> int:
+        return self.TRANSFER_FIRING_OVERHEAD_CYCLES
 
     # ---- DMA channel usage ----
     def shares_memory(self, one: Core, other: Core) -> bool:
@@ -374,6 +385,10 @@ class TransferAndTensorContext:
     def reserved_memory_bits(self, core: Core) -> int:
         """Bits the toolchain claims on this core, summed over the namespaces that own it."""
         return sum(ns.reserved_memory_bits(core) for ns in self.namespace_constraints if ns.applies_to(core))
+
+    def transfer_firing_overhead(self) -> int:
+        """The largest per-firing DMA overhead any active namespace has measured."""
+        return max((ns.transfer_firing_overhead() for ns in self.namespace_constraints), default=0)
 
     def add_dma_usage_constraints(
         self,

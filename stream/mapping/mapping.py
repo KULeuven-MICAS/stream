@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from stream.cost_model.communication_manager import MulticastPathPlan
@@ -297,6 +297,17 @@ class Mapping:
     def with_fused_groups(self, fused_groups: Iterable[FusedGroup]) -> Mapping:
         """The same per-node mapping under different fused groups (e.g. another intra-core tiling)."""
         return Mapping(initial=dict(self._by_node), fused_groups=fused_groups, runtime_args=self._runtime_args)
+
+    def copy(self) -> Mapping:
+        """A detached mapping a consumer may rewrite in place.
+
+        The scheduler restamps inter-core tilings in its steady-state workload's dimension
+        names and drops nodes it replaces; on a shared mapping that poisons every later run
+        that parses the same objects (the names only mean anything against that one graph).
+        NodeMappings are cloned; the kernel objects they point at are immutable and stay shared.
+        """
+        cloned = {node: replace(nm) for node, nm in self._by_node.items()}
+        return Mapping(initial=cloned, fused_groups=self._fused_groups, runtime_args=self._runtime_args)
 
     @property
     def runtime_args(self) -> dict[str, str]:

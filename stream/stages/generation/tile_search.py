@@ -63,6 +63,7 @@ class TileSearchStage(Stage):
         best_context = None
         best_latency = float("inf")
         best_index = None
+        seed_error: Exception | None = None
         for i, mapping in enumerate(candidates):
             tiling = {str(d): t for g in mapping.fused_groups for d, t in g.intra_core_tiling}
             candidate_path = os.path.join(self.output_path, f"tile_{i}")
@@ -79,6 +80,8 @@ class TileSearchStage(Stage):
                 logger.info("Tile candidate %s is infeasible: %s", tiling, e.report.summary)
                 continue
             except (RuntimeError, ValueError, AssertionError) as e:
+                if i == 0:
+                    seed_error = e
                 logger.info("Tile candidate %s failed: %s", tiling, e)
                 continue
             logger.info("Tile candidate %s: latency %s", tiling, latency)
@@ -87,7 +90,9 @@ class TileSearchStage(Stage):
                 best_index = i
                 best_context = StageContext(data=dict(ctxs[0].data))
         if best_context is None:
-            raise RuntimeError("No feasible tile candidate; the seed tiling itself did not allocate.")
+            # The seed is the caller's own declared tiling: its failure is the real error,
+            # not a search outcome.
+            raise RuntimeError("No feasible tile candidate.") from seed_error
         logger.info("Tile search chose candidate %d of %d (latency %s)", best_index, len(candidates), best_latency)
         # Downstream consumers (codegen, hosts reading the output tree) expect the group's own path.
         best_context.set(output_path=self.output_path)
