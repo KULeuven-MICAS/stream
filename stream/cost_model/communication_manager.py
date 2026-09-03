@@ -188,6 +188,26 @@ class CommunicationManager:
         """Return all unique CommunicationLinks."""
         return list(set(d["cl"] for _, _, d in self.accelerator.cores.edges(data=True)))
 
+    def _route_state(self, offchip_mem_penalty: float):
+        """The weighted routing graph, its edge weights and the per-pair k-path cache,
+        shared per accelerator: the graph never changes during a run, so every path set
+        is computed once."""
+        states = self.accelerator.__dict__.setdefault("_route_states", {})
+        state = states.get(offchip_mem_penalty)
+        if state is None:
+            G = self.accelerator.cores  # noqa: N806
+            Gw = nx.DiGraph(G) if G.is_directed() else nx.Graph(G)  # noqa: N806
+            offchip_id = self.accelerator.offchip_core_id
+            for u, v, d in Gw.edges(data=True):
+                offchip = getattr(v, "id", None) == offchip_id and getattr(u, "type", None) == "memory"
+                d["w"] = float(offchip_mem_penalty) if offchip else 1.0
+            edge_w = _build_edge_weight_map(Gw, "w")
+            edge_index = {e: i for i, e in enumerate(edge_w)}
+            index_w = [edge_w[e] for e in edge_w]
+            state = (Gw, edge_w, edge_index, index_w, {})
+            states[offchip_mem_penalty] = state
+        return state
+
     def _get_simple_no_meeting_node_plans(  # noqa: PLR0912, PLR0915
         self,
         sources: tuple["Core", ...],
@@ -212,25 +232,7 @@ class CommunicationManager:
         if not sources or not targets:
             raise ValueError("sources and targets must be non-empty")
 
-        G = self.accelerator.cores
-        Gw = nx.DiGraph(G) if G.is_directed() else nx.Graph(G)
-
-        offchip_id = self.accelerator.offchip_core_id
-
-        def is_offchip(n: "Core") -> bool:
-            return getattr(n, "id", None) == offchip_id
-
-        def is_memory(n: "Core") -> bool:
-            return getattr(n, "type", None) == "memory"
-
-        # Weighting (same idea as meeting case, but applied to no-meeting too)
-        for u, v, d in Gw.edges(data=True):
-            if is_offchip(v) and is_memory(u):
-                d["w"] = float(offchip_mem_penalty)
-            else:
-                d["w"] = 1.0
-
-        edge_w = _build_edge_weight_map(Gw, "w")
+        Gw, edge_w, edge_index, index_w, kpath_cache = self._route_state(offchip_mem_penalty)
 
         # Define the required connectivity.
         # Default: all-pairs coverage (each source can reach each destination).
@@ -239,12 +241,17 @@ class CommunicationManager:
         # Build path options for each pair.
         pair_options: dict[tuple[Core, Core], list[list[Core]]] = {}
         for s, t in pairs:
-            cached = self.shortest_paths.get((s, t))
-            opts = _k_paths_for_pair_using_cached_first(Gw, s, t, k=k_paths, weight="w", cached_path=cached)
+            opts = kpath_cache.get((s, t, k_paths))
+            if opts is None:
+                cached = self.shortest_paths.get((s, t))
+                opts = _k_paths_for_pair_using_cached_first(Gw, s, t, k=k_paths, weight="w", cached_path=cached)
+                kpath_cache[(s, t, k_paths)] = opts
             if not opts:
                 # If any required pair is disconnected, no plan exists under this definition.
                 raise nx.NetworkXNoPath(f"no path for required pair {s}->{t}")
-            pair_options[(s, t)] = opts
+            pair_options[(s, t)] = [
+                (list(path), tuple(edge_index[e] for e in _path_edges(path))) for path in opts
+            ]
 
         # Beam search over pairs (no cartesian product).
         beam: list[_BeamStateNoMeeting] = [_BeamStateNoMeeting(edges=frozenset(), score=0.0, full_paths={})]
@@ -259,11 +266,10 @@ class CommunicationManager:
             next_states: list[_BeamStateNoMeeting] = []
 
             for st in beam:
-                base_edges = set(st.edges)
-                for p in options:
-                    pe = _path_edges(p)
-                    add_cost = _incremental_union_cost(pe, base_edges, edge_w)
-                    new_edges = frozenset(base_edges.union(pe))
+                base_edges = st.edges
+                for p, pe in options:
+                    add_cost = sum(index_w[i] for i in pe if i not in base_edges)
+                    new_edges = base_edges.union(pe)
                     new_full = dict(st.full_paths)
                     new_full[(s, t)] = p
                     next_states.append(
@@ -290,7 +296,7 @@ class CommunicationManager:
             links_used: list[CommunicationLink] = list()
             for path in st.full_paths.values():
                 for u, v in zip(path, path[1:], strict=False):
-                    cl = G.edges[(u, v)]["cl"]
+                    cl = self.accelerator.cores.edges[(u, v)]["cl"]
                     if cl not in links_used:
                         links_used.append(cl)
 

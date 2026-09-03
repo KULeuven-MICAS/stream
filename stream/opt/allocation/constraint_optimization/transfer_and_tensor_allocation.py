@@ -763,6 +763,7 @@ class TransferAndTensorAllocator:
     # model construction                                           #
     # ------------------------------------------------------------ #
     def _build_model(self):
+        self._capacity_screen()
         self._create_vars()
         self._index_choice_metadata()
         self._create_constraints()
@@ -967,6 +968,42 @@ class TransferAndTensorAllocator:
             )
 
     # ...................... memory capacity .................... #
+    def _min_resident_bits(self, t, tensor_size: int) -> int:
+        """The least this tensor can keep resident under any reuse-stop choice."""
+        best: int | None = None
+        for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
+            factor = self.tiles_needed_levels[(t, stop)]
+            if self.rotation_levels.get((t, stop)):
+                factor = max(factor, 2)
+            req = ceil(factor * tensor_size)
+            best = req if best is None else min(best, req)
+        return best or 0
+
+    def _capacity_screen(self):
+        """Fail before building the model when a core cannot fit even the smallest
+        choice for the tensors pinned to it -- arithmetic, not a solve."""
+        pinned: dict[Core, int] = defaultdict(int)
+        heaviest: dict[Core, str] = {}
+        for node in self.workload.get_iteration_space_nodes():
+            carried = [x for x in node.inputs if is_state_operand(node, x)]
+            for t in (*node.outputs, *carried):
+                candidates = self._candidate_cores_for_tensor(t)
+                if len(candidates) != 1:
+                    continue
+                (c,) = candidates
+                tile = self.workload.get_tensor_single_core(t, node, self.mapping)
+                pinned[c] += self._min_resident_bits(t, tile.size_bits())
+                heaviest.setdefault(c, t.name)
+        for c, bits in pinned.items():
+            cap = c.get_memory_capacity() - self.context.reserved_memory_bits(c)
+            if bits > cap:
+                raise InfeasibleAllocationError(
+                    self._structural_infeasibility(
+                        f"Core {c.id}: tensors pinned to it need at least {bits / 8192:.1f} KB "
+                        f"under every reuse choice, but its memory is {cap / 8192:.1f} KB"
+                    )
+                )
+
     def _memory_capacity_constraints(self):
         self.core_load: dict[Core, Any] = defaultdict(int)
         # Transfer output tensors on their chosen compute/memory cores
