@@ -35,8 +35,8 @@ class TileSearchStage(Stage):
         self.output_path: str = self.ctx.get("output_path")
         self.enabled: bool = bool(self.ctx.get("tile_search", False))
 
-    def _candidates(self) -> list[Mapping]:
-        seeds = [self.mapping]
+    def _candidates(self) -> list[tuple[object, Mapping]]:
+        seeds: list[tuple[object, Mapping]] = [(None, self.mapping)]
         groups = self.mapping.fused_groups
         for gi, group in enumerate(groups):
             for ti, (dim, tile) in enumerate(group.intra_core_tiling):
@@ -49,11 +49,11 @@ class TileSearchStage(Stage):
                     tiling[ti] = (dim, grown)
                     new_groups = list(groups)
                     new_groups[gi] = replace(group, intra_core_tiling=tuple(tiling))
-                    seeds.append(self.mapping.with_fused_groups(new_groups))
+                    seeds.append(((gi, ti), self.mapping.with_fused_groups(new_groups)))
         return seeds
 
     def run(self):
-        candidates = self._candidates() if self.enabled else [self.mapping]
+        candidates = self._candidates() if self.enabled else [(None, self.mapping)]
         if len(candidates) == 1:
             sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
             yield from sub_stage.run()
@@ -64,27 +64,37 @@ class TileSearchStage(Stage):
         best_latency = float("inf")
         best_index = None
         seed_error: Exception | None = None
-        for i, mapping in enumerate(candidates):
+        seed_latency = float("inf")
+        # Growth along one dimension only adds memory pressure and per-iteration latency,
+        # so once a grown tile loses to the seed, larger growths of the same dimension
+        # are skipped rather than solved.
+        dead_dims: set[object] = set()
+        for i, (grown_dim, mapping) in enumerate(candidates):
+            if grown_dim in dead_dims:
+                continue
             tiling = {str(d): t for g in mapping.fused_groups for d, t in g.intra_core_tiling}
             candidate_path = os.path.join(self.output_path, f"tile_{i}")
             os.makedirs(candidate_path, exist_ok=True)
             self.ctx.data = dict(base)
             self.ctx.set(mapping=mapping, output_path=candidate_path)
-            sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
             try:
-                ctxs = list(sub_stage.run())
-                assert len(ctxs) == 1, f"Expected exactly one context, but got {len(ctxs)}"
-                latency = ctxs[0].get("scheduler").latency_total
+                ctxs, latency = self._evaluate()
             except InfeasibleAllocationError as e:
                 save_infeasibility_report(candidate_path, e.report)
                 logger.info("Tile candidate %s is infeasible: %s", tiling, e.report.summary)
+                dead_dims.add(grown_dim)
                 continue
             except (RuntimeError, ValueError, AssertionError) as e:
                 if i == 0:
                     seed_error = e
                 logger.info("Tile candidate %s failed: %s", tiling, e)
+                dead_dims.add(grown_dim)
                 continue
             logger.info("Tile candidate %s: latency %s", tiling, latency)
+            if i == 0:
+                seed_latency = latency
+            elif latency >= seed_latency:
+                dead_dims.add(grown_dim)
             if os.environ.get("STREAM_TILE_FORCE") == "largest":
                 # Calibration probe: deploy the largest feasible tile so the per-firing
                 # DMA overhead can be measured against the seed on hardware.
@@ -95,12 +105,21 @@ class TileSearchStage(Stage):
                 best_latency = latency
                 best_index = i
                 best_context = StageContext(data=dict(ctxs[0].data))
+        yield self._finish(best_context, best_index, best_latency, len(candidates), seed_error)
+
+    def _finish(self, best_context, best_index, best_latency, n, seed_error):
         if best_context is None:
             # The seed is the caller's own declared tiling: its failure is the real error,
             # not a search outcome.
             raise RuntimeError("No feasible tile candidate.") from seed_error
-        logger.info("Tile search chose candidate %d of %d (latency %s)", best_index, len(candidates), best_latency)
+        logger.info("Tile search chose candidate %d of %d (latency %s)", best_index, n, best_latency)
         # Downstream consumers (codegen, hosts reading the output tree) expect the group's own path.
         best_context.set(output_path=self.output_path)
         self.ctx = best_context
-        yield best_context
+        return best_context
+
+    def _evaluate(self):
+        sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
+        ctxs = list(sub_stage.run())
+        assert len(ctxs) == 1, f"Expected exactly one context, but got {len(ctxs)}"
+        return ctxs, ctxs[0].get("scheduler").latency_total
