@@ -2,11 +2,24 @@ import logging
 import os
 import time
 
+from stream.hardware.architecture.core import Core
 from stream.ir.allocation import AllocationIR
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 
 logger = logging.getLogger(__name__)
+
+
+def compute_columns(scheduler) -> tuple[int, ...]:
+    """The distinct compute-tile columns the solved allocation occupies."""
+    columns: set[int] = set()
+    for node_mapping in scheduler.mapping.values():
+        for allocation in node_mapping.resource_allocation or ():
+            items = allocation if isinstance(allocation, (list, tuple)) else (allocation,)
+            for item in items:
+                if isinstance(item, Core) and item.type == "compute" and item.col_id is not None:
+                    columns.add(item.col_id)
+    return tuple(sorted(columns))
 
 
 class FusionGroupIterationStage(Stage):
@@ -35,10 +48,13 @@ class FusionGroupIterationStage(Stage):
                 f"{self.__class__.__name__} requires either 'sub_mappings' or 'group_mapping_paths' in context"
             )
 
-    def run(self):
+    def run(self):  # noqa: PLR0915
         sub_workloads = self.sub_workloads
         total_latency = 0.0
         group_latencies: dict[int, float] = {}
+        group_columns: dict[int, tuple[int, ...]] = {}
+        group_bounds: dict[int, float | None] = {}
+        group_nodes: dict[int, int] = {}
         group_wall_times: dict[int, float] = {}
         group_allocations: dict[int, dict | None] = {}
         group_memory_accesses: dict[int, dict | None] = {}
@@ -77,6 +93,9 @@ class FusionGroupIterationStage(Stage):
             group_latency = scheduler.latency_total
             total_latency += group_latency
             group_latencies[i] = group_latency
+            group_columns[i] = compute_columns(scheduler)
+            group_bounds[i] = getattr(scheduler, "throughput_bound", None)
+            group_nodes[i] = len(sub_workload.get_computation_nodes())
             # Capture the full allocation IR (latency + solver backend + intra-core performance:
             # per-node MAC utilization, compute efficiency, compute-vs-transfer bottleneck) per group,
             # so the exploration result can surface cost-model transparency and intra-core-cost viz.
@@ -102,6 +121,9 @@ class FusionGroupIterationStage(Stage):
         final_ctx.set(
             total_latency=total_latency,
             group_latencies=group_latencies,
+            group_columns=group_columns,
+            group_bounds=group_bounds,
+            group_nodes=group_nodes,
             group_wall_times=group_wall_times,
             group_allocations=group_allocations,
             group_memory_accesses=group_memory_accesses,

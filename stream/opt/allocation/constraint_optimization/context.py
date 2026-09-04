@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -184,6 +185,16 @@ class NamespaceConstraints:
     ) -> None:
         """Enforce buffer-descriptor limits for cores in this namespace."""
 
+    # ---- dispatch overhead ----
+
+    def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
+        """Cycles one dispatch spends configuring, given each design's column span.
+
+        Zero for an ideal target; a namespace that reloads configuration between
+        designs prices partition choices with it.
+        """
+        return 0.0
+
     # ---- DMA channel usage ----
 
     def add_dma_usage_constraints(
@@ -284,6 +295,19 @@ class AIE2Constraints(NamespaceConstraints):
                 expr <= core.max_object_fifo_depth,
                 name=f"aie2_bd_depth_Core_{core.id}",
             )
+
+    # A multi-design dispatch runs the full-ELF flow, whose inlined reconfiguration
+    # was measured at ~2.7 ns per CDO byte, ~17 KB per configured column -- ~38.5 us
+    # per column per configure point -- plus a ~35 us parity reset (260902/260904
+    # decks), here in 1.8 GHz core cycles. A single-design dispatch configures at
+    # hardware-context creation instead and pays neither.
+    CONFIGURE_CYCLES_PER_COLUMN = 69_000
+    RESET_CYCLES = 63_000
+
+    def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
+        if len(columns_per_design) <= 1:
+            return 0.0
+        return sum(c * self.CONFIGURE_CYCLES_PER_COLUMN for c in columns_per_design) + self.RESET_CYCLES
 
     # The stack mlir-aie places at the bottom of a compute tile's data memory when the
     # emitted core carries no stackSize. Its absence from the capacity bound let the
@@ -408,6 +432,10 @@ class TransferAndTensorContext:
     def transfer_firing_overhead(self) -> int:
         """The largest per-firing DMA overhead any active namespace has measured."""
         return max((ns.transfer_firing_overhead() for ns in self.namespace_constraints), default=0)
+
+    def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
+        """Configuration cycles one dispatch pays, summed over the namespaces."""
+        return sum(ns.dispatch_overhead_cycles(columns_per_design) for ns in self.namespace_constraints)
 
     def add_dma_usage_constraints(
         self,

@@ -2800,6 +2800,31 @@ class TransferAndTensorAllocator:
             "memory_occupancy": self._memory_occupancy(),
         }
 
+    def throughput_bound(self) -> float:
+        """The pipelined compute bound of the steady state, from the solved allocation.
+
+        The slot chain prices an iteration as if its slots barely overlap; a design
+        whose iterations are independent overlaps them fully through its rotating
+        buffers, and converges to modulo scheduling's bound: iterations times the
+        busiest core's measured-anchor cycles per iteration (or the recurrence bound
+        where state carries), plus one chain's fill. Links are left out -- the solved
+        routing is a staging choice codegen re-derives per column, and the shared
+        off-chip ports are bounded by the access estimator's per-port counts instead.
+        Read post-solve; changes nothing the solver decided.
+        """
+        busy: dict[Any, float] = defaultdict(float)
+        for n in self.ssc_nodes:
+            latencies = [self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)]
+            runtime = ceil(max(latencies)) if latencies else 0
+            active = float(get_active_latency(n, float(runtime), self.ssis))
+            for group in self.mapping.get(n).resource_allocation:
+                for core in group:
+                    busy[core] += active
+        per_iteration = max(busy.values(), default=0.0)
+        per_iteration = max(per_iteration, float(self.recurrence_bound or 0))
+        chain = sum(float(v.X) for v in self.slot_latency.values())
+        return self.iterations * per_iteration + max(0.0, chain - per_iteration)
+
     def capacity_slack(self) -> dict[int, dict[str, float]]:
         """Per core, what the solved allocation leaves unused of each capacity family,
         in the family's own unit: memory in bytes, fifo depth and buffer descriptors in slots.

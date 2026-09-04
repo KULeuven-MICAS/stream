@@ -18,7 +18,7 @@ from stream.stages.allocation.constraint_optimization_allocation import Constrai
 from stream.stages.context import StageContext
 from stream.stages.estimation.core_cost_estimation import CoreCostEstimationStage
 from stream.stages.estimation.memory_accesses_estimation import MemoryAccessesEstimationStage
-from stream.stages.generation.fusion_group_iteration import FusionGroupIterationStage
+from stream.stages.generation.fusion_group_iteration import FusionGroupIterationStage, compute_columns
 from stream.stages.generation.generic_mapping_generation import GenericMappingGenerationStage
 from stream.stages.generation.kernel_state import KernelStateStage
 from stream.stages.generation.mapping_generation import MappingGenerationStage
@@ -62,6 +62,177 @@ def _as_bool(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _solve_partition_candidate(  # noqa: PLR0913
+    hardware: str,
+    workload: str,
+    mapping_path: str,
+    output_path: str,
+    temporal_mapping_type: TemporalMappingType,
+    nb_cols_to_use: int,
+    backend: str,
+    constraint_selection: ConstraintSelection | None,
+    kernels: dict[str, Any] | None,
+) -> StageContext:
+    """Solve one fusion partition without codegen: exactly the pipeline the deployed
+    build runs -- placement and tile candidates priced through the same search --
+    minus only the MLIR emission."""
+    from stream.stages.generation.fixed_mapping_generation import FixedMappingGenerationStage  # noqa: PLC0415
+
+    stages: list[StageCallable] = [
+        AcceleratorParserStage,
+        StreamONNXModelParserStage,
+        FixedMappingGenerationStage,
+        FusionGroupIterationStage,
+        PlacementGenerationStage,
+        KernelStateStage,
+        TileSearchStage,
+        TilingGenerationStage,
+        CoreCostEstimationStage,
+        ConstraintOptimizationAllocationStage,
+        MemoryAccessesEstimationStage,
+    ]
+    ctx = StageContext.from_kwargs(
+        accelerator=hardware,
+        workload_path=workload,
+        mapping_path=mapping_path,
+        loma_lpf_limit=6,
+        output_path=output_path,
+        temporal_mapping_type=temporal_mapping_type,
+        nb_cols_to_use=nb_cols_to_use,
+        backend=backend,
+        constraint_selection=constraint_selection,
+        kernels=kernels,
+        tile_search=True,
+    )
+    answers = MainStage(stages, ctx).run()
+    assert len(answers) == 1
+    return answers[0]
+
+
+def choose_fusion_partition(  # noqa: PLR0913, PLR0912, PLR0915
+    hardware: str,
+    workload: str,
+    mapping: str | None,
+    output_path: str,
+    temporal_mapping_type: TemporalMappingType,
+    nb_cols_to_use: int,
+    backend: str,
+    constraint_selection: ConstraintSelection | None,
+    kernels: dict[str, Any] | None,
+    candidates: list[str] | None = None,
+) -> str:
+    """Pick the fusion partition the solves prefer, and return its mapping's path.
+
+    Candidates are mapping files, each declaring one partition (a caller whose
+    kernel choices depend on the partition hands its own variants in); from a
+    single mapping declaring no groups, the whole chain and one-design-per-layer
+    are derived automatically. Each candidate is priced by the same solve the
+    deployed build runs, plus the namespace's dispatch overhead for its design
+    count and column spans -- a single-design dispatch configures once at context
+    creation, a multi-design one reconfigures per point. The winner and every
+    candidate's price land in ``partition.json`` beside the search outputs.
+    """
+    from stream.opt.allocation.constraint_optimization.context import build_transfer_context  # noqa: PLC0415
+
+    logger = _logging.getLogger(__name__)
+    search_dir = os.path.join(output_path, "partition_search")
+    candidate_paths: list[str] = []
+    partitions: list[list[list[str]]] = []
+    if candidates is None:
+        assert mapping is not None, "derive candidates from a mapping, or pass them"
+        mapping_data = open_yaml(mapping)
+        names = [layer["name"] for layer in mapping_data["layers"]]
+        for index, partition in enumerate([[names], [[name] for name in names]]):
+            candidate_dir = os.path.join(search_dir, f"candidate_{index}")
+            os.makedirs(candidate_dir, exist_ok=True)
+            candidate_mapping = dict(mapping_data)
+            candidate_mapping["fused_groups"] = [
+                {"name": f"Fused_Group_{j + 1}", "layers": list(group)} for j, group in enumerate(partition)
+            ]
+            candidate_path = os.path.join(candidate_dir, "mapping.yaml")
+            with open(candidate_path, "w") as f:
+                yaml.dump(candidate_mapping, f, default_flow_style=False, sort_keys=False)
+            candidate_paths.append(candidate_path)
+            partitions.append(partition)
+    else:
+        candidate_paths = list(candidates)
+        partitions = [
+            [list(group["layers"]) for group in open_yaml(path)["fused_groups"]] for path in candidate_paths
+        ]
+
+    records = []
+    best: tuple[float, int, str] | None = None
+    for index, (candidate_path, partition) in enumerate(zip(candidate_paths, partitions, strict=True)):
+        candidate_dir = os.path.join(search_dir, f"candidate_{index}")
+        os.makedirs(candidate_dir, exist_ok=True)
+        try:
+            ctx = _solve_partition_candidate(
+                hardware,
+                workload,
+                candidate_path,
+                candidate_dir,
+                temporal_mapping_type,
+                nb_cols_to_use,
+                backend,
+                constraint_selection,
+                kernels,
+            )
+        except Exception as error:  # noqa: BLE001 -- an infeasible candidate loses; it must not end the search
+            records.append({"groups": partition, "error": str(error)})
+            logger.info(f"Partition candidate {index} infeasible: {error}")
+            continue
+        group_latencies = ctx.get("group_latencies") or {0: ctx.get("scheduler").latency_total}
+        group_bounds = ctx.get("group_bounds") or {}
+        group_nodes = ctx.get("group_nodes") or {}
+        group_accesses = ctx.get("group_memory_accesses") or {}
+        group_columns = ctx.get("group_columns") or {0: compute_columns(ctx.get("scheduler"))}
+        spans = [len(group_columns[i]) for i in sorted(group_columns)]
+        # Two measured regimes (260904 deck): a fused multi-stage group hands over
+        # through depth-one forks and its slot chain is what hardware shows (k=1
+        # tracks it within 8%); a single-node group's iterations pipeline through
+        # rotating buffers and converge to the busier of the compute bound and the
+        # busiest off-chip port's cycles (k=5 tracks its port bound). Each group is
+        # priced by its own regime.
+        bounded = 0.0
+        offchip_total = 0.0
+        for i in sorted(group_latencies):
+            ports = ((group_accesses.get(i) or {}).get("cores", ())) if group_accesses else ()
+            offchip = max((c["read"] + c["write"] for c in ports if c.get("is_offchip")), default=0.0)
+            offchip_total += offchip
+            if group_nodes.get(i, 2) > 1 or not group_bounds.get(i):
+                bounded += max(group_latencies[i], offchip)
+            else:
+                bounded += max(group_bounds[i], offchip)
+        overhead = build_transfer_context(ctx.get("accelerator")).dispatch_overhead_cycles(spans)
+        cost = bounded + overhead
+        records.append(
+            {
+                "groups": partition,
+                "latency": sum(group_latencies.values()),
+                "throughput_bound": sum(v for v in group_bounds.values() if v),
+                "offchip_bound": offchip_total,
+                "dispatch_overhead": overhead,
+                "cost": cost,
+                "columns_per_design": spans,
+            }
+        )
+        logger.info(f"Partition candidate {index} ({len(partition)} designs): cost {cost}")
+        if best is None or cost < best[0]:
+            best = (cost, index, candidate_path)
+
+    if best is None:
+        raise RuntimeError(f"no fusion partition candidate solved: {[r.get('error') for r in records]}")
+    _, chosen, chosen_path = best
+    with open(os.path.join(output_path, "partition.json"), "w") as f:
+        json.dump(
+            {"chosen": chosen, "mapping": chosen_path, "groups": partitions[chosen], "candidates": records},
+            f,
+            indent=2,
+        )
+    logger.info(f"Chosen partition: {len(partitions[chosen])} design(s)")
+    return chosen_path
 
 
 def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
@@ -108,6 +279,21 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
         temporal_mapping_type = TemporalMappingType.EVEN
     else:
         raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
+
+    # A mapping that declares fused groups is authoritative about them; one that
+    # declares none gets the partition solved before anything is built.
+    if enable_codegen and isinstance(mapping, str) and not (open_yaml(mapping).get("fused_groups") or []):
+        mapping = choose_fusion_partition(
+            hardware,
+            workload,
+            mapping,
+            output_path,
+            temporal_mapping_type,
+            nb_cols_to_use,
+            _backend_enum.value,
+            constraint_selection,
+            kernels,
+        )
 
     # Load final resulting context if it exists and skip_if_exists is True
     ctx_path = f"{output_path}/ctx.pickle"

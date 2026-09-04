@@ -347,6 +347,12 @@ class SteadyStateScheduler:
         except Exception as exc:
             logger.warning("Failed to compute capacity slack: %s", exc)
             self.capacity_slack = {}
+        # The pipelined steady-state bound, for choices that compare across designs.
+        try:
+            self.throughput_bound = tta.throughput_bound()
+        except Exception as exc:
+            logger.warning("Failed to compute throughput bound: %s", exc)
+            self.throughput_bound = None
         # total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
         # assert total == total_latency_solver, (
         #     f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
