@@ -681,18 +681,21 @@ class ChannelToObjectFifoPass(RewritePattern):
                 assert len(local_shape) <= 1
                 num_elements = max((self.held_count(target_type), prod(local_shape)))
 
+                assert isinstance(source_type := source.input.type, StrensorType)
+                repeat = self.replay_count(source_type, target_type)
                 object_fifo = ObjectFifoOp.from_referenced_type(
                     producer_tile,
                     consumer_tiles,
                     name_base + f"{s}_{i}",
                     self.pick_depths(
-                        (2,) + (num_elements,) * len(consumer_tiles),
+                        (self.held_count(source_type),) + (num_elements,) * len(consumer_tiles),
                         (producer_tile, *consumer_tiles),
                         target_type.get_element_type(),
                         target_type.get_kernel_shape(),
                     ),
                     target_type.get_element_type(),
                     target_type.get_kernel_shape(),
+                    repeat_count=repeat,
                 )
                 spat_ofs.append(object_fifo)
 
@@ -745,12 +748,13 @@ class ChannelToObjectFifoPass(RewritePattern):
                 assert isinstance(target_type := target.output.type, StrensorType)
 
                 shim_tile = self.get_tile(producer, target_type.core_allocation.data[0].data)
+                held = self.held_count(target_type)
                 object_fifo = ObjectFifoOp.from_referenced_type(
                     shim_tile,
                     [self.get_tile(target)],
                     name_base + f"mem_{i}",
                     self.pick_depths(
-                        (2, 2),
+                        (held, held),
                         (shim_tile, self.get_tile(target)),
                         target_type.get_element_type(),
                         self.held_shape(target_type),
@@ -774,12 +778,13 @@ class ChannelToObjectFifoPass(RewritePattern):
             assert isinstance(strensor := consumers[0].output.type, StrensorType)
             consumer_tiles = tuple(map(self.get_tile, consumers))
             producer_tile = self.get_tile(producer, strensor.core_allocation.data[0].data)
+            held = self.held_count(strensor)
             object_fifo = ObjectFifoOp.from_referenced_type(
                 producerTile=producer_tile,
                 consumerTiles=consumer_tiles,
                 name=name_base + "mem",
                 elemNumber=self.pick_depths(
-                    (2,) * (1 + len(consumer_tiles)),
+                    (held,) * (1 + len(consumer_tiles)),
                     (producer_tile, *consumer_tiles),
                     strensor.get_element_type(),
                     self.held_shape(strensor),
@@ -883,6 +888,27 @@ class ChannelToObjectFifoPass(RewritePattern):
         return ofs
 
     @staticmethod
+    def replay_count(producer: StrensorType, consumer: StrensorType) -> int:
+        """How many times a staging tile re-sends its held object to this reader.
+
+        Loops the producer holds the tensor across but the consumer does not are
+        re-reads the source never serves; the staged object serves them instead,
+        sent whole once per iteration of their product.
+        """
+
+        def covered(strensor: StrensorType) -> set[tuple[LayerDim, int]]:
+            kernel_dims = {v.dim for v in strensor.ssis.data.get_kernel_variables()}
+            variables = strensor.ssis.data.vars
+            window = variables[len(variables) - strensor.reuse_index.data :]
+            return {
+                (v.dim, v.size)
+                for v in window
+                if v.type == StrensorVarType.TEMPORAL and v.dim not in kernel_dims
+            }
+
+        return prod(size for _, size in covered(producer) - covered(consumer))
+
+    @staticmethod
     def held_count(strensor: StrensorType) -> int:
         """How many buffers of one fifo element a tile needs to keep its consumer fed.
 
@@ -984,7 +1010,9 @@ class ChannelToObjectFifoPass(RewritePattern):
             raise NotImplementedError()
 
         for op in ops:
-            del op.properties["repeat_count"]
+            count = op.properties.get("repeat_count")
+            if count is None or count.value.data <= 1:
+                op.properties.pop("repeat_count", None)
         self.of_count += 1
         end_op = device_op.region.block.last_op
         assert isinstance(end_op, EndOp)
