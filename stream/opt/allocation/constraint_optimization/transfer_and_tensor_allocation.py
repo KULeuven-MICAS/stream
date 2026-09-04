@@ -34,6 +34,7 @@ from stream.ir.infeasibility import (
 )
 from stream.mapping.mapping import Mapping, Resource
 from stream.opt.allocation.constraint_optimization.context import (
+    MemoryReuseEntry,
     TransferAndTensorContext,
     build_transfer_context,
 )
@@ -46,7 +47,6 @@ from stream.opt.allocation.constraint_optimization.utils import (
 )
 from stream.opt.solver import (
     ConstraintSelection,
-    LinExpr,
     ObjectiveLevel,
     PipeliningModel,
     SolverBackend,
@@ -345,10 +345,13 @@ class TransferAndTensorAllocator:
             self.tensors_to_optimize_reuse_for.append(t)
             reuse_factor = 1
             tiles_factor = 1
-            bds_needed = 1
+            # A staging tile's DMA chain holds one BD per resident object; loops it
+            # replays run as a start-queue repeat of that chain, never as more BDs.
+            # Objects rotate in pairs while anything varies outside the window and
+            # collapse to one only when nothing does.
             self.reuse_levels[(t, -1)] = reuse_factor
             self.tiles_needed_levels[(t, -1)] = tiles_factor
-            self.bds_needed_levels[(t, -1)] = bds_needed
+            self.bds_needed_levels[(t, -1)] = 2 if sizes else 1
             for i, (Nl, relevancy) in enumerate(zip(sizes, relevancies, strict=True)):
                 reuse_factor *= Nl if not relevancy else 1
                 tiles_factor *= Nl if relevancy else 1
@@ -357,11 +360,7 @@ class TransferAndTensorAllocator:
                 # a capacity fact charged in the memory term only, never a data window.
                 self.tiles_needed_levels[(t, i)] = tiles_factor
                 self.rotation_levels[(t, i)] = any(relevancies[i + 1 :])
-                if relevancy:
-                    bds_needed = 1
-                else:
-                    bds_needed *= Nl
-                self.bds_needed_levels[(t, i)] = bds_needed
+                self.bds_needed_levels[(t, i)] = 2 if i < len(sizes) - 1 else 1
             # A second buffer helps only with >1 tile; a loop-invariant tensor (tiles_factor==1) wastes half the memory.
             if self.force_double_buffering and tiles_factor > 1:
                 self.tiles_needed_levels[(t, -1)] = 2
@@ -1070,8 +1069,11 @@ class TransferAndTensorAllocator:
                     assert isinstance(c, Core)
                     u = self._tensor_uses_core_var(t, c)
                     min_tiles: int | None = None
+                    # A memory tile stages a window's tiles inside one fifo element
+                    # (held_shape), so its pool holds objects, not tiles.
+                    counted = self.bds_needed_levels if c.type == "memory" else self.tiles_needed_levels
                     for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
-                        tiles_needed = self.tiles_needed_levels[(t, stop)]
+                        tiles_needed = counted[(t, stop)]
                         min_tiles = tiles_needed if min_tiles is None else min(min_tiles, tiles_needed)
                         uz = self._add_binary_product(
                             a=u,
@@ -1165,6 +1167,26 @@ class TransferAndTensorAllocator:
         applicable = self.ssis[t].get_applicable_temporal_variables()
         return self.model.quicksum(s * self.z_stop[(t, s)]._raw for s in range(-1, len(applicable)))
 
+    def _replay_unexpressible_pairs(self, staged: Tensor, read: Tensor) -> tuple:
+        """(memory stop, reader stop) pairs no single whole-object replay realises.
+
+        The staged object covers the relevant loops inside the memory window; the
+        irrelevant loops between the two stops replay it whole, so each must sit
+        outside every relevant loop the object covers. An irrelevant loop between two
+        relevant ones would need the repeat inside the object, which one start-queue
+        repeat cannot express.
+        """
+        mem_vars = self.ssis[staged].get_applicable_temporal_variables()
+        read_levels = len(self.ssis[read].get_applicable_temporal_variables())
+        pairs: list[tuple] = []
+        for s_m in range(len(mem_vars)):
+            top_relevant = max((i for i in range(s_m + 1) if mem_vars[i].relevant), default=-1)
+            for s_c in range(-1, min(s_m, read_levels)):
+                inside = any(not mem_vars[i].relevant and i < top_relevant for i in range(s_c + 1, s_m + 1))
+                if inside:
+                    pairs.append((self.z_stop[(staged, s_m)], self.z_stop[(read, s_c)]))
+        return tuple(pairs)
+
     def _ensure_memory_and_compute_reuse_compatibility(self):
         """
         Relate the reuse levels on either side of a transfer between a memory tile and
@@ -1179,7 +1201,7 @@ class TransferAndTensorAllocator:
         memory tile and brought back, so the compute tile owns it until it is complete
         and the memory tile inherits exactly that residency.
         """
-        memory_reuse: list[tuple[Core, LinExpr, LinExpr]] = []
+        memory_reuse: list[MemoryReuseEntry] = []
         namespace_cores = list({c.namespace: c for c in self.mem_cores}.values())
         for tr in self.transfer_nodes:
             inputs = tr.inputs
@@ -1220,11 +1242,14 @@ class TransferAndTensorAllocator:
                     )
                     # Whether that extra residency is realisable is a target property.
                     # One core per namespace is enough; the rest repeat the constraint.
+                    unexpressible = self._replay_unexpressible_pairs(input_tensor, output_tensor)
                     memory_reuse.extend(
-                        (
+                        MemoryReuseEntry(
+                            tr.name,
                             core,
                             self._reuse_level_expr(input_tensor),
                             self._reuse_level_expr(output_tensor),
+                            unexpressible,
                         )
                         for core in namespace_cores
                     )
