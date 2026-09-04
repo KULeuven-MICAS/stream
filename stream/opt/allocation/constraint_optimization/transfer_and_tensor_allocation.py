@@ -345,13 +345,9 @@ class TransferAndTensorAllocator:
             self.tensors_to_optimize_reuse_for.append(t)
             reuse_factor = 1
             tiles_factor = 1
-            # A staging tile's DMA chain holds one BD per resident object; loops it
-            # replays run as a start-queue repeat of that chain, never as more BDs.
-            # Objects rotate in pairs while anything varies outside the window and
-            # collapse to one only when nothing does.
             self.reuse_levels[(t, -1)] = reuse_factor
             self.tiles_needed_levels[(t, -1)] = tiles_factor
-            self.bds_needed_levels[(t, -1)] = 2 if sizes else 1
+            self.bds_needed_levels[(t, -1)] = tiles_factor
             for i, (Nl, relevancy) in enumerate(zip(sizes, relevancies, strict=True)):
                 reuse_factor *= Nl if not relevancy else 1
                 tiles_factor *= Nl if relevancy else 1
@@ -360,7 +356,11 @@ class TransferAndTensorAllocator:
                 # a capacity fact charged in the memory term only, never a data window.
                 self.tiles_needed_levels[(t, i)] = tiles_factor
                 self.rotation_levels[(t, i)] = any(relevancies[i + 1 :])
-                self.bds_needed_levels[(t, i)] = 2 if i < len(sizes) - 1 else 1
+                # A whole-window stage is one buffer and one BD per DMA chain -- the
+                # replay is a start-queue repeat, verified compact in the lowering --
+                # while any partial window rotates a pool the lowering unrolls per
+                # tile, so it keeps costing its tiles.
+                self.bds_needed_levels[(t, i)] = 4 if i == len(sizes) - 1 else tiles_factor
             # A second buffer helps only with >1 tile; a loop-invariant tensor (tiles_factor==1) wastes half the memory.
             if self.force_double_buffering and tiles_factor > 1:
                 self.tiles_needed_levels[(t, -1)] = 2
@@ -1172,9 +1172,11 @@ class TransferAndTensorAllocator:
 
         The staged object covers the relevant loops inside the memory window; the
         irrelevant loops between the two stops replay it whole, so each must sit
-        outside every relevant loop the object covers. An irrelevant loop between two
-        relevant ones would need the repeat inside the object, which one start-queue
-        repeat cannot express.
+        outside every relevant loop the object covers -- an irrelevant loop between
+        two relevant ones would need the repeat inside the object, which one
+        start-queue repeat cannot say. The stage must also be the whole window: one
+        buffer lowers to one BD per DMA chain, while a partial-window pool unrolls
+        per tile and floods the staging tile's BD budget.
         """
         mem_vars = self.ssis[staged].get_applicable_temporal_variables()
         read_levels = len(self.ssis[read].get_applicable_temporal_variables())
@@ -1183,7 +1185,8 @@ class TransferAndTensorAllocator:
             top_relevant = max((i for i in range(s_m + 1) if mem_vars[i].relevant), default=-1)
             for s_c in range(-1, min(s_m, read_levels)):
                 inside = any(not mem_vars[i].relevant and i < top_relevant for i in range(s_c + 1, s_m + 1))
-                if inside:
+                partial = s_m != len(mem_vars) - 1
+                if inside or partial:
                     pairs.append((self.z_stop[(staged, s_m)], self.z_stop[(read, s_c)]))
         return tuple(pairs)
 
