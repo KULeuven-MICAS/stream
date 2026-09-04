@@ -1190,13 +1190,18 @@ class TransferAndTensorAllocator:
         return self.model.quicksum(s * self.z_stop[(t, s)]._raw for s in range(-1, len(applicable)))
 
     def _replay_unexpressible_pairs(self, staged: Tensor, read: Tensor) -> tuple:
-        """The unexpressible (staged, read) stop pairs, as their z_stop variables."""
+        """The unexpressible (staged, read) stop pairs, as their z_stop variables.
+
+        STREAM_ABLATE_REPLAY forbids every stop past the reader -- the pre-replay
+        behavior, kept only as the A/B arm of the ablation study.
+        """
         relevancies = [v.relevant for v in self.ssis[staged].get_applicable_temporal_variables()]
         read_levels = len(self.ssis[read].get_applicable_temporal_variables())
-        return tuple(
-            (self.z_stop[(staged, s_m)], self.z_stop[(read, s_c)])
-            for s_m, s_c in replay_unexpressible_levels(relevancies, read_levels)
-        )
+        if os.environ.get("STREAM_ABLATE_REPLAY"):
+            levels = [(s_m, s_c) for s_m in range(len(relevancies)) for s_c in range(-1, min(s_m, read_levels))]
+        else:
+            levels = replay_unexpressible_levels(relevancies, read_levels)
+        return tuple((self.z_stop[(staged, s_m)], self.z_stop[(read, s_c)]) for s_m, s_c in levels)
 
     def _ensure_memory_and_compute_reuse_compatibility(self):
         """
