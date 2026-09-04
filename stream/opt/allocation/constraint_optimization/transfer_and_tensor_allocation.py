@@ -82,6 +82,28 @@ _OCCUPANCY_TOP_TENSORS = 8
 TensorPlacementChoice: TypeAlias = tuple[Core, ...]
 
 TensorReuseLevels: TypeAlias = dict[Tensor, int]
+
+
+def replay_unexpressible_levels(relevancies: list[bool], read_levels: int) -> list[tuple[int, int]]:
+    """(memory stop, reader stop) level pairs no single whole-object replay realises.
+
+    The staged object covers the relevant loops inside the memory window; the
+    irrelevant loops between the two stops replay it whole, so each must sit outside
+    every relevant loop the object covers -- an irrelevant loop between two relevant
+    ones would need the repeat inside the object, which one start-queue repeat cannot
+    say. The stage must also be the whole window: one buffer lowers to one BD per DMA
+    chain, while a partial-window pool unrolls per tile and floods the staging tile's
+    BD budget. ``relevancies`` lists the staged side's applicable temporal levels
+    innermost first; stops index them, -1 meaning no reuse.
+    """
+    pairs: list[tuple[int, int]] = []
+    for s_m in range(len(relevancies)):
+        top_relevant = max((i for i in range(s_m + 1) if relevancies[i]), default=-1)
+        for s_c in range(-1, min(s_m, read_levels)):
+            inside = any(not relevancies[i] and i < top_relevant for i in range(s_c + 1, s_m + 1))
+            if inside or s_m != len(relevancies) - 1:
+                pairs.append((s_m, s_c))
+    return pairs
 TensorDepths: TypeAlias = dict[Tensor, int]
 TensorAlloc: TypeAlias = dict[Tensor, TensorPlacementChoice]
 TransferAlloc: TypeAlias = dict[TransferNode, MulticastPathPlan]
@@ -1168,27 +1190,13 @@ class TransferAndTensorAllocator:
         return self.model.quicksum(s * self.z_stop[(t, s)]._raw for s in range(-1, len(applicable)))
 
     def _replay_unexpressible_pairs(self, staged: Tensor, read: Tensor) -> tuple:
-        """(memory stop, reader stop) pairs no single whole-object replay realises.
-
-        The staged object covers the relevant loops inside the memory window; the
-        irrelevant loops between the two stops replay it whole, so each must sit
-        outside every relevant loop the object covers -- an irrelevant loop between
-        two relevant ones would need the repeat inside the object, which one
-        start-queue repeat cannot say. The stage must also be the whole window: one
-        buffer lowers to one BD per DMA chain, while a partial-window pool unrolls
-        per tile and floods the staging tile's BD budget.
-        """
-        mem_vars = self.ssis[staged].get_applicable_temporal_variables()
+        """The unexpressible (staged, read) stop pairs, as their z_stop variables."""
+        relevancies = [v.relevant for v in self.ssis[staged].get_applicable_temporal_variables()]
         read_levels = len(self.ssis[read].get_applicable_temporal_variables())
-        pairs: list[tuple] = []
-        for s_m in range(len(mem_vars)):
-            top_relevant = max((i for i in range(s_m + 1) if mem_vars[i].relevant), default=-1)
-            for s_c in range(-1, min(s_m, read_levels)):
-                inside = any(not mem_vars[i].relevant and i < top_relevant for i in range(s_c + 1, s_m + 1))
-                partial = s_m != len(mem_vars) - 1
-                if inside or partial:
-                    pairs.append((self.z_stop[(staged, s_m)], self.z_stop[(read, s_c)]))
-        return tuple(pairs)
+        return tuple(
+            (self.z_stop[(staged, s_m)], self.z_stop[(read, s_c)])
+            for s_m, s_c in replay_unexpressible_levels(relevancies, read_levels)
+        )
 
     def _ensure_memory_and_compute_reuse_compatibility(self):
         """
