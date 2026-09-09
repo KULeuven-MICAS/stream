@@ -9,8 +9,7 @@ from stream.compiler.transforms.hoist_scale_acquires import HoistFlashScaleAcqui
 
 def acquire(name, port):
     return ObjectFifoAcquireOp(
-        IntegerAttr.from_int_and_width(port.get_int(), 32),
-        IntegerAttr.from_int_and_width(1, 32), name, (256,), bf16)
+        IntegerAttr.from_int_and_width(port.get_int(), 32), 1, name, (256,), bf16)
 
 
 def names(module):

@@ -37,8 +37,6 @@ from xdsl_aie.dialects.aie import (
     ObjectFifoLinkOp,
     ObjectFifoOp,
     ObjectFifoPortEnum,
-    ObjectFIFOSubview,
-    ObjectFIFOSubviewAccessOp,
     SymbolTable,
     TileOp,
 )
@@ -126,7 +124,7 @@ class HoistLayoutCasts(RewritePattern):
     @op_type_rewrite_pattern
     def match_and_rewrite(self, op: LayoutCast, rewriter: PatternRewriter) -> None:
         assert isinstance(op.source, OpResult)
-        if isinstance(op.source.op, ObjectFIFOSubviewAccessOp):
+        if isinstance(op.source.op, ObjectFifoAcquireOp):
             # good, this is what we want
             return
         elif isinstance(switch := op.source.op, IndexSwitchOp):
@@ -213,10 +211,7 @@ class RealizeLayoutCasts(RewritePattern):
             assert device_op is not None
         # gather some variables
         assert isinstance(op.source, OpResult)
-        assert isinstance(subview_access := op.source.op, ObjectFIFOSubviewAccessOp)
-        # assert isinstance(subview_access := op.source.op, ObjectFIFOSubviewAccessOp)
-        assert isinstance(subview_access.subview, OpResult)
-        assert isinstance(of_acquire := subview_access.subview.op, ObjectFifoAcquireOp)
+        assert isinstance(of_acquire := op.source.op, ObjectFifoAcquireOp)
         of_name = of_acquire.objFifo_name.root_reference.data
 
         if op.dest.type == op.source.type:
@@ -244,13 +239,12 @@ class RealizeLayoutCasts(RewritePattern):
         ) -> MemRefType[FixedBitwidthType] | None:
             result = []
             for acquire in acquires:
-                for subview in acquire.result.uses:
-                    if isinstance(subview.operation, ObjectFIFOSubviewAccessOp):
-                        for cast in subview.operation.output.uses:
-                            if isinstance(cast.operation, LayoutCast):
-                                dest_type = cast.operation.dest.type
-                                assert isa(dest_type, MemRefType[FixedBitwidthType])
-                                result.append(dest_type)
+                for obj in acquire.results:
+                    for cast in obj.uses:
+                        if isinstance(cast.operation, LayoutCast):
+                            dest_type = cast.operation.dest.type
+                            assert isa(dest_type, MemRefType[FixedBitwidthType])
+                            result.append(dest_type)
             if len(result) == 0:
                 return None
             else:
@@ -314,19 +308,12 @@ class RealizeLayoutCasts(RewritePattern):
         if not transform_is_null:
             fifo.dimensionsToStream = bd_layout
 
-        if consumer_type is not None:
-            for consumer in consumers:
-                consumer.result.type = ObjectFIFOSubview([consumer_type])
-                for use in consumer.result.uses:
-                    if isinstance(use.operation, ObjectFIFOSubviewAccessOp):
-                        use.operation.output.type = consumer_type
-
-        if producer_type is not None:
-            for producer in producers:
-                producer.result.type = ObjectFIFOSubview([producer_type])
-                for use in producer.result.uses:
-                    if isinstance(use.operation, ObjectFIFOSubviewAccessOp):
-                        use.operation.output.type = producer_type
+        for acquires, layout in ((consumers, consumer_type), (producers, producer_type)):
+            if layout is None:
+                continue
+            for acquire in acquires:
+                for obj in acquire.results:
+                    obj.type = layout
 
         # The transform now lives on the object fifo, and the acquire this cast reads from
         # carries the cast's layout, so the cast has become an identity. Drop it here: the

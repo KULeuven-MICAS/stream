@@ -58,7 +58,6 @@ from xdsl_aie.dialects.aie import (
     ObjectFifoOp,
     ObjectFifoPortEnum,
     ObjectFIFOReleaseOp,
-    ObjectFIFOSubviewAccessOp,
     TileOp,
 )
 
@@ -325,17 +324,16 @@ def _hand_scale(op: ComputationNodeOp, targets: Sequence[TileOp], state, width, 
     def hand(target: TileOp) -> list[Operation]:
         acquire = ObjectFifoAcquireOp(
             IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Produce.get_int(), 32),
-            IntegerAttr.from_int_and_width(1, 32),
+            1,
             _scale_name(tile, target),
             (rows,),
             element_type,
         )
         return [
             acquire,
-            scale := ObjectFIFOSubviewAccessOp(IntegerAttr(0, i32), acquire),
             # Unconditional: a block this core skipped still owes the one behind it the
             # scale it last wrote, which is what the closing rescale divides by.
-            CallOp(SNAPSHOT, [state, scale.output, width], []),
+            CallOp(SNAPSHOT, [state, acquire.results[0], width], []),
             ObjectFIFOReleaseOp(
                 IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Produce.get_int(), 32),
                 IntegerAttr.from_int_and_width(1, 32),
@@ -853,14 +851,14 @@ class FlashKernel(GemmKernel):
         """One value accumulation against the scale the given score core wrote."""
         acquire = ObjectFifoAcquireOp(
             IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Consume.get_int(), 32),
-            IntegerAttr.from_int_and_width(1, 32),
+            1,
             _scale_name(source, _tile(op)),
             (SCALE_ROWS * self.m,),
             self.element_type,
         )
+        scale = acquire.results[0]
         return [
             acquire,
-            scale := ObjectFIFOSubviewAccessOp(IntegerAttr(0, i32), acquire),
             rows := ConstantOp.from_int_and_width(self.m, i32),
             zero := ConstantOp.from_int_and_width(0, i32),
             # Block zero is never causally skipped, so testing it at run time is the same
@@ -869,7 +867,7 @@ class FlashKernel(GemmKernel):
             carried := ExtUIOp(opened, i32),
             CallOp(
                 self.function_name,
-                [op.inputs[0], op.inputs[1], op.inputs[2], scale.output, rows.result, carried.result, index],
+                [op.inputs[0], op.inputs[1], op.inputs[2], scale, rows.result, carried.result, index],
                 [],
             ),
             last := ConstantOp.from_int_and_width(key_blocks - 1, i32),
@@ -877,7 +875,7 @@ class FlashKernel(GemmKernel):
             IfOp(
                 closing,
                 [],
-                Region(Block([CallOp("rescale_O", [op.inputs[2], scale.output, rows.result, index], []), YieldOp()])),
+                Region(Block([CallOp("rescale_O", [op.inputs[2], scale, rows.result, index], []), YieldOp()])),
             ),
             ObjectFIFOReleaseOp(
                 IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Consume.get_int(), 32),

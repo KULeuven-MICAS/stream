@@ -37,7 +37,6 @@ def column():
         EndOp,
         ObjectFifoAcquireOp,
         ObjectFifoPortEnum,
-        ObjectFIFOSubviewAccessOp,
         TileOp,
     )
 
@@ -66,18 +65,17 @@ def column():
         acquires = [
             ObjectFifoAcquireOp(
                 IntegerAttr.from_int_and_width(ObjectFifoPortEnum.Consume.get_int(), 32),
-                IntegerAttr.from_int_and_width(1, 32),
+                1,
                 "operand",
                 (TILE, TILE),
                 bf16,
             )
             for _ in range(operands)
         ]
-        accesses = [ObjectFIFOSubviewAccessOp(IntegerAttr(0, 32), acquire) for acquire in acquires]
         kernel_vars = tuple(StrensorVar(StrensorVarType.KERNEL, TILE, dim) for dim in kernel_dims)
         output = StrensorType(bf16, StrensorSpace(outer + kernel_vars))
-        node = ComputationNodeOp([access.output for access in accesses], (output,), kernel_name, position)
-        return [op for pair in zip(acquires, accesses, strict=True) for op in pair] + [node]
+        node = ComputationNodeOp([a.results[0] for a in acquires], (output,), kernel_name, position)
+        return [*acquires, node]
 
     def core(row, body):
         """The node on its own tile, wrapped in the key loop and then the query loop."""
