@@ -461,8 +461,11 @@ class PartialSoftmaxKernel(SoftmaxKernel):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        if (self.m, self.n) != (FLASH_TILE, FLASH_TILE):
-            raise ValueError(f"mha.cc is written for a {FLASH_TILE}x{FLASH_TILE} block, not {self.m}x{self.n}")
+        # The key block n stays FLASH_TILE (the softmax reduces over it); the query block m
+        # may be a finer multiple of the 8-row MAC group so a wider softmax's consumer holds
+        # a smaller resident window.
+        if self.n != FLASH_TILE or self.m % 8 or self.m > FLASH_TILE:
+            raise ValueError(f"mha.cc key block must be {FLASH_TILE} and query a multiple of 8 up to it, not {self.m}x{self.n}")
 
     @property
     def linkwith_name(self) -> str:
@@ -620,9 +623,12 @@ class FusedScoreSoftmaxKernel(GemmKernel):
     """
 
     def __post_init__(self) -> None:
-        if (self.m, self.k, self.n) != (FLASH_TILE,) * 3:
+        # Key (k) and head (n) stay FLASH_TILE; the query (m) may be a finer multiple of the
+        # 8-row MAC group so the value-accumulation consumer holds a smaller resident window.
+        if (self.k, self.n) != (FLASH_TILE, FLASH_TILE) or self.m % 8 or self.m > FLASH_TILE:
             raise ValueError(
-                f"mha.cc is written for a {FLASH_TILE} query, key and head block, not {self.m}x{self.k}x{self.n}"
+                f"mha.cc key and head block must be {FLASH_TILE} and query a multiple of 8 up to it, "
+                f"not {self.m}x{self.k}x{self.n}"
             )
 
     @property
@@ -752,9 +758,12 @@ class FlashKernel(GemmKernel):
     """
 
     def __post_init__(self) -> None:
-        if (self.m, self.k, self.n) != (FLASH_TILE,) * 3:
+        # Key (k) and head (n) stay FLASH_TILE; the query (m) may be a finer multiple of the
+        # 8-row MAC group so the value-accumulation consumer holds a smaller resident window.
+        if (self.k, self.n) != (FLASH_TILE, FLASH_TILE) or self.m % 8 or self.m > FLASH_TILE:
             raise ValueError(
-                f"mha.cc is written for a {FLASH_TILE} query, key and head block, not {self.m}x{self.k}x{self.n}"
+                f"mha.cc key and head block must be {FLASH_TILE} and query a multiple of 8 up to it, "
+                f"not {self.m}x{self.k}x{self.n}"
             )
 
     @property

@@ -1,9 +1,11 @@
 import logging
+import os
 from dataclasses import replace
 
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.core import Core
 from stream.mapping.chain_placement import (
+    TILED_HANDOVER_FACTOR,
     bandwidth_bound,
     column_budget_options,
     layer_cost,
@@ -134,19 +136,58 @@ class PlacementGenerationStage(Stage):
 
     def _place_stacked(self, nodes: list[ComputationNode], grid, columns, rows) -> None:
         kernels = [self.mapping.get(n).kernel for n in nodes]
-        counts = row_counts([layer_cost(k) for k in kernels], len(rows))
+        # STREAM_WIDE_SOFTMAX: prototype flag to spend a spare row on the bottleneck stage.
+        #   "memtile"/"1": model the handover as memory-tile-relaid (factor 1.0) and keep
+        #                  the widened stage row major (relayout on the DMA).
+        #   "tiled":       still widen (factor 1.0 so row_counts picks it) but keep the
+        #                  core-to-core MAC-tiled handover, the model's own feasible design.
+        mode = os.environ.get("STREAM_WIDE_SOFTMAX")
+        wide = mode in ("1", "memtile", "tiled")
+        counts = row_counts(
+            [layer_cost(k) for k in kernels],
+            len(rows),
+            handover=1.0 if wide else TILED_HANDOVER_FACTOR,
+        )
         granule = dict(kernels[0].granule()).get(0, 1)
         extent = self.workload.get_dimension_size(self.workload.get_dims(nodes[0])[0])
         width = widest_columns(extent, granule, max(counts), len(columns))
+        # A stage split over two rows normally takes them contiguously, leaving its
+        # single-row consumer beside only one half -- the other half's carried state then
+        # crosses a non-neighbouring tile and spends a DMA channel. When the flag asks, seat
+        # the consumer between the two producer rows so both handovers stay in shared memory.
+        row_lists = self._flanking_rows(counts, rows) if wide else None
         offset = 0
-        for node, kernel, r in zip(nodes, kernels, counts):
-            layer_rows = rows[offset : offset + r]
+        for i, (node, kernel, r) in enumerate(zip(nodes, kernels, counts)):
+            layer_rows = row_lists[i] if row_lists is not None else rows[offset : offset + r]
             offset += r
             cores = tuple(grid[(col, row)] for row in layer_rows for col in columns[:width])
             self._assign(node, cores, ((0, width * r),))
         for node, kernel, r, r_next in zip(nodes, kernels, counts, (*counts[1:], counts[-1])):
-            if r > r_next:
+            # "memtile" mode keeps the widened stage row major (relayout on the DMA);
+            # "tiled" mode and the default keep the core-to-core MAC-tiled handover.
+            if r > r_next and mode not in ("1", "memtile"):
                 self._retile(node, kernel, tiled_out=True)
+
+    def _flanking_rows(self, counts, rows):
+        """Rows per stage that seat each single-row consumer between the two rows of a
+        two-row producer, so the carried-state handover stays between neighbours. Only the
+        one-wider-than-its-consumer case is reseated; anything else keeps contiguous rows."""
+        assigned = [None] * len(counts)
+        pool = list(rows)
+        for i, r in enumerate(counts):
+            nxt = counts[i + 1] if i + 1 < len(counts) else None
+            if r == 2 and nxt == 1:
+                # producer takes the outer two rows, its consumer the one between them
+                trio = pool[:3]
+                if len(trio) < 3:
+                    return None  # not enough rows to flank; fall back to contiguous
+                assigned[i] = [trio[0], trio[2]]
+                assigned[i + 1] = [trio[1]]
+                pool = pool[3:]
+            elif assigned[i] is None:
+                assigned[i] = pool[:r]
+                pool = pool[r:]
+        return assigned if all(a is not None for a in assigned) else None
 
     def _place_tenancies(self, nodes: list[ComputationNode], grid, columns, rows) -> None:
         kernels = [self.mapping.get(n).kernel for n in nodes]

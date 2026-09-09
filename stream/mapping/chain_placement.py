@@ -62,14 +62,20 @@ def bandwidth_bound(kernel) -> bool:
     return layer_cost(kernel) <= move_cycles
 
 
-def row_counts(costs: list[float], num_rows: int) -> tuple[int, ...]:
-    """Rows per layer minimizing the bottleneck of cost per row, handover factor included."""
+def row_counts(costs: list[float], num_rows: int, handover: float = TILED_HANDOVER_FACTOR) -> tuple[int, ...]:
+    """Rows per layer minimizing the bottleneck of cost per row, handover factor included.
+
+    ``handover`` is the penalty a layer pays when it is wider than the one it feeds and so
+    must emit the MAC-tiled layout core-to-core. It defaults to the measured 2.09x; passing
+    1.0 models a handover the memory tile re-lays out for free, which is the regime a wider
+    bottleneck stage becomes worthwhile in.
+    """
     best: tuple[tuple[float, int], tuple[int, ...]] | None = None
     for counts in product(range(1, num_rows + 1), repeat=len(costs)):
         if sum(counts) > num_rows:
             continue
         eff = [
-            cost * (TILED_HANDOVER_FACTOR if i + 1 < len(counts) and r > counts[i + 1] else 1.0) / r
+            cost * (handover if i + 1 < len(counts) and r > counts[i + 1] else 1.0) / r
             for i, (cost, r) in enumerate(zip(costs, counts))
         ]
         key = (max(eff), sum(counts))
