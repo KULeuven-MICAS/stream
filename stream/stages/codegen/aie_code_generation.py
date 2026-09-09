@@ -404,7 +404,15 @@ class AIECodeGenerationStage(Stage):
         ClearMemorySpace().apply(self.context, module)
         # Before final.mlir is written, since that file is what downstream hosts compile.
         if self.trace_size:
-            AIEAddTracingScript(trace_size=self.trace_size, max_tiles=self.trace_max_tiles).apply(self.context, module)
+            # STREAM_TRACE_TILES="col,row;col,row" picks the traced tiles (default: the first ones).
+            wanted = tuple(
+                tuple(int(v) for v in tile.split(","))
+                for tile in os.environ.get("STREAM_TRACE_TILES", "").split(";")
+                if tile.strip()
+            )
+            AIEAddTracingScript(
+                trace_size=self.trace_size, max_tiles=self.trace_max_tiles, tiles=wanted
+            ).apply(self.context, module)
         with open(output_path + "/final.mlir", "w") as f:
             f.write(str(module))
 

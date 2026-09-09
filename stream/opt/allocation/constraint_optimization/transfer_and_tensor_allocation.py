@@ -323,14 +323,28 @@ class TransferAndTensorAllocator:
                 )
 
     def _init_transfer_fire_helpers(self) -> None:
+        # STREAM_FORCE_RESIDENT="name,name": tensors held across every temporal loop
+        # of their allocation (fetched once), taken out of the reuse optimization.
+        # "name" holds the tensor across every applicable temporal loop; "name:L"
+        # across the outermost L+1 of them.
+        forced: dict[str, int | None] = {}
+        for entry in os.environ.get("STREAM_FORCE_RESIDENT", "").split(","):
+            if entry.strip():
+                name, _, level = entry.strip().partition(":")
+                forced[name] = int(level) if level else None
         for t in self.workload.tensors:
             ssis = self.ssis[t].get_applicable_temporal_variables()
+            if t.name in forced:
+                level = len(ssis) - 1 if forced[t.name] is None else forced[t.name]
+                for i, iter_var in enumerate(ssis):
+                    iter_var.reuse = Reuse.REUSE if i <= level else Reuse.NO_REUSE
             sizes = [iter_var.size for iter_var in ssis]
             relevancies = [iter_var.relevant for iter_var in ssis]
             reuses = [iter_var.reuse for iter_var in ssis]
-            if any(r != Reuse.NOT_SET for r in reuses):
-                continue
-            self.tensors_to_optimize_reuse_for.append(t)
+            if all(r == Reuse.NOT_SET for r in reuses):
+                self.tensors_to_optimize_reuse_for.append(t)
+            # The per-level factors are needed for every transferred tensor, also
+            # those whose reuse level is fixed rather than optimized.
             reuse_factor = 1
             tiles_factor = 1
             bds_needed = 1
@@ -617,7 +631,8 @@ class TransferAndTensorAllocator:
                 name=f"zStop_Choose_One_{t.name}",
             )
             if t not in self.tensors_to_optimize_reuse_for:
-                reuses = self.ssis[t].get_temporal_reuses()
+                # z_stop is indexed over the applicable temporal variables.
+                reuses = [iv.reuse for iv in self.ssis[t].get_applicable_temporal_variables()]
                 stop = -2
                 for i in range(len(reuses) - 1, -1, -1):
                     if reuses[i] == Reuse.REUSE:
@@ -1765,6 +1780,8 @@ class TransferAndTensorAllocator:
 
         grouped: dict[str, dict[str, Any]] = {}
         unbound: list[str] = []
+        if os.environ.get("STREAM_DEBUG_IIS"):
+            print("[iis]", "\n[iis] ".join(iis_names))
         for name in iis_names:
             ref, kind = self._resolve_iis_constraint(name)
             if ref is None:

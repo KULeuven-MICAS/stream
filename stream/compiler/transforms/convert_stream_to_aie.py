@@ -1,9 +1,10 @@
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from math import prod
 
 from snaxc.dialects.snax import LayoutCast
 from snaxc.dialects.tsl import TiledStridedLayoutAttr
-from snaxc.ir.tsl import Stride, TiledStridedLayout
+from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.context import Context
 from xdsl.dialects import scf
 from xdsl.dialects.arith import ConstantOp
@@ -248,6 +249,82 @@ class RealizeLayoutCasts(RewritePattern):
 
         consumer_type = gather_layout(consumers)
         producer_type = gather_layout(producers)
+
+        # A memory-tile join (several input fifos linked into one output fifo)
+        # is realized on its output fifo: the producers' layout, extended with
+        # the join dimension, is what the joined element holds.
+        # Only joins whose output is consumed by cores; a join drained by a shim
+        # keeps the row-major treatment below.
+        def core_consumed(link: ObjectFifoLinkOp) -> bool:
+            out = SymbolTable.lookup_symbol(device_op, link.fifoOuts.data[0])
+            assert isinstance(out, ObjectFifoOp)
+            return all(
+                isinstance(tile, OpResult)
+                and isinstance(tile.op, TileOp)
+                and tile.op.row.value.data > 1
+                for tile in out.consumerTiles
+            )
+
+        links = [
+            link
+            for link in device_op.walk()
+            if isinstance(link, ObjectFifoLinkOp) and len(link.fifoIns) > 1 and core_consumed(link)
+        ]
+        join_of_input = next(
+            (link for link in links if of_name in (f.root_reference.data for f in link.fifoIns)),
+            None,
+        )
+        join_of_output = next(
+            (link for link in links if of_name in (f.root_reference.data for f in link.fifoOuts)),
+            None,
+        )
+        if join_of_input is not None:
+            assert producer_type is not None and consumer_type is None
+            for producer in producers:
+                producer.result.type = ObjectFIFOSubview([producer_type])
+                for use in producer.result.uses:
+                    if isinstance(use.operation, ObjectFIFOSubviewAccessOp):
+                        use.operation.output.type = producer_type
+            if op.dest.type == op.source.type:
+                op.dest.replace_by(op.source)
+                rewriter.erase_matched_op()
+            return
+        if join_of_output is not None:
+            assert consumer_type is not None and producer_type is None
+            input_names = [f.root_reference.data for f in join_of_output.fifoIns]
+            input_producers = [
+                acquire
+                for name in input_names
+                for acquire in all_acquires(name)
+                if ObjectFifoPortEnum.from_int(acquire.port.value.data) == ObjectFifoPortEnum.Produce
+            ]
+            block_type = gather_layout(input_producers)
+            if block_type is None:
+                # The inputs' casts were realized first and are now the acquires' types.
+                typed = [
+                    subview.operation.output.type
+                    for acquire in input_producers
+                    for subview in acquire.result.uses
+                    if isinstance(subview.operation, ObjectFIFOSubviewAccessOp)
+                    and isa(subview.operation.output.type, MemRefType[FixedBitwidthType])
+                    and isinstance(subview.operation.output.type.layout, TiledStridedLayoutAttr)
+                ]
+                assert typed and all(t == typed[0] for t in typed), (
+                    f"join {of_name}: its inputs' producers carry no layout"
+                )
+                block_type = typed[0]
+            assert isinstance(block_type.layout, TiledStridedLayoutAttr)
+            block = prod(size.data for size in block_type.shape.data)
+            producer_type = MemRefType(
+                consumer_type.element_type,
+                consumer_type.shape,
+                TiledStridedLayoutAttr(
+                    TiledStridedLayout(
+                        [TiledStride([Stride(block, len(input_names))]), *block_type.layout.data.tstrides]
+                    )
+                ),
+                consumer_type.memory_space,
+            )
 
         # create row-major layouts for those without explicit casts:
 

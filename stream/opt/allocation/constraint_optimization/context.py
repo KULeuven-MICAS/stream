@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -224,15 +226,20 @@ class AIE2Constraints(NamespaceConstraints):
         model: SolverModel,
         transfers: list[tuple[Core, LinExpr, LinExpr]],
     ) -> None:
-        """An AIE memory tile cannot re-send an object it holds, so it may not outlive
-        its reader. Liftable once the object FIFO repeat count is emitted."""
+        """A memory tile holds an object exactly as long as its reader does, unless
+        ``STREAM_MEMTILE_REPLAY`` is set: then it may hold it longer, and the object
+        fifo feeding the reader replays it (``repeat_count``, emitted by the AIE
+        codegen) for the loops the tile holds it across and the reader does not.
+        The replay's per-block descriptors on the memory tile are not modelled, so
+        designs opt in. It can never hold it *shorter*: it is the reader's only source."""
+        replay = os.environ.get("STREAM_MEMTILE_REPLAY", "0") not in ("", "0", "false", "no", "off")
         for core, mem_level, compute_level in transfers:
             if not self.applies_to(core):
                 continue
-            model.add_constr(
-                mem_level == compute_level,
-                name=f"aie2_mem_reuse_eq_Core_{core.id}",
-            )
+            if replay:
+                model.add_constr(mem_level >= compute_level, name=f"aie2_mem_reuse_ge_Core_{core.id}")
+            else:
+                model.add_constr(mem_level == compute_level, name=f"aie2_mem_reuse_eq_Core_{core.id}")
 
     # ---- buffer descriptors ----
 

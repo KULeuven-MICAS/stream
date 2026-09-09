@@ -1,5 +1,5 @@
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import reduce
 from itertools import product
 from math import isqrt, prod
@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Self, cast
 
 from xdsl.context import Context
-from xdsl.dialects import scf
+from xdsl.dialects import arith, scf
 from xdsl.dialects.arith import AddiOp, ConstantOp, MuliOp
 from xdsl.dialects.builtin import (
     ArrayAttr,
@@ -21,6 +21,7 @@ from xdsl.dialects.builtin import (
     StringAttr,
     SymbolRefAttr,
     i32,
+    i64,
 )
 from xdsl.dialects.csl import RewritePattern
 from xdsl.dialects.scf import ForOp, IndexSwitchOp
@@ -176,6 +177,7 @@ class StrideSet:
 
 
 NB_COLUMNS = 8
+MEMTILE_INPUT_CHANNELS = 6
 
 
 def column_of(tile: str) -> int:
@@ -187,6 +189,8 @@ def column_of(tile: str) -> int:
 class ChannelToObjectFifoPass(RewritePattern):
     shim_tiles: dict[int, SSAValue]
     of_count: int = 0
+    pending_links: list[ObjectFifoLinkOp] = field(default_factory=list)
+    _join_channels: dict[int, int] = field(default_factory=dict)
     """
     Converts channels to object fifo definitions
     """
@@ -299,9 +303,9 @@ class ChannelToObjectFifoPass(RewritePattern):
         # max one spatial dimension:
         assert len(spatial_dims) <= 1
         for i, spatial in enumerate(iterate_spat_vars(spatial_dims)):
-            # Join Patterns:
+            # Join Patterns (over every joined dimension at once; the fifos are
+            # enumerated in the memory tile's element order, outermost first):
             if join_dims:
-                assert len(join_dims) == 1
                 assert len(spatial_dims) + len(join_dims) == len(transforms)
 
                 # find correct target:
@@ -408,6 +412,11 @@ class ChannelToObjectFifoPass(RewritePattern):
         ]
 
         ofs: list[ObjectFifoOp] = []
+
+        if join_dims and broadcast_dims:
+            return self.compute_to_compute_memtile_join(
+                producers, consumers, spatial_dims, join_dims, broadcast_dims, name_base
+            )
 
         # max one spatial dimension:
         assert len(spatial_dims) <= 1
@@ -613,6 +622,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                     (2,) + (num_elements,) * len(consumer_tiles),
                     target_type.get_element_type(),
                     target_type.get_kernel_shape(),
+                    repeat_count=self.replay_count(source, targets[0]),
                 )
                 spat_ofs.append(object_fifo)
 
@@ -625,6 +635,186 @@ class ChannelToObjectFifoPass(RewritePattern):
             ofs.extend(spat_ofs)
         return ofs
 
+    def memtile_input_channels(self, device: DeviceOp) -> dict[int, int]:
+        """Per column, how many of its memory tile's input DMA channels the design takes.
+
+        A memory tile has six. Every transfer a memory tile relays is a pull op in
+        the tile's core; the pull costs one channel per producer it gathers, which
+        is the channel's producers spread over its memory-tile consumers (one for a
+        shim transfer, the joined cores for an output join). Joins staged here are
+        counted as they are added.
+        """
+        usage: dict[int, int] = dict(self._join_channels)
+        for core in device.region.block.ops:
+            if not isinstance(core, CoreOp):
+                continue
+            assert isinstance(core.tile, OpResult) and isinstance(tile := core.tile.op, TileOp)
+            if tile.row.value.data != 1:
+                continue
+            column = tile.col.value.data
+            for pull in core.walk():
+                if not isinstance(pull, PullOp):
+                    continue
+                channel = pull.channel.owner
+                assert isinstance(channel, ChannelOp)
+                producers = [u.operation for u in channel.channel.uses if isinstance(u.operation, PushOp)]
+                memtile_pulls = [
+                    u.operation
+                    for u in channel.channel.uses
+                    if isinstance(u.operation, PullOp) and self.is_mem_op(u.operation)
+                ]
+                usage[column] = usage.get(column, 0) + max(1, len(producers) // max(1, len(memtile_pulls)))
+        return usage
+
+    def is_mem_op(self, op: PushOp | PullOp) -> bool:
+        strensor = op.input.type if isinstance(op, PushOp) else op.output.type
+        assert isinstance(strensor, StrensorType)
+        return self.is_mem(strensor.core_allocation.data[0].data)
+
+    def memtile(self, device: DeviceOp, column: int) -> SSAValue:
+        """The memory tile of ``column``, declared in ``device`` if it is not yet."""
+        for tile in device.region.block.ops:
+            if isinstance(tile, TileOp) and tile.col.value.data == column and tile.row.value.data == 1:
+                return tile.result
+        tile = TileOp(column, 1)
+        Rewriter().insert_op(tile, InsertPoint.at_start(device.region.block))
+        return tile.result
+
+    def memtile_for_join(self, device: DeviceOp, inputs: int, near: Sequence[int]) -> SSAValue:
+        """A memory tile with ``inputs`` free input channels, the nearest to ``near`` columns."""
+        usage = self.memtile_input_channels(device)
+        candidates = [
+            column for column in range(NB_COLUMNS) if usage.get(column, 0) + inputs <= MEMTILE_INPUT_CHANNELS
+        ]
+        if not candidates:
+            raise RuntimeError("no memory tile has enough free input DMA channels to stage the join")
+        column = min(candidates, key=lambda c: (min(abs(c - n) for n in near), c))
+        self._join_channels[column] = self._join_channels.get(column, 0) + inputs
+        return self.memtile(device, column)
+
+    def compute_to_compute_memtile_join(
+        self,
+        producers: Sequence[PushOp],
+        consumers: Sequence[PullOp],
+        spatial_dims: Sequence[StrensorVar],
+        join_dims: Sequence[StrensorVar],
+        broadcast_dims: Sequence[StrensorVar],
+        name_base: str,
+    ) -> Sequence[ObjectFifoOp]:
+        """A join that is also a broadcast, staged in a memory tile.
+
+        The switch join lands one fifo per joined producer on the consumer, which
+        a core cannot afford next to its other inputs when the same data also has
+        to reach several consumers. Instead each producer feeds a memory tile fifo,
+        the memory tile joins them into one element holding every producer's
+        block, and that element is broadcast to the consumers. The consumer's
+        kernel is then handed the whole element together with the index of the
+        block its current join iteration works on (see
+        ``TransferToObjectFIFOPattern.generate_memtile_join``).
+
+        The memory tiles are taken from the producers' columns, alternating over
+        the joined producers so the joins spread over as many memory tiles as the
+        producers occupy columns.
+        """
+        assert len(join_dims) == 1 and len(broadcast_dims) == 1 and len(spatial_dims) <= 1
+        device = producers[0].parent_op()
+        while not isinstance(device, DeviceOp):
+            assert device is not None
+            device = device.parent_op()
+
+        ofs: list[ObjectFifoOp] = []
+        for i, spatial in enumerate(iterate_spat_vars(spatial_dims)):
+            sources = [
+                next(
+                    p
+                    for p in producers
+                    if p.spatial_index is not None and set(spatial) | set(join) <= set(p.spatial_index.data.vars)
+                )
+                for join in iterate_spat_vars(join_dims)
+            ]
+            targets = [
+                c
+                for broadcast in iterate_spat_vars(broadcast_dims)
+                for c in consumers
+                if c.spatial_index is not None
+                and set(spatial) | set(broadcast) <= set(c.spatial_index.data.vars)
+            ]
+            assert isinstance(target_type := targets[0].output.type, StrensorType)
+            block_shape = target_type.get_kernel_shape()
+            block = prod(block_shape)
+
+            near = []
+            for endpoint in (*sources, *targets):
+                tile = self.get_tile(endpoint)
+                assert isinstance(tile, OpResult) and isinstance(tile.op, TileOp)
+                near.append(tile.op.col.value.data)
+            memtile = self.memtile_for_join(device, len(sources), near)
+
+            inputs: list[ObjectFifoOp] = []
+            for j, source in enumerate(sources):
+                assert isinstance(source_type := source.input.type, StrensorType)
+                assert prod(source_type.get_kernel_shape()) == block
+                fifo = ObjectFifoOp.from_referenced_type(
+                    self.get_tile(source),
+                    [memtile],
+                    name_base + f"memjoin_{i}_{j}",
+                    (2, 2),
+                    source_type.get_element_type(),
+                    source_type.get_kernel_shape(),
+                )
+                source.attributes["of"] = fifo.sym_name
+                inputs.append(fifo)
+
+            output = ObjectFifoOp.from_referenced_type(
+                memtile,
+                [self.get_tile(t) for t in targets],
+                name_base + f"memjoin_{i}_out",
+                (2,) * (1 + len(targets)),
+                target_type.get_element_type(),
+                (len(sources), *block_shape),
+            )
+            for target in targets:
+                target.attributes["of"] = output.sym_name
+                target.attributes["join_size"] = IntegerAttr(len(sources), i64)
+            self.pending_links.append(
+                ObjectFifoLinkOp(
+                    [SymbolRefAttr(fifo.sym_name) for fifo in inputs],
+                    [SymbolRefAttr(output.sym_name)],
+                    tuple(j * block for j in range(len(sources))),
+                    [],
+                )
+            )
+            ofs.extend(inputs)
+            ofs.append(output)
+        return ofs
+
+    @classmethod
+    def replay_count(cls, producer: PushOp, consumer: PullOp) -> int:
+        """How often a memory tile re-sends an element to a core that re-reads it.
+
+        The product of the loops the memory tile holds the tensor across (its reuse
+        window) that do not index the tensor, while the core iterates them outside
+        its own window -- the core acquires the same data again on every one of
+        those iterations, and the tile replays it instead of fetching it anew.
+        """
+        assert isinstance(mem_type := producer.input.type, StrensorType)
+        assert isinstance(core_type := consumer.output.type, StrensorType)
+        mem_vars, core_vars = mem_type.ssis.data.vars, core_type.ssis.data.vars
+        mem_held = set(mem_vars[len(mem_vars) - mem_type.reuse_index.data :])
+        core_held = set(core_vars[len(core_vars) - core_type.reuse_index.data :])
+        relevant = {var.dim for var in core_type.ssis.data.get_kernel_variables()}
+        count = 1
+        for mem_var, core_var in cls.align_strensor_vars(mem_vars, core_vars):
+            if (
+                mem_var.type == StrensorVarType.TEMPORAL
+                and core_var.type == StrensorVarType.TEMPORAL
+                and mem_var in mem_held
+                and core_var not in core_held
+                and core_var.dim not in relevant
+            ):
+                count *= core_var.size
+        return count
+
     def get_tile(self, op: PushOp | PullOp, destination: str = "") -> SSAValue:
         parent = op.parent_op()
         while not isinstance(parent, CoreOp | RuntimeSequenceOp):
@@ -635,6 +825,38 @@ class ChannelToObjectFifoPass(RewritePattern):
         # In the runtime sequence the tile is a shim, one per column, so it is the
         # destination's column that picks it and not the row it happens to sit on.
         return self.shim_tiles[column_of(destination)]
+
+    def distributed_shape(self, memtile_pull: PullOp) -> tuple[int, ...]:
+        """Sizes of the memory tile's loops its consumers take spatially, outer first.
+
+        A memory tile hands the cores below it their blocks out of one element
+        (a distribute link), so the element has to hold every consumer's block:
+        the tile's temporal variables that align with a spatial variable of the
+        consumers, on top of what it holds for reuse.
+        """
+        pushes = [use.operation for use in memtile_pull.output.uses if isinstance(use.operation, PushOp)]
+        if not pushes:
+            return ()
+        assert isinstance(channel := pushes[0].channel.owner, ChannelOp)
+        consumers = [use.operation for use in channel.channel.uses if isinstance(use.operation, PullOp)]
+        assert isinstance(mem_type := memtile_pull.output.type, StrensorType)
+        assert isinstance(core_type := consumers[0].output.type, StrensorType)
+        mem_vars = mem_type.ssis.data.vars
+        held = set(mem_vars[len(mem_vars) - mem_type.reuse_index.data :])
+        return tuple(
+            mem_var.size
+            for mem_var, core_var in self.align_strensor_vars(mem_vars, core_type.ssis.data.vars)
+            if mem_var.type == StrensorVarType.TEMPORAL
+            and core_var.type == StrensorVarType.SPATIAL
+            and mem_var not in held
+        )
+
+    @staticmethod
+    def fetched_once(strensor: StrensorType) -> bool:
+        """Whether a memory tile holds this tensor across every loop: one transfer a run."""
+        vars = strensor.ssis.data.vars
+        held = vars[len(vars) - strensor.reuse_index.data :]
+        return all(var.size == 1 or var in held for var in vars if var.type == StrensorVarType.TEMPORAL)
 
     def shim_to_mem(
         self,
@@ -662,13 +884,17 @@ class ChannelToObjectFifoPass(RewritePattern):
 
                 assert isinstance(target_type := target.output.type, StrensorType)
 
+                # A tensor the tile fetches once and then holds needs no second
+                # buffer, and every buffer costs the tile a descriptor per block it
+                # hands on.
+                depth = 1 if self.fetched_once(target_type) else 2
                 object_fifo = ObjectFifoOp.from_referenced_type(
                     self.get_tile(producer, target_type.core_allocation.data[0].data),
                     [self.get_tile(target)],
                     name_base + f"mem_{i}",
-                    (2, 2),
+                    (depth, depth),
                     target_type.get_element_type(),
-                    self.held_shape(target_type),
+                    self.distributed_shape(target) + self.held_shape(target_type),
                 )
                 distributes.append(object_fifo)
 
@@ -685,13 +911,14 @@ class ChannelToObjectFifoPass(RewritePattern):
             assert isinstance(strensor := consumers[0].output.type, StrensorType)
             consumer_tiles = tuple(map(self.get_tile, consumers))
             producer_tile = self.get_tile(producer, strensor.core_allocation.data[0].data)
+            depth = 1 if self.fetched_once(strensor) else 2
             object_fifo = ObjectFifoOp.from_referenced_type(
                 producerTile=producer_tile,
                 consumerTiles=consumer_tiles,
                 name=name_base + "mem",
-                elemNumber=(2, 2),
+                elemNumber=(depth, depth),
                 referenced_type=strensor.get_element_type(),
-                shape=self.held_shape(strensor),
+                shape=self.distributed_shape(consumers[0]) + self.held_shape(strensor),
             )
             producer.attributes["of"] = object_fifo.sym_name
             for consumer in consumers:
@@ -759,13 +986,14 @@ class ChannelToObjectFifoPass(RewritePattern):
             consumer_tiles = tuple(
                 self.get_tile(consumer, strensor.core_allocation.data[0].data) for consumer in consumers
             )
+            depth = 1 if self.fetched_once(strensor) else 2
             object_fifo = ObjectFifoOp.from_referenced_type(
                 producerTile=producer_tile,
                 consumerTiles=consumer_tiles,
                 name=name_base + "mem",
-                elemNumber=(2, 2),
+                elemNumber=(depth, depth),
                 referenced_type=strensor.get_element_type(),
-                shape=self.held_shape(strensor),
+                shape=self.distributed_shape(consumers[0]) + self.held_shape(strensor),
             )
             producer.attributes["of"] = object_fifo.sym_name
             for consumer in consumers:
@@ -854,11 +1082,17 @@ class ChannelToObjectFifoPass(RewritePattern):
             raise NotImplementedError()
 
         for op in ops:
-            del op.properties["repeat_count"]
+            # A replayed element keeps its count; the default of one is left implicit.
+            repeat = op.properties.get("repeat_count")
+            if not isinstance(repeat, IntegerAttr) or repeat.value.data <= 1:
+                del op.properties["repeat_count"]
         self.of_count += 1
         end_op = device_op.region.block.last_op
         assert isinstance(end_op, EndOp)
         rewriter.insert_op(ops, InsertPoint.before(end_op))
+        if self.pending_links:
+            rewriter.insert_op(self.pending_links, InsertPoint.before(end_op))
+            self.pending_links = []
 
         channel.attributes["of"] = StringAttr(name_base)
 
@@ -885,7 +1119,16 @@ class RealizeLinks(RewritePattern):
         ofs_push = push.attributes.get("of")
         assert isa(ofs_push, StringAttr) or isa(ofs_push, ArrayAttr[StringAttr])
 
-        num_elements = prod(strensor.get_kernel_shape()) * prod(strensor.get_local_shape())
+        # The memory tile's element is what the link's offsets divide; it is the
+        # fifo's own element, which can be larger than the kernel shape times the
+        # reuse window when the tile holds several consumers' or producers' blocks.
+        assert (device_for_fifo := pull.parent_op()) is not None
+        while not isinstance(device_for_fifo, DeviceOp):
+            assert (device_for_fifo := device_for_fifo.parent_op()) is not None
+        whole = ofs_push.data if isinstance(ofs_push, StringAttr) else ofs_pull.data
+        whole_fifo = SymbolTable.lookup_symbol(device_for_fifo, whole)
+        assert isinstance(whole_fifo, ObjectFifoOp)
+        num_elements = prod(int(d.data) for d in whole_fifo.elemType.buffer.shape.data)
         if isinstance(ofs_pull, ArrayAttr):
             # join link
             assert isinstance(ofs_push, StringAttr)
@@ -1004,6 +1247,20 @@ class TransferToRuntimeSequence(RewritePattern):
                     dim_strides[mvar.dim] *= mvar.size
                 iteration_mult *= mvar.size
 
+        # A join / distribute variable is a spatial split of the cores that the
+        # memory tile stages; in memory it takes the place a spatial variable
+        # would -- directly above the kernel tile -- so that every transfer of a
+        # tensor agrees on how a dimension is divided over the cores, whether
+        # they are served by one memory tile or several. Its stride is fixed
+        # here, before the temporal loops above it; its place among the
+        # transfer's dimensions is decided below.
+        join_strides: dict[int, int] = {}
+        for i, (mvar, cvar) in enumerate(iter_strensors()):
+            if mvar.type == StrensorVarType.TEMPORAL and cvar.type == StrensorVarType.SPATIAL:
+                join_strides[i] = dim_strides[cvar.dim] if cvar.dim in dim_strides else 0
+                if cvar.dim in dim_strides:
+                    dim_strides[cvar.dim] *= cvar.size
+
         # next, iterate temporal/absent vars kept local in a memtile
         for i, (mvar, cvar) in enumerate(iter_strensors()):
             stride = dim_strides[cvar.dim] if cvar.dim in dim_strides else 0
@@ -1023,14 +1280,12 @@ class TransferToRuntimeSequence(RewritePattern):
                 iteration_mult *= cvar.size
 
         # then, iterate the join / distribute vars:
-        for mvar, cvar in iter_strensors():
-            stride = dim_strides[cvar.dim] if cvar.dim in dim_strides else 0
+        for i, (mvar, cvar) in enumerate(iter_strensors()):
             if mvar.type == StrensorVarType.TEMPORAL and cvar.type == StrensorVarType.SPATIAL:
                 vars.append(mvar)
                 if cvar.dim in dim_strides:
                     # only add relevant
-                    strides.append(Stride(cvar.size, stride, iteration_mult))
-                    dim_strides[cvar.dim] *= cvar.size
+                    strides.append(Stride(cvar.size, join_strides[i], iteration_mult))
                 iteration_mult *= cvar.size
 
         # then, remaining vars:
@@ -1154,6 +1409,86 @@ class TransferToObjectFIFOPattern(RewritePattern):
         # replace use
         op.output.replace_by(index_switch.results[0])
         # delete original op
+        rewriter.erase_matched_op()
+
+    def generate_memtile_join(
+        self,
+        op: PullOp,
+        of: str,
+        join_size: int,
+        strensor: StrensorType,
+        rewriter: PatternRewriter,
+    ):
+        """Consume a memory-tile join: one element holds every joined block.
+
+        The joined dimension is the consumer's only relevant reuse loop, so the
+        element is acquired where the reuse pattern would acquire the blocks -- at
+        the scope enclosing the reuse loops, once per sweep of them -- but as one
+        element rather than ``join_size`` of them. The kernel is handed the whole
+        element plus the index of the block its join iteration works on, as an
+        extra ``i32`` operand (see the kernel's ``function_call``).
+        """
+        relevant_reuse_vars = tuple(strensor.get_relevant_reuse_vars())
+        assert prod(strensor.get_local_shape()) == join_size, (
+            "a memory-tile join's blocks must be the consumer's whole reuse window"
+        )
+        port = ObjectFifoPortEnum.Consume
+        acquire_op = ObjectFifoAcquireOp(
+            IntegerAttr.from_int_and_width(port.get_int(), 32),
+            IntegerAttr.from_int_and_width(1, 32),
+            object_fifo=of,
+            shape=(join_size, *strensor.get_kernel_shape()),
+            element_type=strensor.get_element_type(),
+        )
+        access_op = ObjectFIFOSubviewAccessOp(IntegerAttr(0, i32), acquire_op)
+
+        # the block index: the join loops linearized, innermost to outermost
+        index_ops: list[Operation] = [
+            mult_val := ConstantOp.from_int_and_width(1, IndexType()),
+            add_val := ConstantOp.from_int_and_width(0, IndexType()),
+        ]
+        for_op = op.parent_op()
+        assert isinstance(for_op, ForOp)
+        innermost = None
+        for iter_var in reversed(relevant_reuse_vars):
+            assert isinstance((layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr)
+            while layer_dim.data != iter_var:
+                for_op = for_op.parent_op()
+                assert isinstance(for_op, ForOp)
+                assert isinstance((layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr)
+            if innermost is None:
+                innermost = for_op
+            i_arg = MuliOp(mult_val, for_op.body.block.args[0])
+            add_val = AddiOp(add_val, i_arg)
+            mult_val = MuliOp(mult_val, for_op.ub)
+            index_ops.extend([i_arg, add_val, mult_val])
+        assert innermost is not None, "a memory-tile join needs the joined dimension as a loop"
+        for_op = for_op.parent_op()
+        index = arith.IndexCastOp(add_val, i32)
+        index_ops.append(index)
+        rewriter.insert_op(index_ops, InsertPoint.at_start(innermost.body.block))
+
+        # the acquire scope: out past the loops the element is held across
+        relevant_dims = {var.dim for var in strensor.ssis.data.get_kernel_variables()}
+        while isinstance(for_op, ForOp):
+            assert isinstance((layer_dim := for_op.attributes.get("layer_dim")), StrensorVarAttr)
+            if layer_dim.data.dim in relevant_dims:
+                break
+            for_op = for_op.parent_op()
+        scope = for_op.body.block if isinstance(for_op, ForOp) else for_op.region.block
+        assert (terminator := scope.last_op) is not None
+        release_op = ObjectFIFOReleaseOp(
+            IntegerAttr.from_int_and_width(port.get_int(), 32),
+            IntegerAttr.from_int_and_width(1, 32),
+            object_fifo=of,
+        )
+        rewriter.insert_op(release_op, InsertPoint.before(terminator))
+        rewriter.insert_op([acquire_op, access_op], InsertPoint.at_start(scope))
+
+        for use in list(op.output.uses):
+            if isinstance(use.operation, ComputationNodeOp):
+                use.operation.operands = (*use.operation.operands, index.result)
+        op.output.replace_by(access_op.output)
         rewriter.erase_matched_op()
 
     def generate_reuse_pattern(  # noqa: PLR0912, PLR0915
@@ -1288,6 +1623,9 @@ class TransferToObjectFIFOPattern(RewritePattern):
             assert isinstance(op, PullOp)
             # TODO: make sure there is no other temporal reuse happening
             self.generate_switch_join(op, ofs.data, strensor, rewriter)
+        elif (join_size := op.attributes.get("join_size")) is not None:
+            assert isinstance(op, PullOp) and isinstance(join_size, IntegerAttr)
+            self.generate_memtile_join(op, ofs.data, join_size.value.data, strensor, rewriter)
         else:
             self.generate_reuse_pattern(op, ofs.data, strensor, rewriter)
 

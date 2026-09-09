@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 from snaxc.dialects.snax import LayoutCast
 from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
-from xdsl.dialects.builtin import FunctionType, StringAttr
+from xdsl.dialects.builtin import FunctionType, ShapedType, StringAttr
 from xdsl.dialects.func import CallOp, FuncOp
 from xdsl.dialects.scf import IndexSwitchOp, YieldOp
 from xdsl.ir import Operation, OpResult, Region
@@ -116,8 +116,10 @@ class AIEKernelWithZeroing(AIEKernel, ABC):
 
         SymbolTable.insert_or_update(device_op, FuncOp(self.zero_name, self.zero_type(op), Region(), "private"))
 
-        # Insert zeroing after definition of output
-        assert isinstance((last := op.inputs[-1]), OpResult)
+        # Insert zeroing after definition of output: the last shaped operand (a
+        # kernel may take scalar operands after it, such as a joined block index)
+        last = next(i for i in reversed(op.inputs) if isinstance(i.type, ShapedType))
+        assert isinstance(last, OpResult)
         first_def: Operation = last.op
 
         # get rid of layout casts
