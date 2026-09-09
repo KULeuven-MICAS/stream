@@ -467,7 +467,9 @@ class PartialSoftmaxKernel(SoftmaxKernel):
 
     @property
     def linkwith_name(self) -> str:
-        return "mha.o"
+        # mha.cc's matmuls are compiled for the query block, so a finer one links its own
+        # object; see _mha_artifacts on the IRON side.
+        return "mha.o" if self.m == FLASH_TILE else f"mha_{self.m}.o"
 
     @property
     def function_name(self) -> str:
@@ -635,7 +637,9 @@ class FusedScoreSoftmaxKernel(GemmKernel):
 
     @property
     def linkwith_name(self) -> str:
-        return "mha.o"
+        # mha.cc's matmuls are compiled for the query block, so a finer one links its own
+        # object; see _mha_artifacts on the IRON side.
+        return "mha.o" if self.m == FLASH_TILE else f"mha_{self.m}.o"
 
     @property
     def function_name(self) -> str:
@@ -770,7 +774,9 @@ class FlashKernel(GemmKernel):
 
     @property
     def linkwith_name(self) -> str:
-        return "mha.o"
+        # mha.cc's matmuls are compiled for the query block, so a finer one links its own
+        # object; see _mha_artifacts on the IRON side.
+        return "mha.o" if self.m == FLASH_TILE else f"mha_{self.m}.o"
 
     @property
     def function_name(self) -> str:
