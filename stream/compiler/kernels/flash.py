@@ -448,8 +448,30 @@ class CausalGemmKernel(GemmKernel):
         ]
 
 
+class MhaSource:
+    """Shared by every entry point compiled from mha.cc.
+
+    The key block and the head stay FLASH_TILE; only the query block varies, and the object
+    is named for it because mha.cc's matmuls are compiled against it."""
+
+    def _check_blocks(self, *fixed: int) -> None:
+        if any(size != FLASH_TILE for size in fixed) or self.m not in FLASH_QUERY_BLOCKS:
+            shape = "x".join(str(s) for s in (self.m, *fixed))
+            raise ValueError(
+                f"mha.cc fixes every block but the query at {FLASH_TILE} and takes a query "
+                f"of {FLASH_QUERY_BLOCKS}, not {shape}"
+            )
+
+    @property
+    def linkwith_name(self) -> str:
+        return "mha.o" if self.m == FLASH_TILE else f"mha_{self.m}.o"
+
+    def block_sizes(self) -> dict[int, tuple[int, ...]]:
+        return {QUERY_DIM: FLASH_QUERY_BLOCKS}
+
+
 @dataclass
-class PartialSoftmaxKernel(SoftmaxKernel):
+class PartialSoftmaxKernel(MhaSource, SoftmaxKernel):
     """One online-softmax step over an m x n block of the score matrix.
 
     Same row-wise shape as the plain softmax -- rows contiguous, the block's own width
@@ -467,19 +489,7 @@ class PartialSoftmaxKernel(SoftmaxKernel):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        # The key block n stays FLASH_TILE (the softmax reduces over it); the query block m
-        # may be a finer multiple of the 8-row MAC group so a wider softmax's consumer holds
-        # a smaller resident window.
-        if self.n != FLASH_TILE or self.m not in FLASH_QUERY_BLOCKS:
-            raise ValueError(
-                f"mha.cc key block must be {FLASH_TILE} and query one of "
-                f"{FLASH_QUERY_BLOCKS}, not {self.m}x{self.n}")
-
-    @property
-    def linkwith_name(self) -> str:
-        # mha.cc's matmuls are compiled for the query block, so a finer one links its own
-        # object; see _mha_artifacts on the IRON side.
-        return "mha.o" if self.m == FLASH_TILE else f"mha_{self.m}.o"
+        self._check_blocks(self.n)
 
     @property
     def function_name(self) -> str:
@@ -514,9 +524,6 @@ class PartialSoftmaxKernel(SoftmaxKernel):
 
     def granule(self) -> list[tuple[int, int]]:
         return [(KEY_DIM, self.n), (QUERY_DIM, self.m)]
-
-    def block_sizes(self) -> dict[int, tuple[int, ...]]:
-        return {QUERY_DIM: FLASH_QUERY_BLOCKS}
 
     def _scale_type(self) -> MemRefType:
         return MemRefType(self.element_type, (SCALE_ROWS * self.m,))
@@ -625,7 +632,7 @@ class PartialSoftmaxKernel(SoftmaxKernel):
 
 
 @dataclass
-class FusedScoreSoftmaxKernel(GemmKernel):
+class FusedScoreSoftmaxKernel(MhaSource, GemmKernel):
     """A step's score side whole: the GEMM and the online softmax on one core.
 
     The softmax reads and writes the block a row at a time out of the GEMM's own MAC
@@ -636,31 +643,15 @@ class FusedScoreSoftmaxKernel(GemmKernel):
     """
 
     def __post_init__(self) -> None:
-        # Key (k) and head (n) stay FLASH_TILE; the query (m) may be a finer multiple of the
-        # 8-row MAC group so the value-accumulation consumer holds a smaller resident window.
-        if (self.k, self.n) != (FLASH_TILE, FLASH_TILE) or self.m not in FLASH_QUERY_BLOCKS:
-            raise ValueError(
-                f"mha.cc key and head block must be {FLASH_TILE} and query one of "
-                f"{FLASH_QUERY_BLOCKS}, "
-                f"not {self.m}x{self.k}x{self.n}"
-            )
+        self._check_blocks(self.k, self.n)
 
     @property
     def unique_name(self) -> str:
         return f"{self.function_name}_{self.m}_{self.k}_{self.n}"
 
     @property
-    def linkwith_name(self) -> str:
-        # mha.cc's matmuls are compiled for the query block, so a finer one links its own
-        # object; see _mha_artifacts on the IRON side.
-        return "mha.o" if self.m == FLASH_TILE else f"mha_{self.m}.o"
-
-    @property
     def function_name(self) -> str:
         return "matmul_softmax"
-
-    def block_sizes(self) -> dict[int, tuple[int, ...]]:
-        return {0: FLASH_QUERY_BLOCKS}
 
     @property
     def zero_name(self) -> str:
@@ -766,7 +757,7 @@ class FusedScoreSoftmaxKernel(GemmKernel):
 
 
 @dataclass
-class FlashKernel(GemmKernel):
+class FlashKernel(MhaSource, GemmKernel):
     """The value half of an online-softmax step: ``O += P V``, rescaled as the row max moves.
 
     A GEMM over the key with the probability block as its A operand, plus the two things
@@ -777,31 +768,15 @@ class FlashKernel(GemmKernel):
     """
 
     def __post_init__(self) -> None:
-        # Key (k) and head (n) stay FLASH_TILE; the query (m) may be a finer multiple of the
-        # 8-row MAC group so the value-accumulation consumer holds a smaller resident window.
-        if (self.k, self.n) != (FLASH_TILE, FLASH_TILE) or self.m not in FLASH_QUERY_BLOCKS:
-            raise ValueError(
-                f"mha.cc key and head block must be {FLASH_TILE} and query one of "
-                f"{FLASH_QUERY_BLOCKS}, "
-                f"not {self.m}x{self.k}x{self.n}"
-            )
+        self._check_blocks(self.k, self.n)
 
     @property
     def unique_name(self) -> str:
         return f"{self.function_name}_{self.m}_{self.k}_{self.n}"
 
     @property
-    def linkwith_name(self) -> str:
-        # mha.cc's matmuls are compiled for the query block, so a finer one links its own
-        # object; see _mha_artifacts on the IRON side.
-        return "mha.o" if self.m == FLASH_TILE else f"mha_{self.m}.o"
-
-    @property
     def function_name(self) -> str:
         return "matmul_PV"
-
-    def block_sizes(self) -> dict[int, tuple[int, ...]]:
-        return {0: FLASH_QUERY_BLOCKS}
 
     @property
     def zero_name(self) -> str:

@@ -16,7 +16,7 @@ Every rule is a measurement restated as a derivation:
 from dataclasses import dataclass
 from itertools import product
 
-from stream.stages.estimation.kernel_cycles import MEASURED_KERNEL_CYCLES, calls_ops
+from stream.stages.estimation.kernel_cycles import anchor, calls_ops
 
 # The MAC-tiled handover variant of the softmax measures 2.09x its row-major body; any
 # layer handing core-to-core to a narrower consumer pays it, which is what makes width
@@ -42,7 +42,7 @@ class LayerPlan:
 
 def layer_cost(kernel) -> float:
     """Cycles one call of this layer's kernel takes, measured where an anchor exists."""
-    measured = MEASURED_KERNEL_CYCLES.get(getattr(kernel, "function_name", None))
+    measured = anchor(kernel)
     if isinstance(measured, tuple):
         cycles, anchor_ops = measured
         return cycles * (calls_ops(kernel) or anchor_ops) / anchor_ops

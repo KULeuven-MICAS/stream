@@ -1,17 +1,20 @@
 import logging
 import os
 from dataclasses import replace
+from typing import Any
 
 from stream.ir.infeasibility import InfeasibleAllocationError
 from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
 from stream.stages.generation.mapping_generation import save_infeasibility_report
 from stream.stages.stage import Stage, StageCallable
-from stream.workload.workload import Workload
+from stream.workload.workload import ComputationNode, Workload
 
 logger = logging.getLogger(__name__)
 
 GROWTH_FACTORS = (2, 4)
+
+_CALL_DIMS = ("m", "k", "n")
 
 
 class TileSearchStage(Stage):
@@ -35,9 +38,79 @@ class TileSearchStage(Stage):
         self.output_path: str = self.ctx.get("output_path")
         self.enabled: bool = bool(self.ctx.get("tile_search", False))
 
+    def _block_options(self, group) -> dict[Any, tuple[int, ...]]:
+        """Compiled block sizes the whole group accepts, per tiling dimension.
+
+        A dimension one kernel compiles in but does not offer sizes for is fixed for the
+        group, since the kernels either side of it are compiled against the same block."""
+        options: dict[Any, set[int]] = {}
+        fixed: set[Any] = set()
+        for name in group.layers:
+            node = self.workload.get_node_by_name(name)
+            if not isinstance(node, ComputationNode) or node not in self.mapping:
+                continue
+            kernel = self.mapping.get(node).kernel
+            if kernel is None:
+                continue
+            dims = self.workload.get_dims(node)
+            offered = kernel.block_sizes()
+            for position, _ in kernel.granule():
+                dim = dims[position]
+                if position in offered:
+                    options[dim] = options.get(dim, set(offered[position])) & set(offered[position])
+                else:
+                    fixed.add(dim)
+        return {
+            dim: tuple(sorted(sizes))
+            for dim, sizes in options.items()
+            if len(sizes) > 1 and dim not in fixed
+        }
+
+    def _with_block(self, gi: int, group, dim, size: int) -> Mapping:
+        """The seed mapping with this group's kernels compiled for ``size`` along ``dim``."""
+        mapping = self.mapping.copy()
+        for name in group.layers:
+            node = self.workload.get_node_by_name(name)
+            if not isinstance(node, ComputationNode) or node not in mapping:
+                continue
+            entry = mapping.get(node)
+            kernel = entry.kernel
+            if kernel is None:
+                continue
+            dims = self.workload.get_dims(node)
+            fields = {
+                _CALL_DIMS[position]: size
+                for position in kernel.block_sizes()
+                if dims[position] == dim and position < len(_CALL_DIMS)
+            }
+            if fields:
+                mapping.set(node, replace(entry, kernel=replace(kernel, **fields)))
+        extent = self.workload.get_dimension_size(dim)
+        tiling = [
+            (d, min(size, extent) if d == dim else tile)
+            for d, tile in group.intra_core_tiling
+        ]
+        groups = list(mapping.fused_groups)
+        groups[gi] = replace(group, intra_core_tiling=tuple(tiling))
+        return mapping.with_fused_groups(groups)
+
     def _candidates(self) -> list[tuple[object, Mapping]]:
         seeds: list[tuple[object, Mapping]] = [(None, self.mapping)]
         groups = self.mapping.fused_groups
+        for gi, group in enumerate(groups):
+            for dim, sizes in self._block_options(group).items():
+                extent = self.workload.get_dimension_size(dim)
+                for size in sizes:
+                    if size > extent or extent % size:
+                        continue
+                    if any(d == dim and tile == size for d, tile in group.intra_core_tiling):
+                        continue
+                    try:
+                        candidate = self._with_block(gi, group, dim, size)
+                    except (ValueError, TypeError) as e:
+                        logger.info("Block %s=%d is not buildable: %s", dim, size, e)
+                        continue
+                    seeds.append((("block", gi, dim, size), candidate))
         for gi, group in enumerate(groups):
             for ti, (dim, tile) in enumerate(group.intra_core_tiling):
                 if dim not in group.growable_dims:

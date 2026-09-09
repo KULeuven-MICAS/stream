@@ -16,7 +16,7 @@ seq 2048, 8 heads, column 3) and docs/source/aie_calibration.md.
 from math import prod
 from typing import Any
 
-MEASURED_KERNEL_CYCLES: dict[str, float | tuple[float, int]] = {
+MEASURED_KERNEL_CYCLES: dict[str, float | tuple[float, int] | dict[int, float]] = {
     "matmul_bf16_bf16_64_64_64": 1730.0,
     "matmul_bf16_bf16_32_32_64": 575.0,
     "matmul_PV": 1536.0,
@@ -36,6 +36,19 @@ MEASURED_KERNEL_CYCLES: dict[str, float | tuple[float, int]] = {
 _CALL_DIMS = ("m", "k", "n")
 
 
+def register_measured(entries: dict[str, float | tuple[float, int] | dict[int, float]]) -> None:
+    """Record anchors measured by the caller, which override the built-in ones."""
+    MEASURED_KERNEL_CYCLES.update(entries)
+
+
+def anchor(kernel: Any) -> float | tuple[float, int] | None:
+    """This kernel's measured per-call anchor, picking the entry for its compiled block."""
+    entry = MEASURED_KERNEL_CYCLES.get(getattr(kernel, "function_name", None))
+    if isinstance(entry, dict):
+        return entry.get(getattr(kernel, "m", None))
+    return entry
+
+
 def calls_ops(kernel: Any) -> int:
     """The operations one call of this kernel covers, from its own tile dimensions."""
     return prod(int(getattr(kernel, d)) for d in _CALL_DIMS if getattr(kernel, d, None) is not None)
@@ -46,7 +59,7 @@ def measured_latency(kernel: Any, ops: int) -> float | None:
     name = getattr(kernel, "function_name", None)
     if name is None:
         return None
-    entry = MEASURED_KERNEL_CYCLES.get(name)
+    entry = anchor(kernel)
     if entry is None:
         return None
     cycles = entry
