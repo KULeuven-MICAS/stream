@@ -45,6 +45,7 @@ from stream.compiler.transforms.unroll import SpatialUnrollPass
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.core import Core
+from stream.hardware.cost import OFF_DIE_KINDS
 from stream.mapping.mapping import Mapping, NodeMapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
@@ -142,7 +143,8 @@ class AIECodeGenerationStage(Stage):
             if any(x.type == StrensorVarType.SPATIAL for x in ss.vars):
                 raise ValueError("Spatial Strensor for single-core transfer found.")
 
-        if cores == [StringAttr("tile_0_0")]:
+        if all(target.type in OFF_DIE_KINDS for target in path_plan.targets):
+            # The off-die side (the shim, or an off-chip core) sees the whole tensor.
             # One destination core, but possibly several consumers on it: a tensor read by
             # two nodes gives its transfer two outputs carrying the same tensor. The line
             # below already indexes outputs[0] for exactly that reason; `.output` asserts
@@ -158,7 +160,7 @@ class AIECodeGenerationStage(Stage):
                 StrensorSpace(
                     tuple(StrensorVar(StrensorVarType.CONSTANT, s, d) for (s, d) in zip(shape, layer_dims, strict=True))
                 ),
-                [StringAttr("tile_0_0")],
+                cores,
             )
             # One result per consumer, even when they share a destination core: the
             # consumers index this transfer's results positionally, so a multicast to two
