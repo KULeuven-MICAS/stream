@@ -152,6 +152,10 @@ class AIEKernel(ABC):
         A position absent from the mapping is fixed at its granule value."""
         return {}
 
+    def cost_family(self) -> str | None:
+        """Symbol whose measured anchor stands in when this shape has none of its own."""
+        return None
+
     def state_operands(self) -> Sequence[StateOperand]:
         """What this kernel keeps in its core between iterations. Empty for a kernel that
         keeps nothing, which is every kernel that is not carrying a running reduction."""

@@ -19,6 +19,10 @@ from typing import Any
 MEASURED_KERNEL_CYCLES: dict[str, float | tuple[float, int] | dict[int, float]] = {
     "matmul_bf16_bf16_64_64_64": 1730.0,
     "matmul_bf16_bf16_32_32_64": 575.0,
+    # The family stands in for a shape with no anchor of its own, scaled by operations.
+    # It is the 64-cube measurement; against the 32x32x64 one it reads 432 where silicon
+    # says 575, so a measured shape always wins over it.
+    "matmul_bf16_bf16": (1730.0, 64 * 64 * 64),
     "matmul_PV": 1536.0,
     "partial_softmax": 4400.0,
     # The MAC-tiled handover variant measures 2.09x the row-major body (occupancy trace,
@@ -42,10 +46,17 @@ def register_measured(entries: dict[str, float | tuple[float, int] | dict[int, f
 
 
 def anchor(kernel: Any) -> float | tuple[float, int] | None:
-    """This kernel's measured per-call anchor, picking the entry for its compiled block."""
+    """This kernel's measured per-call anchor.
+
+    An entry keyed by the symbol wins; a {block: cycles} entry picks the compiled block;
+    otherwise the kernel's cost family stands in, which is what keeps a shape nobody
+    measured priced from silicon rather than from a hand-fed utilisation."""
     entry = MEASURED_KERNEL_CYCLES.get(getattr(kernel, "function_name", None))
     if isinstance(entry, dict):
-        return entry.get(getattr(kernel, "m", None))
+        entry = entry.get(getattr(kernel, "m", None))
+    if entry is None:
+        family = kernel.cost_family() if hasattr(kernel, "cost_family") else None
+        entry = MEASURED_KERNEL_CYCLES.get(family) if family else None
     return entry
 
 

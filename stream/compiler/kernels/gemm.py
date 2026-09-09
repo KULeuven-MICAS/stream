@@ -48,6 +48,9 @@ class GemmKernel(AIEKernelWithZeroing):
     def function_name(self) -> str:
         return f"matmul_{self.element_type}_{self.element_type}_{self.m}_{self.k}_{self.n}"
 
+    def cost_family(self) -> str | None:
+        return f"matmul_{self.element_type}_{self.element_type}"
+
     def granule(self) -> list[tuple[int, int]]:
         return [(1, self.k), (2, self.n), (0, self.m)]
 
