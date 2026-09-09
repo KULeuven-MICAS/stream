@@ -78,6 +78,11 @@ from stream.compiler.kernels.gemm import GemmKernel
 from stream.compiler.kernels.softmax import SoftmaxKernel
 
 FLASH_TILE = 64
+# The narrowest query block mha.cc can walk its online state at. The state is four B_q-long
+# regions and the walker vectorises inside one of them; 32 is the narrowest width the
+# accumulator converts a bf16 vector at, so a finer block would silently overrun.
+FLASH_STATE_WIDTH = 32
+
 """The one block shape mha.cc is written for: B_q, B_kv and d_head all 64.
 
 ``matmul_PV`` reuses the query GEMM's compile-time ``DIM_M``/``DIM_K``/``DIM_N`` for the
@@ -462,8 +467,10 @@ class PartialSoftmaxKernel(SoftmaxKernel):
         # The key block n stays FLASH_TILE (the softmax reduces over it); the query block m
         # may be a finer multiple of the 8-row MAC group so a wider softmax's consumer holds
         # a smaller resident window.
-        if self.n != FLASH_TILE or self.m % 8 or self.m > FLASH_TILE:
-            raise ValueError(f"mha.cc key block must be {FLASH_TILE} and query a multiple of 8 up to it, not {self.m}x{self.n}")
+        if self.n != FLASH_TILE or self.m % FLASH_STATE_WIDTH or self.m > FLASH_TILE:
+            raise ValueError(
+                f"mha.cc key block must be {FLASH_TILE} and query a multiple of "
+                f"{FLASH_STATE_WIDTH} up to it, not {self.m}x{self.n}")
 
     @property
     def linkwith_name(self) -> str:
@@ -625,9 +632,10 @@ class FusedScoreSoftmaxKernel(GemmKernel):
     def __post_init__(self) -> None:
         # Key (k) and head (n) stay FLASH_TILE; the query (m) may be a finer multiple of the
         # 8-row MAC group so the value-accumulation consumer holds a smaller resident window.
-        if (self.k, self.n) != (FLASH_TILE, FLASH_TILE) or self.m % 8 or self.m > FLASH_TILE:
+        if (self.k, self.n) != (FLASH_TILE, FLASH_TILE) or self.m % FLASH_STATE_WIDTH or self.m > FLASH_TILE:
             raise ValueError(
-                f"mha.cc key and head block must be {FLASH_TILE} and query a multiple of 8 up to it, "
+                f"mha.cc key and head block must be {FLASH_TILE} and query a multiple of "
+                f"{FLASH_STATE_WIDTH} up to it, "
                 f"not {self.m}x{self.k}x{self.n}"
             )
 
@@ -762,9 +770,10 @@ class FlashKernel(GemmKernel):
     def __post_init__(self) -> None:
         # Key (k) and head (n) stay FLASH_TILE; the query (m) may be a finer multiple of the
         # 8-row MAC group so the value-accumulation consumer holds a smaller resident window.
-        if (self.k, self.n) != (FLASH_TILE, FLASH_TILE) or self.m % 8 or self.m > FLASH_TILE:
+        if (self.k, self.n) != (FLASH_TILE, FLASH_TILE) or self.m % FLASH_STATE_WIDTH or self.m > FLASH_TILE:
             raise ValueError(
-                f"mha.cc key and head block must be {FLASH_TILE} and query a multiple of 8 up to it, "
+                f"mha.cc key and head block must be {FLASH_TILE} and query a multiple of "
+                f"{FLASH_STATE_WIDTH} up to it, "
                 f"not {self.m}x{self.k}x{self.n}"
             )
 
