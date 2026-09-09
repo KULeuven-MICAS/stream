@@ -146,6 +146,12 @@ class AIEKernel(ABC):
         the level is dropped, which is what the flash lowering requires."""
         return ()
 
+    def block_sizes(self) -> dict[int, tuple[int, ...]]:
+        """Sizes the compiled source accepts at each granule position, finest first.
+
+        A position absent from the mapping is fixed at its granule value."""
+        return {}
+
     def state_operands(self) -> Sequence[StateOperand]:
         """What this kernel keeps in its core between iterations. Empty for a kernel that
         keeps nothing, which is every kernel that is not carrying a running reduction."""

@@ -15,6 +15,15 @@ from stream.compiler.dialects.stream import ComputationNodeOp
 from stream.compiler.kernels.aie_kernel import MAC_ROWS_BFP16, AIEKernelWithZeroing
 
 
+def _halvings(size: int, floor: int) -> tuple[int, ...]:
+    """``size`` and every halving of it mm.cc still compiles, finest first."""
+    out, block = [], size
+    while block >= floor and block % floor == 0:
+        out.append(block)
+        block //= 2
+    return tuple(reversed(out))
+
+
 @dataclass
 class GemmKernel(AIEKernelWithZeroing):
     element_type: AnyDenseElement
@@ -41,6 +50,14 @@ class GemmKernel(AIEKernelWithZeroing):
 
     def granule(self) -> list[tuple[int, int]]:
         return [(1, self.k), (2, self.n), (0, self.m)]
+
+    def block_sizes(self) -> dict[int, tuple[int, ...]]:
+        rows = MAC_ROWS_BFP16 if self.bfp16_mmul else 4
+        return {
+            0: _halvings(self.m, 2 * rows),
+            1: _halvings(self.k, 8),
+            2: _halvings(self.n, 16),
+        }
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         # Intrinsic dimensions of the MAC the kernel was built for. mm.cc takes
