@@ -77,36 +77,6 @@ from stream.compiler.kernels.aie_kernel import (
 from stream.compiler.kernels.gemm import GemmKernel
 from stream.compiler.kernels.softmax import SoftmaxKernel
 
-FLASH_TILE = 64
-# The narrowest query block mha.cc can walk its online state at: the state is four B_q-long
-# regions and the walker vectorises inside one, and 32 is the narrowest width the
-# accumulator converts a bf16 vector at.
-FLASH_STATE_WIDTH = 32
-
-# The score core holds a double-buffered query block and score block either side of the
-# head's key block, all bf16, in the 64 KB of an AIE core. That is what caps the query
-# block, not the kernel source: 96 rows already needs the whole core.
-FLASH_CORE_BYTES = 64 * 1024
-
-
-def _query_resident(block: int) -> int:
-    return 2 * 2 * (block * FLASH_TILE + FLASH_TILE * FLASH_TILE + block * FLASH_TILE)
-
-
-# Query blocks mha.cc compiles for, finest first. The key block and the head stay FLASH_TILE.
-FLASH_QUERY_BLOCKS = tuple(
-    block
-    for block in range(FLASH_STATE_WIDTH, FLASH_CORE_BYTES, FLASH_STATE_WIDTH)
-    if _query_resident(block) < FLASH_CORE_BYTES
-)
-
-"""The one block shape mha.cc is written for: B_q, B_kv and d_head all 64.
-
-``matmul_PV`` reuses the query GEMM's compile-time ``DIM_M``/``DIM_K``/``DIM_N`` for the
-probability block, and both it and ``rescale_O`` walk the context block with 64- and
-512-element strides spelled out in the source.
-"""
-
 SCALE_ROWS = 4
 
 # The running scale, carried over the key block and indexed by the query, which is the pair
@@ -465,23 +435,17 @@ class CausalGemmKernel(GemmKernel):
 class MhaSource:
     """Shared by every entry point compiled from mha.cc.
 
-    The key block and the head stay FLASH_TILE; only the query block varies, and the object
-    is named for it because mha.cc's matmuls are compiled against it."""
+    Only the query block varies, and the object is named for it because mha.cc's matmuls
+    are compiled against it."""
 
-    def _check_blocks(self, *fixed: int) -> None:
-        if any(size != FLASH_TILE for size in fixed) or self.m not in FLASH_QUERY_BLOCKS:
-            shape = "x".join(str(s) for s in (self.m, *fixed))
-            raise ValueError(
-                f"mha.cc fixes every block but the query at {FLASH_TILE} and takes a query "
-                f"of {FLASH_QUERY_BLOCKS}, not {shape}"
-            )
+    @property
+    def manifest_key(self) -> str:
+        # These are mha.cc's own symbols; the GEMM base would claim mm.cc's entry.
+        return self.function_name
 
     @property
     def linkwith_name(self) -> str:
-        return "mha.o" if self.m == FLASH_TILE else f"mha_{self.m}.o"
-
-    def block_sizes(self) -> dict[int, tuple[int, ...]]:
-        return {QUERY_DIM: FLASH_QUERY_BLOCKS}
+        return f"mha_{self.m}.o"
 
 
 @dataclass
@@ -503,7 +467,7 @@ class PartialSoftmaxKernel(MhaSource, SoftmaxKernel):
 
     def __post_init__(self) -> None:
         super().__post_init__()
-        self._check_blocks(self.n)
+        self.validate_shape()
 
     @property
     def function_name(self) -> str:
@@ -657,7 +621,7 @@ class FusedScoreSoftmaxKernel(MhaSource, GemmKernel):
     """
 
     def __post_init__(self) -> None:
-        self._check_blocks(self.k, self.n)
+        self.validate_shape()
 
     @property
     def unique_name(self) -> str:
@@ -782,7 +746,7 @@ class FlashKernel(MhaSource, GemmKernel):
     """
 
     def __post_init__(self) -> None:
-        self._check_blocks(self.k, self.n)
+        self.validate_shape()
 
     @property
     def unique_name(self) -> str:

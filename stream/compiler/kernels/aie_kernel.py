@@ -14,6 +14,8 @@ from xdsl.traits import SymbolTable
 from xdsl_aie.dialects.aie import CoreOp, DeviceOp
 
 from stream.compiler.dialects.stream import ComputationNodeOp, StrensorVar, StrensorVarAttr
+from stream.compiler.kernels import manifest
+from stream.compiler.kernels.manifest import CALL_DIMS
 
 # Intrinsic MAC tile of the AIE2p kernels, and the layouts an operand can take.
 # mm.cc takes 8 rows when bf16 matmuls run on the bfp16 MACs and 4 when they do not.
@@ -146,15 +148,40 @@ class AIEKernel(ABC):
         the level is dropped, which is what the flash lowering requires."""
         return ()
 
+    @property
+    def manifest_key(self) -> str:
+        """The kernel library entry declaring this source's shapes and costs."""
+        return self.function_name
+
+    def call_shape(self) -> dict[str, int]:
+        """The dimensions one call covers, by the name the manifest uses."""
+        return {name: size for name in CALL_DIMS if (size := getattr(self, name, None))}
+
     def block_sizes(self) -> dict[int, tuple[int, ...]]:
         """Sizes the compiled source accepts at each granule position, finest first.
 
-        A position absent from the mapping is fixed at its granule value."""
-        return {}
+        A position absent from the mapping is fixed at its granule value. Empty until a
+        kernel library declares otherwise, which is the right answer for a mapper that
+        has not been told what it is compiling against."""
+        return manifest.blocks(self.manifest_key, self.call_shape())
 
-    def cost_family(self) -> str | None:
-        """Symbol whose measured anchor stands in when this shape has none of its own."""
-        return None
+    def validate_shape(self) -> None:
+        """Reject a shape the kernel library does not compile this source at.
+
+        Silent with no library attached, which is the only honest answer then."""
+        declared, shape = manifest.entry(self.manifest_key), self.call_shape()
+        for name, size in declared.get("fixed", {}).items():
+            if shape.get(name) != size:
+                raise ValueError(
+                    f"{self.manifest_key} is compiled with {name}={size}, not {shape.get(name)}"
+                )
+        if declared.get("blocks"):
+            for position, sizes in self.block_sizes().items():
+                name = CALL_DIMS[position]
+                if shape.get(name) not in sizes:
+                    raise ValueError(
+                        f"{self.manifest_key} compiles {name} of {sizes}, not {shape.get(name)}"
+                    )
 
     def state_operands(self) -> Sequence[StateOperand]:
         """What this kernel keeps in its core between iterations. Empty for a kernel that

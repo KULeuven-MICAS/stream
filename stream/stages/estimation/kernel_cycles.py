@@ -1,68 +1,35 @@
-"""Measured per-call kernel costs on AIE silicon.
+"""Per-call kernel costs, as the attached kernel library measured them.
 
-Keyed by the kernel's linked function symbol -- the same name a hardware trace's
-event0/event1 spans pair to -- so an entry here is directly the median span of
-one call of that symbol, and recalibrating is rerunning the trace. Scaling to a
-node's per-iteration latency is linear in operation count from the anchor call.
+An anchor is the median span of one call of a symbol, which a hardware trace pairs from
+its own event0/event1 markers, so recalibrating is rerunning the trace and editing the
+library's manifest. Scaling to a node's per-iteration latency is linear in operation count
+from the anchor call.
 
-The mapping-supplied ``utilization`` percentage remains the fallback for symbols
-without an anchor; where an anchor exists it wins, because it is a measurement
+The mapping-supplied ``utilization`` percentage remains the fallback for a symbol the
+library gives no anchor for; where an anchor exists it wins, because it is a measurement
 of the deployed binary rather than a hand-fed estimate.
-
-Sources: ~/stream-dse-iron-slides/260902_mha_array_sweep (per-kernel-call spans,
-seq 2048, 8 heads, column 3) and docs/source/aie_calibration.md.
 """
 
 from math import prod
 from typing import Any
 
-MEASURED_KERNEL_CYCLES: dict[str, float | tuple[float, int] | dict[int, float]] = {
-    "matmul_bf16_bf16_64_64_64": 1730.0,
-    "matmul_bf16_bf16_32_32_64": 575.0,
-    # The family stands in for a shape with no anchor of its own, scaled by operations.
-    # It is the 64-cube measurement; against the 32x32x64 one it reads 432 where silicon
-    # says 575, so a measured shape always wins over it.
-    "matmul_bf16_bf16": (1730.0, 64 * 64 * 64),
-    "matmul_PV": 1536.0,
-    "partial_softmax": 4400.0,
-    # The MAC-tiled handover variant measures 2.09x the row-major body (occupancy trace,
-    # 260827_softmax_kernel: 5,149 -> 10,742 cycles per step). This ratio is what makes a
-    # wide-softmax row layout -- which forces the tiled handover -- rank truthfully: the
-    # extra row halves the calls per core and the tiled body doubles each call back.
-    "partial_softmax_mode": 9200.0,
-    "matmul_softmax": 6130.0,
-    # Dimensionless symbols take a runtime length, so the anchor records the call size it
-    # was measured at (cycles, elements). 260903_B traces, swiglu k=5 seq 512, groups 2/3.
-    "silu_bf16": (2503.0, 4096),
-    "eltwise_mul_bf16_vector": (1100.0, 4096),
-}
-
-_CALL_DIMS = ("m", "k", "n")
-
-
-def register_measured(entries: dict[str, float | tuple[float, int] | dict[int, float]]) -> None:
-    """Record anchors measured by the caller, which override the built-in ones."""
-    MEASURED_KERNEL_CYCLES.update(entries)
+from stream.compiler.kernels import manifest
+from stream.compiler.kernels.manifest import CALL_DIMS
 
 
 def anchor(kernel: Any) -> float | tuple[float, int] | None:
-    """This kernel's measured per-call anchor.
+    """This kernel's measured per-call cost, as the kernel library declared it.
 
-    An entry keyed by the symbol wins; a {block: cycles} entry picks the compiled block;
-    otherwise the kernel's cost family stands in, which is what keeps a shape nobody
-    measured priced from silicon rather than from a hand-fed utilisation."""
-    entry = MEASURED_KERNEL_CYCLES.get(getattr(kernel, "function_name", None))
-    if isinstance(entry, dict):
-        entry = entry.get(getattr(kernel, "m", None))
-    if entry is None:
-        family = kernel.cost_family() if hasattr(kernel, "cost_family") else None
-        entry = MEASURED_KERNEL_CYCLES.get(family) if family else None
-    return entry
+    A shape the library measured wins; otherwise its per-operation anchor stands in, which
+    is what keeps a shape nobody timed priced from silicon rather than a hand-fed guess."""
+    key = getattr(kernel, "manifest_key", None)
+    shape = kernel.call_shape() if hasattr(kernel, "call_shape") else {}
+    return manifest.cycles(key, shape)
 
 
 def calls_ops(kernel: Any) -> int:
     """The operations one call of this kernel covers, from its own tile dimensions."""
-    return prod(int(getattr(kernel, d)) for d in _CALL_DIMS if getattr(kernel, d, None) is not None)
+    return prod(int(getattr(kernel, d)) for d in CALL_DIMS if getattr(kernel, d, None) is not None)
 
 
 def measured_latency(kernel: Any, ops: int) -> float | None:
