@@ -14,6 +14,12 @@ logger = logging.getLogger(__name__)
 GROWTH_FACTORS = (2, 4)
 
 
+def _no_candidate(timed_out: bool) -> str:
+    if timed_out:
+        return "No tile candidate was priced; the allocation solve ran out of time."
+    return "No feasible tile candidate."
+
+
 class TileSearchStage(Stage):
     """Let the optimizer choose each fused group's intra-core tile size.
 
@@ -101,7 +107,7 @@ class TileSearchStage(Stage):
         best_latency = float("inf")
         best_index = None
         seed_error: Exception | None = None
-        seed_latency = float("inf")
+        seed_latency, timed_out = float("inf"), False
         # Growth along one dimension only adds memory pressure and per-iteration latency,
         # so once a grown tile loses to the seed, larger growths of the same dimension
         # are skipped rather than solved.
@@ -118,8 +124,9 @@ class TileSearchStage(Stage):
             try:
                 ctxs, latency = self._evaluate()
             except InfeasibleAllocationError as e:
-                save_infeasibility_report(candidate_path, e.report)
-                logger.info("Tile candidate %s is infeasible: %s", tiling, e.report.summary)
+                timed_out |= self._note_unpriced(candidate_path, e, tiling)
+                if i == 0:
+                    seed_error = e
                 dead_dims.add(grown_dim)
                 continue
             except (RuntimeError, ValueError, AssertionError) as e:
@@ -149,14 +156,27 @@ class TileSearchStage(Stage):
                 best_context = StageContext(data=dict(ctxs[0].data))
         if best_context is None:
             # The seed is the caller's own finest granule: its failure is the real error.
-            raise RuntimeError("No feasible tile candidate.") from seed_error
+            raise RuntimeError(_no_candidate(timed_out)) from seed_error
         return best_context, best_index, best_latency, len(candidates)
+
+    def _note_unpriced(self, candidate_path, error, tiling) -> bool:
+        """Record why a candidate has no price; True when the solve merely ran out of time.
+
+        A time limit leaves a candidate unpriced, not refuted, and calling that infeasible
+        sends the reader after a design that builds perfectly well.
+        """
+        save_infeasibility_report(candidate_path, error.report)
+        if error.report.status == "TIME_LIMIT":
+            logger.info("Tile candidate %s ran out of solve time, leaving it unpriced", tiling)
+            return True
+        logger.info("Tile candidate %s is infeasible: %s", tiling, error.report.summary)
+        return False
 
     def _finish(self, best_context, best_index, best_latency, n, seed_error):
         if best_context is None:
             # The seed is the caller's own declared tiling: its failure is the real error,
             # not a search outcome.
-            raise RuntimeError("No feasible tile candidate.") from seed_error
+            raise RuntimeError(_no_candidate(False)) from seed_error
         logger.info("Tile search chose candidate %d of %d (latency %s)", best_index, n, best_latency)
         # Downstream consumers (codegen, hosts reading the output tree) expect the group's own path.
         best_context.set(output_path=self.output_path)
