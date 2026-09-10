@@ -165,6 +165,15 @@ class AIEKernel(ABC):
         has not been told what it is compiling against."""
         return manifest.blocks(self.manifest_key, self.call_shape())
 
+    def work_share(self, index: int, width: int, steps: int) -> float:
+        """Share of a node's work the core at ``index`` of ``width`` does, holding ``steps``
+        slices of the split dimension.
+
+        Uniform unless this kernel's iteration space is not rectangular, in which case the
+        cores do unequal amounts and latency is set by the busiest. Declared here because
+        the kernel that skips the work is the one that knows the shape of what is left."""
+        return 1.0 / max(width, 1)
+
     def validate_shape(self) -> None:
         """Reject a shape the kernel library does not compile this source at.
 

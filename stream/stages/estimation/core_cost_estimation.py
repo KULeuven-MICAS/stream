@@ -13,6 +13,7 @@ from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
+from stream.mapping.work_share import interchangeable, split_steps
 from stream.stages.context import StageContext
 from stream.stages.estimation.core_cost_backends import CoreEstimator, select_backend
 from stream.stages.stage import Stage, StageCallable
@@ -56,6 +57,9 @@ class CoreCostEstimationStage(Stage):
         self.output_path = self.ctx.get("output_path")
         self.nb_spatial_mappings_generated: int = self.ctx.get("nb_spatial_mappings_generated", 1)
         self.temporal_mapping_type: TemporalMappingType = self.ctx.get("temporal_mapping_type")
+        # How many times each tiled dimension comes round, which is what tells a core how
+        # many slices of a split dimension it ends up holding.
+        self.fusion_splits: dict = self.ctx.get("fusion_splits", {}) or {}
         self.loma_show_progress_bar: bool = self.ctx.get("loma_show_progress_bar", False)
         self.cost_lut_path: str = os.path.join(self.output_path, "core_cost_lut.pickle")
         self.visualize_cost_lut_path: str = os.path.splitext(self.cost_lut_path)[0] + ".png"
@@ -91,6 +95,11 @@ class CoreCostEstimationStage(Stage):
                     continue
                 equal_node = self.cost_lut.get_equal_node(node)
                 equal_core = self.cost_lut.get_equal_core(equal_node, core) if equal_node else None
+                if equal_core is not None and not interchangeable(
+                    self.workload, self.mapping, node, equal_core, core,
+                    split_steps(self.workload, self.mapping, node, self.fusion_splits),
+                ):
+                    equal_core = None
                 equal_mapping = self.check_equal_mapping(node, equal_node) if equal_node else None
                 if equal_node and equal_core and equal_mapping:
                     cost = pickle_deepcopy(self.cost_lut.get_cost(equal_node, equal_core))

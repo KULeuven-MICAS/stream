@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import ceil, prod
 
 from xdsl.dialects.builtin import BFloat16Type, FixedBitwidthType, Float32Type
@@ -6,6 +6,7 @@ from xdsl.dialects.builtin import BFloat16Type, FixedBitwidthType, Float32Type
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
+from stream.mapping.work_share import core_work_share, split_steps
 from stream.stages.estimation.kernel_cycles import measured_latency
 from stream.workload.workload import ComputationNode, Workload
 
@@ -16,11 +17,15 @@ class AIECostEstimator:
 
     workload: Workload
     mapping: Mapping
+    fusion_splits: dict = field(default_factory=dict)
 
     def estimate(self, node: ComputationNode, core: Core) -> CoreCostEntry:
         dim_sizes = [self.workload.get_dimension_size(dim) for dim in self.workload.get_dims(node)]
-        total_inter_core_tiling = self._get_total_inter_core_tiling_factor(node)
-        macs = prod(dim_sizes) // total_inter_core_tiling
+        # A split is only an even division when the iteration space is rectangular. Ask what
+        # this core actually does; uniform comes back for everything that is.
+        macs = round(prod(dim_sizes) * core_work_share(
+            self.workload, self.mapping, node, core, self._steps(node)
+        ))
         kernel = self.mapping.get(node).kernel
         ideal_ops_per_cycle = self.ops_per_cycle(node, core)
         ideal_cycles = ceil(macs / ideal_ops_per_cycle)
@@ -47,6 +52,9 @@ class AIECostEstimator:
             layer=node,
             metadata=metadata,
         )
+
+    def _steps(self, node: ComputationNode) -> int:
+        return split_steps(self.workload, self.mapping, node, self.fusion_splits)
 
     def _get_total_inter_core_tiling_factor(self, node):
         # The first (typically only) allocation slot's split factors. Robust to an empty tiling so a
