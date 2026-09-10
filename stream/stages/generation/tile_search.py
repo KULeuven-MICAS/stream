@@ -41,8 +41,9 @@ class TileSearchStage(Stage):
     def _block_options(self, group) -> dict[Any, tuple[int, ...]]:
         """Compiled block sizes the whole group accepts, per tiling dimension.
 
-        A dimension one kernel compiles in but does not offer sizes for is fixed for the
-        group, since the kernels either side of it are compiled against the same block."""
+        A dimension one kernel compiles in but offers no sizes for is fixed for the group,
+        since the kernels either side of it are compiled against the same block. One the
+        group does not tile is already at its extent and is not a tiling decision."""
         options: dict[Any, set[int]] = {}
         fixed: set[Any] = set()
         for name in group.layers:
@@ -60,10 +61,11 @@ class TileSearchStage(Stage):
                     options[dim] = options.get(dim, set(offered[position])) & set(offered[position])
                 else:
                     fixed.add(dim)
+        tiled = {dim for dim, _ in group.intra_core_tiling}
         return {
             dim: tuple(sorted(sizes))
             for dim, sizes in options.items()
-            if len(sizes) > 1 and dim not in fixed
+            if len(sizes) > 1 and dim not in fixed and dim in tiled
         }
 
     def _with_block(self, gi: int, group, dim, size: int) -> Mapping:
@@ -98,7 +100,11 @@ class TileSearchStage(Stage):
         seeds: list[tuple[object, Mapping]] = [(None, self.mapping)]
         groups = self.mapping.fused_groups
         for gi, group in enumerate(groups):
-            for dim, sizes in self._block_options(group).items():
+            offered = self._block_options(group)
+            if offered:
+                logger.info("Group %d offers blocks %s", gi,
+                            {str(d): s for d, s in offered.items()})
+            for dim, sizes in offered.items():
                 extent = self.workload.get_dimension_size(dim)
                 for size in sizes:
                     if size > extent or extent % size:
