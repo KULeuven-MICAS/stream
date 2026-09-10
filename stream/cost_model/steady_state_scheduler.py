@@ -336,6 +336,8 @@ class SteadyStateScheduler:
             overlap,
             latency_per_iteration,
         ) = tta.solve()
+        self.tensor_depths = tensor_depths
+
         # Capture solve statistics before tta goes out of scope (tta.model is a local variable)
         self.solve_stats = tta.model.solve_stats()
         # Capture the read-only performance summary while the solved tta is still in scope.
