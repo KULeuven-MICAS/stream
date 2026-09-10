@@ -1515,7 +1515,9 @@ class TransferAndTensorAllocator:
     def _define_overlap_var(self) -> None:
         overlap = self.model.add_var(vtype=SolverVarType.INTEGER, name="overlap")
         self.overlap = overlap
-        for v in self.idle_lat.values():
+        for res, v in self.idle_lat.items():
+            if not self.constraint_selection.transfer_contention and not isinstance(res, Core):
+                continue
             self.model.add_constr(overlap <= v)
         # Both resource idle and a loop-carried state cap the overlap, so II = max(ResMII, RecMII).
         rec = self.recurrence_bound = self._recurrence_bound()
@@ -1526,29 +1528,26 @@ class TransferAndTensorAllocator:
             )
 
     def _recurrence_bound(self) -> int:
-        """Cycles a loop-carried state forbids overlapping (modulo scheduling's RecMII); 0 when feed-forward."""
-        carriers = {n for n in self.ssc_nodes if any(is_state_operand(n, t) for t in n.inputs)}
+        """Cycles a loop-carried state forbids overlapping (modulo scheduling's RecMII); 0 when feed-forward.
+
+        RecMII is the worst *cycle*, not the worst path. A state is read at carried_over - 1
+        and written at carried_over, so each one is a distance-one self-loop on the node that
+        keeps it. Two nodes that each keep their own state and are joined by a forward edge
+        are two independent recurrences: adding their latencies charges a cycle that is not
+        in the graph, and charges it once per iteration, so a design that runs more and
+        shorter iterations pays it more often for no reason on the hardware.
+
+        A state carried across more than one step would divide by that distance. Every state
+        expressible today is carried across exactly one, and a handover -- the copy the next
+        node reads -- is a forward edge rather than a distance, which is why it is not one.
+        """
+        carriers = [n for n in self.ssc_nodes if any(is_state_operand(n, t) for t in n.inputs)]
         if not carriers:
             return 0
-        latency = {
-            n: ceil(max((self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)), default=0))
-            for n in self.ssc_nodes
-        }
-        # Longest node-latency chain from one carrier to another (a lone scan node is its own chain).
-        longest_from_carrier: dict[Any, int] = {}
-        worst = 0
-        for node in self.workload.dataflow_sort():
-            if node not in latency:
-                continue
-            reaching = [longest_from_carrier[p] for p in self.workload.predecessors(node) if p in longest_from_carrier]
-            best = max(reaching, default=0) + latency[node] if reaching else 0
-            if node in carriers:
-                best = max(best, latency[node])
-            if best:
-                longest_from_carrier[node] = best
-            if node in carriers:
-                worst = max(worst, best)
-        return worst
+        return max(
+            ceil(max((self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)), default=0))
+            for n in carriers
+        )
 
     def _transfer_dma_usage_expr(self, tr: TransferNode, core: Core):
         return self.model.quicksum(self._tensor_on_core_expr(t, core) for t in tr.tensors if isinstance(t, Tensor))

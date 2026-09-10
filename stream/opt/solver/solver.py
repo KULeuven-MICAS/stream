@@ -99,12 +99,17 @@ class PipeliningModel(Enum):
 @dataclass(frozen=True)
 class ConstraintSelection:
     """How TransferAndTensorAllocator builds its model: the boolean fields toggle constraint groups
-    (all default True); ``pipelining`` picks the inter-iteration overlap formulation."""
+    (all default True); ``pipelining`` picks the inter-iteration overlap formulation.
+
+    ``transfer_contention`` lets a link's idle time cap the inter-iteration overlap, which
+    says two transfers sharing a route cannot proceed at once. Transfers keep their routes
+    and their latencies either way; only the overlap bound changes."""
 
     memory_capacity: bool = True
     object_fifo_depth: bool = True
     buffer_descriptors: bool = True
     dma_channels: bool = True
+    transfer_contention: bool = True
     pipelining: PipeliningModel = PipeliningModel.OCCUPANCY
 
     def __post_init__(self) -> None:
