@@ -83,8 +83,22 @@ FLASH_TILE = 64
 # accumulator converts a bf16 vector at.
 FLASH_STATE_WIDTH = 32
 
+# The score core holds a double-buffered query block and score block either side of the
+# head's key block, all bf16, in the 64 KB of an AIE core. That is what caps the query
+# block, not the kernel source: 96 rows already needs the whole core.
+FLASH_CORE_BYTES = 64 * 1024
+
+
+def _query_resident(block: int) -> int:
+    return 2 * 2 * (block * FLASH_TILE + FLASH_TILE * FLASH_TILE + block * FLASH_TILE)
+
+
 # Query blocks mha.cc compiles for, finest first. The key block and the head stay FLASH_TILE.
-FLASH_QUERY_BLOCKS = tuple(range(FLASH_STATE_WIDTH, FLASH_TILE + 1, FLASH_STATE_WIDTH))
+FLASH_QUERY_BLOCKS = tuple(
+    block
+    for block in range(FLASH_STATE_WIDTH, FLASH_CORE_BYTES, FLASH_STATE_WIDTH)
+    if _query_resident(block) < FLASH_CORE_BYTES
+)
 
 """The one block shape mha.cc is written for: B_q, B_kv and d_head all 64.
 
