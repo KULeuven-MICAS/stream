@@ -189,7 +189,10 @@ class PlacementGenerationStage(Stage):
             len(rows),
             handover=1.0 if wide else TILED_HANDOVER_FACTOR,
         )
-        granule = dict(kernels[0].granule()).get(0, 1)
+        # The block belongs to the group, not to its first layer: a GEMM declares no
+        # granule at all, so reading only that one splits the shared dimension finer than
+        # the compiled block and hands a core a tile the kernels cannot be called at.
+        granule = max((dict(kernel.granule()).get(0, 1) for kernel in kernels), default=1)
         extent = self.workload.get_dimension_size(self.workload.get_dims(nodes[0])[0])
         width = widest_columns(extent, granule, max(counts), len(columns))
         # A stage split over two rows normally takes them contiguously, leaving its
