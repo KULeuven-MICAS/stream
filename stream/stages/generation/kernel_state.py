@@ -78,7 +78,13 @@ class KernelStateStage(Stage):
             rebuilt[node.name] = replace(node, inputs=tuple(inputs), operand_mapping=tuple(maps))
         if changed:
             workload = Workload(rebuilt.values())
-            self.ctx.set(workload=workload, mapping=self.mapping.with_updated_workload(workload, self.workload))
+            rekey = lambda m: m.with_updated_workload(workload, self.workload)  # noqa: E731
+            self.ctx.set(workload=workload, mapping=rekey(self.mapping))
+            # The placements generated before this stage key on the nodes it just rebuilt,
+            # so they have to come along or the first lookup in one raises.
+            for field in ("placement_alternatives", "placement_reserves"):
+                if shapes := self.ctx.data.get(field):
+                    self.ctx.set(**{field: [rekey(shape) for shape in shapes]})
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
