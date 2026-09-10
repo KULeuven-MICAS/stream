@@ -4,6 +4,7 @@ from dataclasses import replace
 
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.core import Core
+from stream.mapping.blocks import block_options, with_block
 from stream.mapping.chain_placement import (
     TILED_HANDOVER_FACTOR,
     bandwidth_bound,
@@ -53,22 +54,62 @@ class PlacementGenerationStage(Stage):
         self._pending_fallbacks: list = []
         self._pending_reserves: list = []
         if grid:
-            for group in self.mapping.fused_groups:
-                nodes = [n for name in group.layers if isinstance(n := self._node(name), ComputationNode)]
-                if nodes and all(self._unplaced(n) for n in nodes):
-                    self._place_group(nodes, grid)
-            def materialize(pending):
-                shapes: list[Mapping] = []
-                for narrow in pending:
-                    alt = (shapes[-1] if shapes else self.mapping).copy()
-                    narrow(alt)
-                    shapes.append(alt)
-                return shapes
-
-            self.ctx.set(placement_alternatives=materialize(self._pending_fallbacks))
-            self.ctx.set(placement_reserves=materialize(self._pending_reserves))
+            declared = self.mapping
+            variants = self._block_variants(declared)
+            self._place(declared, grid)
+            alternatives = self._materialize(declared, self._pending_fallbacks)
+            reserves = self._materialize(declared, self._pending_reserves)
+            for variant in variants:
+                self._pending_fallbacks, self._pending_reserves = [], []
+                self._place(variant, grid)
+                alternatives.append(variant)
+                alternatives.extend(self._materialize(variant, self._pending_fallbacks))
+            self.mapping = declared
+            self.ctx.set(mapping=declared)
+            self.ctx.set(placement_alternatives=alternatives)
+            self.ctx.set(placement_reserves=reserves)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
+
+    def _place(self, mapping: Mapping, grid: dict[tuple[int, int], Core]) -> Mapping:
+        self.mapping = mapping
+        for group in mapping.fused_groups:
+            nodes = [n for name in group.layers if isinstance(n := self._node(name), ComputationNode)]
+            if nodes and all(self._unplaced(n) for n in nodes):
+                self._place_group(nodes, grid)
+        return mapping
+
+    def _materialize(self, base: Mapping, pending: list) -> list[Mapping]:
+        shapes: list[Mapping] = []
+        for narrow in pending:
+            alt = (shapes[-1] if shapes else base).copy()
+            narrow(alt)
+            shapes.append(alt)
+        return shapes
+
+    def _block_variants(self, mapping: Mapping) -> list[Mapping]:
+        """One unplaced mapping per compiled block the groups offer, beside the declared one.
+
+        A block decides how many columns the design can fill, so it has to be chosen with a
+        placement rather than against one: each of these is laid out in full and priced by
+        the tile search beside every other placement.
+        """
+        variants: list[Mapping] = []
+        for gi, group in enumerate(mapping.fused_groups):
+            for dim, sizes in block_options(self.workload, mapping, group).items():
+                extent = self.workload.get_dimension_size(dim)
+                for size in sizes:
+                    if size > extent or extent % size:
+                        continue
+                    if any(d == dim and tile == size for d, tile in group.intra_core_tiling):
+                        continue
+                    try:
+                        variants.append(with_block(self.workload, mapping, gi, group, dim, size))
+                    except (ValueError, TypeError) as e:
+                        logger.info("Block %s=%d is not buildable: %s", dim, size, e)
+        if variants:
+            logger.info("Placing %d block variants beside the declared mapping", len(variants))
+        return variants
 
     def _node(self, name: str):
         try:

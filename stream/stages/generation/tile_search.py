@@ -3,7 +3,6 @@ import os
 from dataclasses import replace
 
 from stream.ir.infeasibility import InfeasibleAllocationError
-from stream.mapping.blocks import block_options, with_block
 from stream.mapping.mapping import Mapping
 from stream.stages.context import StageContext
 from stream.stages.generation.mapping_generation import save_infeasibility_report
@@ -18,10 +17,11 @@ GROWTH_FACTORS = (2, 4)
 class TileSearchStage(Stage):
     """Let the optimizer choose each fused group's intra-core tile size.
 
-    The mapping's declared tiling is the seed: the finest granule the compiled kernels
-    accept. Growth is offered only along the group's growable dims -- the ones every
-    declaring kernel consumes in a run-time loop -- since a compiled block's own
-    dimensions never see more than one granule per call. Every candidate is priced by the
+    The mapping's declared tiling is the seed. Growth is offered only along the group's
+    growable dims -- the ones every declaring kernel consumes in a run-time loop -- since a
+    compiled block's own dimensions never see more than one granule per call; a different
+    compiled block is a different placement, which PlacementGenerationStage hands over as
+    one more candidate here. Every candidate is priced by the
     same tiling + cost + allocation tail that prices everything else, so feasibility
     (memory, fifo depth, DMA channels) and worth (latency under the calibrated kernel
     costs) come from one model, and the best-latency solve wins. Off unless the context
@@ -40,24 +40,6 @@ class TileSearchStage(Stage):
     def _candidates(self) -> list[tuple[object, Mapping]]:
         seeds: list[tuple[object, Mapping]] = [(None, self.mapping)]
         groups = self.mapping.fused_groups
-        for gi, group in enumerate(groups):
-            offered = block_options(self.workload, self.mapping, group)
-            if offered:
-                logger.info("Group %d offers blocks %s", gi,
-                            {str(d): s for d, s in offered.items()})
-            for dim, sizes in offered.items():
-                extent = self.workload.get_dimension_size(dim)
-                for size in sizes:
-                    if size > extent or extent % size:
-                        continue
-                    if any(d == dim and tile == size for d, tile in group.intra_core_tiling):
-                        continue
-                    try:
-                        candidate = with_block(self.workload, self.mapping, gi, group, dim, size)
-                    except (ValueError, TypeError) as e:
-                        logger.info("Block %s=%d is not buildable: %s", dim, size, e)
-                        continue
-                    seeds.append((("block", gi, dim, size), candidate))
         for gi, group in enumerate(groups):
             for ti, (dim, tile) in enumerate(group.intra_core_tiling):
                 if dim not in group.growable_dims:
