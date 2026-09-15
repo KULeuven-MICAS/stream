@@ -166,7 +166,7 @@ class AIECodeGenerationStage(Stage):
             # consumers index this transfer's results positionally, so a multicast to two
             # nodes on one core still needs two (identical) results.
             result_types = [result_type] * len(node.outputs)
-        elif len(node.outputs) > 1:
+        elif len(node.outputs) > 1 and len(cores) >= len(node.outputs):
             # create equal split based on compute allocations
             cores_per_output = len(cores) // len(node.outputs)
             result_types = []
@@ -186,7 +186,7 @@ class AIECodeGenerationStage(Stage):
                 cores,
                 reuse_index,
             )
-            result_types = [result_type]
+            result_types = [result_type] * len(node.outputs)
         op = TransferOp(
             inputs,
             result_types,
@@ -288,6 +288,7 @@ class AIECodeGenerationStage(Stage):
             return shape
 
         def check_reduction_axes_resident(node: ComputationNode) -> None:
+            # TODO this does not properly check against reductions in non-NormalizationNode nodes
             """A normalization is only correct over its whole reduction axis, and a kernel sees one kernel tile."""
             if mapping.get(node).kernel is None:
                 return
@@ -384,16 +385,18 @@ class AIECodeGenerationStage(Stage):
         types = []
         remaining_ops = []
         in_edges: list[InEdgeOp] = []
+        yielded: list[SSAValue] = []  # every group output, in one terminating yield
         for op in ops.values():
             if isinstance(op, InEdgeOp):
                 types.append(op.output.type)
                 in_edges.append(op)
             elif isinstance(op, OutEdgeOp):
                 types.append(op.inputs[0].type)
-                remaining_ops.append(YieldOp(*op.inputs))
+                yielded.extend(op.inputs)
                 op.erase()
             else:
                 remaining_ops.append(op)
+        remaining_ops.append(YieldOp(*yielded))
 
         fusion_group = FusionGroupOp(Region(block := Block(remaining_ops, arg_types=types)))
 
