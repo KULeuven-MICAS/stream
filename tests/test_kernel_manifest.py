@@ -72,3 +72,42 @@ def test_a_shape_the_library_does_not_compile_is_refused(library):
         FlashKernel(m=48, k=64, n=64, **SHAPE)
     with pytest.raises(ValueError, match="compiled with n=64"):
         FlashKernel(m=32, k=64, n=128, **SHAPE)
+
+
+def test_a_gemm_still_declares_the_shape_it_is_compiled_at():
+    """The granule is the kernel's own m, k and n, not a fact about any library.
+
+    When the measured sizes and costs moved into the manifest, this went with them by
+    mistake, and GemmKernel was left declaring nothing. Nothing crashed: a group that
+    declares no intra-core tiling is tiled at its kernels' granules, so the GEMM's
+    dimensions simply never entered the tiling and stayed at full extent, which put every
+    core in the array three to six times over capacity. The regression is silent at the
+    kernel and only shows up as an infeasible allocation, so it is pinned here.
+    """
+    manifest.adopt({})
+    assert dict(GemmKernel(m=64, k=128, n=256, **SHAPE).granule()) == {0: 64, 1: 128, 2: 256}
+
+
+def test_every_kernel_puts_a_floor_under_each_dimension_it_is_compiled_at():
+    """A kernel that names a call dimension has to put a granule under it.
+
+    Any dimension a kernel compiles into its block but leaves out of its granule is a
+    dimension a fused group will tile at full extent. This is the invariant the GEMM
+    broke; it is stated over every kernel so the next one cannot break it quietly.
+
+    The comparison is by size rather than by position: a granule position indexes the
+    node's dimensions, which coincide with the manifest's m, k, n for a GEMM but not for
+    a two-dimensional kernel, where position 1 is n.
+    """
+    manifest.adopt({})
+    contiguous = {**SHAPE, "layout": "contiguous"}
+    for kernel in (
+        GemmKernel(m=64, k=128, n=256, **SHAPE),
+        FlashKernel(m=32, k=64, n=64, **SHAPE),
+        PartialSoftmaxKernel(m=32, n=64, **contiguous),
+    ):
+        floors, shape = dict(kernel.granule()), kernel.call_shape()
+        assert sorted(floors.values()) == sorted(shape.values()), (
+            f"{type(kernel).__name__} is compiled at {shape} but its granule is {floors}, "
+            f"so a fused group would tile the missing dimensions at full extent"
+        )

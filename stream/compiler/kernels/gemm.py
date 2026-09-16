@@ -44,6 +44,15 @@ class GemmKernel(AIEKernelWithZeroing):
         # The symbol carries its shape; the library declares the family once.
         return f"matmul_{self.element_type}_{self.element_type}"
 
+    def granule(self) -> list[tuple[int, int]]:
+        """The finest tile one call covers: the shape this kernel is compiled at.
+
+        This is the kernel's own m, k and n, not a fact about any library, which is why
+        it stayed here when the measured sizes and costs moved into the manifest. The
+        reduction leads so the output stays put across the innermost loop.
+        """
+        return [(1, self.k), (2, self.n), (0, self.m)]
+
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         # Intrinsic dimensions of the MAC the kernel was built for. mm.cc takes
         # 8x8x8 when bf16 matmuls are emulated on the bfp16 MACs and 4x8x8 when
