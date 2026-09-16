@@ -10,6 +10,7 @@ An empty registry is the normal state for a mapper with no library attached: ker
 their declared shapes and the tile search simply has no block to offer.
 """
 
+from math import log
 from typing import Any
 
 CALL_DIMS = ("m", "k", "n")
@@ -53,12 +54,42 @@ def divisors(symbol: str | None) -> dict[int, int]:
     return {position: floor for position, name in enumerate(CALL_DIMS) if (floor := declared.get(name))}
 
 
+def _ops(key: str) -> int:
+    """Operations one call of this measured shape covers."""
+    total = 1
+    for part in key.split(","):
+        total *= int(part)
+    return total
+
+
+def _nearest(measured: dict[str, Any], want: int) -> tuple[float, int] | None:
+    """The measured call closest in size to ``want`` operations, as (cycles, operations).
+
+    A kernel's efficiency is a property of the call it is compiled at, not of the family
+    average: mm.cc measures 1595 cycles for a 64x64x64 call and 575 for a 32x32x64 one,
+    which is 0.0061 against 0.0088 cycles per operation. Scaling every unmeasured shape
+    from one per-operation anchor erases that, so a block nobody timed is priced as though
+    it were as efficient as the largest one somebody did. Closest by size instead, which
+    for a shape the same size as a measured call is that call.
+    """
+    sized = [(k, _ops(k)) for k in measured if k != "per_op"]
+    if not sized or want <= 0:
+        return None
+    key, ops = min(sized, key=lambda kv: abs(log(kv[1] / want)))
+    return measured[key], ops
+
+
 def cycles(symbol: str | None, shape: dict[str, int]) -> float | tuple[float, int] | None:
-    """Measured cycles for one call of this shape, or the per-operation anchor behind it."""
+    """Measured cycles for one call of this shape, or the closest measurement behind it."""
     measured = entry(symbol).get("cycles", {})
     key = ",".join(str(shape[name]) for name in CALL_DIMS if shape.get(name))
     if key in measured:
         return measured[key]
+    want = 1
+    for name in CALL_DIMS:
+        want *= shape.get(name) or 1
+    if near := _nearest(measured, want):
+        return near
     if per_op := measured.get("per_op"):
         return per_op["cycles"], per_op["ops"]
     return None
