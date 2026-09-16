@@ -79,7 +79,7 @@ def _evaluate_one_mapping(  # top-level for clean pickling if you ever switch to
         logger.error(f"No scheduler found in context for {mapping_path}")
         return _record(float("inf"), None)
 
-    latency = float(scheduler.latency_total)
+    latency = float(scheduler.cost_to_rank)
     logger.info(f"Mapping {mapping_path} has latency {latency}")
     return _record(latency, mapping_path)
 

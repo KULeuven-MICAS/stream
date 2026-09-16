@@ -41,7 +41,15 @@ class _FakeSubStage:
 
     def run(self):
         idx = int(os.path.basename(self.ctx.get("output_path")))
-        self.ctx.set(scheduler=SimpleNamespace(latency_total=LATENCIES[idx]), variant=idx)
+        # A scheduler is ranked by cost_to_rank, which is its solved objective where it
+        # has one and its latency otherwise. These stand-ins never ran the allocator,
+        # so the two coincide.
+        self.ctx.set(
+            scheduler=SimpleNamespace(
+                latency_total=LATENCIES[idx], cost_to_rank=LATENCIES[idx]
+            ),
+            variant=idx,
+        )
         yield self.ctx
 
 

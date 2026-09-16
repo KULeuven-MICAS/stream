@@ -184,8 +184,12 @@ def test_dma_enabled():
 
 
 def test_dma_objective_no_dma_terms():
-    """When dma_channels=False, primary objective = total_lat only (no DMA vars)."""
-    cs = ConstraintSelection(dma_channels=False)
+    """When dma_channels=False, primary objective = total_lat only (no DMA vars).
+
+    The off-chip traffic charge is turned off here so the assertion is about the DMA terms
+    and nothing else; that charge has its own two tests below.
+    """
+    cs = ConstraintSelection(dma_channels=False, offchip_traffic_cost=False)
     tta = _make_tta_stub(cs, bind_objective=True)
     # Set up minimal mocks for _set_total_latency_and_objective
     mock_model = MagicMock()
@@ -215,6 +219,60 @@ def test_dma_objective_no_dma_terms():
         "buffering",
         "route_hops",
     ]
+
+
+def test_offchip_traffic_is_charged_in_the_primary_objective():
+    """With the charge on, the bytes join the latency in the primary objective.
+
+    Ranked only lexicographically, off-chip traffic can separate two designs just where
+    the latency model calls them exactly equal -- so a design re-reading a tensor twice as
+    often pays nothing for it whenever the re-reads hide behind compute. That is what made
+    the block search take the fine query block at sequence 4096, where silicon is 5%
+    faster on the coarse one.
+    """
+    cs = ConstraintSelection(dma_channels=False, offchip_traffic_cost=True)
+    tta = _make_tta_stub(cs, bind_objective=True)
+    mock_model = MagicMock()
+    mock_total_lat = MagicMock()
+    mock_total_lat._raw = "total_lat_raw"
+    mock_model.add_var.return_value = mock_total_lat
+    mock_model.quicksum.return_value = MagicMock(_raw=0)
+    tta.model = mock_model
+    tta.overlap = MagicMock()
+    tta.iterations = 1
+    tta.slot_latency = {}
+    tta.tensors_to_optimize_reuse_for = []
+    tta.transfer_nodes = []
+    tta.possible_transfer_allocations = {}
+    tta._offchip_bandwidth = lambda: 512.0
+    tta._set_total_latency_and_objective()
+    objectives = mock_model.set_lexicographic_objectives.call_args[0][0]
+    primary = next(o for o in objectives if o.name == "latency")
+    assert primary.expr != "total_lat_raw", "the traffic term did not reach the objective"
+
+
+def test_no_offchip_core_means_no_traffic_charge():
+    """A hardware description that never says where memory is cannot be charged for
+    reaching it, and the design is priced on latency alone rather than on a guess."""
+    cs = ConstraintSelection(dma_channels=False, offchip_traffic_cost=True)
+    tta = _make_tta_stub(cs, bind_objective=True)
+    mock_model = MagicMock()
+    mock_total_lat = MagicMock()
+    mock_total_lat._raw = "total_lat_raw"
+    mock_model.add_var.return_value = mock_total_lat
+    mock_model.quicksum.return_value = MagicMock(_raw=0)
+    tta.model = mock_model
+    tta.overlap = MagicMock()
+    tta.iterations = 1
+    tta.slot_latency = {}
+    tta.tensors_to_optimize_reuse_for = []
+    tta.transfer_nodes = []
+    tta.possible_transfer_allocations = {}
+    tta._offchip_bandwidth = lambda: 0.0
+    tta._set_total_latency_and_objective()
+    objectives = mock_model.set_lexicographic_objectives.call_args[0][0]
+    primary = next(o for o in objectives if o.name == "latency")
+    assert primary.expr == "total_lat_raw"
 
 
 def test_skip_warnings(caplog):

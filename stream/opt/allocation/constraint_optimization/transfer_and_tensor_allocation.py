@@ -1515,10 +1515,15 @@ class TransferAndTensorAllocator:
     def _define_overlap_var(self) -> None:
         overlap = self.model.add_var(vtype=SolverVarType.INTEGER, name="overlap")
         self.overlap = overlap
+        iteration = self.model.quicksum(v._raw for v in self.slot_latency.values())
         for res, v in self.idle_lat.items():
-            if not self.constraint_selection.transfer_contention and not isinstance(res, Core):
+            if not self._bounds_overlap(res):
                 continue
-            self.model.add_constr(overlap <= v)
+            busy = self._link_busy_expr(res) if isinstance(res, CommunicationLink) else None
+            if busy is None:
+                self.model.add_constr(overlap <= v)
+            else:
+                self.model.add_constr(overlap <= iteration - busy)
         # Both resource idle and a loop-carried state cap the overlap, so II = max(ResMII, RecMII).
         rec = self.recurrence_bound = self._recurrence_bound()
         if rec > 0:
@@ -1526,6 +1531,69 @@ class TransferAndTensorAllocator:
                 overlap <= self.model.quicksum(v._raw for v in self.slot_latency.values()) - rec,
                 name="overlap_recurrence_bound",
             )
+
+    def _link_busy_expr(self, link: CommunicationLink):
+        """Cycles this link actually carries data in one iteration, or None if it carries none.
+
+        ``idle_lat`` is built from a per-slot indicator, so a resource appearing anywhere in
+        a slot is billed for the whole of it. For a core that is close enough -- its work is
+        what makes the slot long. For a link it is not: a transfer holding a link for a
+        tenth of a slot is charged as though it held it throughout, and with every switch
+        hop billed that way the overlap collapses and the model over-states contention. That
+        is what makes the short sequences prefer the coarse block against the hardware.
+
+        The transfers already carry their own active latencies, reuse and path choice
+        included, so the honest bill is their sum: idle is then the iteration less that.
+        """
+        terms = [
+            self._active_transfer_latency(tr, choice, y)
+            for (tr, choice), y in self.y_path_choice.items()
+            if link in self.links_in_choice[(tr, choice)]
+        ]
+        return self.model.quicksum(t._raw for t in terms) if terms else None
+
+    def _offchip_bandwidth(self) -> float:
+        """Bits per cycle the array can move across the off-chip boundary, from the
+        hardware description rather than a constant here.
+
+        Every shim link in one direction, summed: traffic is spread over the columns, so
+        what limits a design is the aggregate and not any single column's share. Zero when
+        the description has no off-chip core, which is the honest answer for a model that
+        was never told where memory is -- the traffic term then drops out.
+        """
+        off = self.offchip_core_id
+        if off is None:
+            return 0.0
+        return float(sum(link.bandwidth for link in self.link_set if self._core_id(link.receiver) == off))
+
+    def _bounds_overlap(self, res: Resource) -> bool:
+        """Whether this resource being busy is a reason the next iteration cannot start.
+
+        A core always is: its work is the iteration. An internal link is one of many
+        parallel routes, so charging every switch hop over-states contention, and it counts
+        only when ``transfer_contention`` asks. The off-chip port is neither -- a single
+        shared boundary to DRAM that no design can widen -- so it counts on its own, which
+        is what keeps a design paying for bytes it re-reads however well they hide behind
+        compute.
+        """
+        if isinstance(res, Core):
+            return True
+        if self._is_offchip_link(res):
+            return self.constraint_selection.offchip_contention
+        return self.constraint_selection.transfer_contention
+
+    @staticmethod
+    def _core_id(end: Any) -> Any:
+        """A link end's core id. Some hardware descriptions name their ends rather than
+        holding the Core, so a link is not guaranteed to have one at either side."""
+        return getattr(end, "id", None)
+
+    def _is_offchip_link(self, res: Resource) -> bool:
+        """A link with the off-chip core at either end."""
+        off = self.offchip_core_id
+        if off is None or not isinstance(res, CommunicationLink):
+            return False
+        return off in (self._core_id(res.sender), self._core_id(res.receiver))
 
     def _recurrence_bound(self) -> int:
         """Cycles a loop-carried state forbids overlapping (modulo scheduling's RecMII); 0 when feed-forward.
@@ -1651,6 +1719,15 @@ class TransferAndTensorAllocator:
             for t in self.tensors_to_optimize_reuse_for
             for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
         )
+
+        # ...and charged, not merely broken ties with. Ranked lexicographically below
+        # latency it can only separate designs the latency model already calls equal, so a
+        # design re-reading a tensor twice as often pays nothing for it as long as the
+        # re-reads hide behind compute -- which is the comment above, left unenforced. The
+        # bytes take time at the port that carries them, so they belong in the same
+        # currency: cycles, at the off-chip bandwidth the hardware description declares.
+        if self.constraint_selection.offchip_traffic_cost and (bw := self._offchip_bandwidth()):
+            primary_expr = primary_expr + (self.iterations / bw) * traffic_expr
 
         # Third objective (tiebreaker): minimize total buffering depth
         buffering_expr = self.model.quicksum(

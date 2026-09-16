@@ -103,13 +103,26 @@ class ConstraintSelection:
 
     ``transfer_contention`` lets a link's idle time cap the inter-iteration overlap, which
     says two transfers sharing a route cannot proceed at once. Transfers keep their routes
-    and their latencies either way; only the overlap bound changes."""
+    and their latencies either way; only the overlap bound changes.
+
+    ``offchip_contention`` does the same for the off-chip port alone. The two are separate
+    because the resources are: a switch hop between neighbouring tiles is one of many
+    parallel routes and charging every one of them over-states contention, while the
+    boundary to DRAM is a single shared port no design can widen. With transfer_contention
+    on this changes nothing, since every link already bounds the overlap.
+
+    ``offchip_traffic_cost`` charges the bytes crossing that boundary as the cycles they
+    take at its bandwidth, in the primary objective. Without it off-chip traffic is only a
+    lexicographic tiebreaker, so a design that re-reads a tensor twice as often pays for it
+    only where the latencies are otherwise exactly equal."""
 
     memory_capacity: bool = True
     object_fifo_depth: bool = True
     buffer_descriptors: bool = True
     dma_channels: bool = True
     transfer_contention: bool = True
+    offchip_contention: bool = True
+    offchip_traffic_cost: bool = True
     pipelining: PipeliningModel = PipeliningModel.OCCUPANCY
 
     def __post_init__(self) -> None:

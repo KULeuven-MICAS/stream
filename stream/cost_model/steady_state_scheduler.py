@@ -132,6 +132,22 @@ class SteadyStateScheduler:
 
         self.solve_stats: SolveStats | None = None
 
+    @property
+    def cost_to_rank(self) -> float:
+        """What two solved designs should be compared by.
+
+        ``latency_total`` is the modelled runtime and stays exactly that. The allocator's
+        objective is that runtime plus what the design's off-chip bytes cost at the port
+        carrying them, and that is the honest thing to order candidates on: two designs
+        whose compute hides different amounts of traffic are not equally good merely
+        because their latencies came out equal. Falls back to the latency when no solve
+        statistics were kept, which is every path that did not run the allocator.
+        """
+        stats = self.solve_stats
+        if stats is not None and getattr(stats, "objective", None) is not None:
+            return float(stats.objective)
+        return float(self.latency_total)
+
     def get_ir(self) -> dict:
         """Return a dictionary representation of the scheduler state for serialization/inspection.
 

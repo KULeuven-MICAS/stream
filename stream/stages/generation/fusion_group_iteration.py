@@ -90,7 +90,7 @@ class FusionGroupIterationStage(Stage):
             ctx = ctxs[0]
 
             scheduler = ctx.get("scheduler")
-            group_latency = scheduler.latency_total
+            group_latency = scheduler.cost_to_rank
             total_latency += group_latency
             group_latencies[i] = group_latency
             group_columns[i] = compute_columns(scheduler)
