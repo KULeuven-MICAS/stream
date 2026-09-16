@@ -90,6 +90,18 @@ class FusionGroupIterationStage(Stage):
             ctx = ctxs[0]
 
             scheduler = ctx.get("scheduler")
+            # The ranking cost, which is the solved objective where there is one.
+            #
+            # This is not obviously right and the alternative was measured. choose_fusion
+            # _partition prices a fused group by its slot chain and a single-node group by
+            # its throughput bound, and those two are not on one scale: at embedding 512
+            # the chain prices k=1 at about 950 cycles per deployed microsecond and the
+            # bound prices k=5 at about 2500. Handing the chain the plain latency makes
+            # k=1 win at seq 256, which is right and worth 1.14x against the hand-written
+            # operator, and also at seq 2048, which is wrong and costs 2.6x. The objective
+            # compensates for the scale gap well enough to get seq 2048 right at the price
+            # of seq 256. Neither is a model of the machine; this is the better of the two
+            # until the regimes are calibrated against each other. 260917_SWIGLU_PARITY.
             group_latency = scheduler.cost_to_rank
             total_latency += group_latency
             group_latencies[i] = group_latency
