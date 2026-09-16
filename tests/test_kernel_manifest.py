@@ -27,19 +27,22 @@ def library():
     manifest.adopt({})
 
 
-def test_a_divisor_offers_the_size_and_its_halvings(library):
-    assert manifest.blocks("matmul_bf16_bf16", dict(m=64, k=64, n=64)) == {
-        0: (16, 32, 64), 1: (8, 16, 32, 64), 2: (16, 32, 64)
-    }
+def test_a_divisor_offers_nothing_because_a_rule_is_not_a_menu(library):
+    """mm.cc takes any multiple of its divisor; that is legality, not a list of builds.
 
-
-def test_a_divisor_is_relative_to_what_the_design_asks_for(library):
-    """A source taking any multiple of 16 still only offers what divides this call."""
-    assert manifest.blocks("matmul_bf16_bf16", dict(m=32, k=64, n=64))[0] == (16, 32)
+    Read as an offer it let the block search invent k=8 for the fused SwiGLU -- a block
+    nobody compiled or timed. The per-operation anchor prices it at the same cycles as
+    k=64 while making every transfer eight times smaller, so the search preferred it, and
+    the 512-deep reduction became 64 rounds of accumulation into a bf16 buffer: 4.6x
+    slower on device and 77% of elements outside tolerance against 14.5% before.
+    """
+    assert manifest.blocks("matmul_bf16_bf16") == {}
+    assert manifest.divisors("matmul_bf16_bf16") == {0: 16, 1: 8, 2: 16}
 
 
 def test_an_explicit_list_is_taken_as_given(library):
-    assert manifest.blocks("partial_softmax", dict(m=32, n=64)) == {0: (32, 64)}
+    assert manifest.blocks("partial_softmax") == {0: (32, 64)}
+    assert manifest.divisors("partial_softmax") == {}
 
 
 def test_a_shape_nobody_measured_falls_back_to_the_per_operation_anchor(library):
@@ -48,7 +51,8 @@ def test_a_shape_nobody_measured_falls_back_to_the_per_operation_anchor(library)
 
 
 def test_an_unknown_symbol_offers_nothing(library):
-    assert manifest.blocks("nothing", dict(m=64)) == {}
+    assert manifest.blocks("nothing") == {}
+    assert manifest.divisors("nothing") == {}
     assert manifest.cycles("nothing", dict(m=64)) is None
 
 

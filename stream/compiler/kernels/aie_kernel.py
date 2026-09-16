@@ -163,7 +163,15 @@ class AIEKernel(ABC):
         A position absent from the mapping is fixed at its granule value. Empty until a
         kernel library declares otherwise, which is the right answer for a mapper that
         has not been told what it is compiling against."""
-        return manifest.blocks(self.manifest_key, self.call_shape())
+        return manifest.blocks(self.manifest_key)
+
+    def block_divisors(self) -> dict[int, int]:
+        """The floor each granule position must stay a multiple of, where the source is
+        generic over it.
+
+        A kernel declaring these follows the block its group settles on instead of offering
+        sizes of its own, so it narrows the candidates rather than adding to them."""
+        return manifest.divisors(self.manifest_key)
 
     def work_share(self, index: int, width: int, steps: int) -> float:
         """Share of a node's work the core at ``index`` of ``width`` does, holding ``steps``

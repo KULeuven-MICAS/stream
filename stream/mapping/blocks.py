@@ -18,11 +18,15 @@ CALL_DIMS = ("m", "k", "n")
 def block_options(workload: Workload, mapping: Mapping, group) -> dict[Any, tuple[int, ...]]:
     """Compiled block sizes the whole group accepts, per tiling dimension.
 
-    A dimension one kernel compiles in but offers no sizes for is fixed for the group, since
-    the kernels either side of it are compiled against the same block. One the group does
-    not tile is already at its extent and is not a tiling decision.
+    Only a kernel with a declared block list offers candidates. One generic over a dimension
+    -- declaring a divisor for it -- takes whatever block the group settles on, so it narrows
+    what the others offer instead of proposing sizes nobody built or timed. A dimension a
+    kernel compiles in but neither offers nor accepts is fixed for the group, since the
+    kernels either side of it are compiled against the same block. One the group does not
+    tile is already at its extent and is not a tiling decision.
     """
     options: dict[Any, set[int]] = {}
+    floors: dict[Any, int] = {}
     fixed: set[Any] = set()
     for name in group.layers:
         node = workload.get_node_by_name(name)
@@ -33,18 +37,22 @@ def block_options(workload: Workload, mapping: Mapping, group) -> dict[Any, tupl
             continue
         dims = workload.get_dims(node)
         offered = kernel.block_sizes()
+        accepted = kernel.block_divisors()
         for position, _ in kernel.granule():
             dim = dims[position]
             if position in offered:
                 options[dim] = options.get(dim, set(offered[position])) & set(offered[position])
+            elif position in accepted:
+                floors[dim] = max(floors.get(dim, 1), accepted[position])
             else:
                 fixed.add(dim)
     tiled = {dim for dim, _ in group.intra_core_tiling}
-    return {
-        dim: tuple(sorted(sizes))
+    narrowed = {
+        dim: tuple(sorted(size for size in sizes if size % floors.get(dim, 1) == 0))
         for dim, sizes in options.items()
-        if len(sizes) > 1 and dim not in fixed and dim in tiled
+        if dim not in fixed and dim in tiled
     }
+    return {dim: sizes for dim, sizes in narrowed.items() if len(sizes) > 1}
 
 
 def with_block(workload: Workload, mapping: Mapping, gi: int, group, dim, size: int) -> Mapping:
@@ -59,9 +67,11 @@ def with_block(workload: Workload, mapping: Mapping, gi: int, group, dim, size: 
         if kernel is None:
             continue
         dims = workload.get_dims(node)
+        # Every position the kernel can be rebuilt at, offered or merely accepted: a kernel
+        # generic over the dimension proposes nothing but still has to follow the block.
         fields = {
             CALL_DIMS[position]: size
-            for position in kernel.block_sizes()
+            for position in (*kernel.block_sizes(), *kernel.block_divisors())
             if dims[position] == dim and position < len(CALL_DIMS)
         }
         if fields:

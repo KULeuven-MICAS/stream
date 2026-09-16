@@ -27,34 +27,30 @@ def entry(symbol: str | None) -> dict[str, Any]:
     return _LIBRARY.get(symbol or "", {})
 
 
-def _divisor_family(size: int, floor: int) -> tuple[int, ...]:
-    """``size`` and every halving of it that stays a multiple of ``floor``, finest first."""
-    out, block = [], size
-    while block >= floor and block % floor == 0:
-        out.append(block)
-        block //= 2
-    return tuple(reversed(out))
+def blocks(symbol: str | None) -> dict[int, tuple[int, ...]]:
+    """Sizes the library is built and timed at for ``symbol``, per call-dimension position.
 
-
-def blocks(symbol: str | None, shape: dict[str, int]) -> dict[int, tuple[int, ...]]:
-    """Sizes the library compiles ``symbol`` at, per call-dimension position.
-
-    ``shape`` is the kernel's own dimensions, which a divisor declaration is relative to:
-    a source that takes any multiple of 16 still only offers what divides what it is
-    being asked for.
+    Only an explicit ``blocks`` list is an offer. A ``divisor`` is a legality rule -- what
+    the source will accept -- and a rule is not a menu: every multiple of it compiles, but
+    only the sizes somebody built and measured are worth choosing between. Reading the rule
+    as an offer lets a search invent a block nobody ever ran. ``divisors`` carries the rule.
     """
     declared = entry(symbol)
-    if divisor := declared.get("divisor"):
-        return {
-            position: _divisor_family(shape[name], floor)
-            for position, name in enumerate(CALL_DIMS)
-            if (floor := divisor.get(name)) and shape.get(name)
-        }
     return {
         position: tuple(sizes)
         for position, name in enumerate(CALL_DIMS)
         if (sizes := declared.get("blocks", {}).get(name))
     }
+
+
+def divisors(symbol: str | None) -> dict[int, int]:
+    """The floor each call dimension must stay a multiple of, per position.
+
+    A source declaring these is generic over them: it takes whatever block the rest of its
+    group settles on, so it constrains that choice rather than proposing sizes of its own.
+    """
+    declared = entry(symbol).get("divisor", {})
+    return {position: floor for position, name in enumerate(CALL_DIMS) if (floor := declared.get(name))}
 
 
 def cycles(symbol: str | None, shape: dict[str, int]) -> float | tuple[float, int] | None:
