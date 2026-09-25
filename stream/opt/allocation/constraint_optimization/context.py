@@ -131,6 +131,10 @@ class NamespaceConstraints:
         """
         return False
 
+    def reserved_memory_bits(self, core: Core) -> int:
+        """Bits of the core's data memory the toolchain claims before any tensor lands."""
+        return 0
+
     # ---- object-FIFO depth ----
 
     def add_object_fifo_constraints(
@@ -257,6 +261,13 @@ class AIE2Constraints(NamespaceConstraints):
                 name=f"aie2_bd_depth_Core_{core.id}",
             )
 
+    DEFAULT_CORE_STACK_BYTES = 1024
+
+    def reserved_memory_bits(self, core: Core) -> int:
+        if core.type != "compute":
+            return 0
+        return self.DEFAULT_CORE_STACK_BYTES * 8
+
     # ---- DMA channel usage ----
     def shares_memory(self, one: Core, other: Core) -> bool:
         """Whether two tiles are served by one memory module.
@@ -355,6 +366,10 @@ class TransferAndTensorContext:
     def shares_memory(self, one: Core, other: Core) -> bool:
         """Whether any namespace puts these two cores on shared memory."""
         return any(ns.shares_memory(one, other) for ns in self.namespace_constraints)
+
+    def reserved_memory_bits(self, core: Core) -> int:
+        """Bits the toolchain claims on this core, summed over the namespaces that own it."""
+        return sum(ns.reserved_memory_bits(core) for ns in self.namespace_constraints if ns.applies_to(core))
 
     def add_dma_usage_constraints(
         self,

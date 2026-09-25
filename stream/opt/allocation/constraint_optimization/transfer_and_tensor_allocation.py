@@ -1006,7 +1006,7 @@ class TransferAndTensorAllocator:
                 terms["handover"] = {"value": held, "dims": (), "dtype": ""}
 
         for c, expr in self.core_load.items():
-            cap = c.get_memory_capacity()
+            cap = c.get_memory_capacity() - self.context.reserved_memory_bits(c)
             self._resource_bounds[("memory_capacity", c.id)] = cap / 8  # bytes
             self._add_resource_constr(
                 expr <= cap, name=f"mem_cap_{_resource_key(c)}", kind="memory_capacity", resource=c
@@ -2695,7 +2695,8 @@ class TransferAndTensorAllocator:
             except Exception:  # noqa: BLE001 -- an unreadable solution means no measurement, not zero
                 continue
             try:
-                capacity = int(core.get_memory_capacity())
+                bound = self._resource_bounds.get(("memory_capacity", core_id))
+                capacity = int(bound * 8) if bound is not None else int(core.get_memory_capacity())
             except Exception:  # noqa: BLE001
                 continue
             rows.append(

@@ -119,3 +119,12 @@ def test_from_config_maps_the_aie2_knobs():
     assert built.max_compute_tile_dma_channels == 8
     assert built.max_shim_tile_dma_channels == 2
     assert built.offchip_core_id == accelerator.offchip_core_id
+
+
+def test_compute_tiles_reserve_the_toolchain_stack():
+    accelerator = _accelerator(_AIE)
+    context = build_transfer_context(accelerator)
+    compute = next(c for c in accelerator.core_list if c.type == "compute")
+    memory = next(c for c in accelerator.core_list if c.type == "memory")
+    assert context.reserved_memory_bits(compute) == AIE2Constraints.DEFAULT_CORE_STACK_BYTES * 8
+    assert context.reserved_memory_bits(memory) == 0
