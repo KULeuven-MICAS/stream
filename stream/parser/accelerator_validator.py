@@ -78,6 +78,8 @@ class AcceleratorValidator:
         },
         # Id of the core that acts as the off-chip memory controller
         "offchip_core_id": {"type": "integer", "min": 0, "required": True},
+        # Optional measured DRAM behaviour, in bits per cycle: see stream.cost_model.offchip_dram
+        "offchip_dram": {"type": "dict", "required": False},
         # Optional unit_energy_cost used for connections that don't specify their own
         "unit_energy_cost": {
             "type": "float",

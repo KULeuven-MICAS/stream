@@ -24,11 +24,14 @@ class Accelerator:
         cores: CoreGraph,
         nb_shared_mem_groups: int,
         offchip_core_id: int | None = None,
+        offchip_dram: dict | None = None,
     ):
         """ """
         self.name = name
         self.cores = cores
         self.offchip_core_id = offchip_core_id
+        # Measured DRAM behaviour, or None when the description declares none.
+        self.offchip_dram = offchip_dram
         self.nb_shared_mem_groups = nb_shared_mem_groups
         self.communication_manager = CommunicationManager(self)
 

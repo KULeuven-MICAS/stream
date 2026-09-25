@@ -197,9 +197,15 @@ def choose_fusion_partition(  # noqa: PLR0913, PLR0912, PLR0915
         # priced by its own regime.
         bounded = 0.0
         offchip_total = 0.0
+        # A description that measures its DRAM has it inside the solve, as a resource bounding
+        # the step, so the solved latency and bound already carry it. Only without one is the
+        # off-chip port bounded here, from the access estimator's per-port counts.
+        dram_in_solve = getattr(ctx.get("accelerator"), "offchip_dram", None) is not None
         for i in sorted(group_latencies):
             ports = ((group_accesses.get(i) or {}).get("cores", ())) if group_accesses else ()
-            offchip = max((c["read"] + c["write"] for c in ports if c.get("is_offchip")), default=0.0)
+            offchip = 0.0 if dram_in_solve else max(
+                (c["read"] + c["write"] for c in ports if c.get("is_offchip")), default=0.0
+            )
             offchip_total += offchip
             if group_nodes.get(i, 2) > 1 or not group_bounds.get(i):
                 bounded += max(group_latencies[i], offchip)

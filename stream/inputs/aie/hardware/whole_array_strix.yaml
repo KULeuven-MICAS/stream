@@ -92,6 +92,17 @@ core_coordinates:
   46: [7, 4]
   47: [7, 5]
 offchip_core_id: 0
+# How DRAM behaves behind the shims, in bits per 1.8 GHz array cycle. Measured on NPU2
+# Strix with a DRAM -> memory tile -> DRAM copy over eight columns that checks its bytes,
+# 16 MB each way: contiguous both ways at once gives the ceiling and the contiguous rate;
+# one side walking 4 KB rows in runs of `span` bytes gives the strided rates.
+# 260923_mha_model_accuracy/harness/dram_bw.py, results/dram_bw.jsonl.
+offchip_dram:
+  ceiling: 296.6
+  contiguous: 148.3
+  strided:
+    read: {32: 19.0, 64: 35.2, 128: 53.5, 256: 57.2, 512: 93.5}
+    write: {32: 17.1, 64: 28.3, 128: 53.2, 256: 54.2, 512: 93.5}
 core_connectivity:
   # ───── Connect shim_dma to mem_tile (Column 0) ─────
   - type: link

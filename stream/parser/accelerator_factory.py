@@ -48,6 +48,7 @@ class AcceleratorFactory:
             cores=cores_graph,
             offchip_core_id=offchip_core_id,
             nb_shared_mem_groups=nb_shared_mem_groups,
+            offchip_dram=self.data.get("offchip_dram"),
         )
 
     def create_core(

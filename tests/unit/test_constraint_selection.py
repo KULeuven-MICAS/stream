@@ -121,6 +121,8 @@ def _make_tta_stub(constraint_selection, *, bind_objective=False):
 
     tta = MagicMock(spec=TransferAndTensorAllocator)
     tta.constraint_selection = constraint_selection
+    # No measured DRAM: the objective's traffic charge is what prices the off-chip bytes.
+    tta.dram = None
     # Bind the real dispatch methods so if-guards execute
     tta._create_constraints = TransferAndTensorAllocator._create_constraints.__get__(tta)
     tta._overlap_and_objective = TransferAndTensorAllocator._overlap_and_objective.__get__(tta)
@@ -269,6 +271,33 @@ def test_no_offchip_core_means_no_traffic_charge():
     tta.transfer_nodes = []
     tta.possible_transfer_allocations = {}
     tta._offchip_bandwidth = lambda: 0.0
+    tta._set_total_latency_and_objective()
+    objectives = mock_model.set_lexicographic_objectives.call_args[0][0]
+    primary = next(o for o in objectives if o.name == "latency")
+    assert primary.expr == "total_lat_raw"
+
+
+def test_a_measured_dram_takes_the_bytes_out_of_the_objective():
+    """With DRAM in the solve as a resource bounding the step, the bytes are in the latency
+    already, so the primary objective does not charge them a second time."""
+    from stream.cost_model.offchip_dram import DramProfile
+
+    cs = ConstraintSelection(dma_channels=False, offchip_traffic_cost=True)
+    tta = _make_tta_stub(cs, bind_objective=True)
+    tta.dram = DramProfile(ceiling=296.6, contiguous=148.3, strided={"read": {32: 19.0}, "write": {32: 17.1}})
+    mock_model = MagicMock()
+    mock_total_lat = MagicMock()
+    mock_total_lat._raw = "total_lat_raw"
+    mock_model.add_var.return_value = mock_total_lat
+    mock_model.quicksum.return_value = MagicMock(_raw=0)
+    tta.model = mock_model
+    tta.overlap = MagicMock()
+    tta.iterations = 4
+    tta.slot_latency = {}
+    tta.tensors_to_optimize_reuse_for = []
+    tta.transfer_nodes = []
+    tta.possible_transfer_allocations = {}
+    tta._offchip_bandwidth = lambda: 512.0
     tta._set_total_latency_and_objective()
     objectives = mock_model.set_lexicographic_objectives.call_args[0][0]
     primary = next(o for o in objectives if o.name == "latency")

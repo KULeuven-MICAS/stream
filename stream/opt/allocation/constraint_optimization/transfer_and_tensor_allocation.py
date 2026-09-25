@@ -19,6 +19,7 @@ except ModuleNotFoundError:
 
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.core_cost_lut import CoreCostLUT
+from stream.cost_model.offchip_dram import DramProfile, contiguous_span_bytes
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink
@@ -151,6 +152,10 @@ class TransferAndTensorAllocator:
             accelerator, nb_cols_to_use=nb_cols_to_use, force_double_buffering=True
         )
         self.offchip_core_id = self.context.offchip_core_id
+        # The memory behind the off-chip core, when the hardware description measures it.
+        # Without it the off-chip core is only its links, and the objective charges the bytes.
+        self.dram = DramProfile.from_description(getattr(accelerator, "offchip_dram", None))
+        self.dram_busy = None
         self.iterations = iterations
         self.ssis = ssis
         self.multiplicities = multiplicities
@@ -220,6 +225,7 @@ class TransferAndTensorAllocator:
 
         # latency vars
         self._transfer_latency_cache: dict[tuple[TransferNode, MulticastPathPlan], SolverVar] = {}
+        self._dram_latency_cache: dict[tuple[TransferNode, MulticastPathPlan], SolverVar] = {}
         self.slot_latency: dict[int, SolverVar] = {}
         self.overlap: SolverVar | None = None
         self.total_latency: SolverVar | None = None
@@ -340,7 +346,38 @@ class TransferAndTensorAllocator:
         # so it adds no time to the slot, the same reason it spends no DMA channel.
         if self._choice_shares_memory(tr, path):
             return 0
-        return self.context.transfer_firing_overhead() + get_transfer_latency_for_path(tr, path)
+        link = self.context.transfer_firing_overhead() + get_transfer_latency_for_path(tr, path)
+        # Alone, a transfer to or from DRAM still moves no faster than one direction of it
+        # at the rate its access pattern gets.
+        return max(link, self._dram_cycles(tr, path, self.dram.contiguous) if self.dram else 0)
+
+    def _dram_side(self, path: MulticastPathPlan) -> str | None:
+        """'read' for a transfer out of DRAM, 'write' for one into it, None for on-chip."""
+        if self.offchip_core_id is None:
+            return None
+        if any(c.id == self.offchip_core_id for c in path.sources):
+            return "read"
+        if any(c.id == self.offchip_core_id for c in path.targets):
+            return "write"
+        return None
+
+    def _dram_cycles(self, tr: TransferNode, path: MulticastPathPlan, rate: float) -> int:
+        """Cycles one firing of an off-chip transfer holds DRAM at `rate` bits per cycle,
+        slowed by how contiguously its block sits in the tensor it is cut from.
+
+        The block is the transfer's tensor: what every column it feeds moves at one step,
+        so its contiguous span is what DRAM sees, whichever links the solver routes it on.
+        """
+        side = self._dram_side(path)
+        if self.dram is None or side is None:
+            return 0
+        tensor = tr.inputs[0]
+        try:
+            full = tuple(tensor.subview.source.type.get_shape())
+        except Exception:  # noqa: BLE001 -- no enclosing tensor: only the inner extent is known
+            full = None
+        span = contiguous_span_bytes(tuple(tensor.shape), full, tensor.operand_type.bitwidth)
+        return ceil(tensor.size_bits() / (rate * self.dram.efficiency(span, side)))
 
     def _ensure_same_ssis_for_all_transfers(self) -> None:
         first_ssis = self.ssis[self.transfer_nodes[0]]
@@ -1525,6 +1562,7 @@ class TransferAndTensorAllocator:
             else:
                 self.model.add_constr(overlap <= iteration - busy)
         self._skipped_step_floor(overlap, iteration)
+        self._dram_bound(overlap, iteration)
         # Both resource idle and a loop-carried state cap the overlap, so II = max(ResMII, RecMII).
         rec = self.recurrence_bound = self._recurrence_bound()
         if rec > 0:
@@ -1759,7 +1797,9 @@ class TransferAndTensorAllocator:
         # re-reads hide behind compute -- which is the comment above, left unenforced. The
         # bytes take time at the port that carries them, so they belong in the same
         # currency: cycles, at the off-chip bandwidth the hardware description declares.
-        if self.constraint_selection.offchip_traffic_cost and (bw := self._offchip_bandwidth()):
+        # With a measured DRAM the bytes are already in the latency, through the DRAM bound;
+        # charging them here as well would bill them twice.
+        if self.dram is None and self.constraint_selection.offchip_traffic_cost and (bw := self._offchip_bandwidth()):
             primary_expr = primary_expr + (self.iterations / bw) * traffic_expr
 
         # Third objective (tiebreaker): minimize total buffering depth
@@ -2602,6 +2642,43 @@ class TransferAndTensorAllocator:
 
         return active_latency_absent_loops_and_reuse_factor
 
+    def _active_dram_latency(self, tr: TransferNode, choice: MulticastPathPlan, y: SolverVar) -> SolverVar:
+        """DRAM cycles this transfer occupies per iteration at the shared read + write
+        ceiling: its cycles per firing over how often it fires, the same reuse the transfer
+        latency divides by."""
+        if (tr, choice) not in self._dram_latency_cache:
+            constant = float(self._dram_cycles(tr, choice, self.dram.ceiling))
+            t = tr.outputs[0]
+            applicable_temporal = self.ssis[t].get_applicable_temporal_variables()
+            selectors = [
+                (self.z_stop[(t, s)], float(self.reuse_levels[(t, s)])) for s in range(-1, len(applicable_temporal))
+            ]
+            self._dram_latency_cache[(tr, choice)] = self._add_binary_times_const_over_linexpr(
+                binary_var=y,
+                numerator=get_active_latency(tr, constant, self.ssis),
+                denominator_expr=self.reuse_factors[tr]._raw,
+                denominator_lb=1.0,
+                base_name=f"dram_latency_{tr}",
+                selectors=selectors,
+            )
+        return self._dram_latency_cache[(tr, choice)]
+
+    def _dram_bound(self, overlap, iteration) -> None:
+        """DRAM is one memory behind every off-chip link: whatever the routing, the step
+        lasts at least as long as all off-chip transfers of one iteration take there."""
+        if self.dram is None:
+            return
+        terms = [
+            self._active_dram_latency(tr, choice, y)._raw
+            for (tr, choice), y in self.y_path_choice.items()
+            if self._dram_side(choice) is not None and not self._choice_shares_memory(tr, choice)
+        ]
+        if not terms:
+            return
+        self.dram_busy = self.model.add_var(vtype=SolverVarType.CONTINUOUS, name="dram_busy")
+        self.model.add_constr(self.dram_busy == self.model.quicksum(terms), name="dram_busy_def")
+        self.model.add_constr(overlap <= iteration - self.dram_busy, name="dram_bound")
+
     def _active_compute_latency(
         self,
         n: ComputationNode,
@@ -2936,6 +3013,8 @@ class TransferAndTensorAllocator:
                     busy[core] += active
         per_iteration = max(busy.values(), default=0.0)
         per_iteration = max(per_iteration, float(self.recurrence_bound or 0))
+        if self.dram_busy is not None:
+            per_iteration = max(per_iteration, float(self.dram_busy.X))
         chain = sum(float(v.X) for v in self.slot_latency.values())
         return self.iterations * per_iteration + max(0.0, chain - per_iteration)
 
@@ -3223,6 +3302,9 @@ class TransferAndTensorAllocator:
                     "overlap": _scalar(overlap_val),
                     "iter_step": _scalar(iter_step_val),
                     "total_latency": _scalar(total_latency_val),
+                    # DRAM cycles one iteration's off-chip transfers take, when it is modelled:
+                    # the step is at least this long, so equal to iter_step means DRAM binds.
+                    "dram_busy": _scalar(float(self.dram_busy.X)) if self.dram_busy is not None else None,
                 },
                 # Per-resource slack; the overlap equals the minimum (the binding resource(s) first).
                 "resource_slack": self._resource_slack_breakdown(),
