@@ -173,6 +173,7 @@ class TransferAndTensorAllocator:
         self._resource_terms: dict[tuple[str, int], dict[str, float]] = defaultdict(dict)
         # core id -> [(indicator, bits-when-1, tensor)]: terms of that core's memory-capacity constraint.
         self._memory_load_terms: dict[int, list[tuple[SolverVar, int, str]]] = defaultdict(list)
+        self._capacity_load_terms: dict[tuple[str, int], list[tuple[SolverVar, int]]] = defaultdict(list)
 
         # primary decision vars
         self.x_tensor_choice: dict[tuple[Tensor, TensorPlacementChoice], SolverVar] = {}
@@ -204,8 +205,8 @@ class TransferAndTensorAllocator:
         self._ensure_same_ssis_for_all_transfers()
         self.reuse_levels: dict[tuple[Tensor, int], int] = {}
         self.tiles_needed_levels: dict[tuple[Tensor, int], int] = {}
-        self.bds_needed_levels: dict[tuple[Tensor, int], int] = {}
         self.rotation_levels: dict[tuple[Tensor, int], bool] = {}
+        self.bds_needed_levels: dict[tuple[Tensor, int], int] = {}
         self.tensors_to_optimize_reuse_for: list[Tensor] = []
         self._init_transfer_fire_helpers()
 
@@ -351,8 +352,8 @@ class TransferAndTensorAllocator:
                 tiles_factor *= Nl if relevancy else 1
                 self.reuse_levels[(t, i)] = reuse_factor
                 self.tiles_needed_levels[(t, i)] = tiles_factor
-                if relevancy:
                 self.rotation_levels[(t, i)] = any(relevancies[i + 1 :])
+                if relevancy:
                     bds_needed = 1
                 else:
                     bds_needed *= Nl
@@ -979,9 +980,9 @@ class TransferAndTensorAllocator:
                     min_req: int | None = None
                     for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                         size_factor = self.tiles_needed_levels[(t, stop)]
-                        req_size = ceil(size_factor * tensor_size)
                         if self.rotation_levels.get((t, stop)):
                             size_factor = max(size_factor, 2)
+                        req_size = ceil(size_factor * tensor_size)
                         min_req = req_size if min_req is None else min(min_req, req_size)
                         uz = self._add_binary_product(
                             a=u,
@@ -1037,6 +1038,7 @@ class TransferAndTensorAllocator:
                             base_name=f"objfifo_{t.name}_{_resource_key(c)}_L{stop}",
                         )
                         self.object_fifo_depth[c] = self.object_fifo_depth[c] + tiles_needed * uz._raw
+                        self._capacity_load_terms[("object_fifo_depth", c.id)].append((uz, tiles_needed))
                     if min_tiles is not None:
                         self._resource_terms[("object_fifo_depth", c.id)][t.name] = min_tiles
         self.context.add_object_fifo_constraints(self.model, self.object_fifo_depth)
@@ -1067,6 +1069,7 @@ class TransferAndTensorAllocator:
                                 base_name=f"bddepth_{t.name}_{_resource_key(c)}_L{stop}",
                             )
                             self.bd_depth[c] = self.bd_depth[c] + bds_needed * uz._raw
+                            self._capacity_load_terms[("buffer_descriptors", c.id)].append((uz, bds_needed))
                     else:
                         # If the core is a memory core, we add bd usage only if the eq. tensor on compute
                         # is not being reused (zStop[t, stop] == 0 at that reuse level)
@@ -1081,6 +1084,7 @@ class TransferAndTensorAllocator:
                             compute_tensor = tr.outputs[0]
                         else:
                             raise NotImplementedError("Expected tensor to be either input or output of the transfer.")
+                        compute_levels = len(self.ssis[compute_tensor].get_applicable_temporal_variables())
                         for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                             src_tensor_reuse = self.z_stop[(compute_tensor, stop)] if stop < compute_levels else 0
                             gate_var = self.model.add_var(
@@ -1088,7 +1092,6 @@ class TransferAndTensorAllocator:
                                 name=f"active_{compute_tensor.name}_{_resource_key(c)}_L{stop}",
                             )
                             self.model.add_constr(
-                        compute_levels = len(self.ssis[compute_tensor].get_applicable_temporal_variables())
                                 gate_var == 1 - src_tensor_reuse,
                                 name=f"active_gate_{compute_tensor.name}_{_resource_key(c)}_L{stop}",
                             )
@@ -1105,6 +1108,7 @@ class TransferAndTensorAllocator:
                             bds_needed = self.bds_needed_levels[(t, stop)]
                             min_bd = bds_needed if min_bd is None else min(min_bd, bds_needed)
                             self.bd_depth[c] = self.bd_depth[c] + bds_needed * uzgate._raw
+                            self._capacity_load_terms[("buffer_descriptors", c.id)].append((uzgate, bds_needed))
                     if min_bd is not None:
                         self._resource_terms[("buffer_descriptors", c.id)][t.name] = min_bd
         self.context.add_buffer_descriptor_constraints(self.model, self.bd_depth)
@@ -1146,6 +1150,13 @@ class TransferAndTensorAllocator:
                             self.z_stop[(output_tensor, s)] == self.z_stop[(input_tensor, s)],
                             name=f"reuse_eq_input_{tr.name}_L{s}",
                         )
+                    self.model.add_constr(
+                        self.model.quicksum(self.z_stop[(output_tensor, s)]._raw for s in range(shared - 1, out_levels))
+                        == self.model.quicksum(
+                            self.z_stop[(input_tensor, s)]._raw for s in range(shared - 1, in_levels)
+                        ),
+                        name=f"reuse_eq_input_{tr.name}_L{shared - 1}",
+                    )
             elif tr.transfer_type in (TransferType.MEM_TO_COMPUTE,):
                 assert len(inputs) == 1, "Expected exactly one input tensor for MEM_TO_COMPUTE transfer."
                 input_tensor = inputs[0]
@@ -1154,13 +1165,6 @@ class TransferAndTensorAllocator:
                     # reads it (>=, not ==), so a deeper-loop-invariant operand isn't evicted and re-streamed.
                     self.model.add_constr(
                         self._reuse_level_expr(input_tensor) >= self._reuse_level_expr(output_tensor),
-                    self.model.add_constr(
-                        self.model.quicksum(self.z_stop[(output_tensor, s)]._raw for s in range(shared - 1, out_levels))
-                        == self.model.quicksum(
-                            self.z_stop[(input_tensor, s)]._raw for s in range(shared - 1, in_levels)
-                        ),
-                        name=f"reuse_eq_input_{tr.name}_L{shared - 1}",
-                    )
                         name=f"reuse_ge_output_{tr.name}",
                     )
                     # Whether that extra residency is realisable is a target property.
@@ -2687,6 +2691,22 @@ class TransferAndTensorAllocator:
             "tensor_reuse": self._tensor_reuse_breakdown(),
             "memory_occupancy": self._memory_occupancy(),
         }
+
+    def capacity_slack(self) -> dict[int, dict[str, float]]:
+        """Unused capacity per core: memory in bytes, fifo depth and buffer descriptors in slots."""
+        slack: dict[int, dict[str, float]] = {}
+        for row in self._memory_occupancy():
+            slack.setdefault(row["core_id"], {})["memory_bytes"] = (row["capacity_bits"] - row["resident_bits"]) / 8
+        for (family, core_id), terms in self._capacity_load_terms.items():
+            bound = self._resource_bounds.get((family, core_id))
+            if bound is None:
+                continue
+            try:
+                used = sum(count for var, count in terms if float(var.X) > self.VAR_THRESHOLD)
+            except Exception:  # noqa: BLE001
+                continue
+            slack.setdefault(core_id, {})[family] = bound - used
+        return slack
 
     def _memory_occupancy(self) -> list[dict[str, Any]]:
         """Per core: bits the solved placement keeps resident vs capacity (from the memory-capacity constraint)."""
