@@ -1078,12 +1078,13 @@ class TransferAndTensorAllocator:
                         else:
                             raise NotImplementedError("Expected tensor to be either input or output of the transfer.")
                         for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
-                            src_tensor_reuse = self.z_stop[(compute_tensor, stop)]
+                            src_tensor_reuse = self.z_stop[(compute_tensor, stop)] if stop < compute_levels else 0
                             gate_var = self.model.add_var(
                                 vtype=SolverVarType.BINARY,
                                 name=f"active_{compute_tensor.name}_{_resource_key(c)}_L{stop}",
                             )
                             self.model.add_constr(
+                        compute_levels = len(self.ssis[compute_tensor].get_applicable_temporal_variables())
                                 gate_var == 1 - src_tensor_reuse,
                                 name=f"active_gate_{compute_tensor.name}_{_resource_key(c)}_L{stop}",
                             )
@@ -1129,12 +1130,14 @@ class TransferAndTensorAllocator:
         for tr in self.transfer_nodes:
             inputs = tr.inputs
             outputs = tr.outputs
-            relevancies = self.ssis[tr].get_applicable_temporal_relevancies()
             if tr.transfer_type in (TransferType.COMPUTE_TO_MEM,):
                 assert len(outputs) == 1, "Expected exactly one output tensor for COMPUTE_TO_MEM transfer."
                 output_tensor = outputs[0]
                 for input_tensor in inputs:
-                    for s in range(-1, len(relevancies)):
+                    out_levels = len(self.ssis[output_tensor].get_applicable_temporal_sizes())
+                    in_levels = len(self.ssis[input_tensor].get_applicable_temporal_sizes())
+                    shared = min(out_levels, in_levels)
+                    for s in range(-1, shared - 1):
                         self.model.add_constr(
                             self.z_stop[(output_tensor, s)] == self.z_stop[(input_tensor, s)],
                             name=f"reuse_eq_input_{tr.name}_L{s}",
@@ -1147,6 +1150,13 @@ class TransferAndTensorAllocator:
                     # reads it (>=, not ==), so a deeper-loop-invariant operand isn't evicted and re-streamed.
                     self.model.add_constr(
                         self._reuse_level_expr(input_tensor) >= self._reuse_level_expr(output_tensor),
+                    self.model.add_constr(
+                        self.model.quicksum(self.z_stop[(output_tensor, s)]._raw for s in range(shared - 1, out_levels))
+                        == self.model.quicksum(
+                            self.z_stop[(input_tensor, s)]._raw for s in range(shared - 1, in_levels)
+                        ),
+                        name=f"reuse_eq_input_{tr.name}_L{shared - 1}",
+                    )
                         name=f"reuse_ge_output_{tr.name}",
                     )
                     # Whether that extra residency is realisable is a target property.
