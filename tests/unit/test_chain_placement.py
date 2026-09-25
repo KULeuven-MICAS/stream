@@ -20,6 +20,15 @@ def test_a_dominant_middle_layer_does_not_widen():
     assert row_counts([1730, 4400 * 2, 1536], 4) == (1, 1, 1)
 
 
+def test_a_state_consumer_is_never_wider_than_its_producer():
+    # The traced flash costs: the context layer, handed the softmax's carried scale, is
+    # the bottleneck. Unconstrained it takes two rows; the second is not beside the
+    # softmax, and aiecc rejects the design that handover would need.
+    costs = [1595, 4436, 11500]
+    assert row_counts(costs, 4) == (1, 1, 2)
+    assert row_counts(costs, 4, state_consumers=frozenset({2})) == (1, 1, 1)
+
+
 def test_widest_columns_honours_granularity():
     assert widest_columns(512, 64, 1, 8) == 8
     assert widest_columns(256, 64, 1, 8) == 4

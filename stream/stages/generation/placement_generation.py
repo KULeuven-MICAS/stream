@@ -184,10 +184,18 @@ class PlacementGenerationStage(Stage):
         #                  core-to-core MAC-tiled handover, the model's own feasible design.
         mode = os.environ.get("STREAM_WIDE_SOFTMAX")
         wide = mode in ("1", "memtile", "tiled")
+        # Without the prototype's flanking, a layer handed carried state stays no wider than
+        # the layer handing it over, so the handover stays between neighbours.
+        state_consumers = frozenset(
+            i + 1
+            for i, kernel in enumerate(kernels[:-1])
+            if not wide and kernel is not None and any(s.handover for s in kernel.state_operands())
+        )
         counts = row_counts(
             [layer_cost(k) for k in kernels],
             len(rows),
             handover=1.0 if wide else TILED_HANDOVER_FACTOR,
+            state_consumers=state_consumers,
         )
         # The block belongs to the group, not to its first layer: a GEMM declares no
         # granule at all, so reading only that one splits the shared dimension finer than

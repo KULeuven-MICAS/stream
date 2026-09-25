@@ -62,17 +62,30 @@ def bandwidth_bound(kernel) -> bool:
     return layer_cost(kernel) <= move_cycles
 
 
-def row_counts(costs: list[float], num_rows: int, handover: float = TILED_HANDOVER_FACTOR) -> tuple[int, ...]:
+def row_counts(
+    costs: list[float],
+    num_rows: int,
+    handover: float = TILED_HANDOVER_FACTOR,
+    state_consumers: frozenset[int] = frozenset(),
+) -> tuple[int, ...]:
     """Rows per layer minimizing the bottleneck of cost per row, handover factor included.
 
     ``handover`` is the penalty a layer pays when it is wider than the one it feeds and so
     must emit the MAC-tiled layout core-to-core. It defaults to the measured 2.09x; passing
     1.0 models a handover the memory tile re-lays out for free, which is the regime a wider
     bottleneck stage becomes worthwhile in.
+
+    ``state_consumers`` are the layers handed a carried state by the layer before them. Such
+    a layer is never made wider than its producer: the state sits in memory the two share,
+    and a second row of consumers is not beside the producer, so the handover would cross
+    the array on a channel the producer does not have -- aiecc rejects it as "number of
+    output DMA channel exceeded" on the producer's tile.
     """
     best: tuple[tuple[float, int], tuple[int, ...]] | None = None
     for counts in product(range(1, num_rows + 1), repeat=len(costs)):
         if sum(counts) > num_rows:
+            continue
+        if any(i > 0 and counts[i] > counts[i - 1] for i in state_consumers):
             continue
         eff = [
             cost * (handover if i + 1 < len(counts) and r > counts[i + 1] else 1.0) / r
