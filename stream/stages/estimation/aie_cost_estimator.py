@@ -6,6 +6,7 @@ from xdsl.dialects.builtin import BFloat16Type, FixedBitwidthType, Float32Type
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
+from stream.stages.estimation.kernel_cycles import measured_latency
 from stream.workload.workload import ComputationNode, Workload
 
 
@@ -21,14 +22,16 @@ class AIECostEstimator:
         total_inter_core_tiling = self._get_total_inter_core_tiling_factor(node)
         macs = prod(dim_sizes) // total_inter_core_tiling
         kernel = self.mapping.get(node).kernel
-        # No kernel model (e.g. a generically auto-mapped node) -> assume ideal (100%) utilisation so the
-        # run completes with an ideal-cycle estimate instead of failing; a hand-written AIE mapping
-        # supplies a real kernel with its measured utilisation.
-        utilization = kernel.utilization if kernel is not None else 100.0
         ideal_ops_per_cycle = self.ops_per_cycle(node, core)
         ideal_cycles = ceil(macs / ideal_ops_per_cycle)
-        ops_per_cycle = ideal_ops_per_cycle * (utilization / 100.0)
-        cycles = ceil(macs / ops_per_cycle)
+        measured = measured_latency(kernel, macs) if kernel is not None else None
+        if measured is not None:
+            cycles = ceil(measured)
+            metadata = {"backend": "aie", "measured_symbol": kernel.function_name}
+        else:
+            utilization = kernel.utilization if kernel is not None else 100.0
+            cycles = ceil(macs / (ideal_ops_per_cycle * (utilization / 100.0)))
+            metadata = {"backend": "aie", "utilization": utilization}
         energy = 0  # TODO
         return CoreCostEntry(
             energy_total=energy,
@@ -39,7 +42,7 @@ class AIECostEstimator:
             cme=None,
             mapping=None,
             layer=node,
-            metadata={"utilization": utilization, "backend": "aie"},
+            metadata=metadata,
         )
 
     def _get_total_inter_core_tiling_factor(self, node):
