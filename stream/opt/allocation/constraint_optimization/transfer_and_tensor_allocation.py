@@ -205,6 +205,7 @@ class TransferAndTensorAllocator:
         self.reuse_levels: dict[tuple[Tensor, int], int] = {}
         self.tiles_needed_levels: dict[tuple[Tensor, int], int] = {}
         self.bds_needed_levels: dict[tuple[Tensor, int], int] = {}
+        self.rotation_levels: dict[tuple[Tensor, int], bool] = {}
         self.tensors_to_optimize_reuse_for: list[Tensor] = []
         self._init_transfer_fire_helpers()
 
@@ -351,6 +352,7 @@ class TransferAndTensorAllocator:
                 self.reuse_levels[(t, i)] = reuse_factor
                 self.tiles_needed_levels[(t, i)] = tiles_factor
                 if relevancy:
+                self.rotation_levels[(t, i)] = any(relevancies[i + 1 :])
                     bds_needed = 1
                 else:
                     bds_needed *= Nl
@@ -978,6 +980,8 @@ class TransferAndTensorAllocator:
                     for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                         size_factor = self.tiles_needed_levels[(t, stop)]
                         req_size = ceil(size_factor * tensor_size)
+                        if self.rotation_levels.get((t, stop)):
+                            size_factor = max(size_factor, 2)
                         min_req = req_size if min_req is None else min(min_req, req_size)
                         uz = self._add_binary_product(
                             a=u,
