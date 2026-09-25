@@ -6,7 +6,7 @@ from xdsl.dialects.builtin import BFloat16Type, FixedBitwidthType, Float32Type
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
-from stream.mapping.work_share import core_work_share, split_steps
+from stream.mapping.work_share import computed_fraction, core_work_share, split_steps
 from stream.stages.estimation.kernel_cycles import measured_latency
 from stream.workload.workload import ComputationNode, Workload
 
@@ -40,6 +40,9 @@ class AIECostEstimator:
             utilization = kernel.utilization if kernel is not None else 100.0
             cycles = ceil(macs / (ideal_ops_per_cycle * (utilization / 100.0)))
             metadata = {"backend": "aie", "utilization": utilization}
+        metadata["computed_fraction"] = computed_fraction(
+            self.workload, self.mapping, node, core, self._steps(node)
+        )
         energy = 0  # TODO
         return CoreCostEntry(
             energy_total=energy,

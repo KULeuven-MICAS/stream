@@ -1524,6 +1524,7 @@ class TransferAndTensorAllocator:
                 self.model.add_constr(overlap <= v)
             else:
                 self.model.add_constr(overlap <= iteration - busy)
+        self._skipped_step_floor(overlap, iteration)
         # Both resource idle and a loop-carried state cap the overlap, so II = max(ResMII, RecMII).
         rec = self.recurrence_bound = self._recurrence_bound()
         if rec > 0:
@@ -1531,6 +1532,38 @@ class TransferAndTensorAllocator:
                 overlap <= self.model.quicksum(v._raw for v in self.slot_latency.values()) - rec,
                 name="overlap_recurrence_bound",
             )
+
+    def _skipped_step_floor(self, overlap, iteration) -> None:
+        """A step a core skips still takes as long as the operands it skips over.
+
+        A causal core's cost is its share of the rectangle, which prices the steps it skips
+        at nothing. They are not free: the design streams the whole rectangle, so on a
+        skipped step the core still acquires and releases every block the step moves, and
+        the step lasts as long as that block's transfer. Over a steady state, then, the
+        core's step is its computed fraction at its own cost plus the skipped fraction at
+        the cost of the slowest transfer it takes part in -- one constraint per such
+        transfer, in the transfers' own currency, with no constant of its own.
+        STREAM_SKIP_FLOOR=0 turns it off.
+        """
+        if os.environ.get("STREAM_SKIP_FLOOR", "1") == "0":
+            return
+        for n in self.ssc_nodes:
+            for core in self.cost_lut.get_cores(n):
+                entry = self.cost_lut.get_cost(n, core)
+                fraction = (entry.metadata or {}).get("computed_fraction", 1.0)
+                if fraction >= 1.0 - 1e-9:  # a uniform split skips nothing
+                    continue
+                busy = get_active_latency(n, float(ceil(entry.latency_total)), self.ssis)
+                for (tr, choice), y in self.y_path_choice.items():
+                    if core not in self._src_cores_of_choice(choice) and core not in self._dst_cores_of_choice(
+                        choice
+                    ):
+                        continue
+                    latency = self._active_transfer_latency(tr, choice, y)
+                    self.model.add_constr(
+                        overlap <= iteration - busy - (1.0 - fraction) * latency._raw,
+                        name=f"skip_floor_{n.name}_{_resource_key(core)}_{tr.name}_{hash(choice)}",
+                    )
 
     def _link_busy_expr(self, link: CommunicationLink):
         """Cycles this link actually carries data in one iteration, or None if it carries none.

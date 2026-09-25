@@ -100,8 +100,23 @@ def core_work_share(workload: Any, mapping: Any, node: Any, core: Any, steps: in
     return max(shares, key=lambda share: abs(share - uniform), default=uniform)
 
 
+def computed_fraction(workload: Any, mapping: Any, node: Any, core: Any, steps: int = 1) -> float:
+    """Fraction of this core's steps that compute anything, the rest being skipped.
+
+    The share is of the whole rectangle, so a core that skipped nothing would hold its
+    uniform 1/width of it; what it holds against that is how many of its steps it computes.
+    A step it skips still waits for the operands it would have used, which is why the
+    allocator wants this number and not only the share.
+    """
+    split = _query_split(mapping, node)
+    if split is None or len(split[0]) <= 1 or core not in split[0]:
+        return 1.0
+    share = core_work_share(workload, mapping, node, core, steps)
+    return min(1.0, share * len(split[0]))
+
+
 def uniform_share(splits: int) -> float:
     return 1.0 / max(splits, 1)
 
 
-__all__ = ["core_work_share", "uniform_share"]
+__all__ = ["computed_fraction", "core_work_share", "uniform_share"]
