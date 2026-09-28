@@ -3,6 +3,7 @@ from typing import Any
 from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.utils import DiGraphWrapper
 
+from stream.compiler.kernels.library import KernelLibrary
 from stream.cost_model.communication_manager import CommunicationManager
 from stream.hardware.architecture.core import Core
 
@@ -24,9 +25,10 @@ class Accelerator:
         cores: CoreGraph,
         nb_shared_mem_groups: int,
         offchip_core_id: int | None = None,
+        kernel_library: KernelLibrary | None = None,
     ):
-        """ """
         self.name = name
+        self.kernel_library = kernel_library
         self.cores = cores
         self.offchip_core_id = offchip_core_id
         self.nb_shared_mem_groups = nb_shared_mem_groups
