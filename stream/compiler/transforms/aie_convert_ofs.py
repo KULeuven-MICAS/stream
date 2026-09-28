@@ -60,6 +60,7 @@ from stream.compiler.dialects.stream import (
     StrensorVarType,
     YieldOp,
 )
+from stream.compiler.fifo_depths import FifoDepths, elem_bits, object_bytes
 from stream.compiler.transforms.unroll import iterate_spat_vars
 from stream.datatypes import LayerDim
 
@@ -289,9 +290,23 @@ def column_of(tile: str) -> int:
 class ChannelToObjectFifoPass(RewritePattern):
     shim_tiles: dict[int, SSAValue]
     of_count: int = 0
+    depths: FifoDepths | None = None
     """
     Converts channels to object fifo definitions
     """
+
+    def pick_depths(
+        self,
+        depths: Sequence[int | float],
+        tiles: tuple[SSAValue, ...],
+        element_type: Attribute,
+        shape: Iterable[int],
+        feed: bool = True,
+    ) -> tuple[int, ...]:
+        counts = tuple(int(d) for d in depths)
+        if self.depths is None:
+            return counts
+        return self.depths.deepen(counts, tiles, object_bytes(elem_bits(element_type), tuple(shape)), feed=feed)
 
     def compute_to_mem(
         self,
@@ -345,7 +360,13 @@ class ChannelToObjectFifoPass(RewritePattern):
                         self.get_tile(source),
                         [self.get_tile(target)],
                         name_base + f"join_{i}_{j}",
-                        (num_elements, 2),
+                        self.pick_depths(
+                            (num_elements, 2),
+                            (self.get_tile(source), self.get_tile(target)),
+                            source_type.get_element_type(),
+                            source_type.get_kernel_shape(),
+                            feed=False,
+                        ),
                         source_type.get_element_type(),
                         source_type.get_kernel_shape(),
                     )
@@ -377,7 +398,13 @@ class ChannelToObjectFifoPass(RewritePattern):
                     self.get_tile(source),
                     [self.get_tile(target)],
                     name_base + f"unicast_{i}",
-                    (2, 2),
+                    self.pick_depths(
+                        (2, 2),
+                        (self.get_tile(source), self.get_tile(target)),
+                        source_type.get_element_type(),
+                        source_type.get_kernel_shape(),
+                        feed=False,
+                    ),
                     source_type.get_element_type(),
                     source_type.get_kernel_shape(),
                 )
@@ -658,7 +685,12 @@ class ChannelToObjectFifoPass(RewritePattern):
                     producer_tile,
                     consumer_tiles,
                     name_base + f"{s}_{i}",
-                    (2,) + (num_elements,) * len(consumer_tiles),
+                    self.pick_depths(
+                        (2,) + (num_elements,) * len(consumer_tiles),
+                        (producer_tile, *consumer_tiles),
+                        target_type.get_element_type(),
+                        target_type.get_kernel_shape(),
+                    ),
                     target_type.get_element_type(),
                     target_type.get_kernel_shape(),
                 )
@@ -712,11 +744,18 @@ class ChannelToObjectFifoPass(RewritePattern):
 
                 assert isinstance(target_type := target.output.type, StrensorType)
 
+                shim_tile = self.get_tile(producer, target_type.core_allocation.data[0].data)
                 object_fifo = ObjectFifoOp.from_referenced_type(
-                    self.get_tile(producer, target_type.core_allocation.data[0].data),
+                    shim_tile,
                     [self.get_tile(target)],
                     name_base + f"mem_{i}",
-                    (2, 2),
+                    self.pick_depths(
+                        (2, 2),
+                        (shim_tile, self.get_tile(target)),
+                        target_type.get_element_type(),
+                        self.held_shape(target_type),
+                        feed=False,
+                    ),
                     target_type.get_element_type(),
                     self.held_shape(target_type),
                 )
@@ -739,7 +778,13 @@ class ChannelToObjectFifoPass(RewritePattern):
                 producerTile=producer_tile,
                 consumerTiles=consumer_tiles,
                 name=name_base + "mem",
-                elemNumber=(2, 2),
+                elemNumber=self.pick_depths(
+                    (2,) * (1 + len(consumer_tiles)),
+                    (producer_tile, *consumer_tiles),
+                    strensor.get_element_type(),
+                    self.held_shape(strensor),
+                    feed=False,
+                ),
                 referenced_type=strensor.get_element_type(),
                 shape=self.held_shape(strensor),
             )
@@ -778,11 +823,18 @@ class ChannelToObjectFifoPass(RewritePattern):
 
                 assert isinstance(source_type := source.input.type, StrensorType)
 
+                shim_tile = self.get_tile(target, source_type.core_allocation.data[0].data)
                 object_fifo = ObjectFifoOp.from_referenced_type(
                     self.get_tile(source),
-                    [self.get_tile(target, source_type.core_allocation.data[0].data)],
+                    [shim_tile],
                     name_base + f"mem_{j}",
-                    (2, 2),
+                    self.pick_depths(
+                        (2, 2),
+                        (self.get_tile(source), shim_tile),
+                        source_type.get_element_type(),
+                        self.held_shape(source_type),
+                        feed=False,
+                    ),
                     source_type.get_element_type(),
                     self.held_shape(source_type),
                 )
@@ -813,7 +865,13 @@ class ChannelToObjectFifoPass(RewritePattern):
                 producerTile=producer_tile,
                 consumerTiles=consumer_tiles,
                 name=name_base + "mem",
-                elemNumber=(2, 2),
+                elemNumber=self.pick_depths(
+                    (2,) * (1 + len(consumer_tiles)),
+                    (producer_tile, *consumer_tiles),
+                    strensor.get_element_type(),
+                    self.held_shape(strensor),
+                    feed=False,
+                ),
                 referenced_type=strensor.get_element_type(),
                 shape=self.held_shape(strensor),
             )
@@ -1688,18 +1746,22 @@ class RemoveEmptyCores(RewritePattern):
             rewriter.erase_matched_op()
 
 
+@dataclass(frozen=True)
 class AIEConvertOfs(ModulePass):
     """
     Convert stream transfers into object fifo transfer patterns
     """
 
     name = "aie-convert-ofs"
+    depths: FifoDepths | None = None
 
     def apply(self, ctx: Context, op: ModuleOp) -> None:
         # create new shim tile
         device = next(op for op in op.walk() if isinstance(op, DeviceOp))
         shim_tiles = {column: TileOp(column, 0) for column in range(NB_COLUMNS)}
-        PatternRewriteWalker(ChannelToObjectFifoPass({x: y.result for x, y in shim_tiles.items()})).rewrite_module(op)
+        PatternRewriteWalker(
+            ChannelToObjectFifoPass({x: y.result for x, y in shim_tiles.items()}, depths=self.depths)
+        ).rewrite_module(op)
         Rewriter().insert_op(
             [x for x in shim_tiles.values() if x.result.uses], InsertPoint.at_start(device.region.block)
         )
