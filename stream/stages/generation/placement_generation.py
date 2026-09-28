@@ -3,6 +3,7 @@ from dataclasses import replace
 
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.core import Core
+from stream.mapping.blocks import block_options, with_block
 from stream.mapping.chain_placement import (
     MIN_CALL_OPERANDS,
     bandwidth_bound,
@@ -44,23 +45,51 @@ class PlacementGenerationStage(Stage):
         self._pending_fallbacks: list = []
         self._pending_reserves: list = []
         if grid:
-            for group in self.mapping.fused_groups:
-                nodes = [n for name in group.layers if isinstance(n := self._node(name), ComputationNode)]
-                if nodes and all(self._unplaced(n) for n in nodes):
-                    self._place_group(nodes, grid)
-
-            def materialize(pending):
-                shapes: list[Mapping] = []
-                for narrow in pending:
-                    alt = (shapes[-1] if shapes else self.mapping).copy()
-                    narrow(alt)
-                    shapes.append(alt)
-                return shapes
-
-            self.ctx.set(placement_alternatives=materialize(self._pending_fallbacks))
-            self.ctx.set(placement_reserves=materialize(self._pending_reserves))
+            declared = self.mapping
+            variants = self._block_variants(declared)
+            self._place(declared, grid)
+            alternatives = self._materialize(declared, self._pending_fallbacks)
+            reserves = self._materialize(declared, self._pending_reserves)
+            for variant in variants:
+                self._pending_fallbacks, self._pending_reserves = [], []
+                self._place(variant, grid)
+                alternatives.append(variant)
+                alternatives.extend(self._materialize(variant, self._pending_fallbacks))
+            self.mapping = declared
+            self.ctx.set(mapping=declared, placement_alternatives=alternatives, placement_reserves=reserves)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
+
+    def _place(self, mapping: Mapping, grid: dict[tuple[int, int], Core]) -> None:
+        self.mapping = mapping
+        for group in mapping.fused_groups:
+            nodes = [n for name in group.layers if isinstance(n := self._node(name), ComputationNode)]
+            if nodes and all(self._unplaced(n) for n in nodes):
+                self._place_group(nodes, grid)
+
+    @staticmethod
+    def _materialize(base: Mapping, pending: list) -> list[Mapping]:
+        shapes: list[Mapping] = []
+        for narrow in pending:
+            alt = (shapes[-1] if shapes else base).copy()
+            narrow(alt)
+            shapes.append(alt)
+        return shapes
+
+    def _block_variants(self, mapping: Mapping) -> list[Mapping]:
+        """One unplaced mapping per other compiled block the groups offer, each placed and priced in full."""
+        variants: list[Mapping] = []
+        for gi, group in enumerate(mapping.fused_groups):
+            for dim, sizes in block_options(self.workload, mapping, group).items():
+                extent = self.workload.get_dimension_size(dim)
+                for size in sizes:
+                    if size > extent or extent % size or (dim, size) in group.intra_core_tiling:
+                        continue
+                    try:
+                        variants.append(with_block(self.workload, mapping, gi, group, dim, size))
+                    except ValueError as e:
+                        logger.info("Block %s=%d is not buildable: %s", dim, size, e)
+        return variants
 
     def _node(self, name: str):
         try:
@@ -126,7 +155,7 @@ class PlacementGenerationStage(Stage):
             if kernel is not None and any(s.handover for s in kernel.state_operands())
         )
         counts = row_counts([layer_cost(k) for k in kernels], len(rows), state_consumers=state_consumers)
-        granule = call_sizes(kernels[0]).get(0, 1)
+        granule = max(call_sizes(kernel).get(0, 1) for kernel in kernels)
         extent = self.workload.get_dimension_size(self.workload.get_dims(nodes[0])[0])
         width = widest_columns(extent, granule, max(counts), len(columns))
         offset = 0

@@ -593,6 +593,10 @@ class FusedScoreSoftmaxKernel(GemmKernel):
         return f"{self.function_name}_{self.m}_{self.k}_{self.n}"
 
     @property
+    def library_key(self) -> str:
+        return self.function_name
+
+    @property
     def function_name(self) -> str:
         return "matmul_softmax"
 
@@ -713,6 +717,10 @@ class FlashKernel(GemmKernel):
     @property
     def unique_name(self) -> str:
         return f"{self.function_name}_{self.m}_{self.k}_{self.n}"
+
+    @property
+    def library_key(self) -> str:
+        return self.function_name
 
     @property
     def function_name(self) -> str:
