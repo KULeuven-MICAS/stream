@@ -104,7 +104,7 @@ class SteadyStateScheduler:
         """
         self.workload = workload  # Only contains nodes that are part of the current fusion stack
         self.accelerator = accelerator
-        self.mapping = mapping
+        self.mapping = mapping.copy()
         self.fusion_splits = fusion_splits
         self.cost_lut = cost_lut
         self.partitioned_nodes: dict[ComputationNode, list[SteadyStateComputation]] = {}
