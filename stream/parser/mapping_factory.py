@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 
 from xdsl.context import Context
@@ -113,17 +114,57 @@ class MappingFactory:
     def create_fused_groups(self) -> list[FusedGroup]:
         fused_groups: list[FusedGroup] = []
         for fused_group in self.fused_groups_data:
+            layers = tuple(fused_group.get("layers", []))
             intra_core_tiling = fused_group.get("intra_core_tiling", []) or []
+            if intra_core_tiling:
+                tiling = tuple(self._convert_intra_core_tiling_entry(entry) for entry in intra_core_tiling)
+            else:
+                tiling = self._call_tile_tiling(layers)
             fused_groups.append(
                 FusedGroup(
                     name=fused_group["name"],
-                    layers=tuple(fused_group.get("layers", [])),
-                    intra_core_tiling=tuple(
-                        self._convert_intra_core_tiling_entry(entry) for entry in intra_core_tiling
-                    ),
+                    layers=layers,
+                    intra_core_tiling=tiling,
+                    runtime_dims=self._runtime_dims(layers, tiling),
                 ),
             )
         return fused_groups
+
+    def _group_kernels(self, layers: tuple[str, ...]):
+        for name in layers:
+            node = self.workload.get_node_by_name(name)
+            if isinstance(node, ComputationNode):
+                kernel = self.create_kernel(self.get_mapping_data_for_node(node))
+                if kernel is not None:
+                    yield node, kernel
+
+    def _call_tile_tiling(self, layers: tuple[str, ...]) -> tuple[tuple[LayerDim, int], ...]:
+        """A group's default tiling: its kernels' call tiles, with the dimensions its layers share innermost."""
+        tiling: dict[LayerDim, int] = {}
+        kernels = list(self._group_kernels(layers))
+        for node, kernel in kernels:
+            node_dims = self.workload.get_dims(node)
+            for position, size, dim in kernel.call_tile():
+                layer_dim = node_dims[position]
+                extent = self.workload.get_dimension_size(layer_dim)
+                if size < extent or dim.keep_whole:
+                    tiling.setdefault(layer_dim, min(size, extent))
+        shared = dict.fromkeys(tiling, 0)
+        for a, b in pairwise(set(self.workload.get_dims(node)) for node, _ in kernels):
+            for dim in a & b:
+                if dim in shared:
+                    shared[dim] += 1
+        return tuple(sorted(tiling.items(), key=lambda item: shared[item[0]]))
+
+    def _runtime_dims(self, layers: tuple[str, ...], tiling) -> tuple[LayerDim, ...]:
+        """Tiling dimensions every kernel of the group takes as a runtime size."""
+        compiled: set[LayerDim] = set()
+        runtime: set[LayerDim] = set()
+        for node, kernel in self._group_kernels(layers):
+            node_dims = self.workload.get_dims(node)
+            for position, _, dim in kernel.call_tile():
+                (runtime if dim.runtime else compiled).add(node_dims[position])
+        return tuple(dim for dim, _ in tiling if dim in runtime and dim not in compiled)
 
     def _convert_intra_core_tiling_entry(self, entry: dict[str, Any]) -> tuple[LayerDim, int]:
         node_name, dim_name = entry["dim"].rsplit(".", 1)

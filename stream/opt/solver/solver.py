@@ -1053,6 +1053,7 @@ class ORToolsBackend(SolverModel):
     def _optimize_lexicographic(self) -> None:
         assert self._lex_objectives is not None
         params = mathopt.SolveParameters(**self._params)
+        feasible = None
 
         for i, obj in enumerate(self._lex_objectives):
             raw_expr = _unwrap_ort(obj.expr)
@@ -1061,11 +1062,19 @@ class ORToolsBackend(SolverModel):
             else:
                 self._model.maximize(raw_expr)
 
-            self._result = mathopt.solve(self._model, self._solver_type, params=params)
+            result = mathopt.solve(self._model, self._solver_type, params=params)
 
-            if self._result is None or not self._result.has_primal_feasible_solution():
-                _logger.warning("Lexicographic solve: phase %d (%s) found no feasible solution", i, obj.name)
+            if result is None or not result.has_primal_feasible_solution():
+                _logger.warning(
+                    "Lexicographic solve: phase %d (%s) found no feasible solution%s",
+                    i,
+                    obj.name,
+                    "; keeping the solution from the level above" if feasible else "",
+                )
+                self._result = feasible if feasible is not None else result
                 return
+
+            self._result = feasible = result
 
             if i < len(self._lex_objectives) - 1:
                 opt_val = self._result.objective_value()

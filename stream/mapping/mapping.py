@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, TypeAlias
 
 from stream.cost_model.communication_manager import MulticastPathPlan
@@ -25,6 +25,7 @@ class FusedGroup:
     name: str
     layers: tuple[str, ...] = field(default_factory=tuple)
     intra_core_tiling: tuple[tuple[LayerDim, int], ...] = field(default_factory=tuple)
+    runtime_dims: tuple[LayerDim, ...] = field(default_factory=tuple)
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -293,6 +294,15 @@ class Mapping:
     @property
     def fused_groups(self) -> tuple[FusedGroup, ...]:
         return self._fused_groups
+
+    def with_fused_groups(self, fused_groups: Iterable[FusedGroup]) -> Mapping:
+        """The same per-node mapping under different fused groups (e.g. another intra-core tiling)."""
+        return Mapping(initial=dict(self._by_node), fused_groups=fused_groups, runtime_args=self._runtime_args)
+
+    def copy(self) -> Mapping:
+        """A detached mapping a consumer may rewrite in place."""
+        cloned = {node: replace(nm) for node, nm in self._by_node.items()}
+        return Mapping(initial=cloned, fused_groups=self._fused_groups, runtime_args=self._runtime_args)
 
     @property
     def runtime_args(self) -> dict[str, str]:
