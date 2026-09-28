@@ -14,7 +14,7 @@ def _vi(name: str, shape: tuple[int, ...]):
 
 
 def test_conv_accepts_asymmetric_2d_padding():
-    weight = helper.make_tensor("W", TensorProto.FLOAT, [4, 8, 3, 3], [])
+    weight = helper.make_tensor("W", TensorProto.FLOAT, [4, 8, 3, 3], [0.0] * (4 * 8 * 3 * 3))
     node = helper.make_node(
         "Conv",
         ["X", "W"],
