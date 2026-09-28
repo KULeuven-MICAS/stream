@@ -22,6 +22,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass(frozen=True)
+class MemoryReuseEntry:
+    """One staged tensor's residency on a memory tile, held against its reader's."""
+
+    name: str
+    core: Core
+    mem_level: LinExpr
+    compute_level: LinExpr
+    unexpressible: tuple[tuple[SolverVar, SolverVar], ...]
+
+
 # ============================================================================
 # ConstraintContext – used by the *timeslot* allocation stage
 # ============================================================================
@@ -149,12 +160,9 @@ class NamespaceConstraints:
     def add_memory_reuse_constraints(
         self,
         model: SolverModel,
-        transfers: list[tuple[Core, LinExpr, LinExpr]],
+        transfers: list[MemoryReuseEntry],
     ) -> None:
-        """Narrow how much longer a memory tile may hold a tensor than its reader.
-
-        Each entry is (memory tile, its reuse level, the compute tile's).
-        """
+        """Narrow how much longer a memory tile may hold a tensor than its reader."""
 
     # ---- buffer descriptors ----
 
@@ -234,17 +242,17 @@ class AIE2Constraints(NamespaceConstraints):
     def add_memory_reuse_constraints(
         self,
         model: SolverModel,
-        transfers: list[tuple[Core, LinExpr, LinExpr]],
+        transfers: list[MemoryReuseEntry],
     ) -> None:
-        """An AIE memory tile cannot re-send an object it holds, so it may not outlive
-        its reader. Liftable once the object FIFO repeat count is emitted."""
-        for core, mem_level, compute_level in transfers:
-            if not self.applies_to(core):
+        """A memory tile may outlive its reader where one whole-object replay expresses the re-read."""
+        for entry in transfers:
+            if not self.applies_to(entry.core):
                 continue
-            model.add_constr(
-                mem_level == compute_level,
-                name=f"aie2_mem_reuse_eq_Core_{core.id}",
-            )
+            for i, (mem_stop, compute_stop) in enumerate(entry.unexpressible):
+                model.add_constr(
+                    mem_stop._raw + compute_stop._raw <= 1,
+                    name=f"aie2_mem_replay_{entry.name}_Core_{entry.core.id}_P{i}",
+                )
 
     # ---- buffer descriptors ----
 
@@ -348,7 +356,7 @@ class TransferAndTensorContext:
     def add_memory_reuse_constraints(
         self,
         model: SolverModel,
-        transfers: list[tuple[Core, LinExpr, LinExpr]],
+        transfers: list[MemoryReuseEntry],
     ) -> None:
         """Dispatch memory-tile reuse constraints to all namespace strategies."""
         for ns in self.namespace_constraints:
