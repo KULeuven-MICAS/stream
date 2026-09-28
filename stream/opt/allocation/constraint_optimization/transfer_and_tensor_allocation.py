@@ -1599,6 +1599,12 @@ class TransferAndTensorAllocator:
             for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
         )
 
+        hops_expr = self.model.quicksum(
+            len(self.links_in_choice[(tr, choice)]) * self.y_path_choice[(tr, choice)]._raw
+            for tr in self.transfer_nodes
+            for choice in self.possible_transfer_allocations[tr]
+        )
+
         self.model.set_lexicographic_objectives(
             [
                 ObjectiveLevel(expr=primary_expr, priority=4, name="latency"),
@@ -1630,12 +1636,6 @@ class TransferAndTensorAllocator:
         ("aie2_bd", "buffer_descriptors"),
         ("bddepth", "buffer_descriptors"),
         ("link_used", "link_contention"),
-        hops_expr = self.model.quicksum(
-            len(self.links_in_choice[(tr, choice)]) * self.y_path_choice[(tr, choice)]._raw
-            for tr in self.transfer_nodes
-            for choice in self.possible_transfer_allocations[tr]
-        )
-
         ("dma", "dma_channels"),
     )
 
