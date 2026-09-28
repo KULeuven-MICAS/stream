@@ -19,7 +19,6 @@ from stream.compiler.kernels.library import CallDim, KernelLibrary, KernelSpec
 
 MAC_TILED = "default"
 CONTIGUOUS = "contiguous"
-VECTOR_LANES = 16
 
 
 def acquired_object(value: SSAValue) -> SSAValue:

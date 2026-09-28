@@ -16,7 +16,6 @@ from xdsl.irdl import Operation
 
 from stream.compiler.dialects.stream import ComputationNodeOp
 from stream.compiler.kernels.aie_kernel import (
-    VECTOR_LANES,
     AIEKernel,
     elementwise_operand_layout,
 )
@@ -31,14 +30,7 @@ class EltwiseMulKernel(AIEKernel):
 
     @property
     def function_name(self) -> str:
-        """The vectorized variant where the tile fills whole vectors, else the scalar one.
-
-        The multiply is position independent and all three operands share a layout, so
-        the only thing vectorizing asks of the tile is that it leaves no remainder: the
-        vectorized kernel steps a whole vector at a time and has no epilogue.
-        """
-        variant = "vector" if self.m * self.n % VECTOR_LANES == 0 else "scalar"
-        return f"eltwise_mul_{self.element_type}_{variant}"
+        return f"eltwise_mul_{self.element_type}_vector_size"
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         return [elementwise_operand_layout(self.m, self.n, self.layout, self.mac) for _ in range(3)]
