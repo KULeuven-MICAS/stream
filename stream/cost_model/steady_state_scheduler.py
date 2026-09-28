@@ -120,6 +120,7 @@ class SteadyStateScheduler:
         self.setup_latency_total = 0
         self.performance_stats: dict | None = None
         self.tensor_depths: TensorDepths = {}
+        self.timeslots: dict[Node, int] = {}
 
         self.nb_cols_to_use = nb_cols_to_use
         self.transfer_context = build_transfer_context(accelerator, nb_cols_to_use=nb_cols_to_use)
@@ -308,12 +309,12 @@ class SteadyStateScheduler:
         multiplicities = self.calculate_multiplicities()
         # Get the timeslots for all nodes (resource-aware: same slot allowed iff a
         # disjoint core/link assignment exists across same-class nodes in that slot).
-        timeslots = self.ssw.get_timeslots(self.mapping)
-        # timeslots = self.ssw.get_timeslots_simple()  # baseline: one slot per node, no resource awareness
+        self.timeslots = self.ssw.get_timeslots(self.mapping)
+        # self.timeslots = self.ssw.get_timeslots_simple()  # baseline: one slot per node, no resource awareness
         # At this point, the only nodes without an allocation are the transfer nodes
         tta = TransferAndTensorAllocator(
             self.ssw,
-            timeslots,
+            self.timeslots,
             accelerator=self.accelerator,
             iterations=self.iterations,
             ssis=self.ssis,
