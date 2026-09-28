@@ -1,7 +1,7 @@
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from math import prod
-from typing import cast
+from typing import ClassVar, cast
 
 from snaxc.ir.tsl import TiledStridedLayout
 from xdsl.dialects.arith import ConstantOp
@@ -16,25 +16,18 @@ from xdsl.irdl import Operation
 
 from stream.compiler.dialects.stream import ComputationNodeOp
 from stream.compiler.kernels.aie_kernel import (
-    MAC_ROWS_BFP16,
     VECTOR_LANES,
     AIEKernel,
-    R,
     elementwise_operand_layout,
 )
 
 
-@dataclass
+@dataclass(kw_only=True)
 class EltwiseMulKernel(AIEKernel):
-    element_type: AnyDenseElement
-    m: int
-    n: int
+    DIMS: ClassVar[Mapping[str, int]] = {"m": 0, "n": 1}
+    m: int = 32
+    n: int = 64
     layout: str
-    bfp16_mmul: bool = False
-
-    @property
-    def linkwith_name(self) -> str:
-        return "mul.o"
 
     @property
     def function_name(self) -> str:
@@ -48,8 +41,7 @@ class EltwiseMulKernel(AIEKernel):
         return f"eltwise_mul_{self.element_type}_{variant}"
 
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
-        rows = MAC_ROWS_BFP16 if self.bfp16_mmul else R
-        return [elementwise_operand_layout(self.m, self.n, self.layout, rows) for _ in range(3)]
+        return [elementwise_operand_layout(self.m, self.n, self.layout, self.mac) for _ in range(3)]
 
     def function_type(self, op: ComputationNodeOp) -> FunctionType:
         assert op.output is not None

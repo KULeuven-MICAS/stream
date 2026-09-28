@@ -1,6 +1,6 @@
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import cast
+from typing import ClassVar, cast
 
 from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.dialects.arith import AddiOp, ConstantOp, IndexCastOp, MuliOp
@@ -21,19 +21,13 @@ from stream.compiler.dialects.stream import (
 )
 from stream.compiler.kernels.aie_kernel import (
     CONTIGUOUS,
-    MAC_ROWS_BFP16,
     AIEKernel,
-    R,
-    T,
     elementwise_operand_layout,
     induction_variable,
 )
 
-SOFTMAX_VECTOR_LANES = 64
-"""Elements softmax.cc reduces per step; it has no epilogue, so a shorter tail is dropped."""
 
-
-@dataclass
+@dataclass(kw_only=True)
 class SoftmaxKernel(AIEKernel):
     """One call of softmax.cc normalizes an m x n tile, one row at a time.
 
@@ -47,28 +41,19 @@ class SoftmaxKernel(AIEKernel):
     normalizing it, so the tile also has to say where its first row sits globally.
     """
 
-    element_type: AnyDenseElement
-    m: int
+    DIMS: ClassVar[Mapping[str, int]] = {"m": 0, "n": 1}
+    m: int = 1
     n: int
     layout: str
-    bfp16_mmul: bool = False
     causal: bool = False
 
     def __post_init__(self) -> None:
         if self.layout != CONTIGUOUS:
             raise ValueError(f"softmax reads its row linearly and needs the {CONTIGUOUS!r} layout, not {self.layout!r}")
-        if self.n % SOFTMAX_VECTOR_LANES:
-            raise ValueError(
-                f"softmax drops the tail of a row that is not a multiple of {SOFTMAX_VECTOR_LANES}: {self.n}"
-            )
 
     @property
     def unique_name(self) -> str:
         return f"{self.function_name}_{self.m}_{self.n}_{self.layout}"
-
-    @property
-    def linkwith_name(self) -> str:
-        return "softmax.o"
 
     @property
     def function_name(self) -> str:
@@ -80,13 +65,13 @@ class SoftmaxKernel(AIEKernel):
     def _row_major(self) -> TiledStridedLayout:
         """Row major, spelled over the MAC tile bounds of the GEMM either side of it
         where those divide, since a transform is read off matching tile bounds."""
-        rows = MAC_ROWS_BFP16 if self.bfp16_mmul else R
-        if self.m % rows or self.n % T:
-            return elementwise_operand_layout(self.m, self.n, self.layout, rows)
+        rows, cols = self.mac["m"], self.mac["n"]
+        if self.m % rows or self.n % cols:
+            return elementwise_operand_layout(self.m, self.n, self.layout, self.mac)
         return TiledStridedLayout(
             [
                 TiledStride([Stride(rows * self.n, self.m // rows), Stride(self.n, rows)]),
-                TiledStride([Stride(T, self.n // T), Stride(1, T)]),
+                TiledStride([Stride(cols, self.n // cols), Stride(1, cols)]),
             ]
         )
 

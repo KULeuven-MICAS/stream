@@ -42,12 +42,11 @@ def make_swiglu_mapping(  # noqa: PLR0915
 
     # Left Gemm
     if seq_len_tile_size == 1:
-        kernel_gemm = {"name": "matvec", "kwargs": {"utilization": 61.8, "layout": "default"}}
+        kernel_gemm = {"name": "matvec", "kwargs": {"layout": "default"}}
     else:
         kernel_gemm = {
             "name": "gemm",
             "kwargs": {
-                "utilization": 61.8,
                 "m": seq_len_tile_size,
                 "k": INPUT_CHANNEL_TILE_SIZE,
                 "n": OUTPUT_CHANNEL_TILE_SIZE,
@@ -92,7 +91,7 @@ def make_swiglu_mapping(  # noqa: PLR0915
     ]
     # compute_allocation_silu = [26]
     # inter_core_tiling_silu = []
-    kernel_silu = {"name": "silu", "kwargs": {"utilization": 50.0, "layout": "default"}}  # TODO: utilization
+    kernel_silu = {"name": "silu", "kwargs": {"layout": "default"}}
     silu = {
         "name": "Silu",
         "core_allocation": copy.deepcopy(compute_allocation_silu),
@@ -109,7 +108,7 @@ def make_swiglu_mapping(  # noqa: PLR0915
     ]
     # compute_allocation_mul = [32]
     # inter_core_tiling_mul = []
-    kernel_mul = {"name": "eltwise_mul", "kwargs": {"utilization": 50.0, "layout": "default"}}  # TODO: utilization
+    kernel_mul = {"name": "eltwise_mul", "kwargs": {"layout": "default"}}
     mul = {
         "name": "Elt_Mul",
         "core_allocation": copy.deepcopy(compute_allocation_mul),
@@ -130,7 +129,6 @@ def make_swiglu_mapping(  # noqa: PLR0915
         kernel_gemm = {
             "name": "gemm",
             "kwargs": {
-                "utilization": 61.8,
                 "m": seq_len_tile_size,
                 "k": OUTPUT_CHANNEL_TILE_SIZE,
                 "n": INPUT_CHANNEL_TILE_SIZE,

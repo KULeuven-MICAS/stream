@@ -14,12 +14,10 @@ class MappingParser:
         mapping_yaml_path: str,
         workload: Workload,
         accelerator: Accelerator,
-        kernels: dict[str, Any] | None = None,
     ):
         self.mapping_yaml_path = mapping_yaml_path
         self.workload = workload
         self.accelerator = accelerator
-        self.kernels = kernels
 
     def run(self):
         mapping_data = self.parse_mapping_data()
@@ -35,6 +33,6 @@ class MappingParser:
         return mapping_validator.normalized_data
 
     def parse_mapping(self, mapping_data: dict[str, Any]):
-        mapping_factory = MappingFactory(mapping_data, self.workload, self.accelerator, kernels=self.kernels)
+        mapping_factory = MappingFactory(mapping_data, self.workload, self.accelerator)
         all_mappings = mapping_factory.create()
         return all_mappings

@@ -8,17 +8,19 @@ all three operands share a layout.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 pytest.importorskip("snaxc", reason="the AIE dialects are a separate install, via stream-setup-aie")
 
 
 def kernel(m: int, n: int, layout: str = "default"):
-    from xdsl.dialects.builtin import bf16
-
     from stream.compiler.kernels.eltwise_mul import EltwiseMulKernel
+    from stream.compiler.kernels.library import KernelLibrary
 
-    return EltwiseMulKernel(1.0, bf16, m, n, layout)
+    library = KernelLibrary.load(Path(__file__).parents[2] / "stream/inputs/aie/kernels/aie2p.toml")
+    return EltwiseMulKernel(m=m, n=n, layout=layout, library=library)
 
 
 @pytest.mark.parametrize("layout", ["default", "contiguous"])

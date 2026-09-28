@@ -77,7 +77,7 @@ If neither matches, validation fails - every node must resolve to an entry (use 
 | `name` | yes | Node name or operator type to match (see above). |
 | `core_allocation` | yes | A list of **candidate core-id groups**. `[[0,1,2,3]]` is one group of four cores; the MILP allocator chooses the actual placement within that candidate set. A single-core role is just `[[4]]`. |
 | `inter_core_tiling` | no | How to split the operator **across** cores. Each inner entry is `{dim: D<n>, split: k}` - split loop dimension `D<n>` (0-indexed in the node's loop nest) by factor `k`. |
-| `kernel` | no | Kernel hint used by the AIE codegen path: `{name: <kernel>, kwargs: {utilization: <pct>}}`. Ignored by the non-AIE CO pipeline. |
+| `kernel` | no | Kernel used by the AIE codegen path: `{name: <kernel>, kwargs: {<field>: <value>}}`, described by the accelerator's [kernel library](kernel_library.md). Ignored by the non-AIE CO pipeline. |
 
 ### Fused-group fields
 

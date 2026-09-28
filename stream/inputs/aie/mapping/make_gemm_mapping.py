@@ -17,7 +17,7 @@ def make_gemm_mapping(M, K, N, m, k, n, nb_rows_to_use: int = 4, nb_cols_to_use:
 
     kernel = {
         "name": "gemm",
-        "kwargs": {"m": m, "k": k, "n": n, "utilization": 61.8, "layout": "default"},
+        "kwargs": {"m": m, "k": k, "n": n, "layout": "default"},
     }
     inter_core_tiling = [{"dim": "D0", "split": d_inter_core}, {"dim": "D2", "split": k_inter_core}]
     gemm = {

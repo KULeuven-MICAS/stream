@@ -17,14 +17,8 @@ from stream.compiler.dialects.stream import ComputationNodeOp
 from stream.compiler.kernels.aie_kernel import AIEKernelWithZeroing
 
 
-@dataclass
+@dataclass(kw_only=True)
 class MatVecKernel(AIEKernelWithZeroing):
-    element_type: AnyDenseElement
-
-    @property
-    def linkwith_name(self) -> str:
-        return "mv.o"
-
     @property
     def zero_name(self) -> str:
         return f"zero_vectorized_{self.element_type}"

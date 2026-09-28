@@ -137,7 +137,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
             backend=_backend_enum.value,
             constraint_selection=constraint_selection,
-            kernels=kernels,  # optional caller-supplied kernel factory overrides
+            kernel_library=kernel_library,
         )
         # optionally add code generation stage
         if enable_codegen:
