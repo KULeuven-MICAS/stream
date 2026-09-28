@@ -1,0 +1,60 @@
+[family.matmul]
+ops_per_cycle = 151.0
+mac = { m = 8, k = 8, n = 8 }
+
+[family.vector]
+ops_per_cycle = 16.0
+
+[kernel.matmul_bf16_bf16]
+family = "matmul"
+object = "mm_{m}_{k}_{n}.o"
+dims = [{ name = "k", divisor = 8 }, { name = "n", divisor = 16 }, { name = "m", divisor = 16 }]
+
+[kernel.matvec_vectorized_bf16_bf16]
+family = "vector"
+object = "mv.o"
+
+[kernel.silu_bf16]
+family = "vector"
+object = "silu.o"
+dims = [{ name = "n", runtime = true, keep_whole = true }, { name = "m", runtime = true }]
+
+[kernel.eltwise_mul_bf16_vector]
+family = "vector"
+object = "mul.o"
+dims = [{ name = "n", runtime = true, keep_whole = true }, { name = "m", runtime = true }]
+
+[kernel.eltwise_mul_bf16_scalar]
+family = "vector"
+object = "mul.o"
+dims = [{ name = "n", runtime = true, keep_whole = true }, { name = "m", runtime = true }]
+
+[kernel.softmax_rows_bf16]
+family = "vector"
+object = "softmax.o"
+dims = [{ name = "n", divisor = 64 }, { name = "m", runtime = true }]
+
+[kernel.softmax_rows_causal_bf16]
+family = "vector"
+object = "softmax.o"
+dims = [{ name = "n", divisor = 64 }, { name = "m", runtime = true }]
+
+[kernel.partial_softmax]
+family = "vector"
+object = "mha.o"
+dims = [{ name = "n", fixed = 64 }, { name = "m", fixed = 64 }]
+
+[kernel.partial_softmax_mode]
+family = "vector"
+object = "mha.o"
+dims = [{ name = "n", fixed = 64 }, { name = "m", fixed = 64 }]
+
+[kernel.matmul_softmax]
+family = "matmul"
+object = "mha.o"
+dims = [{ name = "k", fixed = 64 }, { name = "n", fixed = 64 }, { name = "m", fixed = 64 }]
+
+[kernel.matmul_PV]
+family = "matmul"
+object = "mha.o"
+dims = [{ name = "k", fixed = 64 }, { name = "n", fixed = 64 }, { name = "m", fixed = 64 }]
