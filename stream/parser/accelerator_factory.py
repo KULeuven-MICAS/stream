@@ -3,6 +3,7 @@ from typing import Any
 from zigzag.parser.accelerator_factory import AcceleratorFactory as ZigZagCoreFactory
 
 from stream.compiler.kernels.library import KernelLibrary
+from stream.cost_model.bandwidth import BandwidthModel
 from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
 from stream.hardware.architecture.backends import AIE2CoreBackend, ZigZagCoreBackend
 from stream.hardware.architecture.core import Core
@@ -50,6 +51,11 @@ class AcceleratorFactory:
             offchip_core_id=offchip_core_id,
             nb_shared_mem_groups=nb_shared_mem_groups,
             kernel_library=KernelLibrary.load(self.data.get("kernel_library")),
+            bandwidth={
+                int(core): BandwidthModel.from_description(model)
+                for core, model in self.data.get("bandwidth", {}).items()
+            },
+            reconfiguration=self.data.get("reconfiguration"),
         )
 
     def create_core(

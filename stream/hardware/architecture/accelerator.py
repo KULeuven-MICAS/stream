@@ -4,6 +4,7 @@ from zigzag.mapping.spatial_mapping import SpatialMapping
 from zigzag.utils import DiGraphWrapper
 
 from stream.compiler.kernels.library import KernelLibrary
+from stream.cost_model.bandwidth import BandwidthModel
 from stream.cost_model.communication_manager import CommunicationManager
 from stream.hardware.architecture.core import Core
 
@@ -26,11 +27,15 @@ class Accelerator:
         nb_shared_mem_groups: int,
         offchip_core_id: int | None = None,
         kernel_library: KernelLibrary | None = None,
+        bandwidth: dict[int, BandwidthModel] | None = None,
+        reconfiguration: dict | None = None,
     ):
         self.name = name
         self.kernel_library = kernel_library
         self.cores = cores
         self.offchip_core_id = offchip_core_id
+        self.bandwidth = bandwidth or {}
+        self.reconfiguration = reconfiguration or {}
         self.nb_shared_mem_groups = nb_shared_mem_groups
         self.communication_manager = CommunicationManager(self)
 

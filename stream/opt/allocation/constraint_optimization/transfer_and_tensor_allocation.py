@@ -17,6 +17,7 @@ try:
 except ModuleNotFoundError:
     GRB = None  # type: ignore[assignment]
 
+from stream.cost_model.bandwidth import BandwidthModel, contiguous_span_bytes
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.cost_model.core_cost_lut import CoreCostLUT
 from stream.hardware.architecture.accelerator import Accelerator
@@ -142,6 +143,8 @@ class TransferAndTensorAllocator:
             accelerator, nb_cols_to_use=nb_cols_to_use, force_double_buffering=True
         )
         self.offchip_core_id = self.context.offchip_core_id
+        self.shared_bandwidth: dict[int, BandwidthModel] = dict(accelerator.bandwidth)
+        self.shared_busy: dict[int, SolverVar] = {}
         self.iterations = iterations
         self.ssis = ssis
         self.multiplicities = multiplicities
@@ -211,6 +214,7 @@ class TransferAndTensorAllocator:
 
         # latency vars
         self._transfer_latency_cache: dict[tuple[TransferNode, MulticastPathPlan], SolverVar] = {}
+        self._shared_latency_cache: dict[tuple[int, TransferNode, MulticastPathPlan], SolverVar] = {}
         self.slot_latency: dict[int, SolverVar] = {}
         self.overlap: SolverVar | None = None
         self.total_latency: SolverVar | None = None
@@ -331,7 +335,30 @@ class TransferAndTensorAllocator:
         # so it adds no time to the slot, the same reason it spends no DMA channel.
         if self._choice_shares_memory(tr, path):
             return 0
-        return get_transfer_latency_for_path(tr, path)
+        link = get_transfer_latency_for_path(tr, path)
+        shared = (
+            self._shared_cycles(core, tr, path, model.contiguous) for core, model in self.shared_bandwidth.items()
+        )
+        return max(link, *shared) if self.shared_bandwidth else link
+
+    @staticmethod
+    def _direction(core_id: int, path: MulticastPathPlan) -> str | None:
+        """'read' for a transfer out of this core, 'write' for one into it, None for one it takes no part in."""
+        if any(c.id == core_id for c in path.sources):
+            return "read"
+        if any(c.id == core_id for c in path.targets):
+            return "write"
+        return None
+
+    def _shared_cycles(self, core_id: int, tr: TransferNode, path: MulticastPathPlan, rate: float) -> int:
+        """Cycles one firing holds a shared-bandwidth core at ``rate``, slowed by its access pattern."""
+        direction = self._direction(core_id, path)
+        if direction is None:
+            return 0
+        tensor = tr.inputs[0]
+        full = tuple(tensor.subview.source.type.get_shape())
+        span = contiguous_span_bytes(tuple(tensor.shape), full, tensor.operand_type.bitwidth)
+        return ceil(tensor.size_bits() / (rate * self.shared_bandwidth[core_id].efficiency(span, direction)))
 
     def _ensure_same_ssis_for_all_transfers(self) -> None:
         first_ssis = self.ssis[self.transfer_nodes[0]]
@@ -1474,8 +1501,17 @@ class TransferAndTensorAllocator:
     def _define_overlap_var(self) -> None:
         overlap = self.model.add_var(vtype=SolverVarType.INTEGER, name="overlap")
         self.overlap = overlap
-        for v in self.idle_lat.values():
-            self.model.add_constr(overlap <= v)
+        iteration = self.model.quicksum(v._raw for v in self.slot_latency.values())
+        for res, v in self.idle_lat.items():
+            if not self._bounds_overlap(res):
+                continue
+            busy = self._link_busy_expr(res) if isinstance(res, CommunicationLink) else None
+            if busy is None:
+                self.model.add_constr(overlap <= v)
+            else:
+                self.model.add_constr(overlap <= iteration - busy)
+        self._skipped_step_floor(overlap, iteration)
+        self._shared_bandwidth_bounds(overlap, iteration)
         # Both resource idle and a loop-carried state cap the overlap, so II = max(ResMII, RecMII).
         rec = self.recurrence_bound = self._recurrence_bound()
         if rec > 0:
@@ -1484,30 +1520,73 @@ class TransferAndTensorAllocator:
                 name="overlap_recurrence_bound",
             )
 
+    def _skipped_step_floor(self, overlap, iteration) -> None:
+        """A step a core skips still takes as long as the operands it skips over."""
+        for n in self.ssc_nodes:
+            for core in self.cost_lut.get_cores(n):
+                entry = self.cost_lut.get_cost(n, core)
+                fraction = (entry.metadata or {}).get("computed_fraction", 1.0)
+                if fraction >= 1.0 - 1e-9:
+                    continue
+                busy = get_active_latency(n, float(ceil(entry.latency_total)), self.ssis)
+                for (tr, choice), y in self.y_path_choice.items():
+                    if core not in self._src_cores_of_choice(choice) and core not in self._dst_cores_of_choice(choice):
+                        continue
+                    latency = self._active_transfer_latency(tr, choice, y)
+                    self.model.add_constr(
+                        overlap <= iteration - busy - (1.0 - fraction) * latency._raw,
+                        name=f"skip_floor_{n.name}_{_resource_key(core)}_{tr.name}_{hash(choice)}",
+                    )
+
+    def _link_busy_expr(self, link: CommunicationLink):
+        """Cycles this link actually carries data in one iteration, or None if it carries none."""
+        terms = [
+            self._active_transfer_latency(tr, choice, y)
+            for (tr, choice), y in self.y_path_choice.items()
+            if link in self.links_in_choice[(tr, choice)]
+        ]
+        return self.model.quicksum(t._raw for t in terms) if terms else None
+
+    def _offchip_bandwidth(self) -> float:
+        """Bits per cycle the array can move across the off-chip boundary."""
+        off = self.offchip_core_id
+        if off is None:
+            return 0.0
+        return float(sum(link.bandwidth for link in self.link_set if self._core_id(link.receiver) == off))
+
+    def _bounds_overlap(self, res: Resource) -> bool:
+        """Whether this resource being busy is a reason the next iteration cannot start."""
+        if isinstance(res, Core):
+            return True
+        if self._is_offchip_link(res):
+            return self.constraint_selection.offchip_contention
+        return self.constraint_selection.transfer_contention
+
+    @staticmethod
+    def _core_id(end: Core | str) -> int | None:
+        """A link end's core id, None for an end that is not a core."""
+        return end.id if isinstance(end, Core) else None
+
+    def _is_offchip_link(self, res: Resource) -> bool:
+        """A link with the off-chip core at either end."""
+        off = self.offchip_core_id
+        if off is None or not isinstance(res, CommunicationLink):
+            return False
+        return off in (self._core_id(res.sender), self._core_id(res.receiver))
+
     def _recurrence_bound(self) -> int:
-        """Cycles a loop-carried state forbids overlapping (modulo scheduling's RecMII); 0 when feed-forward."""
-        carriers = {n for n in self.ssc_nodes if any(is_state_operand(n, t) for t in n.inputs)}
+        """Cycles a loop-carried state forbids overlapping (modulo scheduling's RecMII); 0 when feed-forward.
+
+        Every state is a distance-one self-loop on the node that keeps it, so the worst cycle is the
+        slowest carrier alone; a forward edge between two carriers joins no cycle.
+        """
+        carriers = [n for n in self.ssc_nodes if any(is_state_operand(n, t) for t in n.inputs)]
         if not carriers:
             return 0
-        latency = {
-            n: ceil(max((self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)), default=0))
-            for n in self.ssc_nodes
-        }
-        # Longest node-latency chain from one carrier to another (a lone scan node is its own chain).
-        longest_from_carrier: dict[Any, int] = {}
-        worst = 0
-        for node in self.workload.dataflow_sort():
-            if node not in latency:
-                continue
-            reaching = [longest_from_carrier[p] for p in self.workload.predecessors(node) if p in longest_from_carrier]
-            best = max(reaching, default=0) + latency[node] if reaching else 0
-            if node in carriers:
-                best = max(best, latency[node])
-            if best:
-                longest_from_carrier[node] = best
-            if node in carriers:
-                worst = max(worst, best)
-        return worst
+        return max(
+            ceil(max((self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)), default=0))
+            for n in carriers
+        )
 
     def _transfer_dma_usage_expr(self, tr: TransferNode, core: Core):
         return self.model.quicksum(self._tensor_on_core_expr(t, core) for t in tr.tensors if isinstance(t, Tensor))
@@ -1611,6 +1690,13 @@ class TransferAndTensorAllocator:
             for t in self.tensors_to_optimize_reuse_for
             for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
         )
+
+        if (
+            not self.shared_bandwidth
+            and self.constraint_selection.offchip_traffic_cost
+            and (bw := self._offchip_bandwidth())
+        ):
+            primary_expr = primary_expr + (self.iterations / bw) * traffic_expr
 
         # Third objective (tiebreaker): minimize total buffering depth
         buffering_expr = self.model.quicksum(
@@ -2445,6 +2531,43 @@ class TransferAndTensorAllocator:
 
         return active_latency_absent_loops_and_reuse_factor
 
+    def _active_shared_latency(
+        self, core_id: int, tr: TransferNode, choice: MulticastPathPlan, y: SolverVar
+    ) -> SolverVar:
+        """Cycles this transfer holds a shared-bandwidth core per iteration, at its read and write ceiling."""
+        key = (core_id, tr, choice)
+        if key not in self._shared_latency_cache:
+            constant = float(self._shared_cycles(core_id, tr, choice, self.shared_bandwidth[core_id].ceiling))
+            t = tr.outputs[0]
+            applicable_temporal = self.ssis[t].get_applicable_temporal_variables()
+            selectors = [
+                (self.z_stop[(t, s)], float(self.reuse_levels[(t, s)])) for s in range(-1, len(applicable_temporal))
+            ]
+            self._shared_latency_cache[key] = self._add_binary_times_const_over_linexpr(
+                binary_var=y,
+                numerator=get_active_latency(tr, constant, self.ssis),
+                denominator_expr=self.reuse_factors[tr]._raw,
+                denominator_lb=1.0,
+                base_name=f"shared_latency_{core_id}_{tr}",
+                selectors=selectors,
+            )
+        return self._shared_latency_cache[key]
+
+    def _shared_bandwidth_bounds(self, overlap, iteration) -> None:
+        """Bound the step by the time each shared-bandwidth core spends on one iteration's transfers."""
+        for core_id in self.shared_bandwidth:
+            terms = [
+                self._active_shared_latency(core_id, tr, choice, y)._raw
+                for (tr, choice), y in self.y_path_choice.items()
+                if self._direction(core_id, choice) is not None and not self._choice_shares_memory(tr, choice)
+            ]
+            if not terms:
+                continue
+            busy = self.model.add_var(vtype=SolverVarType.CONTINUOUS, name=f"shared_busy_{core_id}")
+            self.model.add_constr(busy == self.model.quicksum(terms), name=f"shared_busy_{core_id}_def")
+            self.model.add_constr(overlap <= iteration - busy, name=f"shared_bound_{core_id}")
+            self.shared_busy[core_id] = busy
+
     def _active_compute_latency(
         self,
         n: ComputationNode,
@@ -2757,6 +2880,23 @@ class TransferAndTensorAllocator:
             "memory_occupancy": self._memory_occupancy(),
         }
 
+    def throughput_bound(self) -> float:
+        """The pipelined compute bound of the steady state, from the solved allocation."""
+        busy: dict[Any, float] = defaultdict(float)
+        for n in self.ssc_nodes:
+            latencies = [self.cost_lut.get_cost(n, c).latency_total for c in self.cost_lut.get_cores(n)]
+            runtime = ceil(max(latencies)) if latencies else 0
+            active = float(get_active_latency(n, float(runtime), self.ssis))
+            for group in self.mapping.get(n).resource_allocation:
+                for core in group:
+                    busy[core] += active
+        per_iteration = max(busy.values(), default=0.0)
+        per_iteration = max(per_iteration, float(self.recurrence_bound or 0))
+        for busy in self.shared_busy.values():
+            per_iteration = max(per_iteration, float(busy.X))
+        chain = sum(float(v.X) for v in self.slot_latency.values())
+        return self.iterations * per_iteration + max(0.0, chain - per_iteration)
+
     def capacity_slack(self) -> dict[int, dict[str, float]]:
         """Unused capacity per core: memory in bytes, fifo depth and buffer descriptors in slots."""
         slack: dict[int, dict[str, float]] = {}
@@ -3039,6 +3179,7 @@ class TransferAndTensorAllocator:
                     "overlap": _scalar(overlap_val),
                     "iter_step": _scalar(iter_step_val),
                     "total_latency": _scalar(total_latency_val),
+                    "shared_busy": {core: _scalar(float(busy.X)) for core, busy in self.shared_busy.items()},
                 },
                 # Per-resource slack; the overlap equals the minimum (the binding resource(s) first).
                 "resource_slack": self._resource_slack_breakdown(),

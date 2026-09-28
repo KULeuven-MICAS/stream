@@ -91,7 +91,7 @@ class MappingGenerationStage(Stage):
                 assert len(ctxs) == 1, f"Expected exactly one context, but got {len(ctxs)}"
                 ctx = ctxs[0]
                 scheduler = ctx.get("scheduler", None)
-                latency = scheduler.latency_total
+                latency = scheduler.cost_to_rank
             except InfeasibleAllocationError as e:
                 save_infeasibility_report(output_path_i, e.report)
                 logger.error(f"Mapping {mapping_path} is infeasible: {e.report.summary}")

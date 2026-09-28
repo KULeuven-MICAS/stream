@@ -129,6 +129,22 @@ class SteadyStateScheduler:
             os.makedirs(self.output_path, exist_ok=True)
 
         self.solve_stats: SolveStats | None = None
+        self.throughput_bound: float | None = None
+
+    @property
+    def cost_to_rank(self) -> float:
+        """What two solved designs should be compared by."""
+        if self.solve_stats is not None and self.solve_stats.objective is not None:
+            return float(self.solve_stats.objective)
+        return float(self.latency_total)
+
+    @property
+    def estimated_cycles(self) -> float:
+        """What running this steady state takes: a lone node pipelines to its throughput bound,
+        while a fused group is held to how its nodes overlap, which the solved cost captures."""
+        if self.throughput_bound is not None and len(self.workload.get_computation_nodes()) == 1:
+            return self.throughput_bound
+        return self.cost_to_rank
 
     def get_ir(self) -> dict:
         """Return a dictionary representation of the scheduler state for serialization/inspection.
@@ -344,6 +360,7 @@ class SteadyStateScheduler:
         except Exception as exc:
             logger.warning("Failed to compute capacity slack: %s", exc)
             self.capacity_slack = {}
+        self.throughput_bound = tta.throughput_bound()
         # total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
         # assert total == total_latency_solver, (
         #     f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."

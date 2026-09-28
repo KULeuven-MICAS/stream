@@ -79,6 +79,10 @@ class AcceleratorValidator:
         },
         # Id of the core that acts as the off-chip memory controller
         "offchip_core_id": {"type": "integer", "min": 0, "required": True},
+        # Core id -> measured bandwidth every transfer through that core shares
+        "bandwidth": {"type": "dict", "required": False, "keysrules": {"type": "integer"}},
+        # What reconfiguring the array between designs costs, read by the namespace constraints
+        "reconfiguration": {"type": "dict", "required": False},
         # Optional unit_energy_cost used for connections that don't specify their own
         "unit_energy_cost": {
             "type": "float",

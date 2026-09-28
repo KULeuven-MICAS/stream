@@ -24,7 +24,7 @@ zeroing call that belongs to a GEMM rather than to the graph.
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from math import prod
+from math import ceil, prod
 from typing import cast
 
 from snaxc.ir.tsl import TiledStridedLayout
@@ -417,6 +417,12 @@ class CausalGemmKernel(GemmKernel):
     @property
     def unique_name(self) -> str:
         return f"{super().unique_name}_causal"
+
+    def work_share(self, index: int, width: int, steps: int) -> float:
+        blocks = range(index, width * steps, width)
+        attended = sum(ceil((block + 1) * self.m / self.n) for block in blocks)
+        key_blocks = ceil(width * steps * self.m / self.n)
+        return attended / (width * steps * key_blocks)
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         query, key = _kernel_dims(op)

@@ -38,6 +38,7 @@ class CoreCostContext(Protocol):
     temporal_mapping_type: TemporalMappingType
     loma_lpf_limit: int
     nb_spatial_mappings_generated: int
+    fusion_splits: dict
 
 
 class CoreCostBackend(Protocol):
@@ -57,7 +58,7 @@ class CoreCostBackend(Protocol):
 
 
 class AIEBackend:
-    """AIE compute tiles: the utilization-based estimator."""
+    """AIE compute tiles: the kernel-library-priced estimator."""
 
     name = "aie"
     priority = 10
@@ -68,7 +69,7 @@ class AIEBackend:
     def make(self, context: CoreCostContext) -> CoreEstimator:
         from stream.stages.estimation.aie_cost_estimator import AIECostEstimator  # noqa: PLC0415
 
-        return AIECostEstimator(context.workload, context.mapping)
+        return AIECostEstimator(context.workload, context.mapping, context.fusion_splits)
 
 
 class ZigZagBackend:
