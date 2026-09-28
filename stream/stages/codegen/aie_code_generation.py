@@ -33,6 +33,7 @@ from stream.compiler.transforms.clear_memory_space import ClearMemorySpace
 from stream.compiler.transforms.convert_stream_to_aie import (
     ConvertStreamToAIEPass,
 )
+from stream.compiler.transforms.hoist_scale_acquires import HoistFlashScaleAcquires
 from stream.compiler.transforms.iteration_space_to_for import IterationSpaceToFor
 from stream.compiler.transforms.unroll import SpatialUnrollPass
 from stream.cost_model.communication_manager import MulticastPathPlan
@@ -443,6 +444,7 @@ class AIECodeGenerationStage(Stage):
         with open(output_path + "/convert_of.mlir", "w") as f:
             f.write(str(module))
         ConvertStreamToAIEPass().apply(self.context, module)
+        HoistFlashScaleAcquires().apply(self.context, module)
         with open(output_path + "/to_aie.mlir", "w") as f:
             f.write(str(module))
         AIEMoveTileOpsUp().apply(self.context, module)
