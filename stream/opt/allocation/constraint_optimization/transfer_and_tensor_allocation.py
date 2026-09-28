@@ -1571,9 +1571,10 @@ class TransferAndTensorAllocator:
 
         self.model.set_lexicographic_objectives(
             [
-                ObjectiveLevel(expr=primary_expr, priority=3, name="latency"),
-                ObjectiveLevel(expr=traffic_expr, priority=2, name="offchip_traffic"),
-                ObjectiveLevel(expr=buffering_expr, priority=1, name="buffering"),
+                ObjectiveLevel(expr=primary_expr, priority=4, name="latency"),
+                ObjectiveLevel(expr=traffic_expr, priority=3, name="offchip_traffic"),
+                ObjectiveLevel(expr=buffering_expr, priority=2, name="buffering"),
+                ObjectiveLevel(expr=hops_expr, priority=1, name="route_hops"),
             ],
             sense="minimize",
         )
@@ -1599,6 +1600,12 @@ class TransferAndTensorAllocator:
         ("aie2_bd", "buffer_descriptors"),
         ("bddepth", "buffer_descriptors"),
         ("link_used", "link_contention"),
+        hops_expr = self.model.quicksum(
+            len(self.links_in_choice[(tr, choice)]) * self.y_path_choice[(tr, choice)]._raw
+            for tr in self.transfer_nodes
+            for choice in self.possible_transfer_allocations[tr]
+        )
+
         ("dma", "dma_channels"),
     )
 

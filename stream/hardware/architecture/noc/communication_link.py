@@ -55,6 +55,7 @@ class CommunicationLink:
         self.bandwidth = bandwidth
         self.unit_energy_cost = unit_energy_cost
         self.bidirectional = bidirectional  # TODO this property is not in use?
+        self._hash = hash((self.sender, self.receiver, self.bandwidth, self.unit_energy_cost, self.bidirectional))
 
     def __str__(self) -> str:
         return f"CL({self.sender}, {self.receiver}, bw={self.bandwidth})"
@@ -63,7 +64,7 @@ class CommunicationLink:
         return str(self)
 
     def __hash__(self) -> int:
-        return hash((self.sender, self.receiver, self.bandwidth, self.unit_energy_cost, self.bidirectional))
+        return self._hash
 
     def __eq__(self, other: object) -> bool:
         return isinstance(other, CommunicationLink) and (self.sender, self.receiver, self.bandwidth) == (
