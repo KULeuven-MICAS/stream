@@ -69,6 +69,7 @@ nav:
       - user-guide.md
       - Workload: workload.md
       - Hardware: hardware.md
+      - Kernel library: kernel_library.md
       - Mapping: mapping.md
       - Stages: stages.md
       - Outputs: outputs.md

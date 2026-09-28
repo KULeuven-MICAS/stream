@@ -2,6 +2,7 @@ from typing import Any
 
 from zigzag.parser.accelerator_factory import AcceleratorFactory as ZigZagCoreFactory
 
+from stream.compiler.kernels.library import KernelLibrary
 from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
 from stream.hardware.architecture.backends import AIE2CoreBackend, ZigZagCoreBackend
 from stream.hardware.architecture.core import Core
@@ -48,6 +49,7 @@ class AcceleratorFactory:
             cores=cores_graph,
             offchip_core_id=offchip_core_id,
             nb_shared_mem_groups=nb_shared_mem_groups,
+            kernel_library=KernelLibrary.load(self.data.get("kernel_library")),
         )
 
     def create_core(

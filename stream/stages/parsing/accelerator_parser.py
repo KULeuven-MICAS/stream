@@ -2,6 +2,7 @@ import logging
 
 from zigzag.utils import open_yaml
 
+from stream.compiler.kernels.library import KernelLibrary
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
@@ -26,6 +27,8 @@ class AcceleratorParserStage(Stage):
         else:
             assert self.accelerator.split(".")[-1] == "yaml", "Expected a yaml file as accelerator input"
             accelerator = self.parse_accelerator_from_yaml(self.accelerator)
+        if (library := self.ctx.get("kernel_library")) is not None:
+            accelerator.kernel_library = KernelLibrary.load(library)
 
         self.ctx.set(accelerator=accelerator)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)

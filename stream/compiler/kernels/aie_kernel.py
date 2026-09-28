@@ -1,10 +1,11 @@
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import ClassVar
 
 from snaxc.dialects.snax import LayoutCast
 from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
-from xdsl.dialects.builtin import FunctionType, StringAttr
+from xdsl.dialects.builtin import AnyDenseElement, FunctionType, StringAttr, bf16
 from xdsl.dialects.func import CallOp, FuncOp
 from xdsl.dialects.scf import ForOp, IndexSwitchOp, YieldOp
 from xdsl.ir import Operation, OpResult, Region, SSAValue
@@ -14,36 +15,31 @@ from xdsl.traits import SymbolTable
 from xdsl_aie.dialects.aie import CoreOp, DeviceOp, ObjectFIFOSubviewAccessOp
 
 from stream.compiler.dialects.stream import ComputationNodeOp, StrensorVar, StrensorVarAttr
+from stream.compiler.kernels.library import CallDim, KernelLibrary, KernelSpec
 
-# Intrinsic MAC tile of the AIE2p kernels, and the layouts an operand can take.
-# mm.cc takes 8 rows when bf16 matmuls run on the bfp16 MACs and 4 when they do not.
-R, T = 4, 8
-MAC_ROWS_BFP16 = 8
 MAC_TILED = "default"
 CONTIGUOUS = "contiguous"
 VECTOR_LANES = 16
-"""Elements a vectorized elementwise kernel loads per step."""
 
 
-def elementwise_operand_layout(m: int, n: int, layout: str, mac_rows: int = R) -> TiledStridedLayout:
-    """Layout of one operand of an elementwise kernel.
-
-    An elementwise kernel walks its operands linearly, so it imposes no layout of
-    its own; the layout only has to match what the operands already are.
-    ``default`` is the r x t tiling a GEMM writes its output in, so an elementwise
-    layer fused behind one needs no transformation. ``contiguous`` is plain row
-    major, which is what a layer reading from and writing to memory wants: its
-    transfers then run the length of a row instead of one MAC tile at a time.
-    """
-    if layout == CONTIGUOUS:
-        return TiledStridedLayout([TiledStride([Stride(n, m)]), TiledStride([Stride(1, n)])])
-    mt, nt = m // mac_rows, n // T
+def tiled_layout(rows: int, cols: int, tile_rows: int, tile_cols: int) -> TiledStridedLayout:
+    """Row-major tiles of tile_rows x tile_cols, each tile row major."""
+    col_tiles = cols // tile_cols
     return TiledStridedLayout(
         [
-            TiledStride([Stride(mac_rows * T * nt, mt), Stride(T, mac_rows)]),
-            TiledStride([Stride(mac_rows * T, nt), Stride(1, T)]),
+            TiledStride([Stride(tile_rows * tile_cols * col_tiles, rows // tile_rows), Stride(tile_cols, tile_rows)]),
+            TiledStride([Stride(tile_rows * tile_cols, col_tiles), Stride(1, tile_cols)]),
         ]
     )
+
+
+def row_major_layout(rows: int, cols: int) -> TiledStridedLayout:
+    return TiledStridedLayout([TiledStride([Stride(cols, rows)]), TiledStride([Stride(1, cols)])])
+
+
+def elementwise_operand_layout(m: int, n: int, layout: str, mac: Mapping[str, int]) -> TiledStridedLayout:
+    """Row major for ``contiguous``, else the tiling a matmul leaves its output in."""
+    return row_major_layout(m, n) if layout == CONTIGUOUS else tiled_layout(m, n, mac["m"], mac["n"])
 
 
 def induction_variable(op: Operation, var: StrensorVar, occurrence: int = 0) -> SSAValue:
@@ -83,17 +79,48 @@ class StateOperand:
     handover: int = 0
 
 
-@dataclass
+@dataclass(kw_only=True)
 class AIEKernel(ABC):
-    utilization: float
+    element_type: AnyDenseElement = bf16
+    library: KernelLibrary | None = field(default=None, compare=False, repr=False)
+    DIMS: ClassVar[Mapping[str, int]] = {}
 
     @property
     def unique_name(self) -> str:
         return self.function_name
 
     @property
-    @abstractmethod
-    def linkwith_name(self) -> str: ...
+    def library_key(self) -> str:
+        return self.function_name
+
+    @property
+    def spec(self) -> KernelSpec:
+        if self.library is None:
+            raise ValueError(f"{type(self).__name__} needs a kernel library")
+        spec = self.library.spec(self.library_key)
+        if spec is None:
+            raise ValueError(f"the kernel library does not describe {self.library_key}")
+        return spec
+
+    @property
+    def mac(self) -> Mapping[str, int]:
+        if self.library is None:
+            raise ValueError(f"{type(self).__name__} needs a kernel library")
+        return self.library.mac
+
+    def call_shape(self) -> dict[str, int]:
+        return {d.name: int(getattr(self, d.name)) for d in self.spec.dims}
+
+    def call_tile(self) -> list[tuple[int, int, CallDim]]:
+        """Each call dimension the library declares, as (node dimension position, size, declaration)."""
+        return [(self.DIMS[d.name], int(getattr(self, d.name)), d) for d in self.spec.dims]
+
+    def validate(self) -> None:
+        self.spec.validate(self.call_shape())
+
+    @property
+    def linkwith_name(self) -> str:
+        return self.spec.object.format(**self.call_shape())
 
     @property
     @abstractmethod

@@ -1,4 +1,5 @@
 name: single_core
+kernel_library: ../kernels/aie2p.toml
 cores:
   0: shim_dma.yaml
   1: mem_tile_256KB.yaml

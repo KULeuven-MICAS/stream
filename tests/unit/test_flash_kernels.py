@@ -13,9 +13,14 @@ import pytest
 
 pytest.importorskip("snaxc", reason="the AIE dialects are a separate install, via stream-setup-aie")
 
+from pathlib import Path  # noqa: E402
+
+from stream.compiler.kernels.library import KernelLibrary  # noqa: E402
+
 TILE = 64
 BLOCKS = 8
 COLUMNS = 4
+LIBRARY = KernelLibrary.load(Path(__file__).parents[2] / "stream/inputs/aie/kernels/aie2p.toml")
 
 
 @pytest.fixture(scope="module")
@@ -90,9 +95,9 @@ def column():
         tile = TileOp(0, row)
         return [tile, CoreOp(None, tile, Region(Block([*ops, EndOp()])))]
 
-    scores = CausalGemmKernel(61.8, bf16, TILE, TILE, TILE, "default", True)
-    softmax = PartialSoftmaxKernel(50.0, bf16, TILE, TILE, "contiguous", True)
-    context = FlashKernel(61.8, bf16, TILE, TILE, TILE, "default", True)
+    scores = CausalGemmKernel(m=TILE, k=TILE, n=TILE, layout="default", library=LIBRARY)
+    softmax = PartialSoftmaxKernel(m=TILE, n=TILE, layout="contiguous", library=LIBRARY)
+    context = FlashKernel(m=TILE, k=TILE, n=TILE, layout="default", library=LIBRARY)
     device = DeviceOp(
         IntegerAttr.from_int_and_width(AIEDeviceEnum.npu2.get_int(), 32),
         Region(
@@ -190,12 +195,12 @@ def test_the_fused_score_kernel_stays_in_a_gemms_tilings():
     Nothing but IRON_FUSED_KERNEL reaches this kernel, so no other test would notice its
     layouts drifting away from the GEMM it replaces.
     """
-    from stream.compiler.kernels import AIEKernels
+    from stream.compiler.kernels.registry import AIE_KERNELS
 
-    shape = {"utilization": 50.0, "m": TILE, "k": TILE, "n": TILE, "layout": "default"}
-    fused = AIEKernels["matmul_softmax"](**shape)
+    shape = {"m": TILE, "k": TILE, "n": TILE, "layout": "default", "library": LIBRARY}
+    fused = AIE_KERNELS["matmul_softmax"](**shape)
     assert fused.function_name == "matmul_softmax"
-    assert fused.operand_layouts() == AIEKernels["gemm"](**shape).operand_layouts()
+    assert fused.operand_layouts() == AIE_KERNELS["gemm"](**shape).operand_layouts()
 
 
 def test_only_the_kernels_that_carry_a_running_scale_declare_state():
@@ -206,18 +211,15 @@ def test_only_the_kernels_that_carry_a_running_scale_declare_state():
     it as one would make the value core a carrier in the recurrence bound and forbid the two
     halves of a step from overlapping.
     """
-    from stream.compiler.kernels import AIEKernels
+    from stream.compiler.kernels.registry import AIE_KERNELS
 
     declaring = {
         name: [s.name for s in kernel.state_operands()]
         for name, kernel in (
-            ("partial_softmax", AIEKernels["partial_softmax"](utilization=50.0, n=TILE, layout="contiguous", m=TILE)),
-            (
-                "matmul_softmax",
-                AIEKernels["matmul_softmax"](utilization=50.0, m=TILE, k=TILE, n=TILE, layout="default"),
-            ),
-            ("gemm", AIEKernels["gemm"](utilization=61.8, m=TILE, k=TILE, n=TILE, layout="default", flash=True)),
-            ("softmax", AIEKernels["softmax"](utilization=50.0, n=TILE, layout="contiguous")),
+            ("partial_softmax", AIE_KERNELS["partial_softmax"](n=TILE, layout="contiguous", m=TILE)),
+            ("matmul_softmax", AIE_KERNELS["matmul_softmax"](m=TILE, k=TILE, n=TILE, layout="default")),
+            ("gemm", AIE_KERNELS["gemm"](m=TILE, k=TILE, n=TILE, layout="default", flash=True)),
+            ("softmax", AIE_KERNELS["softmax"](n=TILE, layout="contiguous")),
         )
     }
     assert declaring == {
@@ -231,10 +233,10 @@ def test_only_the_kernels_that_carry_a_running_scale_declare_state():
 def test_the_declared_state_is_the_size_the_core_buffer_holds():
     """The declaration and the allocation are two statements of one fact, so they are checked
     against each other rather than both against a number written twice."""
-    from stream.compiler.kernels import AIEKernels
     from stream.compiler.kernels.flash import SCALE_ROWS
+    from stream.compiler.kernels.registry import AIE_KERNELS
 
-    kernel = AIEKernels["partial_softmax"](utilization=50.0, n=TILE, layout="contiguous", m=TILE)
+    kernel = AIE_KERNELS["partial_softmax"](n=TILE, layout="contiguous", m=TILE)
     (state,) = kernel.state_operands()
     # _core_buffer allocates SCALE_ROWS * m elements; the declaration says rows per step, and
     # the node supplies the query extent that a split then divides.

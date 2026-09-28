@@ -174,7 +174,7 @@ class MappingValidator:
     def add_defaults(self, layer_data: dict[str, Any]) -> None:
         # No name means no kernel: only an AIE-code-generated layer names one.
         kernel = layer_data.setdefault("kernel", {})
-        kernel.setdefault("kwargs", {"utilization": 100.0})
+        kernel.setdefault("kwargs", {})
         layer_data.setdefault("inter_core_tiling", [])
 
     def add_fused_group_defaults(self, fused_group: dict[str, Any]) -> None:

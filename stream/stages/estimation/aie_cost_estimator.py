@@ -6,7 +6,6 @@ from xdsl.dialects.builtin import BFloat16Type, FixedBitwidthType, Float32Type
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.core import Core
 from stream.mapping.mapping import Mapping
-from stream.stages.estimation.kernel_cycles import measured_latency
 from stream.workload.workload import ComputationNode, Workload
 
 
@@ -24,14 +23,9 @@ class AIECostEstimator:
         kernel = self.mapping.get(node).kernel
         ideal_ops_per_cycle = self.ops_per_cycle(node, core)
         ideal_cycles = ceil(macs / ideal_ops_per_cycle)
-        measured = measured_latency(kernel, macs) if kernel is not None else None
-        if measured is not None:
-            cycles = ceil(measured)
-            metadata = {"backend": "aie", "measured_symbol": kernel.function_name}
-        else:
-            utilization = kernel.utilization if kernel is not None else 100.0
-            cycles = ceil(macs / (ideal_ops_per_cycle * (utilization / 100.0)))
-            metadata = {"backend": "aie", "utilization": utilization}
+        cycles, metadata = self._kernel_cycles(kernel, macs)
+        if cycles is None:
+            cycles, metadata = ideal_cycles, {"backend": "aie"}
         energy = 0  # TODO
         return CoreCostEntry(
             energy_total=energy,
@@ -44,6 +38,18 @@ class AIECostEstimator:
             layer=node,
             metadata=metadata,
         )
+
+    @staticmethod
+    def _kernel_cycles(kernel, macs: int) -> tuple[int | None, dict]:
+        """Cycles for ``macs`` operations of this kernel, from its measured call or its family rate."""
+        if kernel is None or kernel.library is None or kernel.library.spec(kernel.library_key) is None:
+            return None, {}
+        spec = kernel.spec
+        if measured := spec.call_cycles(kernel.call_shape()):
+            call_cycles, call_ops = measured
+            return ceil(call_cycles * macs / call_ops), {"backend": "aie", "measured_symbol": spec.symbol}
+        rate = kernel.library.families[spec.family].ops_per_cycle
+        return ceil(macs / rate), {"backend": "aie", "family": spec.family}
 
     def _get_total_inter_core_tiling_factor(self, node):
         # The first (typically only) allocation slot's split factors. Robust to an empty tiling so a

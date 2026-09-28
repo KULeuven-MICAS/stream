@@ -9,6 +9,7 @@ from onnx import ModelProto
 from zigzag.mapping.temporal_mapping import TemporalMappingType
 from zigzag.utils import open_yaml, pickle_load
 
+from stream.compiler.kernels.library import KernelLibrary
 from stream.hardware.bundle import HardwareBundle
 from stream.hardware.cost import HardwareBudget, assert_within_budget, evaluate_bundle_cost
 from stream.instrumentation import build_instrumentation, fail_instrumentation, finish_instrumentation, instrument
@@ -79,7 +80,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
     npu: str = "npu2",
     backend: str = "ortools_gscip",
     constraint_selection: ConstraintSelection | None = None,
-    kernels: dict[str, Any] | None = None,
+    kernel_library: KernelLibrary | str | dict[str, Any] | None = None,
     instrumentation: dict[str, Any] | None = None,
 ) -> StageContext:
     # Callers (e.g. the web runner) may pass JSON-sourced strings for the booleans; coerce them so a
@@ -136,7 +137,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
             nb_cols_to_use=nb_cols_to_use,  # required by ConstraintOptimizationAllocationStage
             backend=_backend_enum.value,
             constraint_selection=constraint_selection,
-            kernels=kernels,  # optional caller-supplied kernel factory overrides
+            kernel_library=kernel_library,
         )
         # optionally add code generation stage
         if enable_codegen:

@@ -64,6 +64,7 @@ class AcceleratorValidator:
     SCHEMA: dict[str, Any] = {
         # Basic identification
         "name": {"type": "string", "required": True},
+        "kernel_library": {"type": "string", "required": False},
         # Core catalogue: each value is either a file reference (ids may share one file) or an
         # inlined core description.
         "cores": {
@@ -164,6 +165,7 @@ class AcceleratorValidator:
 
         # Validation outside of schema
         self.validate_core_ids()
+        self.validate_kernel_library()
         self.validate_all_cores()
         self.validate_namespace()
         self.validate_core_coordinates()
@@ -176,6 +178,14 @@ class AcceleratorValidator:
             logger.critical("Accelerator validation failed with %d issue(s).", len(self.errors))
 
         return self.is_valid
+
+    def validate_kernel_library(self) -> None:
+        if (path := self.data.get("kernel_library")) is None:
+            return
+        path = os.path.normpath(os.path.join(self.accelerator_dirname, path))
+        if not os.path.isfile(path):
+            self.invalidate(f"kernel_library {path} does not exist.")
+        self.data["kernel_library"] = path
 
     def validate_core_ids(self):
         core_ids = list(self.data["cores"].keys())

@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from math import prod
 from typing import cast
 
-from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
+from snaxc.ir.tsl import TiledStridedLayout
 from xdsl.dialects.arith import AddiOp, CmpiOp, ConstantOp, ExtUIOp, IndexCastOp, MuliOp, RemUIOp, TruncFOp
 from xdsl.dialects.builtin import (
     ArrayAttr,
@@ -68,23 +68,13 @@ from stream.compiler.dialects.stream import (
     StrensorVarType,
 )
 from stream.compiler.kernels.aie_kernel import (
-    MAC_ROWS_BFP16,
     AIEKernel,
-    R,
     StateOperand,
-    T,
     induction_variable,
+    tiled_layout,
 )
 from stream.compiler.kernels.gemm import GemmKernel
 from stream.compiler.kernels.softmax import SoftmaxKernel
-
-FLASH_TILE = 64
-"""The one block shape mha.cc is written for: B_q, B_kv and d_head all 64.
-
-``matmul_PV`` reuses the query GEMM's compile-time ``DIM_M``/``DIM_K``/``DIM_N`` for the
-probability block, and both it and ``rescale_O`` walk the context block with 64- and
-512-element strides spelled out in the source.
-"""
 
 SCALE_ROWS = 4
 
@@ -415,7 +405,7 @@ def _store_index(buffer: SSAValue, key: SSAValue, query: SSAValue) -> list[Opera
     ]
 
 
-@dataclass
+@dataclass(kw_only=True)
 class CausalGemmKernel(GemmKernel):
     """A GEMM over the score matrix that leaves out the blocks a causal mask would zero.
 
@@ -442,7 +432,7 @@ class CausalGemmKernel(GemmKernel):
         ]
 
 
-@dataclass
+@dataclass(kw_only=True)
 class PartialSoftmaxKernel(SoftmaxKernel):
     """One online-softmax step over an m x n block of the score matrix.
 
@@ -458,15 +448,6 @@ class PartialSoftmaxKernel(SoftmaxKernel):
     # the plain kernel; either one takes the mode-selectable entry point.
     tiled_in: bool = False
     tiled_out: bool = False
-
-    def __post_init__(self) -> None:
-        super().__post_init__()
-        if (self.m, self.n) != (FLASH_TILE, FLASH_TILE):
-            raise ValueError(f"mha.cc is written for a {FLASH_TILE}x{FLASH_TILE} block, not {self.m}x{self.n}")
-
-    @property
-    def linkwith_name(self) -> str:
-        return "mha.o"
 
     @property
     def function_name(self) -> str:
@@ -489,14 +470,7 @@ class PartialSoftmaxKernel(SoftmaxKernel):
         scatter per group of rows on the way out, so a layer that can afford the memory tile
         writes row major instead.
         """
-        rows = MAC_ROWS_BFP16 if self.bfp16_mmul else R
-        mt, nt = self.m // rows, self.n // T
-        mac = TiledStridedLayout(
-            [
-                TiledStride([Stride(rows * T * nt, mt), Stride(T, rows)]),
-                TiledStride([Stride(rows * T, nt), Stride(1, T)]),
-            ]
-        )
+        mac = tiled_layout(self.m, self.n, self.mac["m"], self.mac["n"])
         return [mac if self.tiled_in else self._row_major(), mac if self.tiled_out else self._row_major()]
 
     def _scale_type(self) -> MemRefType:
@@ -605,7 +579,7 @@ class PartialSoftmaxKernel(SoftmaxKernel):
         return ops
 
 
-@dataclass
+@dataclass(kw_only=True)
 class FusedScoreSoftmaxKernel(GemmKernel):
     """A step's score side whole: the GEMM and the online softmax on one core.
 
@@ -616,19 +590,9 @@ class FusedScoreSoftmaxKernel(GemmKernel):
     that crosses to ``matmul_PV``, are the same as when the softmax stands on its own.
     """
 
-    def __post_init__(self) -> None:
-        if (self.m, self.k, self.n) != (FLASH_TILE,) * 3:
-            raise ValueError(
-                f"mha.cc is written for a {FLASH_TILE} query, key and head block, not {self.m}x{self.k}x{self.n}"
-            )
-
     @property
     def unique_name(self) -> str:
         return f"{self.function_name}_{self.m}_{self.k}_{self.n}"
-
-    @property
-    def linkwith_name(self) -> str:
-        return "mha.o"
 
     @property
     def function_name(self) -> str:
@@ -737,7 +701,7 @@ class FusedScoreSoftmaxKernel(GemmKernel):
         return ops
 
 
-@dataclass
+@dataclass(kw_only=True)
 class FlashKernel(GemmKernel):
     """The value half of an online-softmax step: ``O += P V``, rescaled as the row max moves.
 
@@ -748,19 +712,9 @@ class FlashKernel(GemmKernel):
     the same reuse the backend already gives a GEMM's output.
     """
 
-    def __post_init__(self) -> None:
-        if (self.m, self.k, self.n) != (FLASH_TILE,) * 3:
-            raise ValueError(
-                f"mha.cc is written for a {FLASH_TILE} query, key and head block, not {self.m}x{self.k}x{self.n}"
-            )
-
     @property
     def unique_name(self) -> str:
         return f"{self.function_name}_{self.m}_{self.k}_{self.n}"
-
-    @property
-    def linkwith_name(self) -> str:
-        return "mha.o"
 
     @property
     def function_name(self) -> str:

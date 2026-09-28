@@ -229,12 +229,11 @@ class MappingGenerator:
 
     def _kernel_gemm(self) -> dict[str, Any]:
         if self.seq_len_tile_size == 1:
-            return {"name": "matvec", "kwargs": {"utilization": 61.8, "layout": "default"}}
+            return {"name": "matvec", "kwargs": {"layout": "default"}}
 
         return {
             "name": "gemm",
             "kwargs": {
-                "utilization": 61.8,
                 "m": self.seq_len_tile_size,
                 "k": self.embedding_tile_size,
                 "n": self.hidden_tile_size,
@@ -243,10 +242,10 @@ class MappingGenerator:
         }
 
     def _kernel_silu(self) -> dict[str, Any]:
-        return {"name": "silu", "kwargs": {"utilization": 50.0, "layout": "default"}}
+        return {"name": "silu", "kwargs": {"layout": "default"}}
 
     def _kernel_mul(self) -> dict[str, Any]:
-        return {"name": "eltwise_mul", "kwargs": {"utilization": 50.0, "layout": "default"}}
+        return {"name": "eltwise_mul", "kwargs": {"layout": "default"}}
 
     def _build_layer_templates(self) -> list[dict[str, Any]]:
         """

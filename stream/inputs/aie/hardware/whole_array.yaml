@@ -1,4 +1,5 @@
 name: whole_array
+kernel_library: ../kernels/aie2p.toml
 cores:
   0: ./cores/shim_dma.yaml
   1: ./cores/mem_tile_256KB.yaml

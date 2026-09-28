@@ -19,8 +19,7 @@ class MappingParserStage(Stage):
         self.accelerator = self.ctx.require_value("accelerator", self.__class__.__name__)
         self.workload = self.ctx.require_value("workload", self.__class__.__name__)
         mapping_path = self.ctx.require_value("mapping_path", self.__class__.__name__)
-        kernels = self.ctx.get("kernels")
-        self.mapping_parser = MappingParser(mapping_path, self.workload, self.accelerator, kernels=kernels)
+        self.mapping_parser = MappingParser(mapping_path, self.workload, self.accelerator)
 
     def run(self):
         mapping = self.mapping_parser.run()

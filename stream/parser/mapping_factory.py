@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import inspect
 from typing import TYPE_CHECKING, Any
 
 from xdsl.context import Context
@@ -27,16 +26,12 @@ class MappingFactory:
         mapping_data: dict[str, Any],
         workload: Workload,
         accelerator: Accelerator,
-        kernels: dict[str, Any] | None = None,
     ):
         self.layers_data: list[dict[str, Any]] = mapping_data.get("layers", [])
         self.fused_groups_data: list[dict[str, Any]] = mapping_data.get("fused_groups", [])
         self.runtime_args_data: dict[str, str] = mapping_data.get("runtime_args", {})
         self.workload = workload
         self.accelerator = accelerator
-        # Caller-supplied kernel factories that override the built-in AIEKernels by
-        # name (used to inject externally-authored operand layouts into codegen).
-        self.kernel_overrides: dict[str, Any] = kernels or {}
 
     def create(self) -> Mapping:
         mapping = Mapping(fused_groups=self.create_fused_groups(), runtime_args=self.create_runtime_args())
@@ -74,33 +69,28 @@ class MappingFactory:
             cores.append(tuple(core_group))
         return tuple(cores)
 
-    def kernel_args_match_kernel_signature(self, kernel, kwargs):
-        try:
-            inspect.signature(kernel).bind(**kwargs)
-            return True
-        except TypeError:
-            return False
-
     def create_kernel(self, mapping_data: dict[str, Any]) -> AIEKernel | None:
         kernel_name = (mapping_data.get("kernel") or {}).get("name")
         if not kernel_name:
             return None
         try:
-            from stream.compiler.kernels import AIEKernels  # noqa: PLC0415
+            from stream.compiler.kernels.registry import AIE_KERNELS  # noqa: PLC0415
         except ModuleNotFoundError:
             # The AIE codegen toolchain isn't installed (base, non-AIE install), so no AIE kernels
             # exist to build. NodeMapping.kernel is only consumed by AIE codegen and AIE-core cost
             # estimation, so leaving it None is correct for the base pipeline.
             return None
 
-        known_kernels = {**AIEKernels, **self.kernel_overrides}
-        if kernel_name not in known_kernels:
-            raise ValueError(f"Unknown kernel name {kernel_name!r}. Known kernels: {sorted(known_kernels)}")
-        kernel = known_kernels[kernel_name]
+        if kernel_name not in AIE_KERNELS:
+            raise ValueError(f"Unknown kernel name {kernel_name!r}. Known kernels: {sorted(AIE_KERNELS)}")
         kernel_kwargs = mapping_data["kernel"].get("kwargs", {})
-        if not self.kernel_args_match_kernel_signature(kernel, kernel_kwargs):
-            raise ValueError(f"Kernel arguments {kernel_kwargs} do not match kernel {kernel_name} signature.")
-        return kernel(**kernel_kwargs)
+        try:
+            kernel = AIE_KERNELS[kernel_name](**kernel_kwargs, library=self.accelerator.kernel_library)
+        except TypeError as e:
+            raise ValueError(f"Kernel arguments {kernel_kwargs} do not match kernel {kernel_name}: {e}") from e
+        if kernel.library is not None:
+            kernel.validate()
+        return kernel
 
     def convert_inter_core_tiling(
         self, mapping_data: dict[str, Any], node: ComputationNode
