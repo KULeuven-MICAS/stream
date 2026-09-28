@@ -5,7 +5,7 @@ from xdsl.context import Context
 from xdsl.dialects import builtin, func
 from xdsl.ir import Attribute, BlockArgument
 from xdsl.passes import ModulePass
-from xdsl_aie.dialects.aie import ObjectFIFO, ObjectFIFOSubview
+from xdsl_aie.dialects.aie import ObjectFIFO
 
 
 class ClearMemorySpace(ModulePass):
@@ -34,9 +34,6 @@ class ClearMemorySpace(ModulePass):
             if isinstance(t, ObjectFIFO):
                 t = cast(ObjectFIFO[Attribute], t)
                 return ObjectFIFO([clear_memory_space(t.buffer)])
-            if isinstance(t, ObjectFIFOSubview):
-                t = cast(ObjectFIFOSubview[Attribute], t)
-                return ObjectFIFOSubview([clear_memory_space(t.buffer)])
             return t
 
         for op_in_module in op.walk():
