@@ -8,6 +8,7 @@ from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
 from itertools import product
+from math import prod
 from typing import Any
 
 import yaml
@@ -211,6 +212,36 @@ class MappingGenerator:
     # -------------------------
     # Core building blocks
     # -------------------------
+    ELEMENT_BYTES = 2
+    BUFFERS = 2
+
+    def _tile_fits_core(self) -> None:
+        m, k, n = self.seq_len_tile_size, self.embedding_tile_size, self.hidden_tile_size
+        gemm = self.BUFFERS * self.ELEMENT_BYTES * (m * k + k * n + m * n)
+        eltwise = self.BUFFERS * self.ELEMENT_BYTES * 3 * m * n
+        core_bytes = min(c.get_memory_capacity() for c in self.accelerator.core_list if c.type == "compute") // 8
+        for name, need in (("gemm", gemm), ("elementwise", eltwise)):
+            if need > core_bytes:
+                raise AssertionError(
+                    f"A {name} tile of ({m}, {k}, {n}) needs {need} bytes double-buffered "
+                    f"against a core's {core_bytes}; no split can make it fit."
+                )
+
+    def _derived_totals(self, layer_templates: Sequence[dict[str, Any]], tpl: dict[str, Any]) -> list[int]:
+        """Core totals worth offering a layer, from its share of the workload's cycles."""
+        max_cores = len(self.compute_core_ids)
+
+        def cost(t: dict[str, Any]) -> float:
+            ops = prod(int(s) for s in t["dim_sizes"].values())
+            family = "matmul" if "k" in t["kernel"]["kwargs"] else "vector"
+            library = self.accelerator.kernel_library
+            return ops / (library.families[family].ops_per_cycle if library is not None else 1.0)
+
+        share = cost(tpl) / sum(cost(t) for t in layer_templates)
+        ideal = max(1.0, share * max_cores)
+        totals = [t for t in (1, 2, 4, 8, 16, 32, 64) if t <= max_cores and ideal / 4 <= t <= ideal * 4]
+        return totals or [1]
+
     def _validate_problem_sizes(self) -> None:
         if self.seq_len % 4 != 0:
             raise AssertionError("seq_len must be divisible by 4 for these mappings.")
@@ -220,6 +251,7 @@ class MappingGenerator:
             raise AssertionError(f"embedding_dim must be divisible by {self.embedding_tile_size}.")
         if self.hidden_dim % self.hidden_tile_size != 0:
             raise AssertionError(f"hidden_dim must be divisible by {self.hidden_tile_size}.")
+        self._tile_fits_core()
 
     def _get_compute_core_ids(self, accelerator: Accelerator) -> list[int]:
         """
@@ -351,15 +383,11 @@ class MappingGenerator:
             dims: list[str] = list(tpl["inter_core_dims"])
             dim_sizes: dict[str, int] = dict(tpl["dim_sizes"])
 
-            # Allowed totals for this layer (if not specified, fall back to "anything up to max_cores")
-            allowed_totals = self.layer_core_splits.get(lname, None)
-            if allowed_totals is not None:
-                # sanitize and keep only feasible totals
-                allowed_totals = sorted({int(x) for x in allowed_totals if 1 <= int(x) <= max_cores})
-                if not allowed_totals:
-                    # No feasible totals -> no options for this layer
-                    per_layer_options.append([])
-                    continue
+            allowed_totals = self.layer_core_splits.get(lname, self._derived_totals(layer_templates, tpl))
+            allowed_totals = sorted({int(x) for x in allowed_totals if 1 <= int(x) <= max_cores})
+            if not allowed_totals:
+                per_layer_options.append([])
+                continue
 
             # split choices per dim must be divisors and <= max_cores
             split_choices_per_dim: list[list[int]] = []
@@ -376,7 +404,7 @@ class MappingGenerator:
 
                 if needed > max_cores:
                     continue
-                if allowed_totals is not None and needed not in allowed_totals:
+                if needed not in allowed_totals:
                     continue
                 if not self._splits_fit_array_shape(splits):
                     continue
