@@ -85,7 +85,7 @@ class TileSearchStage(Stage):
         best_latency = float("inf")
         best_index = None
         seed_error: Exception | None = None
-        seed_latency = float("inf")
+        seed_latency, timed_out = float("inf"), False
         dead_dims: set[object] = set()
         for i, (grown_dim, mapping) in enumerate(candidates):
             if grown_dim in dead_dims:
@@ -100,7 +100,10 @@ class TileSearchStage(Stage):
                 ctxs, latency = self._evaluate()
             except InfeasibleAllocationError as e:
                 save_infeasibility_report(candidate_path, e.report)
-                logger.info("Tile candidate %s is infeasible: %s", tiling, e.report.summary)
+                timed_out |= e.report.status == "TIME_LIMIT"
+                logger.info("Tile candidate %s is unpriced: %s", tiling, e.report.summary)
+                if i == 0:
+                    seed_error = e
                 dead_dims.add(grown_dim)
                 continue
             except (RuntimeError, ValueError, AssertionError) as e:
@@ -123,7 +126,8 @@ class TileSearchStage(Stage):
                 best_index = i
                 best_context = StageContext(data=dict(ctxs[0].data))
         if best_context is None:
-            raise RuntimeError("No feasible tile candidate.") from seed_error
+            reason = "the allocation solve ran out of time" if timed_out else "none is feasible"
+            raise RuntimeError(f"No tile candidate was priced: {reason}.") from seed_error
         return best_context, best_index, best_latency, len(candidates)
 
     def _finish(self, best_context, best_index, best_latency, n):
