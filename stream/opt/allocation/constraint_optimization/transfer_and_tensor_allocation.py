@@ -1685,18 +1685,21 @@ class TransferAndTensorAllocator:
         # so a transfer hiding behind compute is free to the primary objective however
         # often it fires. Offchip bandwidth is shared by every slot, so it is not free
         # on hardware.
-        traffic_expr = self.model.quicksum(
-            (t.size_bits() / self.reuse_levels[(t, s)]) * self.z_stop[(t, s)]._raw
+        self._traffic_terms = [
+            (t.size_bits() / self.reuse_levels[(t, s)], self.z_stop[(t, s)])
             for t in self.tensors_to_optimize_reuse_for
             for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
-        )
+        ]
+        traffic_expr = self.model.quicksum(bits * z._raw for bits, z in self._traffic_terms)
 
+        self._traffic_weight = 0.0
         if (
             not self.shared_bandwidth
             and self.constraint_selection.offchip_traffic_cost
             and (bw := self._offchip_bandwidth())
         ):
-            primary_expr = primary_expr + (self.iterations / bw) * traffic_expr
+            self._traffic_weight = self.iterations / bw
+            primary_expr = primary_expr + self._traffic_weight * traffic_expr
 
         # Third objective (tiebreaker): minimize total buffering depth
         buffering_expr = self.model.quicksum(
@@ -2879,6 +2882,13 @@ class TransferAndTensorAllocator:
             "tensor_reuse": self._tensor_reuse_breakdown(),
             "memory_occupancy": self._memory_occupancy(),
         }
+
+    def primary_cost(self) -> float:
+        """The solved value of the latency objective, whichever lexicographic level the backend ended on."""
+        cost = float(self.total_lat.X)
+        if self.constraint_selection.dma_channels:
+            cost += float(self.max_core_dma_in.X) + float(self.max_core_dma_out.X)
+        return cost + self._traffic_weight * sum(bits * float(z.X) for bits, z in self._traffic_terms)
 
     def throughput_bound(self) -> float:
         """The pipelined compute bound of the steady state, from the solved allocation."""

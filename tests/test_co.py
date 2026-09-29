@@ -92,6 +92,8 @@ def test_co_tpu_two_conv(output_dir: Path):
     assert scheduler.latency_total > 0, "Expected positive latency_total"
     assert scheduler.latency_per_iteration > 0, "Expected positive latency_per_iteration"
     assert scheduler.iterations > 0, "Expected positive iterations"
+    # OR-Tools solves the objective levels in turn and ends on a tiebreaker; the rank is the first level.
+    assert scheduler.cost_to_rank >= scheduler.latency_total
 
     # The solved scheduler must yield a JSON-serializable AllocationIR (runtime_args carry AffineMaps).
     allocation = AllocationIR.from_internal(scheduler)
