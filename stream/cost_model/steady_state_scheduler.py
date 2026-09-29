@@ -130,13 +130,12 @@ class SteadyStateScheduler:
 
         self.solve_stats: SolveStats | None = None
         self.throughput_bound: float | None = None
+        self.primary_cost: float | None = None
 
     @property
     def cost_to_rank(self) -> float:
-        """What two solved designs should be compared by."""
-        if self.solve_stats is not None and self.solve_stats.objective is not None:
-            return float(self.solve_stats.objective)
-        return float(self.latency_total)
+        """What two solved designs should be compared by: the latency objective the solve minimised first."""
+        return float(self.latency_total) if self.primary_cost is None else self.primary_cost
 
     @property
     def estimated_cycles(self) -> float:
@@ -361,6 +360,7 @@ class SteadyStateScheduler:
             logger.warning("Failed to compute capacity slack: %s", exc)
             self.capacity_slack = {}
         self.throughput_bound = tta.throughput_bound()
+        self.primary_cost = tta.primary_cost()
         # total, per_iter, ov = tsa_upd.compute_latency(iterations=self.iterations, offchip_core_id=offchip_core_id)
         # assert total == total_latency_solver, (
         #     f"Calculated total latency {total} does not match total latency from solver {total_latency_solver}."
