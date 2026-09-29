@@ -148,4 +148,4 @@ class TileSearchStage(Stage):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         ctxs = list(sub_stage.run())
         assert len(ctxs) == 1, f"Expected exactly one context, but got {len(ctxs)}"
-        return ctxs, ctxs[0].get("scheduler").latency_total
+        return ctxs, ctxs[0].get("scheduler").cost_to_rank

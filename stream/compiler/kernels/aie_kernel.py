@@ -147,6 +147,10 @@ class AIEKernel(ABC):
     def operand_layouts(self) -> Sequence[TiledStridedLayout]:
         return []
 
+    def work_share(self, index: int, width: int, steps: int) -> float:
+        """Share of a node's work the core at ``index`` of ``width`` does, holding ``steps`` slices."""
+        return 1.0 / max(width, 1)
+
     def state_operands(self) -> Sequence[StateOperand]:
         """What this kernel keeps in its core between iterations. Empty for a kernel that
         keeps nothing, which is every kernel that is not carrying a running reduction."""

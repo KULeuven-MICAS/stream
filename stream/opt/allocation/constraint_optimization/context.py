@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -173,6 +174,10 @@ class NamespaceConstraints:
     ) -> None:
         """Enforce buffer-descriptor limits for cores in this namespace."""
 
+    def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
+        """Cycles one dispatch spends configuring, given each design's column span."""
+        return 0.0
+
     # ---- DMA channel usage ----
 
     def add_dma_usage_constraints(
@@ -207,11 +212,15 @@ class AIE2Constraints(NamespaceConstraints):
         max_compute_tile_dma_channels: int = 2,
         max_mem_tile_dma_channels: int = 6,
         max_shim_tile_dma_channels: int = 2,
+        reconfiguration: Mapping[str, float] | None = None,
     ) -> None:
         self.offchip_core_id = offchip_core_id
         self.max_compute_tile_dma_channels = max_compute_tile_dma_channels
         self.max_mem_tile_dma_channels = max_mem_tile_dma_channels
         self.max_shim_tile_dma_channels = max_shim_tile_dma_channels
+        reconfiguration = reconfiguration or {}
+        self.cycles_per_column = float(reconfiguration.get("cycles_per_column", 0.0))
+        self.reset_cycles = float(reconfiguration.get("reset_cycles", 0.0))
 
     @classmethod
     def from_config(cls, config: NamespaceConstraintConfig) -> AIE2Constraints:
@@ -220,6 +229,7 @@ class AIE2Constraints(NamespaceConstraints):
             max_compute_tile_dma_channels=config.max_compute_tile_dma_channels,
             max_mem_tile_dma_channels=config.max_mem_tile_dma_channels,
             max_shim_tile_dma_channels=config.max_shim_tile_dma_channels,
+            reconfiguration=config.accelerator.reconfiguration,
         )
 
     # ---- object-FIFO depth ----
@@ -268,6 +278,12 @@ class AIE2Constraints(NamespaceConstraints):
                 expr <= core.max_object_fifo_depth,
                 name=f"aie2_bd_depth_Core_{core.id}",
             )
+
+    def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
+        """A dispatch of several designs configures each one's columns and resets the array once."""
+        if len(columns_per_design) <= 1:
+            return 0.0
+        return sum(c * self.cycles_per_column for c in columns_per_design) + self.reset_cycles
 
     DEFAULT_CORE_STACK_BYTES = 1024
 
@@ -378,6 +394,10 @@ class TransferAndTensorContext:
     def reserved_memory_bits(self, core: Core) -> int:
         """Bits the toolchain claims on this core, summed over the namespaces that own it."""
         return sum(ns.reserved_memory_bits(core) for ns in self.namespace_constraints if ns.applies_to(core))
+
+    def dispatch_overhead_cycles(self, columns_per_design: Sequence[int]) -> float:
+        """Configuration cycles one dispatch pays, summed over the namespaces."""
+        return sum(ns.dispatch_overhead_cycles(columns_per_design) for ns in self.namespace_constraints)
 
     def add_dma_usage_constraints(
         self,

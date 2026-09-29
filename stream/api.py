@@ -2,6 +2,8 @@ import json
 import logging as _logging
 import os
 import tempfile
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 import yaml
@@ -65,6 +67,113 @@ def _as_bool(value: Any) -> bool:
     return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _temporal_mapping_type(name: str) -> TemporalMappingType:
+    if name not in ("uneven", "even"):
+        raise ValueError(f"Invalid temporal mapping type: {name}. Must be 'uneven' or 'even'.")
+    return TemporalMappingType.UNEVEN if name == "uneven" else TemporalMappingType.EVEN
+
+
+# What every allocating pipeline runs on one fused group's workload and mapping.
+_ALLOCATION_STAGES: list[StageCallable] = [
+    PlacementGenerationStage,
+    KernelStateStage,  # the state a kernel carries, before the iteration space is read
+    TileSearchStage,
+    TilingGenerationStage,
+    CoreCostEstimationStage,
+    ConstraintOptimizationAllocationStage,
+    MemoryAccessesEstimationStage,
+]
+
+
+@dataclass(frozen=True)
+class MappingEstimate:
+    """A mapping priced by the allocation solve of each of its fused groups."""
+
+    mapping: str
+    group_cycles: tuple[float, ...]
+    dispatch_cycles: float
+
+    @property
+    def cycles(self) -> float:
+        return sum(self.group_cycles) + self.dispatch_cycles
+
+
+def evaluate_mapping(  # noqa: PLR0913
+    hardware: str,
+    workload: str,
+    mapping: str,
+    output_path: str,
+    temporal_mapping_type: str = "uneven",
+    nb_cols_to_use: int = 4,
+    backend: str = "ortools_gscip",
+    constraint_selection: ConstraintSelection | None = None,
+    kernel_library: KernelLibrary | str | dict[str, Any] | None = None,
+) -> MappingEstimate:
+    """Solve the allocation of each of the mapping's fused groups, without generating code, and price it.
+
+    Each group costs its scheduler's estimate, and a dispatch of several groups adds what the
+    hardware's namespace constraints charge for reconfiguring the array between them.
+    """
+    from stream.opt.allocation.constraint_optimization.context import build_transfer_context  # noqa: PLC0415
+    from stream.stages.generation.fixed_mapping_generation import FixedMappingGenerationStage  # noqa: PLC0415
+
+    stages: list[StageCallable] = [
+        AcceleratorParserStage,
+        StreamONNXModelParserStage,
+        FixedMappingGenerationStage,
+        FusionGroupIterationStage,
+        *_ALLOCATION_STAGES,
+    ]
+    ctx = StageContext.from_kwargs(
+        accelerator=hardware,
+        workload_path=workload,
+        mapping_path=mapping,
+        loma_lpf_limit=6,
+        output_path=output_path,
+        temporal_mapping_type=_temporal_mapping_type(temporal_mapping_type),
+        nb_cols_to_use=nb_cols_to_use,
+        backend=SolverBackend[backend.upper()].value,
+        constraint_selection=constraint_selection,
+        kernel_library=kernel_library,
+        tile_search=True,
+    )
+    (ctx,) = MainStage(stages, ctx).run()
+    groups = sorted(ctx.get("group_cycles"))
+    columns = [len(ctx.get("group_columns")[i]) for i in groups]
+    return MappingEstimate(
+        mapping=mapping,
+        group_cycles=tuple(ctx.get("group_cycles")[i] for i in groups),
+        dispatch_cycles=build_transfer_context(ctx.get("accelerator")).dispatch_overhead_cycles(columns),
+    )
+
+
+def select_mapping(
+    hardware: str, workload: str, candidates: Sequence[str], output_path: str, **options: Any
+) -> MappingEstimate:
+    """The candidate mapping estimated to take the fewest cycles; one that cannot be allocated loses.
+
+    ``options`` are :func:`evaluate_mapping`'s, and each candidate is solved under
+    ``output_path/candidate_<index>``.
+    """
+    logger = _logging.getLogger(__name__)
+    estimates: list[MappingEstimate] = []
+    failures: list[str] = []
+    for index, candidate in enumerate(candidates):
+        try:
+            estimate = evaluate_mapping(
+                hardware, workload, candidate, os.path.join(output_path, f"candidate_{index}"), **options
+            )
+        except (RuntimeError, ValueError) as error:
+            logger.info("Mapping %s cannot be allocated: %s", candidate, error)
+            failures.append(f"{candidate}: {error}")
+            continue
+        logger.info("Mapping %s: %.0f cycles", candidate, estimate.cycles)
+        estimates.append(estimate)
+    if not estimates:
+        raise RuntimeError(f"No candidate mapping could be allocated: {failures}")
+    return min(estimates, key=lambda estimate: estimate.cycles)
+
+
 def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
     hardware: str,
     workload: str,
@@ -102,13 +211,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
     # Get logger
     logger = _logging.getLogger(__name__)
 
-    # Determine temporal mapping type for ZigZag
-    if temporal_mapping_type == "uneven":
-        temporal_mapping_type = TemporalMappingType.UNEVEN
-    elif temporal_mapping_type == "even":
-        temporal_mapping_type = TemporalMappingType.EVEN
-    else:
-        raise ValueError(f"Invalid temporal mapping type: {temporal_mapping_type}. Must be 'uneven' or 'even'.")
+    temporal_mapping_type = _temporal_mapping_type(temporal_mapping_type)
 
     # Load final resulting context if it exists and skip_if_exists is True
     ctx_path = f"{output_path}/ctx.pickle"
@@ -120,13 +223,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
             AcceleratorParserStage,  # Parses the accelerator
             StreamONNXModelParserStage,  # Parses the ONNX Model into the workload
             MappingParserStage,
-            PlacementGenerationStage,
-            KernelStateStage,  # the state a kernel carries, before the iteration space is read
-            TileSearchStage,
-            TilingGenerationStage,
-            CoreCostEstimationStage,
-            ConstraintOptimizationAllocationStage,
-            MemoryAccessesEstimationStage,
+            *_ALLOCATION_STAGES,
         ]
         ctx = StageContext.from_kwargs(
             accelerator=hardware,  # required by AcceleratorParserStage
@@ -168,13 +265,7 @@ def optimize_allocation_co_with_mapping(  # noqa: PLR0913, PLR0912
                     AIECodeGenerationStage,  # codegen each group (inner pipeline)
                     # No MappingParserStage: FixedMappingGenerationStage supplies the
                     # per-group Mapping objects in-memory via FusionGroupIterationStage.
-                    PlacementGenerationStage,
-                    KernelStateStage,  # the state a kernel carries, before the iteration space is read
-                    TileSearchStage,
-                    TilingGenerationStage,
-                    CoreCostEstimationStage,
-                    ConstraintOptimizationAllocationStage,
-                    MemoryAccessesEstimationStage,
+                    *_ALLOCATION_STAGES,
                 ]
             else:
                 stages = [AIECodeGenerationStage] + stages

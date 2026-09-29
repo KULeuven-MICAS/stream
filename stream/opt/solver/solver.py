@@ -98,13 +98,15 @@ class PipeliningModel(Enum):
 
 @dataclass(frozen=True)
 class ConstraintSelection:
-    """How TransferAndTensorAllocator builds its model: the boolean fields toggle constraint groups
-    (all default True); ``pipelining`` picks the inter-iteration overlap formulation."""
+    """Which constraint groups TransferAndTensorAllocator builds, and its overlap formulation."""
 
     memory_capacity: bool = True
     object_fifo_depth: bool = True
     buffer_descriptors: bool = True
     dma_channels: bool = True
+    transfer_contention: bool = True
+    offchip_contention: bool = True
+    offchip_traffic_cost: bool = True
     pipelining: PipeliningModel = PipeliningModel.OCCUPANCY
 
     def __post_init__(self) -> None:

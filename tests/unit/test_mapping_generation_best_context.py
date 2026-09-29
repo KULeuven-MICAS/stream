@@ -41,7 +41,10 @@ class _FakeSubStage:
 
     def run(self):
         idx = int(os.path.basename(self.ctx.get("output_path")))
-        self.ctx.set(scheduler=SimpleNamespace(latency_total=LATENCIES[idx]), variant=idx)
+        self.ctx.set(
+            scheduler=SimpleNamespace(latency_total=LATENCIES[idx], cost_to_rank=LATENCIES[idx]),
+            variant=idx,
+        )
         yield self.ctx
 
 

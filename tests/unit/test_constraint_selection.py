@@ -121,6 +121,7 @@ def _make_tta_stub(constraint_selection, *, bind_objective=False):
 
     tta = MagicMock(spec=TransferAndTensorAllocator)
     tta.constraint_selection = constraint_selection
+    tta.shared_bandwidth = {}
     # Bind the real dispatch methods so if-guards execute
     tta._create_constraints = TransferAndTensorAllocator._create_constraints.__get__(tta)
     tta._overlap_and_objective = TransferAndTensorAllocator._overlap_and_objective.__get__(tta)
@@ -185,7 +186,7 @@ def test_dma_enabled():
 
 def test_dma_objective_no_dma_terms():
     """When dma_channels=False, primary objective = total_lat only (no DMA vars)."""
-    cs = ConstraintSelection(dma_channels=False)
+    cs = ConstraintSelection(dma_channels=False, offchip_traffic_cost=False)
     tta = _make_tta_stub(cs, bind_objective=True)
     # Set up minimal mocks for _set_total_latency_and_objective
     mock_model = MagicMock()
@@ -214,6 +215,81 @@ def test_dma_objective_no_dma_terms():
         "buffering",
         "route_hops",
     ]
+
+
+def test_offchip_traffic_is_charged_in_the_primary_objective():
+    """With the charge on, the bytes join the latency in the primary objective."""
+    cs = ConstraintSelection(dma_channels=False, offchip_traffic_cost=True)
+    tta = _make_tta_stub(cs, bind_objective=True)
+    mock_model = MagicMock()
+    mock_total_lat = MagicMock()
+    mock_total_lat._raw = "total_lat_raw"
+    mock_model.add_var.return_value = mock_total_lat
+    mock_model.quicksum.return_value = MagicMock(_raw=0)
+    tta.model = mock_model
+    tta.overlap = MagicMock()
+    tta.iterations = 1
+    tta.slot_latency = {}
+    tta.tensors_to_optimize_reuse_for = []
+    tta.transfer_nodes = []
+    tta.possible_transfer_allocations = {}
+    tta._offchip_bandwidth = lambda: 512.0
+    tta._set_total_latency_and_objective()
+    objectives = mock_model.set_lexicographic_objectives.call_args[0][0]
+    primary = next(o for o in objectives if o.name == "latency")
+    assert primary.expr != "total_lat_raw", "the traffic term did not reach the objective"
+
+
+def test_no_offchip_core_means_no_traffic_charge():
+    """Without an off-chip core no traffic is charged, and the design is priced on latency alone."""
+    cs = ConstraintSelection(dma_channels=False, offchip_traffic_cost=True)
+    tta = _make_tta_stub(cs, bind_objective=True)
+    mock_model = MagicMock()
+    mock_total_lat = MagicMock()
+    mock_total_lat._raw = "total_lat_raw"
+    mock_model.add_var.return_value = mock_total_lat
+    mock_model.quicksum.return_value = MagicMock(_raw=0)
+    tta.model = mock_model
+    tta.overlap = MagicMock()
+    tta.iterations = 1
+    tta.slot_latency = {}
+    tta.tensors_to_optimize_reuse_for = []
+    tta.transfer_nodes = []
+    tta.possible_transfer_allocations = {}
+    tta._offchip_bandwidth = lambda: 0.0
+    tta._set_total_latency_and_objective()
+    objectives = mock_model.set_lexicographic_objectives.call_args[0][0]
+    primary = next(o for o in objectives if o.name == "latency")
+    assert primary.expr == "total_lat_raw"
+
+
+def test_a_shared_bandwidth_model_takes_the_bytes_out_of_the_objective():
+    """With the off-chip bandwidth in the solve the bytes are in the latency already, so the objective does
+    not charge them again."""
+    from stream.cost_model.bandwidth import BandwidthModel
+
+    cs = ConstraintSelection(dma_channels=False, offchip_traffic_cost=True)
+    tta = _make_tta_stub(cs, bind_objective=True)
+    tta.shared_bandwidth = {
+        0: BandwidthModel(ceiling=296.6, contiguous=148.3, strided={"read": {32: 19.0}, "write": {32: 17.1}})
+    }
+    mock_model = MagicMock()
+    mock_total_lat = MagicMock()
+    mock_total_lat._raw = "total_lat_raw"
+    mock_model.add_var.return_value = mock_total_lat
+    mock_model.quicksum.return_value = MagicMock(_raw=0)
+    tta.model = mock_model
+    tta.overlap = MagicMock()
+    tta.iterations = 4
+    tta.slot_latency = {}
+    tta.tensors_to_optimize_reuse_for = []
+    tta.transfer_nodes = []
+    tta.possible_transfer_allocations = {}
+    tta._offchip_bandwidth = lambda: 512.0
+    tta._set_total_latency_and_objective()
+    objectives = mock_model.set_lexicographic_objectives.call_args[0][0]
+    primary = next(o for o in objectives if o.name == "latency")
+    assert primary.expr == "total_lat_raw"
 
 
 def test_skip_warnings(caplog):
