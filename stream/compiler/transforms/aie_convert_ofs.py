@@ -156,6 +156,17 @@ def _consumer_point(groups: Sequence[Sequence[StrensorVar]], outer: dict[LayerDi
     return {StrensorVar(StrensorVarType.POINT, index, dim) for dim, index in merged.items()}
 
 
+def _endpoint_order(op: PushOp | PullOp) -> tuple[int, str, str]:
+    """A fixed order over a channel's pushes or pulls, the one splitting the most dimensions first."""
+    strensor = op.input.type if isinstance(op, PushOp) else op.output.type
+    index = op.spatial_index
+    return (-len(index.data.vars) if index is not None else 0, str(index), str(strensor))
+
+
+def _first_endpoint(channel: SSAValue, kind: type[PushOp] | type[PullOp]) -> PushOp | PullOp:
+    return min((use.operation for use in channel.uses if isinstance(use.operation, kind)), key=_endpoint_order)
+
+
 def _reads_point(index: set[StrensorVar], point: set[StrensorVar]) -> bool:
     """Whether a consumer reads a producer's point, taking the first copy of what it does not split."""
     missing = point - index
@@ -956,7 +967,8 @@ class ChannelToObjectFifoPass(RewritePattern):
                 consumers.append(use.operation)
             else:
                 raise RuntimeError("channel used by non-push/pull operation")
-        consumers.sort(key=lambda c: -len(c.spatial_index.data.vars) if c.spatial_index is not None else 0)
+        producers.sort(key=_endpoint_order)
+        consumers.sort(key=_endpoint_order)
         assert isinstance(in_type := producers[0].input.type, StrensorType)
         assert isinstance(out_type := consumers[0].output.type, StrensorType)
         in_ss = in_type.ssis.data
@@ -1250,17 +1262,23 @@ def transfer_endpoints(op: PushOp | PullOp) -> tuple[StrensorType, StrensorType]
 
     A transfer reaches its compute tile either directly or by way of a memory tile, so
     the chain of pushes and pulls is walked to its end. Both ends coincide for a direct
-    transfer, and one descriptor then covers the whole movement.
+    transfer, and one descriptor then covers the whole movement. Where the chain fans out to
+    readers that split it differently, it follows the reader splitting the most dimensions,
+    which is the one the memory tile's layout serves.
     """
     if isinstance(op, PushOp):
-        stops = [next(u.operation for u in op.channel.uses if isinstance(u.operation, PullOp))]
-        while onward := next((u.operation for u in stops[-1].output.uses if isinstance(u.operation, PushOp)), None):
-            stops.append(next(u.operation for u in onward.channel.uses if isinstance(u.operation, PullOp)))
+        stops = [_first_endpoint(op.channel, PullOp)]
+        while onward := min(
+            (u.operation for u in stops[-1].output.uses if isinstance(u.operation, PushOp)),
+            key=_endpoint_order,
+            default=None,
+        ):
+            stops.append(_first_endpoint(onward.channel, PullOp))
         first, last = stops[0].output.type, stops[-1].output.type
     else:
-        stops = [next(u.operation for u in op.channel.uses if isinstance(u.operation, PushOp))]
+        stops = [_first_endpoint(op.channel, PushOp)]
         while isinstance(back := stops[-1].input.owner, PullOp):
-            stops.append(next(u.operation for u in back.channel.uses if isinstance(u.operation, PushOp)))
+            stops.append(_first_endpoint(back.channel, PushOp))
         first, last = stops[0].input.type, stops[-1].input.type
     assert isinstance(first, StrensorType) and isinstance(last, StrensorType)
     return first, last
