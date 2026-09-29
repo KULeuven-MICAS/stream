@@ -65,28 +65,21 @@ async def _run_solve_background(
     backend: str,
     constraint_dict: dict[str, bool],
 ) -> None:
-    """Run optimize_allocation_co in a background thread and update job state.
+    """Run evaluate_mapping in a background thread and update job state.
 
     Uses asyncio.to_thread to avoid blocking the event loop during the MILP solve.
     Heavy imports (stream.api, ConstraintSelection) are lazy.
     """
     state.jobs[job_id]["status"] = "running"
     try:
-        from stream.api import optimize_allocation_co  # noqa: PLC0415
+        from stream.api import SolveOptions, evaluate_mapping  # noqa: PLC0415
         from stream.opt.solver import ConstraintSelection  # noqa: PLC0415
 
-        cs = ConstraintSelection(**constraint_dict)
-        ctx = await asyncio.to_thread(
-            optimize_allocation_co,
-            hardware=hardware,
-            workload=workload,
-            mapping=mapping,
-            experiment_id=job_id,
-            output_path=output_path,
-            backend=backend,
-            constraint_selection=cs,
+        options = SolveOptions(backend=backend, constraint_selection=ConstraintSelection(**constraint_dict))
+        estimate = await asyncio.to_thread(
+            evaluate_mapping, hardware, workload, f"{output_path}/{job_id}", mapping, options
         )
-        state.jobs[job_id]["result"] = {"ctx": ctx}
+        state.jobs[job_id]["result"] = {"ctx": estimate.context}
         state.jobs[job_id]["status"] = "complete"
     except Exception as e:
         state.jobs[job_id]["status"] = "failed"

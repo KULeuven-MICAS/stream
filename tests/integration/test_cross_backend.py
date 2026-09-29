@@ -15,7 +15,6 @@ Backend injection strategy:
 """
 
 import os
-import re
 import tempfile
 import time
 from unittest.mock import patch
@@ -23,7 +22,7 @@ from unittest.mock import patch
 import pytest
 from ortools.math_opt.python import mathopt
 
-from stream.api import optimize_allocation_co
+from stream.api import SolveOptions, evaluate_mapping
 from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping
 from stream.inputs.aie.mapping.make_swiglu_mapping import make_swiglu_mapping
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
@@ -50,7 +49,7 @@ REL_TOL = 0.01
 # Patch targets — both allocator modules import create_solver into their own namespace
 _ALLOC_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.allocation.create_solver"
 _TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation.create_solver"
-_LICENSE_CHECK = "stream.api._sanity_check_gurobi_license"
+_LICENSE_CHECK = "stream.api.GurobiBackend.check_license"
 
 
 # ---------------------------------------------------------------------------
@@ -86,21 +85,9 @@ def _run_gemm_pipeline(output_path: str):
     workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
     mapping_path = make_gemm_mapping(M, K, N, m, k, n, nb_rows_to_use=nb_rows, nb_cols_to_use=nb_cols)
 
-    hw_name = ACCELERATOR.split("/")[-1].split(".")[0]
-    wl_name = re.split(r"/|\.", workload_path)[-1]
-    if wl_name == "onnx":
-        wl_name = re.split(r"/|\.", workload_path)[-2]
-    experiment_id = f"{hw_name}-{wl_name}-{nb_rows}_row_{nb_cols}_col"
-
-    return optimize_allocation_co(
-        hardware=ACCELERATOR,
-        workload=workload_path,
-        mapping=mapping_path,
-        experiment_id=experiment_id,
-        output_path=output_path,
-        skip_if_exists=False,
-        nb_cols_to_use=nb_cols,
-    )
+    return evaluate_mapping(
+        ACCELERATOR, workload_path, output_path, mapping_path, options=SolveOptions(nb_cols_to_use=nb_cols)
+    ).context
 
 
 def _run_swiglu_pipeline(output_path: str):
@@ -115,7 +102,7 @@ def _run_swiglu_pipeline(output_path: str):
     # Parameters from launch.json (known working, verified)
     seq_len, embedding_dim, hidden_dim = 256, 512, 2048
     in_dtype, out_dtype = "bf16", "bf16"
-    rows, cols = 4, 8
+    cols = 8
     seq_len_tile_size = 32
     embedding_tile_size = 32
     hidden_tile_size = 64
@@ -131,21 +118,9 @@ def _run_swiglu_pipeline(output_path: str):
         hidden_tile_size,
     )
 
-    hw_name = ACCELERATOR.split("/")[-1].split(".")[0]
-    wl_name = re.split(r"/|\.", workload_path)[-1]
-    if wl_name == "onnx":
-        wl_name = re.split(r"/|\.", workload_path)[-2]
-    experiment_id = f"{hw_name}-{wl_name}-{rows}_row_{cols}_col"
-
-    return optimize_allocation_co(
-        hardware=ACCELERATOR,
-        workload=workload_path,
-        mapping=mapping_path,
-        experiment_id=experiment_id,
-        output_path=output_path,
-        skip_if_exists=False,
-        nb_cols_to_use=cols,
-    )
+    return evaluate_mapping(
+        ACCELERATOR, workload_path, output_path, mapping_path, options=SolveOptions(nb_cols_to_use=cols)
+    ).context
 
 
 def _extract_latency_total(ctx) -> float:

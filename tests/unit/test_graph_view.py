@@ -143,19 +143,21 @@ def test_untiled_flag_and_json_roundtrip():
     assert restored.block_classes[0].multiplicity == view.block_classes[0].multiplicity
 
 
-def test_api_entry_point_parses_and_views():
-    from stream.api import workload_graph_view
+def _view_of_file(path: str, **kwargs) -> dict:
+    from stream.frontends import load_workload
 
-    view = workload_graph_view("stream/inputs/testing/workload/attention_head.onnx")
+    return WorkloadGraphView.from_workload(load_workload(path), **kwargs).model_dump()
+
+
+def test_a_loaded_workload_views():
+    view = _view_of_file("stream/inputs/testing/workload/attention_head.onnx")
     assert view["schema_version"] == "1.1"
     assert view["nodes"] and view["edges"]
     assert any(c["op"] == "MatMul" for c in view["block_classes"])
     assert view["proposed_regions"] == []  # no capacity -> no proposals
 
 
-def test_api_entry_point_surfaces_proposed_regions_under_a_capacity():
-    from stream.api import workload_graph_view
-
-    view = workload_graph_view("stream/inputs/testing/workload/attention_head.onnx", fusion_capacity=UNBOUNDED)
+def test_a_loaded_workload_surfaces_proposed_regions_under_a_capacity():
+    view = _view_of_file("stream/inputs/testing/workload/attention_head.onnx", fusion_capacity=UNBOUNDED)
     assert view["proposed_regions"]
     assert any(n["proposed_region"] is not None for n in view["nodes"])

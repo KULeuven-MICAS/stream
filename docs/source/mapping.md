@@ -13,7 +13,7 @@ A mapping can be **auto-generated** by the pipeline or **hand-written**. The for
 
 ## Auto-generated mapping (the default)
 
-If you don't pass a mapping, `optimize_allocation_co_generic` (and `scripts/main_stream_co.py` without `--mapping`) builds one for you. This is the recommended starting point.
+If you don't pass a mapping, `evaluate_mapping` asks the mapping generator that claims the hardware for one; for any accelerator that is the generic generator. This is the recommended starting point.
 
 The generic generator (`stream/stages/generation/generic_mapping_generation.py`):
 
@@ -101,4 +101,4 @@ For a workload with multiple fusion groups, the pipeline runs the CO once per gr
 
 ## Reusing an allocation
 
-The auto-generated `mapping.yaml` files written into a run's output directory are valid hand-written mappings. To pin a result, copy the generated mapping out, edit the `core_allocation` candidate sets down to the chosen cores, and pass it back with `--mapping` (or to `optimize_allocation_co_with_mapping`).
+The auto-generated `mapping.yaml` files written into a run's output directory are valid hand-written mappings. To pin a result, copy the generated mapping out, edit the `core_allocation` candidate sets down to the chosen cores, and pass it back as `evaluate_mapping`'s `mapping`.

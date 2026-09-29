@@ -1,30 +1,28 @@
 # Outputs
 
-Every entry point returns a `StageContext`, and writes a set of files to the run's output directory (`<output_path>/<experiment_id>/`). This page covers both.
+Every entry point returns a `MappingEstimate` and writes a set of files under its output directory, one `group_<index>/` folder per fused group. This page covers both.
 
-## The result context
+## The result
 
-After a run, read results off the returned context with `ctx.get(...)`:
+A `MappingEstimate` holds `cycles`, the fused groups' estimates plus the reconfiguration the hardware declares, the per-group `group_cycles`, and the solved `context`. Read the rest off the context with `ctx.get(...)`:
 
 | Key | What it is |
 |-----|-----------|
-| `total_latency` | Total scheduled latency (cycles) for the workload. |
 | `group_latencies` | Per-fusion-group latency breakdown. |
 | `scheduler` | The `SteadyStateScheduler` - the full schedule and timing. |
 | `workload` | The parsed computation graph. |
 | `accelerator` | The parsed hardware model. |
 
 ```python
-ctx = optimize_allocation_co_generic(...)
-print(ctx.get("total_latency"))     # e.g. 14344.0
-print(ctx.get("group_latencies"))
+estimate = evaluate_mapping(...)
+print(estimate.cycles)
+ctx = estimate.context
 scheduler = ctx.get("scheduler")
 ```
 
 ## Files written to disk
 
-- **`summary.yaml`** - a machine-readable summary of the run (e.g. `total_latency`, per-group latencies).
-- **Visualizations (PNG)** - workload graph, tiling, and the schedule, written into the run directory.
+- **Visualizations (PNG)** - the tiling and the schedule of each fused group, written into its `group_<index>/` folder.
 
 ## Schedule trace (Perfetto)
 

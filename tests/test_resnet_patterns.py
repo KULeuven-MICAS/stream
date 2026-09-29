@@ -15,7 +15,7 @@ import pytest
 import yaml
 from zigzag.mapping.temporal_mapping import TemporalMappingType
 
-from stream.api import optimize_allocation_co_generic
+from stream.api import evaluate_mapping
 from stream.inputs.testing.workload.make_resnet_subgraph import (
     ResNetPattern,
     ResNetSubgraphConfig,
@@ -52,12 +52,7 @@ def test_basic_residual():
     onnx_path = make_resnet_subgraph(config)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx = optimize_allocation_co_generic(
-            hardware=_ACCELERATOR,
-            workload=onnx_path,
-            experiment_id="test-basic-residual",
-            output_path=tmpdir,
-        )
+        ctx = evaluate_mapping(_ACCELERATOR, onnx_path, tmpdir).context
 
         total_latency = ctx.get("total_latency")
         assert total_latency is not None and total_latency > 0, f"Expected positive total_latency, got {total_latency}"
@@ -77,12 +72,7 @@ def test_stride2_downsample():
     onnx_path = make_resnet_subgraph(config)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx = optimize_allocation_co_generic(
-            hardware=_ACCELERATOR,
-            workload=onnx_path,
-            experiment_id="test-stride2-downsample",
-            output_path=tmpdir,
-        )
+        ctx = evaluate_mapping(_ACCELERATOR, onnx_path, tmpdir).context
 
         total_latency = ctx.get("total_latency")
         assert total_latency is not None and total_latency > 0, f"Expected positive total_latency, got {total_latency}"
@@ -102,12 +92,7 @@ def test_frontend_path():
     onnx_path = make_resnet_subgraph(config)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx = optimize_allocation_co_generic(
-            hardware=_ACCELERATOR,
-            workload=onnx_path,
-            experiment_id="test-frontend-path",
-            output_path=tmpdir,
-        )
+        ctx = evaluate_mapping(_ACCELERATOR, onnx_path, tmpdir).context
 
         # Latency assertions
         total_latency = ctx.get("total_latency")
@@ -150,12 +135,7 @@ def test_dual_residual():
     onnx_path = make_resnet_subgraph(config)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx = optimize_allocation_co_generic(
-            hardware=_ACCELERATOR,
-            workload=onnx_path,
-            experiment_id="test-dual-residual",
-            output_path=tmpdir,
-        )
+        ctx = evaluate_mapping(_ACCELERATOR, onnx_path, tmpdir).context
 
         total_latency = ctx.get("total_latency")
         assert total_latency is not None and total_latency > 0, f"Expected positive total_latency, got {total_latency}"

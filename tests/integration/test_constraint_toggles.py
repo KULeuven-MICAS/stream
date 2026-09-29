@@ -7,14 +7,13 @@ selective constraints active.
 """
 
 import os
-import re
 import tempfile
 from unittest.mock import patch
 
 import pytest
 from ortools.math_opt.python import mathopt
 
-from stream.api import optimize_allocation_co
+from stream.api import SolveOptions, evaluate_mapping
 from stream.hardware.architecture.core import Core
 from stream.inputs.aie.mapping.make_gemm_mapping import make_gemm_mapping
 from stream.inputs.aie.workload.make_onnx_gemm import make_gemm_workload
@@ -31,7 +30,7 @@ REL_TOL = 0.01
 
 _ALLOC_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.allocation.create_solver"
 _TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation.create_solver"
-_LICENSE_CHECK = "stream.api._sanity_check_gurobi_license"
+_LICENSE_CHECK = "stream.api.GurobiBackend.check_license"
 _BUILD_TRANSFER_CONTEXT = (
     "stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation.build_transfer_context"
 )
@@ -55,22 +54,13 @@ def _run_gemm(output_path: str, constraint_selection: ConstraintSelection | None
     workload_path = make_gemm_workload(M, K, N, in_dtype, out_dtype)
     mapping_path = make_gemm_mapping(M, K, N, m, k, n, nb_rows_to_use=nb_rows, nb_cols_to_use=nb_cols)
 
-    hw_name = ACCELERATOR.split("/")[-1].split(".")[0]
-    wl_name = re.split(r"/|\.", workload_path)[-1]
-    if wl_name == "onnx":
-        wl_name = re.split(r"/|\.", workload_path)[-2]
-    experiment_id = f"{hw_name}-{wl_name}-{nb_rows}_row_{nb_cols}_col"
-
-    return optimize_allocation_co(
-        hardware=ACCELERATOR,
-        workload=workload_path,
-        mapping=mapping_path,
-        experiment_id=experiment_id,
-        output_path=output_path,
-        skip_if_exists=False,
-        nb_cols_to_use=nb_cols,
-        constraint_selection=constraint_selection,
-    )
+    return evaluate_mapping(
+        ACCELERATOR,
+        workload_path,
+        output_path,
+        mapping_path,
+        options=SolveOptions(nb_cols_to_use=nb_cols, constraint_selection=constraint_selection),
+    ).context
 
 
 def _make_ortools_factory(solver_type: mathopt.SolverType = mathopt.SolverType.GSCIP):

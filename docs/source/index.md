@@ -26,12 +26,17 @@ cd stream
 pip install -e .
 ```
 
-Then run the CO pipeline on a bundled workload, with an auto-generated mapping:
+Then price a bundled workload, with a generated mapping:
 
-```bash
-python scripts/main_stream_co.py \
-  --hardware stream/inputs/examples/hardware/tpu_like_quad_core.yaml \
-  --workload stream/inputs/testing/workload/2conv_1_8_32_32_16_32_3.onnx
+```python
+from stream.api import evaluate_mapping
+
+estimate = evaluate_mapping(
+    "stream/inputs/examples/hardware/tpu_like_quad_core.yaml",
+    "stream/inputs/testing/workload/2conv_1_8_32_32_16_32_3.onnx",
+    "outputs/first-run",
+)
+print(estimate.cycles)
 ```
 
 See [Installation](installation.md) and [Getting Started](getting-started.md) for details, and the [User Guide](user-guide.md) for the workload, hardware, and mapping input formats.

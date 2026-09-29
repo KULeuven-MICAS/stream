@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from stream.api import optimize_allocation_co
+from stream.api import evaluate_mapping
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import (
@@ -74,14 +74,7 @@ def test_co_tpu_two_conv(output_dir: Path):
     print(f"Workload path: {workload_path}")
     print(f"Mapping path: {mapping_path}")
 
-    ctx = optimize_allocation_co(
-        hardware=_ACCELERATOR,
-        workload=workload_path,
-        mapping=mapping_path,
-        experiment_id="test-tpu-two-conv",
-        output_path=str(output_dir),
-        skip_if_exists=False,
-    )
+    ctx = evaluate_mapping(_ACCELERATOR, workload_path, str(output_dir), mapping_path).context
 
     scheduler: SteadyStateScheduler = ctx.get("scheduler")
 

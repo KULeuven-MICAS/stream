@@ -9,7 +9,7 @@ import tempfile
 import pytest
 import yaml
 
-from stream.api import optimize_allocation_co_generic
+from stream.api import evaluate_mapping
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.inputs.testing.workload.make_conv_relu_flatten_gemm import (
@@ -121,7 +121,7 @@ def test_mapping_validates():
 
 
 def test_pipeline_end_to_end():
-    """optimize_allocation_co_generic completes end-to-end for two-conv TPU workload.
+    """A generated mapping of the two-conv workload solves end-to-end on the TPU-like hardware.
 
     Two-conv is used as a fast single-group proxy (< 60s) for quick iteration.
     test_pipeline_multi_group covers multi-group pipeline mechanics.
@@ -129,13 +129,7 @@ def test_pipeline_end_to_end():
     workload_path = make_2_conv_workload(_WORKLOAD_CONFIG)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx = optimize_allocation_co_generic(
-            hardware=_ACCELERATOR,
-            workload=workload_path,
-            experiment_id="test-generic-two-conv",
-            output_path=tmpdir,
-            skip_if_exists=False,
-        )
+        ctx = evaluate_mapping(_ACCELERATOR, workload_path, tmpdir).context
 
     scheduler: SteadyStateScheduler = ctx.get("scheduler")
     assert scheduler is not None, "No scheduler in context"
@@ -157,7 +151,7 @@ def test_pipeline_end_to_end():
 @pytest.mark.slow  # multi-group MILP run; too slow / near-timeout on CI runners
 @pytest.mark.timeout(120)
 def test_pipeline_multi_group():
-    """optimize_allocation_co_generic completes for a multi-group workload.
+    """A generated mapping of a multi-group workload solves end-to-end.
 
     Uses a synthetic Conv->Relu->Flatten->Gemm workload that splits into 2 fusion groups
     via FusionEdge parsing. Tests the same multi-group pipeline mechanics as ResNet18
@@ -166,13 +160,7 @@ def test_pipeline_multi_group():
     workload_path = make_conv_relu_flatten_gemm_workload()
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx = optimize_allocation_co_generic(
-            hardware=_ACCELERATOR,
-            workload=workload_path,
-            experiment_id="test-multi-group",
-            output_path=tmpdir,
-            skip_if_exists=False,
-        )
+        ctx = evaluate_mapping(_ACCELERATOR, workload_path, tmpdir).context
 
     # Verify scheduler result
     scheduler: SteadyStateScheduler = ctx.get("scheduler")

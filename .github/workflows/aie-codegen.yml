@@ -19,8 +19,7 @@ on:
       - "stream/aie_setup.py"
       - "stream/compiler/**"
       - "stream/inputs/aie/**"
-      - "scripts/main_swiglu.py"
-      - "scripts/main_gemm.py"
+      - "tests/integration/test_aie_codegen.py"
       - ".github/workflows/aie-codegen.yml"
   schedule:
     - cron: "0 6 * * 1" # Mondays 06:00 UTC -- catches upstream wheel-index rotation
@@ -67,72 +66,9 @@ jobs:
         # The console script under test: pins + GitHub release index pages + .pth.
         run: stream-setup-aie
 
-      - name: Generate SwiGLU MLIR
-        # Open-source GSCIP backend so no Gurobi license is needed in CI. Feasible
-        # 256/512/2048 config (the infeasible big shape lives only in `just swiglu`'s
-        # docs, not here).
+      - name: Generate SwiGLU designs
+        # Open-source GSCIP backend, so no Gurobi license is needed in CI: the whole block, and one
+        # ending in the element-wise multiply, whose terminal transfer back to DRAM once failed codegen.
         run: |
-          python scripts/main_swiglu.py \
-            --seq_len 256 --embedding_dim 512 --hidden_dim 2048 \
-            --in_dtype bf16 --out_dtype bf16 --trace_size 1048576 \
-            --rows 4 --cols 8 --npu npu2 \
-            --embedding_tile_size 32 --hidden_tile_size 64 --seq_len_tile_size 32 \
-            --backend ortools_gscip
-
-      - name: Assert MLIR output is valid
-        run: |
-          OUT="outputs/whole_array_strix-swiglu_256_512_2048-4_row_8_col/output.mlir"
-          if [ ! -f "$OUT" ]; then
-            echo "::error::no output.mlir was produced at $OUT"
-            exit 1
-          fi
-          ops=$(grep -cE 'aie\.|aiex\.' "$OUT")
-          echo "generated $OUT with $ops aie/aiex ops"
-          if ! grep -q 'aie.device(npu2)' "$OUT"; then
-            echo "::error::output.mlir is missing the aie.device(npu2) module"
-            exit 1
-          fi
-          if [ "$ops" -lt 100 ]; then
-            echo "::error::output.mlir has only $ops aie/aiex ops (expected >100)"
-            exit 1
-          fi
-
-      - name: Generate SwiGLU MLIR (no down-projection; terminal elt-mul)
-        # Regression guard: a fused region ending in an element-wise op
-        # (last_gemm_down=False -> gate/up GEMMs, SiLU, elt-mul, no down GEMM)
-        # previously failed AIE codegen (the terminal output's mem->shim transfer
-        # was unimplemented). Same feasible 256/512/2048 config, GSCIP backend.
-        run: |
-          python scripts/main_swiglu.py \
-            --seq_len 256 --embedding_dim 512 --hidden_dim 2048 \
-            --in_dtype bf16 --out_dtype bf16 --trace_size 1048576 \
-            --rows 4 --cols 8 --npu npu2 \
-            --embedding_tile_size 32 --hidden_tile_size 64 --seq_len_tile_size 32 \
-            --backend ortools_gscip --no_last_gemm_down
-
-      - name: Assert no-down MLIR output is valid
-        run: |
-          OUT="outputs/whole_array_strix-swiglu_256_512_2048_no_gemm_down-4_row_8_col/output.mlir"
-          if [ ! -f "$OUT" ]; then
-            echo "::error::no output.mlir was produced at $OUT"
-            exit 1
-          fi
-          ops=$(grep -cE 'aie\.|aiex\.' "$OUT")
-          echo "generated $OUT with $ops aie/aiex ops"
-          if ! grep -q 'aie.device(npu2)' "$OUT"; then
-            echo "::error::output.mlir is missing the aie.device(npu2) module"
-            exit 1
-          fi
-          if [ "$ops" -lt 100 ]; then
-            echo "::error::output.mlir has only $ops aie/aiex ops (expected >100)"
-            exit 1
-          fi
-
-      - name: Upload generated MLIR
-        if: always()
-        continue-on-error: true
-        uses: actions/upload-artifact@v4
-        with:
-          name: swiglu-mlir
-          path: outputs/whole_array_strix-swiglu_256_512_2048-4_row_8_col/output.mlir
-          retention-days: 7
+          python -m pip install pytest
+          python -m pytest tests/integration/test_aie_codegen.py -m slow -q -p no:cacheprovider

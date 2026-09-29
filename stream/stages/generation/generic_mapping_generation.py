@@ -1,6 +1,7 @@
 import logging
 
 from stream.mapping.generic_generator import GenericMappingGenerator
+from stream.parser.mapping_parser import MappingParser
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
 from stream.workload.node import HasIterationSpace
@@ -12,10 +13,10 @@ PER_LAYER = "per-layer"
 
 
 class GenericMappingGenerationStage(Stage):
-    """Generate per-fusion-group mapping YAMLs from workload+accelerator.
+    """Generate each fusion group's mapping from workload+accelerator, written as YAML beside the run.
 
     Reads: accelerator, workload, output_path
-    Writes: group_mapping_paths (list[str] of YAML file paths), sub_workloads (list[Workload])
+    Writes: sub_workloads (list[Workload]), sub_mappings (list[Mapping]), one per fused group
     Delegates to: FusionGroupIterationStage (next in list_of_callables)
     """
 
@@ -53,8 +54,10 @@ class GenericMappingGenerationStage(Stage):
         group_mapping_paths, sub_workloads = generator.generate_all_groups(cut_points=cut_points)
         logger.info(f"Generated {len(group_mapping_paths)} group mapping(s): {group_mapping_paths}")
 
-        # Write both paths AND sub_workloads to context so FusionGroupIterationStage
-        # does NOT need to re-call split_fusion_groups() (avoids duplicate work per WARNING 2)
-        self.ctx.set(group_mapping_paths=group_mapping_paths, sub_workloads=sub_workloads)
+        sub_mappings = [
+            MappingParser(path, sub_workload, self.accelerator).run()
+            for path, sub_workload in zip(group_mapping_paths, sub_workloads, strict=True)
+        ]
+        self.ctx.set(sub_workloads=sub_workloads, sub_mappings=sub_mappings)
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
