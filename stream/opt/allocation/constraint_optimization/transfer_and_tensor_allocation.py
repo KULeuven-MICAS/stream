@@ -760,6 +760,7 @@ class TransferAndTensorAllocator:
     # model construction                                           #
     # ------------------------------------------------------------ #
     def _build_model(self):
+        self._capacity_screen()
         self._create_vars()
         self._index_choice_metadata()
         self._create_constraints()
@@ -964,6 +965,38 @@ class TransferAndTensorAllocator:
             )
 
     # ...................... memory capacity .................... #
+    def _resident_tiles(self, t, stop: int) -> int:
+        """Tiles of this tensor codegen keeps resident when it stops reuse at ``stop``."""
+        tiles = self.tiles_needed_levels[(t, stop)]
+        return max(tiles, 2) if self.rotation_levels.get((t, stop)) else tiles
+
+    def _min_resident_bits(self, t, tensor_size: int) -> int:
+        """The least this tensor can keep resident under any reuse-stop choice."""
+        stops = range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
+        return min(ceil(self._resident_tiles(t, stop) * tensor_size) for stop in stops)
+
+    def _capacity_screen(self):
+        """Fail before building the model when a core cannot fit its pinned tensors under any reuse choice."""
+        pinned: dict[Core, int] = defaultdict(int)
+        for node in self.workload.get_iteration_space_nodes():
+            carried = [x for x in node.inputs if is_state_operand(node, x)]
+            for t in (*node.outputs, *carried):
+                candidates = self._candidate_cores_for_tensor(t)
+                if len(candidates) != 1:
+                    continue
+                (c,) = candidates
+                tile = self.workload.get_tensor_single_core(t, node, self.mapping)
+                pinned[c] += self._min_resident_bits(t, tile.size_bits())
+        for c, bits in pinned.items():
+            cap = c.get_memory_capacity() - self.context.reserved_memory_bits(c)
+            if bits > cap:
+                raise InfeasibleAllocationError(
+                    self._structural_infeasibility(
+                        f"Core {c.id}: tensors pinned to it need at least {bits / 8192:.1f} KB "
+                        f"under every reuse choice, but its memory is {cap / 8192:.1f} KB"
+                    )
+                )
+
     def _memory_capacity_constraints(self):
         self.core_load: dict[Core, Any] = defaultdict(int)
         # Transfer output tensors on their chosen compute/memory cores
@@ -980,10 +1013,7 @@ class TransferAndTensorAllocator:
                     u = self._tensor_uses_core_var(t, c)
                     min_req: int | None = None
                     for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
-                        size_factor = self.tiles_needed_levels[(t, stop)]
-                        if self.rotation_levels.get((t, stop)):
-                            size_factor = max(size_factor, 2)
-                        req_size = ceil(size_factor * tensor_size)
+                        req_size = ceil(self._resident_tiles(t, stop) * tensor_size)
                         min_req = req_size if min_req is None else min(min_req, req_size)
                         uz = self._add_binary_product(
                             a=u,
@@ -1569,11 +1599,18 @@ class TransferAndTensorAllocator:
             for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
         )
 
+        hops_expr = self.model.quicksum(
+            len(self.links_in_choice[(tr, choice)]) * self.y_path_choice[(tr, choice)]._raw
+            for tr in self.transfer_nodes
+            for choice in self.possible_transfer_allocations[tr]
+        )
+
         self.model.set_lexicographic_objectives(
             [
-                ObjectiveLevel(expr=primary_expr, priority=3, name="latency"),
-                ObjectiveLevel(expr=traffic_expr, priority=2, name="offchip_traffic"),
-                ObjectiveLevel(expr=buffering_expr, priority=1, name="buffering"),
+                ObjectiveLevel(expr=primary_expr, priority=4, name="latency"),
+                ObjectiveLevel(expr=traffic_expr, priority=3, name="offchip_traffic"),
+                ObjectiveLevel(expr=buffering_expr, priority=2, name="buffering"),
+                ObjectiveLevel(expr=hops_expr, priority=1, name="route_hops"),
             ],
             sense="minimize",
         )
