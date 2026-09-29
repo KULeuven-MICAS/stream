@@ -39,6 +39,7 @@ from stream.compiler.transforms.unroll import SpatialUnrollPass
 from stream.cost_model.communication_manager import MulticastPathPlan
 from stream.datatypes import LayerDim
 from stream.hardware.architecture.core import Core
+from stream.hardware.cost import OFF_DIE_KINDS
 from stream.mapping.mapping import Mapping, NodeMapping
 from stream.stages.context import StageContext
 from stream.stages.stage import Stage, StageCallable
@@ -114,13 +115,12 @@ class AIECodeGenerationStage(Stage):
         inputs: Sequence[SSAValue],
         ssis_dict: dict[HasIterationSpace | Tensor, SteadyStateIterationSpace],
         workload: Workload,
-        ss: StrensorSpace,
-        reuse_index: int,
+        spaces: Sequence[tuple[int, StrensorSpace]],
     ) -> TransferOp:
         """
-        Create a TransferOp for a given SteadyStateTransfer.
+        Create a TransferOp for a given SteadyStateTransfer, with one strensor space per output.
         """
-
+        reuse_index, ss = spaces[0]
         input_type = SSAValue.get(inputs[0]).type
         assert isinstance(input_type, StrensorType)
         path_plan = mapping.resource_allocation[0]
@@ -135,7 +135,7 @@ class AIECodeGenerationStage(Stage):
             if any(x.type == StrensorVarType.SPATIAL for x in ss.vars):
                 raise ValueError("Spatial Strensor for single-core transfer found.")
 
-        if cores == [StringAttr("tile_0_0")]:
+        if all(target.type in OFF_DIE_KINDS for target in path_plan.targets):
             shape = cast(ShapedType, node.output.subview.source.type).get_shape()
             layer_dims = (
                 x[0]
@@ -147,22 +147,16 @@ class AIECodeGenerationStage(Stage):
                 StrensorSpace(
                     tuple(StrensorVar(StrensorVarType.CONSTANT, s, d) for (s, d) in zip(shape, layer_dims, strict=True))
                 ),
-                [StringAttr("tile_0_0")],
+                cores,
             )
-            result_types = [result_type]
+            result_types = [result_type] * len(node.outputs)
         elif len(node.outputs) > 1:
-            # create equal split based on compute allocations
-            cores_per_output = len(cores) // len(node.outputs)
             result_types = []
-            for i in range(len(node.outputs)):
-                result_types.append(
-                    StrensorType(
-                        input_type.element_type,
-                        ss,
-                        cores[i * cores_per_output : (i + 1) * cores_per_output],
-                        reuse_index,
-                    )
-                )
+            for (index, space), reader in zip(spaces, self._readers(node, workload), strict=True):
+                allocation = full_mapping.get(reader).resource_allocation[0]
+                reader_cores = allocation.sources if isinstance(allocation, MulticastPathPlan) else allocation
+                cores_attr = [StringAttr(f"tile_{c.col_id}_{c.row_id}") for c in reader_cores]
+                result_types.append(StrensorType(input_type.element_type, space, cores_attr, index))
         else:
             result_type = StrensorType(
                 input_type.element_type,
@@ -184,6 +178,18 @@ class AIECodeGenerationStage(Stage):
         )
 
         return op
+
+    @staticmethod
+    def _readers(node: TransferNode, workload: Workload) -> list[HasInputs]:
+        """Per output of a transfer, the node that reads it."""
+        taken: dict[int, int] = {}
+        readers = []
+        for output in node.outputs:
+            candidates = [s for s in workload.successors(node) if isinstance(s, HasInputs) and output in s.inputs]
+            k = taken.get(id(output), 0)
+            taken[id(output)] = k + 1
+            readers.append(candidates[k])
+        return readers
 
     def create_computation_node_op(  # noqa: PLR0913
         self,
@@ -257,6 +263,7 @@ class AIECodeGenerationStage(Stage):
         ssis_dict: dict[HasIterationSpace | Tensor, SteadyStateIterationSpace],
     ) -> ModuleOp:
         ops: dict[Node, Operation] = {}
+        scheduler = self.ctx.get("scheduler")
 
         def get_layer_dims(tensor: Tensor) -> Iterable[LayerDim]:
             strides = workload.strides_for_tensor(tensor)
@@ -286,13 +293,15 @@ class AIECodeGenerationStage(Stage):
                         f"{kernel_sizes[dim]} of {extent}; keep the reduced axis resident in the kernel."
                     )
 
-        def ssis_to_strensorspace(tensor: Tensor) -> tuple[int, StrensorSpace]:
+        def ssis_to_strensorspace(
+            tensor: Tensor, ssis: SteadyStateIterationSpace | None = None
+        ) -> tuple[int, StrensorSpace]:
             # kernel vars:
             vars: list[StrensorVar] = []
             for size, dim in zip(get_kernel_size(tensor), get_layer_dims(tensor), strict=True):
                 vars.insert(0, StrensorVar(StrensorVarType.KERNEL, size, dim))
             reuse_index = len(vars)
-            for var in ssis_dict[tensor].variables:
+            for var in (ssis or ssis_dict[tensor]).variables:
                 if var.effect == LoopEffect.ABSENT:
                     vars.insert(0, StrensorVar(StrensorVarType.ABSENT, var.size, var.dimension))
                 elif var.type == IterationVariableType.SPATIAL:
@@ -334,7 +343,15 @@ class AIECodeGenerationStage(Stage):
                 inp = inps[0]
                 ops[node] = OutEdgeOp(node, (inp,))
             if isinstance(node, TransferNode):
-                reuse_index, ss = ssis_to_strensorspace(node.outputs[0])
+                if len(node.outputs) == 1:
+                    spaces = [ssis_to_strensorspace(node.outputs[0])]
+                else:
+                    spaces = [
+                        ssis_to_strensorspace(
+                            output, scheduler.generate_tensor_ssis(workload, output, reader, ssis_dict)
+                        )
+                        for output, reader in zip(node.outputs, self._readers(node, workload), strict=True)
+                    ]
                 ops[node] = self.create_transfer_op(
                     node,
                     mapping.get(node),
@@ -342,8 +359,7 @@ class AIECodeGenerationStage(Stage):
                     tuple(inputs(node)),
                     ssis_dict,
                     workload,
-                    ss,
-                    reuse_index,
+                    spaces,
                 )
             if isinstance(node, ComputationNode):
                 check_reduction_axes_resident(node)
@@ -363,16 +379,18 @@ class AIECodeGenerationStage(Stage):
         types = []
         remaining_ops = []
         in_edges: list[InEdgeOp] = []
+        yielded: list[SSAValue] = []
         for op in ops.values():
             if isinstance(op, InEdgeOp):
                 types.append(op.output.type)
                 in_edges.append(op)
             elif isinstance(op, OutEdgeOp):
                 types.append(op.inputs[0].type)
-                remaining_ops.append(YieldOp(*op.inputs))
+                yielded.extend(op.inputs)
                 op.erase()
             else:
                 remaining_ops.append(op)
+        remaining_ops.append(YieldOp(*yielded))
 
         fusion_group = FusionGroupOp(Region(block := Block(remaining_ops, arg_types=types)))
 

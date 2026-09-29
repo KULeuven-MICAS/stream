@@ -158,6 +158,12 @@ def _consumer_point(groups: Sequence[Sequence[StrensorVar]], outer: dict[LayerDi
     return {StrensorVar(StrensorVarType.POINT, index, dim) for dim, index in merged.items()}
 
 
+def _reads_point(index: set[StrensorVar], point: set[StrensorVar]) -> bool:
+    """Whether a consumer reads a producer's point, taking the first copy of what it does not split."""
+    missing = point - index
+    return index <= point and all(v.size == 0 for v in missing)
+
+
 @dataclass(frozen=True)
 class Stride:
     size: int
@@ -666,7 +672,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                             (spatial, distribute, broadcast),
                             {v.dim: v.size for v in spatial_dims},
                         )
-                        if point == set(c.spatial_index.data.vars):
+                        if _reads_point(set(c.spatial_index.data.vars), point):
                             targets.append(c)
 
                 # gather all broadcast tiles:
@@ -952,6 +958,7 @@ class ChannelToObjectFifoPass(RewritePattern):
                 consumers.append(use.operation)
             else:
                 raise RuntimeError("channel used by non-push/pull operation")
+        consumers.sort(key=lambda c: -len(c.spatial_index.data.vars) if c.spatial_index is not None else 0)
         assert isinstance(in_type := producers[0].input.type, StrensorType)
         assert isinstance(out_type := consumers[0].output.type, StrensorType)
         in_ss = in_type.ssis.data
