@@ -8,18 +8,30 @@ from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.dialects.builtin import AnyDenseElement, FunctionType, StringAttr, bf16
 from xdsl.dialects.func import CallOp, FuncOp
 from xdsl.dialects.scf import ForOp, IndexSwitchOp, YieldOp
-from xdsl.ir import Operation, OpResult, Region, SSAValue
+from xdsl.ir import Operation, Region, SSAValue
 from xdsl.pattern_rewriter import PatternRewriter
 from xdsl.rewriter import InsertPoint
 from xdsl.traits import SymbolTable
-from xdsl_aie.dialects.aie import CoreOp, DeviceOp, ObjectFIFOSubviewAccessOp
+from xdsl_aie.dialects.aie import CoreOp, DeviceOp, ObjectFifoAcquireOp
 
 from stream.compiler.dialects.stream import ComputationNodeOp, StrensorVar, StrensorVarAttr
 from stream.compiler.kernels.library import CallDim, KernelLibrary, KernelSpec
 
 MAC_TILED = "default"
 CONTIGUOUS = "contiguous"
-VECTOR_LANES = 16
+
+
+def acquired_object(value: SSAValue) -> SSAValue:
+    """The value behind any layout casts, which is where the object fifo acquires it."""
+    while isinstance(cast := value.owner, LayoutCast):
+        value = cast.source
+    return value
+
+
+def yielded_value(region: Region) -> SSAValue:
+    terminator = region.block.last_op
+    assert isinstance(terminator, YieldOp)
+    return terminator.arguments[0]
 
 
 def tiled_layout(rows: int, cols: int, tile_rows: int, tile_cols: int) -> TiledStridedLayout:
@@ -173,8 +185,8 @@ class AIEKernelWithZeroing(AIEKernel, ABC):
     @abstractmethod
     def zero_type(self, op: ComputationNodeOp) -> FunctionType: ...
 
-    def zero_call(self, op: ObjectFIFOSubviewAccessOp) -> Operation:
-        return CallOp(self.zero_name, [op.output], [])
+    def zero_call(self, buffer: SSAValue) -> Operation:
+        return CallOp(self.zero_name, [buffer], [])
 
     def rewrite(self, op: ComputationNodeOp, rewriter: PatternRewriter) -> None:
         # find device op to insert zero call
@@ -185,32 +197,14 @@ class AIEKernelWithZeroing(AIEKernel, ABC):
 
         SymbolTable.insert_or_update(device_op, FuncOp(self.zero_name, self.zero_type(op), Region(), "private"))
 
-        # Insert zeroing after definition of output
-        assert isinstance((last := op.inputs[-1]), OpResult)
-        first_def: Operation = last.op
-
-        # get rid of layout casts
-        while isinstance(first_def, LayoutCast):
-            assert isinstance(first_def.source, OpResult)
-            first_def = first_def.source.op
-
-        # handle index switch statements
-        if isinstance(first_def, IndexSwitchOp):
-            for case_region in first_def.case_regions:
-                yield_op = case_region.block.last_op
-                assert isinstance(yield_op, YieldOp)
-                case_def = yield_op.arguments[0]
-                assert isinstance(case_def, OpResult)
-                case_def = case_def.op
-                # again, get rid of layout casts:
-                while isinstance(case_def, LayoutCast):
-                    assert isinstance(case_def.source, OpResult)
-                    case_def = case_def.source.op
-                assert isinstance(case_def, ObjectFIFOSubviewAccessOp)
-                rewriter.insert_op(self.zero_call(case_def), InsertPoint.after(case_def))
+        output = acquired_object(op.inputs[-1])
+        if isinstance(switch := output.owner, IndexSwitchOp):
+            outputs = [acquired_object(yielded_value(case)) for case in switch.case_regions]
         else:
-            assert isinstance(first_def, ObjectFIFOSubviewAccessOp)
-            rewriter.insert_op(self.zero_call(first_def), InsertPoint.after(first_def))
+            outputs = [output]
+        for buffer in outputs:
+            assert isinstance(buffer.owner, ObjectFifoAcquireOp)
+            rewriter.insert_op(self.zero_call(buffer), InsertPoint.after(buffer.owner))
 
         # Then, rewrite op as before:
         AIEKernel.rewrite(self, op, rewriter)

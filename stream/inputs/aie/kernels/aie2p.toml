@@ -14,17 +14,12 @@ dims = [{ name = "k", divisor = 8 }, { name = "n", divisor = 16 }, { name = "m",
 family = "vector"
 object = "mv.o"
 
-[kernel.silu_bf16]
+[kernel.silu_bf16_size]
 family = "vector"
 object = "silu.o"
 dims = [{ name = "n", runtime = true, keep_whole = true }, { name = "m", runtime = true }]
 
-[kernel.eltwise_mul_bf16_vector]
-family = "vector"
-object = "mul.o"
-dims = [{ name = "n", runtime = true, keep_whole = true }, { name = "m", runtime = true }]
-
-[kernel.eltwise_mul_bf16_scalar]
+[kernel.eltwise_mul_bf16_vector_size]
 family = "vector"
 object = "mul.o"
 dims = [{ name = "n", runtime = true, keep_whole = true }, { name = "m", runtime = true }]
@@ -32,12 +27,12 @@ dims = [{ name = "n", runtime = true, keep_whole = true }, { name = "m", runtime
 [kernel.softmax_rows_bf16]
 family = "vector"
 object = "softmax.o"
-dims = [{ name = "n", divisor = 64 }, { name = "m", runtime = true }]
+dims = [{ name = "n", divisor = 32 }, { name = "m", runtime = true }]
 
 [kernel.softmax_rows_causal_bf16]
 family = "vector"
 object = "softmax.o"
-dims = [{ name = "n", divisor = 64 }, { name = "m", runtime = true }]
+dims = [{ name = "n", divisor = 32 }, { name = "m", runtime = true }]
 
 [kernel.partial_softmax]
 family = "vector"

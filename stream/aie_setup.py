@@ -27,25 +27,20 @@ from pathlib import Path
 
 # Installed --no-deps: they pin xdsl to a git commit that would otherwise clobber the released
 # xdsl that stream-dse depends on.
-_XDSL_AIE = "git+https://github.com/xdslproject/xdsl-aie.git@0756a2582ec60095bf129288bdcb722462365799"
+_XDSL_AIE = "git+https://github.com/xdslproject/xdsl-aie.git@f2540442628aa782847ababd1dc76c0e323ba459"
 _SNAX_MLIR = "git+https://github.com/kuleuven-micas/snax-mlir.git@1c01c5d100df128c9fa01d3336ebea98e19b20cf"
 
-# Opt-in only (--with-mlir-aie). Codegen emits the v1.4.0 buffer descriptor form, which
-# earlier mlir-aie parses by dropping the attributes it does not know rather than failing,
-# so a standalone toolchain has to be v1.4.0 or newer. This llvm-aie is the build amd/iron
-# pairs with it. Several llvm-aie indices are listed because a pinned build ages out of the
-# rolling `nightly` window into the dated archival tag.
-_MLIR_AIE_PIN = "mlir_aie==1.4.0"
-_LLVM_AIE_PIN = "llvm-aie==21.0.0.2026062301+cb664e8c"
+_MLIR_AIE_PIN = "mlir_aie==1.4.4.dev43+g1d7b9ea"
+_LLVM_AIE_PIN = "llvm-aie==22.0.0.2026091701+773413fb"
 _AIE_WHEEL_INDICES = [
     "--extra-index-url",
-    "https://github.com/Xilinx/mlir-aie/releases/expanded_assets/v1.4.0",
+    "https://github.com/Xilinx/mlir-aie/releases/expanded_assets/latest-wheels-4",
     "--extra-index-url",
     "https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly",
     "--extra-index-url",
     "https://github.com/Xilinx/llvm-aie/releases/expanded_assets/nightly-20240501-20260527",
 ]
-_SUPPORTED_PYTHONS = {(3, 10), (3, 11), (3, 12), (3, 14)}
+_SUPPORTED_PYTHONS = {(3, 12), (3, 13), (3, 14)}
 
 _PTH_FILENAME = "_stream_mlir_aie.pth"
 

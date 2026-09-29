@@ -18,7 +18,6 @@ from xdsl.dialects.builtin import (
     ModuleOp,
     StringAttr,
     SymbolRefAttr,
-    i32,
 )
 from xdsl.dialects.csl import RewritePattern
 from xdsl.dialects.scf import ForOp, IndexSwitchOp
@@ -43,7 +42,6 @@ from xdsl_aie.dialects.aie import (
     ObjectFifoOp,
     ObjectFifoPortEnum,
     ObjectFIFOReleaseOp,
-    ObjectFIFOSubviewAccessOp,
     RuntimeSequenceOp,
     TileOp,
 )
@@ -1426,6 +1424,17 @@ class TransferToRuntimeSequence(RewritePattern):
         rewriter.erase_matched_op(safe_erase=False)
 
 
+def select_object(index: SSAValue, objects: Sequence[SSAValue]) -> IndexSwitchOp:
+    """Pick the object an iteration owns out of the ones acquired around the loop."""
+    return IndexSwitchOp(
+        arg=index,
+        cases=DenseArrayBase.from_list(IntegerType(64), list(range(len(objects)))),
+        default_region=Region(Block([scf.YieldOp(objects[0])])),
+        case_regions=[Region(Block([scf.YieldOp(obj)])) for obj in objects],
+        result_types=[objects[0].type],
+    )
+
+
 @dataclass
 class TransferToObjectFIFOPattern(RewritePattern):
     def generate_switch(
@@ -1453,7 +1462,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
         for of in ofs:
             acquire_op = ObjectFifoAcquireOp(
                 IntegerAttr.from_int_and_width(port.get_int(), 32),
-                IntegerAttr.from_int_and_width(1, 32),
+                1,
                 object_fifo=of.data,
                 shape=strensor.get_kernel_shape(),
                 element_type=strensor.get_element_type(),
@@ -1465,18 +1474,10 @@ class TransferToObjectFIFOPattern(RewritePattern):
                 object_fifo=of.data,
             )
             releases.append(release_op)
-        access_ops = [ObjectFIFOSubviewAccessOp(IntegerAttr(0, i32), acquire) for acquire in acquires]
         # toggle between acquires with index switch op:
-        index_switch = IndexSwitchOp(
-            arg=for_op.body.block.args[0],
-            cases=DenseArrayBase.from_list(IntegerType(64), list(range(t_var.size))),
-            default_region=Region(Block([scf.YieldOp(access_ops[0])])),
-            case_regions=[Region(Block([scf.YieldOp(access_ops[i])])) for i in range(t_var.size)],
-            result_types=access_ops[0].result_types,
-        )
+        index_switch = select_object(for_op.body.block.args[0], [a.results[0] for a in acquires])
         # put all acquries before for op:
         rewriter.insert_op(acquires, InsertPoint.before(for_op))
-        rewriter.insert_op(access_ops, InsertPoint.before(for_op))
         # put selection in for op:
         rewriter.insert_op(index_switch, InsertPoint.at_start(for_op.body.block))
         # put all releases after for op:
@@ -1522,14 +1523,11 @@ class TransferToObjectFIFOPattern(RewritePattern):
         # acquire:
         acquire_op = ObjectFifoAcquireOp(
             IntegerAttr.from_int_and_width(port.get_int(), 32),
-            IntegerAttr.from_int_and_width(reuse_factor, 32),
+            reuse_factor,
             object_fifo=of,
             shape=strensor.get_kernel_shape(),
             element_type=strensor.get_element_type(),
         )
-
-        # accesses:
-        access_ops = [ObjectFIFOSubviewAccessOp(IntegerAttr(i, i32), acquire_op) for i in range(reuse_factor)]
 
         # index op to select correct access, only when there is something to select between:
         # building it unconditionally would register uses on loop arguments that are never
@@ -1564,15 +1562,9 @@ class TransferToObjectFIFOPattern(RewritePattern):
         # A single object needs no selection, and the acquire below already dominates
         # every use of it.
         if not selecting:
-            selected = access_ops[0].results[0]
+            selected = acquire_op.results[0]
         else:
-            index_switch = IndexSwitchOp(
-                arg=add_val,
-                cases=DenseArrayBase.from_list(IntegerType(64), list(range(reuse_factor))),
-                default_region=Region(Block([scf.YieldOp(access_ops[0])])),
-                case_regions=[Region(Block([scf.YieldOp(access_ops[i])])) for i in range(reuse_factor)],
-                result_types=access_ops[0].result_types,
-            )
+            index_switch = select_object(add_val, acquire_op.results)
             index_ops.append(index_switch)
             selected = index_switch.results[0]
 
@@ -1608,7 +1600,7 @@ class TransferToObjectFIFOPattern(RewritePattern):
         block = for_op.body.block if isinstance(for_op, ForOp) else for_op.region.block
         assert (terminator := block.last_op) is not None
         rewriter.insert_op(release_op, InsertPoint.before(terminator))
-        rewriter.insert_op([acquire_op, *access_ops], InsertPoint.at_start(block))
+        rewriter.insert_op(acquire_op, InsertPoint.at_start(block))
 
         # set output of computation node op if this was a push op
         if isinstance(op, PushOp):

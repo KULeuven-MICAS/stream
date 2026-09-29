@@ -1,10 +1,4 @@
-"""The elementwise multiply vectorizes when its tile leaves no remainder.
-
-The vectorized kernel steps a whole vector per iteration and has no epilogue, so a
-tile that is not a multiple of the vector width would silently leave its tail
-unwritten. Layout does not enter into it: the multiply is position independent and
-all three operands share a layout.
-"""
+"""The elementwise multiply calls mlir-aie's runtime-sized entry point, which handles any tail."""
 
 from __future__ import annotations
 
@@ -23,14 +17,7 @@ def kernel(m: int, n: int, layout: str = "default"):
     return EltwiseMulKernel(m=m, n=n, layout=layout, library=library)
 
 
-@pytest.mark.parametrize("layout", ["default", "contiguous"])
-def test_a_whole_tile_vectorizes(layout: str):
-    assert kernel(32, 64, layout).function_name == "eltwise_mul_bf16_vector"
-
-
-def test_a_tile_with_a_remainder_stays_scalar():
-    assert kernel(1, 15).function_name == "eltwise_mul_bf16_scalar"
-
-
-def test_both_variants_are_linked_from_the_same_object():
-    assert kernel(32, 64).linkwith_name == kernel(1, 1).linkwith_name == "mul.o"
+@pytest.mark.parametrize("m, n", [(32, 64), (1, 15)])
+def test_every_tile_calls_the_runtime_sized_multiply(m: int, n: int):
+    assert kernel(m, n).function_name == "eltwise_mul_bf16_vector_size"
+    assert kernel(m, n).linkwith_name == "mul.o"

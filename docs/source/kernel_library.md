@@ -16,7 +16,7 @@ object = "mm_{m}_{k}_{n}.o"
 dims = [{ name = "k", divisor = 8 }, { name = "n", divisor = 16 }, { name = "m", divisor = 16 }]
 cycles = [{ m = 64, k = 64, n = 64, cycles = 1595.0 }]
 
-[kernel.silu_bf16]
+[kernel.silu_bf16_size]
 family = "vector"
 object = "silu.o"
 dims = [{ name = "n", runtime = true, keep_whole = true }, { name = "m", runtime = true }]

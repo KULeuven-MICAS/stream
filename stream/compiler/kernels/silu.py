@@ -30,7 +30,7 @@ class SiluKernel(AIEKernel):
 
     @property
     def function_name(self) -> str:
-        return f"silu_{self.element_type}"
+        return f"silu_{self.element_type}_size"
 
     def function_type(self, op: ComputationNodeOp) -> FunctionType:
         assert op.output is not None
