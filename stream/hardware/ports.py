@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from stream.cost_model.bandwidth import BandwidthModel
 
@@ -13,8 +13,6 @@ if TYPE_CHECKING:
     from stream.hardware.architecture.accelerator import Accelerator
     from stream.hardware.architecture.core import Core
 
-PortKey = tuple[int, str, str]
-PortRef = tuple[int, str, str]
 Service = tuple[str, str]
 
 OUTPUT = "output"
@@ -22,6 +20,22 @@ READ = "read"
 WRITE = "write"
 READ_BY_DATAPATH = "read_by_datapath"
 WRITE_BY_DATAPATH = "write_by_datapath"
+
+
+class PortKey(NamedTuple):
+    """A physical port: the share group and name of the memory that owns it, and the port name."""
+
+    share_group: int
+    memory: str
+    port: str
+
+
+class PortRef(NamedTuple):
+    """A port as one core names it, as in a ``bandwidth:`` port key."""
+
+    core_id: int
+    memory: str
+    port: str
 
 
 def input_role(k: int) -> str:
@@ -44,7 +58,7 @@ class PortSpec:
 
     @property
     def key(self) -> PortKey:
-        return (self.share_group, self.memory, self.name)
+        return PortKey(self.share_group, self.memory, self.name)
 
 
 @dataclass(frozen=True)
@@ -79,26 +93,29 @@ class PortRegistry:
 
     @classmethod
     def from_accelerator(cls, accelerator: Accelerator) -> PortRegistry:
-        """Ports of every core; a core with a measured bandwidth has none, as that already covers its traffic."""
+        """Ports of every core, one per port of each physical memory; a core with a measured bandwidth has none,
+        as that already covers its traffic."""
+        specs = {core.id: core.memory_ports() for core in accelerator.cores.node_list}
         found: dict[PortKey, PortSpec] = {}
         core_ids: dict[PortKey, set[int]] = defaultdict(set)
         serves: dict[PortKey, set[Service]] = defaultdict(set)
         key_of: dict[PortRef, PortKey] = {}
-        for core in accelerator.cores.node_list:
-            if core.id in accelerator.bandwidth:
+        for core_id, core_specs in specs.items():
+            if core_id in accelerator.bandwidth:
                 continue
-            for spec in core.memory_ports():
-                found.setdefault(spec.key, spec)
-                core_ids[spec.key].add(core.id)
-                serves[spec.key].update(spec.serves)
-                key_of[(core.id, spec.memory, spec.name)] = spec.key
+            for spec in core_specs:
+                key = spec.key
+                found.setdefault(key, spec)
+                core_ids[key].add(core_id)
+                serves[key].update(spec.serves)
+                key_of[PortRef(core_id, spec.memory, spec.name)] = key
         overrides = _overrides_by_key(accelerator.port_bandwidth, key_of)
         ports = {
             key: Port(
                 key=key,
                 core_ids=tuple(sorted(core_ids[key])),
-                memory=spec.memory,
-                name=spec.name,
+                memory=key.memory,
+                name=key.port,
                 bandwidth=overrides.get(key, BandwidthModel.flat(spec.bits_per_cycle)),
                 read_energy_per_bit=spec.read_energy_per_bit,
                 write_energy_per_bit=spec.write_energy_per_bit,
@@ -119,8 +136,8 @@ class PortRegistry:
         return self._ports_of.get(core.id, ())
 
     def port_for(self, core: Core, direction: str, operand: str) -> Port | None:
-        """The port ``operand``'s top level uses for ``direction`` on ``core``, else any top-level port of
-        ``core`` that serves ``direction``."""
+        """The port ``operand``'s top level uses for ``direction`` on ``core``.
+        When no port serves that pair, any port of ``core`` serving ``direction``, as the bits still pass one."""
         ports = self.ports_of(core)
         own = next((p for p in ports if (operand, direction) in p.serves), None)
         return own or next((p for p in ports if any(d == direction for _, d in p.serves)), None)
@@ -132,10 +149,9 @@ def _overrides_by_key(
     overrides: dict[PortKey, BandwidthModel] = {}
     for ref, model in port_bandwidth.items():
         if ref not in key_of:
-            core_id, memory, port = ref
             raise ValueError(
-                f"`bandwidth.{core_id}.{memory}.{port}`: core {core_id} declares no port `{port}` on a top-level "
-                f"memory `{memory}`, or its backend models no memory ports."
+                f"`bandwidth.{ref.core_id}.{ref.memory}.{ref.port}`: core {ref.core_id} declares no port "
+                f"`{ref.port}` on a top-level memory `{ref.memory}`, or its backend models no memory ports."
             )
         if overrides.setdefault(key_of[ref], model) != model:
             raise ValueError(f"bandwidth entries disagree on shared port {key_of[ref]}.")

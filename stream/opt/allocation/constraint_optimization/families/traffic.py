@@ -7,7 +7,7 @@ from math import prod
 from typing import TYPE_CHECKING, Any
 
 from stream.cost_model.bandwidth import contiguous_span_bytes
-from stream.hardware.ports import OUTPUT, READ, WRITE, Port, PortRegistry, input_role
+from stream.hardware.ports import OUTPUT, READ, WRITE, Port, input_role
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency
 from stream.stages.estimation.core_cost_backends import CoreCostBackend, port_traffic, select_backend
 from stream.workload.steady_state.iteration_space import LoopEffect
@@ -83,7 +83,8 @@ def _span_bytes(tr: TransferNode) -> float:
     return contiguous_span_bytes(tuple(tensor.shape), full, tensor.operand_type.bitwidth)
 
 
-def _sides(alloc: TransferAndTensorAllocator, ports: PortRegistry, tr: TransferNode, choice: Any) -> list[PortShare]:
+def _sides(alloc: TransferAndTensorAllocator, tr: TransferNode, choice: Any) -> list[PortShare]:
+    ports = alloc.accelerator.ports
     sides: list[PortShare] = []
     span = _span_bytes(tr)
     for cores, direction, share in ((choice.sources, READ, 1.0 / len(choice.sources)), (choice.targets, WRITE, 1.0)):
@@ -99,7 +100,7 @@ def _sides(alloc: TransferAndTensorAllocator, ports: PortRegistry, tr: TransferN
     return sides
 
 
-def dma_streams(alloc: TransferAndTensorAllocator, ports: PortRegistry) -> list[DmaStream]:
+def dma_streams(alloc: TransferAndTensorAllocator) -> list[DmaStream]:
     """Every gated transfer latency that moves bits, with the ports its sources read and its targets write."""
     streams: list[DmaStream] = []
     for (tr, choice), quantity in alloc.quantities.indexed("transfer_latency").items():
@@ -107,12 +108,12 @@ def dma_streams(alloc: TransferAndTensorAllocator, ports: PortRegistry) -> list[
         if latency <= 0:
             continue
         bits = tr.inputs[0].size_bits() * active_fraction(tr, alloc)
-        sides = tuple(_sides(alloc, ports, tr, choice))
+        sides = tuple(_sides(alloc, tr, choice))
         streams.append(DmaStream(tr, choice, quantity.expr, bits / latency, latency, alloc.slot_of[tr], sides))
     return streams
 
 
-def node_traffic(alloc: TransferAndTensorAllocator, ports: PortRegistry) -> list[NodeTraffic]:
+def node_traffic(alloc: TransferAndTensorAllocator) -> list[NodeTraffic]:
     """The top-level port traffic of each node from its cost backend, on the physical core it runs on."""
     traffic: list[NodeTraffic] = []
     backends: dict[Core, CoreCostBackend] = {}
@@ -124,7 +125,7 @@ def node_traffic(alloc: TransferAndTensorAllocator, ports: PortRegistry) -> list
                 continue
             backend = backends.setdefault(core, select_backend(core))
             for operand, direction, bits in port_traffic(backend, alloc.cost_lut.get_cost(node, core)):
-                port = ports.port_for(core, direction, operand)
+                port = alloc.accelerator.ports.port_for(core, direction, operand)
                 if port is not None:
                     traffic.append(NodeTraffic(node, core, port, direction, bits * fraction, alloc.slot_of[node]))
     return traffic

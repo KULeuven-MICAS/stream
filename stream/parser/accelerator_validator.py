@@ -9,6 +9,7 @@ from typing import Any
 from cerberus import Validator
 from zigzag.utils import open_yaml
 
+from stream.hardware.ports import PortRef
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 logger = logging.getLogger(__name__)
@@ -26,10 +27,10 @@ FILENAME_REGEX = (
 PORT_REF_REGEX = r"^\d+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$"
 
 
-def parse_port_ref(ref: str) -> tuple[int, str, str]:
+def parse_port_ref(ref: str) -> PortRef:
     """Split a ``bandwidth:`` port key into (core id, memory instance name, port name)."""
     core, memory, port = ref.split(".")
-    return int(core), memory, port
+    return PortRef(int(core), memory, port)
 
 
 def resolve_core_path(core_file_name: str, accelerator_dirname: str) -> str | None:

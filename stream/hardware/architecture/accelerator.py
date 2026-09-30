@@ -1,3 +1,4 @@
+from functools import cached_property
 from typing import Any
 
 from zigzag.mapping.spatial_mapping import SpatialMapping
@@ -7,6 +8,7 @@ from stream.compiler.kernels.library import KernelLibrary
 from stream.cost_model.bandwidth import BandwidthModel
 from stream.cost_model.communication_manager import CommunicationManager
 from stream.hardware.architecture.core import Core
+from stream.hardware.ports import PortRef, PortRegistry
 
 
 class CoreGraph(DiGraphWrapper[Core]):
@@ -28,8 +30,9 @@ class Accelerator:
         offchip_core_id: int | None = None,
         kernel_library: KernelLibrary | None = None,
         bandwidth: dict[int, BandwidthModel] | None = None,
+        *,
         reconfiguration: dict | None = None,
-        port_bandwidth: dict[tuple[int, str, str], BandwidthModel] | None = None,
+        port_bandwidth: dict[PortRef, BandwidthModel] | None = None,
     ):
         self.name = name
         self.kernel_library = kernel_library
@@ -73,6 +76,11 @@ class Accelerator:
             return some_dataflow
 
         raise ValueError("Unclear which dataflow to return or no valid dataflow found.")
+
+    @cached_property
+    def ports(self) -> PortRegistry:
+        """The top-level memory ports of every core."""
+        return PortRegistry.from_accelerator(self)
 
     @property
     def core_list(self) -> list[Core]:

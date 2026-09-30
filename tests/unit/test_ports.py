@@ -6,7 +6,7 @@ from zigzag.utils import open_yaml
 from stream.cost_model.bandwidth import BandwidthModel
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.hardware.ports import OUTPUT, READ_BY_DATAPATH, WRITE_BY_DATAPATH, PortRegistry, input_role
+from stream.hardware.ports import OUTPUT, READ_BY_DATAPATH, WRITE_BY_DATAPATH, input_role
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.stages.estimation.core_cost_backends import ZIGZAG_BACKEND, port_traffic
@@ -41,7 +41,7 @@ def fusemax() -> Accelerator:
 
 
 def test_cores_sharing_a_memory_share_its_ports(fusemax: Accelerator):
-    registry = PortRegistry.from_accelerator(fusemax)
+    registry = fusemax.ports
     sram = [port for port in registry if port.memory == "sram"]
     assert {port.key for port in sram} == {(0, "sram", "r_port_1"), (0, "sram", "w_port_1")}
     assert all(port.core_ids == (0, 1) for port in sram)
@@ -49,7 +49,7 @@ def test_cores_sharing_a_memory_share_its_ports(fusemax: Accelerator):
 
 
 def test_each_operand_gets_its_own_dram_port(fusemax: Accelerator):
-    registry = PortRegistry.from_accelerator(fusemax)
+    registry = fusemax.ports
     dram = fusemax.get_core(2)
     assert len(registry.ports_of(dram)) == 3
     roles = (input_role(1), input_role(2), OUTPUT)
@@ -62,14 +62,14 @@ def test_each_operand_gets_its_own_dram_port(fusemax: Accelerator):
 
 
 def test_a_direction_the_operand_does_not_use_falls_back_to_a_port_serving_it(fusemax: Accelerator):
-    registry = PortRegistry.from_accelerator(fusemax)
+    registry = fusemax.ports
     port = registry.port_for(fusemax.get_core(2), WRITE_BY_DATAPATH, input_role(1))
     assert port is not None and port.name == "rw_port_3"
 
 
 def test_declared_port_width_and_access_energy_become_the_port_model(fusemax: Accelerator):
     # fusemax_dram.yaml: rw ports of 3200 b/cc, r_cost = w_cost = 32000 pJ per access
-    port = next(p for p in PortRegistry.from_accelerator(fusemax) if p.key == (2, "dram", "rw_port_1"))
+    port = next(p for p in fusemax.ports if p.key == (2, "dram", "rw_port_1"))
     assert port.bits_per_cycle == 3200
     assert port.bandwidth.efficiency(4, "read") == 1.0
     assert port.read_energy_per_bit == port.write_energy_per_bit == 10.0
@@ -77,7 +77,7 @@ def test_declared_port_width_and_access_energy_become_the_port_model(fusemax: Ac
 
 def test_aie2_cores_have_no_ports():
     accelerator = parse_accelerator(AIE2)
-    registry = PortRegistry.from_accelerator(accelerator)
+    registry = accelerator.ports
     assert len(registry) == 0
     core = next(iter(accelerator.cores.node_list))
     assert registry.port_for(core, READ_BY_DATAPATH, input_role(1)) is None
@@ -85,7 +85,7 @@ def test_aie2_cores_have_no_ports():
 
 def test_a_core_with_measured_bandwidth_has_no_ports():
     accelerator = fusemax_accelerator({2: MEASURED})
-    registry = PortRegistry.from_accelerator(accelerator)
+    registry = accelerator.ports
     assert registry.ports_of(accelerator.get_core(2)) == ()
     assert {port.memory for port in registry} == {"sram"}
     assert set(accelerator.bandwidth) == {2}
@@ -93,7 +93,7 @@ def test_a_core_with_measured_bandwidth_has_no_ports():
 
 def test_a_port_key_replaces_that_ports_declared_width():
     accelerator = fusemax_accelerator({"2.dram.rw_port_1": MEASURED, "1.sram.r_port_1": MEASURED})
-    ports = {port.key: port for port in PortRegistry.from_accelerator(accelerator)}
+    ports = {port.key: port for port in accelerator.ports}
     measured = BandwidthModel.from_description(MEASURED)
     assert ports[(2, "dram", "rw_port_1")].bandwidth == measured
     assert ports[(0, "sram", "r_port_1")].bandwidth == measured

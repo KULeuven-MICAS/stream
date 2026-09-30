@@ -6,7 +6,7 @@ from collections import defaultdict
 from math import ceil
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from stream.hardware.ports import PortKey, PortRegistry
+from stream.hardware.ports import PortKey
 from stream.opt.allocation.constraint_optimization.families import SLOT_PRESSURE
 from stream.opt.allocation.constraint_optimization.families.traffic import dma_streams, node_traffic
 
@@ -34,18 +34,17 @@ class MemoryPorts:
         self.rate: dict[PortKey, float] = {}
 
     def declare(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None:
-        ports = PortRegistry.from_accelerator(alloc.accelerator)
-        self.rate = {port.key: port.bits_per_cycle for port in ports}
+        self.rate = {port.key: port.bits_per_cycle for port in alloc.accelerator.ports}
         per_iteration: dict[PortKey, Terms] = defaultdict(list)
         per_slot: dict[tuple[PortKey, int], Terms] = defaultdict(list)
         worst: dict[Any, float] = {}
-        for stream in dma_streams(alloc, ports):
+        for stream in dma_streams(alloc):
             worst[id(stream.gated)] = stream.latency_ub
             for side in stream.sides:
                 term = (stream.bits_per_cycle * side.share / side.efficiency, stream.gated)
                 per_iteration[side.port.key].append(term)
                 per_slot[(side.port.key, stream.slot)].append(term)
-        for traffic in node_traffic(alloc, ports):
+        for traffic in node_traffic(alloc):
             per_iteration[traffic.port.key].append((traffic.bits, 1))
             per_slot[(traffic.port.key, traffic.slot)].append((traffic.bits, 1))
 

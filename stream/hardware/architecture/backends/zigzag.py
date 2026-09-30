@@ -109,7 +109,7 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
         for op in tops:
             level = hierarchy.get_memory_levels(op)[-1]
             for port in level.ports:
-                key = (level.memory_instance.shared_memory_group_id, level.name, port.name)
+                key = PortKey(level.memory_instance.shared_memory_group_id, level.name, port.name)
                 found.setdefault(key, (level, port))
                 serves.setdefault(key, set()).update(
                     (operand_role(str(served)), ZIGZAG_DIRECTION_NAMES[direction])

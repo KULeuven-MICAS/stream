@@ -6,7 +6,6 @@ from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
 from stream.hardware.architecture.backends import BACKEND_BUILDERS
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
-from stream.hardware.ports import PortRegistry
 from stream.parser.accelerator_validator import parse_port_ref
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
@@ -64,7 +63,7 @@ class AcceleratorFactory:
         )
         if accelerator.port_bandwidth:
             # Building the registry rejects a port key that names no port a core's backend models.
-            PortRegistry.from_accelerator(accelerator)
+            _ = accelerator.ports
         return accelerator
 
     def create_core(
