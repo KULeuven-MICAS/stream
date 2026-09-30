@@ -59,12 +59,20 @@ core_connectivity:
 | `cores` | yes | Map of integer **core id → core file**. Paths may be relative (`./cores/foo.yaml`); a bare filename is resolved against `<accelerator_dir>/cores/` then `<accelerator_dir>/`. |
 | `offchip_core_id` | yes | The id of the core that fronts external memory (DRAM). Must appear in `cores`. No computation is ever placed here. |
 | `kernel_library` | no | Path, relative to this file, to the [kernel library](kernel_library.md) the target's AIE kernels are described by. |
-| `bandwidth` | no | Map of core id to the measured bandwidth every transfer through that core shares, in bits per cycle: `ceiling` for reads and writes together, `contiguous` one way, and `strided.read` / `strided.write` per contiguous span in bytes. The allocation then runs no transfer through the core faster than its access pattern allows, and bounds every step by the time the core spends on one iteration's transfers. A key `<core id>.<memory>.<port>` (e.g. `2.dram.rw_port_1`) instead gives the same measured model to one port of a top-level memory of a ZigZag core, replacing the port's `bandwidth_max` (bits per cycle); cores in one `core_memory_sharing` group share that port. A core with a core-id key has no per-port model, so it takes no port key. The per-port rates are used by the `memory_ports` constraint family (`SolveOptions(families=["memory_ports"])`). |
+| `bandwidth` | no | Map of core id to the measured bandwidth every transfer through that core shares, in bits per cycle: `ceiling` for reads and writes together, `contiguous` one way, and `strided.read` / `strided.write` per contiguous span in bytes. The allocation then runs no transfer through the core faster than its access pattern allows, and bounds every step by the time the core spends on one iteration's transfers. A key can also name one memory port, see [Memory ports](#memory-ports). |
 | `reconfiguration` | no | What reconfiguring the array between the designs of one dispatch costs, read by the cores' namespace constraints; for `aie2`, `cycles_per_column` per design and `reset_cycles` once. |
 | `core_connectivity` | yes | List of links and buses connecting the cores (see below). |
 | `unit_energy_cost` | no | Default energy per transferred word for every connection, unless overridden per-connection. Defaults to `0`. |
 | `core_coordinates` | no | Map of core id → `[col, row]`. Used for placement-aware models; required for the AIE namespace, optional otherwise. |
 | `core_memory_sharing` | no | Groups of core ids that share their top-level memory, e.g. `["0, 1", "2, 3"]`. Its capacity bounds everything the group's cores hold in it together: split tiles add up, a tensor each core holds whole counts once. |
+
+### Memory ports
+
+A `bandwidth` key `<core id>.<memory>.<port>` (e.g. `2.dram.rw_port_1`) gives the measured model to one port of a top-level memory of a ZigZag core. It replaces that port's `bandwidth_max`, in bits per cycle. A core with a core-id key has no per-port model, so it takes no port key.
+
+A port belongs to a physical memory: cores in one `core_memory_sharing` group share it, and memories listed in one `memory_aliases` group share the ports of the group's first memory.
+
+The `memory_ports` constraint family (`SolveOptions(families=["memory_ports"])`) uses these rates. Its `interval` option (default true) fits each port's bits per iteration in its rate times the initiation interval; `burst` (default true) fits each step's bits in its rate times that step's latency.
 
 ### Connections: `link` vs `bus`
 
