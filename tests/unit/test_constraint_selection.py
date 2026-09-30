@@ -115,12 +115,14 @@ def _make_tta_stub(constraint_selection, *, bind_objective=False):
     bind_objective: if True, also bind the real _set_total_latency_and_objective
     so its DMA conditional logic executes. Only needed for the objective test.
     """
+    from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
     from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
         TransferAndTensorAllocator,
     )
 
     tta = MagicMock(spec=TransferAndTensorAllocator)
     tta.constraint_selection = constraint_selection
+    tta.quantities = QuantityRegistry()
     tta.shared_bandwidth = {}
     # Bind the real dispatch methods so if-guards execute
     tta._create_constraints = TransferAndTensorAllocator._create_constraints.__get__(tta)
