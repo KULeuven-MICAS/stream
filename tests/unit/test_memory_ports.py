@@ -120,6 +120,36 @@ def test_an_accelerator_without_port_models_gets_no_port_constraint() -> None:
     alloc.model.add_constr.assert_not_called()
 
 
+def port_registry(transfer_contention: bool) -> tuple[MagicMock, QuantityRegistry]:
+    alloc = MagicMock()
+    alloc.constraint_selection.transfer_contention = transfer_contention
+    registry = QuantityRegistry()
+    for name, value in (("iteration", 10), ("overlap", 2)):
+        registry.add(name, value)
+    registry.add("port_rate", 64.0, index=DRAM)
+    registry.add("port_demand", 256.0, index=DRAM)
+    registry.add("port_demand_slot", 256.0, index=(DRAM, 0))
+    registry.add("slot_latency", 4, index=0)
+    return alloc, registry
+
+
+def constraint_names(alloc: MagicMock) -> list[str]:
+    return [call.kwargs["name"] for call in alloc.model.add_constr.call_args_list]
+
+
+@pytest.mark.parametrize("transfer_contention", [True, False])
+def test_the_interval_bound_holds_with_or_without_transfer_contention(transfer_contention: bool) -> None:
+    alloc, registry = port_registry(transfer_contention)
+    MemoryPorts(burst=False).constrain(alloc, registry)
+    assert constraint_names(alloc) == ["port_interval_6_dram_rw_port_1"]
+
+
+def test_interval_off_keeps_only_the_burst_bound() -> None:
+    alloc, registry = port_registry(transfer_contention=True)
+    MemoryPorts(interval=False).constrain(alloc, registry)
+    assert constraint_names(alloc) == ["port_burst_6_dram_rw_port_1_0"]
+
+
 def zigzag_stall(real_cycles: list[int], window: int, periods: int) -> float:
     """ZigZag's combined stall of double-buffered streams sharing one port (CostModelEvaluation, step 2)."""
     activities = [

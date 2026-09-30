@@ -25,12 +25,14 @@ def _port_name(key: PortKey) -> str:
 
 
 class MemoryPorts:
-    """The interval bound: a port's bits per iteration fit in its rate times the initiation interval. With
-    ``burst``, the burst bound: each slot's bits on a port fit in its rate times that slot's latency."""
+    """With ``interval``, the interval bound: a port's bits per iteration fit in its rate times the initiation
+    interval, for every port. With ``burst``, the burst bound: each slot's bits on a port fit in its rate times
+    that slot's latency. Rates are in bits per cycle."""
 
     name: ClassVar[str] = "memory_ports"
 
-    def __init__(self, burst: bool = True) -> None:
+    def __init__(self, interval: bool = True, burst: bool = True) -> None:
+        self.interval = interval
         self.burst = burst
 
     def declare(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None:
@@ -62,7 +64,7 @@ class MemoryPorts:
     def constrain(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None:
         if "port_demand" not in q:
             return
-        if alloc.constraint_selection.transfer_contention:
+        if self.interval:
             interval = q.get("iteration").expr - q.get("overlap").expr
             for key, demand in q.indexed("port_demand").items():
                 rate = q.get("port_rate", key).expr
