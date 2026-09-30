@@ -90,9 +90,6 @@ class AIEBackend:
 
         return AIECostEstimator(context.workload, context.mapping, context.fusion_splits)
 
-    def port_traffic(self, entry: CoreCostEntry) -> PortTraffic:  # noqa: ARG002 -- AIE tiles model no ports
-        return ()
-
 
 class ZigZagBackend:
     """The universal fallback: claims every core at the lowest priority."""

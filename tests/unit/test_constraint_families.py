@@ -30,7 +30,6 @@ class CapIteration:
     """Test family: registers the iteration as a quantity and caps it at ``cap`` cycles."""
 
     name: ClassVar[str] = "cap_iteration"
-    adds_variables: ClassVar[bool] = False
 
     def __init__(self, cap: float = 1e12) -> None:
         self.cap = cap

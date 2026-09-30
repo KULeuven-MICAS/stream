@@ -22,7 +22,6 @@ class ConstraintFamily(Protocol):
     """``declare`` runs before the overlap is defined and ``constrain`` after it, both with the registry."""
 
     name: ClassVar[str]
-    adds_variables: ClassVar[bool]
 
     def declare(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None: ...
 

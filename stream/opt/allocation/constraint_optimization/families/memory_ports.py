@@ -28,7 +28,6 @@ class MemoryPorts:
     P1 also bounds each slot's bits by its rate times that slot's latency. Adds no variables."""
 
     name: ClassVar[str] = "memory_ports"
-    adds_variables: ClassVar[bool] = False
 
     def __init__(self, burst: bool = True) -> None:
         self.burst = burst
