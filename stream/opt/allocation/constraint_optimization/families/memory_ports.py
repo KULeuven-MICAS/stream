@@ -61,6 +61,8 @@ class MemoryPorts:
             )
 
     def constrain(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None:
+        if "port_demand" not in q:
+            return
         if alloc.constraint_selection.transfer_contention:
             interval = q.get("iteration").expr - q.get("overlap").expr
             for key, demand in q.indexed("port_demand").items():

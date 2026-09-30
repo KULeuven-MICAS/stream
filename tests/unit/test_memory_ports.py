@@ -1,4 +1,5 @@
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -8,6 +9,7 @@ from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, ma
 from stream.opt.allocation.constraint_optimization import families
 from stream.opt.allocation.constraint_optimization import transfer_and_tensor_allocation as tta
 from stream.opt.allocation.constraint_optimization.families.memory_ports import MemoryPorts
+from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 
 ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 TWO_CONV = TwoConvWorkloadConfig(
@@ -105,3 +107,10 @@ def test_burst_off_builds_one_constraint_per_port(tmp_path_factory: pytest.TempP
     interval_only = solve(tmp_path_factory, [{"memory_ports": {"burst": False}}])
     n_ports = len(interval_only.quantities.indexed("port_demand"))
     assert model_size(interval_only)[1] == model_size(base)[1] + n_ports
+
+
+def test_an_accelerator_without_port_models_gets_no_port_constraint() -> None:
+    alloc = MagicMock()
+    registry = QuantityRegistry()
+    MemoryPorts().constrain(alloc, registry)
+    alloc.model.add_constr.assert_not_called()
