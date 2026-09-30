@@ -467,10 +467,6 @@ class SolverModel(ABC):
         """
         raise NotImplementedError(f"{type(self).__name__} does not support lexicographic objectives")
 
-    def infinity(self) -> float:
-        """Convenience accessor for INFINITY class constant."""
-        return self.INFINITY
-
 
 # ---------------------------------------------------------------------------
 # Gurobi private implementations
