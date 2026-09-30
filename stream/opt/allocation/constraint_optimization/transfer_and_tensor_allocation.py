@@ -1590,8 +1590,10 @@ class TransferAndTensorAllocator:
         """The largest slot latency a family's constraints can force, 0 when no family declares one."""
         if SLOT_PRESSURE not in self.quantities:
             return 0
-        pressures = self.quantities.indexed(SLOT_PRESSURE).values()
-        return ceil(max((q.upper_bound or 0.0 for q in pressures), default=0.0))
+        pressures = self.quantities.indexed(SLOT_PRESSURE)
+        if unbounded := [index for index, q in pressures.items() if q.upper_bound is None]:
+            raise ValueError(f"{SLOT_PRESSURE} quantities need an upper_bound: {unbounded}")
+        return ceil(max((q.upper_bound or 0.0 for q in pressures.values()), default=0.0))
 
     def _define_overlap_var(self) -> None:
         overlap = self.model.add_var(vtype=SolverVarType.INTEGER, name="overlap")

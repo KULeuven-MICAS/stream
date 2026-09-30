@@ -55,6 +55,8 @@ def load_families(
     """Instantiate the families ``specs`` name, in order; an unknown name raises with the known ones."""
     if not specs:
         return ()
+    if isinstance(specs, str):
+        raise TypeError(f"Constraint families are a list of names, got the string {specs!r}")
     known = available_families() if factories is None else factories
     families: list[ConstraintFamily] = []
     for name, options in map(parse_spec, specs):

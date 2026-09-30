@@ -104,3 +104,8 @@ def test_family_adds_its_constraint_quantity_and_slot_bound(monkeypatch: pytest.
     assert "capped_iteration" not in base.quantities
     assert with_family._family_slot_pressure_bound() == PRESSURE_BOUND
     assert base._family_slot_pressure_bound() == 0
+
+
+def test_a_bare_family_name_is_rejected() -> None:
+    with pytest.raises(TypeError, match="list of names"):
+        load_families("cap_iteration", {CapIteration.name: CapIteration})
