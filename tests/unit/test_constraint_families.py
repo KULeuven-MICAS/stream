@@ -109,3 +109,8 @@ def test_family_adds_its_constraint_quantity_and_slot_bound(monkeypatch: pytest.
 def test_a_bare_family_name_is_rejected() -> None:
     with pytest.raises(TypeError, match="list of names"):
         load_families("cap_iteration", {CapIteration.name: CapIteration})
+
+
+def test_solve_options_reject_a_bare_family_name() -> None:
+    with pytest.raises(TypeError, match="list of names"):
+        SolveOptions(families="memory_ports").resolved_constraint_selection()

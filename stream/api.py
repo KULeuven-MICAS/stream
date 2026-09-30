@@ -75,11 +75,12 @@ class SolveOptions:
     families: Sequence[str | Mapping[str, Any]] | None = None
     """Constraint families to add to the allocation model; None adds none. ``memory_ports`` bounds each top-level
     memory port's bits per iteration by its rate (bits per cycle) times the initiation interval, and with option
-    ``burst`` (default true) each slot's bits by its rate times the slot latency. ``energy`` registers the
-    ``energy`` quantity (pJ per iteration) for an ``objective`` to use."""
+    ``burst`` (default true) each slot's bits by its rate times the slot latency."""
 
     def resolved_constraint_selection(self) -> ConstraintSelection | None:
         """``constraint_selection`` with ``families`` folded in."""
+        if isinstance(self.families, str):
+            raise TypeError(f"SolveOptions.families is a list of names, got the string {self.families!r}")
         if not self.families:
             return self.constraint_selection
         return replace(self.constraint_selection or ConstraintSelection(), families=tuple(self.families))
