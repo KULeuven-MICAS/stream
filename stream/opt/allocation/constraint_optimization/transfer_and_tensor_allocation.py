@@ -1561,7 +1561,7 @@ class TransferAndTensorAllocator:
         pressures = self.quantities.indexed(SLOT_PRESSURE)
         if unbounded := [index for index, q in pressures.items() if q.upper_bound is None]:
             raise ValueError(f"{SLOT_PRESSURE} quantities need an upper_bound: {unbounded}")
-        return ceil(max((q.upper_bound or 0.0 for q in pressures.values()), default=0.0))
+        return ceil(max(q.upper_bound for q in pressures.values()))
 
     def _define_overlap_var(self) -> None:
         overlap = self.model.add_var(vtype=SolverVarType.INTEGER, name="overlap")
