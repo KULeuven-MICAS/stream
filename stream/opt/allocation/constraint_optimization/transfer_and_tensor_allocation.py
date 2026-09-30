@@ -10,8 +10,8 @@ import matplotlib.pyplot as plt
 import yaml
 from xdsl.ir.affine import AffineDimExpr
 
-# GRB.Callback constants — used only by _mip_progress_callback (Gurobi-specific).
-# gurobipy is optional (Gurobi backend only); GRB is touched solely on the Gurobi solve path.
+# GRB supplies the callback codes of _mip_progress_callback and the Gurobi status names of the solve
+# summary; gurobipy is optional, so GRB is None without it and only the Gurobi solve path touches it.
 try:
     from gurobipy import GRB
 except ModuleNotFoundError:
@@ -1769,7 +1769,7 @@ class TransferAndTensorAllocator:
             traffic_weight = self.iterations / bw
             primary_expr = primary_expr + traffic_weight * traffic_expr
 
-        # Third objective (tiebreaker): minimize total buffering depth
+        # Buffering depth; the ObjectiveSpec decides whether and at which priority it is minimised.
         buffering_expr = self.model.quicksum(
             self.tiles_needed_levels[(t, s)] * self.z_stop[(t, s)]._raw
             for t in self.tensors_to_optimize_reuse_for
