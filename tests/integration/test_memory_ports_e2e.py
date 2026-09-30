@@ -19,8 +19,8 @@ SWIGLU_TILING = [
     {"dim": "Gemm_Left.D0", "tile": 16},
 ]
 
-# Total latency and most utilised (memory, port) from the prototype run in evidence_59a9340/ports.jsonl, equal to
-# the family's output at merge. On a change, `pytest -m slow tests/integration/test_memory_ports_e2e.py` prints both.
+# Total latency and busiest (memory, port): the prototype's (evidence_59a9340/ports.jsonl), and the family's output
+# at merge. `pytest -m slow` on this file prints the current values of a case that changes.
 TWO_CONV_CASES = [
     ("eyeriss_like_single_core", 114999, ("dram", "rw_port_1")),
     ("eyeriss_like_dual_core", 80915, ("sram_1M", "rw_port_2")),
@@ -37,8 +37,9 @@ SWIGLU_CASES = [
     ("eyeriss_like_quad_core", 201589494, ("dram", "rw_port_1")),
     ("tpu_like_quad_core", 201588814, ("dram", "rw_port_1")),
     ("simba_small", 201589342, ("dram", "rw_port_1")),
-    ("simba", 201589014, ("dram", "rw_port_1")),
-    ("fusemax", 76808227, ("sram", "r_port_1")),
+    # One cycle above the prototype, which dropped streams whose active latency rounds to 0.
+    ("simba", 201589015, ("dram", "rw_port_1")),
+    ("fusemax", 76808228, ("sram", "r_port_1")),  # as simba
     ("meta_prototype_dual_core_simd_offchip", 201588793, ("dram", "rw_port_1")),
 ]
 
