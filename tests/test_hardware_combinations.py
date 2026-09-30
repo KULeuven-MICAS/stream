@@ -18,12 +18,11 @@ Silu/Mul) and added the swiglu workload builder and swiglu arm.
 """
 
 import tempfile
-from pathlib import Path
 
 import pytest
 from zigzag.utils import open_yaml
 
-from stream.api import optimize_allocation_co_generic
+from stream.api import SolveOptions, evaluate_mapping
 from stream.cost_model.steady_state_scheduler import SteadyStateScheduler
 from stream.hardware.architecture.accelerator import Accelerator
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
@@ -224,14 +223,8 @@ def test_hardware_two_conv(hardware: str, record_metric) -> None:
     Selected by: pytest -k two_conv
     """
     workload_path = make_2_conv_workload(_SMALL_2CONV_CONFIG)
-    hw_stem = Path(hardware).stem
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx = optimize_allocation_co_generic(
-            hardware=hardware,
-            workload=workload_path,
-            experiment_id=f"two_conv_{hw_stem}",
-            output_path=tmpdir,
-        )
+        ctx = evaluate_mapping(hardware, workload_path, tmpdir).context
     accelerator = ctx.get("accelerator")
     _assert_co_result(ctx, accelerator, expected_node_count=2)
     # metrics capture — read-only advisory side-effect
@@ -255,15 +248,13 @@ def test_hardware_swiglu(hardware: str, record_metric) -> None:
         embedding_dim=_SWIGLU_EMBEDDING_DIM,
         hidden_dim=_SWIGLU_HIDDEN_DIM,
     )
-    hw_stem = Path(hardware).stem
     with tempfile.TemporaryDirectory() as tmpdir:
-        ctx = optimize_allocation_co_generic(
-            hardware=hardware,
-            workload=workload_path,
-            experiment_id=f"swiglu_{hw_stem}",
-            output_path=tmpdir,
-            intra_core_tiling=_SWIGLU_INTRA_CORE_TILING,
-        )
+        ctx = evaluate_mapping(
+            hardware,
+            workload_path,
+            tmpdir,
+            options=SolveOptions(stage_options={"intra_core_tiling": _SWIGLU_INTRA_CORE_TILING}),
+        ).context
     accelerator = ctx.get("accelerator")
     _assert_co_result(ctx, accelerator, expected_node_count=5)
     # metrics capture — read-only advisory side-effect

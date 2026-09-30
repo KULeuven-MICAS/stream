@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from stream.api import optimize_allocation_co_generic_workload
+from stream.api import SolveOptions, evaluate_mapping
 from stream.workload.models import (
     AttentionConfig,
     LinearAttentionConfig,
@@ -20,13 +20,9 @@ _ACCELERATOR = "stream/inputs/testing/hardware/tpu_like_quad_core.yaml"
 
 
 def _run(workload, tmp_path: Path):
-    return optimize_allocation_co_generic_workload(
-        hardware=_ACCELERATOR,
-        workload=workload,
-        experiment_id="catalog_e2e",
-        output_path=str(tmp_path),
-        backend="ORTOOLS_GSCIP",  # SCIP: no Gurobi license needed
-    )
+    return evaluate_mapping(
+        _ACCELERATOR, workload, str(tmp_path), options=SolveOptions(backend="ORTOOLS_GSCIP")
+    ).context
 
 
 @pytest.mark.slow
@@ -46,13 +42,12 @@ def test_attention_block_fuses_into_one_region(tmp_path: Path):
 @pytest.mark.timeout(600)
 def test_softmax_is_decomposed_in_the_pipeline(tmp_path: Path):
     """The pipeline decomposes the MHA softmax into ReduceMax/Exp/ReduceSum/Div and still solves."""
-    ctx = optimize_allocation_co_generic_workload(
-        hardware=_ACCELERATOR,
-        workload=build_attention_block(AttentionConfig(batch=1, heads=1, seq=8, d_head=8)),
-        experiment_id="expanded_softmax",
-        output_path=str(tmp_path),
-        backend="ORTOOLS_GSCIP",
-    )
+    ctx = evaluate_mapping(
+        _ACCELERATOR,
+        build_attention_block(AttentionConfig(batch=1, heads=1, seq=8, d_head=8)),
+        str(tmp_path),
+        options=SolveOptions(backend="ORTOOLS_GSCIP"),
+    ).context
     assert ctx.get("total_latency") and ctx.get("total_latency") > 0
     node_types = {n.type for n in ctx.get("workload").get_computation_nodes()}
     assert {"ReduceMax", "Exp", "ReduceSum", "Div"} <= node_types

@@ -27,17 +27,13 @@ def _compute_columns(scheduler: "SteadyStateScheduler") -> tuple[int, ...]:
 
 
 class FusionGroupIterationStage(Stage):
-    """Iterate over fusion groups, running the inner pipeline once per group.
+    """Iterate over fusion groups, running the inner pipeline once per group on its own workload and mapping.
 
-    Supports two modes:
-    - In-memory: sub_mappings provided → sets mapping directly per group (no MappingParserStage needed)
-    - File-based: group_mapping_paths provided → sets mapping_path per group (MappingParserStage reads it)
-
-    Reads: sub_workloads, output_path, and either sub_mappings or group_mapping_paths
-    Writes: total_latency (float), group_latencies (dict), group_wall_times (dict)
+    Reads: sub_workloads, sub_mappings, output_path
+    Writes: total_latency (float), group_latencies (dict), group_cycles (dict), group_wall_times (dict)
     """
 
-    REQUIRED_FIELDS = ("accelerator", "workload", "output_path", "sub_workloads")
+    REQUIRED_FIELDS = ("accelerator", "workload", "output_path", "sub_workloads", "sub_mappings")
 
     def __init__(self, list_of_callables: list[StageCallable], ctx: StageContext):
         super().__init__(list_of_callables, ctx)
@@ -45,12 +41,7 @@ class FusionGroupIterationStage(Stage):
         self.workload = self.ctx.require_value("workload", self.__class__.__name__)
         self.output_path = self.ctx.require_value("output_path", self.__class__.__name__)
         self.sub_workloads = self.ctx.require_value("sub_workloads", self.__class__.__name__)
-        self.sub_mappings = self.ctx.get("sub_mappings")
-        self.group_mapping_paths = self.ctx.get("group_mapping_paths")
-        if self.sub_mappings is None and self.group_mapping_paths is None:
-            raise ValueError(
-                f"{self.__class__.__name__} requires either 'sub_mappings' or 'group_mapping_paths' in context"
-            )
+        self.sub_mappings = self.ctx.require_value("sub_mappings", self.__class__.__name__)
 
     def run(self):  # noqa: PLR0915
         sub_workloads = self.sub_workloads
@@ -63,25 +54,15 @@ class FusionGroupIterationStage(Stage):
         group_memory_accesses: dict[int, dict | None] = {}
         final_ctx = None
 
-        if self.sub_mappings is not None:
-            assert len(sub_workloads) == len(self.sub_mappings), (
-                f"Mismatch: {len(sub_workloads)} sub-workloads vs {len(self.sub_mappings)} sub-mappings"
-            )
-        else:
-            assert len(sub_workloads) == len(self.group_mapping_paths), (
-                f"Mismatch: {len(sub_workloads)} sub-workloads vs {len(self.group_mapping_paths)} mapping paths"
-            )
+        assert len(sub_workloads) == len(self.sub_mappings), (
+            f"Mismatch: {len(sub_workloads)} sub-workloads vs {len(self.sub_mappings)} sub-mappings"
+        )
 
         for i, sub_workload in enumerate(sub_workloads):
             group_output = os.path.join(self.output_path, f"group_{i}")
             os.makedirs(group_output, exist_ok=True)
 
-            ctx_updates = dict(workload=sub_workload, output_path=group_output, group_index=i)
-            if self.sub_mappings is not None:
-                ctx_updates["mapping"] = self.sub_mappings[i]
-            else:
-                ctx_updates["mapping_path"] = self.group_mapping_paths[i]
-            self.ctx.set(**ctx_updates)
+            self.ctx.set(workload=sub_workload, mapping=self.sub_mappings[i], output_path=group_output, group_index=i)
 
             logger.info(f"Running inner pipeline for group {i} ({len(sub_workload.get_computation_nodes())} nodes)")
 

@@ -15,7 +15,7 @@ from pathlib import Path
 
 import pytest
 
-from stream.api import optimize_allocation_co_generic
+from stream.api import SolveOptions, evaluate_mapping
 
 _ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 _ATTENTION = "stream/inputs/testing/workload/attention_head.onnx"
@@ -24,13 +24,9 @@ _ATTENTION = "stream/inputs/testing/workload/attention_head.onnx"
 @pytest.mark.slow
 @pytest.mark.timeout(600)
 def test_attention_dse_end_to_end(tmp_path: Path):
-    ctx = optimize_allocation_co_generic(
-        hardware=_ACCELERATOR,
-        workload=_ATTENTION,
-        experiment_id="attention_e2e",
-        output_path=str(tmp_path),
-        backend="ortools_gscip",  # SCIP: no Gurobi license needed
-    )
+    ctx = evaluate_mapping(
+        _ACCELERATOR, _ATTENTION, str(tmp_path), options=SolveOptions(backend="ortools_gscip")
+    ).context
 
     total_latency = ctx.get("total_latency")
     group_latencies = ctx.get("group_latencies")

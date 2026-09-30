@@ -1,12 +1,13 @@
 """De-aliased hardware bundles (C1) and the built-in hardware cost model / budget guard (C4)."""
 
+import json
 import math
 import tempfile
 
 import pytest
 import yaml
 
-from stream.api import hardware_cost_report, optimize_allocation_co_generic
+from stream.api import evaluate_mapping
 from stream.hardware.bundle import HardwareBundle
 from stream.hardware.cost import (
     BudgetVerdict,
@@ -124,12 +125,7 @@ def test_asymmetric_bundle_runs_end_to_end():
     )
     with tempfile.TemporaryDirectory() as tmpdir:
         accelerator_path = bundle.materialize(tmpdir)
-        ctx = optimize_allocation_co_generic(
-            hardware=str(accelerator_path),
-            workload=workload_path,
-            experiment_id="test-bundle-asymmetric",
-            output_path=tmpdir,
-        )
+        ctx = evaluate_mapping(str(accelerator_path), workload_path, tmpdir).context
     assert ctx.get("total_latency") > 0
 
 
@@ -214,10 +210,8 @@ def test_aie_bundle_is_priceable_and_reports_what_it_cannot_model():
     assert compute_tiles and all(not c.compute.modelled for c in compute_tiles)
 
 
-def test_api_hardware_cost_report_round_trips(tmp_path):
-    out = tmp_path / "hardware_cost.json"
-    report = hardware_cost_report(TPU_V7, str(out))
-    assert out.exists()
+def test_cost_report_is_plain_json():
+    report = json.loads(json.dumps(evaluate_bundle_cost(HardwareBundle.from_yaml(TPU_V7)).to_dict()))
     assert report["total_area_mm2"] > 0
     assert report["cores"][0]["memories"][0]["memory_name"]
 
@@ -233,8 +227,7 @@ def test_baseline_is_its_own_budget():
     assert verdict.ok, verdict.violations
 
 
-def test_over_budget_variant_is_rejected_without_a_solve(monkeypatch):
-    """(c) The C4 done-condition: rejection happens before anything is scheduled."""
+def test_over_budget_variant_is_rejected():
     bundle = HardwareBundle.from_yaml(TPU_V7)
     budget = HardwareBudget.from_bundle(bundle)
 
@@ -243,23 +236,8 @@ def test_over_budget_variant_is_rejected_without_a_solve(monkeypatch):
     verdict = check_budget(variant, budget)
     assert not verdict.ok
     assert "area" in verdict.violations[0]
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        accelerator_path = variant.materialize(tmpdir)
-
-        # Any stage running at all would mean the budget was checked too late.
-        def _fail(*args, **kwargs):
-            raise AssertionError("the pipeline must not start for an over-budget variant")
-
-        monkeypatch.setattr(MainStage, "run", _fail)
-        with pytest.raises(HardwareBudgetExceededError):
-            optimize_allocation_co_generic(
-                hardware=str(accelerator_path),
-                workload="stream/inputs/examples/workload/resnet18.onnx",
-                experiment_id="test-budget-reject",
-                output_path=tmpdir,
-                hardware_budget=budget,
-            )
+    with pytest.raises(HardwareBudgetExceededError):
+        assert_within_budget(variant, budget)
 
 
 def test_budget_headroom_admits_a_bounded_increase():

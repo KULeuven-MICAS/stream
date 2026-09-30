@@ -91,6 +91,16 @@ aie2 = "stream.opt.allocation.constraint_optimization.context:AIE2Constraints"
 aie = "stream.stages.estimation.core_cost_backends:AIE_BACKEND"
 zigzag = "stream.stages.estimation.core_cost_backends:ZIGZAG_BACKEND"
 
+# Code generation backends: the entry-point name is the backend's `name`, its object a CodegenBackend
+# that `claims` the accelerators it emits code for and returns the per-group codegen `stage()`.
+[project.entry-points."stream.codegen_backends"]
+aie2 = "stream.stages.codegen.backends:AIE2_CODEGEN"
+
+# Mapping generators: the entry-point name is the generator's `name`, its object a MappingGenerator that
+# `claims` the accelerators it proposes mappings for and returns the `stages()` that build them.
+[project.entry-points."stream.mapping_generators"]
+generic = "stream.stages.generation.mapping_generators:GENERIC_MAPPING"
+
 # A plugin distribution declares itself here so it can be allowlisted (STREAM_ALLOWED_OVERLAYS) and
 # ordered by an OVERLAY_PRIORITY int on its module -- public entry points are priority 0, so a plugin
 # outranks a built-in of the same name. The value is the distribution's module.

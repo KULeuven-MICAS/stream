@@ -7,7 +7,7 @@ default:
     @just --list
 
 # ----------------------------------------------------------------------------
-# Non-AIE generic CO matrix (scripts/main_stream_co.py + the pytest test matrix)
+# Non-AIE generic CO matrix (the pytest test matrix)
 # ----------------------------------------------------------------------------
 
 # Regenerate the committed CI workload fixtures (2-conv + swiglu ONNX, weight values cleared) in
@@ -16,18 +16,14 @@ gen-workloads:
     python -c "from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload; make_2_conv_workload(TwoConvWorkloadConfig(batch_size=1, in_channels=8, height=32, width=32, out_channels_1=16, out_channels_2=32, kernel_size=3, in_dtype='bf16', weight_dtype='bf16'))"
     python -c "from stream.inputs.testing.workload.make_swiglu import make_small_swiglu_workload; make_small_swiglu_workload()"
 
-# Run the 2-conv workload on one hardware (default tpu_like_quad_core) via the generic CO pipeline.
-# `hw` is a stem from stream/inputs/examples/hardware/ (e.g. fusemax, simba_small, eyeriss_like_dual_core).
+# Run the 2-conv workload on one hardware (default tpu_like_quad_core); `hw` is a stem from
+# stream/inputs/examples/hardware/ (e.g. fusemax, simba_small, eyeriss_like_dual_core).
 co-2conv hw="tpu_like_quad_core":
-    python scripts/main_stream_co.py \
-      --hardware stream/inputs/examples/hardware/{{hw}}.yaml \
-      --workload stream/inputs/testing/workload/2conv_1_8_32_32_16_32_3.onnx
+    python -m pytest tests/test_hardware_combinations.py -k "two_conv and {{hw}}"
 
-# Run the swiglu workload on one hardware (default tpu_like_quad_core) via the generic CO pipeline.
+# Run the swiglu workload on one hardware (default tpu_like_quad_core).
 co-swiglu hw="tpu_like_quad_core":
-    python scripts/main_stream_co.py \
-      --hardware stream/inputs/examples/hardware/{{hw}}.yaml \
-      --workload stream/inputs/testing/workload/swiglu_1_16_32.onnx
+    python -m pytest tests/test_hardware_combinations.py -k "swiglu and {{hw}}"
 
 # Run the full hardware x workload test matrix (parse + 2-conv + swiglu over all 8 non-AIE architectures).
 matrix:
@@ -37,10 +33,6 @@ matrix:
 # AIE codegen (AMD Strix NPU target — requires the AIE toolchain; run `stream-setup-aie`)
 # ----------------------------------------------------------------------------
 
-# Generate AIE MLIR for a SwiGLU block on the AMD Strix array (4x8 compute tiles, npu2); writes outputs/<experiment-id>/output.mlir
+# Generate AIE MLIR for SwiGLU blocks on the AMD Strix array (4x8 compute tiles, npu2).
 swiglu:
-    python scripts/main_swiglu.py --seq_len 256 --embedding_dim 512 --hidden_dim 2048 --in_dtype bf16 --out_dtype bf16 --trace_size 1048576 --rows 4 --cols 8 --npu npu2 --embedding_tile_size 32 --hidden_tile_size 64 --seq_len_tile_size 32
-
-# Generate AIE MLIR for a GEMM on the AMD Strix array (4x8 compute tiles, npu2).
-gemm:
-    python scripts/main_gemm.py --M 512 --N 512 --K 512 --m 16 --k 128 --n 32 --in_dtype bf16 --out_dtype bf16 --rows 4 --cols 8 --npu npu2 --trace_size 1048576
+    python -m pytest tests/integration/test_aie_codegen.py -m slow

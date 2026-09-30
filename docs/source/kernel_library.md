@@ -1,6 +1,6 @@
 # Kernel library
 
-A kernel library tells Stream what a target's compiled kernels accept, what object each one links against, and what one call costs. It belongs to whoever builds the kernels. An accelerator file names its library with `kernel_library: <path>`, relative to the accelerator file, and `optimize_allocation_co(kernel_library=...)` replaces it with a TOML or YAML path, a mapping, or a `KernelLibrary`. `stream/inputs/aie/kernels/aie2p.toml` is the library the example AIE accelerators name.
+A kernel library tells Stream what a target's compiled kernels accept, what object each one links against, and what one call costs. It belongs to whoever builds the kernels. An accelerator file names its library with `kernel_library: <path>`, relative to the accelerator file, and `SolveOptions(kernel_library=...)` replaces it with a TOML or YAML path, a mapping, or a `KernelLibrary`. `stream/inputs/aie/kernels/aie2p.toml` is the library the example AIE accelerators name.
 
 ```toml
 [family.matmul]

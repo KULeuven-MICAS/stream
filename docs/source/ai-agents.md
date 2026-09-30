@@ -40,7 +40,7 @@ When an agent (or any tool) needs machine-readable output instead of console tex
 ```python
 from stream.ir import WorkloadIR, AcceleratorIR, AllocationIR
 
-# after running optimize_allocation_co_generic(...) -> ctx
+# ctx = evaluate_mapping(...).context
 workload_ir    = WorkloadIR.from_internal(ctx.get("workload"))
 accelerator_ir = AcceleratorIR.from_internal(ctx.get("accelerator"))
 allocation_ir  = AllocationIR.from_internal(ctx.get("scheduler"))

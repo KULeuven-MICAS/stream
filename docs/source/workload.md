@@ -105,10 +105,10 @@ onnx.save(shape_inference.infer_shapes(model), "one_conv.onnx")
 
 Once saved, run it through the pipeline like any other workload:
 
-```bash
-python scripts/main_stream_co.py \
-  --hardware stream/inputs/examples/hardware/tpu_like_quad_core.yaml \
-  --workload one_conv.onnx
+```python
+from stream.api import evaluate_mapping
+
+evaluate_mapping("stream/inputs/examples/hardware/tpu_like_quad_core.yaml", "one_conv.onnx", "outputs/one-conv")
 ```
 
 Stream also ships parameterized reference blocks for the building blocks of modern models — attention, GQA, a Mamba-style recurrence, SwiGLU/MLP, RMSNorm, MoE — as affine workload graphs you can build directly (`stream.workload.blocks.build_block`) for experiments that do not start from an ONNX file.
