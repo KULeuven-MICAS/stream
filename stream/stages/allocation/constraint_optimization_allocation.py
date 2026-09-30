@@ -45,13 +45,7 @@ class ConstraintOptimizationAllocationStage(Stage):
         self.cost_lut = self.ctx.get("cost_lut")
 
         config = self.ctx.get("constraint_opt_config")
-        if config is None:
-            logger.warning(
-                "ConstraintOptimizationAllocationStage: legacy kwargs configuration path is deprecated. "
-                "Please pass a ConstraintOptStageConfig. Building config from kwargs for now."
-            )
-            config = ConstraintOptStageConfig.from_legacy_kwargs(**self.ctx.data)
-        self.config = config
+        self.config = config or ConstraintOptStageConfig.from_kwargs(**self.ctx.data)
 
         self.output_path = self.ctx.get("output_path")
         self.backend: str = self.ctx.get("backend", "ORTOOLS_GSCIP")

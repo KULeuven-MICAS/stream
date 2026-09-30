@@ -17,10 +17,8 @@ class ConstraintOptStageConfig:
     transfer: TransferMilpConfig = field(default_factory=TransferMilpConfig)
 
     @classmethod
-    def from_legacy_kwargs(cls, **kwargs) -> ConstraintOptStageConfig:
-        """
-        Temporary adapter to convert legacy kwargs into a typed config.
-        """
+    def from_kwargs(cls, **kwargs) -> ConstraintOptStageConfig:
+        """Build the config from the stage context, reading `nb_cols_to_use`."""
         transfer_cfg = TransferMilpConfig(
             nb_cols_to_use=kwargs.get("nb_cols_to_use", 4),
         )
