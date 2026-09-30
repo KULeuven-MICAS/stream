@@ -7,7 +7,17 @@ from stream.opt.allocation.constraint_optimization import transfer_and_tensor_al
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 
 ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
-TWO_CONV = TwoConvWorkloadConfig(1, 8, 32, 32, 16, 32, 3, "bf16", "bf16")
+TWO_CONV = TwoConvWorkloadConfig(
+    batch_size=1,
+    in_channels=8,
+    height=32,
+    width=32,
+    out_channels_1=16,
+    out_channels_2=32,
+    kernel_size=3,
+    in_dtype="bf16",
+    weight_dtype="bf16",
+)
 
 
 @pytest.fixture(scope="module")
