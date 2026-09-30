@@ -1,28 +1,17 @@
+from collections.abc import Callable
 from typing import Any, ClassVar
 
 import pytest
 
-from stream.api import SolveOptions, evaluate_mapping
+from stream.api import SolveOptions
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
-from stream.opt.allocation.constraint_optimization import families
 from stream.opt.allocation.constraint_optimization import transfer_and_tensor_allocation as tta
 from stream.opt.allocation.constraint_optimization.families import SLOT_PRESSURE, load_families, parse_spec
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.solver import ConstraintSelection
 
 ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
-TWO_CONV = TwoConvWorkloadConfig(
-    batch_size=1,
-    in_channels=8,
-    height=32,
-    width=32,
-    out_channels_1=16,
-    out_channels_2=32,
-    kernel_size=3,
-    in_dtype="bf16",
-    weight_dtype="bf16",
-)
 PRESSURE_BOUND = 10**9
 
 
@@ -43,24 +32,19 @@ class CapIteration:
         alloc.model.add_constr(iteration <= self.cap, name="cap_iteration")
 
 
-def solve(monkeypatch: pytest.MonkeyPatch, tmp_path: Any, options: SolveOptions) -> tta.TransferAndTensorAllocator:
-    monkeypatch.setattr(families, "available_families", lambda: {CapIteration.name: CapIteration})
-    built: list[tta.TransferAndTensorAllocator] = []
-    original = tta.TransferAndTensorAllocator._build_model
-
-    def capture(self: tta.TransferAndTensorAllocator) -> None:
-        built.append(self)
-        original(self)
-
-    monkeypatch.setattr(tta.TransferAndTensorAllocator, "_build_model", capture)
-    workload, mapping = make_2_conv_workload(TWO_CONV), make_2_conv_mapping(TWO_CONV)
-    evaluate_mapping(ACCELERATOR, workload, str(tmp_path), mapping, options)
-    return built[0]
-
-
-def model_size(alloc: tta.TransferAndTensorAllocator) -> tuple[int, int]:
-    raw = alloc.model._model  # type: ignore[attr-defined]
-    return sum(1 for _ in raw.variables()), sum(1 for _ in raw.linear_constraints())
+def solve(
+    solved_allocator: Callable[..., Any], two_conv: TwoConvWorkloadConfig, out: Any, options: SolveOptions
+) -> Any:
+    workload, mapping = make_2_conv_workload(two_conv), make_2_conv_mapping(two_conv)
+    return solved_allocator(
+        ACCELERATOR,
+        workload,
+        str(out),
+        mapping,
+        options,
+        families_available={CapIteration.name: CapIteration},
+        hook="_build_model",
+    )
 
 
 def test_spec_forms_parse_to_name_and_options() -> None:
@@ -92,9 +76,12 @@ def test_solve_options_fold_families_into_the_constraint_selection() -> None:
 
 
 @pytest.mark.slow
-def test_family_adds_its_constraint_quantity_and_slot_bound(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
-    base = solve(monkeypatch, tmp_path / "base", SolveOptions())
-    with_family = solve(monkeypatch, tmp_path / "family", SolveOptions(families=[{"cap_iteration": {"cap": 1e9}}]))
+def test_family_adds_its_constraint_quantity_and_slot_bound(
+    solved_allocator: Callable, two_conv: TwoConvWorkloadConfig, model_size: Callable, tmp_path: Any
+) -> None:
+    base = solve(solved_allocator, two_conv, tmp_path / "base", SolveOptions())
+    options = SolveOptions(families=[{"cap_iteration": {"cap": 1e9}}])
+    with_family = solve(solved_allocator, two_conv, tmp_path / "family", options)
     base_vars, base_cons = model_size(base)
     family_vars, family_cons = model_size(with_family)
     assert family_vars == base_vars

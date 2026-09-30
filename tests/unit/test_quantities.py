@@ -1,39 +1,22 @@
+from collections.abc import Callable
+from typing import Any
+
 import pytest
 
-from stream.api import evaluate_mapping
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.opt.allocation.constraint_optimization import transfer_and_tensor_allocation as tta
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 
 ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
-TWO_CONV = TwoConvWorkloadConfig(
-    batch_size=1,
-    in_channels=8,
-    height=32,
-    width=32,
-    out_channels_1=16,
-    out_channels_2=32,
-    kernel_size=3,
-    in_dtype="bf16",
-    weight_dtype="bf16",
-)
 
 
 @pytest.fixture(scope="module")
-def alloc(tmp_path_factory: pytest.TempPathFactory) -> tta.TransferAndTensorAllocator:
-    solved: list[tta.TransferAndTensorAllocator] = []
-    original = tta.TransferAndTensorAllocator.solve
-
-    def capture(self: tta.TransferAndTensorAllocator, **kwargs: bool) -> object:
-        solved.append(self)
-        return original(self, **kwargs)
-
-    with pytest.MonkeyPatch.context() as patch:
-        patch.setattr(tta.TransferAndTensorAllocator, "solve", capture)
-        out = tmp_path_factory.mktemp("two_conv")
-        evaluate_mapping(ACCELERATOR, make_2_conv_workload(TWO_CONV), str(out), make_2_conv_mapping(TWO_CONV))
-    return solved[0]
+def alloc(
+    tmp_path_factory: pytest.TempPathFactory, solved_allocator: Callable[..., Any], two_conv: TwoConvWorkloadConfig
+) -> tta.TransferAndTensorAllocator:
+    out = str(tmp_path_factory.mktemp("two_conv"))
+    return solved_allocator(ACCELERATOR, make_2_conv_workload(two_conv), out, make_2_conv_mapping(two_conv))
 
 
 def test_registry_returns_scalar_and_indexed_quantities() -> None:

@@ -165,8 +165,6 @@ def test_dma_guard():
     """TTA with dma_channels=False does not call _add_dma_usage_constraints."""
     cs = ConstraintSelection(dma_channels=False)
     tta = _make_tta_stub(cs)
-    tta.max_slot = 0
-    tta.big_m = 10
     tta._objective()
     tta._add_dma_usage_constraints.assert_not_called()
 
@@ -175,8 +173,6 @@ def test_dma_enabled():
     """TTA with dma_channels=True calls _add_dma_usage_constraints."""
     cs = ConstraintSelection(dma_channels=True)
     tta = _make_tta_stub(cs)
-    tta.max_slot = 0
-    tta.big_m = 10
     tta._objective()
     tta._add_dma_usage_constraints.assert_called_once()
 
@@ -300,8 +296,6 @@ def test_skip_warnings(caplog):
     tta = _make_tta_stub(cs)
     with caplog.at_level(logging.WARNING):
         tta._create_constraints()
-        tta.max_slot = 0
-        tta.big_m = 10
         tta._objective()
     assert "memory_capacity" in caplog.text.lower()
     assert "object_fifo_depth" in caplog.text.lower()
@@ -317,8 +311,6 @@ def test_all_enabled_calls_all():
     tta._memory_capacity_constraints.assert_called_once()
     tta._object_fifo_depth_constraints.assert_called_once()
     tta._buffer_descriptor_constraints.assert_called_once()
-    tta.max_slot = 0
-    tta.big_m = 10
     tta._objective()
     tta._add_dma_usage_constraints.assert_called_once()
 
