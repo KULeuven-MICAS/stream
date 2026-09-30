@@ -145,6 +145,7 @@ class CommunicationManager:
         self.all_shortest_paths = self.get_all_shortest_paths()
         self.all_pair_links = self.get_all_links_for_all_core_pairs()
         self.event_id = 0
+        self._transfer_plans: dict[tuple[tuple[Core, ...], tuple[Core, ...]], tuple[MulticastPathPlan, ...]] = {}
 
     def get_shortest_paths(self):
         # For each core pair save a shortest path
@@ -342,10 +343,10 @@ class CommunicationManager:
         src_allocs: list["Core"],
         dst_allocs: list["Core"],
     ) -> tuple[MulticastPathPlan, ...]:
-        request = MulticastRequest(
-            sources=src_allocs,  # type: ignore
-            destinations=dst_allocs,  # type: ignore
-        )
-        multicast_plans = self._enumerate_multicast_plans(request, offchip_mem_penalty=1)
-        # Stable output ordering
-        return tuple(multicast_plans)
+        """The plans for a transfer between these cores, enumerated once per pair of core sets."""
+        key = (tuple(src_allocs), tuple(dst_allocs))
+        plans = self._transfer_plans.get(key)
+        if plans is None:
+            request = MulticastRequest(sources=key[0], destinations=key[1])
+            plans = self._transfer_plans[key] = tuple(self._enumerate_multicast_plans(request, offchip_mem_penalty=1))
+        return plans
