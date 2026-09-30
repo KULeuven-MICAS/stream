@@ -1116,7 +1116,8 @@ class ORToolsBackend(SolverModel):
         raw = _unwrap_ort(expr)
         if isinstance(raw, int | float):
             return float(raw)
-        assert self._result is not None, "value() needs a solved model"
+        if self._result is None or not self._result.has_primal_feasible_solution():
+            raise ValueError("No solution available")
         return float(mathopt.evaluate_expression(raw, self._result.variable_values()))
 
     def _mip_gap(self) -> float | None:
