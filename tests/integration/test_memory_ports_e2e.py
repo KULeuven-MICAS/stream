@@ -1,4 +1,4 @@
-"""The memory-ports family on the example ZigZag accelerators, against the prototype that derived it."""
+"""The memory-ports family on the example ZigZag accelerators: latency and busiest port per case."""
 
 import tempfile
 from collections.abc import Callable
@@ -19,15 +19,16 @@ SWIGLU_TILING = [
     {"dim": "Gemm_Left.D0", "tile": 16},
 ]
 
-# Total latency and busiest (memory, port): the prototype's (evidence_59a9340/ports.jsonl), and the family's output
-# at merge. `pytest -m slow` on this file prints the current values of a case that changes.
+# Total latency and busiest (memory, port): the prototype's (evidence_59a9340/ports.jsonl) unless marked, and the
+# family's output at merge. `pytest -m slow` on this file prints the current values of a case that changes.
 TWO_CONV_CASES = [
     ("eyeriss_like_single_core", 114999, ("dram", "rw_port_1")),
     ("eyeriss_like_dual_core", 80915, ("sram_1M", "rw_port_2")),
-    ("eyeriss_like_quad_core", 46031, ("sram_1M", "rw_port_2")),
+    # Below the prototype, which credited every target of a one-to-one split with the whole tensor.
+    ("eyeriss_like_quad_core", 45689, ("sram_1M", "rw_port_2")),
     ("tpu_like_quad_core", 18072, ("dram", "rw_port_1")),
     ("simba_small", 14913, ("dram", "rw_port_1")),
-    ("simba", 12308, ("dram", "rw_port_1")),
+    ("simba", 12081, ("dram", "rw_port_1")),  # as eyeriss_like_quad_core
     ("fusemax", 185892, ("sram", "r_port_1")),
     ("meta_prototype_dual_core_simd_offchip", 21625, ("dram", "rw_port_1")),
 ]
@@ -51,8 +52,8 @@ def solve_with_ports(solved_allocator: Callable[..., Any], hardware: str, worklo
 
 
 def port_activity(alloc: tta.TransferAndTensorAllocator) -> list[dict]:
-    """The port report, after checking that no port moves more than its bandwidth allows."""
-    rows = alloc.compute_performance_stats()["memory_ports"]
+    """The memory-port rows, after checking that no port moves more than its bandwidth allows."""
+    rows = [row for row in alloc.compute_performance_stats()["memory_ports"] if row["kind"] == "memory_port"]
     assert all(row["stall_or_slack"] <= 1e-6 for row in rows)
     assert all((row["burst_utilization"] or 0.0) <= 1.0 + 1e-9 for row in rows)
     return rows
@@ -60,7 +61,7 @@ def port_activity(alloc: tta.TransferAndTensorAllocator) -> list[dict]:
 
 @pytest.mark.slow
 @pytest.mark.parametrize(("hardware", "latency", "port"), TWO_CONV_CASES, ids=[c[0] for c in TWO_CONV_CASES])
-def test_two_conv_matches_the_prototype(
+def test_two_conv_latency_and_busiest_port(
     solved_allocator: Callable,
     two_conv: TwoConvWorkloadConfig,
     hardware: str,
@@ -74,7 +75,7 @@ def test_two_conv_matches_the_prototype(
 
 @pytest.mark.slow
 @pytest.mark.parametrize(("hardware", "latency", "port"), SWIGLU_CASES, ids=[c[0] for c in SWIGLU_CASES])
-def test_fused_swiglu_matches_the_prototype(
+def test_fused_swiglu_latency_and_busiest_port(
     solved_allocator: Callable, hardware: str, latency: int, port: tuple[str, str]
 ) -> None:
     workload = make_small_swiglu_workload(seq_len=256, embedding_dim=2048, hidden_dim=8192)

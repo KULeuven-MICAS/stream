@@ -88,14 +88,22 @@ def _sides(alloc: TransferAndTensorAllocator, tr: TransferNode, choice: Any) -> 
     ports = alloc.accelerator.ports
     sides: list[PortShare] = []
     span = _span_bytes(tr)
-    for cores, direction, share in ((choice.sources, READ, 1.0 / len(choice.sources)), (choice.targets, WRITE, 1.0)):
+    # Sources and targets that pair up one to one move a slice each, as the transfer latency assumes;
+    # otherwise every target receives the whole tensor.
+    paired = 1 < len(choice.sources) == len(choice.targets)
+    write_share = 1.0 / len(choice.targets) if paired else 1.0
+    for cores, direction, share in (
+        (choice.sources, READ, 1.0 / len(choice.sources)),
+        (choice.targets, WRITE, write_share),
+    ):
         operand = operand_role(alloc, tr, read_side=direction == READ)
         for core in cores:
             port = ports.port_for(core, direction, operand)
             if port is None:
                 continue
             # Targets in one core_memory_sharing group receive a multicast once, into their shared memory.
-            if direction == WRITE and any(s.port.key == port.key and s.direction == WRITE for s in sides):
+            multicast_again = any(s.port.key == port.key and s.direction == WRITE for s in sides)
+            if direction == WRITE and not paired and multicast_again:
                 continue
             sides.append(PortShare(port, direction, share, port.bandwidth.efficiency(span, direction)))
     return sides
