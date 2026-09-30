@@ -6,7 +6,7 @@ from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
 from stream.hardware.architecture.backends import BACKEND_BUILDERS
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
-from stream.parser.accelerator_validator import parse_port_ref
+from stream.parser.accelerator_validator import parse_memory_ref, parse_port_ref
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 
@@ -59,6 +59,11 @@ class AcceleratorFactory:
                 parse_port_ref(ref): BandwidthModel.from_description(model)
                 for ref, model in self.data.get("bandwidth", {}).items()
                 if isinstance(ref, str)
+            },
+            memory_aliases={
+                parse_memory_ref(alias): parse_memory_ref(group[0])
+                for group in self.data.get("memory_aliases") or []
+                for alias in group[1:]
             },
         )
         if accelerator.port_bandwidth:

@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from stream.hardware.architecture.core import Core
 
 Service = tuple[str, str]
+MemoryRef = tuple[int, str]
 
 OUTPUT = "output"
 READ = "read"
@@ -94,8 +95,9 @@ class PortRegistry:
     @classmethod
     def from_accelerator(cls, accelerator: Accelerator) -> PortRegistry:
         """Ports of every core, one per port of each physical memory; a core with a measured bandwidth has none,
-        as that already covers its traffic."""
+        as that already covers its traffic. An aliased memory takes the ports of its group's first memory."""
         specs = {core.id: core.memory_ports() for core in accelerator.cores.node_list}
+        share_group = {(core_id, spec.memory): spec.share_group for core_id in specs for spec in specs[core_id]}
         found: dict[PortKey, PortSpec] = {}
         core_ids: dict[PortKey, set[int]] = defaultdict(set)
         serves: dict[PortKey, set[Service]] = defaultdict(set)
@@ -104,8 +106,10 @@ class PortRegistry:
             if core_id in accelerator.bandwidth:
                 continue
             for spec in core_specs:
-                key = spec.key
-                found.setdefault(key, spec)
+                owner = accelerator.memory_aliases.get((core_id, spec.memory), (core_id, spec.memory))
+                key = PortKey(share_group.get(owner, spec.share_group), owner[1], spec.name)
+                if key not in found or owner == (core_id, spec.memory):
+                    found[key] = spec
                 core_ids[key].add(core_id)
                 serves[key].update(spec.serves)
                 key_of[PortRef(core_id, spec.memory, spec.name)] = key

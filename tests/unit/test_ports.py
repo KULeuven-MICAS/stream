@@ -14,6 +14,7 @@ from stream.stages.parsing.accelerator_parser import parse_accelerator
 
 FUSEMAX = "stream/inputs/examples/hardware/fusemax.yaml"
 AIE2 = "stream/inputs/aie/hardware/whole_array.yaml"
+ALIASED = "tests/fixtures/hardware/tpu_v7_aliased.yaml"
 MEASURED = {
     "ceiling": 296.6,
     "contiguous": 148.3,
@@ -134,3 +135,13 @@ def test_a_cost_backend_without_port_traffic_reports_none():
     entry = CoreCostEntry(energy_total=0.0, latency_total=0.0, ideal_cycle=0.0, ideal_temporal_cycle=0.0)
     assert port_traffic(_BackendWithoutPortTraffic(), entry) == ()
     assert port_traffic(ZIGZAG_BACKEND, entry) == ()
+
+
+def test_aliased_memories_share_one_physical_port():
+    # tpu_v7_aliased.yaml: `8.vmem`, `0.operand_buffer` and `1.operand_buffer` are one scratchpad.
+    accelerator = parse_accelerator(ALIASED)
+    vmem = [port for port in accelerator.ports if 8 in port.core_ids]
+    assert {port.key for port in vmem} == {(8, "vmem", "r_port_1"), (8, "vmem", "w_port_1")}
+    assert all(port.core_ids == (0, 1, 8) for port in vmem)
+    assert all(port.bits_per_cycle == 262144 for port in vmem)
+    assert accelerator.ports.ports_of(accelerator.get_core(0)) == tuple(vmem)

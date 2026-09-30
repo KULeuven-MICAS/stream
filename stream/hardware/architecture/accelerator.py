@@ -8,7 +8,7 @@ from stream.compiler.kernels.library import KernelLibrary
 from stream.cost_model.bandwidth import BandwidthModel
 from stream.cost_model.communication_manager import CommunicationManager
 from stream.hardware.architecture.core import Core
-from stream.hardware.ports import PortRef, PortRegistry
+from stream.hardware.ports import MemoryRef, PortRef, PortRegistry
 
 
 class CoreGraph(DiGraphWrapper[Core]):
@@ -22,7 +22,7 @@ class Accelerator:
     In this Stream version, the cores are actually a graph with directed edges representing communication links.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         name: str,
         cores: CoreGraph,
@@ -33,6 +33,7 @@ class Accelerator:
         *,
         reconfiguration: dict | None = None,
         port_bandwidth: dict[PortRef, BandwidthModel] | None = None,
+        memory_aliases: dict[MemoryRef, MemoryRef] | None = None,
     ):
         self.name = name
         self.kernel_library = kernel_library
@@ -41,6 +42,8 @@ class Accelerator:
         self.bandwidth = bandwidth or {}
         # (core id, memory instance, port name) -> measured model replacing the port's declared width
         self.port_bandwidth = port_bandwidth or {}
+        # (core id, memory instance) -> the first memory of its `memory_aliases` group, the physical one
+        self.memory_aliases = memory_aliases or {}
         self.reconfiguration = reconfiguration or {}
         # core id -> the first core of its `core_memory_sharing` group, whose top-level memory it uses
         self.shared_mem_group_ids = shared_mem_group_ids

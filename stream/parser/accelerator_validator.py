@@ -9,7 +9,7 @@ from typing import Any
 from cerberus import Validator
 from zigzag.utils import open_yaml
 
-from stream.hardware.ports import PortRef
+from stream.hardware.ports import MemoryRef, PortRef
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 logger = logging.getLogger(__name__)
@@ -31,6 +31,12 @@ def parse_port_ref(ref: str) -> PortRef:
     """Split a ``bandwidth:`` port key into (core id, memory instance name, port name)."""
     core, memory, port = ref.split(".")
     return PortRef(int(core), memory, port)
+
+
+def parse_memory_ref(ref: str) -> MemoryRef:
+    """Split a ``memory_aliases`` entry ``<core id>.<memory name>``."""
+    core, _, memory = ref.partition(".")
+    return int(core), memory
 
 
 def resolve_core_path(core_file_name: str, accelerator_dirname: str) -> str | None:
@@ -433,8 +439,7 @@ class AcceleratorValidator:
         """Every ``<core id>.<memory name>`` in `memory_aliases` must name a memory that exists."""
         for group in self.data.get("memory_aliases", []):
             for ref in group:
-                core_id_str, _, mem_name = ref.partition(".")
-                core_id = int(core_id_str)
+                core_id, mem_name = parse_memory_ref(ref)
                 core_data = self.data["cores"].get(core_id)
                 if core_data is None:
                     self.invalidate(f"`memory_aliases` entry '{ref}' names unknown core id {core_id}.")
