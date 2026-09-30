@@ -2,6 +2,10 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from zigzag.cost_model.cost_model import CostModelEvaluation
+from zigzag.cost_model.port_activity import PortActivity
+from zigzag.datatypes import LayerOperand
+from zigzag.hardware.architecture.memory_port import DataDirection
 
 from stream.api import SolveOptions, evaluate_mapping
 from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mapping
@@ -114,3 +118,23 @@ def test_an_accelerator_without_port_models_gets_no_port_constraint() -> None:
     registry = QuantityRegistry()
     MemoryPorts().constrain(alloc, registry)
     alloc.model.add_constr.assert_not_called()
+
+
+def zigzag_stall(real_cycles: list[int], window: int, periods: int) -> float:
+    """ZigZag's combined stall of double-buffered streams sharing one port (CostModelEvaluation, step 2)."""
+    activities = [
+        PortActivity(r, window, window, periods, LayerOperand("I"), 0, DataDirection.WR_IN_BY_HIGH) for r in real_cycles
+    ]
+    union = CostModelEvaluation._CostModelEvaluation__calc_mem_updating_window_union(None, activities)  # type: ignore[attr-defined]
+    positive = sum(a.stall_or_slack for a in activities if a.stall_or_slack > 0)
+    negative = sum(a.stall_or_slack for a in activities if a.stall_or_slack <= 0)
+    return positive + max(0, negative + sum(a.mem_updating_window for a in activities) - union)
+
+
+@pytest.mark.parametrize("bits", [[4096], [4096, 2048], [1024, 1024, 3072, 512]])
+def test_interval_bound_is_zigzag_stall_free_window_of_double_buffered_streams(bits: list[int]) -> None:
+    rate, periods = 64, 10_000
+    real = [b // rate for b in bits]
+    interval = sum(bits) / rate  # P2 at equality: rate * interval = sum of the streams' bits
+    assert zigzag_stall(real, round(interval), periods) == 0
+    assert zigzag_stall(real, round(interval) - 1, periods) > 0
