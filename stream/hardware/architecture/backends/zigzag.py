@@ -7,12 +7,13 @@ both backends are first-class citizens in the framework.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, ClassVar, Literal
 
 from zigzag.datatypes import MemoryOperand
 from zigzag.hardware.architecture.accelerator import Accelerator as _ZigZagAccelerator
 from zigzag.hardware.architecture.memory_level import MemoryLevel
 from zigzag.hardware.architecture.memory_port import DataDirection, MemoryPort, MemoryPortType
+from zigzag.parser.accelerator_factory import AcceleratorFactory as ZigZagCoreFactory
 
 from stream.hardware.ports import (
     OUTPUT,
@@ -51,6 +52,35 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
     and ``get_ir()`` so that :class:`~stream.hardware.architecture.core.Core` can
     delegate uniformly without ``isinstance`` checks.
     """
+
+    #: Core attributes this backend adds to the core's IR.
+    core_ir_fields: ClassVar[tuple[str, ...]] = ()
+
+    @classmethod
+    def from_core_data(
+        cls, core_data: dict[str, Any], core_id: int, shared_mem_group_id: int | None
+    ) -> ZigZagCoreBackend:
+        """The backend of a validated ``zigzag`` core description."""
+        core = ZigZagCoreFactory(core_data).create(core_id, shared_mem_group_id=shared_mem_group_id)
+        core.__class__ = cls
+        return core  # type: ignore[return-value]
+
+    def same_hardware(self, other: object) -> bool:
+        """Same operational array, memory hierarchy and dataflows; the core id is compared by the core."""
+        return (
+            isinstance(other, ZigZagCoreBackend)
+            and self.operational_array == other.operational_array
+            and self.memory_hierarchy == other.memory_hierarchy
+            and self.dataflows == other.dataflows
+        )
+
+    def has_same_performance(self, other: object) -> bool:
+        return (
+            isinstance(other, ZigZagCoreBackend)
+            and self.operational_array == other.operational_array
+            and self.memory_hierarchy.has_same_performance(other.memory_hierarchy)
+            and self.dataflows == other.dataflows
+        )
 
     # ------------------------------------------------------------------
     # Backend protocol — same interface as AIE2CoreBackend

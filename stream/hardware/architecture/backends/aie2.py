@@ -14,7 +14,7 @@ concepts that do not apply to the AIE2 architecture.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, ClassVar, Literal
 
 from stream.hardware.ports import PortSpec
 
@@ -36,6 +36,28 @@ class AIE2CoreBackend:
     memory_capacity_bits: int
     bandwidth_min: int = 0
     bandwidth_max: int = 0
+
+    #: Core attributes this backend adds to the core's IR.
+    core_ir_fields: ClassVar[tuple[str, ...]] = ("max_object_fifo_depth",)
+
+    @classmethod
+    def from_core_data(
+        cls, core_data: dict[str, Any], core_id: int, shared_mem_group_id: int | None
+    ) -> AIE2CoreBackend:
+        """The backend of a validated ``aie2`` core description; tiles share no memory, so the ids go unused."""
+        del core_id, shared_mem_group_id
+        mem = core_data["memory"]
+        return cls(
+            memory_capacity_bits=mem["capacity"],
+            bandwidth_min=mem.get("bandwidth_min", 0),
+            bandwidth_max=mem.get("bandwidth_max", 0),
+        )
+
+    def same_hardware(self, other: object) -> bool:
+        return self == other
+
+    def has_same_performance(self, other: object) -> bool:
+        return self == other
 
     # ------------------------------------------------------------------
     # Backend protocol — same interface as ZigZagCoreBackend
