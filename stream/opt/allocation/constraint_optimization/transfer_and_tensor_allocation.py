@@ -39,7 +39,7 @@ from stream.opt.allocation.constraint_optimization.context import (
     TransferAndTensorContext,
     build_transfer_context,
 )
-from stream.opt.allocation.constraint_optimization.families import SLOT_PRESSURE, load_families
+from stream.opt.allocation.constraint_optimization.families import SLOT_PRESSURE, ReportingFamily, load_families
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
     _resource_key,
@@ -2936,7 +2936,14 @@ class TransferAndTensorAllocator:
             "overlap": self._overlap_section(),
             "tensor_reuse": self._tensor_reuse_breakdown(),
             "memory_occupancy": self._memory_occupancy(),
-        }
+        } | self._family_reports()
+
+    def _family_reports(self) -> dict[str, Any]:
+        reports: dict[str, Any] = {}
+        for family in self.families:
+            if isinstance(family, ReportingFamily):
+                reports |= family.report(self, self.quantities)
+        return reports
 
     def primary_cost(self) -> float:
         """The solved value of the latency objective, whichever lexicographic level the backend ended on."""

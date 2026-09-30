@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from stream.plugins import load_group
 
@@ -26,6 +26,13 @@ class ConstraintFamily(Protocol):
     def declare(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None: ...
 
     def constrain(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None: ...
+
+
+@runtime_checkable
+class ReportingFamily(Protocol):
+    """A family that adds sections to the solved schedule's performance report."""
+
+    def report(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> dict[str, Any]: ...
 
 
 def available_families() -> dict[str, Callable[..., ConstraintFamily]]:

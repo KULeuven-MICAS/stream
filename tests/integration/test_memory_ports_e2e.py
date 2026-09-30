@@ -50,11 +50,12 @@ def solve_with_ports(solved_allocator: Callable[..., Any], hardware: str, worklo
         return solved_allocator(HARDWARE.format(hardware), workload, out, options=solve_options)
 
 
-def busiest_port(alloc: tta.TransferAndTensorAllocator, interval: Callable[..., float]) -> tuple[str, str]:
-    demand = alloc.quantities.indexed("port_demand")
-    rate = alloc.quantities.indexed("port_rate")
-    key = max(demand, key=lambda k: alloc.model.value(demand[k].expr) / (rate[k].expr * interval(alloc)))
-    return key[1], key[2]
+def port_activity(alloc: tta.TransferAndTensorAllocator) -> list[dict]:
+    """The port report, after checking that no port moves more than its bandwidth allows."""
+    rows = alloc.compute_performance_stats()["memory_ports"]
+    assert all(row["stall_or_slack"] <= 1e-6 for row in rows)
+    assert all((row["burst_utilization"] or 0.0) <= 1.0 + 1e-9 for row in rows)
+    return rows
 
 
 @pytest.mark.slow
@@ -62,23 +63,26 @@ def busiest_port(alloc: tta.TransferAndTensorAllocator, interval: Callable[..., 
 def test_two_conv_matches_the_prototype(
     solved_allocator: Callable,
     two_conv: TwoConvWorkloadConfig,
-    interval: Callable,
     hardware: str,
     latency: int,
     port: tuple[str, str],
 ) -> None:
     alloc = solve_with_ports(solved_allocator, hardware, make_2_conv_workload(two_conv))
     assert alloc.total_latency.X == latency
-    assert busiest_port(alloc, interval) == port
+    assert port_activity(alloc)[0]["port"] == ".".join(port)
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize(("hardware", "latency", "port"), SWIGLU_CASES, ids=[c[0] for c in SWIGLU_CASES])
 def test_fused_swiglu_matches_the_prototype(
-    solved_allocator: Callable, interval: Callable, hardware: str, latency: int, port: tuple[str, str]
+    solved_allocator: Callable, hardware: str, latency: int, port: tuple[str, str]
 ) -> None:
     workload = make_small_swiglu_workload(seq_len=256, embedding_dim=2048, hidden_dim=8192)
     tiling = {"intra_core_tiling": SWIGLU_TILING}
     alloc = solve_with_ports(solved_allocator, hardware, workload, stage_options=tiling)
     assert alloc.total_latency.X == latency
-    assert busiest_port(alloc, interval) == port
+    busiest = port_activity(alloc)[0]
+    assert busiest["port"] == ".".join(port)
+    # Every weight is re-read once per sequence tile, so wherever DRAM is busiest it sets the interval.
+    if port[0] == "dram":
+        assert busiest["utilization"] == pytest.approx(1.0, abs=1e-3)

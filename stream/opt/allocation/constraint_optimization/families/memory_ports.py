@@ -76,6 +76,41 @@ class MemoryPorts:
                     name=f"port_burst_{_port_name(key)}_{slot}",
                 )
 
+    def report(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> dict[str, Any]:
+        """Per port, in ZigZag's port-activity terms: ``real_cycle`` the port needs for one iteration's bits,
+        ``allowed_cycle`` the initiation interval, ``stall_or_slack`` their difference; busiest port first."""
+        if "port_demand" not in q:
+            return {"memory_ports": []}
+        value = alloc.model.value
+        interval = value(q.get("iteration").expr) - value(q.get("overlap").expr)
+        cores = {port.key: list(port.core_ids) for port in alloc.accelerator.ports}
+        rows = []
+        for key, demand in q.indexed("port_demand").items():
+            rate, bits = q.get("port_rate", key).expr, value(demand.expr)
+            bursts = {
+                slot: value(d.expr) / (rate * alloc.slot_latency[slot].X)
+                for (k, slot), d in q.indexed("port_demand_slot").items()
+                if k == key and alloc.slot_latency[slot].X > 0
+            }
+            busiest = max(bursts, key=bursts.__getitem__, default=None)
+            rows.append(
+                {
+                    "port": f"{key.memory}.{key.port}",
+                    "core_ids": cores[key],
+                    "bw_bits_per_cycle": rate,
+                    "bits_per_iteration": bits,
+                    "req_bw_aver": bits / interval if interval > 0 else None,
+                    "real_cycle": bits / rate,
+                    "allowed_cycle": interval,
+                    "stall_or_slack": bits / rate - interval,
+                    "utilization": bits / (rate * interval) if interval > 0 else None,
+                    "burst_utilization": bursts.get(busiest) if busiest is not None else None,
+                    "burst_slot": busiest,
+                }
+            )
+        rows.sort(key=lambda row: -(row["utilization"] or 0.0))
+        return {"memory_ports": rows}
+
     @staticmethod
     def _sum(alloc: TransferAndTensorAllocator, terms: Terms) -> Any:
         return alloc.model.quicksum(coefficient * value for coefficient, value, _ in terms)._raw
