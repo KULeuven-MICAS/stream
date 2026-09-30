@@ -46,8 +46,7 @@ SWIGLU_GUROBI_OBJ = 3_215_616.0
 # Relative tolerance for cross-backend comparison (1%)
 REL_TOL = 0.01
 
-# Patch targets — both allocator modules import create_solver into their own namespace
-_ALLOC_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.allocation.create_solver"
+# Patch target: the allocator module imports create_solver into its own namespace
 _TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation.create_solver"
 _LICENSE_CHECK = "stream.api.GurobiBackend.check_license"
 
@@ -192,16 +191,13 @@ def test_gemm_gurobi_baseline():
 def test_gemm_cross_backend():
     """ORToolsBackend (GSCIP) produces OPTIMAL on TETRA gemm instance, matching Gurobi within 1%.
 
-    Covers objective quality on the gemm workload.
-    The pipeline's ``create_solver`` calls are patched in both allocator modules
-    so the ORToolsBackend is used transparently in place of GurobiBackend.
+    The allocator module's ``create_solver`` is patched to return an ORToolsBackend.
     """
     results = []
     ort_factory = _make_ortools_factory(mathopt.SolverType.GSCIP)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         with (
-            patch(_ALLOC_CREATE_SOLVER, side_effect=ort_factory),
             patch(_TTA_CREATE_SOLVER, side_effect=ort_factory),
             patch(_LICENSE_CHECK),
         ):
@@ -232,7 +228,6 @@ def test_gemm_highs():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         with (
-            patch(_ALLOC_CREATE_SOLVER, side_effect=highs_factory),
             patch(_TTA_CREATE_SOLVER, side_effect=highs_factory),
             patch(_LICENSE_CHECK),
         ):
@@ -291,7 +286,6 @@ def test_swiglu_cross_backend():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         with (
-            patch(_ALLOC_CREATE_SOLVER, side_effect=ort_factory),
             patch(_TTA_CREATE_SOLVER, side_effect=ort_factory),
             patch(_LICENSE_CHECK),
         ):
@@ -318,7 +312,6 @@ def test_swiglu_highs():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         with (
-            patch(_ALLOC_CREATE_SOLVER, side_effect=highs_factory),
             patch(_TTA_CREATE_SOLVER, side_effect=highs_factory),
             patch(_LICENSE_CHECK),
         ):

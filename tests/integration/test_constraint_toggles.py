@@ -28,7 +28,6 @@ ACCELERATOR = os.path.join(
 )
 REL_TOL = 0.01
 
-_ALLOC_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.allocation.create_solver"
 _TTA_CREATE_SOLVER = "stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation.create_solver"
 _LICENSE_CHECK = "stream.api.GurobiBackend.check_license"
 _BUILD_TRANSFER_CONTEXT = (
@@ -317,7 +316,6 @@ def test_cross_backend_parity(cs: ConstraintSelection):
     ort_factory = _make_ortools_factory()
     with tempfile.TemporaryDirectory() as tmpdir:
         with (
-            patch(_ALLOC_CREATE_SOLVER, side_effect=ort_factory),
             patch(_TTA_CREATE_SOLVER, side_effect=ort_factory),
             patch(_LICENSE_CHECK),
         ):

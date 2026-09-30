@@ -13,7 +13,6 @@ CO_DIR = REPO_ROOT / "stream" / "opt" / "allocation" / "constraint_optimization"
 
 # Files that MUST NOT have any gurobipy imports
 CLEAN_FILES = [
-    CO_DIR / "allocation.py",
     CO_DIR / "context.py",
     CO_DIR / "utils.py",
     REPO_ROOT / "stream" / "api.py",
