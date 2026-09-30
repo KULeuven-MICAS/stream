@@ -386,31 +386,18 @@ class AcceleratorValidator:
             conn.setdefault("unit_energy_cost", self.data.get("unit_energy_cost", 0))
 
     def validate_bandwidth(self) -> None:
-        """Every ``bandwidth:`` key names an existing core, or a top-level port of a ZigZag core."""
+        """Every ``bandwidth:`` key names an existing core; the accelerator factory checks that a port key
+        names a modelled port."""
         keys = self.data.get("bandwidth", {})
         measured_cores = {key for key in keys if isinstance(key, int)}
         for core_id in measured_cores - set(self.data["cores"]):
             self.invalidate(f"`bandwidth` names unknown core {core_id}.")
         for ref in (key for key in keys if isinstance(key, str) and re.match(PORT_REF_REGEX, key)):
-            core_id, memory, port = parse_port_ref(ref)
-            if core_id in measured_cores:
+            core_id, _, _ = parse_port_ref(ref)
+            if core_id not in self.data["cores"]:
+                self.invalidate(f"`bandwidth.{ref}`: unknown core {core_id}.")
+            elif core_id in measured_cores:
                 self.invalidate(f"`bandwidth.{ref}`: core {core_id} already has a measured core bandwidth.")
-            elif (error := self._port_ref_error(core_id, memory, port)) is not None:
-                self.invalidate(f"`bandwidth.{ref}`: {error}")
-
-    def _port_ref_error(self, core_id: int, memory: str, port: str) -> str | None:
-        core_data = self.data["cores"].get(core_id)
-        if not isinstance(core_data, dict):
-            return f"unknown core {core_id}."
-        memories: dict[str, Any] = core_data.get("memories", {})
-        if memory not in memories:
-            return f"core {core_id} has no memory `{memory}`."
-        if port not in {p["name"] for p in memories[memory].get("ports", [])}:
-            return f"memory `{memory}` of core {core_id} has no port `{port}`."
-        top_levels = {op: name for name, mem in memories.items() for op in mem.get("operands", [])}
-        if memory not in top_levels.values():
-            return f"memory `{memory}` is not the top level of any operand of core {core_id}."
-        return None
 
     def validate_core_mem_sharing(self):
         # Replace string of core ids with tuple of ints

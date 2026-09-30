@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from stream.hardware.ports import PortSpec
+
 
 @dataclass(frozen=True)
 class AIE2CoreBackend:
@@ -46,6 +48,10 @@ class AIE2CoreBackend:
     def get_max_memory_bandwidth(self, type: Literal["read"] | Literal["write"]) -> int:
         """Memory bandwidth in bits/cycle."""
         return self.bandwidth_max
+
+    def memory_ports(self) -> tuple[PortSpec, ...]:
+        """AIE2 tiles model no memory ports."""
+        return ()
 
     def get_ir(self) -> dict:
         """Serialize backend-specific fields for the IR dict."""

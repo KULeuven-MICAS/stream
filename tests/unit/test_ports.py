@@ -1,17 +1,19 @@
 from typing import Any
 
 import pytest
-from zigzag.hardware.architecture.memory_port import DataDirection
 from zigzag.utils import open_yaml
 
 from stream.cost_model.bandwidth import BandwidthModel
+from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.hardware.ports import PortRegistry
+from stream.hardware.ports import OUTPUT, READ_BY_DATAPATH, WRITE_BY_DATAPATH, PortRegistry, input_role
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
+from stream.stages.estimation.core_cost_backends import ZIGZAG_BACKEND, port_traffic
 from stream.stages.parsing.accelerator_parser import parse_accelerator
 
 FUSEMAX = "stream/inputs/examples/hardware/fusemax.yaml"
+AIE2 = "stream/inputs/aie/hardware/whole_array.yaml"
 MEASURED = {
     "ceiling": 296.6,
     "contiguous": 148.3,
@@ -50,17 +52,18 @@ def test_each_operand_gets_its_own_dram_port(fusemax: Accelerator):
     registry = PortRegistry.from_accelerator(fusemax)
     dram = fusemax.get_core(2)
     assert len(registry.ports_of(dram)) == 3
-    names = {op: registry.port_for(dram, DataDirection.RD_OUT_TO_LOW, op) for op in ("I1", "I2", "O")}
-    assert {op: port and port.name for op, port in names.items()} == {
-        "I1": "rw_port_1",
-        "I2": "rw_port_2",
-        "O": "rw_port_3",
+    roles = (input_role(1), input_role(2), OUTPUT)
+    names = {role: registry.port_for(dram, READ_BY_DATAPATH, role) for role in roles}
+    assert {role: port and port.name for role, port in names.items()} == {
+        "input1": "rw_port_1",
+        "input2": "rw_port_2",
+        "output": "rw_port_3",
     }
 
 
 def test_a_direction_the_operand_does_not_use_falls_back_to_a_port_serving_it(fusemax: Accelerator):
     registry = PortRegistry.from_accelerator(fusemax)
-    port = registry.port_for(fusemax.get_core(2), DataDirection.WR_IN_BY_LOW, "I1")
+    port = registry.port_for(fusemax.get_core(2), WRITE_BY_DATAPATH, input_role(1))
     assert port is not None and port.name == "rw_port_3"
 
 
@@ -73,11 +76,11 @@ def test_declared_port_width_and_access_energy_become_the_port_model(fusemax: Ac
 
 
 def test_aie2_cores_have_no_ports():
-    accelerator = parse_accelerator("stream/inputs/aie/hardware/whole_array.yaml")
+    accelerator = parse_accelerator(AIE2)
     registry = PortRegistry.from_accelerator(accelerator)
     assert len(registry) == 0
     core = next(iter(accelerator.cores.node_list))
-    assert registry.port_for(core, DataDirection.RD_OUT_TO_LOW, "I1") is None
+    assert registry.port_for(core, READ_BY_DATAPATH, input_role(1)) is None
 
 
 def test_a_core_with_measured_bandwidth_has_no_ports():
@@ -98,20 +101,36 @@ def test_a_port_key_replaces_that_ports_declared_width():
     assert accelerator.bandwidth == {}
 
 
-@pytest.mark.parametrize(
-    "key",
-    [
-        9,
-        "9.dram.rw_port_1",
-        "2.sram.rw_port_1",
-        "2.dram.rw_port_9",
-        "0.rf_I.r_port_1",
-        "2.dram",
-    ],
-)
-def test_bandwidth_keys_naming_no_core_or_top_level_port_are_rejected(key: Any):
+@pytest.mark.parametrize("key", [9, "9.dram.rw_port_1", "2.dram"])
+def test_bandwidth_keys_naming_no_core_are_rejected(key: Any):
     assert not fusemax_with_bandwidth({key: MEASURED})[0]
+
+
+@pytest.mark.parametrize("key", ["2.sram.rw_port_1", "2.dram.rw_port_9", "0.rf_I.r_port_1"])
+def test_port_keys_naming_no_top_level_port_are_rejected_at_parse_time(key: Any):
+    with pytest.raises(ValueError, match="declares no port"):
+        fusemax_accelerator({key: MEASURED})
+
+
+def test_aie2_port_keys_are_rejected_at_parse_time():
+    data = open_yaml(AIE2)
+    data["bandwidth"] = {"0.mem.port": MEASURED}
+    validator = AcceleratorValidator(data, AIE2)
+    assert validator.validate()
+    with pytest.raises(ValueError, match="models no memory ports"):
+        AcceleratorFactory(validator.normalized_data).create()
 
 
 def test_a_port_key_on_a_measured_core_is_rejected():
     assert not fusemax_with_bandwidth({2: MEASURED, "2.dram.rw_port_1": MEASURED})[0]
+
+
+class _BackendWithoutPortTraffic:
+    name = "bare"
+    priority = 0
+
+
+def test_a_cost_backend_without_port_traffic_reports_none():
+    entry = CoreCostEntry(energy_total=0.0, latency_total=0.0, ideal_cycle=0.0, ideal_temporal_cycle=0.0)
+    assert port_traffic(_BackendWithoutPortTraffic(), entry) == ()
+    assert port_traffic(ZIGZAG_BACKEND, entry) == ()

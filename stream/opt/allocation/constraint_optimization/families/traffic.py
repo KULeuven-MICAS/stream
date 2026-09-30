@@ -6,11 +6,10 @@ from dataclasses import dataclass
 from math import prod
 from typing import TYPE_CHECKING, Any
 
-from zigzag.hardware.architecture.memory_port import DataDirection
-
 from stream.cost_model.bandwidth import contiguous_span_bytes
-from stream.hardware.ports import Port, PortRegistry
+from stream.hardware.ports import OUTPUT, READ, WRITE, Port, PortRegistry, input_role
 from stream.opt.allocation.constraint_optimization.utils import get_active_latency
+from stream.stages.estimation.core_cost_backends import CoreCostBackend, port_traffic, select_backend
 from stream.workload.steady_state.iteration_space import LoopEffect
 from stream.workload.workload import ComputationNode, TransferNode
 
@@ -21,10 +20,6 @@ if TYPE_CHECKING:
         TransferAndTensorAllocator,
     )
 
-READ = DataDirection.RD_OUT_TO_HIGH
-WRITE = DataDirection.WR_IN_BY_HIGH
-NODE_DIRECTIONS = (DataDirection.RD_OUT_TO_LOW, DataDirection.WR_IN_BY_LOW)
-
 
 @dataclass(frozen=True)
 class PortShare:
@@ -32,7 +27,7 @@ class PortShare:
     ``efficiency`` of the port's rate for the stream's access pattern."""
 
     port: Port
-    direction: DataDirection
+    direction: str
     share: float
     efficiency: float
 
@@ -57,7 +52,7 @@ class NodeTraffic:
     node: ComputationNode
     core: Core
     port: Port
-    direction: DataDirection
+    direction: str
     bits: float
     slot: int
 
@@ -70,16 +65,16 @@ def active_fraction(node: Any, alloc: TransferAndTensorAllocator) -> float:
 
 
 def memory_operand(alloc: TransferAndTensorAllocator, tr: TransferNode, read_side: bool) -> str:
-    """ZigZag memory operand the tensor sits in on one side: ``O`` for a producer, ``I<k>`` for input k."""
+    """Operand role the tensor has on one side: the output for a producer, input k for a consumer's input k."""
     producer = next(iter(alloc.workload.predecessors(tr)), None)
     if read_side and isinstance(producer, ComputationNode):
-        return "O"
+        return OUTPUT
     for consumer in alloc.workload.successors(tr):
         if isinstance(consumer, ComputationNode):
             for tensor in tr.outputs:
                 if tensor in consumer.inputs:
-                    return f"I{consumer.inputs.index(tensor) + 1}"
-    return "O"
+                    return input_role(consumer.inputs.index(tensor) + 1)
+    return OUTPUT
 
 
 def _span_bytes(tr: TransferNode) -> float:
@@ -92,16 +87,15 @@ def _sides(alloc: TransferAndTensorAllocator, ports: PortRegistry, tr: TransferN
     sides: list[PortShare] = []
     span = _span_bytes(tr)
     for cores, direction, share in ((choice.sources, READ, 1.0 / len(choice.sources)), (choice.targets, WRITE, 1.0)):
-        operand = memory_operand(alloc, tr, read_side=direction is READ)
-        side = "read" if direction is READ else "write"
+        operand = memory_operand(alloc, tr, read_side=direction == READ)
         for core in cores:
             port = ports.port_for(core, direction, operand)
             if port is None:
                 continue
             # Targets in one core_memory_sharing group receive a multicast once, into their shared memory.
-            if direction is WRITE and any(s.port.key == port.key and s.direction is WRITE for s in sides):
+            if direction == WRITE and any(s.port.key == port.key and s.direction == WRITE for s in sides):
                 continue
-            sides.append(PortShare(port, direction, share, port.bandwidth.efficiency(span, side)))
+            sides.append(PortShare(port, direction, share, port.bandwidth.efficiency(span, direction)))
     return sides
 
 
@@ -119,26 +113,18 @@ def dma_streams(alloc: TransferAndTensorAllocator, ports: PortRegistry) -> list[
 
 
 def node_traffic(alloc: TransferAndTensorAllocator, ports: PortRegistry) -> list[NodeTraffic]:
-    """The top-level port traffic of each node from its ZigZag evaluation, on the physical core it runs on."""
+    """The top-level port traffic of each node from its cost backend, on the physical core it runs on."""
     traffic: list[NodeTraffic] = []
+    backends: dict[Core, CoreCostBackend] = {}
     for node in alloc.ssc_nodes:
         placed = {core for group in alloc.mapping.get(node).resource_allocation for core in group}
         fraction = active_fraction(node, alloc)
         for core in alloc.cost_lut.get_cores(node):
-            cme = alloc.cost_lut.get_cost(node, core).cme
-            if core not in placed or cme is None:
+            if core not in placed:
                 continue
-            for layer_op in cme.layer.layer_operands:
-                mem_op = cme.memory_operand_links.layer_to_mem_op(layer_op)
-                top = cme.mapping.mem_level[layer_op] - 1
-                level = cme.accelerator.get_memory_level(mem_op, top)
-                accesses = cme.memory_word_access[layer_op][top]
-                for direction in NODE_DIRECTIONS:
-                    words = accesses.get(direction)
-                    evaluated = next((p for p in level.ports if (mem_op, top, direction) in p.served_op_lv_dir), None)
-                    port = ports.port_for(core, direction, str(mem_op))
-                    if not words or evaluated is None or port is None:
-                        continue
-                    bits = words * evaluated.bw_max * fraction
-                    traffic.append(NodeTraffic(node, core, port, direction, bits, alloc.slot_of[node]))
+            backend = backends.setdefault(core, select_backend(core))
+            for operand, direction, bits in port_traffic(backend, alloc.cost_lut.get_cost(node, core)):
+                port = ports.port_for(core, direction, operand)
+                if port is not None:
+                    traffic.append(NodeTraffic(node, core, port, direction, bits * fraction, alloc.slot_of[node]))
     return traffic

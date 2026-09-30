@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from zigzag.hardware.architecture.memory_port import DataDirection
+
+from stream.hardware.architecture.backends.zigzag import DIRECTIONS, operand_role
 from stream.plugins import load_group
 from stream.stages.estimation.zigzag_cost_estimator import ZigZagCostEstimator
 
@@ -21,6 +24,8 @@ logger = logging.getLogger(__name__)
 
 CORE_COST_BACKENDS_GROUP = "stream.core_cost_backends"
 CONTRACT_VERSION = 1
+
+PortTraffic = tuple[tuple[str, str, float], ...]
 
 
 class CoreEstimator(Protocol):
@@ -57,6 +62,20 @@ class CoreCostBackend(Protocol):
         ...
 
 
+@runtime_checkable
+class PortTrafficSource(Protocol):
+    """Optional backend capability: the bits a costed node moves through its core's top-level memory ports."""
+
+    def port_traffic(self, entry: CoreCostEntry) -> PortTraffic:
+        """(operand role, direction, bits) per evaluation of ``entry``'s node, before its active fraction."""
+        ...
+
+
+def port_traffic(backend: object, entry: CoreCostEntry) -> PortTraffic:
+    """``backend``'s port traffic for ``entry``; none from a backend without the capability."""
+    return backend.port_traffic(entry) if isinstance(backend, PortTrafficSource) else ()
+
+
 class AIEBackend:
     """AIE compute tiles: the kernel-library-priced estimator."""
 
@@ -70,6 +89,9 @@ class AIEBackend:
         from stream.stages.estimation.aie_cost_estimator import AIECostEstimator  # noqa: PLC0415
 
         return AIECostEstimator(context.workload, context.mapping, context.fusion_splits)
+
+    def port_traffic(self, entry: CoreCostEntry) -> PortTraffic:  # noqa: ARG002 -- AIE tiles model no ports
+        return ()
 
 
 class ZigZagBackend:
@@ -90,6 +112,24 @@ class ZigZagBackend:
             loma_lpf_limit=context.loma_lpf_limit,
             nb_spatial_mappings_generated=context.nb_spatial_mappings_generated,
         )
+
+    def port_traffic(self, entry: CoreCostEntry) -> PortTraffic:
+        """Words each operand's top level moves to and from the datapath, times the evaluated port's width."""
+        cme = entry.cme
+        if cme is None:
+            return ()
+        traffic: list[tuple[str, str, float]] = []
+        for layer_op in cme.layer.layer_operands:
+            mem_op = cme.memory_operand_links.layer_to_mem_op(layer_op)
+            top = cme.mapping.mem_level[layer_op] - 1
+            level = cme.accelerator.get_memory_level(mem_op, top)
+            accesses = cme.memory_word_access[layer_op][top]
+            for direction in (DataDirection.RD_OUT_TO_LOW, DataDirection.WR_IN_BY_LOW):
+                words = accesses.get(direction)
+                port = next((p for p in level.ports if (mem_op, top, direction) in p.served_op_lv_dir), None)
+                if words and port is not None:
+                    traffic.append((operand_role(str(mem_op)), DIRECTIONS[direction], words * port.bw_max))
+        return tuple(traffic)
 
 
 # Entry-point targets registered under the public distribution (see pyproject.toml).
