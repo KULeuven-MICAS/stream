@@ -34,7 +34,8 @@ class PortShare:
 
 @dataclass(frozen=True)
 class DmaStream:
-    """``bits_per_cycle * gated`` is the stream's bits per iteration; ``gated`` never exceeds ``latency_ub``."""
+    """``bits_per_cycle * gated`` is the stream's bits per iteration; ``gated`` never exceeds ``latency_ub``. It is
+    the gated latency, or the path choice when the active latency rounds to 0 and has no gated latency to scale."""
 
     transfer: TransferNode
     choice: MulticastPathPlan
@@ -104,12 +105,19 @@ def dma_streams(alloc: TransferAndTensorAllocator) -> list[DmaStream]:
     """Every gated transfer latency that moves bits, with the ports its sources read and its targets write."""
     streams: list[DmaStream] = []
     for (tr, choice), quantity in alloc.quantities.indexed("transfer_latency").items():
-        latency = get_active_latency(tr, float(alloc.transfer_latency_for_path(tr, choice)), alloc.ssis)
-        if latency <= 0:
+        link_latency = float(alloc.transfer_latency_for_path(tr, choice))
+        if link_latency <= 0:
             continue
+        latency = get_active_latency(tr, link_latency, alloc.ssis)
         bits = tr.inputs[0].size_bits() * active_fraction(tr, alloc)
         sides = tuple(_sides(alloc, tr, choice))
-        streams.append(DmaStream(tr, choice, quantity.expr, bits / latency, latency, alloc.slot_of[tr], sides))
+        if latency > 0:
+            stream = DmaStream(tr, choice, quantity.expr, bits / latency, latency, alloc.slot_of[tr], sides)
+        else:
+            # Charged at a reuse factor of 1, an upper bound, since y / R needs a variable of its own.
+            gate = alloc.y_path_choice[(tr, choice)]._raw
+            stream = DmaStream(tr, choice, gate, bits, 1.0, alloc.slot_of[tr], sides)
+        streams.append(stream)
     return streams
 
 

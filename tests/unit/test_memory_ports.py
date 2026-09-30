@@ -1,3 +1,4 @@
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -12,8 +13,10 @@ from stream.inputs.testing.mapping.make_2_conv_mapping import make_2_conv_mappin
 from stream.inputs.testing.workload.make_2_conv import TwoConvWorkloadConfig, make_2_conv_workload
 from stream.opt.allocation.constraint_optimization import families
 from stream.opt.allocation.constraint_optimization import transfer_and_tensor_allocation as tta
+from stream.opt.allocation.constraint_optimization.families import traffic
 from stream.opt.allocation.constraint_optimization.families.memory_ports import MemoryPorts
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
+from stream.workload.steady_state.iteration_space import LoopEffect
 
 ACCELERATOR = "stream/inputs/examples/hardware/tpu_like_quad_core.yaml"
 TWO_CONV = TwoConvWorkloadConfig(
@@ -148,6 +151,22 @@ def test_interval_off_keeps_only_the_burst_bound() -> None:
     alloc, registry = port_registry(transfer_contention=True)
     MemoryPorts(interval=False).constrain(alloc, registry)
     assert constraint_names(alloc) == ["port_burst_6_dram_rw_port_1_0"]
+
+
+def test_a_stream_whose_active_latency_rounds_to_zero_keeps_its_bits(monkeypatch: pytest.MonkeyPatch) -> None:
+    tr, choice, alloc = MagicMock(), MagicMock(), MagicMock()
+    tr.inputs[0].size_bits.return_value = 4096
+    alloc.quantities = QuantityRegistry()
+    alloc.quantities.add("transfer_latency", "gated", index=(tr, choice))
+    alloc.transfer_latency_for_path.return_value = 1
+    loops = [SimpleNamespace(size=2, effect=LoopEffect.INVARIANT), SimpleNamespace(size=8, effect=LoopEffect.ABSENT)]
+    alloc.ssis.get.return_value.get_temporal_variables.return_value = loops
+    alloc.y_path_choice = {(tr, choice): SimpleNamespace(_raw="y")}
+    alloc.slot_of = {tr: 0}
+    monkeypatch.setattr(traffic, "_sides", lambda *_: [])
+    (stream,) = traffic.dma_streams(alloc)
+    # Active for 1 of 8 iterations: 1 cycle rounds to 0, while 4096 / 8 bits still move.
+    assert (stream.gated, stream.bits_per_cycle * stream.latency_ub) == ("y", 512)
 
 
 def zigzag_stall(real_cycles: list[int], window: int, periods: int) -> float:
