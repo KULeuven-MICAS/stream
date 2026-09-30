@@ -76,11 +76,11 @@ class MappingFactory:
             return None
         try:
             from stream.compiler.kernels.registry import AIE_KERNELS  # noqa: PLC0415
-        except ModuleNotFoundError:
-            # The AIE codegen toolchain isn't installed (base, non-AIE install), so no AIE kernels
-            # exist to build. NodeMapping.kernel is only consumed by AIE codegen and AIE-core cost
-            # estimation, so leaving it None is correct for the base pipeline.
-            return None
+        except ModuleNotFoundError as e:
+            raise ModuleNotFoundError(
+                f"The mapping names kernel {kernel_name!r}, but the AIE kernels cannot be imported ({e}); "
+                "install them with `stream-setup-aie`."
+            ) from e
 
         if kernel_name not in AIE_KERNELS:
             raise ValueError(f"Unknown kernel name {kernel_name!r}. Known kernels: {sorted(AIE_KERNELS)}")
