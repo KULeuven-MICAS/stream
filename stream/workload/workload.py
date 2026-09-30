@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import replace
+from functools import cached_property
 from itertools import combinations
 from typing import TYPE_CHECKING, cast
 
@@ -55,8 +56,11 @@ def _order_inputs_by_use(nodes: list[Node]) -> None:
 
 
 class Workload(DiGraphWrapper[Node]):
-    _dataflow_order: list[Node] | None = None
-    _global_dimension_idxs: dict[Node, range] | None = None
+    """A dataflow graph of nodes, immutable once built.
+
+    Everything derived from the graph is computed once and kept, so a changed workload is a new
+    ``Workload``: the graph is frozen and a mutating networkx call raises.
+    """
 
     def __init__(self, nodes: Sequence[Node] = ()):
         graph = nx.DiGraph()
@@ -75,23 +79,21 @@ class Workload(DiGraphWrapper[Node]):
                         raise RuntimeError(f"Input tensor {input.name} for node {node.name} has no producer.") from e
                     graph.add_edge(pred, node)
         super().__init__(graph)
+        nx.freeze(self)
 
-    def _invalidate_order(self) -> None:
-        self._dataflow_order = None
-        self._global_dimension_idxs = None
-
-    def dataflow_sort(self) -> list[Node]:
+    def dataflow_sort(self) -> tuple[Node, ...]:
         """Nodes in topological order, ties broken by the order they were added.
 
         The frontend adds nodes in the order the source graph lists them, so ties
         follow the dataflow rather than the node names. Renaming a tensor must not
         renumber the dimensions and solver variables derived from this order.
         """
-        if self._dataflow_order is None or len(self._dataflow_order) != self.number_of_nodes():
-            position = self.node_positions()
-            self._dataflow_order = list(nx.lexicographical_topological_sort(self, key=position.__getitem__))
-            self._global_dimension_idxs = None
         return self._dataflow_order
+
+    @cached_property
+    def _dataflow_order(self) -> tuple[Node, ...]:
+        position = self.node_positions()
+        return tuple(nx.lexicographical_topological_sort(self, key=position.__getitem__))
 
     def node_positions(self) -> dict[Node, int]:
         return {node: i for i, node in enumerate(self.nodes)}
@@ -105,25 +107,22 @@ class Workload(DiGraphWrapper[Node]):
         node_names = ", ".join(getattr(n, "name", type(n).__name__) for n in nodes)
         return f"Workload(num_nodes={len(nodes)}, num_edges={len(edges)}, nodes=[{node_names}])"
 
-    @property
-    def num_dims(self):
+    @cached_property
+    def num_dims(self) -> int:
         return sum(node.num_dims for node in self.nodes if isinstance(node, HasIterationSpace))
 
-    @property
-    def global_idxs(self):
+    @cached_property
+    def global_idxs(self) -> dict[Node, range]:
         """
         Determine unique global indices for each dimension in this workload
         """
-        order = self.dataflow_sort()
-        if self._global_dimension_idxs is None:
-            global_dimension_idxs: dict[Node, range] = {}
-            idx = 0
-            for node in order:
-                if isinstance(node, HasIterationSpace):
-                    global_dimension_idxs[node] = range(idx, idx + node.num_dims)
-                    idx += node.num_dims
-            self._global_dimension_idxs = global_dimension_idxs
-        return self._global_dimension_idxs
+        global_dimension_idxs: dict[Node, range] = {}
+        idx = 0
+        for node in self.dataflow_sort():
+            if isinstance(node, HasIterationSpace):
+                global_dimension_idxs[node] = range(idx, idx + node.num_dims)
+                idx += node.num_dims
+        return global_dimension_idxs
 
     @property
     def tensors(self) -> tuple[Tensor, ...]:
@@ -159,7 +158,11 @@ class Workload(DiGraphWrapper[Node]):
         row = AffineTransform.from_affine_map(AffineMap(self.num_dims, 0, (relation,))).A[0]
         return sorted(int(c) for c in row if c != 0) == [-1, 1]
 
-    def dimension_relations(self) -> Sequence[AffineExpr]:
+    def dimension_relations(self) -> tuple[AffineExpr, ...]:
+        return self._dimension_relations
+
+    @cached_property
+    def _dimension_relations(self) -> tuple[AffineExpr, ...]:
         result = []
         # Relations between shared intermediate tensors:
         for src, dst in self.edges:
@@ -190,7 +193,7 @@ class Workload(DiGraphWrapper[Node]):
                             a, b, expr_a, expr_b
                         ):
                             result.append(relation)
-        return result
+        return tuple(result)
 
     def _both_parallel_outputs(
         self, a: "HasIterationSpace", b: "HasIterationSpace", expr_a: AffineExpr, expr_b: AffineExpr
@@ -447,8 +450,13 @@ class Workload(DiGraphWrapper[Node]):
         idx = expressions.index(dim)
         return dim_ranges[idx]
 
-    def unique_dimensions(self):
-        relations = AffineMap(self.num_dims, 0, tuple(self.dimension_relations()))
+    def unique_dimensions(self) -> tuple[tuple[LayerDim, ...], tuple[AffineExpr, ...]]:
+        """The workload's independent dimensions, and each global dimension as an expression of them."""
+        return self._unique_dimensions
+
+    @cached_property
+    def _unique_dimensions(self) -> tuple[tuple[LayerDim, ...], tuple[AffineExpr, ...]]:
+        relations = AffineMap(self.num_dims, 0, self.dimension_relations())
         transform = AffineTransform.from_affine_map(relations)
 
         A_sp = sp.Matrix(transform.A)
@@ -480,8 +488,8 @@ class Workload(DiGraphWrapper[Node]):
 
         x = N * sp.Matrix(z_syms) + x_p
 
-        dim_values = [sympy_to_xdsl(sp.simplify(expr)) for expr in x]
-        z = [LayerDim(position=i, prefix="z") for i in range(len(free_vars))]
+        dim_values = tuple(sympy_to_xdsl(sp.simplify(expr)) for expr in x)
+        z = tuple(LayerDim(position=i, prefix="z") for i in range(len(free_vars)))
         return z, dim_values
 
     def get_unique_dims_inter_core_tiling(self, node: ComputationNode, mapping: "Mapping") -> InterCoreTiling:
@@ -627,21 +635,6 @@ class Workload(DiGraphWrapper[Node]):
             shape=new_shape,
             subview=new_subview,
         )
-
-    def replace_node(self, old_node: Node, new_node: Node) -> None:
-        """Replace a node in the workload with a new node, updating edges accordingly."""
-        if old_node not in self.node_list:
-            try:
-                old_node = self.get_node_by_name(old_node.name)
-            except KeyError as e:
-                raise KeyError(f"Node {old_node.name} not found in workload.") from e
-        self.add_node(new_node)
-        for pred in self.predecessors(old_node):
-            self.add_edge(pred, new_node)
-        for succ in self.successors(old_node):
-            self.add_edge(new_node, succ)
-        self.remove_node(old_node)
-        self._invalidate_order()
 
     def with_modified_dimension_sizes(self, new_sizes: dict[LayerDim, int]) -> "Workload":
         """Create a new workload where the dimension sizes of the given global dimension indices are modified to the new
