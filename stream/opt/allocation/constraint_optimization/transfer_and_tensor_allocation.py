@@ -207,7 +207,6 @@ class TransferAndTensorAllocator:
         # auxiliary indicators
         self._handover_bits: dict[int, int] = {}
         self.transfer_side_indicator: dict[tuple[TransferNode, Core, bool], SolverVar] = {}
-        self.transfer_core_indicator: dict[tuple[TransferNode, Core], SolverVar] = {}
         self.tensor_core_indicator: dict[tuple[Tensor, Core], SolverVar] = {}
         self.same_core_indicator: dict[tuple[Tensor, Tensor, Core], SolverVar] = {}
 
@@ -335,10 +334,6 @@ class TransferAndTensorAllocator:
     # ------------------------------------------------------------ #
     # internal helpers                                             #
     # ------------------------------------------------------------ #
-    @staticmethod
-    def _mem_factor(t: Tensor, core: Core) -> int:
-        return 1
-
     def _transfer_latency_for_path(self, tr: TransferNode, path: MulticastPathPlan) -> int:
         # A transfer served out of memory the two cores share reads in place: no bytes cross a link,
         # so it adds no time to the slot, the same reason it spends no DMA channel.
@@ -723,27 +718,6 @@ class TransferAndTensorAllocator:
             self.x_tensor_choice[(t, choice)]._raw for choice in self._tensor_choices(t) if core in choice
         )
 
-    def _transfer_uses_core_var(self, tr: TransferNode, core: Core) -> SolverVar:
-        key = (tr, core)
-        if key in self.transfer_core_indicator:
-            return self.transfer_core_indicator[key]
-
-        u = self.model.add_var(vtype=SolverVarType.BINARY, name=f"u_{tr.name}_{_resource_key(core)}")
-        self.transfer_core_indicator[key] = u
-
-        occ_exprs = [self._tensor_on_core_expr(t, core) for t in tr.tensors if isinstance(t, Tensor)]
-        if not occ_exprs:
-            self.model.add_constr(u == 0, name=f"u_zero_{tr.name}_{_resource_key(core)}")
-            return u
-
-        for i, occ in enumerate(occ_exprs):
-            self.model.add_constr(u >= occ, name=f"u_lb_{tr.name}_{_resource_key(core)}_{i}")
-        self.model.add_constr(
-            u <= self.model.quicksum(occ_exprs),
-            name=f"u_ub_{tr.name}_{_resource_key(core)}",
-        )
-        return u
-
     def _transfer_side_uses_core_var(self, tr: TransferNode, core: Core, incoming: bool) -> SolverVar:
         """Whether any tensor this transfer brings to (or takes from) this core sits on it.
 
@@ -833,13 +807,6 @@ class TransferAndTensorAllocator:
             name=f"same_lb_{src_tensor.name}_{dst_tensor.name}_{_resource_key(core)}",
         )
         return v
-
-    def _all_candidate_cores_for_transfer(self, tr: TransferNode) -> set[Core]:
-        out: set[Core] = set()
-        for t in tr.tensors:
-            if isinstance(t, Tensor):
-                out.update(self._candidate_cores_for_tensor(t))
-        return out
 
     # ------------------------------------------------------------ #
     # model construction                                           #
@@ -1689,9 +1656,6 @@ class TransferAndTensorAllocator:
             for n in carriers
         )
 
-    def _transfer_dma_usage_expr(self, tr: TransferNode, core: Core):
-        return self.model.quicksum(self._tensor_on_core_expr(t, core) for t in tr.tensors if isinstance(t, Tensor))
-
     def _add_dma_usage_constraints(self) -> None:
         """
         Directional DMA accounting for all on-chip cores.
@@ -1769,21 +1733,21 @@ class TransferAndTensorAllocator:
         )
 
     def _set_total_latency_and_objective(self) -> None:
-        self.total_lat = self.model.add_var(vtype=SolverVarType.INTEGER, name="total_latency")
-        self.total_latency = self.total_lat
+        total_latency = self.model.add_var(vtype=SolverVarType.INTEGER, name="total_latency")
+        self.total_latency = total_latency
         assert self.overlap is not None, "Overlap variable must be initialized before objective."
         self.model.add_constr(
-            self.total_lat
+            total_latency
             == self.iterations * self.model.quicksum(v._raw for v in self.slot_latency.values())
             - (self.iterations - 1) * self.overlap
         )
-        self.quantities.add("total_latency", self.total_lat._raw)
+        self.quantities.add("total_latency", total_latency._raw)
 
         # Primary objective: minimize total latency (+ DMA balancing if enabled)
         if self.constraint_selection.dma_channels:
-            primary_expr = self.total_lat._raw + self.max_core_dma_in._raw + self.max_core_dma_out._raw
+            primary_expr = total_latency._raw + self.max_core_dma_in._raw + self.max_core_dma_out._raw
         else:
-            primary_expr = self.total_lat._raw
+            primary_expr = total_latency._raw
 
         # Slot latency only sees a transfer when it is the longest thing in its slot,
         # so a transfer hiding behind compute is free to the primary objective however
@@ -2403,11 +2367,6 @@ class TransferAndTensorAllocator:
                 chosen_memory_cores[tr] = self._fixed_tensor_choice(tensor)
         return chosen_memory_cores
 
-    def update_transfer_memory_core_allocation(self) -> None:
-        chosen_memory_cores = self.get_chosen_memory_cores()
-        for tr, cores in chosen_memory_cores.items():
-            self.mapping.update_memory_allocation_for_node(tr, (cores,))
-
     def get_tensor_allocations(self) -> TensorAlloc:
         tensor_alloc: TensorAlloc = {}
         for t in self.tensor_fixed:
@@ -2422,13 +2381,6 @@ class TransferAndTensorAllocator:
                 raise ValueError(f"{t.node_name}: expected exactly one placement choice, got {chosen}")
             tensor_alloc[t] = chosen[0]
         return tensor_alloc
-
-    def _check_io_transfers_firing_levels(self) -> None:
-        for tr in self.transfer_nodes:
-            for t in tr.tensors:
-                stop_max = len(self.ssis[t].get_applicable_temporal_variables())
-                stop = next(s for s in range(-1, stop_max) if self.z_stop[(t, s)].X > self.VAR_THRESHOLD)
-                assert stop >= 0
 
     def _retrieve_core_allocation(self, node: Node) -> tuple[tuple[Core, ...], ...]:
         if isinstance(node, InEdge):
@@ -2686,20 +2638,6 @@ class TransferAndTensorAllocator:
             self.model.add_constr(overlap <= iteration - busy, name=f"shared_bound_{core_id}")
             self.shared_busy[core_id] = busy
             self.quantities.add("shared_busy", busy._raw, index=core_id)
-
-    def _active_compute_latency(
-        self,
-        n: ComputationNode,
-        runtime_constant: float,
-    ) -> int:
-        # Get the temporal steady state fraction of 'ABSENT' loops
-        ssis_t = self.ssis.get(n).get_temporal_variables()
-        total_product = prod([ssis_var.size for ssis_var in ssis_t])
-        product_without_absent = prod([ssis_var.size for ssis_var in ssis_t if ssis_var.effect != LoopEffect.ABSENT])
-        fraction = product_without_absent / total_product if total_product > 0 else 1.0
-        # Scale the runtime constant by the fraction to get the effective latency
-        active_latency = int(round(runtime_constant * fraction))
-        return active_latency
 
     def _mip_progress_callback(self, model, where):
         if where not in (GRB.Callback.MIP, GRB.Callback.MIPSOL, GRB.Callback.PRESOLVE):

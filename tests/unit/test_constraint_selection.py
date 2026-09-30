@@ -182,7 +182,7 @@ def test_dma_enabled():
 
 
 def test_dma_objective_no_dma_terms():
-    """When dma_channels=False, primary objective = total_lat only (no DMA vars)."""
+    """When dma_channels=False, primary objective = total_latency only (no DMA vars)."""
     cs = ConstraintSelection(dma_channels=False, offchip_traffic_cost=False)
     tta = _make_tta_stub(cs, bind_objective=True)
     # Set up minimal mocks for _set_total_latency_and_objective
@@ -199,7 +199,7 @@ def test_dma_objective_no_dma_terms():
     tta.transfer_nodes = []
     tta.possible_transfer_allocations = {}
     tta._set_total_latency_and_objective()
-    # Verify lexicographic objectives were set with primary = total_lat only
+    # Verify lexicographic objectives were set with primary = total_latency only
     mock_model.set_lexicographic_objectives.assert_called_once()
     objectives = mock_model.set_lexicographic_objectives.call_args[0][0]
     primary = next(o for o in objectives if o.name == "latency")
