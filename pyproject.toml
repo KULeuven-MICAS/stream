@@ -81,6 +81,11 @@ torch_export = "stream.frontends.torch_export:TorchExportFrontend"
 # NamespaceConstraints subclass. Instantiated via from_config whenever the accelerator contains a
 # core of that namespace, so an out-of-tree extension supplies constraints for its own hardware
 # namespace. The built-in aie2 strategy registers here too -- the public path is the plugin path.
+# Optional allocation-model constraint families, selected per solve by SolveOptions.families. The
+# entry-point name is the family's `name`, its object a ConstraintFamily factory.
+[project.entry-points."stream.constraint_families"]
+memory_ports = "stream.opt.allocation.constraint_optimization.families.memory_ports:MemoryPorts"
+
 [project.entry-points."stream.constraints"]
 aie2 = "stream.opt.allocation.constraint_optimization.context:AIE2Constraints"
 
