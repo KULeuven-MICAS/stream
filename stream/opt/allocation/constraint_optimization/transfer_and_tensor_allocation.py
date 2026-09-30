@@ -3179,12 +3179,12 @@ class TransferAndTensorAllocator:
                     raw = int(self._transfer_latency_for_path(tr, choice))
                     active_abs = int(get_active_latency(tr, float(raw), self.ssis))
                     try:
-                        reuse_factor = float(self.reuse_factors[tr].getValue())
+                        reuse_factor = self.model.value(self.reuse_factors[tr])
                     except Exception:
                         reuse_factor = None
                     cached_var = self._transfer_latency_cache.get((tr, choice))
                     try:
-                        contribution = float(cached_var.getValue()) if cached_var is not None else None
+                        contribution = self.model.value(cached_var) if cached_var is not None else None
                     except Exception:
                         contribution = None
                     tensor_bits: int | None = None
