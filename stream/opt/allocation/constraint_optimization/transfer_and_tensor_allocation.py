@@ -39,6 +39,7 @@ from stream.opt.allocation.constraint_optimization.context import (
     TransferAndTensorContext,
     build_transfer_context,
 )
+from stream.opt.allocation.constraint_optimization.families import SLOT_PRESSURE, load_families
 from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
     _resource_key,
@@ -226,6 +227,7 @@ class TransferAndTensorAllocator:
         self.total_latency: SolverVar | None = None
         self.recurrence_bound: int = 0
         self.quantities = QuantityRegistry()
+        self.families = load_families(self.constraint_selection.families)
 
         # transfer fire helpers init
         self._ensure_same_ssis_for_all_transfers()
@@ -847,7 +849,12 @@ class TransferAndTensorAllocator:
         self._create_vars()
         self._index_choice_metadata()
         self._create_constraints()
-        self._overlap_and_objective()
+        for family in self.families:
+            family.declare(self, self.quantities)
+        self._overlap()
+        for family in self.families:
+            family.constrain(self, self.quantities)
+        self._objective()
 
     # ...................... VARIABLES ................... #
     def _create_vars(self):
@@ -1426,13 +1433,12 @@ class TransferAndTensorAllocator:
                     )
 
     # ...................... overlap + objective ................. #
-    def _overlap_and_objective(self) -> None:
-        max_s = self.max_slot
-        big_m = self.big_m
-
-        self._init_idle_indicators(max_s, big_m)
-        self._create_idle_latency_vars(max_s)
+    def _overlap(self) -> None:
+        self._init_idle_indicators(self.max_slot, self.big_m)
+        self._create_idle_latency_vars(self.max_slot)
         self._define_overlap_var()
+
+    def _objective(self) -> None:
         if self.constraint_selection.dma_channels:
             self._add_dma_usage_constraints()
         else:
@@ -1559,6 +1565,7 @@ class TransferAndTensorAllocator:
             for choice in self._path_choices(tr):
                 lat = ceil(self._transfer_latency_for_path(tr, choice))
                 slot_latency_ub = max(slot_latency_ub, lat)
+        slot_latency_ub = max(slot_latency_ub, self._family_slot_pressure_bound())
 
         for res in {r for r, _ in self.idle_ind}:
             terms = []
@@ -1578,6 +1585,13 @@ class TransferAndTensorAllocator:
                 v == self.model.quicksum(t._raw for t in terms), name=f"idleLat_def_{_resource_key(res)}"
             )
             self.idle_lat[res] = v
+
+    def _family_slot_pressure_bound(self) -> int:
+        """The largest slot latency a family's constraints can force, 0 when no family declares one."""
+        if SLOT_PRESSURE not in self.quantities:
+            return 0
+        pressures = self.quantities.indexed(SLOT_PRESSURE).values()
+        return ceil(max((q.upper_bound or 0.0 for q in pressures), default=0.0))
 
     def _define_overlap_var(self) -> None:
         overlap = self.model.add_var(vtype=SolverVarType.INTEGER, name="overlap")

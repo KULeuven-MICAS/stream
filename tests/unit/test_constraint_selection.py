@@ -110,7 +110,7 @@ def _make_tta_stub(constraint_selection, *, bind_objective=False):
 
     We cannot instantiate a real TTA without a Workload, so we create
     a mock that has the constraint_selection attribute and delegates
-    to the real _create_constraints / _overlap_and_objective methods.
+    to the real _create_constraints / _objective methods.
 
     bind_objective: if True, also bind the real _set_total_latency_and_objective
     so its DMA conditional logic executes. Only needed for the objective test.
@@ -126,7 +126,7 @@ def _make_tta_stub(constraint_selection, *, bind_objective=False):
     tta.shared_bandwidth = {}
     # Bind the real dispatch methods so if-guards execute
     tta._create_constraints = TransferAndTensorAllocator._create_constraints.__get__(tta)
-    tta._overlap_and_objective = TransferAndTensorAllocator._overlap_and_objective.__get__(tta)
+    tta._objective = TransferAndTensorAllocator._objective.__get__(tta)
     if bind_objective:
         tta._set_total_latency_and_objective = TransferAndTensorAllocator._set_total_latency_and_objective.__get__(tta)
     return tta
@@ -172,7 +172,7 @@ def test_dma_guard():
     tta = _make_tta_stub(cs)
     tta.max_slot = 0
     tta.big_m = 10
-    tta._overlap_and_objective()
+    tta._objective()
     tta._add_dma_usage_constraints.assert_not_called()
 
 
@@ -182,7 +182,7 @@ def test_dma_enabled():
     tta = _make_tta_stub(cs)
     tta.max_slot = 0
     tta.big_m = 10
-    tta._overlap_and_objective()
+    tta._objective()
     tta._add_dma_usage_constraints.assert_called_once()
 
 
@@ -307,7 +307,7 @@ def test_skip_warnings(caplog):
         tta._create_constraints()
         tta.max_slot = 0
         tta.big_m = 10
-        tta._overlap_and_objective()
+        tta._objective()
     assert "memory_capacity" in caplog.text.lower()
     assert "object_fifo_depth" in caplog.text.lower()
     assert "buffer_descriptors" in caplog.text.lower()
@@ -324,7 +324,7 @@ def test_all_enabled_calls_all():
     tta._buffer_descriptor_constraints.assert_called_once()
     tta.max_slot = 0
     tta.big_m = 10
-    tta._overlap_and_objective()
+    tta._objective()
     tta._add_dma_usage_constraints.assert_called_once()
 
 

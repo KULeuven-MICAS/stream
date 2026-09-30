@@ -225,7 +225,7 @@ def test_buffer_descriptor_flip():
 def test_dma_channels_flip():
     """dma_channels guard: tight DMA limit causes infeasibility; disabling restores feasibility.
 
-    The guard in _overlap_and_objective() is structurally wired. Proof:
+    The guard in _objective() is structurally wired. Proof:
     - DMA channels=1 (all tiles) + dma_channels=True  -> RuntimeError
     - DMA channels=1 (all tiles) + dma_channels=False -> success
 

@@ -6,7 +6,7 @@ import datetime
 import logging
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Any
@@ -108,6 +108,8 @@ class ConstraintSelection:
     offchip_contention: bool = True
     offchip_traffic_cost: bool = True
     pipelining: PipeliningModel = PipeliningModel.OCCUPANCY
+    families: tuple[str | Mapping[str, Any], ...] = ()
+    """Constraint families to build, by entry-point name, or ``{name: options}``; none by default."""
 
     def __post_init__(self) -> None:
         if not self.memory_capacity and self.object_fifo_depth:

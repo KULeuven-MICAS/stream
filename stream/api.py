@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from zigzag.mapping.temporal_mapping import TemporalMappingType
@@ -72,6 +72,14 @@ class SolveOptions:
     tile_search: bool = False
     instrumentation: Mapping[str, Any] | None = None
     stage_options: Mapping[str, Any] = field(default_factory=dict)
+    families: Sequence[str | Mapping[str, Any]] | None = None
+    """Constraint families to add to the allocation model, such as ``["memory_ports"]``; None adds none."""
+
+    def resolved_constraint_selection(self) -> ConstraintSelection | None:
+        """``constraint_selection`` with ``families`` folded in."""
+        if not self.families:
+            return self.constraint_selection
+        return replace(self.constraint_selection or ConstraintSelection(), families=tuple(self.families))
 
 
 @dataclass(frozen=True)
@@ -169,7 +177,7 @@ def _solve(
         temporal_mapping_type=TemporalMappingType[options.temporal_mapping_type.upper()],
         nb_cols_to_use=options.nb_cols_to_use,
         backend=backend.value,
-        constraint_selection=options.constraint_selection,
+        constraint_selection=options.resolved_constraint_selection(),
         kernel_library=options.kernel_library,
         tile_search=options.tile_search,
         **options.stage_options,
