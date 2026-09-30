@@ -39,6 +39,7 @@ from stream.opt.allocation.constraint_optimization.context import (
     TransferAndTensorContext,
     build_transfer_context,
 )
+from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
 from stream.opt.allocation.constraint_optimization.timeslot_allocation import (
     _resource_key,
 )
@@ -224,6 +225,7 @@ class TransferAndTensorAllocator:
         self.overlap: SolverVar | None = None
         self.total_latency: SolverVar | None = None
         self.recurrence_bound: int = 0
+        self.quantities = QuantityRegistry()
 
         # transfer fire helpers init
         self._ensure_same_ssis_for_all_transfers()
@@ -857,6 +859,7 @@ class TransferAndTensorAllocator:
     def __create_slot_latency_vars(self):
         for s in range(self.max_slot + 1):
             self.slot_latency[s] = self.model.add_var(vtype=SolverVarType.INTEGER, name=f"L_{s}")
+            self.quantities.add("slot_latency", self.slot_latency[s]._raw, index=s)
 
     def __create_reuse_vars(self):
         self.z_stop: dict[tuple[Tensor, int], SolverVar] = {}
@@ -1155,6 +1158,7 @@ class TransferAndTensorAllocator:
                 terms["handover"] = {"value": held, "dims": (), "dtype": ""}
 
         for memory, expr in load.items():
+            self.quantities.add("memory_load", expr, index=memory.id)
             cap = self._memory_capacity_bits(memory)
             self._resource_bounds[("memory_capacity", memory.id)] = cap / 8  # bytes
             self._add_resource_constr(
@@ -1579,10 +1583,14 @@ class TransferAndTensorAllocator:
         overlap = self.model.add_var(vtype=SolverVarType.INTEGER, name="overlap")
         self.overlap = overlap
         iteration = self.model.quicksum(v._raw for v in self.slot_latency.values())
+        self.quantities.add("overlap", overlap._raw)
+        self.quantities.add("iteration", iteration)
         for res, v in self.idle_lat.items():
             if not self._bounds_overlap(res):
                 continue
             busy = self._link_busy_expr(res) if isinstance(res, CommunicationLink) else None
+            if busy is not None:
+                self.quantities.add("link_busy", busy, index=res)
             if busy is None:
                 self.model.add_constr(overlap <= v)
             else:
@@ -1721,6 +1729,8 @@ class TransferAndTensorAllocator:
 
             self.core_dma_in[core] = v_in
             self.core_dma_out[core] = v_out
+            self.quantities.add("dma_in", v_in._raw, index=core.id)
+            self.quantities.add("dma_out", v_out._raw, index=core.id)
 
         self.max_core_dma_in = self.model.add_var(vtype=SolverVarType.INTEGER, name="maxCoreDmaIn")
         self.max_core_dma_out = self.model.add_var(vtype=SolverVarType.INTEGER, name="maxCoreDmaOut")
@@ -1751,6 +1761,7 @@ class TransferAndTensorAllocator:
             == self.iterations * self.model.quicksum(v._raw for v in self.slot_latency.values())
             - (self.iterations - 1) * self.overlap
         )
+        self.quantities.add("total_latency", self.total_lat._raw)
 
         # Primary objective: minimize total latency (+ DMA balancing if enabled)
         if self.constraint_selection.dma_channels:
@@ -1762,21 +1773,21 @@ class TransferAndTensorAllocator:
         # so a transfer hiding behind compute is free to the primary objective however
         # often it fires. Offchip bandwidth is shared by every slot, so it is not free
         # on hardware.
-        self._traffic_terms = [
+        traffic_terms = [
             (t.size_bits() / self.reuse_levels[(t, s)], self.z_stop[(t, s)])
             for t in self.tensors_to_optimize_reuse_for
             for s in range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
         ]
-        traffic_expr = self.model.quicksum(bits * z._raw for bits, z in self._traffic_terms)
+        traffic_expr = self.model.quicksum(bits * z._raw for bits, z in traffic_terms)
 
-        self._traffic_weight = 0.0
+        traffic_weight = 0.0
         if (
             not self.shared_bandwidth
             and self.constraint_selection.offchip_traffic_cost
             and (bw := self._offchip_bandwidth())
         ):
-            self._traffic_weight = self.iterations / bw
-            primary_expr = primary_expr + self._traffic_weight * traffic_expr
+            traffic_weight = self.iterations / bw
+            primary_expr = primary_expr + traffic_weight * traffic_expr
 
         # Third objective (tiebreaker): minimize total buffering depth
         buffering_expr = self.model.quicksum(
@@ -1791,12 +1802,20 @@ class TransferAndTensorAllocator:
             for choice in self.possible_transfer_allocations[tr]
         )
 
+        self.quantities.add("primary", primary_expr)
+        self.quantities.add("offchip_traffic", traffic_expr)
+        self.quantities.add("buffering", buffering_expr)
+        self.quantities.add("route_hops", hops_expr)
+        levels = [
+            ("latency", "primary"),
+            ("offchip_traffic", "offchip_traffic"),
+            ("buffering", "buffering"),
+            ("route_hops", "route_hops"),
+        ]
         self.model.set_lexicographic_objectives(
             [
-                ObjectiveLevel(expr=primary_expr, priority=4, name="latency"),
-                ObjectiveLevel(expr=traffic_expr, priority=3, name="offchip_traffic"),
-                ObjectiveLevel(expr=buffering_expr, priority=2, name="buffering"),
-                ObjectiveLevel(expr=hops_expr, priority=1, name="route_hops"),
+                ObjectiveLevel(expr=self.quantities.get(quantity).expr, priority=len(levels) - i, name=name)
+                for i, (name, quantity) in enumerate(levels)
             ],
             sense="minimize",
         )
@@ -2608,6 +2627,9 @@ class TransferAndTensorAllocator:
                 selectors=selectors,
             )
             self._transfer_latency_cache[(tr, choice)] = active_latency_absent_loops_and_reuse_factor
+            self.quantities.add(
+                "transfer_latency", active_latency_absent_loops_and_reuse_factor._raw, index=(tr, choice)
+            )
 
         return active_latency_absent_loops_and_reuse_factor
 
@@ -2647,6 +2669,7 @@ class TransferAndTensorAllocator:
             self.model.add_constr(busy == self.model.quicksum(terms), name=f"shared_busy_{core_id}_def")
             self.model.add_constr(overlap <= iteration - busy, name=f"shared_bound_{core_id}")
             self.shared_busy[core_id] = busy
+            self.quantities.add("shared_busy", busy._raw, index=core_id)
 
     def _active_compute_latency(
         self,
@@ -2962,10 +2985,7 @@ class TransferAndTensorAllocator:
 
     def primary_cost(self) -> float:
         """The solved value of the latency objective, whichever lexicographic level the backend ended on."""
-        cost = float(self.total_lat.X)
-        if self.constraint_selection.dma_channels:
-            cost += float(self.max_core_dma_in.X) + float(self.max_core_dma_out.X)
-        return cost + self._traffic_weight * sum(bits * float(z.X) for bits, z in self._traffic_terms)
+        return self.model.value(self.quantities.get("primary").expr)
 
     def throughput_bound(self) -> float:
         """The pipelined compute bound of the steady state, from the solved allocation."""
