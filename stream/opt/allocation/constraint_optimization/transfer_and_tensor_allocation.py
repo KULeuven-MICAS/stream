@@ -334,7 +334,8 @@ class TransferAndTensorAllocator:
     # ------------------------------------------------------------ #
     # internal helpers                                             #
     # ------------------------------------------------------------ #
-    def _transfer_latency_for_path(self, tr: TransferNode, path: MulticastPathPlan) -> int:
+    def transfer_latency_for_path(self, tr: TransferNode, path: MulticastPathPlan) -> int:
+        """Cycles one firing of ``tr`` takes on ``path``, before its active fraction and reuse."""
         # A transfer served out of memory the two cores share reads in place: no bytes cross a link,
         # so it adds no time to the slot, the same reason it spends no DMA channel.
         if self._choice_shares_memory(tr, path):
@@ -1530,7 +1531,7 @@ class TransferAndTensorAllocator:
 
         for tr in self.transfer_nodes:
             for choice in self._path_choices(tr):
-                lat = ceil(self._transfer_latency_for_path(tr, choice))
+                lat = ceil(self.transfer_latency_for_path(tr, choice))
                 slot_latency_ub = max(slot_latency_ub, lat)
         slot_latency_ub = max(slot_latency_ub, self._family_slot_pressure_bound())
 
@@ -2575,7 +2576,7 @@ class TransferAndTensorAllocator:
         if (tr, choice) in self._transfer_latency_cache:
             active_latency_absent_loops_and_reuse_factor = self._transfer_latency_cache[(tr, choice)]
         else:
-            latency_constant = float(self._transfer_latency_for_path(tr, choice))
+            latency_constant = float(self.transfer_latency_for_path(tr, choice))
             active_latency_absent_loops = get_active_latency(tr, latency_constant, self.ssis)
 
             reuse_factor_expr = self.reuse_factors[tr]._raw
@@ -3176,7 +3177,7 @@ class TransferAndTensorAllocator:
                     if float(y.X) < 0.5:  # noqa: PLR2004
                         continue
                     s = int(self.slot_of[tr])
-                    raw = int(self._transfer_latency_for_path(tr, choice))
+                    raw = int(self.transfer_latency_for_path(tr, choice))
                     active_abs = int(get_active_latency(tr, float(raw), self.ssis))
                     try:
                         reuse_factor = self.model.value(self.reuse_factors[tr])

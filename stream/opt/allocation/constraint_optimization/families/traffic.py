@@ -64,7 +64,7 @@ def active_fraction(node: Any, alloc: TransferAndTensorAllocator) -> float:
     return prod(v.size for v in temporal if v.effect != LoopEffect.ABSENT) / total if total else 1.0
 
 
-def memory_operand(alloc: TransferAndTensorAllocator, tr: TransferNode, read_side: bool) -> str:
+def operand_role(alloc: TransferAndTensorAllocator, tr: TransferNode, read_side: bool) -> str:
     """Operand role the tensor has on one side: the output for a producer, input k for a consumer's input k."""
     producer = next(iter(alloc.workload.predecessors(tr)), None)
     if read_side and isinstance(producer, ComputationNode):
@@ -87,7 +87,7 @@ def _sides(alloc: TransferAndTensorAllocator, ports: PortRegistry, tr: TransferN
     sides: list[PortShare] = []
     span = _span_bytes(tr)
     for cores, direction, share in ((choice.sources, READ, 1.0 / len(choice.sources)), (choice.targets, WRITE, 1.0)):
-        operand = memory_operand(alloc, tr, read_side=direction == READ)
+        operand = operand_role(alloc, tr, read_side=direction == READ)
         for core in cores:
             port = ports.port_for(core, direction, operand)
             if port is None:
@@ -103,7 +103,7 @@ def dma_streams(alloc: TransferAndTensorAllocator, ports: PortRegistry) -> list[
     """Every gated transfer latency that moves bits, with the ports its sources read and its targets write."""
     streams: list[DmaStream] = []
     for (tr, choice), quantity in alloc.quantities.indexed("transfer_latency").items():
-        latency = get_active_latency(tr, float(alloc._transfer_latency_for_path(tr, choice)), alloc.ssis)
+        latency = get_active_latency(tr, float(alloc.transfer_latency_for_path(tr, choice)), alloc.ssis)
         if latency <= 0:
             continue
         bits = tr.inputs[0].size_bits() * active_fraction(tr, alloc)

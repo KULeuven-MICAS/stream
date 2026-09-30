@@ -26,7 +26,7 @@ from stream.hardware.ports import (
     input_role,
 )
 
-DIRECTIONS = {
+ZIGZAG_DIRECTION_NAMES = {
     DataDirection.RD_OUT_TO_HIGH: READ,
     DataDirection.WR_IN_BY_HIGH: WRITE,
     DataDirection.RD_OUT_TO_LOW: READ_BY_DATAPATH,
@@ -82,7 +82,7 @@ class ZigZagCoreBackend(_ZigZagAccelerator):
                 key = (level.memory_instance.shared_memory_group_id, level.name, port.name)
                 found.setdefault(key, (level, port))
                 serves.setdefault(key, set()).update(
-                    (operand_role(str(served)), DIRECTIONS[direction])
+                    (operand_role(str(served)), ZIGZAG_DIRECTION_NAMES[direction])
                     for served, lv, direction in port.served_op_lv_dir
                     if tops.get(served) == lv
                 )

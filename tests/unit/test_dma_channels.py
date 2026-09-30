@@ -138,12 +138,12 @@ def _allocator(context, broadcast: bool = False):
 
 def test_a_neighbour_transfer_reads_in_place_so_its_path_latency_is_zero(aie2):
     """A compute-to-compute transfer between neighbours is served out of shared memory: it spends no
-    channel (above) and moves no bytes over a link, so ``_transfer_latency_for_path`` returns 0."""
+    channel (above) and moves no bytes over a link, so ``transfer_latency_for_path`` returns 0."""
     alloc = _allocator(aie2)
     tr = _Transfer(TransferType.COMPUTE_TO_COMPUTE)
     plan = _Plan([_core(0, "compute", 0, 2)], [_core(1, "compute", 0, 3)])  # north neighbour
     assert alloc._choice_shares_memory(tr, plan) is True
-    assert alloc._transfer_latency_for_path(tr, plan) == 0
+    assert alloc.transfer_latency_for_path(tr, plan) == 0
 
 
 def test_a_transfer_across_the_array_is_not_shared(aie2):

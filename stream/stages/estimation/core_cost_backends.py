@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from zigzag.hardware.architecture.memory_port import DataDirection
 
-from stream.hardware.architecture.backends.zigzag import DIRECTIONS, operand_role
+from stream.hardware.architecture.backends.zigzag import ZIGZAG_DIRECTION_NAMES, operand_role
 from stream.plugins import load_group
 from stream.stages.estimation.zigzag_cost_estimator import ZigZagCostEstimator
 
@@ -128,7 +128,7 @@ class ZigZagBackend:
                 words = accesses.get(direction)
                 port = next((p for p in level.ports if (mem_op, top, direction) in p.served_op_lv_dir), None)
                 if words and port is not None:
-                    traffic.append((operand_role(str(mem_op)), DIRECTIONS[direction], words * port.bw_max))
+                    traffic.append((operand_role(str(mem_op)), ZIGZAG_DIRECTION_NAMES[direction], words * port.bw_max))
         return tuple(traffic)
 
 
