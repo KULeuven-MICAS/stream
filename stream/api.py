@@ -73,7 +73,10 @@ class SolveOptions:
     instrumentation: Mapping[str, Any] | None = None
     stage_options: Mapping[str, Any] = field(default_factory=dict)
     families: Sequence[str | Mapping[str, Any]] | None = None
-    """Constraint families to add to the allocation model, such as ``["memory_ports"]``; None adds none."""
+    """Constraint families to add to the allocation model; None adds none. ``memory_ports`` bounds each top-level
+    memory port's bits per iteration by its rate (bits per cycle) times the initiation interval, and with option
+    ``burst`` (default true) each slot's bits by its rate times the slot latency. ``energy`` registers the
+    ``energy`` quantity (pJ per iteration) for an ``objective`` to use."""
 
     def resolved_constraint_selection(self) -> ConstraintSelection | None:
         """``constraint_selection`` with ``families`` folded in."""

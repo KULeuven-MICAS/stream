@@ -32,6 +32,7 @@ class MemoryPorts:
 
     def __init__(self, burst: bool = True) -> None:
         self.burst = burst
+        self.rate: dict[PortKey, float] = {}
 
     def declare(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None:
         ports = PortRegistry.from_accelerator(alloc.accelerator)
@@ -56,9 +57,8 @@ class MemoryPorts:
         for key, iteration_terms in per_iteration.items():
             demands = [iteration_terms, *(terms for (k, _), terms in per_slot.items() if k == key)]
             bound = max(self._upper(terms, worst) for terms in demands) / self.rate[key]
-            q.add(
-                SLOT_PRESSURE, q.get("port_demand", key).expr, index=("memory_ports", key), upper_bound=ceil(bound) + 1
-            )
+            cycles = q.get("port_demand", key).expr / self.rate[key]
+            q.add(SLOT_PRESSURE, cycles, index=("memory_ports", key), upper_bound=ceil(bound) + 1)
 
     def constrain(self, alloc: TransferAndTensorAllocator, q: QuantityRegistry) -> None:
         if "port_demand" not in q:

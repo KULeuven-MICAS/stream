@@ -96,8 +96,12 @@ def _sides(alloc: TransferAndTensorAllocator, ports: PortRegistry, tr: TransferN
         side = "read" if direction is READ else "write"
         for core in cores:
             port = ports.port_for(core, direction, operand)
-            if port is not None:
-                sides.append(PortShare(port, direction, share, port.bandwidth.efficiency(span, side)))
+            if port is None:
+                continue
+            # Targets in one core_memory_sharing group receive a multicast once, into their shared memory.
+            if direction is WRITE and any(s.port.key == port.key and s.direction is WRITE for s in sides):
+                continue
+            sides.append(PortShare(port, direction, share, port.bandwidth.efficiency(span, side)))
     return sides
 
 
