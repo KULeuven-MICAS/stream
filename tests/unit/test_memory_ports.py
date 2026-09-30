@@ -100,6 +100,16 @@ def test_burst_off_builds_one_constraint_per_port(solve: Solve, base: Any, model
     assert model_size(interval_only)[1] == model_size(base)[1] + n_ports
 
 
+@pytest.mark.slow
+def test_without_bounds_the_family_only_reports(solve: Solve, base: Any, model_size: Callable) -> None:
+    report_only = solve([{"memory_ports": {"interval": False, "burst": False}}])
+    assert model_size(report_only) == model_size(base)
+    assert report_only.total_latency.X == base.total_latency.X
+    rows = report_only.compute_performance_stats()["memory_ports"]
+    assert {row["kind"] for row in rows} == {"memory_port", "link"}
+    assert rows[0]["utilization"] == max(row["utilization"] for row in rows)
+
+
 def test_an_accelerator_without_port_models_gets_no_port_constraint() -> None:
     alloc = MagicMock()
     registry = QuantityRegistry()
