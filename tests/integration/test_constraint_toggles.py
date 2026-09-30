@@ -223,13 +223,9 @@ def test_buffer_descriptor_flip():
 
 @pytest.mark.slow
 def test_dma_channels_flip():
-    """dma_channels guard: tight DMA limit causes infeasibility; disabling restores feasibility.
+    """A tight DMA limit is infeasible with dma_channels on and feasible with it off (the guard in _objective).
 
-    The guard in _objective() is structurally wired. Proof:
-    - DMA channels=1 (all tiles) + dma_channels=True  -> RuntimeError
-    - DMA channels=1 (all tiles) + dma_channels=False -> success
-
-    Patch target: build_transfer_context in TTA's own namespace (imported at line 22).
+    build_transfer_context is patched in the allocator's own namespace.
     """
     # Enabled + tight limit -> infeasible
     with tempfile.TemporaryDirectory() as tmpdir:

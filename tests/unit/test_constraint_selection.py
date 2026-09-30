@@ -106,14 +106,9 @@ from unittest.mock import MagicMock  # noqa: E402
 
 
 def _make_tta_stub(constraint_selection, *, bind_objective=False):
-    """Create a minimal TTA-like object with constraint_selection set.
+    """A mock allocator that runs the real _create_constraints and _objective dispatch.
 
-    We cannot instantiate a real TTA without a Workload, so we create
-    a mock that has the constraint_selection attribute and delegates
-    to the real _create_constraints / _objective methods.
-
-    bind_objective: if True, also bind the real _set_total_latency_and_objective
-    so its DMA conditional logic executes. Only needed for the objective test.
+    bind_objective also binds the real _set_total_latency_and_objective so its DMA branch runs.
     """
     from stream.opt.allocation.constraint_optimization.quantities import QuantityRegistry
     from stream.opt.allocation.constraint_optimization.transfer_and_tensor_allocation import (
