@@ -8,6 +8,7 @@ from stream.hardware.architecture.accelerator import Accelerator, CoreGraph
 from stream.hardware.architecture.backends import AIE2CoreBackend, ZigZagCoreBackend
 from stream.hardware.architecture.core import Core
 from stream.hardware.architecture.noc.communication_link import CommunicationLink, get_bidirectional_edges
+from stream.parser.accelerator_validator import parse_port_ref
 from stream.parser.core_validator import ALLOWED_KINDS, ALLOWED_NAMESPACES, CoreValidatorRegistry
 
 
@@ -51,10 +52,16 @@ class AcceleratorFactory:
             shared_mem_group_ids=shared_mem_group_ids,
             kernel_library=KernelLibrary.load(self.data.get("kernel_library")),
             bandwidth={
-                int(core): BandwidthModel.from_description(model)
+                core: BandwidthModel.from_description(model)
                 for core, model in self.data.get("bandwidth", {}).items()
+                if isinstance(core, int)
             },
             reconfiguration=self.data.get("reconfiguration"),
+            port_bandwidth={
+                parse_port_ref(ref): BandwidthModel.from_description(model)
+                for ref, model in self.data.get("bandwidth", {}).items()
+                if isinstance(ref, str)
+            },
         )
 
     def create_core(

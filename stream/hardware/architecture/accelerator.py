@@ -29,12 +29,15 @@ class Accelerator:
         kernel_library: KernelLibrary | None = None,
         bandwidth: dict[int, BandwidthModel] | None = None,
         reconfiguration: dict | None = None,
+        port_bandwidth: dict[tuple[int, str, str], BandwidthModel] | None = None,
     ):
         self.name = name
         self.kernel_library = kernel_library
         self.cores = cores
         self.offchip_core_id = offchip_core_id
         self.bandwidth = bandwidth or {}
+        # (core id, memory instance, port name) -> measured model replacing the port's declared width
+        self.port_bandwidth = port_bandwidth or {}
         self.reconfiguration = reconfiguration or {}
         # core id -> the first core of its `core_memory_sharing` group, whose top-level memory it uses
         self.shared_mem_group_ids = shared_mem_group_ids

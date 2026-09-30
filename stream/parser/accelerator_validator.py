@@ -1,6 +1,7 @@
 import copy
 import logging
 import os
+import re
 from functools import reduce
 from itertools import combinations
 from typing import Any
@@ -20,6 +21,15 @@ FILENAME_REGEX = (
     r"[A-Za-z0-9_\-]+"  # file name
     r"(?:\.ya?ml)?$"  # optional ".yaml" or ".yml"
 )
+
+# "<core id>.<memory instance name>.<port name>", e.g. "2.dram.rw_port_1"
+PORT_REF_REGEX = r"^\d+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+$"
+
+
+def parse_port_ref(ref: str) -> tuple[int, str, str]:
+    """Split a ``bandwidth:`` port key into (core id, memory instance name, port name)."""
+    core, memory, port = ref.split(".")
+    return int(core), memory, port
 
 
 def resolve_core_path(core_file_name: str, accelerator_dirname: str) -> str | None:
@@ -79,8 +89,13 @@ class AcceleratorValidator:
         },
         # Id of the core that acts as the off-chip memory controller
         "offchip_core_id": {"type": "integer", "min": 0, "required": True},
-        # Core id -> measured bandwidth every transfer through that core shares
-        "bandwidth": {"type": "dict", "required": False, "keysrules": {"type": "integer"}},
+        # Core id -> measured bandwidth every transfer through that core shares, or a port key ->
+        # measured bandwidth replacing that top-level port's declared width
+        "bandwidth": {
+            "type": "dict",
+            "required": False,
+            "keysrules": {"anyof": [{"type": "integer"}, {"type": "string", "regex": PORT_REF_REGEX}]},
+        },
         # What reconfiguring the array between designs costs, read by the namespace constraints
         "reconfiguration": {"type": "dict", "required": False},
         # Optional unit_energy_cost used for connections that don't specify their own
@@ -177,6 +192,7 @@ class AcceleratorValidator:
         self.validate_core_connectivity()
         self.validate_core_mem_sharing()
         self.validate_memory_aliases()
+        self.validate_bandwidth()
 
         if not self.is_valid and self.errors:
             logger.critical("Accelerator validation failed with %d issue(s).", len(self.errors))
@@ -368,6 +384,33 @@ class AcceleratorValidator:
             conn["cores"] = tuple(cores)
             conn.setdefault("type", "link")
             conn.setdefault("unit_energy_cost", self.data.get("unit_energy_cost", 0))
+
+    def validate_bandwidth(self) -> None:
+        """Every ``bandwidth:`` key names an existing core, or a top-level port of a ZigZag core."""
+        keys = self.data.get("bandwidth", {})
+        measured_cores = {key for key in keys if isinstance(key, int)}
+        for core_id in measured_cores - set(self.data["cores"]):
+            self.invalidate(f"`bandwidth` names unknown core {core_id}.")
+        for ref in (key for key in keys if isinstance(key, str) and re.match(PORT_REF_REGEX, key)):
+            core_id, memory, port = parse_port_ref(ref)
+            if core_id in measured_cores:
+                self.invalidate(f"`bandwidth.{ref}`: core {core_id} already has a measured core bandwidth.")
+            elif (error := self._port_ref_error(core_id, memory, port)) is not None:
+                self.invalidate(f"`bandwidth.{ref}`: {error}")
+
+    def _port_ref_error(self, core_id: int, memory: str, port: str) -> str | None:
+        core_data = self.data["cores"].get(core_id)
+        if not isinstance(core_data, dict):
+            return f"unknown core {core_id}."
+        memories: dict[str, Any] = core_data.get("memories", {})
+        if memory not in memories:
+            return f"core {core_id} has no memory `{memory}`."
+        if port not in {p["name"] for p in memories[memory].get("ports", [])}:
+            return f"memory `{memory}` of core {core_id} has no port `{port}`."
+        top_levels = {op: name for name, mem in memories.items() for op in mem.get("operands", [])}
+        if memory not in top_levels.values():
+            return f"memory `{memory}` is not the top level of any operand of core {core_id}."
+        return None
 
     def validate_core_mem_sharing(self):
         # Replace string of core ids with tuple of ints
