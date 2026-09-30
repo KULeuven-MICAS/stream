@@ -62,6 +62,20 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install .
 
+      - name: Parse the installed hardware descriptions
+        # Outside the checkout, so every file a shipped accelerator references must be in the wheel.
+        working-directory: ${{ runner.temp }}
+        run: |
+          python - <<'EOF'
+          from pathlib import Path
+
+          import stream
+          from stream.stages.parsing.accelerator_parser import parse_accelerator
+
+          for path in sorted((Path(stream.__file__).parent / "inputs").glob("*/hardware/*.yaml")):
+              parse_accelerator(str(path))
+          EOF
+
       - name: Install AIE toolchain via stream-setup-aie
         # The console script under test: pins + GitHub release index pages + .pth.
         run: stream-setup-aie

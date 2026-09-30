@@ -2,9 +2,9 @@
 name: quad_core
 
 cores:
-  0: stream/inputs/examples/hardware/cores/fusemax_array.yaml   # main array core
-  1: stream/inputs/examples/hardware/cores/fusemax_vec.yaml     # SIMD/vector core
-  2: stream/inputs/examples/hardware/cores/fusemax_dram.yaml    # off-chip DRAM controller
+  0: ./cores/fusemax_array.yaml  # main array core
+  1: ./cores/fusemax_vec.yaml    # SIMD/vector core
+  2: ./cores/fusemax_dram.yaml   # off-chip DRAM controller
 
 offchip_core_id: 2          # core that fronts external memory
 unit_energy_cost: 512       # default energy per transferred word
