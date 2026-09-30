@@ -376,6 +376,10 @@ class SolverModel(ABC):
         """Return the number of solutions found."""
 
     @abstractmethod
+    def value(self, expr: Any) -> float:
+        """Solved value of a variable, a linear expression or a constant."""
+
+    @abstractmethod
     def solve_stats(self) -> SolveStats:
         """Return structured solve statistics.
 
@@ -700,6 +704,12 @@ class GurobiBackend(SolverModel):
 
     def get_sol_count(self) -> int:
         return self._model.SolCount
+
+    def value(self, expr: Any) -> float:
+        raw = _unwrap(expr)
+        if isinstance(raw, int | float):
+            return float(raw)
+        return float(raw.getValue() if hasattr(raw, "getValue") else raw.X)
 
     def _mip_gap(self) -> float | None:
         """Relative optimality gap; falls back to the primal/dual bounds when ``MIPGap`` is absent."""
@@ -1101,6 +1111,13 @@ class ORToolsBackend(SolverModel):
         if self._result is None:
             return 0
         return 1 if self._result.has_primal_feasible_solution() else 0
+
+    def value(self, expr: Any) -> float:
+        raw = _unwrap_ort(expr)
+        if isinstance(raw, int | float):
+            return float(raw)
+        assert self._result is not None, "value() needs a solved model"
+        return float(mathopt.evaluate_expression(raw, self._result.variable_values()))
 
     def _mip_gap(self) -> float | None:
         """Relative optimality gap, derived from MathOpt's primal/dual bounds."""
