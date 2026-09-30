@@ -6,3 +6,8 @@ memory:
   capacity: 2097152  # 256 KB in bits
   bandwidth_min: 128  # bits/cc
   bandwidth_max: 768  # bits/cc
+
+dma:  # tile DMA channels, each a 32-bit stream (AM020)
+  mm2s: 6
+  s2mm: 6
+  channel_bits: 32

@@ -358,10 +358,12 @@ class MemoryOccupancyIR(BaseModel):
 
 
 class PortActivityIR(BaseModel):
-    """One top-level memory port under the memory_ports family, in ZigZag's port-activity terms."""
+    """One resource under the memory_ports family, in ZigZag's port-activity terms."""
 
-    port: str = Field(description="'<memory>.<port>'")
-    core_ids: list[int] = Field(description="Cores sharing the memory the port belongs to")
+    kind: str = Field(default="memory_port", description="'memory_port', 'shared_bandwidth' or 'link'")
+    port: str = Field(description="'<memory>.<port>', 'measured', or '<sender>-><receiver>' for a link")
+    core_ids: list[int] = Field(description="Cores sharing the resource")
+    core_types: list[str] = Field(default_factory=list, description="Core type of each of core_ids")
     bw_bits_per_cycle: float = Field(description="Port bandwidth")
     bits_per_iteration: float = Field(description="Bits the solved schedule moves through the port per iteration")
     req_bw_aver: float | None = Field(description="Average bandwidth required over the initiation interval")

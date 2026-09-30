@@ -6,7 +6,7 @@ from zigzag.utils import open_yaml
 from stream.cost_model.bandwidth import BandwidthModel
 from stream.cost_model.core_cost import CoreCostEntry
 from stream.hardware.architecture.accelerator import Accelerator
-from stream.hardware.ports import OUTPUT, READ_BY_DATAPATH, WRITE_BY_DATAPATH, input_role
+from stream.hardware.ports import OUTPUT, READ_BY_DATAPATH, WRITE, WRITE_BY_DATAPATH, input_role
 from stream.parser.accelerator_factory import AcceleratorFactory
 from stream.parser.accelerator_validator import AcceleratorValidator
 from stream.stages.estimation.core_cost_backends import ZIGZAG_BACKEND, port_traffic
@@ -76,12 +76,13 @@ def test_declared_port_width_and_access_energy_become_the_port_model(fusemax: Ac
     assert port.read_energy_per_bit == port.write_energy_per_bit == 10.0
 
 
-def test_aie2_cores_have_no_ports():
+def test_aie2_tiles_expose_their_dma_channels_as_ports():
     accelerator = parse_accelerator(AIE2)
-    registry = accelerator.ports
-    assert len(registry) == 0
-    core = next(iter(accelerator.cores.node_list))
-    assert registry.port_for(core, READ_BY_DATAPATH, input_role(1)) is None
+    compute, mem_tile = accelerator.get_core(2), accelerator.get_core(1)
+    rates = {(p.name, p.bits_per_cycle) for p in accelerator.ports.ports_of(compute)}
+    assert rates == {("mm2s", 64), ("s2mm", 64)}
+    assert accelerator.ports.port_for(mem_tile, WRITE, input_role(1)).bits_per_cycle == 6 * 32
+    assert accelerator.ports.port_for(compute, READ_BY_DATAPATH, input_role(1)) is None
 
 
 def test_a_core_with_measured_bandwidth_has_no_ports():

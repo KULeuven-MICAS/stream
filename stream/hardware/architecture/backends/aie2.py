@@ -13,10 +13,10 @@ concepts that do not apply to the AIE2 architecture.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, ClassVar, Literal
 
-from stream.hardware.ports import PortSpec
+from stream.hardware.ports import ANY_OPERAND, READ, WRITE, PortSpec
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,10 @@ class AIE2CoreBackend:
     memory_capacity_bits: int
     bandwidth_min: int = 0
     bandwidth_max: int = 0
+    dma_mm2s: int = 0
+    dma_s2mm: int = 0
+    dma_channel_bits: int = 0
+    core_id: int = field(default=-1, compare=False)
 
     #: Core attributes this backend adds to the core's IR.
     core_ir_fields: ClassVar[tuple[str, ...]] = ("max_object_fifo_depth",)
@@ -44,13 +48,18 @@ class AIE2CoreBackend:
     def from_core_data(
         cls, core_data: dict[str, Any], core_id: int, shared_mem_group_id: int | None
     ) -> AIE2CoreBackend:
-        """The backend of a validated ``aie2`` core description; tiles share no memory, so the ids go unused."""
-        del core_id, shared_mem_group_id
-        mem = core_data["memory"]
+        """The backend of a validated ``aie2`` core description; tiles share no memory, so a tile's DMA ports
+        are its own."""
+        del shared_mem_group_id
+        mem, dma = core_data["memory"], core_data.get("dma", {})
         return cls(
             memory_capacity_bits=mem["capacity"],
             bandwidth_min=mem.get("bandwidth_min", 0),
             bandwidth_max=mem.get("bandwidth_max", 0),
+            dma_mm2s=dma.get("mm2s", 0),
+            dma_s2mm=dma.get("s2mm", 0),
+            dma_channel_bits=dma.get("channel_bits", 0),
+            core_id=core_id,
         )
 
     def same_hardware(self, other: object) -> bool:
@@ -72,8 +81,21 @@ class AIE2CoreBackend:
         return self.bandwidth_max
 
     def memory_ports(self) -> tuple[PortSpec, ...]:
-        """AIE2 tiles model no memory ports."""
-        return ()
+        """The tile DMA: MM2S channels read the tile memory onto streams, S2MM channels write into it."""
+        if not self.dma_channel_bits:
+            return ()
+        return tuple(
+            PortSpec(
+                self.core_id,
+                "dma",
+                name,
+                channels * self.dma_channel_bits,
+                0.0,
+                0.0,
+                frozenset({(ANY_OPERAND, direction)}),
+            )
+            for name, channels, direction in (("mm2s", self.dma_mm2s, READ), ("s2mm", self.dma_s2mm, WRITE))
+        )
 
     def get_ir(self) -> dict:
         """Serialize backend-specific fields for the IR dict."""
@@ -83,4 +105,5 @@ class AIE2CoreBackend:
                 "bandwidth_min": self.bandwidth_min,
                 "bandwidth_max": self.bandwidth_max,
             },
+            "dma": {"mm2s": self.dma_mm2s, "s2mm": self.dma_s2mm, "channel_bits": self.dma_channel_bits},
         }

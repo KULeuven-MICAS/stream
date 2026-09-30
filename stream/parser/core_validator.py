@@ -239,6 +239,15 @@ _AIE2_NATIVE_SCHEMA: dict[str, Any] = {
             "bandwidth_max": {"type": "integer", "required": True, "min": 0},
         },
     },
+    "dma": {
+        "type": "dict",
+        "required": False,
+        "schema": {
+            "mm2s": {"type": "integer", "required": True, "min": 1},
+            "s2mm": {"type": "integer", "required": True, "min": 1},
+            "channel_bits": {"type": "integer", "required": True, "min": 1},
+        },
+    },
 }
 
 

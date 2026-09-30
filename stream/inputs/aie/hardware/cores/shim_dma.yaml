@@ -6,3 +6,8 @@ memory:
   capacity: 10000000000  # effectively unlimited (off-chip backing)
   bandwidth_min: 128  # bits/cc
   bandwidth_max: 128  # bits/cc
+
+dma:  # tile DMA channels, each a 32-bit stream (AM020)
+  mm2s: 2
+  s2mm: 2
+  channel_bits: 32

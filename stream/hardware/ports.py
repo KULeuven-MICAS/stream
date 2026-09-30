@@ -39,6 +39,10 @@ class PortRef(NamedTuple):
     port: str
 
 
+ANY_OPERAND = "any"
+"""Operand role of a port that serves every operand, such as a tile DMA."""
+
+
 def input_role(k: int) -> str:
     """Operand role of the k-th input of a node, counted from 1."""
     return f"input{k}"
