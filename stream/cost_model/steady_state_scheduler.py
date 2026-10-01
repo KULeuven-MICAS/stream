@@ -115,6 +115,7 @@ class SteadyStateScheduler:
         self.latency_total = -1
         self.latency_per_iteration = -1
         self.overlap_between_iterations = -1
+        self.latency_fill = 0
         self.performance_stats: dict | None = None
         self.tensor_depths: TensorDepths = {}
 
@@ -185,6 +186,7 @@ class SteadyStateScheduler:
                 "total": self.latency_total,
                 "per_iteration": self.latency_per_iteration,
                 "overlap_between_iterations": self.overlap_between_iterations,
+                "fill": self.latency_fill,
             },
             "backend": self.backend,
             "solve": solve_ir,
@@ -370,6 +372,7 @@ class SteadyStateScheduler:
             latency_per_iteration,
             overlap,
         )
+        self.latency_fill = round(tta.fill.X)
         # End-to-end MAC utilization: useful MACs vs the whole chip's peak over the full runtime
         # (so it folds in spatial fill, temporal stalls, idle cores AND transfer overhead). Purely
         # observational; never let it break the solve.

@@ -24,6 +24,10 @@ class LatencyInfo(BaseModel):
     overlap_between_iterations: int = Field(
         description="Overlap cycles between consecutive iterations (pipeline depth)"
     )
+    fill: int = Field(
+        default=0,
+        description="Cycles of total each run waits before its first iteration for the tensors it holds in one buffer",
+    )
 
 
 class CostModelsIR(BaseModel):

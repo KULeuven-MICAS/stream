@@ -119,6 +119,7 @@ def _make_tta_stub(constraint_selection, *, bind_objective=False):
     tta.constraint_selection = constraint_selection
     tta.quantities = QuantityRegistry()
     tta.shared_bandwidth = {}
+    tta.fill = 0
     # Bind the real dispatch methods so if-guards execute
     tta._create_constraints = TransferAndTensorAllocator._create_constraints.__get__(tta)
     tta._objective = TransferAndTensorAllocator._objective.__get__(tta)

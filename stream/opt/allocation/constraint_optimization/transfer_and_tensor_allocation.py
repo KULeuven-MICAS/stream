@@ -223,6 +223,7 @@ class TransferAndTensorAllocator:
         self._shared_latency_cache: dict[tuple[int, TransferNode, MulticastPathPlan], SolverVar] = {}
         self.slot_latency: dict[int, SolverVar] = {}
         self.overlap: SolverVar | None = None
+        self.fill: SolverVar | None = None
         self.total_latency: SolverVar | None = None
         self.recurrence_bound: int = 0
         self.quantities = QuantityRegistry()
@@ -1405,6 +1406,51 @@ class TransferAndTensorAllocator:
         self._init_idle_indicators(self.max_slot, self.big_m)
         self._create_idle_latency_vars(self.max_slot)
         self._define_overlap_var()
+        self._resident_fill()
+
+    def _resident_fill(self) -> None:
+        """Cycles each run waits, before its first iteration, for the off-chip tensors it holds in one buffer.
+
+        A reuse level no outer loop rotates keeps its whole window in a single object for the run:
+        the object fills completely before the first iteration reads it, and the next run cannot
+        refill it before this one is done with it, so the fill overlaps no iteration. The slots
+        spread that transfer over the iterations instead, as if a second buffer prefetched it.
+        The fills run together, each no faster than its own path and all of them sharing every
+        shared-bandwidth core at its ceiling, as one iteration's transfers do.
+        """
+        self.fill = fill = self.model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name="resident_fill")
+        shared: dict[int, list[Any]] = defaultdict(list)
+        for (tr, choice), y in self.y_path_choice.items():
+            t = tr.outputs[0]
+            if not self._is_const_i(tr) or t not in self.tensors_to_optimize_reuse_for:
+                continue
+            stops = [
+                s
+                for s in range(len(self.ssis[t].get_applicable_temporal_variables()))
+                if not self.rotation_levels[(t, s)]
+            ]
+            held = [
+                (
+                    self.tiles_needed_levels[(t, s)],
+                    self._add_binary_product(
+                        a=y, b=self.z_stop[(t, s)], base_name=f"fill_{tr.name}_{hash(choice)}_L{s}"
+                    ),
+                )
+                for s in stops
+            ]
+            if not held:
+                continue
+            cycles = self.transfer_latency_for_path(tr, choice)
+            self.model.add_constr(
+                fill >= self.model.quicksum(tiles * cycles * w._raw for tiles, w in held),
+                name=f"fill_{tr.name}_{hash(choice)}",
+            )
+            for core_id, model in self.shared_bandwidth.items():
+                share = self._shared_cycles(core_id, tr, choice, model.ceiling)
+                shared[core_id] += [tiles * share * w._raw for tiles, w in held]
+        for core_id, terms in shared.items():
+            self.model.add_constr(fill >= self.model.quicksum(terms), name=f"fill_shared_{core_id}")
+        self.quantities.add("resident_fill", fill._raw)
 
     def _objective(self) -> None:
         if self.constraint_selection.dma_channels:
@@ -1741,6 +1787,7 @@ class TransferAndTensorAllocator:
             total_latency
             == self.iterations * self.model.quicksum(v._raw for v in self.slot_latency.values())
             - (self.iterations - 1) * self.overlap
+            + self.fill
         )
         self.quantities.add("total_latency", total_latency._raw)
 
@@ -2964,7 +3011,7 @@ class TransferAndTensorAllocator:
         for busy in self.shared_busy.values():
             per_iteration = max(per_iteration, float(busy.X))
         chain = sum(float(v.X) for v in self.slot_latency.values())
-        return self.iterations * per_iteration + max(0.0, chain - per_iteration)
+        return self.iterations * per_iteration + max(0.0, chain - per_iteration) + float(self.fill.X)
 
     def capacity_slack(self) -> dict[int, dict[str, float]]:
         """Unused capacity per core: memory in bytes, fifo depth and buffer descriptors in slots."""
