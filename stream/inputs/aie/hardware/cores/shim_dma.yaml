@@ -11,3 +11,5 @@ dma:  # tile DMA channels, each moving 64 bits a cycle as traced on NPU2, the wi
   mm2s: 2
   s2mm: 2
   channel_bits: 64
+  buffer_descriptors: 16
+  iterations: 64

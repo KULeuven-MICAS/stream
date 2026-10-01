@@ -39,6 +39,8 @@ class AIE2CoreBackend:
     dma_mm2s: int = 0
     dma_s2mm: int = 0
     dma_channel_bits: int = 0
+    dma_buffer_descriptors: int = 0
+    dma_iterations: int = 0
     core_id: int = field(default=-1, compare=False)
 
     #: Core attributes this backend adds to the core's IR.
@@ -59,6 +61,8 @@ class AIE2CoreBackend:
             dma_mm2s=dma.get("mm2s", 0),
             dma_s2mm=dma.get("s2mm", 0),
             dma_channel_bits=dma.get("channel_bits", 0),
+            dma_buffer_descriptors=dma.get("buffer_descriptors", 0),
+            dma_iterations=dma.get("iterations", 0),
             core_id=core_id,
         )
 
@@ -105,5 +109,11 @@ class AIE2CoreBackend:
                 "bandwidth_min": self.bandwidth_min,
                 "bandwidth_max": self.bandwidth_max,
             },
-            "dma": {"mm2s": self.dma_mm2s, "s2mm": self.dma_s2mm, "channel_bits": self.dma_channel_bits},
+            "dma": {
+                "mm2s": self.dma_mm2s,
+                "s2mm": self.dma_s2mm,
+                "channel_bits": self.dma_channel_bits,
+                "buffer_descriptors": self.dma_buffer_descriptors,
+                "iterations": self.dma_iterations,
+            },
         }

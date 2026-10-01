@@ -402,6 +402,15 @@ class AIECodeGenerationStage(Stage):
 
         return module
 
+    def _shim_limits(self) -> tuple[int, int]:
+        """The buffer descriptors a shim tile has for the runtime sequence and the steps one iterates,
+        as the accelerator declares them; 0 where it does not. A trace writes its buffer out through
+        one descriptor."""
+        shims = [core for core in self.ctx.get("accelerator").core_list if core.type == "shim"]
+        descriptors = min((core.dma_buffer_descriptors for core in shims), default=0)
+        iterations = min((core.dma_iterations for core in shims), default=0)
+        return descriptors - 1 if descriptors and self.trace_size else descriptors, iterations
+
     def _fifo_depths(self) -> FifoDepths | None:
         """A depth policy funded by the capacity the solved allocation left unused."""
         scheduler = self.ctx.get("scheduler")
@@ -458,7 +467,10 @@ class AIECodeGenerationStage(Stage):
         IterationSpaceToFor().apply(self.context, module)
         with open(output_path + "/with_for.mlir", "w") as f:
             f.write(str(module))
-        AIEConvertOfs(depths=self._fifo_depths()).apply(self.context, module)
+        descriptors, iterations = self._shim_limits()
+        AIEConvertOfs(depths=self._fifo_depths(), shim_descriptors=descriptors, shim_iterations=iterations).apply(
+            self.context, module
+        )
         with open(output_path + "/convert_of.mlir", "w") as f:
             f.write(str(module))
         ConvertStreamToAIEPass().apply(self.context, module)
