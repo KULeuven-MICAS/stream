@@ -139,13 +139,16 @@ class MappingFactory:
                     yield node, kernel
 
     def _call_tile_tiling(self, layers: tuple[str, ...]) -> tuple[tuple[LayerDim, int], ...]:
-        """A group's default tiling: its kernels' call tiles, with the dimensions its layers share innermost."""
+        """A group's default tiling, innermost first: its kernels' call tiles, with the dimensions its layers
+        share innermost, then one at a time each dimension no kernel addresses, such as a batch axis."""
         tiling: dict[LayerDim, int] = {}
+        addressed: set[LayerDim] = set()
         kernels = list(self._group_kernels(layers))
         for node, kernel in kernels:
             node_dims = self.workload.get_dims(node)
-            for position, size, dim in kernel.call_tile():
+            for position, size, dim in kernel.call_tile(node):
                 layer_dim = node_dims[position]
+                addressed.add(layer_dim)
                 extent = self.workload.get_dimension_size(layer_dim)
                 if size < extent or dim.keep_whole:
                     tiling.setdefault(layer_dim, min(size, extent))
@@ -154,7 +157,13 @@ class MappingFactory:
             for dim in a & b:
                 if dim in shared:
                     shared[dim] += 1
-        return tuple(sorted(tiling.items(), key=lambda item: shared[item[0]]))
+        batch = dict.fromkeys(
+            dim
+            for node, _ in kernels
+            for dim in self.workload.get_dims(node)
+            if dim not in addressed and self.workload.get_dimension_size(dim) > 1
+        )
+        return (*sorted(tiling.items(), key=lambda item: shared[item[0]]), *((dim, 1) for dim in batch))
 
     def _runtime_dims(self, layers: tuple[str, ...], tiling) -> tuple[LayerDim, ...]:
         """Tiling dimensions every kernel of the group takes as a runtime size."""
@@ -162,7 +171,7 @@ class MappingFactory:
         runtime: set[LayerDim] = set()
         for node, kernel in self._group_kernels(layers):
             node_dims = self.workload.get_dims(node)
-            for position, _, dim in kernel.call_tile():
+            for position, _, dim in kernel.call_tile(node):
                 (runtime if dim.runtime else compiled).add(node_dims[position])
         return tuple(dim for dim, _ in tiling if dim in runtime and dim not in compiled)
 

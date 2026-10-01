@@ -1,9 +1,10 @@
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from math import prod
 
 from snaxc.dialects.snax import LayoutCast
 from snaxc.dialects.tsl import TiledStridedLayoutAttr
-from snaxc.ir.tsl import Stride, TiledStridedLayout
+from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
 from xdsl.context import Context
 from xdsl.dialects import scf
 from xdsl.dialects.arith import ConstantOp
@@ -97,8 +98,14 @@ class SetKernelLayouts(RewritePattern):
         if not layouts:
             return
         shaped_operands = [operand for operand in op.operands if isinstance(operand.type, ShapedType)]
-        for layout, operand in zip(layouts, shaped_operands, strict=True):
+        for declared, operand in zip(layouts, shaped_operands, strict=True):
             assert isa(old_type := operand.type, MemRefType[FixedBitwidthType])
+            # A batch axis reaches the kernel as one index: a leading axis of extent one.
+            lead = old_type.get_shape()[: max(0, old_type.get_num_dims() - declared.dimension())]
+            layout = declared
+            if lead and all(size == 1 for size in lead):
+                unit = TiledStride([Stride(prod(old_type.get_shape()), 1)])
+                layout = TiledStridedLayout([unit] * len(lead) + list(declared.tstrides), declared.offset)
             if layout.dimension() != old_type.get_num_dims():
                 raise ValueError(
                     f"Kernel {op.kernel.data} declares a {layout.dimension()}-D operand layout for a "

@@ -250,7 +250,7 @@ def test_the_declared_state_is_the_size_the_core_buffer_holds():
     # _core_buffer allocates SCALE_ROWS * m elements; the declaration says rows per step, and
     # the node supplies the query extent that a split then divides.
     assert state.rows * kernel.m == SCALE_ROWS * kernel.m
-    assert (state.carried_over, state.indexed_by) == (1, 0)
+    assert (state.carried_over, state.indexed_by) == ("n", "m")
 
 
 def test_an_unsplit_step_still_hands_its_scale_on(unsplit):

@@ -79,8 +79,7 @@ SCALE_ROWS = 4
 
 # The running scale, carried over the key block and indexed by the query, which is the pair
 # of dimensions every flash node's iteration space is written in.
-QUERY_DIM, KEY_DIM = 0, 1
-STATE_SCALE = StateOperand("flash_state", SCALE_ROWS, carried_over=KEY_DIM, indexed_by=QUERY_DIM, handover=2)
+STATE_SCALE = StateOperand("flash_state", SCALE_ROWS, carried_over="n", indexed_by="m", handover=2)
 """Rows of ``B_q`` the scale buffer holds: m_{i-1}, m_i, l_i and exp2(m_{i-1} - m_i)."""
 
 SNAPSHOT, SNAPSHOT_OBJECT = "passThroughLine", "mha_passThrough.o"
@@ -391,10 +390,6 @@ def _block_index(op: ComputationNodeOp, dim) -> tuple[list[Operation], SSAValue,
     return ops, result, stride
 
 
-def _kernel_dims(op: ComputationNodeOp) -> list:
-    return [var.dim for var in cast(StrensorType, op.output.type).ssis.data.get_kernel_variables()]
-
-
 def _store_index(buffer: SSAValue, key: SSAValue, query: SSAValue) -> list[Operation]:
     return [
         first := ConstantOp.from_int_and_width(0, IndexType()),
@@ -426,7 +421,7 @@ class CausalGemmKernel(GemmKernel):
         return attended / (width * steps * key_blocks)
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
-        query, key = _kernel_dims(op)
+        query, key = self.output_axes(op)
         key_ops, key_block, _ = _block_index(op, key)
         query_ops, query_block, _ = _block_index(op, query)
         return [
@@ -533,7 +528,7 @@ class PartialSoftmaxKernel(SoftmaxKernel):
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         device, tile = _device(op), _tile(op)
-        query, key = _kernel_dims(op)
+        query, key = self.output_axes(op)
         key_ops, key_block, key_blocks = _block_index(op, key)
         query_ops, query_block, query_blocks = _block_index(op, query)
         state = self._state_buffer(device, tile)
@@ -661,7 +656,7 @@ class FusedScoreSoftmaxKernel(GemmKernel):
 
     def function_call(self, op: ComputationNodeOp) -> Sequence[Operation]:
         device, tile = _device(op), _tile(op)
-        query, key = _kernel_dims(op)
+        query, key = self.output_axes(op)
         key_ops, key_block, key_blocks = _block_index(op, key)
         query_ops, query_block, query_blocks = _block_index(op, query)
         state = self._state_buffer(device, tile)
@@ -772,9 +767,10 @@ class FlashKernel(GemmKernel):
         self.check_operands(op)
         device, tile = _device(op), _tile(op)
         sources = _partners(device, op, SCORE_SIDE)
-        kernel_dims = _kernel_dims(op)
+        kernel_dims = self.output_axes(op)
         space = cast(StrensorType, op.output.type).ssis.data
-        reduced = {var.dim for var in space.vars if var.type is not StrensorVarType.KERNEL} - set(kernel_dims)
+        indexed = {var.dim for var in space.get_kernel_variables()}
+        reduced = {var.dim for var in space.vars if var.type is not StrensorVarType.KERNEL} - indexed
         if len(reduced) > 1:
             raise ValueError(f"kernel {self.function_name} accumulates over one dimension, not {sorted(reduced)}")
         key_ops, key_block, key_blocks = _block_index(op, next(iter(reduced), None))

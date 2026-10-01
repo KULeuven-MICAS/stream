@@ -29,21 +29,23 @@ def _extent(node: ComputationNode, position: int) -> int | None:
     return None
 
 
-def state_tensor(node: ComputationNode, state) -> tuple[Tensor, AffineMap] | None:
-    """The operand and the map that make ``state`` a recurrence on ``node``.
+def state_tensor(node: ComputationNode, state, positions: dict[str, int]) -> tuple[Tensor, AffineMap] | None:
+    """The operand and the map that make ``state`` a recurrence on ``node``, whose kernel's
+    dimensions sit at ``positions``.
 
     ``rows`` of state per step of the carried dimension, indexed by the dimension the node
     splits over, so a split of that dimension divides the state with it. Reading the carried
     dimension at ``-1`` is what marks it: the extent that reaches the tensor is clipped to
     its own shape, so the carry costs ``rows`` however the carried dimension is tiled.
     """
-    indexed = _extent(node, state.indexed_by)
-    if indexed is None or _extent(node, state.carried_over) is None:
+    carried, index = positions[state.carried_over], positions[state.indexed_by]
+    indexed = _extent(node, index)
+    if indexed is None or _extent(node, carried) is None:
         return None
     rank = len(node.operand_mapping[0].results) if node.operand_mapping else 0
-    dims = max(rank, state.carried_over + 1, state.indexed_by + 1)
-    carry: AffineExpr = AffineDimExpr(state.carried_over) - 1
-    mapping = AffineMap(dims, 0, (carry, AffineDimExpr(state.indexed_by)))
+    dims = max(rank, carried + 1, index + 1)
+    carry: AffineExpr = AffineDimExpr(carried) - 1
+    mapping = AffineMap(dims, 0, (carry, AffineDimExpr(index)))
     tensor = Tensor.create(f"{state.name}_{node.name}", node.outputs[0].operand_type, (state.rows, indexed))
     return tensor, mapping
 
@@ -61,13 +63,15 @@ class KernelStateStage(Stage):
     def run(self):
         rebuilt, changed = {}, False
         for node in self.workload.nodes:
-            declared = self._declared(node)
+            kernel = self._kernel(node)
+            declared = list(kernel.state_operands()) if kernel is not None else []
             if not declared:
                 rebuilt[node.name] = node
                 continue
             inputs, maps = list(node.inputs), list(node.operand_mapping)
+            positions = kernel.positions(node)
             for state in declared:
-                built = state_tensor(node, state)
+                built = state_tensor(node, state, positions)
                 if built is None:
                     continue
                 tensor, mapping = built
@@ -85,8 +89,7 @@ class KernelStateStage(Stage):
         sub_stage = self.list_of_callables[0](self.list_of_callables[1:], self.ctx)
         yield from sub_stage.run()
 
-    def _declared(self, node):
+    def _kernel(self, node):
         if not isinstance(node, ComputationNode):
-            return []
-        kernel = getattr(self.mapping.get(node), "kernel", None)
-        return list(kernel.state_operands()) if kernel is not None else []
+            return None
+        return getattr(self.mapping.get(node), "kernel", None)
