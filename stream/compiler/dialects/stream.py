@@ -255,7 +255,8 @@ class StrensorType(
         # only get relevant temporal vars
         relevant_dims = {var.dim for var in self.ssis.data.get_kernel_variables()}
         for var in vars:
-            if var.type == StrensorVarType.TEMPORAL and var.dim in relevant_dims:
+            # A loop of one keeps nothing more local than its body does.
+            if var.type == StrensorVarType.TEMPORAL and var.dim in relevant_dims and var.size > 1:
                 yield var
 
     def get_local_shape(self) -> tuple[int, ...]:

@@ -52,3 +52,17 @@ def test_the_buffer_count_survives_printing(buffers):
     context = Context()
     context.load_dialect(Stream)
     assert Parser(context, str(key(buffers))).parse_attribute() == key(buffers)
+
+
+def test_a_loop_of_one_keeps_nothing_more_local():
+    """A query block that is the whole of a core's rows leaves its loop one step long."""
+    space = StrensorSpace(
+        (
+            StrensorVar(StrensorVarType.TEMPORAL, 4, HEAD),
+            StrensorVar(StrensorVarType.TEMPORAL, 1, QUERY),
+            StrensorVar(StrensorVarType.TEMPORAL, 2, KEY),
+            StrensorVar(StrensorVarType.KERNEL, 32, QUERY),
+            StrensorVar(StrensorVarType.KERNEL, 64, KEY),
+        )
+    )
+    assert StrensorType(bf16, space, [StringAttr("tile_0_2")], reuse_index=4).get_local_shape() == (2,)
