@@ -921,13 +921,14 @@ class ChannelToObjectFifoPass(RewritePattern):
     def held_count(strensor: StrensorType) -> int:
         """How many buffers of one fifo element a tile needs to keep its consumer fed.
 
-        Two overlaps the next transfer with the current compute. One is enough when nothing
-        varies outside the tensor's reuse window: the fifo then hands over the same data
-        every iteration, which is also the single copy the allocator costed it at.
+        One is enough when nothing varies outside the tensor's reuse window: the fifo then hands
+        over the same data every iteration, which is also the single copy the allocator costed
+        it at. Otherwise the tile cycles through the buffers the allocator chose: two overlap the
+        next transfer with the current compute, one makes the next window wait for this one.
         """
         variables = strensor.ssis.data.vars
         outer = variables[: len(variables) - strensor.reuse_index.data]
-        return 2 if any(var.type == StrensorVarType.TEMPORAL for var in outer) else 1
+        return strensor.buffers.data if any(var.type == StrensorVarType.TEMPORAL for var in outer) else 1
 
     @classmethod
     def held_shape(cls, strensor: StrensorType) -> tuple[int, ...]:

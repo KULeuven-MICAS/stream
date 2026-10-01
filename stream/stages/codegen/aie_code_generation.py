@@ -12,6 +12,7 @@ from xdsl.parser import StringAttr
 
 from stream.compiler.context.aie_context import AIEContext
 from stream.compiler.dialects.stream import (
+    DOUBLE_BUFFERED,
     ComputationNodeOp,
     FusionGroupOp,
     InEdgeOp,
@@ -152,17 +153,20 @@ class AIECodeGenerationStage(Stage):
             result_types = [result_type] * len(node.outputs)
         elif len(node.outputs) > 1:
             result_types = []
-            for (index, space), reader in zip(spaces, self._readers(node, workload), strict=True):
+            for (index, space), reader, output in zip(spaces, self._readers(node, workload), node.outputs, strict=True):
                 allocation = full_mapping.get(reader).resource_allocation[0]
                 reader_cores = allocation.sources if isinstance(allocation, MulticastPathPlan) else allocation
                 cores_attr = [StringAttr(f"tile_{c.col_id}_{c.row_id}") for c in reader_cores]
-                result_types.append(StrensorType(input_type.element_type, space, cores_attr, index))
+                result_types.append(
+                    StrensorType(input_type.element_type, space, cores_attr, index, self._buffers(output))
+                )
         else:
             result_type = StrensorType(
                 input_type.element_type,
                 ss,
                 cores,
                 reuse_index,
+                self._buffers(node.outputs[0]),
             )
             result_types = [result_type]
         op = TransferOp(
@@ -178,6 +182,10 @@ class AIECodeGenerationStage(Stage):
         )
 
         return op
+
+    def _buffers(self, tensor: Tensor) -> int:
+        """The buffers the solve holds a moving window of ``tensor`` in."""
+        return 1 if tensor in self.ctx.get("scheduler").single_buffered else DOUBLE_BUFFERED
 
     @staticmethod
     def _readers(node: TransferNode, workload: Workload) -> list[HasInputs]:

@@ -3,6 +3,7 @@ import math
 import os
 import re
 from collections import defaultdict
+from functools import cached_property
 from math import ceil, prod
 from typing import Any, TypeAlias
 
@@ -830,6 +831,7 @@ class TransferAndTensorAllocator:
         self.__create_tensor_placement_vars()
         self.__create_transfer_path_vars()
         self.__create_reuse_vars()
+        self.__create_single_buffer_vars()
         self.__create_slot_latency_vars()
 
     def __create_slot_latency_vars(self):
@@ -839,6 +841,7 @@ class TransferAndTensorAllocator:
 
     def __create_reuse_vars(self):
         self.z_stop: dict[tuple[Tensor, int], SolverVar] = {}
+        self.z_single: dict[tuple[Tensor, int], SolverVar] = {}
         for t in self.workload.tensors:
             sizes = self.ssis[t].get_applicable_temporal_sizes()
             for stop in range(-1, len(sizes)):
@@ -863,6 +866,31 @@ class TransferAndTensorAllocator:
                     self.model.quicksum(self.z_stop[(t, s)]._raw for s in range(stop, len(sizes))) == 1,
                     name=f"zStop_AtLeast_{t.name}_L{stop}",
                 )
+
+    @cached_property
+    def _sole_outputs(self) -> set[Tensor]:
+        """The tensors a transfer moves to a single reader."""
+        return {tr.outputs[0] for tr in self.transfer_nodes if len(tr.outputs) == 1}
+
+    def _may_single_buffer(self, t, stop: int) -> bool:
+        """Whether a tensor a transfer moves to one reader may hold its one-tile window at ``stop`` in
+        a single buffer where an outer loop moves it on: the next window then waits for the last
+        read of this one."""
+        return (
+            stop >= 0
+            and t in self.tensors_to_optimize_reuse_for
+            and t in self._sole_outputs
+            and self.rotation_levels[(t, stop)]
+            and self.tiles_needed_levels[(t, stop)] == 1
+        )
+
+    def __create_single_buffer_vars(self):
+        for t in self.tensors_to_optimize_reuse_for:
+            for stop in range(len(self.ssis[t].get_applicable_temporal_variables())):
+                if self._may_single_buffer(t, stop):
+                    v = self.model.add_var(vtype=SolverVarType.BINARY, name=f"zSingle_{t.name}_L{stop}")
+                    self.model.add_constr(v <= self.z_stop[(t, stop)], name=f"zSingle_AtStop_{t.name}_L{stop}")
+                    self.z_single[(t, stop)] = v
 
     def __create_transfer_path_vars(self):
         for tr in self.transfer_nodes:
@@ -1025,15 +1053,18 @@ class TransferAndTensorAllocator:
             )
 
     # ...................... memory capacity .................... #
-    def _resident_tiles(self, t, stop: int) -> int:
-        """Tiles of this tensor codegen keeps resident when it stops reuse at ``stop``."""
+    def _resident_tiles(self, t, stop: int, single: bool = False) -> int:
+        """Tiles of this tensor codegen keeps resident when it stops reuse at ``stop``, held in one
+        buffer where ``single``."""
         tiles = self.tiles_needed_levels[(t, stop)]
-        return max(tiles, 2) if self.rotation_levels.get((t, stop)) else tiles
+        return max(tiles, 2) if self.rotation_levels.get((t, stop)) and not single else tiles
 
     def _min_resident_bits(self, t, tensor_size: int) -> int:
-        """The least this tensor can keep resident under any reuse-stop choice."""
+        """The least this tensor can keep resident under any reuse-stop and buffering choice."""
         stops = range(-1, len(self.ssis[t].get_applicable_temporal_variables()))
-        return min(ceil(self._resident_tiles(t, stop) * tensor_size) for stop in stops)
+        return min(
+            ceil(self._resident_tiles(t, stop, self._may_single_buffer(t, stop)) * tensor_size) for stop in stops
+        )
 
     def _capacity_screen(self):
         """Fail before building the model when a memory cannot fit its pinned tensors under any reuse choice."""
@@ -1104,13 +1135,23 @@ class TransferAndTensorAllocator:
                     min_req: int | None = None
                     for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                         req_size = ceil(self._resident_tiles(t, stop) * tensor_size)
-                        min_req = req_size if min_req is None else min(min_req, req_size)
+                        single = (t, stop) in self.z_single
+                        least = ceil(self._resident_tiles(t, stop, single) * tensor_size)
+                        min_req = least if min_req is None else min(min_req, least)
                         uz = self._add_binary_product(
                             a=u,
                             b=self.z_stop[(t, stop)],
                             base_name=f"memload_{t.name}_{_resource_key(holder)}_L{stop}",
                         )
                         held[(t, memory)].append((uz, req_size, t.name))
+                        if single:
+                            # The second buffer the window would rotate through is not held.
+                            us = self._add_binary_product(
+                                a=u,
+                                b=self.z_single[(t, stop)],
+                                base_name=f"memsingle_{t.name}_{_resource_key(holder)}_L{stop}",
+                            )
+                            held[(t, memory)].append((us, least - req_size, t.name))
                     if min_req is not None:  # bytes this tensor's tile adds if resident on holder
                         least_bytes[memory] += min_req / 8
                 for memory, value in least_bytes.items():
@@ -1409,34 +1450,41 @@ class TransferAndTensorAllocator:
         self._resident_fill()
 
     def _resident_fill(self) -> None:
-        """Cycles each run waits, before its first iteration, for the off-chip tensors it holds in one buffer.
+        """Cycles each run waits for the windows it holds in one buffer to fill.
 
-        A reuse level no outer loop rotates keeps its whole window in a single object for the run:
-        the object fills completely before the first iteration reads it, and the next run cannot
-        refill it before this one is done with it, so the fill overlaps no iteration. The slots
-        spread that transfer over the iterations instead, as if a second buffer prefetched it.
-        The fills run together, each no faster than its own path and all of them sharing every
+        A reuse level no outer loop rotates keeps its whole window of an off-chip tensor in a single
+        object for the run: the object fills completely before the first iteration reads it, and the
+        next run cannot refill it before this one is done with it, so the fill overlaps no iteration.
+        A window an outer loop moves on that is held in one buffer instead waits the same way every
+        time it moves on, the next window filling only once the last read of this one is done. The
+        slots spread those transfers over the iterations, as if a second buffer prefetched them. The
+        fills run together, each no faster than its own path and all of them sharing every
         shared-bandwidth core at its ceiling, as one iteration's transfers do.
         """
         self.fill = fill = self.model.add_var(vtype=SolverVarType.CONTINUOUS, lb=0.0, name="resident_fill")
         shared: dict[int, list[Any]] = defaultdict(list)
+        singles: dict[Tensor, list[tuple[int, Any]]] = defaultdict(list)
+        for (t, s), single in self.z_single.items():
+            singles[t].append((s, single))
         for (tr, choice), y in self.y_path_choice.items():
             t = tr.outputs[0]
-            if not self._is_const_i(tr) or t not in self.tensors_to_optimize_reuse_for:
+            if t not in self.tensors_to_optimize_reuse_for:
                 continue
-            stops = [
-                s
-                for s in range(len(self.ssis[t].get_applicable_temporal_variables()))
-                if not self.rotation_levels[(t, s)]
-            ]
+            sizes = self.ssis[t].get_applicable_temporal_sizes()
+            # (tiles a run waits for, the choice that makes it wait, its name)
+            whole = (
+                [
+                    (self.tiles_needed_levels[(t, s)], self.z_stop[(t, s)], f"L{s}")
+                    for s in range(len(sizes))
+                    if not self.rotation_levels[(t, s)]
+                ]
+                if self._is_const_i(tr)
+                else []
+            )
+            choices = whole + [(prod(sizes[s + 1 :]), single, f"single_L{s}") for s, single in singles[t]]
             held = [
-                (
-                    self.tiles_needed_levels[(t, s)],
-                    self._add_binary_product(
-                        a=y, b=self.z_stop[(t, s)], base_name=f"fill_{tr.name}_{hash(choice)}_L{s}"
-                    ),
-                )
-                for s in stops
+                (tiles, self._add_binary_product(a=y, b=z, base_name=f"fill_{tr.name}_{hash(choice)}_{name}"))
+                for tiles, z, name in choices
             ]
             if not held:
                 continue
@@ -2377,6 +2425,10 @@ class TransferAndTensorAllocator:
                 if self.z_stop[(t, stop)].X > self.VAR_THRESHOLD:
                     reuse_levels[t] = stop
         return reuse_levels
+
+    def get_single_buffered(self) -> set[Tensor]:
+        """The tensors whose moving window the solve holds in one buffer."""
+        return {t for (t, _), z in self.z_single.items() if z.X > self.VAR_THRESHOLD}
 
     def get_tensor_depths(
         self,

@@ -202,6 +202,10 @@ class StrensorVarAttr(Data[StrensorVar]):
         return var
 
 
+# A window a loop moves on is prefetched into a second buffer while the first is read.
+DOUBLE_BUFFERED = 2
+
+
 @irdl_attr_definition
 class StrensorType(
     ParametrizedAttribute,
@@ -217,6 +221,8 @@ class StrensorType(
     core_allocation: ParameterDef[ArrayAttr[StringAttr]]
     # how many vars are kept local?
     reuse_index: ParameterDef[IntAttr]
+    # the buffers a tile cycles through as a loop outside the reuse window moves it on
+    buffers: ParameterDef[IntAttr]
 
     def __init__(
         self,
@@ -224,6 +230,7 @@ class StrensorType(
         ssis: StrensorSpace | StrensorSpaceAttr,
         core_allocation: Sequence[StringAttr] | ArrayAttr[StringAttr] = tuple(),
         reuse_index: int | IntAttr = 0,
+        buffers: int | IntAttr = DOUBLE_BUFFERED,
     ):
         if not isinstance(ssis, StrensorSpaceAttr):
             ssis = StrensorSpaceAttr(ssis)
@@ -231,7 +238,9 @@ class StrensorType(
             core_allocation = ArrayAttr(core_allocation)
         if not isinstance(reuse_index, IntAttr):
             reuse_index = IntAttr(reuse_index)
-        super().__init__([element_type, ssis, ArrayAttr(core_allocation), reuse_index])
+        if not isinstance(buffers, IntAttr):
+            buffers = IntAttr(buffers)
+        super().__init__([element_type, ssis, ArrayAttr(core_allocation), reuse_index, buffers])
 
     @property
     def num_reuse_vars(self) -> int:
@@ -277,6 +286,8 @@ class StrensorType(
             if isinstance(self.core_allocation, ArrayAttr):
                 printer.print_string(", ")
                 printer.print_attribute(self.core_allocation)
+            if self.buffers.data != DOUBLE_BUFFERED:
+                printer.print_string(f", buffers = {self.buffers.data}")
 
     @classmethod
     def parse_parameters(cls, parser: AttrParser) -> Sequence[Attribute]:
@@ -295,9 +306,14 @@ class StrensorType(
             cores = parser.parse_attribute()
         else:
             cores = NoneAttr()
+        buffers = DOUBLE_BUFFERED
+        if parser.parse_optional_characters(",") is not None:
+            parser.parse_keyword("buffers")
+            parser.parse_punctuation("=")
+            buffers = parser.parse_integer()
         parser.parse_characters(">")
         reuse_idx = IntAttr(len(vars) - non_reuse_idx if non_reuse_idx else 0)
-        return element_type, ss, cores, reuse_idx
+        return element_type, ss, cores, reuse_idx, IntAttr(buffers)
 
 
 @irdl_op_definition

@@ -118,6 +118,7 @@ class SteadyStateScheduler:
         self.latency_fill = 0
         self.performance_stats: dict | None = None
         self.tensor_depths: TensorDepths = {}
+        self.single_buffered: set[Tensor] = set()
 
         self.nb_cols_to_use = nb_cols_to_use
         self.transfer_context = build_transfer_context(accelerator, nb_cols_to_use=nb_cols_to_use)
@@ -373,6 +374,7 @@ class SteadyStateScheduler:
             overlap,
         )
         self.latency_fill = round(tta.fill.X)
+        self.single_buffered = tta.get_single_buffered()
         # End-to-end MAC utilization: useful MACs vs the whole chip's peak over the full runtime
         # (so it folds in spatial fill, temporal stalls, idle cores AND transfer overhead). Purely
         # observational; never let it break the solve.
