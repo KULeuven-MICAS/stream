@@ -7,7 +7,7 @@ memory:
   bandwidth_min: 128  # bits/cc
   bandwidth_max: 768  # bits/cc
 
-dma:  # tile DMA channels, each a 32-bit stream (AM020)
+dma:  # tile DMA channels, each moving 64 bits a cycle as traced on NPU2, the width of the links
   mm2s: 6
   s2mm: 6
-  channel_bits: 32
+  channel_bits: 64

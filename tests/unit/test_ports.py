@@ -80,8 +80,8 @@ def test_aie2_tiles_expose_their_dma_channels_as_ports():
     accelerator = parse_accelerator(AIE2)
     compute, mem_tile = accelerator.get_core(2), accelerator.get_core(1)
     rates = {(p.name, p.bits_per_cycle) for p in accelerator.ports.ports_of(compute)}
-    assert rates == {("mm2s", 64), ("s2mm", 64)}
-    assert accelerator.ports.port_for(mem_tile, WRITE, input_role(1)).bits_per_cycle == 6 * 32
+    assert rates == {("mm2s", 2 * 64), ("s2mm", 2 * 64)}
+    assert accelerator.ports.port_for(mem_tile, WRITE, input_role(1)).bits_per_cycle == 6 * 64
     assert accelerator.ports.port_for(compute, READ_BY_DATAPATH, input_role(1)) is None
 
 
