@@ -320,7 +320,8 @@ class AIECodeGenerationStage(Stage):
                     if isinstance(other_node, HasOutputs) and inp in other_node.outputs:
                         yield ops[other_node].results[other_node.outputs.index(inp)]
 
-        for node in workload.topological_sort():
+        # Ensure nodes are emitted in the same order as the scheduler reasoned about them.
+        for node in sorted(workload, key=lambda n: scheduler.timeslots[n]):
             if isinstance(node, InEdge):
                 shape = cast(ShapedType, node.output.subview.source.type).get_shape()
                 # A tensor consumed by more than one node is multicast: its transfer has
