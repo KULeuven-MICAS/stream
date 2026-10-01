@@ -84,14 +84,19 @@ def _span_bytes(tr: TransferNode) -> float:
     return contiguous_span_bytes(tuple(tensor.shape), full, tensor.operand_type.bitwidth)
 
 
+def _target_share(alloc: TransferAndTensorAllocator, tr: TransferNode) -> float:
+    """Share of the transferred tensor one target receives: its tile under the consumer's inter-core tiling,
+    as memory access estimation counts it. A broadcast gives every target the whole tensor."""
+    tensor = tr.outputs[0]
+    tile = alloc.workload.get_tensor_of_transfer_to_single_core(tensor, tr, alloc.mapping)
+    return tile.size_bits() / tensor.size_bits()
+
+
 def _sides(alloc: TransferAndTensorAllocator, tr: TransferNode, choice: Any) -> list[PortShare]:
     ports = alloc.accelerator.ports
     sides: list[PortShare] = []
     span = _span_bytes(tr)
-    # Sources and targets that pair up one to one move a slice each, as the transfer latency assumes;
-    # otherwise every target receives the whole tensor.
-    paired = 1 < len(choice.sources) == len(choice.targets)
-    write_share = 1.0 / len(choice.targets) if paired else 1.0
+    write_share = _target_share(alloc, tr)
     for cores, direction, share in (
         (choice.sources, READ, 1.0 / len(choice.sources)),
         (choice.targets, WRITE, write_share),
@@ -101,9 +106,9 @@ def _sides(alloc: TransferAndTensorAllocator, tr: TransferNode, choice: Any) -> 
             port = ports.port_for(core, direction, operand)
             if port is None:
                 continue
-            # Targets in one core_memory_sharing group receive a multicast once, into their shared memory.
-            multicast_again = any(s.port.key == port.key and s.direction == WRITE for s in sides)
-            if direction == WRITE and not paired and multicast_again:
+            # Targets in one core_memory_sharing group receive a broadcast once, into their shared memory.
+            broadcast_again = any(s.port.key == port.key and s.direction == WRITE for s in sides)
+            if direction == WRITE and write_share == 1.0 and broadcast_again:
                 continue
             sides.append(PortShare(port, direction, share, port.bandwidth.efficiency(span, direction)))
     return sides

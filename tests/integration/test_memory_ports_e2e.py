@@ -24,11 +24,10 @@ SWIGLU_TILING = [
 TWO_CONV_CASES = [
     ("eyeriss_like_single_core", 114999, ("dram", "rw_port_1")),
     ("eyeriss_like_dual_core", 80915, ("sram_1M", "rw_port_2")),
-    # Below the prototype, which credited every target of a one-to-one split with the whole tensor.
-    ("eyeriss_like_quad_core", 45689, ("sram_1M", "rw_port_2")),
+    ("eyeriss_like_quad_core", 46031, ("sram_1M", "rw_port_2")),
     ("tpu_like_quad_core", 18072, ("dram", "rw_port_1")),
     ("simba_small", 14913, ("dram", "rw_port_1")),
-    ("simba", 12081, ("dram", "rw_port_1")),  # as eyeriss_like_quad_core
+    ("simba", 12308, ("dram", "rw_port_1")),
     ("fusemax", 185892, ("sram", "r_port_1")),
     ("meta_prototype_dual_core_simd_offchip", 21625, ("dram", "rw_port_1")),
 ]
