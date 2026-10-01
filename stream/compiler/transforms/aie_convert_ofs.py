@@ -1558,7 +1558,6 @@ class TransferToObjectFIFOPattern(RewritePattern):
                 add_val := ConstantOp.from_int_and_width(0, IndexType()),
             ]
         for_op = op.parent_op()
-        assert isinstance(for_op, ForOp)
         innermost = None
         # innermost to outermost:
         for iter_var in reversed(relevant_reuse_vars):

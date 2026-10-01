@@ -166,8 +166,9 @@ def _stamp_points(device: DeviceOp) -> None:
         if node is None or node.spatial_index is None:
             continue
         dim = _split_dim(node)
-        point = _spatial_point(node, dim)
-        if dim is None or point is None:
+        # A step no split hands out holds every query block on its one core.
+        point = 0 if dim is None else _spatial_point(node, dim)
+        if point is None:
             continue
         core.attributes[FLASH_POINT] = IntegerAttr.from_int_and_width(point, 32)
         core.attributes[FLASH_EXTENT] = IntegerAttr.from_int_and_width(_spatial_extent(node, dim), 32)
