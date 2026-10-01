@@ -20,7 +20,7 @@ def test_the_strix_array_declares_its_off_chip_bandwidth_and_reconfiguration():
     accelerator = _parse("stream/inputs/aie/hardware/whole_array_strix.yaml")
     assert set(accelerator.bandwidth) == {accelerator.offchip_core_id}
     assert isinstance(accelerator.bandwidth[accelerator.offchip_core_id], BandwidthModel)
-    assert accelerator.reconfiguration == {"cycles_per_column": 69000, "reset_cycles": 63000}
+    assert accelerator.reconfiguration == {"cycles_per_column": 40000, "reset_cycles": 63000}
 
 
 def test_hardware_without_either_declares_neither():
