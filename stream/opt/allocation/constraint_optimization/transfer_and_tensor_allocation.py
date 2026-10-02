@@ -1005,6 +1005,21 @@ class TransferAndTensorAllocator:
                         y <= self._tensor_on_core_expr(dst_tensor, dst_core),
                         name=f"path_dst_match_{tr.name}_{dst_tensor.name}_{_resource_key(dst_core)}_choice_{i}",
                     )
+            # And the tensor sits only where the chosen path delivers it: a core holding a copy
+            # nothing wrote cannot be where a later transfer reads it from. An empty path moves
+            # nothing, so the colocation constraints place its tensor.
+            if dst_tensor in self.tensor_fixed:
+                continue
+            for core in self._candidate_cores_for_tensor(dst_tensor):
+                delivering = [
+                    self.y_path_choice[(tr, choice)]._raw
+                    for choice in choices
+                    if core in self.choice_dst_cores[(tr, choice)] or self.choice_has_empty_path[(tr, choice)]
+                ]
+                self.model.add_constr(
+                    self._tensor_on_core_expr(dst_tensor, core) <= self.model.quicksum(delivering),
+                    name=f"dst_delivered_{tr.name}_{dst_tensor.name}_{_resource_key(core)}",
+                )
 
     def _add_empty_path_coherence_constraints(self, tr: TransferNode, choices: tuple[MulticastPathPlan, ...]) -> None:
         """
