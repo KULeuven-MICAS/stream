@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, ClassVar, cast
 
 from snaxc.dialects.snax import LayoutCast
 from snaxc.ir.tsl import Stride, TiledStride, TiledStridedLayout
-from xdsl.dialects.builtin import AnyDenseElement, FunctionType, StringAttr, bf16
+from xdsl.dialects.builtin import AnyDenseElement, FunctionType, MemRefType, StringAttr, bf16
 from xdsl.dialects.func import CallOp, FuncOp
 from xdsl.dialects.scf import ForOp, IndexSwitchOp, YieldOp
 from xdsl.ir import Operation, Region, SSAValue
@@ -157,7 +157,16 @@ class AIEKernel(ABC):
 
     @property
     def linkwith_name(self) -> str:
+        """The object of the declared call block."""
         return self.spec.object.format(**self.call_shape())
+
+    def call_object(self, op: ComputationNodeOp) -> str:
+        """The object one call links, at the extents its operands have, inputs then output as ``ROLES``
+        counts them. A runtime dimension's call takes the tile it is handed rather than the declared
+        block, and an object compiled for its element count must be compiled for that tile."""
+        shapes = [cast(MemRefType[AnyDenseElement], operand.type).get_shape() for operand in op.inputs]
+        extents = {name: shapes[operand][axis] for name, (operand, axis) in self.ROLES.items()}
+        return self.spec.object.format(**(self.call_shape() | extents))
 
     @property
     @abstractmethod
@@ -198,7 +207,7 @@ class AIEKernel(ABC):
         while not isinstance(core_op, CoreOp):
             assert core_op.parent
             core_op = core_op.parent
-        core_op.link_with = StringAttr(self.linkwith_name)
+        core_op.link_with = StringAttr(self.call_object(op))
 
         # replace computation node with func call op
         rewriter.insert_op(self.function_call(op), InsertPoint.after(op))
