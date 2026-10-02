@@ -759,6 +759,28 @@ class TransferAndTensorAllocator:
         )
         return u
 
+    def _tensor_in_memory_var(self, t: Tensor, cores: list[Core]) -> SolverVar:
+        """Whether ``t`` sits on any of ``cores``, the cores sharing one memory."""
+        if len(cores) == 1:
+            return self._tensor_uses_core_var(t, cores[0])
+        key = "__".join(_resource_key(c) for c in cores)
+        v = self.model.add_var(vtype=SolverVarType.BINARY, name=f"u_{t.name}_{key}")
+        if t in self.tensor_fixed:
+            occ = int(any(c in self._fixed_tensor_choice(t) for c in cores))
+        else:
+            occ = self.model.quicksum(
+                self.x_tensor_choice[(t, choice)]._raw
+                for choice in self._tensor_choices(t)
+                if any(c in choice for c in cores)
+            )
+        self.model.add_constr(v == occ, name=f"u_eq_{t.name}_{key}")
+        return v
+
+    def _memory_capacity_bits(self, memory: Core) -> int:
+        """Bits of ``memory`` left for tensors: its capacity less what the toolchain claims on each core using it."""
+        users = [c for c in self.accelerator.core_list if self.accelerator.memory_of(c) == memory]
+        return memory.get_memory_capacity() - sum(self.context.reserved_memory_bits(c) for c in users)
+
     def _same_core_var(self, src_tensor: Tensor, dst_tensor: Tensor, core: Core) -> SolverVar:
         key = (src_tensor, dst_tensor, core)
         if key in self.same_core_indicator:
@@ -1012,7 +1034,7 @@ class TransferAndTensorAllocator:
         return min(ceil(self._resident_tiles(t, stop) * tensor_size) for stop in stops)
 
     def _capacity_screen(self):
-        """Fail before building the model when a core cannot fit its pinned tensors under any reuse choice."""
+        """Fail before building the model when a memory cannot fit its pinned tensors under any reuse choice."""
         pinned: dict[Core, int] = defaultdict(int)
         for node in self.workload.get_iteration_space_nodes():
             carried = [x for x in node.inputs if is_state_operand(node, x)]
@@ -1022,9 +1044,9 @@ class TransferAndTensorAllocator:
                     continue
                 (c,) = candidates
                 tile = self.workload.get_tensor_single_core(t, node, self.mapping)
-                pinned[c] += self._min_resident_bits(t, tile.size_bits())
+                pinned[self.accelerator.memory_of(c)] += self._min_resident_bits(t, tile.size_bits())
         for c, bits in pinned.items():
-            cap = c.get_memory_capacity() - self.context.reserved_memory_bits(c)
+            cap = self._memory_capacity_bits(c)
             if bits > cap:
                 raise InfeasibleAllocationError(
                     self._structural_infeasibility(
@@ -1034,8 +1056,8 @@ class TransferAndTensorAllocator:
                 )
 
     def _memory_capacity_constraints(self):
-        self.core_load: dict[Core, Any] = defaultdict(int)
-        # Transfer output tensors on their chosen compute/memory cores
+        """What each memory holds, keyed by the core owning it, so cores sharing one memory share its capacity."""
+        load: dict[Core, Any] = defaultdict(int)
         for node in self.workload.get_iteration_space_nodes():
             # A node's outputs, and the state it keeps resident while it runs there.
             carried = [x for x in node.inputs if is_state_operand(node, x)]
@@ -1043,10 +1065,19 @@ class TransferAndTensorAllocator:
                 tile = self.workload.get_tensor_single_core(t, node, self.mapping)
                 tensor_size = tile.size_bits()
                 tile_dims, tile_dtype = self._tile_shape(node, t, tile)
-                candidate_cores = self._candidate_cores_for_tensor(t)
-                for c in candidate_cores:
-                    assert isinstance(c, Core)
-                    u = self._tensor_uses_core_var(t, c)
+                sharing: dict[Core, list[Core]] = defaultdict(list)
+                for c in self._candidate_cores_for_tensor(t):
+                    sharing[self.accelerator.memory_of(c)].append(c)
+                # A tile that is the whole tensor is the same data on every core holding it, so a memory
+                # those cores share holds it once; a tile of a split tensor is a different part on each.
+                whole = tensor_size == t.size_bits()
+                holders = [
+                    (memory, holder, self._tensor_in_memory_var(t, cores if whole else [holder]))
+                    for memory, cores in sharing.items()
+                    for holder in ([memory] if whole else cores)
+                ]
+                least_bytes: dict[Core, float] = defaultdict(float)
+                for memory, holder, u in holders:
                     min_req: int | None = None
                     for stop in range(-1, len(self.ssis[t].get_applicable_temporal_variables())):
                         req_size = ceil(self._resident_tiles(t, stop) * tensor_size)
@@ -1054,34 +1085,36 @@ class TransferAndTensorAllocator:
                         uz = self._add_binary_product(
                             a=u,
                             b=self.z_stop[(t, stop)],
-                            base_name=f"memload_{t.name}_{_resource_key(c)}_L{stop}",
+                            base_name=f"memload_{t.name}_{_resource_key(holder)}_L{stop}",
                         )
-                        self.core_load[c] = self.core_load[c] + req_size * uz._raw
+                        load[memory] = load[memory] + req_size * uz._raw
                         # Keep the indicator + coefficient so _memory_occupancy can recompute the solved residency.
-                        self._memory_load_terms[c.id].append((uz, req_size, t.name))
-                    if min_req is not None:  # bytes this tensor's tile adds if resident on c
-                        self._resource_terms[("memory_capacity", c.id)][t.name] = {
-                            "value": min_req / 8,
-                            "dims": tile_dims,
-                            "dtype": tile_dtype,
-                        }
+                        self._memory_load_terms[memory.id].append((uz, req_size, t.name))
+                    if min_req is not None:  # bytes this tensor's tile adds if resident on holder
+                        least_bytes[memory] += min_req / 8
+                for memory, value in least_bytes.items():
+                    self._resource_terms[("memory_capacity", memory.id)][t.name] = {
+                        "value": value,
+                        "dims": tile_dims,
+                        "dtype": tile_dtype,
+                    }
 
         # The core that writes a handover holds it. A core reading one out of memory it
         # already shares reads it in place; one further away is given a copy of its own.
         for one, other, bits in self._handovers():
-            holders = (one,) if self.context.shares_memory(one, other) else (one, other)
-            for core in holders:
-                self.core_load[core] = self.core_load[core] + bits
-                self._handover_bits[core.id] = self._handover_bits.get(core.id, 0) + bits
-                terms = self._resource_terms[("memory_capacity", core.id)]
+            readers = (one,) if self.context.shares_memory(one, other) else (one, other)
+            for memory in dict.fromkeys(self.accelerator.memory_of(c) for c in readers):
+                load[memory] = load[memory] + bits
+                self._handover_bits[memory.id] = self._handover_bits.get(memory.id, 0) + bits
+                terms = self._resource_terms[("memory_capacity", memory.id)]
                 held = terms.get("handover", {}).get("value", 0) + bits / 8
                 terms["handover"] = {"value": held, "dims": (), "dtype": ""}
 
-        for c, expr in self.core_load.items():
-            cap = c.get_memory_capacity() - self.context.reserved_memory_bits(c)
-            self._resource_bounds[("memory_capacity", c.id)] = cap / 8  # bytes
+        for memory, expr in load.items():
+            cap = self._memory_capacity_bits(memory)
+            self._resource_bounds[("memory_capacity", memory.id)] = cap / 8  # bytes
             self._add_resource_constr(
-                expr <= cap, name=f"mem_cap_{_resource_key(c)}", kind="memory_capacity", resource=c
+                expr <= cap, name=f"mem_cap_{_resource_key(memory)}", kind="memory_capacity", resource=memory
             )
 
     def _object_fifo_depth_constraints(self):
