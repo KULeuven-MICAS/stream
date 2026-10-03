@@ -352,6 +352,7 @@ class TransferAndTensorContext:
     constraints to the model.
     """
 
+    accelerator: Accelerator
     offchip_core_id: int | None
     mem_cores: list[Core]
     force_double_buffering: bool
@@ -388,7 +389,9 @@ class TransferAndTensorContext:
             ns.add_buffer_descriptor_constraints(model, buffer_descriptor_depth)
 
     def shares_memory(self, one: Core, other: Core) -> bool:
-        """Whether any namespace puts these two cores on shared memory."""
+        """Whether the two cores use one memory, or a namespace lets one reach the other's."""
+        if self.accelerator.memory_of(one) == self.accelerator.memory_of(other):
+            return True
         return any(ns.shares_memory(one, other) for ns in self.namespace_constraints)
 
     def reserved_memory_bits(self, core: Core) -> int:
@@ -475,6 +478,7 @@ def build_transfer_context(
     ns_constraints = tuple(namespace_constraints_for(accelerator, config))
 
     return TransferAndTensorContext(
+        accelerator=accelerator,
         offchip_core_id=offchip_core_id,
         mem_cores=mem_cores,
         force_double_buffering=force_double_buffering,

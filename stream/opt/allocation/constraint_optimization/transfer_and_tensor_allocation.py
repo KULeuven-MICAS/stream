@@ -103,6 +103,11 @@ TransferAlloc: TypeAlias = dict[TransferNode, MulticastPathPlan]
 MemoryAlloc: TypeAlias = dict[TransferNode, TensorPlacementChoice]
 
 
+def _held_bits(terms: list[tuple[SolverVar, int, str]]) -> Any:
+    """Bits a list of (indicator, bits when it is 1, tensor) residency terms holds."""
+    return sum(bits * indicator._raw for indicator, bits, _ in terms)
+
+
 class TransferAndTensorAllocator:
     """
     MILP that decides
@@ -559,6 +564,8 @@ class TransferAndTensorAllocator:
         on a memory tile -- so the case left to check is whether the cores this one actually
         hands to, or takes from, are its neighbours.
         """
+        if self._within_one_memory(tr):
+            return True
         choices = self.possible_transfer_allocations.get(tr) or ()
         if not choices or self._transfer_is_broadcast(tr):
             return False
@@ -578,10 +585,25 @@ class TransferAndTensorAllocator:
         """Whether this transfer, placed on this choice, lands core to core out of memory the two
         sides already share -- the object-fifo lowering that spends no DMA channel and moves no bytes
         over a link. The per-choice form of the same conditions ``_transfer_shares_memory`` reads."""
+        if self._in_one_memory(choice):
+            return True
         if tr.transfer_type is not TransferType.COMPUTE_TO_COMPUTE or self._transfer_is_broadcast(tr):
             return False
         pairs = self._communicating_pairs(choice)
         return bool(pairs) and all(self.context.shares_memory(one, other) for one, other in pairs)
+
+    def _in_one_memory(self, choice: MulticastPathPlan) -> bool:
+        """Whether every core of this choice uses one memory, so the data it hands over never moves."""
+        return len({self.accelerator.memory_of(c) for c in (*choice.sources, *choice.targets)}) == 1
+
+    def _within_one_memory(self, tr: TransferNode) -> bool:
+        """Whether every placement of this transfer stays in one memory."""
+        choices = self.possible_transfer_allocations.get(tr)
+        return bool(choices) and all(self._in_one_memory(choice) for choice in choices)
+
+    def _in_place_copies(self) -> dict[Tensor, Tensor]:
+        """Each tensor a transfer copies within one memory, to the tensor it copies: one buffer holds both."""
+        return {copy: tr.inputs[0] for tr in self.transfer_nodes if self._within_one_memory(tr) for copy in tr.outputs}
 
     def _transfer_fan_out(self, tr: TransferNode) -> int:
         """DMA channels one source core drives: a fifo per destination it feeds a distinct slice to."""
@@ -643,7 +665,8 @@ class TransferAndTensorAllocator:
         for tr in self.transfer_nodes:
             for choice in self.possible_transfer_allocations[tr]:
                 key = (tr, choice)
-                self.links_in_choice[key] = self._links_of_choice(choice)
+                # Data handed over within one memory crosses no link.
+                self.links_in_choice[key] = set() if self._in_one_memory(choice) else self._links_of_choice(choice)
                 self.link_set.update(self.links_in_choice[key])
                 self.choice_src_cores[key] = self._src_cores_of_choice(choice)
                 self.choice_dst_cores[key] = self._dst_cores_of_choice(choice)
@@ -1055,9 +1078,30 @@ class TransferAndTensorAllocator:
                     )
                 )
 
+    def _memory_loads(self, held: dict[tuple[Tensor, Core], list[tuple[SolverVar, int, str]]]) -> dict[Core, Any]:
+        """Bits each memory holds: every tensor's residency, an in-place copy only what it holds beyond its source."""
+        load: dict[Core, Any] = defaultdict(int)
+        copies = self._in_place_copies()
+        for (t, memory), terms in held.items():
+            # Keep the indicators + coefficients so _memory_occupancy can recompute the solved residency.
+            self._memory_load_terms[memory.id] += terms
+            if t not in copies:
+                load[memory] = load[memory] + _held_bits(terms)
+                continue
+            # A copy within one memory is its source's buffer: it adds only what it holds beyond the source,
+            # and is reported as its residency less the source's.
+            source = held.get((copies[t], memory), [])
+            name = f"inplace_{t.name}_{_resource_key(memory)}"
+            extra = self.model.add_var(vtype=SolverVarType.CONTINUOUS, name=name)
+            self.model.add_constr(extra >= _held_bits(terms) - _held_bits(source), name=f"{name}_ge")
+            load[memory] = load[memory] + extra._raw
+            self._memory_load_terms[memory.id] += [(indicator, -bits, t.name) for indicator, bits, _ in source]
+        return load
+
     def _memory_capacity_constraints(self):
         """What each memory holds, keyed by the core owning it, so cores sharing one memory share its capacity."""
-        load: dict[Core, Any] = defaultdict(int)
+        # (tensor, memory) -> [(indicator, bits when it is 1, tensor)]: what holding the tensor there takes.
+        held: dict[tuple[Tensor, Core], list[tuple[SolverVar, int, str]]] = defaultdict(list)
         for node in self.workload.get_iteration_space_nodes():
             # A node's outputs, and the state it keeps resident while it runs there.
             carried = [x for x in node.inputs if is_state_operand(node, x)]
@@ -1087,9 +1131,7 @@ class TransferAndTensorAllocator:
                             b=self.z_stop[(t, stop)],
                             base_name=f"memload_{t.name}_{_resource_key(holder)}_L{stop}",
                         )
-                        load[memory] = load[memory] + req_size * uz._raw
-                        # Keep the indicator + coefficient so _memory_occupancy can recompute the solved residency.
-                        self._memory_load_terms[memory.id].append((uz, req_size, t.name))
+                        held[(t, memory)].append((uz, req_size, t.name))
                     if min_req is not None:  # bytes this tensor's tile adds if resident on holder
                         least_bytes[memory] += min_req / 8
                 for memory, value in least_bytes.items():
@@ -1098,6 +1140,8 @@ class TransferAndTensorAllocator:
                         "dims": tile_dims,
                         "dtype": tile_dtype,
                     }
+
+        load = self._memory_loads(held)
 
         # The core that writes a handover holds it. A core reading one out of memory it
         # already shares reads it in place; one further away is given a copy of its own.
@@ -2965,17 +3009,19 @@ class TransferAndTensorAllocator:
             if core is None:
                 continue
             handed = self._handover_bits.get(core_id, 0)
-            resident = handed
-            per_tensor: dict[str, int] = {"handover": handed} if handed else {}
+            per_tensor: dict[str, int] = defaultdict(int)
             try:
                 for indicator, bits, tensor_name in terms:
                     # A MILP binary comes back as 0.9999...; anything above the midpoint is a 1.
-                    if float(indicator.X) <= self.VAR_THRESHOLD:
-                        continue
-                    resident += bits
-                    per_tensor[tensor_name] = per_tensor.get(tensor_name, 0) + bits
+                    if float(indicator.X) > self.VAR_THRESHOLD:
+                        per_tensor[tensor_name] += bits
             except Exception:  # noqa: BLE001 -- an unreadable solution means no measurement, not zero
                 continue
+            # A copy within one memory holds what it needs beyond its source, and never less than nothing.
+            per_tensor = {name: bits for name, bits in per_tensor.items() if bits > 0}
+            if handed:
+                per_tensor["handover"] = handed
+            resident = sum(per_tensor.values())
             try:
                 bound = self._resource_bounds.get(("memory_capacity", core_id))
                 capacity = int(bound * 8) if bound is not None else int(core.get_memory_capacity())
