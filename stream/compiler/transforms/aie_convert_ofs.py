@@ -919,13 +919,8 @@ class ChannelToObjectFifoPass(RewritePattern):
 
     @staticmethod
     def held_count(strensor: StrensorType) -> int:
-        """How many buffers of one fifo element a tile needs to keep its consumer fed.
-
-        One is enough when nothing varies outside the tensor's reuse window: the fifo then hands
-        over the same data every iteration, which is also the single copy the allocator costed
-        it at. Otherwise the tile cycles through the buffers the allocator chose: two overlap the
-        next transfer with the current compute, one makes the next window wait for this one.
-        """
+        """Buffers of one fifo element a tile holds: one when nothing varies outside the tensor's reuse window, so
+        the fifo hands over the same data every iteration, otherwise the buffers the allocator chose."""
         variables = strensor.ssis.data.vars
         outer = variables[: len(variables) - strensor.reuse_index.data]
         return strensor.buffers.data if any(var.type == StrensorVarType.TEMPORAL for var in outer) else 1
@@ -1696,17 +1691,9 @@ class StrensorToMemref(RewritePattern):
 
 @dataclass
 class ChainRereads(RewritePattern):
-    """
-    Give a loop around a transfer that re-reads its window one task instead of one per step.
-
-    A transfer that re-reads its window takes the descriptor's iteration dimension, at stride
-    zero, for the re-reads, so a loop around it unrolls into one task per step, each issued only
-    once the one two before it is done. Where a fifo's tasks differ only by one constant step of
-    offset, a chain of as many descriptors as there are re-reads, each stepping the loop on its
-    own iteration dimension, is the whole loop in one task. A fifo keeps its tasks where the
-    chain would take more descriptors than its shim tile has, or the loop more steps than a
-    descriptor iterates.
-    """
+    """Turn a loop of re-reading shim tasks that differ by one constant offset step into one task: a chain of a
+    descriptor per re-read, each stepping the loop on its iteration dimension. A fifo keeps its tasks where the
+    chain needs more descriptors than its shim tile has, or the loop more steps than a descriptor iterates."""
 
     descriptors: int
     iterations: int
@@ -1894,8 +1881,7 @@ class AIEConvertOfs(ModulePass):
 
     name = "aie-convert-ofs"
     depths: FifoDepths | None = None
-    # The buffer descriptors a shim tile has and the steps one iterates; none declared leaves
-    # every unrolled loop unrolled.
+    # The buffer descriptors a shim tile has and the steps one iterates; without both every loop stays unrolled.
     shim_descriptors: int = 0
     shim_iterations: int = 0
 
@@ -1911,7 +1897,7 @@ class AIEConvertOfs(ModulePass):
         )
         PatternRewriteWalker(TransferToRuntimeSequence(), apply_recursively=False).rewrite_module(op)
         PatternRewriteWalker(StrensorToMemref()).rewrite_module(op)
-        if self.shim_descriptors:
+        if self.shim_descriptors and self.shim_iterations:
             PatternRewriteWalker(
                 ChainRereads(self.shim_descriptors, self.shim_iterations), apply_recursively=False
             ).rewrite_module(op)
